@@ -17,6 +17,8 @@ import { GatiMitraMerchant } from "@/constants/theme";
 export const STORE_STATUS_NOTIFICATION_ID = "merchant-store-status";
 /** v2 — Android channels are immutable; v1 may have been created too quiet to show. */
 export const STORE_STATUS_CHANNEL_ID = "merchant_store_status_v2";
+/** Transition alerts (online idle / out of timings) — default system sound. */
+export const STORE_STATUS_ALERT_CHANNEL_ID = "merchant_store_status_alert_v1";
 export const STORE_STATUS_SESSION_FILE = "merchant_store_status_session.json";
 
 /** Legacy kitchen / online / boot ids — always dismiss so only one status row exists. */
@@ -37,6 +39,8 @@ export type StoreStatusNotifArgs = {
   force?: boolean;
   /** When ONLINE: kitchen progress body (else default "Waiting for orders"). */
   bodyOverride?: string | null;
+  /** One-shot system sound for real transitions (online idle / out of timings). */
+  playSound?: boolean;
 };
 
 const OUT_OF_TIMINGS_REASONS = new Set([
@@ -191,6 +195,14 @@ async function ensureChannel(
       importance: Notifications.AndroidImportance.HIGH,
       sound: undefined,
       enableVibrate: false,
+      showBadge: true,
+      bypassDnd: false,
+    });
+    await Notifications.setNotificationChannelAsync(STORE_STATUS_ALERT_CHANNEL_ID, {
+      name: "Store status alerts",
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: "default",
+      enableVibrate: true,
       showBadge: true,
       bypassDnd: false,
     });
@@ -370,6 +382,8 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
 
     await ensureChannel(Notifications);
     await dismissPresentedStoreStatus(Notifications, true);
+    const playSound = args.playSound === true;
+    const channelId = playSound ? STORE_STATUS_ALERT_CHANNEL_ID : STORE_STATUS_CHANNEL_ID;
     await Notifications.scheduleNotificationAsync({
       identifier: STORE_STATUS_NOTIFICATION_ID,
       content: {
@@ -390,9 +404,9 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
         color: GatiMitraMerchant.primary,
         sticky: args.state === "ONLINE",
         autoDismiss: args.state !== "ONLINE",
-        sound: undefined,
+        sound: playSound ? "default" : undefined,
         priority: Notifications.AndroidNotificationPriority.HIGH,
-        ...(Platform.OS === "android" ? { channelId: STORE_STATUS_CHANNEL_ID } : {}),
+        ...(Platform.OS === "android" ? { channelId } : {}),
       },
       trigger: null,
     });
@@ -433,9 +447,9 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
           color: GatiMitraMerchant.primary,
           sticky: args.state === "ONLINE",
           autoDismiss: args.state !== "ONLINE",
-          sound: undefined,
+          sound: playSound ? "default" : undefined,
           priority: Notifications.AndroidNotificationPriority.HIGH,
-          ...(Platform.OS === "android" ? { channelId: STORE_STATUS_CHANNEL_ID } : {}),
+          ...(Platform.OS === "android" ? { channelId } : {}),
         },
         trigger: null,
       });
@@ -541,6 +555,8 @@ export async function reconcileStoreStatusNotification(args: {
     storeName: args.storeName,
     source: args.source ?? "RECONCILE",
     force: true,
+    playSound: true,
+    eventId: `STORE_STATUS:OUT_OF_TIMINGS:${args.storeId}:${args.source ?? "RECONCILE"}`,
   });
   if (args.source !== "APP_START") {
     logStatus({

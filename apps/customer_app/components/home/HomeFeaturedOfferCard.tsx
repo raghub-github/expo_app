@@ -33,6 +33,12 @@ function parseHeadline(title: string, offerType?: string | null): { prefix: stri
   const type = String(offerType ?? "").toUpperCase();
   if (!raw) return { prefix: "", highlight: "SPECIAL OFFER" };
 
+  // Flash Sale / "Flat DEALS @ ₹9" — never force a trailing OFF.
+  if (type === "FLASH_SALE" || type.includes("FLASH") || /flash\s*sale|flat\s*deals\s*@|deals\s*@/i.test(raw)) {
+    const cleaned = raw.replace(/\s+OFF\s*$/i, "").trim() || raw;
+    return { prefix: "", highlight: cleaned.toUpperCase() };
+  }
+
   if (type.includes("FLAT") || type === "CART_FLAT" || /₹\s*\d/.test(raw)) {
     const amount = raw.replace(/\s*OFF\s*$/i, "").trim();
     return { prefix: "FLAT", highlight: amount.toUpperCase().includes("OFF") ? amount : `${amount} OFF` };

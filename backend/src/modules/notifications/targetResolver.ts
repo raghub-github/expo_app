@@ -21,6 +21,29 @@ import { expandCampaignUserIdCandidates } from "./campaignTarget.js";
 
 const TOKEN_STALENESS_DAYS = 90;
 
+/** Options for token resolution. Critical incoming-order alerts may ignore dormancy. */
+export type ResolveTargetOpts = {
+  /**
+   * When true, include Expo/native tokens regardless of last_seen/updated_at age
+   * (NULL last_seen included). Only DeviceNotRegistered / invalid-token purge
+   * should drop them — do not gate RIDER_DISPATCH_OFFER / MERCHANT_NEW_ORDER
+   * on 90-day dormancy.
+   */
+  ignoreStaleness?: boolean;
+};
+
+function stalenessSql(
+  sql: ReturnType<typeof getSql>,
+  column: "updated_at" | "last_seen_at",
+  ignoreStaleness?: boolean
+) {
+  if (ignoreStaleness) return sql``;
+  if (column === "updated_at") {
+    return sql`AND (updated_at IS NULL OR updated_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)`;
+  }
+  return sql`AND (last_seen_at IS NULL OR last_seen_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)`;
+}
+
 function normaliseRole(r: string | null | undefined): NotificationRole {
   const lower = (r ?? "").toLowerCase();
   if (
@@ -80,7 +103,8 @@ function preferNativeAndroidFcm(recipients: Recipient[]): Recipient[] {
 
 async function tokensForUserIds(
   userIds: string[],
-  role?: NotificationRole
+  role?: NotificationRole,
+  opts?: ResolveTargetOpts
 ): Promise<Recipient[]> {
   if (userIds.length === 0) return [];
   const sql = getSql();
@@ -89,7 +113,7 @@ async function tokensForUserIds(
     FROM public.expo_push_tokens
     WHERE user_id = ANY(${userIds}::text[])
       AND expo_push_token IS NOT NULL
-      AND (updated_at IS NULL OR updated_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)
+      ${stalenessSql(sql, "updated_at", opts?.ignoreStaleness)}
       ${role && role !== "all" ? sql`AND lower(role) = ${role}` : sql``}
   `) as unknown as Array<{
     user_id: string;
@@ -146,11 +170,13 @@ async function nativeFcmTokens(opts: {
   storeIds?: number[];
   allForRole?: boolean;
   includeAppFcmWithoutExpo?: boolean;
+  ignoreStaleness?: boolean;
 }): Promise<Recipient[]> {
   const sql = getSql();
   const userIds = opts.userIds?.map((s) => s.trim()).filter(Boolean) ?? [];
   const storeIds = opts.storeIds?.filter((id) => Number.isFinite(id) && id > 0) ?? [];
   const role = opts.role && opts.role !== "all" ? opts.role : null;
+  const stale = stalenessSql(sql, "last_seen_at", opts.ignoreStaleness);
 
   let rows: Array<{
     user_id: string;
@@ -169,7 +195,7 @@ async function nativeFcmTokens(opts: {
         FROM public.native_device_push_tokens
         WHERE token_type = 'fcm'
           AND store_id = ANY(${storeIds}::bigint[])
-          AND (last_seen_at IS NULL OR last_seen_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)
+          ${stale}
       `) as unknown as typeof rows;
     } else if (userIds.length > 0) {
       rows = (await sql`
@@ -177,7 +203,7 @@ async function nativeFcmTokens(opts: {
         FROM public.native_device_push_tokens
         WHERE token_type = 'fcm'
           AND user_id = ANY(${userIds}::text[])
-          AND (last_seen_at IS NULL OR last_seen_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)
+          ${stale}
           ${role ? sql`AND lower(role) = ${role}` : sql``}
       `) as unknown as typeof rows;
     } else if (opts.allForRole && role) {
@@ -186,7 +212,7 @@ async function nativeFcmTokens(opts: {
         FROM public.native_device_push_tokens
         WHERE token_type = 'fcm'
           AND lower(role) = ${role}
-          AND (last_seen_at IS NULL OR last_seen_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)
+          ${stale}
       `) as unknown as typeof rows;
     }
   } catch (e) {
@@ -270,18 +296,25 @@ async function merchantRecipients(opts: {
   storeIds?: number[];
   parentMerchantIds?: string[];
   allStores?: boolean;
+  ignoreStaleness?: boolean;
 }): Promise<Recipient[]> {
   const storeTokens = await tokensFromMerchantStorePushTokens(opts);
   // Always union explicit parents with store→parent (+ store-token user) lookups.
   let parentIds = [...(opts.parentMerchantIds ?? [])];
   if (opts.storeIds?.length) {
-    const nested = await Promise.all(opts.storeIds.map((id) => userIdsForStore(id)));
+    const nested = await Promise.all(
+      opts.storeIds.map((id) => userIdsForStore(id, { ignoreStaleness: opts.ignoreStaleness }))
+    );
     parentIds = [...new Set([...parentIds, ...nested.flat().filter(Boolean)])];
   }
   const expoRecipients = parentIds.length
-    ? await tokensForUserIds(parentIds, "merchant")
+    ? await tokensForUserIds(parentIds, "merchant", opts)
     : opts.allStores
-      ? await tokensForUserIds(await userIdsByRole("merchant"), "merchant")
+      ? await tokensForUserIds(
+          await userIdsByRole("merchant", opts),
+          "merchant",
+          opts
+        )
       : [];
 
   // Partnersite web tokens often have store_id=null — always also resolve by parent user ids
@@ -289,18 +322,39 @@ async function merchantRecipients(opts: {
   // App Android FCM tokens also often have store_id=null — parent id fan-out covers them.
   const nativeParts: Recipient[] = [];
   if (opts.storeIds?.length) {
-    nativeParts.push(...(await nativeFcmTokens({ storeIds: opts.storeIds, role: "merchant" })));
+    nativeParts.push(
+      ...(await nativeFcmTokens({
+        storeIds: opts.storeIds,
+        role: "merchant",
+        ignoreStaleness: opts.ignoreStaleness,
+      }))
+    );
   }
   if (parentIds.length) {
-    nativeParts.push(...(await nativeFcmTokens({ userIds: parentIds, role: "merchant" })));
+    nativeParts.push(
+      ...(await nativeFcmTokens({
+        userIds: parentIds,
+        role: "merchant",
+        ignoreStaleness: opts.ignoreStaleness,
+      }))
+    );
   } else if (opts.allStores) {
-    nativeParts.push(...(await nativeFcmTokens({ allForRole: true, role: "merchant" })));
+    nativeParts.push(
+      ...(await nativeFcmTokens({
+        allForRole: true,
+        role: "merchant",
+        ignoreStaleness: opts.ignoreStaleness,
+      }))
+    );
   }
 
   return preferNativeAndroidFcm(dedupeByToken([...storeTokens, ...expoRecipients, ...nativeParts]));
 }
 
-async function userIdsByRole(role: NotificationRole): Promise<string[]> {
+async function userIdsByRole(
+  role: NotificationRole,
+  opts?: ResolveTargetOpts
+): Promise<string[]> {
   const sql = getSql();
   if (
     role !== "rider" &&
@@ -319,7 +373,7 @@ async function userIdsByRole(role: NotificationRole): Promise<string[]> {
       SELECT DISTINCT user_id FROM public.expo_push_tokens
       WHERE user_id IS NOT NULL
         AND lower(role) = ${role}
-        AND (updated_at IS NULL OR updated_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)
+        ${stalenessSql(sql, "updated_at", opts?.ignoreStaleness)}
     `) as unknown as Array<{ user_id: string }>;
     for (const r of expoRows) ids.add(r.user_id);
   } catch (e) {
@@ -332,7 +386,7 @@ async function userIdsByRole(role: NotificationRole): Promise<string[]> {
       WHERE user_id IS NOT NULL
         AND lower(role) = ${role}
         AND token_type = 'fcm'
-        AND (last_seen_at IS NULL OR last_seen_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)
+        ${stalenessSql(sql, "last_seen_at", opts?.ignoreStaleness)}
     `) as unknown as Array<{ user_id: string }>;
     for (const r of nativeRows) ids.add(r.user_id);
   } catch (e) {
@@ -342,7 +396,10 @@ async function userIdsByRole(role: NotificationRole): Promise<string[]> {
   return [...ids];
 }
 
-async function userIdsForStore(storeId: number): Promise<string[]> {
+async function userIdsForStore(
+  storeId: number,
+  opts?: ResolveTargetOpts
+): Promise<string[]> {
   const sql = getSql();
   const ids = new Set<string>();
   const rows = (await sql`
@@ -365,7 +422,7 @@ async function userIdsForStore(storeId: number): Promise<string[]> {
       WHERE store_id = ${storeId}
         AND user_id IS NOT NULL
         AND token_type = 'fcm'
-        AND (last_seen_at IS NULL OR last_seen_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)
+        ${stalenessSql(sql, "last_seen_at", opts?.ignoreStaleness)}
     `) as unknown as Array<{ user_id: string }>;
     for (const r of tokenUsers) {
       if (r.user_id) ids.add(r.user_id);
@@ -589,13 +646,20 @@ export async function resolveInboxOnlyRecipients(
   return [];
 }
 
-async function recipientsForRole(role: NotificationRole): Promise<Recipient[]> {
+async function recipientsForRole(
+  role: NotificationRole,
+  opts?: ResolveTargetOpts
+): Promise<Recipient[]> {
   if (role === "merchant") {
-    return merchantRecipients({ allStores: true });
+    return merchantRecipients({ allStores: true, ignoreStaleness: opts?.ignoreStaleness });
   }
-  const ids = await userIdsByRole(role);
-  const expo = await tokensForUserIds(ids, role);
-  const native = await nativeFcmTokens({ allForRole: true, role });
+  const ids = await userIdsByRole(role, opts);
+  const expo = await tokensForUserIds(ids, role, opts);
+  const native = await nativeFcmTokens({
+    allForRole: true,
+    role,
+    ignoreStaleness: opts?.ignoreStaleness,
+  });
   return preferNativeAndroidFcm(dedupeByToken([...expo, ...native]));
 }
 
@@ -811,18 +875,28 @@ async function recipientsForGeo(opts: {
   lng?: number;
   radius_km?: number;
   role?: NotificationRole | null;
+  ignoreStaleness?: boolean;
 }): Promise<Recipient[]> {
   const audience = await resolveGeoAudience(opts);
   const out: Recipient[] = [];
+  const tokenOpts: ResolveTargetOpts = { ignoreStaleness: opts.ignoreStaleness };
 
   if (audience.customerIds.length) {
-    const expo = await tokensForUserIds(audience.customerIds, "customer");
-    const native = await nativeFcmTokens({ userIds: audience.customerIds, role: "customer" });
+    const expo = await tokensForUserIds(audience.customerIds, "customer", tokenOpts);
+    const native = await nativeFcmTokens({
+      userIds: audience.customerIds,
+      role: "customer",
+      ignoreStaleness: opts.ignoreStaleness,
+    });
     out.push(...expo, ...native);
   }
   if (audience.riderIds.length) {
-    const expo = await tokensForUserIds(audience.riderIds, "rider");
-    const native = await nativeFcmTokens({ userIds: audience.riderIds, role: "rider" });
+    const expo = await tokensForUserIds(audience.riderIds, "rider", tokenOpts);
+    const native = await nativeFcmTokens({
+      userIds: audience.riderIds,
+      role: "rider",
+      ignoreStaleness: opts.ignoreStaleness,
+    });
     out.push(...expo, ...native);
   }
   if (audience.storeIds.length || audience.merchantParentIds.length) {
@@ -832,6 +906,7 @@ async function recipientsForGeo(opts: {
         parentMerchantIds: audience.merchantParentIds.length
           ? audience.merchantParentIds
           : undefined,
+        ignoreStaleness: opts.ignoreStaleness,
       })),
     );
   }
@@ -840,13 +915,22 @@ async function recipientsForGeo(opts: {
 
 /**
  * Resolve a target filter into concrete delivery recipients.
+ * Pass `ignoreStaleness: true` for critical incoming-order templates so dormant
+ * tokens (last_seen/updated_at older than TOKEN_STALENESS_DAYS) are still tried;
+ * invalid tokens continue to be purged on DeviceNotRegistered.
  */
-export async function resolveTarget(target: TargetFilter): Promise<Recipient[]> {
-  const recipients = await resolveTargetRaw(target);
+export async function resolveTarget(
+  target: TargetFilter,
+  opts?: ResolveTargetOpts
+): Promise<Recipient[]> {
+  const recipients = await resolveTargetRaw(target, opts);
   return preferNativeAndroidFcm(dedupeByToken(recipients));
 }
 
-async function resolveTargetRaw(target: TargetFilter): Promise<Recipient[]> {
+async function resolveTargetRaw(
+  target: TargetFilter,
+  opts?: ResolveTargetOpts
+): Promise<Recipient[]> {
   if ("device_token" in target && target.device_token) {
     return [
       {
@@ -873,9 +957,12 @@ async function resolveTargetRaw(target: TargetFilter): Promise<Recipient[]> {
 
   if ("user_id" in target && typeof target.user_id === "string") {
     const candidates = expandCampaignUserIdCandidates(target.user_id);
-    const expo = await tokensForUserIds(candidates);
+    const expo = await tokensForUserIds(candidates, undefined, opts);
     const merchant = await tokensFromMerchantStorePushTokens({ parentMerchantIds: candidates });
-    const native = await nativeFcmTokens({ userIds: candidates });
+    const native = await nativeFcmTokens({
+      userIds: candidates,
+      ignoreStaleness: opts?.ignoreStaleness,
+    });
     return dedupeByToken([...expo, ...merchant, ...native]);
   }
 
@@ -887,9 +974,12 @@ async function resolveTargetRaw(target: TargetFilter): Promise<Recipient[]> {
           .filter(Boolean),
       ),
     ];
-    const expo = await tokensForUserIds(candidates);
+    const expo = await tokensForUserIds(candidates, undefined, opts);
     const merchant = await tokensFromMerchantStorePushTokens({ parentMerchantIds: candidates });
-    const native = await nativeFcmTokens({ userIds: candidates });
+    const native = await nativeFcmTokens({
+      userIds: candidates,
+      ignoreStaleness: opts?.ignoreStaleness,
+    });
     return dedupeByToken([...expo, ...merchant, ...native]);
   }
 
@@ -901,6 +991,7 @@ async function resolveTargetRaw(target: TargetFilter): Promise<Recipient[]> {
       lng: target.lng,
       radius_km: target.radius_km,
       role: target.role ?? null,
+      ignoreStaleness: opts?.ignoreStaleness,
     });
   }
 
@@ -913,19 +1004,20 @@ async function resolveTargetRaw(target: TargetFilter): Promise<Recipient[]> {
         lng: "lng" in target ? target.lng : undefined,
         radius_km: "radius_km" in target ? target.radius_km : undefined,
         role: target.role,
+        ignoreStaleness: opts?.ignoreStaleness,
       });
     }
-    return recipientsForRole(target.role);
+    return recipientsForRole(target.role, opts);
   }
 
   if ("all_customers" in target && target.all_customers) {
-    return recipientsForRole("customer");
+    return recipientsForRole("customer", opts);
   }
   if ("all_merchants" in target && target.all_merchants) {
-    return merchantRecipients({ allStores: true });
+    return merchantRecipients({ allStores: true, ignoreStaleness: opts?.ignoreStaleness });
   }
   if ("all_riders" in target && target.all_riders) {
-    return recipientsForRole("rider");
+    return recipientsForRole("rider", opts);
   }
 
   if ("store_ids" in target && Array.isArray(target.store_ids)) {
@@ -933,11 +1025,14 @@ async function resolveTargetRaw(target: TargetFilter): Promise<Recipient[]> {
       .map((n) => Number(n))
       .filter((n) => Number.isFinite(n) && n > 0);
     if (ids.length === 0) return [];
-    return merchantRecipients({ storeIds: ids });
+    return merchantRecipients({ storeIds: ids, ignoreStaleness: opts?.ignoreStaleness });
   }
 
   if ("store_id" in target && typeof target.store_id === "number") {
-    return merchantRecipients({ storeIds: [target.store_id] });
+    return merchantRecipients({
+      storeIds: [target.store_id],
+      ignoreStaleness: opts?.ignoreStaleness,
+    });
   }
 
   if ("order_id" in target && typeof target.order_id === "string") {
@@ -953,10 +1048,15 @@ async function resolveTargetRaw(target: TargetFilter): Promise<Recipient[]> {
           return merchantRecipients({
             parentMerchantIds: ids,
             storeIds: storeIds.length ? storeIds : undefined,
+            ignoreStaleness: opts?.ignoreStaleness,
           });
         }
-        const expo = await tokensForUserIds(ids, role);
-        const native = await nativeFcmTokens({ userIds: ids, role });
+        const expo = await tokensForUserIds(ids, role, opts);
+        const native = await nativeFcmTokens({
+          userIds: ids,
+          role,
+          ignoreStaleness: opts?.ignoreStaleness,
+        });
         return dedupeByToken([...expo, ...native]);
       })
     );
@@ -977,10 +1077,10 @@ async function resolveTargetRaw(target: TargetFilter): Promise<Recipient[]> {
             ? ("merchant" as const)
             : null;
     if (roleTopic === "merchant") {
-      return merchantRecipients({ allStores: true });
+      return merchantRecipients({ allStores: true, ignoreStaleness: opts?.ignoreStaleness });
     }
     if (roleTopic) {
-      return recipientsForRole(roleTopic);
+      return recipientsForRole(roleTopic, opts);
     }
 
     // Custom topic name — pure FCM topic broadcast (no per-device fan-out).
@@ -998,9 +1098,9 @@ async function resolveTargetRaw(target: TargetFilter): Promise<Recipient[]> {
   // Broadcast stubs used by older clients / API explorers.
   if ("all_active" in target && target.all_active) {
     return dedupeByToken([
-      ...(await recipientsForRole("customer")),
-      ...(await merchantRecipients({ allStores: true })),
-      ...(await recipientsForRole("rider")),
+      ...(await recipientsForRole("customer", opts)),
+      ...(await merchantRecipients({ allStores: true, ignoreStaleness: opts?.ignoreStaleness })),
+      ...(await recipientsForRole("rider", opts)),
     ]);
   }
   if ("all_inactive" in target && target.all_inactive) {

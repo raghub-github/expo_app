@@ -15,6 +15,8 @@ type Props = {
   noPackagingCharges: boolean;
   hasActiveFilters: boolean;
   activeFilterCount: number;
+  showFlashDeals?: boolean;
+  flashDeals?: boolean;
   /** When false (cart/track footing live), only the section title remains. */
   showFilterChips?: boolean;
   onToggleOpenNow: () => void;
@@ -23,6 +25,7 @@ type Props = {
   onToggleOffers: () => void;
   onToggleNoPackaging: () => void;
   onToggleNearFast: () => void;
+  onToggleFlashDeals?: () => void;
   onOpenFilters: () => void;
 };
 
@@ -41,6 +44,8 @@ export function DiscoveryExploreSection({
   noPackagingCharges,
   hasActiveFilters,
   activeFilterCount,
+  showFlashDeals = false,
+  flashDeals = false,
   showFilterChips = true,
   onToggleOpenNow,
   onToggleTopBrands,
@@ -48,6 +53,7 @@ export function DiscoveryExploreSection({
   onToggleOffers,
   onToggleNoPackaging,
   onToggleNearFast,
+  onToggleFlashDeals,
   onOpenFilters,
 }: Props) {
   const sortActive = sortBy !== "default";
@@ -87,6 +93,38 @@ export function DiscoveryExploreSection({
           </AppText>
         </TouchableOpacity>
         <TouchableOpacity
+          style={[styles.chip, openNow && styles.chipOn]}
+          onPress={onToggleOpenNow}
+          activeOpacity={0.85}
+        >
+          <Ionicons
+            name="storefront-outline"
+            size={14}
+            color={openNow ? DiscoveryColors.teal : DiscoveryColors.openIcon}
+          />
+          <AppText style={styles.chipText}>Open Now</AppText>
+        </TouchableOpacity>
+        {showFlashDeals && onToggleFlashDeals ? (
+          <TouchableOpacity
+            style={[styles.chip, flashDeals && styles.chipFlashDeals]}
+            onPress={onToggleFlashDeals}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="pricetag" size={14} color={flashDeals ? "#fff" : "#C2410C"} />
+            <AppText style={[styles.chipText, flashDeals && styles.chipTextFlashDeals]}>
+              Flash Deal
+            </AppText>
+          </TouchableOpacity>
+        ) : null}
+        <TouchableOpacity
+          style={[styles.chip, nearFast && styles.chipOn]}
+          onPress={onToggleNearFast}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="flash" size={14} color={nearFast ? DiscoveryColors.teal : "#16A34A"} />
+          <AppText style={styles.chipText}>Near & Fast</AppText>
+        </TouchableOpacity>
+        <TouchableOpacity
           style={[styles.chip, sortActive && styles.chipOn]}
           onPress={onToggleSort}
           activeOpacity={0.85}
@@ -98,18 +136,6 @@ export function DiscoveryExploreSection({
           />
           <AppText style={styles.chipText}>{sortLabel(sortBy)}</AppText>
           <Ionicons name="chevron-down" size={11} color={DiscoveryColors.textMuted} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.chip, openNow && styles.chipOn]}
-          onPress={onToggleOpenNow}
-          activeOpacity={0.85}
-        >
-          <Ionicons
-            name="storefront-outline"
-            size={14}
-            color={openNow ? DiscoveryColors.teal : DiscoveryColors.openIcon}
-          />
-          <AppText style={styles.chipText}>Open Now</AppText>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.chip, topBrands && styles.chipOn]}
@@ -146,14 +172,6 @@ export function DiscoveryExploreSection({
             color={noPackagingCharges ? DiscoveryColors.teal : DiscoveryColors.orange}
           />
           <AppText style={styles.chipText}>No packaging</AppText>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.chip, nearFast && styles.chipOn]}
-          onPress={onToggleNearFast}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="flash" size={14} color={nearFast ? DiscoveryColors.teal : "#16A34A"} />
-          <AppText style={styles.chipText}>Near & Fast</AppText>
         </TouchableOpacity>
       </ScrollView>
       ) : null}
@@ -206,6 +224,15 @@ const styles = StyleSheet.create({
   chipOn: {
     backgroundColor: "rgba(45,212,191,0.12)",
     borderColor: DiscoveryColors.accentSoft,
+  },
+  chipFlashDeals: {
+    backgroundColor: "#C2410C",
+    borderColor: "#C2410C",
+  },
+  chipTextFlashDeals: {
+    color: "#fff",
+    fontWeight: "800",
+    letterSpacing: 0.2,
   },
   chipText: {
     fontSize: 12,

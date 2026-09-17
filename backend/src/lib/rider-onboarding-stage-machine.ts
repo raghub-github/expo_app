@@ -76,6 +76,8 @@ function asKyc(value: string): KycStatus {
 /**
  * Resolve the next persisted rider stage/kyc/status.
  * Never sets APPROVAL without paymentCompleted.
+ * Never sets ACTIVE / KYC APPROVED until identity + vehicle docs are fully verified
+ * (skipped optional docs do not count as pending).
  */
 export function resolveRiderOnboardingStageTransition(
   input: StageMachineInput,
@@ -93,6 +95,27 @@ export function resolveRiderOnboardingStageTransition(
     };
   }
 
+  const allDocsVerified = input.identityVerified && input.vehicleVerified;
+  const docsReadyForPayment = input.identitySubmitted && input.vehicleReady;
+
+  // Wrongly activated while onboarding docs still need manual review → demote.
+  if ((currentStatus === "ACTIVE" || currentStage === "ACTIVE") && !allDocsVerified) {
+    if (input.paymentCompleted) {
+      return {
+        onboardingStage: "APPROVAL",
+        kycStatus: currentKyc === "REJECTED" ? "REJECTED" : "REVIEW",
+        status: "INACTIVE",
+        changed: true,
+      };
+    }
+    return {
+      onboardingStage: docsReadyForPayment ? "PAYMENT" : "KYC",
+      kycStatus: currentKyc === "REJECTED" ? "REJECTED" : "PENDING",
+      status: "INACTIVE",
+      changed: true,
+    };
+  }
+
   if (currentStatus === "ACTIVE" || currentStage === "ACTIVE") {
     return {
       onboardingStage: "ACTIVE",
@@ -102,35 +125,36 @@ export function resolveRiderOnboardingStageTransition(
     };
   }
 
-  const allDocsVerified = input.identityVerified && input.vehicleVerified;
-  const docsReadyForPayment = input.identitySubmitted && input.vehicleReady;
-
   let nextStage: OnboardingStage = currentStage;
   let nextKyc: KycStatus = currentKyc;
-  let nextStatus = currentStatus;
+  let nextStatus = currentStatus === "ACTIVE" ? "INACTIVE" : currentStatus;
 
   if (input.paymentCompleted && allDocsVerified) {
     nextStage = "ACTIVE";
     nextKyc = "APPROVED";
     nextStatus = "ACTIVE";
   } else if (input.paymentCompleted) {
-    // Paid — enter approval queue even if some docs still pending manual review.
+    // Paid — approval queue until every submitted (non-skipped) doc is verified.
     nextStage = "APPROVAL";
-    if (allDocsVerified) nextKyc = "APPROVED";
-    else if (nextKyc === "PENDING" && input.identityVerified) nextKyc = "APPROVED";
+    nextStatus = "INACTIVE";
+    if (currentKyc === "REJECTED") nextKyc = "REJECTED";
+    else nextKyc = "REVIEW";
   } else if (docsReadyForPayment || allDocsVerified) {
     nextStage = "PAYMENT";
+    nextStatus = "INACTIVE";
     if (allDocsVerified) nextKyc = "APPROVED";
-    else if (input.identityVerified && nextKyc === "PENDING") nextKyc = "APPROVED";
+    else if (currentKyc === "REJECTED") nextKyc = "REJECTED";
+    else if (input.identityVerified) nextKyc = "REVIEW";
+    else nextKyc = "PENDING";
   } else if (input.identitySubmitted || input.identityVerified || currentStage !== "MOBILE_VERIFIED") {
     nextStage = "KYC";
-    // Do not mark APPROVED from identity alone in a way that unlocks approval UI.
-    // Keep PENDING until vehicle path is ready, unless already REJECTED/REVIEW.
-    if (nextKyc === "APPROVED" && !input.identityVerified) {
-      nextKyc = "PENDING";
+    nextStatus = "INACTIVE";
+    if (nextKyc === "APPROVED" && !allDocsVerified) {
+      nextKyc = input.identityVerified ? "REVIEW" : "PENDING";
     }
   } else {
     nextStage = "MOBILE_VERIFIED";
+    nextStatus = "INACTIVE";
   }
 
   // Heal illegal APPROVAL-without-payment (legacy bug).

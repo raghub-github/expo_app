@@ -122,10 +122,11 @@ export async function applyRiderDeviceLoginPolicy(
 
   if (bypassPolicy) {
     await persistRiderDeviceSession(sql, { userId, deviceId, loginMethod, ip, location, loginGeo, device });
+    await forceRiderOfflineAfterLogin(riderId, "login_bypass");
     return { outcome: "ok", kind: "bypassed" };
   }
 
-  return sql.begin(async (tx) => {
+  const result = await sql.begin(async (tx) => {
     // Lock the rider's own (already-committed) row to serialize concurrent login/device-
     // change attempts for this rider — mirrors the rider_wallet FOR UPDATE pattern in
     // rider-withdrawal.service.ts. Plain READ COMMITTED is sufficient; the row lock alone
@@ -207,8 +208,21 @@ export async function applyRiderDeviceLoginPolicy(
     await persistRiderDeviceSession(tx as unknown as Sql, { userId, deviceId, loginMethod, ip, location, loginGeo, device });
 
     if (decision.kind === "device_change_allowed") {
-      return { outcome: "ok", kind: "device_changed", revokedCount };
+      return { outcome: "ok" as const, kind: "device_changed" as const, revokedCount };
     }
-    return { outcome: "ok", kind: decision.kind };
+    return { outcome: "ok" as const, kind: decision.kind };
   });
+  await forceRiderOfflineAfterLogin(riderId, "device_login");
+  return result;
+}
+
+async function forceRiderOfflineAfterLogin(riderId: number, via: string): Promise<void> {
+  try {
+    const { recordRiderDutyOffIfOnline } = await import("./rider-duty-log.service.js");
+    await recordRiderDutyOffIfOnline(riderId, "logout", {
+      metadata: { via },
+    });
+  } catch {
+    /* login must not fail if duty-off is unavailable */
+  }
 }

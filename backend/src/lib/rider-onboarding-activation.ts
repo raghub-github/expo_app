@@ -122,8 +122,33 @@ export async function tryActivateRiderIfEligible(riderId: number): Promise<boole
 
   const [rider] = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
   if (!rider) return false;
-  if (rider.status === "ACTIVE" || rider.status === "BLOCKED" || rider.status === "BANNED") {
-    return rider.status === "ACTIVE";
+  if (rider.status === "BLOCKED" || rider.status === "BANNED") {
+    return false;
+  }
+
+  const { riderHasManualOnboardingVerificationPending, ensureOnboardingVerificationPendingTicket } =
+    await import("./onboarding-verification-pending-ticket.js");
+  const manualPending = await riderHasManualOnboardingVerificationPending(riderId);
+
+  // Already live with only secondary-vehicle / skipped pending docs → stay ACTIVE.
+  // Wrongly activated while first-vehicle onboarding docs still need review → demote.
+  if (rider.status === "ACTIVE" || rider.onboardingStage === "ACTIVE") {
+    if (!manualPending) return true;
+
+    const paymentCompleted = await checkOnboardingPaymentCompleted(riderId);
+    await db
+      .update(riders)
+      .set({
+        status: "INACTIVE",
+        onboardingStage: paymentCompleted ? "APPROVAL" : "PAYMENT",
+        kycStatus: "REVIEW",
+        updatedAt: new Date(),
+      })
+      .where(eq(riders.id, riderId));
+    if (paymentCompleted) {
+      await ensureOnboardingVerificationPendingTicket(riderId).catch(() => undefined);
+    }
+    return false;
   }
 
   const allDocs = await db
@@ -211,13 +236,33 @@ export async function tryActivateRiderIfEligible(riderId: number): Promise<boole
 
   if (!onboardingGateMet) return false;
 
+  // Manual first-vehicle / KYC doc review must finish before KYC APPROVED + ACTIVE.
+  if (manualPending) {
+    const paymentCompleted = await checkOnboardingPaymentCompleted(riderId);
+    await db
+      .update(riders)
+      .set({
+        status: "INACTIVE",
+        onboardingStage: paymentCompleted ? "APPROVAL" : "PAYMENT",
+        kycStatus: "REVIEW",
+        updatedAt: new Date(),
+      })
+      .where(eq(riders.id, riderId));
+    if (paymentCompleted) {
+      await ensureOnboardingVerificationPendingTicket(riderId).catch(() => undefined);
+    }
+    return false;
+  }
+
   const paymentCompleted = await checkOnboardingPaymentCompleted(riderId);
   if (!paymentCompleted) {
     await db
       .update(riders)
       .set({
-        kycStatus: "APPROVED",
+        // Docs verified but unpaid — not fully approved for go-live yet.
+        kycStatus: "REVIEW",
         onboardingStage: "PAYMENT",
+        status: "INACTIVE",
         updatedAt: new Date(),
       })
       .where(eq(riders.id, riderId));

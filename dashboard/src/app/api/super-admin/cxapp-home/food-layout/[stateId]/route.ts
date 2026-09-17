@@ -3,6 +3,7 @@ import { requireSuperAdminApi } from "@/lib/super-admin-api";
 import {
   getStateFoodHomeLayoutConfig,
   saveStateDiscoveryCta,
+  saveStateClassicUnder250,
   saveStateGridFirstSubscriptionRow,
   saveStateGridFirstUnder250,
   upsertStateFoodHomeLayout,
@@ -49,6 +50,12 @@ export async function GET(request: NextRequest, ctx: RouteCtx) {
         gridFirstUnder250FilterLabel: config.gridFirstUnder250.filterLabel,
         gridFirstUnder250TabImageUrl: config.gridFirstUnder250.tabImageUrl,
         gridFirstUnder250HeroImageUrl: config.gridFirstUnder250.heroImageUrl,
+        classicUnder250Enabled: config.classicUnder250.enabled,
+        classicUnder250MaxPrice: config.classicUnder250.maxPrice,
+        classicUnder250Title: config.classicUnder250.title,
+        classicUnder250FilterLabel: config.classicUnder250.filterLabel,
+        classicUnder250TabImageUrl: config.classicUnder250.tabImageUrl,
+        classicUnder250HeroImageUrl: config.classicUnder250.heroImageUrl,
         discoveryDealsAtMaxPrice: config.discoveryCta.dealsAtMaxPrice,
         discoveryDealsAtImageUrl: config.discoveryCta.dealsAtImageUrl,
         discoveryDealsAtHeroImageUrl: config.discoveryCta.dealsAtHeroImageUrl,
@@ -92,6 +99,12 @@ export async function PUT(request: NextRequest, ctx: RouteCtx) {
       gridFirstUnder250FilterLabel?: unknown;
       gridFirstUnder250TabImageUrl?: unknown;
       gridFirstUnder250HeroImageUrl?: unknown;
+      classicUnder250Enabled?: unknown;
+      classicUnder250MaxPrice?: unknown;
+      classicUnder250Title?: unknown;
+      classicUnder250FilterLabel?: unknown;
+      classicUnder250TabImageUrl?: unknown;
+      classicUnder250HeroImageUrl?: unknown;
       discoveryDealsAtMaxPrice?: unknown;
       discoveryDealsAtImageUrl?: unknown;
       discoveryDealsAtHeroImageUrl?: unknown;
@@ -147,38 +160,82 @@ export async function PUT(request: NextRequest, ctx: RouteCtx) {
       body.gridFirstUnder250TabImageUrl !== undefined ||
       body.gridFirstUnder250HeroImageUrl !== undefined;
 
+    const hasClassicUnder250Patch =
+      typeof body.classicUnder250Enabled === "boolean" ||
+      body.classicUnder250MaxPrice != null ||
+      typeof body.classicUnder250Title === "string" ||
+      typeof body.classicUnder250FilterLabel === "string" ||
+      body.classicUnder250TabImageUrl !== undefined ||
+      body.classicUnder250HeroImageUrl !== undefined;
+
     let under250 = DEFAULT_GRID_FIRST_UNDER_250;
-    if (hasUnder250Patch) {
+    let classicUnder250 = DEFAULT_GRID_FIRST_UNDER_250;
+    if (hasUnder250Patch || hasClassicUnder250Patch) {
       const current = await getStateFoodHomeLayoutConfig(stateId);
-      under250 = await saveStateGridFirstUnder250(stateId, {
-        enabled:
-          typeof body.gridFirstUnder250Enabled === "boolean"
-            ? body.gridFirstUnder250Enabled
-            : current.gridFirstUnder250.enabled,
-        maxPrice:
-          body.gridFirstUnder250MaxPrice != null
-            ? parseGridFirstUnder250MaxPrice(body.gridFirstUnder250MaxPrice)
-            : current.gridFirstUnder250.maxPrice,
-        title:
-          typeof body.gridFirstUnder250Title === "string"
-            ? body.gridFirstUnder250Title
-            : current.gridFirstUnder250.title,
-        filterLabel:
-          typeof body.gridFirstUnder250FilterLabel === "string"
-            ? body.gridFirstUnder250FilterLabel
-            : current.gridFirstUnder250.filterLabel,
-        tabImageUrl:
-          body.gridFirstUnder250TabImageUrl !== undefined
-            ? parseGridFirstUnder250ImageUrl(body.gridFirstUnder250TabImageUrl)
-            : current.gridFirstUnder250.tabImageUrl,
-        heroImageUrl:
-          body.gridFirstUnder250HeroImageUrl !== undefined
-            ? parseGridFirstUnder250ImageUrl(body.gridFirstUnder250HeroImageUrl)
-            : current.gridFirstUnder250.heroImageUrl,
-      });
+      if (hasUnder250Patch) {
+        under250 = await saveStateGridFirstUnder250(stateId, {
+          enabled:
+            typeof body.gridFirstUnder250Enabled === "boolean"
+              ? body.gridFirstUnder250Enabled
+              : current.gridFirstUnder250.enabled,
+          maxPrice:
+            body.gridFirstUnder250MaxPrice != null
+              ? parseGridFirstUnder250MaxPrice(body.gridFirstUnder250MaxPrice)
+              : current.gridFirstUnder250.maxPrice,
+          title:
+            typeof body.gridFirstUnder250Title === "string"
+              ? body.gridFirstUnder250Title
+              : current.gridFirstUnder250.title,
+          filterLabel:
+            typeof body.gridFirstUnder250FilterLabel === "string"
+              ? body.gridFirstUnder250FilterLabel
+              : current.gridFirstUnder250.filterLabel,
+          tabImageUrl:
+            body.gridFirstUnder250TabImageUrl !== undefined
+              ? parseGridFirstUnder250ImageUrl(body.gridFirstUnder250TabImageUrl)
+              : current.gridFirstUnder250.tabImageUrl,
+          heroImageUrl:
+            body.gridFirstUnder250HeroImageUrl !== undefined
+              ? parseGridFirstUnder250ImageUrl(body.gridFirstUnder250HeroImageUrl)
+              : current.gridFirstUnder250.heroImageUrl,
+        });
+      } else {
+        under250 = current.gridFirstUnder250;
+      }
+      if (hasClassicUnder250Patch) {
+        classicUnder250 = await saveStateClassicUnder250(stateId, {
+          enabled:
+            typeof body.classicUnder250Enabled === "boolean"
+              ? body.classicUnder250Enabled
+              : current.classicUnder250.enabled,
+          maxPrice:
+            body.classicUnder250MaxPrice != null
+              ? parseGridFirstUnder250MaxPrice(body.classicUnder250MaxPrice)
+              : current.classicUnder250.maxPrice,
+          title:
+            typeof body.classicUnder250Title === "string"
+              ? body.classicUnder250Title
+              : current.classicUnder250.title,
+          filterLabel:
+            typeof body.classicUnder250FilterLabel === "string"
+              ? body.classicUnder250FilterLabel
+              : current.classicUnder250.filterLabel,
+          tabImageUrl:
+            body.classicUnder250TabImageUrl !== undefined
+              ? parseGridFirstUnder250ImageUrl(body.classicUnder250TabImageUrl)
+              : current.classicUnder250.tabImageUrl,
+          heroImageUrl:
+            body.classicUnder250HeroImageUrl !== undefined
+              ? parseGridFirstUnder250ImageUrl(body.classicUnder250HeroImageUrl)
+              : current.classicUnder250.heroImageUrl,
+        });
+      } else {
+        classicUnder250 = current.classicUnder250;
+      }
     } else {
       const current = await getStateFoodHomeLayoutConfig(stateId);
       under250 = current.gridFirstUnder250;
+      classicUnder250 = current.classicUnder250;
     }
 
     const hasDiscoveryCtaPatch =
@@ -255,6 +312,12 @@ export async function PUT(request: NextRequest, ctx: RouteCtx) {
       gridFirstUnder250FilterLabel: under250.filterLabel,
       gridFirstUnder250TabImageUrl: under250.tabImageUrl,
       gridFirstUnder250HeroImageUrl: under250.heroImageUrl,
+      classicUnder250Enabled: classicUnder250.enabled,
+      classicUnder250MaxPrice: classicUnder250.maxPrice,
+      classicUnder250Title: classicUnder250.title,
+      classicUnder250FilterLabel: classicUnder250.filterLabel,
+      classicUnder250TabImageUrl: classicUnder250.tabImageUrl,
+      classicUnder250HeroImageUrl: classicUnder250.heroImageUrl,
       discoveryDealsAtMaxPrice: discoveryCta.dealsAtMaxPrice,
       discoveryDealsAtImageUrl: discoveryCta.dealsAtImageUrl,
       discoveryDealsAtHeroImageUrl: discoveryCta.dealsAtHeroImageUrl,

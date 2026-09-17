@@ -1,6 +1,6 @@
 /**
- * Aadhaar masking helpers — store/display only last 4 digits.
- * Canonical form: XXXX-XXXX-1234
+ * Aadhaar masking helpers — display last 4 only; persist full 12 digits on riders.
+ * Canonical display: XXXX-XXXX-1234
  */
 
 export function digitsOnlyAadhaar(value: string | null | undefined): string {
@@ -13,6 +13,13 @@ export function isMaskedAadhaar(value: string | null | undefined): boolean {
   if (/^XXXX-XXXX-\d{4}$/.test(s)) return true;
   if (/^X{8}\d{4}$/.test(s.replace(/-/g, ""))) return true;
   return /X{4,}/.test(s) && /\d{4}$/.test(s.replace(/-/g, ""));
+}
+
+/** Full 12-digit UID when present; null if masked/partial/invalid. */
+export function fullAadhaarDigits(value: string | null | undefined): string | null {
+  if (isMaskedAadhaar(value)) return null;
+  const digits = digitsOnlyAadhaar(value);
+  return /^\d{12}$/.test(digits) ? digits : null;
 }
 
 /** Mask full 12-digit Aadhaar (or already-partial) as XXXX-XXXX-1234. */
@@ -28,6 +35,45 @@ export function maskAadhaarNumber(value: string | null | undefined): string {
     return `XXXX-XXXX-${digits.slice(-4)}`;
   }
   return raw;
+}
+
+/**
+ * Pull the best full-12 / masked pair from a Cashfree verified payload + optional
+ * rider-entered number (DigiLocker often returns only masked UID).
+ */
+export function resolveAadhaarPersistFields(args: {
+  verifiedData?: Record<string, unknown> | null;
+  enteredAadhaar?: string | null;
+  businessIdentifier?: string | null;
+}): { full: string | null; masked: string; displayDocNumber: string | null } {
+  const d =
+    args.verifiedData && typeof args.verifiedData === "object" ? args.verifiedData : {};
+  const candidates = [
+    args.enteredAadhaar,
+    d.aadhaar_number_full,
+    d.full_aadhaar,
+    d.aadhaar_number,
+    d.uid,
+    d.masked_aadhaar,
+    args.businessIdentifier,
+  ];
+  let full: string | null = null;
+  for (const c of candidates) {
+    const f = fullAadhaarDigits(c == null ? null : String(c));
+    if (f) {
+      full = f;
+      break;
+    }
+  }
+  const maskedFromPayload = maskAadhaarNumber(
+    String(d.masked_aadhaar || d.aadhaar_number || d.uid || args.businessIdentifier || full || ""),
+  );
+  const masked = full ? maskAadhaarNumber(full) : maskedFromPayload;
+  return {
+    full,
+    masked,
+    displayDocNumber: masked || null,
+  };
 }
 
 function unwrapAadhaarDetails(
@@ -56,10 +102,11 @@ export function normalizeAadhaarVerifiedDetails(
   rows: Array<[string, string]>;
   maskedAadhaar: string;
   name: string;
+  fullAadhaar: string | null;
 } {
   const d = unwrapAadhaarDetails(details);
   if (!Object.keys(d).length) {
-    return { rows: [], maskedAadhaar: "", name: "" };
+    return { rows: [], maskedAadhaar: "", name: "", fullAadhaar: null };
   }
   const name = String(
     d.name ||
@@ -99,9 +146,17 @@ export function normalizeAadhaarVerifiedDetails(
   }
 
   const uid = String(
-    d.aadhaar_number || d.masked_aadhaar || d.uid || d.aadhaar || "",
+    d.aadhaar_number_full ||
+      d.aadhaar_number ||
+      d.masked_aadhaar ||
+      d.uid ||
+      d.aadhaar ||
+      "",
   ).trim();
-  const maskedAadhaar = maskAadhaarNumber(uid);
+  const fullAadhaar =
+    fullAadhaarDigits(uid) || fullAadhaarDigits(String(d.aadhaar_number_full || ""));
+  const maskedAadhaar =
+    maskAadhaarNumber(uid) || (fullAadhaar ? maskAadhaarNumber(fullAadhaar) : "");
 
   const rows: Array<[string, string]> = [];
   if (name) rows.push(["Name", name]);
@@ -117,5 +172,5 @@ export function normalizeAadhaarVerifiedDetails(
   if (careOf) rows.push(["Care of", careOf]);
   if (maskedAadhaar) rows.push(["Aadhaar", maskedAadhaar]);
   if (address) rows.push(["Address", address]);
-  return { rows, maskedAadhaar, name };
+  return { rows, maskedAadhaar, name, fullAadhaar };
 }

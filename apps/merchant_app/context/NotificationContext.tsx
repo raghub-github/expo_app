@@ -28,8 +28,10 @@ import {
 
 export type NotificationType = "order" | "store" | "system" | "earning";
 
-/** Foreground cadence for the campaign inbox (no postgres realtime for it). */
-const FOREGROUND_INBOX_POLL_MS = 10_000;
+/** Store inbox has postgres realtime; this is a safety net + campaign hydrate. */
+const FOREGROUND_INBOX_POLL_MS = 45_000;
+/** Campaign rows live only on /v1/notifications/inbox — refresh less often than store rows. */
+const CAMPAIGN_INBOX_POLL_MS = 90_000;
 
 export interface MerchantNotification {
   id: string;
@@ -260,42 +262,65 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const dismissedCampaignIdsRef = useRef<Set<string>>(new Set());
 
   const storeId = selectedStore?.id ?? null;
+  const fetchInflightRef = useRef<Promise<void> | null>(null);
+  const lastCampaignFetchAtRef = useRef(0);
 
-  const fetchNotifications = useCallback(async (opts?: { silent?: boolean }) => {
+  const fetchNotifications = useCallback(async (opts?: { silent?: boolean; includeCampaign?: boolean }) => {
     if (!token || !storeId) {
       setNotifications([]);
       setLoading(false);
       return;
     }
+    if (fetchInflightRef.current) {
+      await fetchInflightRef.current;
+      return;
+    }
     const silent = opts?.silent === true;
+    const now = Date.now();
+    const includeCampaign =
+      opts?.includeCampaign === true ||
+      !silent ||
+      now - lastCampaignFetchAtRef.current >= CAMPAIGN_INBOX_POLL_MS;
     // Only the first / explicit full fetch shows the page spinner.
     // Realtime + WaitingForOrderNotifier poll via silent refresh — no spinner loop.
     if (!silent) setLoading(true);
-    try {
-      const [{ notifications: list }, campaign, dismissedCampaignIds] = await Promise.all([
-        getStoreNotifications(storeId, token),
-        fetchCampaignInbox(),
-        readDismissedCampaignIds(),
-      ]);
-      dismissedCampaignIdsRef.current = dismissedCampaignIds;
-      const storeRows = list
-        .map(mapRowToNotification)
-        .filter((n) => {
-          const fp = `fp:${n.title.trim().toLowerCase()}|${n.body.trim().toLowerCase().slice(0, 120)}`;
-          return !dismissedCampaignIds.has(fp);
+    const run = (async () => {
+      try {
+        const [storePage, campaign, dismissedCampaignIds] = await Promise.all([
+          getStoreNotifications(storeId, token),
+          includeCampaign ? fetchCampaignInbox() : Promise.resolve(null as MerchantNotification[] | null),
+          readDismissedCampaignIds(),
+        ]);
+        if (includeCampaign) lastCampaignFetchAtRef.current = Date.now();
+        dismissedCampaignIdsRef.current = dismissedCampaignIds;
+        const storeRows = storePage.notifications
+          .map(mapRowToNotification)
+          .filter((n) => {
+            const fp = `fp:${n.title.trim().toLowerCase()}|${n.body.trim().toLowerCase().slice(0, 120)}`;
+            return !dismissedCampaignIds.has(fp);
+          });
+        setNotifications((prev) => {
+          const prevCampaign =
+            campaign == null
+              ? prev.filter((n) => n.id.startsWith("campaign:") || n.id.startsWith("push:"))
+              : campaign.filter((n) => {
+                  if (dismissedCampaignIds.has(n.id)) return false;
+                  const fp = `fp:${n.title.trim().toLowerCase()}|${n.body.trim().toLowerCase().slice(0, 120)}`;
+                  return !dismissedCampaignIds.has(fp);
+                });
+          return mergeNotificationFeed([...prevCampaign, ...storeRows]);
         });
-      // Campaign rows have no server-side delete, so honour local dismissals.
-      const visibleCampaign = campaign.filter((n) => {
-        if (dismissedCampaignIds.has(n.id)) return false;
-        const fp = `fp:${n.title.trim().toLowerCase()}|${n.body.trim().toLowerCase().slice(0, 120)}`;
-        return !dismissedCampaignIds.has(fp);
-      });
-      // Campaign / announcement rows first, then live store notifications.
-      setNotifications(mergeNotificationFeed([...visibleCampaign, ...storeRows]));
-    } catch {
-      if (!silent) setNotifications([]);
+      } catch {
+        if (!silent) setNotifications([]);
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    })();
+    fetchInflightRef.current = run;
+    try {
+      await run;
     } finally {
-      if (!silent) setLoading(false);
+      if (fetchInflightRef.current === run) fetchInflightRef.current = null;
     }
   }, [token, storeId]);
 
@@ -365,8 +390,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     return () => sub.remove();
   }, [fetchNotifications]);
 
-  // Campaign + store inbox rows have no dedicated realtime — poll while foreground
-  // so new-order accept notifications reach IncomingOrderNotificationBridge quickly.
+  // Campaign + store inbox rows — store has postgres realtime; poll is a slow safety net.
   useEffect(() => {
     if (!token || !storeId) return;
     const id = setInterval(() => {

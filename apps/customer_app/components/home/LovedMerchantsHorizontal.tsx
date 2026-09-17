@@ -5,6 +5,7 @@ import {
   MERCHANT_RAIL_GAP,
 } from "@/components/home/MerchantGridCard";
 import type { MerchantSummary } from "@/services/merchant.service";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 
 type Props = {
   merchants: MerchantSummary[];
@@ -23,13 +24,8 @@ export function LovedMerchantsHorizontal({
 
   return (
     <ScrollView
-      horizontal
-      nestedScrollEnabled
-      showsHorizontalScrollIndicator={false}
+      {...NATURAL_HORIZONTAL_SCROLL_PROPS}
       contentContainerStyle={styles.content}
-      // First-tap cards must not wait for parent scroll settle.
-      delaysContentTouches={false}
-      keyboardShouldPersistTaps="handled"
     >
       {merchants.map((m) => (
         <View key={`loved-h-${m.id}`} style={styles.cardWrap}>

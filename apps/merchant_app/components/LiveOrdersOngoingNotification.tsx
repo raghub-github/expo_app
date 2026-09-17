@@ -43,7 +43,9 @@ import {
   type ActiveOrdersBreakdown,
 } from "@/services/storeSettingsApi";
 
-const KITCHEN_POLL_MS = 12_000;
+const KITCHEN_POLL_MS = 30_000;
+/** Authoritative active-orders-count sync cadence (board drives sticky between hits). */
+const KITCHEN_API_EVERY_N = 4;
 const SESSION_KEY_PREFIX = "merchant_store_status_session_";
 
 function isExpoGo(): boolean {
@@ -123,6 +125,9 @@ export default function LiveOrdersOngoingNotification() {
   const sessionStoreIdRef = useRef<number | null>(null);
   const lastKitchenBodyRef = useRef<string>("");
   const evaluatingRef = useRef(false);
+  const pendingEvaluateRef = useRef<{ source: string; opts?: { fetchApi?: boolean } } | null>(
+    null
+  );
 
   // Dismiss the legacy live-orders id once so only one status row can exist.
   useEffect(() => {
@@ -177,6 +182,7 @@ export default function LiveOrdersOngoingNotification() {
             bodyOverride: "Waiting for orders",
             // Genuine new idle session — the machine only emits POST_IDLE on a real transition.
             force: true,
+            playSound: true,
             eventId: `IDLE:${ctx.storeId}:${action.idleSessionId}`,
           });
           return;
@@ -194,6 +200,7 @@ export default function LiveOrdersOngoingNotification() {
             bodyOverride: ctx.body,
             // Real content change only — the machine emits UPDATE_KITCHEN just when counts differ.
             force: true,
+            playSound: false,
             eventId: `KITCHEN:${ctx.storeId}:${ctx.body.slice(0, 48)}`,
           });
           return;
@@ -236,7 +243,17 @@ export default function LiveOrdersOngoingNotification() {
     async (source: string, opts?: { fetchApi?: boolean }) => {
       if (!canRunLocalSticky()) return;
       if (!sessionLoadedRef.current) return; // wait until the persisted session is restored
-      if (evaluatingRef.current) return;
+      if (evaluatingRef.current) {
+        // Coalesce — never drop a newer board/status transition while a post is in flight.
+        const prev = pendingEvaluateRef.current;
+        pendingEvaluateRef.current = {
+          source,
+          opts: {
+            fetchApi: Boolean(opts?.fetchApi || prev?.opts?.fetchApi),
+          },
+        };
+        return;
+      }
       evaluatingRef.current = true;
       try {
         const c = ctxRef.current;
@@ -253,6 +270,7 @@ export default function LiveOrdersOngoingNotification() {
         }
 
         // Online: instant board-derived snapshot first, then confirm with the authoritative API.
+        // Works in foreground AND background — AppState never gates the post.
         await runReduce(breakdownFromBoard(ordersRef.current), `${source}_BOARD`);
         if (opts?.fetchApi && c.token && c.storeId != null) {
           invalidateActiveOrdersCountCache(c.storeId);
@@ -265,6 +283,11 @@ export default function LiveOrdersOngoingNotification() {
         }
       } finally {
         evaluatingRef.current = false;
+        const pending = pendingEvaluateRef.current;
+        pendingEvaluateRef.current = null;
+        if (pending) {
+          void evaluateRef.current(pending.source, pending.opts);
+        }
       }
     },
     [runReduce]
@@ -301,25 +324,30 @@ export default function LiveOrdersOngoingNotification() {
   }, [storeId]);
 
   // Re-evaluate on backend status / online / board changes — machine no-ops unless a real transition.
+  // Not gated on AppState: foreground, background, and inactive all sync the same sticky.
   useEffect(() => {
     if (!canRunLocalSticky()) return;
-    void evaluateRef.current("STATUS_CHANGE", { fetchApi: true });
+    void evaluateRef.current("STATUS_CHANGE", { fetchApi: false });
   }, [isAuthenticated, loading, isOnline, storeName, merchantId, statusReason, unavailableReason, token]);
 
   useEffect(() => {
     if (!canRunLocalSticky()) return;
-    void evaluateRef.current("BOARD_CHANGE");
+    void evaluateRef.current("BOARD_CHANGE", { fetchApi: false });
   }, [orders]);
 
-  // Poll + foreground are STATE SYNCS (fetch authoritative counts); posting still gated by the machine.
+  // Poll + foreground are STATE SYNCS; API confirm is throttled (board fills the gaps).
   useEffect(() => {
     if (!canRunLocalSticky()) return;
+    let ticks = 0;
     const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
       if (state !== "active") return;
       void evaluateRef.current("APP_RESUME", { fetchApi: true });
     });
     const poll = setInterval(() => {
-      void evaluateRef.current("KITCHEN_POLL", { fetchApi: true });
+      ticks += 1;
+      void evaluateRef.current("KITCHEN_POLL", {
+        fetchApi: ticks % KITCHEN_API_EVERY_N === 0,
+      });
     }, KITCHEN_POLL_MS);
     return () => {
       sub.remove();

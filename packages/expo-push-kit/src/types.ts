@@ -55,6 +55,7 @@ export type PushControllerOptions = {
     lightColor?: string;
     /** Android raw sound name (no extension). */
     sound?: string;
+    bypassDnd?: boolean;
   }>;
   /** Android package for APP_NOTIFICATION_SETTINGS. */
   androidPackageName?: string;

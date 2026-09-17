@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, Pressable } from "react-native";
+import Svg, { Line } from "react-native-svg";
 import { Ionicons } from "@expo/vector-icons";
 import { ItemVegMark } from "@/components/order/ItemVegMark";
 import type { LineItem } from "@/hooks/useOrders";
@@ -19,6 +21,8 @@ type Props = {
   showExpandChevron?: boolean;
   /** Tighter padding for compact sheets (incoming order). */
   dense?: boolean;
+  /** 1-based line index shown as "1." before the item (order cards / modal). */
+  index?: number | null;
 };
 
 export function OrderCardItemRow({
@@ -30,6 +34,7 @@ export function OrderCardItemRow({
   showQuantityColumn = false,
   showExpandChevron = false,
   dense = false,
+  index = null,
 }: Props) {
   const hasCust = lineItemHasCustomizations(item);
   const cookingNote = resolveLineItemCookingNote(item);
@@ -37,6 +42,9 @@ export function OrderCardItemRow({
   const { catalog, net, showStrike, offerBadge, offerKind } = merchantFoodItemCatalogAndNet(
     item as ApiFoodOrderItem
   );
+  const nth =
+    index != null && Number.isFinite(index) && index > 0 ? Math.floor(index) : null;
+  const [nameWidth, setNameWidth] = useState(0);
 
   return (
     <Pressable
@@ -48,7 +56,16 @@ export function OrderCardItemRow({
         pressed && styles.pressed,
       ]}
     >
-      <ItemVegMark vegNonveg={item.vegNonveg ?? orderVeg} name={item.name} size={dense ? 15 : 14} />
+      {nth != null ? (
+        <Text style={[styles.nthLabel, dense && styles.nthLabelDense]} maxFontSizeMultiplier={1.2}>
+          {nth}.
+        </Text>
+      ) : null}
+      <ItemVegMark
+        vegNonveg={item.vegNonveg ?? (orderVeg && !/^mixed$/i.test(String(orderVeg)) ? orderVeg : null)}
+        name={item.name}
+        size={dense ? 16 : 15}
+      />
       <View style={styles.body}>
         {offerBadge ? (
           <View
@@ -70,17 +87,42 @@ export function OrderCardItemRow({
         ) : null}
         <View style={styles.titleRow}>
           <Pressable onPress={onItemNamePress} hitSlop={4} style={styles.itemNamePress}>
-            <Text
-              style={[styles.itemLabel, dense && styles.itemLabelDense]}
-              numberOfLines={2}
-              ellipsizeMode="tail"
-              maxFontSizeMultiplier={1.3}
-            >
-              {showQuantityColumn ? null : `${item.qty} x `}
-              <Text style={styles.itemName} maxFontSizeMultiplier={1.3}>
-                {item.name}
+            {/* SVG dashed rule = exact name width; avoids Android dashed-border crash */}
+            <View style={styles.itemNameWrap}>
+              <Text
+                style={[styles.itemLabel, dense && styles.itemLabelDense]}
+                numberOfLines={2}
+                ellipsizeMode="tail"
+                maxFontSizeMultiplier={1.3}
+                onLayout={(e) => {
+                  const w = Math.ceil(e.nativeEvent.layout.width);
+                  if (w > 0 && w !== nameWidth) setNameWidth(w);
+                }}
+              >
+                {showQuantityColumn ? null : (
+                  <Text style={styles.qtyPrefix} maxFontSizeMultiplier={1.3}>
+                    {`${item.qty} x `}
+                  </Text>
+                )}
+                <Text style={[styles.itemName, dense && styles.itemLabelDense]} maxFontSizeMultiplier={1.3}>
+                  {item.name}
+                </Text>
               </Text>
-            </Text>
+              {nameWidth > 0 ? (
+                <Svg width={nameWidth} height={2} style={styles.itemNameDash}>
+                  <Line
+                    x1={0}
+                    y1={1}
+                    x2={nameWidth}
+                    y2={1}
+                    stroke="#94A3B8"
+                    strokeWidth={1.25}
+                    strokeDasharray="3.5 3"
+                    strokeLinecap="butt"
+                  />
+                </Svg>
+              ) : null}
+            </View>
           </Pressable>
           {hasCust ? (
             <View style={styles.custPill}>
@@ -129,6 +171,18 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   pressed: { opacity: 0.85 },
+  nthLabel: {
+    minWidth: 18,
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#64748B",
+    fontVariant: ["tabular-nums"],
+    flexShrink: 0,
+  },
+  nthLabelDense: {
+    minWidth: 16,
+    fontSize: 12,
+  },
   chevron: {
     flexShrink: 0,
     marginLeft: -2,
@@ -142,27 +196,35 @@ const styles = StyleSheet.create({
     width: "100%",
     minWidth: 0,
   },
+  itemNameWrap: {
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+  },
+  itemNameDash: {
+    marginTop: 1,
+  },
   itemLabel: {
-    fontSize: 13,
-    fontWeight: "500",
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+    fontSize: 14.5,
+    fontWeight: "700",
     color: "#1A1A1A",
-    borderBottomWidth: 1,
-    borderBottomColor: "#CCCCCC",
-    borderStyle: "dashed",
-    paddingBottom: 2,
   },
   itemLabelDense: {
-    fontSize: 12,
-    paddingBottom: 0,
+    fontSize: 14,
+    fontWeight: "700",
   },
   itemNamePress: {
-    flexGrow: 1,
+    flexGrow: 0,
     flexShrink: 1,
-    flexBasis: "40%",
-    minWidth: 0,
+    alignSelf: "flex-start",
     maxWidth: "100%",
   },
   itemName: {
+    fontWeight: "800",
+    fontSize: 14.5,
+  },
+  qtyPrefix: {
     fontWeight: "700",
   },
   custPill: {
@@ -237,18 +299,19 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   qtyCellDense: {
-    height: 22,
-    minWidth: 26,
-    paddingHorizontal: 4,
+    height: 26,
+    minWidth: 28,
+    paddingHorizontal: 5,
   },
   qtyText: {
     fontSize: 13,
-    fontWeight: "600",
+    fontWeight: "800",
     color: "#1A1A1A",
     fontVariant: ["tabular-nums"],
   },
   qtyTextDense: {
-    fontSize: 12,
+    fontSize: 12.5,
+    fontWeight: "800",
   },
   amountCol: {
     width: 72,
@@ -262,12 +325,13 @@ const styles = StyleSheet.create({
     textDecorationLine: "line-through",
   },
   price: {
-    fontSize: 13,
-    fontWeight: "600",
+    fontSize: 14,
+    fontWeight: "800",
     color: "#1A1A1A",
     fontVariant: ["tabular-nums"],
   },
   priceDense: {
-    fontSize: 12,
+    fontSize: 13.5,
+    fontWeight: "800",
   },
 });

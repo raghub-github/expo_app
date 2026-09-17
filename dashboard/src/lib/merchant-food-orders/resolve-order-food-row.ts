@@ -47,7 +47,9 @@ function foodBelongsToStore(
   food: FoodLookupRow | null | undefined,
   merchantStoreInternalId: number
 ): boolean {
-  if (food?.merchant_store_id == null) return false;
+  if (!food) return false;
+  // Legacy rows may omit merchant_store_id — defer to orders_core ownership.
+  if (food.merchant_store_id == null) return true;
   return Number(food.merchant_store_id) === merchantStoreInternalId;
 }
 
@@ -58,7 +60,8 @@ function foodBelongsToStore(
 export async function resolveMerchantFoodOrder(
   db: SupabaseClient,
   merchantStoreInternalId: number,
-  orderIdParam: number
+  orderIdParam: number,
+  opts?: { formattedOrderId?: string | null }
 ): Promise<ResolvedMerchantFoodOrder | null> {
   const finish = async (
     food: FoodLookupRow | null,
@@ -82,6 +85,37 @@ export async function resolveMerchantFoodOrder(
   };
 
   const foodSelect = "id, order_id, core_order_id, merchant_store_id";
+  const formatted = (opts?.formattedOrderId ?? "").trim();
+
+  if (formatted) {
+    const { data: coreByFmt } = await db
+      .from("orders_core")
+      .select("id, merchant_store_id")
+      .eq("merchant_store_id", merchantStoreInternalId)
+      .eq("formatted_order_id", formatted)
+      .maybeSingle();
+    if (coreByFmt?.id != null) {
+      const corePk = Number(coreByFmt.id);
+      const { data: foodForFmt } = await db
+        .from("orders_food")
+        .select(foodSelect)
+        .eq("order_id", corePk)
+        .maybeSingle();
+      const done = await finish((foodForFmt as FoodLookupRow) ?? null, corePk);
+      if (done) return done;
+    }
+    const { data: foodByFmt } = await db
+      .from("orders_food")
+      .select(foodSelect)
+      .eq("merchant_store_id", merchantStoreInternalId)
+      .eq("formatted_order_id", formatted)
+      .maybeSingle();
+    if (foodByFmt) {
+      const corePk = await resolveCorePkFromFoodRow(db, foodByFmt as FoodLookupRow);
+      const done = await finish(foodByFmt as FoodLookupRow, corePk);
+      if (done) return done;
+    }
+  }
 
   // 1) partnersite path: orders_food.id (prefer this store)
   const { data: byFoodIdStore } = await db

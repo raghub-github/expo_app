@@ -18,8 +18,9 @@ import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
 const SUBMIT_GREEN = colors.success[500];
-const SKIP_PINK = "#E85D75";
-const REF_BLUE = "#1A73E8";
+const SKIP_PINK = "#E11D48";
+const REF_BLUE = "#2563EB";
+const DEFAULT_RATING = 5;
 
 type FeedbackTag = {
   id: string;
@@ -78,7 +79,7 @@ export function CustomerFeedbackBottomSheet({
 }: Props) {
   const { t } = useTranslation();
   const { height, isShortHeight, insets, rs } = useResponsiveLayout();
-  const [rating, setRating] = useState<number | null>(4);
+  const [rating, setRating] = useState<number>(DEFAULT_RATING);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [comment, setComment] = useState("");
 
@@ -88,7 +89,7 @@ export function CustomerFeedbackBottomSheet({
 
   useEffect(() => {
     if (!visible) return;
-    setRating(4);
+    setRating(DEFAULT_RATING);
     setSelectedTags([]);
     setComment("");
   }, [visible]);
@@ -103,7 +104,23 @@ export function CustomerFeedbackBottomSheet({
     );
   };
 
-  const canSubmit = rating != null && !loading;
+  const canSubmit = !loading;
+
+  const handleSubmit = () => {
+    if (!canSubmit) return;
+    const trimmedComment = comment.trim();
+    const messages = selectedTags.map((id) => {
+      const tag = availableTags.find((item) => item.id === id);
+      return tag ? t(tag.labelKey, tag.fallback) : id;
+    });
+    if (trimmedComment) messages.push(trimmedComment);
+    onSubmit({
+      rating,
+      tags: selectedTags,
+      messages,
+      comment: trimmedComment || undefined,
+    });
+  };
 
   return (
     <Modal
@@ -112,15 +129,22 @@ export function CustomerFeedbackBottomSheet({
       animationType="slide"
       statusBarTranslucent
       presentationStyle="overFullScreen"
-      onRequestClose={() => undefined}
+      onRequestClose={onSkip}
     >
       <KeyboardAvoidingView
         style={styles.root}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View style={styles.backdrop} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
+        <Pressable
+          style={styles.backdrop}
+          onPress={loading ? undefined : onSkip}
+          accessibilityRole="button"
+          accessibilityLabel={t("orders.activeFood.feedbackSkip", "Skip")}
+        />
 
         <View style={[styles.sheet, { maxHeight: Math.round(height * 0.92) }]}>
+          <View style={styles.handle} />
+
           <View style={[rowLayout.row, styles.header]}>
             <Text style={[styles.title, flexShrinkText]} numberOfLines={2}>
               {t("orders.activeFood.customerFeedbackTitle", "Customer Feedback")}
@@ -129,7 +153,7 @@ export function CustomerFeedbackBottomSheet({
               onPress={onSkip}
               disabled={loading}
               hitSlop={12}
-              style={rowLayout.noShrink}
+              style={[styles.skipBtn, rowLayout.noShrink]}
               accessibilityRole="button"
               accessibilityLabel={t("orders.activeFood.feedbackSkip", "Skip")}
             >
@@ -146,21 +170,7 @@ export function CustomerFeedbackBottomSheet({
             footerBottomInset={bottomPad}
             footer={
               <Pressable
-                onPress={() => {
-                  if (!canSubmit || rating == null) return;
-                  const trimmedComment = comment.trim();
-                  const messages = selectedTags.map((id) => {
-                    const tag = availableTags.find((item) => item.id === id);
-                    return tag ? t(tag.labelKey, tag.fallback) : id;
-                  });
-                  if (trimmedComment) messages.push(trimmedComment);
-                  onSubmit({
-                    rating,
-                    tags: selectedTags,
-                    messages,
-                    comment: trimmedComment || undefined,
-                  });
-                }}
+                onPress={handleSubmit}
                 disabled={!canSubmit}
                 style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
                 accessibilityRole="button"
@@ -178,7 +188,7 @@ export function CustomerFeedbackBottomSheet({
               {t("orders.activeFood.customerFeedbackLead", "You just delivered an order")}
             </Text>
 
-            <View style={[rowLayout.rowStart, styles.orderRow]}>
+            <View style={[rowLayout.rowStart, styles.infoCard]}>
               <View style={[styles.orderIcon, rowLayout.noShrink]}>
                 <Ionicons name="home" size={22} color="#fff" />
               </View>
@@ -191,8 +201,6 @@ export function CustomerFeedbackBottomSheet({
                 </Text>
               </View>
             </View>
-
-            <View style={styles.divider} />
 
             <Text style={[styles.sectionLabel, flexShrinkText]} numberOfLines={3}>
               {t(
@@ -214,7 +222,7 @@ export function CustomerFeedbackBottomSheet({
                     accessibilityRole="button"
                     accessibilityState={{ selected }}
                   >
-                    <Text style={styles.emoji}>{emoji}</Text>
+                    <Text style={[styles.emoji, selected && styles.emojiSelected]}>{emoji}</Text>
                   </Pressable>
                 );
               })}
@@ -273,35 +281,61 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: "rgba(15, 23, 42, 0.48)",
   },
   sheet: {
-    backgroundColor: "#fff",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingTop: 20,
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingTop: 10,
     overflow: "hidden",
     flexShrink: 1,
     minHeight: 0,
     width: "100%",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0F172A",
+        shadowOpacity: 0.18,
+        shadowRadius: 24,
+        shadowOffset: { width: 0, height: -8 },
+      },
+      android: { elevation: 16 },
+      default: {},
+    }),
+  },
+  handle: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#D1D5DB",
+    marginBottom: 12,
   },
   header: {
     justifyContent: "space-between",
-    marginBottom: 8,
+    marginBottom: 6,
     paddingHorizontal: 20,
     gap: 12,
     maxWidth: "100%",
+    alignItems: "center",
   },
   title: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#111827",
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#0F172A",
+    letterSpacing: -0.3,
     flex: 1,
     minWidth: 0,
   },
+  skipBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#FFF1F2",
+  },
   skipText: {
-    fontSize: 16,
-    fontWeight: "600",
+    fontSize: 14,
+    fontWeight: "700",
     color: SKIP_PINK,
   },
   scrollContent: {
@@ -309,24 +343,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   footerSlot: {
-    borderTopWidth: 0,
-    backgroundColor: "transparent",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#F1F5F9",
+    backgroundColor: "#fff",
     paddingHorizontal: 4,
+    paddingTop: 10,
   },
   lead: {
-    fontSize: 15,
-    color: "#374151",
-    marginBottom: 14,
+    fontSize: 14,
+    color: "#64748B",
+    marginBottom: 12,
+    fontWeight: "500",
   },
-  orderRow: {
+  infoCard: {
     gap: 12,
-    marginBottom: 16,
+    marginBottom: 20,
     maxWidth: "100%",
+    backgroundColor: "#F8FAFC",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    padding: 14,
   },
   orderIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 48,
+    height: 48,
+    borderRadius: 16,
     backgroundColor: REF_BLUE,
     alignItems: "center",
     justifyContent: "center",
@@ -334,27 +376,24 @@ const styles = StyleSheet.create({
   orderTextCol: {
     flex: 1,
     minWidth: 0,
+    justifyContent: "center",
   },
   orderIdLine: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
-    color: "#111827",
+    color: "#334155",
     marginBottom: 4,
   },
   customerName: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#111827",
-  },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: "#E5E7EB",
-    marginBottom: 18,
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#0F172A",
   },
   sectionLabel: {
     fontSize: 15,
-    color: "#374151",
-    marginBottom: 14,
+    color: "#334155",
+    marginBottom: 12,
+    fontWeight: "600",
   },
   emojiRow: {
     justifyContent: "space-between",
@@ -366,21 +405,25 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     aspectRatio: 1,
-    maxWidth: 52,
-    maxHeight: 52,
-    borderRadius: 26,
+    maxWidth: 56,
+    maxHeight: 56,
+    borderRadius: 28,
     borderWidth: 2,
-    borderColor: "#E5E7EB",
+    borderColor: "#E2E8F0",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F9FAFB",
+    backgroundColor: "#F8FAFC",
   },
   emojiBtnSelected: {
     borderColor: SUBMIT_GREEN,
     backgroundColor: colors.success[50],
+    transform: [{ scale: 1.06 }],
   },
   emoji: {
     fontSize: 26,
+  },
+  emojiSelected: {
+    fontSize: 28,
   },
   tagsWrap: {
     flexDirection: "row",
@@ -391,7 +434,7 @@ const styles = StyleSheet.create({
   },
   tagPill: {
     borderWidth: 1.5,
-    borderColor: "#D1D5DB",
+    borderColor: "#E2E8F0",
     borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 10,
@@ -404,22 +447,22 @@ const styles = StyleSheet.create({
   },
   tagText: {
     fontSize: 14,
-    color: "#6B7280",
-    fontWeight: "500",
+    color: "#64748B",
+    fontWeight: "600",
   },
   tagTextActive: {
     color: "#166534",
   },
   commentInput: {
-    minHeight: 96,
-    borderWidth: 1,
-    borderColor: "#D1D5DB",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: "#111827",
-    backgroundColor: "#F9FAFB",
+    minHeight: 100,
+    borderWidth: 1.5,
+    borderColor: "#E2E8F0",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    color: "#0F172A",
+    backgroundColor: "#F8FAFC",
     marginBottom: 8,
     maxWidth: "100%",
   },
@@ -427,7 +470,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: 4,
     backgroundColor: SUBMIT_GREEN,
-    borderRadius: 14,
+    borderRadius: 16,
     paddingVertical: 16,
     paddingHorizontal: 12,
     alignItems: "center",
@@ -439,6 +482,7 @@ const styles = StyleSheet.create({
   submitText: {
     color: "#fff",
     fontSize: 17,
-    fontWeight: "700",
+    fontWeight: "800",
+    letterSpacing: 0.2,
   },
 });

@@ -70,4 +70,45 @@ describe("aggregateCustomerRefundRows", () => {
     assert.equal(summary.amount, 71.5);
     assert.equal(summary.references.length, 1);
   });
+
+  it("does not duplicate processed/completed when stored timeline already has them", () => {
+    const summary = aggregateCustomerRefundRows([
+      {
+        id: 9,
+        order_id: 8,
+        refund_status: "completed",
+        execution_status: "COMPLETED",
+        execution_route: "WALLET",
+        refund_amount: 225.59,
+        refund_reference: "RRN-FD801E6C-670E-40B9-8139-D48858CE5F5C",
+        customer_wallet_ledger_id: 11,
+        split_wallet_amount: 225.59,
+        created_at: "2026-09-15T09:25:00.000Z",
+        executed_at: "2026-09-15T09:25:00.000Z",
+        completed_at: "2026-09-15T09:25:00.000Z",
+        refund_timeline: [
+          {
+            key: "initiated",
+            label: "Refund initiated for ₹225.59",
+            at: "2026-09-15T09:25:00.000Z",
+          },
+          {
+            key: "processed",
+            label: "Refund processed",
+            at: "2026-09-15T09:25:00.000Z",
+          },
+          {
+            key: "completed",
+            label: "Refund completed",
+            at: "2026-09-15T09:25:00.000Z",
+          },
+        ],
+      },
+    ]);
+    assert.ok(summary);
+    const keys = summary.timeline.map((s) => s.key);
+    assert.deepEqual(keys, ["initiated", "processed", "completed"]);
+    assert.equal(summary.timeline.filter((s) => s.key === "processed").length, 1);
+    assert.equal(summary.timeline.filter((s) => s.key === "completed").length, 1);
+  });
 });

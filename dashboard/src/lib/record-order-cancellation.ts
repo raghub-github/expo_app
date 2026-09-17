@@ -6,7 +6,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { resolveOrderCancellationRefund } from "@/lib/order-cancellation-refund";
 import { applyMerchantOrderCancellationLedger } from "@/lib/orders/apply-merchant-cancellation-debit";
-import { resolveAutoMerchantCancellationDebit } from "@/lib/orders/resolve-merchant-cancellation-ledger";
 
 export type OrderCancellationActorType =
   | "store"
@@ -224,6 +223,9 @@ export async function recordOrderCancellation(
 
 async function syncMerchantCancellationLedger(input: RecordOrderCancellationInput): Promise<void> {
   try {
+    // Only pass admin-explicit Merchant debit (Full / Partial / No).
+    // Do NOT pre-resolve compensation → partial_debit here: that would hit the
+    // admin 50% matrix and skip super-admin policy keep % (40/80/100/0).
     const explicitDebit =
       typeof input.metadata?.merchantDebit === "string"
         ? input.metadata.merchantDebit
@@ -231,24 +233,22 @@ async function syncMerchantCancellationLedger(input: RecordOrderCancellationInpu
             "string"
           ? (input.metadata as { merchant_debit: string }).merchant_debit
           : null;
-
-    const auto = await resolveAutoMerchantCancellationDebit(input.orderCorePk, explicitDebit);
-    const merchantDebit = auto.merchantDebit ?? explicitDebit;
     const partialAmount =
-      auto.partialAmount ??
-      (typeof input.metadata?.partialAmount === "number"
+      typeof input.metadata?.partialAmount === "number"
         ? input.metadata.partialAmount
         : typeof (input.metadata as { partial_amount?: number } | undefined)?.partial_amount ===
             "number"
           ? (input.metadata as { partial_amount: number }).partial_amount
-          : null);
+          : null;
 
     await applyMerchantOrderCancellationLedger({
       orderCoreId: input.orderCorePk,
-      merchantDebit,
+      merchantDebit: explicitDebit,
       partialAmount,
       actorSystemUserId: input.cancelledById ?? null,
       source: "merchant_portal_cancel",
+      cancelledByType: input.cancelledByType,
+      cancelledByLabel: input.cancelledByLabel,
     });
   } catch (ledgerErr) {
     console.warn("[recordOrderCancellation] merchant ledger failed:", ledgerErr);

@@ -36,7 +36,13 @@ import {
 } from "@/src/services/onboardingGeo.service";
 import { Button } from "@/src/components/ui/Button";
 import { ONBOARDING_PAGE_BG } from "@/src/components/onboarding/OnboardingTopBar";
-import { resolveOnboardingHref } from "@/src/lib/onboarding-routes";
+import {
+  ContinueButton,
+  OnboardingStickyFooter,
+  onboardingHeaderPaddingTop,
+  onboardingStickyScrollPadding,
+} from "@/src/components/onboarding/OnboardingFormUi";
+import { nextOnboardingRoute } from "@/src/lib/onboarding-routes";
 import { openOnboardingIssueSupportTicket } from "@/src/lib/rider-support-navigation";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
 import { useQueryClient } from "@tanstack/react-query";
@@ -47,8 +53,6 @@ type PickerLevel = "state" | "district" | null;
 
 const OTHER_ID = "__other__";
 /** Transparent onboarding header ≈ safe-area + bar chips + extra gap so content sits lower. */
-const HEADER_CLEARANCE = 88;
-const CONTENT_TOP_EXTRA = 36;
 const GPS_FIX_TIMEOUT_MS = 4500;
 const GEOCODE_TIMEOUT_MS = 2000;
 
@@ -804,37 +808,9 @@ export default function LocationScreen() {
         }
         return;
       }
-      // Resume first incomplete step — never force Aadhaar if KYC already done.
-      const next = resolveOnboardingHref(
-        riderStatus?.onboardingStatus,
-        data.currentStep,
-        (riderStatus?.nextOnboardingStep as any) ?? null,
-        {
-          vehicleChoice: data.vehicleChoice || riderStatus?.vehicleChoice || undefined,
-          vehicleOnboardingFlow:
-            data.vehicleOnboardingFlow ||
-            (riderStatus?.vehicleOnboardingFlow === "dl_rc" ||
-            riderStatus?.vehicleOnboardingFlow === "rental_ev" ||
-            riderStatus?.vehicleOnboardingFlow === "payment"
-              ? riderStatus.vehicleOnboardingFlow
-              : undefined),
-          vehicleOnboardingSubmittedFor:
-            data.vehicleOnboardingSubmittedFor ||
-            riderStatus?.vehicleDocsSubmittedFor ||
-            undefined,
-          bankAccountOnboardingDone:
-            data.bankAccountOnboardingDone || riderStatus?.bankAccountOnboardingDone,
-          accountStatus: riderStatus?.accountStatus,
-          approvalStatus: riderStatus?.approvalStatus,
-          paymentCompleted: riderStatus?.paymentCompleted,
-          referralPromptHandled: true,
-          workLocationConfirmed: true,
-          completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
-        },
-      );
-      router.replace(
-        next === "/(onboarding)/location" ? "/(onboarding)/aadhaar" : next,
-      );
+      // Sequential Continue (1→2→3): always the next adjacent screen, never jump
+      // to the furthest incomplete step (e.g. rental-ev) after header Back.
+      router.replace(nextOnboardingRoute("location") ?? "/(onboarding)/aadhaar");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not save location";
       if (/NOT_HIRING|hiring is currently unavailable/i.test(msg)) {
@@ -859,7 +835,7 @@ export default function LocationScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.root} edges={["bottom"]}>
+    <SafeAreaView style={styles.root} edges={[]}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -868,7 +844,10 @@ export default function LocationScreen() {
           contentContainerStyle={[
             styles.scroll,
             // headerTransparent overlays content — clear the floating top bar.
-            { paddingTop: insets.top + HEADER_CLEARANCE + CONTENT_TOP_EXTRA },
+            {
+              paddingTop: onboardingHeaderPaddingTop(insets.top),
+              paddingBottom: onboardingStickyScrollPadding(insets.bottom),
+            },
           ]}
           keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
@@ -1029,15 +1008,15 @@ export default function LocationScreen() {
             </View>
           </View>
 
-          <Button
-            onPress={() => void handleContinue()}
-            loading={saving}
-            disabled={!canContinue || saving}
-            size="lg"
-          >
-            Next
-          </Button>
         </ScrollView>
+        <OnboardingStickyFooter style={{ backgroundColor: ONBOARDING_PAGE_BG }}>
+          <ContinueButton
+            label="Next"
+            onPress={() => void handleContinue()}
+            disabled={!canContinue || saving}
+            loading={saving}
+          />
+        </OnboardingStickyFooter>
       </KeyboardAvoidingView>
 
       <Modal visible={pickerLevel != null} animationType="slide" transparent>

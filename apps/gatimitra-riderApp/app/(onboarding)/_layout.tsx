@@ -23,16 +23,19 @@ export default function OnboardingLayout() {
           headerShown: true,
           headerTransparent: true,
           headerStyle: { backgroundColor: "transparent" },
-          // Full-screen transparent headers steal ScrollView gestures unless empty space
-          // uses box-none so touches pass through to the screen below.
+          // Native-stack transparent headers often stretch to full screen and steal
+          // ScrollView pan gestures. Outer absoluteFill + box-none lets empty space pass
+          // through; only the top bar chrome receives touches.
           header: (props) => (
-            <View style={styles.headerTouchThrough} pointerEvents="box-none">
-              <OnboardingTopBar
-                route={props.route}
-                title={
-                  typeof props.options?.title === "string" ? props.options.title : undefined
-                }
-              />
+            <View style={styles.headerPassThrough} pointerEvents="box-none">
+              <View style={styles.headerChrome} pointerEvents="box-none">
+                <OnboardingTopBar
+                  route={props.route}
+                  title={
+                    typeof props.options?.title === "string" ? props.options.title : undefined
+                  }
+                />
+              </View>
             </View>
           ),
           contentStyle: { flex: 1, width: "100%", backgroundColor: ONBOARDING_PAGE_BG },
@@ -55,7 +58,10 @@ export default function OnboardingLayout() {
 }
 
 const styles = StyleSheet.create({
-  headerTouchThrough: {
+  headerPassThrough: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  headerChrome: {
     position: "absolute",
     top: 0,
     left: 0,

@@ -7,17 +7,15 @@ export function isExpoGoRuntime(): boolean {
 }
 
 /**
- * Load expo-notifications only outside Expo Go.
- * Any import in Expo Go (SDK 53+) fires console.error about remote push being
- * removed — even when only local/permission APIs are used.
+ * Load expo-notifications. Remote push tokens still must not be requested in
+ * Expo Go — callers gate that separately. Local schedule / handlers need the
+ * module in Expo Go (`allowExpoGo: true`).
  */
 export async function loadNotificationsModule(
-  _opts?: { allowExpoGo?: boolean }
+  opts?: { allowExpoGo?: boolean }
 ): Promise<typeof import("expo-notifications") | null> {
   try {
-    // allowExpoGo is ignored on purpose: importing always triggers Expo Go's
-    // DevicePushTokenAutoRegistration warning/error on Android.
-    if (isExpoGoRuntime()) {
+    if (isExpoGoRuntime() && !opts?.allowExpoGo) {
       return null;
     }
     return await import("expo-notifications");

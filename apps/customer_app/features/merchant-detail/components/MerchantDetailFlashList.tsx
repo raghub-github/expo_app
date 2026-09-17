@@ -12,10 +12,12 @@ import {
   Platform,
   RefreshControl,
   FlatList,
+  Pressable,
   type ListRenderItem,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { AppText } from "@/components/AppText";
 import Animated, {
   type SharedValue,
@@ -23,6 +25,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { StoreInfoCard } from "@/components/store/StoreInfoCard";
 import { StoreFilterBar, type StoreFilterId } from "@/components/store/StoreFilterBar";
+import { ClassicFreeDeliveryBanner } from "@/components/store/ClassicFreeDeliveryBanner";
 import { StorePastOrdersSection } from "@/components/store/StorePastOrdersSection";
 import { StoreComboSection } from "@/components/store/StoreComboSection";
 import { StoreSectionHeader } from "@/components/store/StoreSectionHeader";
@@ -33,6 +36,7 @@ import { MerchantClosedBanner } from "./MerchantClosedBanner";
 import { MerchantRushBanner } from "./MerchantRushBanner";
 import { MerchantCategoryRail } from "./MerchantCategoryRail";
 import { MerchantMenuMasonrySection } from "./MerchantMenuMasonrySection";
+import { ClassicFeaturedImagedRail } from "./ClassicFeaturedImagedRail";
 import { MerchantMenuLoadingSkeleton } from "@/components/merchant/MerchantMenuLoadingSkeleton";
 import { StoreTheme } from "@/constants/storeTheme";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -57,6 +61,10 @@ import {
   markMerchantMenuScrollActive,
   markMerchantMenuScrollEnded,
 } from "@/lib/merchantMenuScrollGuard";
+import {
+  NATURAL_DECELERATION_RATE,
+  SCROLL_FLING_VELOCITY_EPS,
+} from "@/lib/naturalScrollProps";
 
 /**
  * Virtualized merchant menu.
@@ -100,6 +108,8 @@ export type MerchantDetailFlashListProps = {
   onOffersPress: () => void;
   onSchedulePress: () => void;
   onRatingHintPress?: () => void;
+  /** Focus sticky search — Classic in-list “Search for dishes” row. */
+  onFocusMenuSearch?: () => void;
   filter: StoreFilterId;
   onFilterChange: (id: StoreFilterId) => void;
   onOpenFilters: () => void;
@@ -150,6 +160,8 @@ export type MerchantDetailFlashListProps = {
   chromeHeight?: number;
   /** Discovery only — vertical category rail beside the masonry menu. */
   showCategoryRail?: boolean;
+  /** Classic food-home layout — StoreInfoCard + classic chrome variants. */
+  classicLayout?: boolean;
   refreshing?: boolean;
   onRefresh?: () => void;
 };
@@ -216,6 +228,7 @@ const MerchantDetailFlashListInner = forwardRef<
     onOffersPress,
     onSchedulePress,
     onRatingHintPress,
+    onFocusMenuSearch,
     filter,
     onFilterChange,
     onOpenFilters,
@@ -256,6 +269,7 @@ const MerchantDetailFlashListInner = forwardRef<
     heroBannerHeight = HEADER_IMAGE_HEIGHT,
     chromeHeight = 0,
     showCategoryRail: showCategoryRailProp = false,
+    classicLayout = false,
     refreshing = false,
     onRefresh,
   } = props;
@@ -342,6 +356,25 @@ const MerchantDetailFlashListInner = forwardRef<
           scrollRef.current?.scrollToEnd({ animated });
           return;
         }
+
+        // Prefer measured row offsets — FlatList scrollToIndex on mixed-height
+        // menus often fails and retries for seconds (home `+` deep-link lag).
+        const row = data[index];
+        if (row) {
+          let y = rowOffsetsRef.current.get(row.key);
+          if (y == null) {
+            rebuildRowOffsets();
+            y = rowOffsetsRef.current.get(row.key);
+          }
+          if (y != null) {
+            scrollRef.current?.scrollToOffset({
+              offset: Math.max(0, y - viewOffset),
+              animated,
+            });
+            return;
+          }
+        }
+
         try {
           scrollRef.current?.scrollToIndex({
             index: listIndex,
@@ -349,16 +382,16 @@ const MerchantDetailFlashListInner = forwardRef<
             viewOffset,
           });
         } catch {
-          // Layout may not be ready — fall back to measured offsets.
+          // Layout may not be ready — fall back to measured offsets with short retries.
           const generation = ++scrollGenerationRef.current;
           const attempt = (retriesLeft: number) => {
             if (generation !== scrollGenerationRef.current) return;
-            const row = data[index];
-            if (!row) return;
-            let y = rowOffsetsRef.current.get(row.key);
+            const nextRow = data[index];
+            if (!nextRow) return;
+            let y = rowOffsetsRef.current.get(nextRow.key);
             if (y == null) {
               rebuildRowOffsets();
-              y = rowOffsetsRef.current.get(row.key);
+              y = rowOffsetsRef.current.get(nextRow.key);
             }
             if (y != null) {
               scrollRef.current?.scrollToOffset({
@@ -371,7 +404,7 @@ const MerchantDetailFlashListInner = forwardRef<
               requestAnimationFrame(() => attempt(retriesLeft - 1));
             }
           };
-          attempt(20);
+          attempt(animated ? 20 : 8);
         }
       },
     }),
@@ -463,6 +496,7 @@ const MerchantDetailFlashListInner = forwardRef<
             offerCount={visibleOffersCount}
             reserveOfferRow={reserveOfferRow}
             isFrequentlyReordered={(merchant.completedOrderCount ?? 0) > 50}
+            classicLayout={classicLayout}
             onInfoPress={onInfoPress}
             onOffersPress={onOffersPress}
             onSchedulePress={onSchedulePress}
@@ -491,13 +525,17 @@ const MerchantDetailFlashListInner = forwardRef<
 
       case "filter_bar":
         return (
-          <StoreFilterBar
-            active={filter}
-            onChange={onFilterChange}
-            onOpenFilters={onOpenFilters}
-            showHighlyReordered={showHighlyReordered}
-            filtersActive={filtersActive}
-          />
+          <View>
+            {/* Classic: single filter row lives here. Sticky chrome must NOT also mount filters. */}
+            <StoreFilterBar
+              active={filter}
+              onChange={onFilterChange}
+              onOpenFilters={onOpenFilters}
+              showHighlyReordered={showHighlyReordered}
+              filtersActive={filtersActive}
+            />
+            {!dark ? <ClassicFreeDeliveryBanner /> : null}
+          </View>
         );
 
       case "past_orders":
@@ -561,6 +599,20 @@ const MerchantDetailFlashListInner = forwardRef<
             resolveMenuItemPk={resolveMenuItemPk}
             itemOfferById={itemOfferById}
             railInset={railInset}
+          />
+        );
+
+      case "featured_imaged_rail":
+        return (
+          <ClassicFeaturedImagedRail
+            title={item.title}
+            items={item.items}
+            merchantId={merchantId}
+            onAdd={onAdd}
+            onIncrement={onIncrement}
+            onDecrement={onDecrement}
+            onItemPress={onItemPress}
+            isStoreClosed={isStoreClosed}
           />
         );
 
@@ -675,6 +727,7 @@ const MerchantDetailFlashListInner = forwardRef<
           dark && styles.rowShellDark,
           item.type === "section_header" ? styles.sectionHeaderShell : null,
           item.type === "menu_masonry" ||
+          item.type === "featured_imaged_rail" ||
           item.type === "empty_menu" ||
           item.type === "menu_loading"
             ? styles.masonryRowShell
@@ -709,6 +762,10 @@ const MerchantDetailFlashListInner = forwardRef<
       itemOfferById,
       isStoreClosed,
       showCategoryRail,
+      onFocusMenuSearch,
+      filter,
+      filtersActive,
+      showHighlyReordered,
     ]
   );
 
@@ -822,10 +879,15 @@ const MerchantDetailFlashListInner = forwardRef<
           onScroll={scrollHandler}
           scrollEventThrottle={16}
           keyboardShouldPersistTaps="always"
-          nestedScrollEnabled={false}
+          // Same nested-scroll contract as classic Food home — horizontal rails
+          // (Worth A Try, filters) keep their own axis without killing vertical fling.
+          nestedScrollEnabled
+          directionalLockEnabled
           showsVerticalScrollIndicator
           bounces
+          alwaysBounceVertical={false}
           delaysContentTouches={false}
+          decelerationRate={NATURAL_DECELERATION_RATE}
           overScrollMode="never"
           refreshControl={
             onRefresh ? (
@@ -844,11 +906,14 @@ const MerchantDetailFlashListInner = forwardRef<
           }}
           onMomentumScrollBegin={markMerchantMenuScrollActive}
           onScrollEndDrag={(event) => {
-            markMerchantMenuScrollEnded();
             onScrollEndExtra?.(event);
             onVisibleCategoryChange?.(
               resolveVisibleCategoryId(event.nativeEvent.contentOffset.y)
             );
+            const vy = event.nativeEvent.velocity?.y ?? 0;
+            if (Math.abs(vy) < SCROLL_FLING_VELOCITY_EPS) {
+              markMerchantMenuScrollEnded();
+            }
           }}
           onMomentumScrollEnd={(event) => {
             markMerchantMenuScrollEnded();
@@ -938,6 +1003,24 @@ const styles = StyleSheet.create({
     backgroundColor: StoreTheme.background,
     overflow: "visible",
   },
+  classicInListSearch: {
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 8,
+    height: 48,
+    borderRadius: 999,
+    backgroundColor: StoreTheme.searchBg,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    gap: 10,
+  },
+  classicInListSearchText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "500",
+    color: StoreTheme.textSecondary,
+  },
   zeroCell: {
     height: 0,
     overflow: "hidden",
@@ -947,7 +1030,7 @@ const styles = StyleSheet.create({
   },
   rowShell: {
     backgroundColor: StoreTheme.background,
-    overflow: "hidden",
+    overflow: "visible",
     zIndex: 1,
   },
   rowShellDark: {

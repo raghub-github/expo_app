@@ -74,11 +74,42 @@ export function resolveOnboardingDecision(input: OnboardingDecisionInput): Onboa
   const eligibleServices = allServices.filter((s) => input.services[s].eligible);
   const blockedServices: BlockedServiceInfo[] = allServices
     .filter((s) => !input.services[s].eligible)
-    .map((s) => ({
-      service: s,
-      missingDocuments: input.services[s].missingDocuments,
-      reasons: input.services[s].blocking.map((b) => b.reason),
-    }));
+    .map((s) => {
+      const decision = input.services[s];
+      // Display priority: docs → vehicle/other → geo (SERVICE_DISABLED last).
+      const orderedBlocking = [...decision.blocking].sort((a, b) => {
+        const rank = (code: string) => {
+          const c = String(code || "").toUpperCase();
+          if (c === "SERVICE_DISABLED") return 3;
+          if (
+            c.startsWith("DL_") ||
+            c.startsWith("RC_") ||
+            c.includes("PROOF") ||
+            c.includes("NOT_VERIFIED") ||
+            c.includes("_PENDING") ||
+            c.includes("_REJECTED") ||
+            c.includes("_EXPIRED")
+          ) {
+            return 0;
+          }
+          if (
+            c.includes("VEHICLE") ||
+            c.includes("FUEL") ||
+            c.includes("OWNERSHIP") ||
+            c.includes("COMMERCIAL")
+          ) {
+            return 1;
+          }
+          return 2;
+        };
+        return rank(a.code) - rank(b.code);
+      });
+      return {
+        service: s,
+        missingDocuments: decision.missingDocuments,
+        reasons: orderedBlocking.map((b) => b.reason),
+      };
+    });
   const allEligible = allServices.length > 0 && blockedServices.length === 0;
 
   const base = { paymentEligible: false, eligibleServices, blockedServices, allEligible };

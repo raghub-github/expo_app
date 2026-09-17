@@ -35,6 +35,25 @@ export function friendlyOnboardingError(
 
   // Business duplicates — before any network/server classification.
   if (
+    /SAME_VEHICLE_CLASS|already have a .+ registered\. Your second vehicle must be a different vehicle type/i.test(
+      haystack
+    )
+  ) {
+    const api =
+      apiMsg && apiMsg.length < 180
+        ? apiMsg
+        : "You already have a vehicle of this type registered. Your second vehicle must be a different vehicle type.";
+    return api;
+  }
+  if (/MAX_VEHICLES|Maximum \d+ vehicles are allowed/i.test(haystack)) {
+    return "You already have 2 vehicles on file. A third vehicle cannot be added.";
+  }
+  if (
+    /DUPLICATE_RC|This vehicle is already added to your account/i.test(haystack)
+  ) {
+    return "This registration number is already on your account.";
+  }
+  if (
     /dl_already_registered|rc_already_registered|pan_already_registered|aadhaar_already_registered|aadhar_already_registered|already\s+registered|driving\s*licen[cs]e\s+already\s+registered|registration\s+certificate\s+already\s+registered|pan\s+already\s+registered|aadha?ar\s+already\s+registered|try\s+with\s+diff/i.test(
       haystack
     )
@@ -43,6 +62,14 @@ export function friendlyOnboardingError(
   }
   if (/dob_required/i.test(haystack)) {
     return "Date of birth is required. Enter DOB as on your driving licence (DD/MM/YYYY).";
+  }
+  // Cashfree wallet / provider outage — never show "Insufficient balance" to riders.
+  if (
+    /insufficient[_\s-]?balance|provider_error_insufficient|provider_not_configured|electronic verification is temporarily unavailable/i.test(
+      haystack
+    )
+  ) {
+    return "Electronic verification is temporarily unavailable. Please upload a clear photo for manual review.";
   }
   // Invalid / not-found DL (format 400 `invalid_dl` OR Cashfree DL reject).
   if (
@@ -57,17 +84,28 @@ export function friendlyOnboardingError(
       haystack
     )
   ) {
-    return "Invalid RC number. Please check and try again.";
+    return "Invalid RC number. Please enter a valid RC number and try again.";
   }
   if (/invalid_pan/i.test(haystack)) {
     return "Invalid PAN. Please check and try again.";
   }
+  if (/vehicle_docs_incomplete/i.test(haystack)) {
+    return "Complete all required documents for your selected vehicle before continuing.";
+  }
   // Cashfree / provider rejected the number without a typed code.
+  // Prefer the caller fallback when it is document-specific (e.g. Invalid RC…).
   if (
-    /upstream_failed|not_found_error|failed_at_source|verification\s*failed|could\s*not\s*be\s*verified|status:\s*rejected|\brejected\b|cashfree\s*status/i.test(
+    /upstream_failed|not_found_error|failed_at_source|verification\s*failed|could\s*not\s*be\s*verified|status:\s*rejected|\brejected\b|cashfree\s*status|invalid\s*document\s*number/i.test(
       haystack
     )
   ) {
+    if (
+      fallback &&
+      fallback !== "Something went wrong. Please try again." &&
+      /invalid\s+(rc|dl|pan|document)|enter a valid/i.test(fallback)
+    ) {
+      return fallback;
+    }
     return "Invalid document number. Please check and try again.";
   }
 

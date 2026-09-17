@@ -92,7 +92,7 @@ export function useActiveOrdersHydration() {
     refetchOnMount: "always",
     refetchOnReconnect: true,
     refetchInterval:
-      hydrated && hasSession && hasTrackableOrders ? 90_000 : false,
+      hydrated && hasSession && hasTrackableOrders ? 12_000 : false,
     refetchIntervalInBackground: false,
     initialData: cachedOrders,
     initialDataUpdatedAt: getMyOrdersCachedAt(),

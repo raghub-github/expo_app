@@ -1,4 +1,5 @@
 import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppText } from "@/components/AppText";
@@ -12,6 +13,9 @@ export type FoodHomeFilterRowProps = {
   openNow: boolean;
   nearFast?: boolean;
   filterHasOffers?: boolean;
+  /** Show FLASH DEALS chip when any nearby outlet has an active flash sale. */
+  showFlashDeals?: boolean;
+  flashDeals?: boolean;
   topBrands?: boolean;
   noPackagingCharges: boolean;
   showMealsUnderPriceChip?: boolean;
@@ -20,6 +24,7 @@ export type FoodHomeFilterRowProps = {
   onToggleSort: () => void;
   onToggleOpenNow: () => void;
   onToggleNearFast?: () => void;
+  onToggleFlashDeals?: () => void;
   onToggleOffers?: () => void;
   onToggleTopBrands?: () => void;
   onToggleHighlyRated?: () => void;
@@ -37,6 +42,8 @@ export function FoodHomeFilterRow({
   openNow,
   nearFast = false,
   filterHasOffers = false,
+  showFlashDeals = false,
+  flashDeals = false,
   topBrands = false,
   noPackagingCharges,
   showMealsUnderPriceChip = false,
@@ -45,6 +52,7 @@ export function FoodHomeFilterRow({
   onToggleSort,
   onToggleOpenNow,
   onToggleNearFast,
+  onToggleFlashDeals,
   onToggleOffers,
   onToggleTopBrands,
   onToggleHighlyRated,
@@ -52,16 +60,26 @@ export function FoodHomeFilterRow({
   onMealsUnderPricePress,
   compact = false,
 }: FoodHomeFilterRowProps) {
+  const flashDealsChip =
+    showFlashDeals && onToggleFlashDeals ? (
+      <TouchableOpacity
+        style={[styles.chip, flashDeals && styles.chipFlashDeals]}
+        onPress={onToggleFlashDeals}
+        activeOpacity={0.85}
+      >
+        <Ionicons name="pricetag" size={16} color={flashDeals ? "#fff" : "#C2410C"} />
+        <AppText style={[styles.chipText, flashDeals && styles.chipTextFlashDeals]}>
+          Flash Deal
+        </AppText>
+      </TouchableOpacity>
+    ) : null;
+
   return (
     <View style={[styles.wrap, compact && styles.wrapCompact]}>
       <ScrollView
-        horizontal
-        nestedScrollEnabled
-        showsHorizontalScrollIndicator={false}
+        {...NATURAL_HORIZONTAL_SCROLL_PROPS}
         style={styles.chipsScroll}
         contentContainerStyle={styles.chipsRow}
-        keyboardShouldPersistTaps="handled"
-        delaysContentTouches={false}
       >
         {variant === "grid_first" ? (
           <>
@@ -80,20 +98,6 @@ export function FoodHomeFilterRow({
               </AppText>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.chip, nearFast && styles.chipNearFast]}
-              onPress={onToggleNearFast ?? onToggleSort}
-              activeOpacity={0.85}
-            >
-              <Ionicons
-                name="flash"
-                size={16}
-                color={nearFast ? "#15803D" : "#16A34A"}
-              />
-              <AppText style={[styles.chipText, nearFast && styles.chipTextNearFast]}>
-                Near & Fast
-              </AppText>
-            </TouchableOpacity>
-            <TouchableOpacity
               style={[styles.chip, openNow && styles.chipActive]}
               onPress={onToggleOpenNow}
               activeOpacity={0.85}
@@ -105,6 +109,21 @@ export function FoodHomeFilterRow({
               />
               <AppText style={[styles.chipText, openNow && styles.chipTextActive]}>
                 Open Now
+              </AppText>
+            </TouchableOpacity>
+            {flashDealsChip}
+            <TouchableOpacity
+              style={[styles.chip, nearFast && styles.chipNearFast]}
+              onPress={onToggleNearFast ?? onToggleSort}
+              activeOpacity={0.85}
+            >
+              <Ionicons
+                name="flash"
+                size={16}
+                color={nearFast ? "#15803D" : "#16A34A"}
+              />
+              <AppText style={[styles.chipText, nearFast && styles.chipTextNearFast]}>
+                Near & Fast
               </AppText>
             </TouchableOpacity>
             {onToggleOffers ? (
@@ -181,44 +200,80 @@ export function FoodHomeFilterRow({
         ) : (
           <>
             <TouchableOpacity
-              style={[styles.chip, openNow && styles.chipActive]}
-              onPress={onToggleOpenNow}
-            >
-              <Ionicons
-                name="storefront-outline"
-                size={18}
-                color={openNow ? "#fff" : GatiMitraColors.primaryMint}
-              />
-              <AppText style={[styles.chipText, openNow && styles.chipTextActive]}>
-                Open Now
-              </AppText>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.chip, sortBy !== "default" && styles.chipActive]}
-              onPress={onToggleSort}
-            >
-              <Ionicons
-                name="swap-vertical"
-                size={18}
-                color={sortBy !== "default" ? "#fff" : GatiMitraColors.textPrimaryNew}
-              />
-              <AppText style={[styles.chipText, sortBy !== "default" && styles.chipTextActive]}>
-                {sortBy === "default" ? "Sort" : sortBy === "rating" ? "Rating" : "Distance"}
-              </AppText>
-            </TouchableOpacity>
-            <TouchableOpacity
               style={[styles.chip, hasActiveFilters && styles.chipActive]}
               onPress={onOpenFilters}
+              activeOpacity={0.85}
             >
               <Ionicons
                 name="options-outline"
-                size={18}
+                size={16}
                 color={hasActiveFilters ? "#fff" : GatiMitraColors.textPrimaryNew}
               />
               <AppText style={[styles.chipText, hasActiveFilters && styles.chipTextActive]}>
                 Filters
               </AppText>
             </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.chip, openNow && styles.chipActive]}
+              onPress={onToggleOpenNow}
+              activeOpacity={0.85}
+            >
+              <Ionicons
+                name="storefront-outline"
+                size={16}
+                color={openNow ? "#fff" : GatiMitraColors.primaryMint}
+              />
+              <AppText style={[styles.chipText, openNow && styles.chipTextActive]}>
+                Open Now
+              </AppText>
+            </TouchableOpacity>
+            {flashDealsChip}
+            {onToggleNearFast ? (
+              <TouchableOpacity
+                style={[styles.chip, nearFast && styles.chipActive]}
+                onPress={onToggleNearFast}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name="flash"
+                  size={16}
+                  color={nearFast ? "#fff" : "#22C55E"}
+                />
+                <AppText style={[styles.chipText, nearFast && styles.chipTextActive]}>
+                  Near & Fast
+                </AppText>
+              </TouchableOpacity>
+            ) : null}
+            <TouchableOpacity
+              style={[styles.chip, sortBy !== "default" && styles.chipActive]}
+              onPress={onToggleSort}
+              activeOpacity={0.85}
+            >
+              <Ionicons
+                name="swap-vertical"
+                size={16}
+                color={sortBy !== "default" ? "#fff" : GatiMitraColors.textPrimaryNew}
+              />
+              <AppText style={[styles.chipText, sortBy !== "default" && styles.chipTextActive]}>
+                {sortBy === "default" ? "Sort" : sortBy === "rating" ? "Rating" : "Distance"}
+              </AppText>
+            </TouchableOpacity>
+            {onToggleOffers ? (
+              <TouchableOpacity
+                style={[styles.chip, filterHasOffers && styles.chipActive]}
+                onPress={onToggleOffers}
+                activeOpacity={0.85}
+              >
+                <Ionicons
+                  name="sparkles-outline"
+                  size={16}
+                  color={filterHasOffers ? "#fff" : GatiMitraColors.textPrimaryNew}
+                />
+                <AppText style={[styles.chipText, filterHasOffers && styles.chipTextActive]}>
+                  Offers
+                </AppText>
+              </TouchableOpacity>
+            ) : null}
           </>
         )}
       </ScrollView>
@@ -274,6 +329,15 @@ const styles = StyleSheet.create({
   },
   chipTextNearFast: {
     color: "#15803D",
+  },
+  chipFlashDeals: {
+    backgroundColor: "#C2410C",
+    borderColor: "#C2410C",
+  },
+  chipTextFlashDeals: {
+    color: "#fff",
+    fontWeight: "800",
+    letterSpacing: 0.2,
   },
   chipMeals: {
     backgroundColor: "#DCFCE7",

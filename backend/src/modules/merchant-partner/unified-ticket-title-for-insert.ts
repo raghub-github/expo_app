@@ -58,6 +58,9 @@ const LEGACY_UNIFIED_TICKET_TITLE_ENUM = new Set<string>([
  */
 const INTAKE_TITLE_TO_LEGACY_ENUM: Record<string, string> = {
   STORE_LOCATION_ISSUE: "ADDRESS_MANAGEMENT_ISSUE",
+  /** Human subject used in rider onboarding auto-tickets — not a legacy enum label. */
+  ONBOARDING_VERIFICATION_PENDING: "DOCUMENT_VERIFICATION_ISSUE",
+  "Onboarding Verification Pending": "DOCUMENT_VERIFICATION_ISSUE",
 };
 
 let unifiedTicketsTicketTitlePgType: string | undefined = undefined;

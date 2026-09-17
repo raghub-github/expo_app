@@ -1,17 +1,56 @@
+/** True when a "key" is actually the proxy route path, not an R2 object. */
+export function isBogusAttachmentProxyKey(key: string | null | undefined): boolean {
+  const k = String(key || "")
+    .trim()
+    .replace(/^\/+/, "")
+    .toLowerCase();
+  if (!k) return true;
+  return (
+    k === "attachments/proxy" ||
+    k === "api/attachments/proxy" ||
+    k === "v1/attachments/proxy" ||
+    k.endsWith("/attachments/proxy")
+  );
+}
+
 /** Strip query/hash and accidental nested proxy wrappers from an R2 object key. */
 export function normalizeR2ObjectKey(raw: string): string {
   let key = String(raw ?? "").trim();
   if (!key) return "";
+
+  // Relative proxy path with ?key=… (missing leading /api is common after bad extracts).
+  if (
+    /(?:^|\/)(?:api\/|v1\/)?attachments\/proxy\?/i.test(key) ||
+    key.toLowerCase().includes("attachments/proxy?")
+  ) {
+    try {
+      const u = new URL(
+        key.startsWith("http://") || key.startsWith("https://")
+          ? key
+          : `https://local.invalid${key.startsWith("/") ? "" : "/"}${key}`
+      );
+      const nested = u.searchParams.get("key")?.trim();
+      if (nested) {
+        key = nested;
+      } else if (u.pathname.includes("/attachments/proxy")) {
+        return "";
+      }
+    } catch {
+      return "";
+    }
+  }
 
   if (key.startsWith("http://") || key.startsWith("https://")) {
     try {
       const u = new URL(key);
       if (
         u.pathname.startsWith("/api/attachments/proxy") ||
-        u.pathname.startsWith("/v1/attachments/proxy")
+        u.pathname.startsWith("/v1/attachments/proxy") ||
+        u.pathname.includes("/attachments/proxy")
       ) {
         const nested = u.searchParams.get("key");
-        key = nested ? nested.trim() : decodeURIComponent(u.pathname.replace(/^\/+/, ""));
+        if (!nested?.trim()) return "";
+        key = nested.trim();
       } else {
         key = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
         const bucketSegment = key.split("/")[0];
@@ -25,11 +64,19 @@ export function normalizeR2ObjectKey(raw: string): string {
   }
 
   const q = key.indexOf("?");
-  if (q >= 0) key = key.slice(0, q);
+  if (q >= 0) {
+    // Only strip query when this is a bare object key with accidental junk — not when
+    // the "?" belongs to a proxy URL we failed to parse above.
+    const before = key.slice(0, q);
+    if (!/attachments\/proxy$/i.test(before.replace(/^\/+/, ""))) {
+      key = before;
+    }
+  }
   const h = key.indexOf("#");
   if (h >= 0) key = key.slice(0, h);
 
   key = key.replace(/^\/+/, "");
+  if (isBogusAttachmentProxyKey(key)) return "";
   if (key.startsWith("docs/orders/")) {
     key = key.slice("docs/".length);
   }
@@ -224,7 +271,7 @@ export function toAttachmentProxyUrl(value: string | null | undefined): string |
   const trimmed = value.trim();
   if (!trimmed || trimmed.startsWith("data:") || trimmed.startsWith("blob:")) return null;
   const key = unwrapNestedProxyKey(trimmed);
-  if (!key) return null;
+  if (!key || isBogusAttachmentProxyKey(key)) return null;
   return `/api/attachments/proxy?key=${encodeURIComponent(key)}`;
 }
 

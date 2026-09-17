@@ -696,11 +696,12 @@ export const en = {
       paymentSuccess: "Payment successful!",
     },
     pending: {
-      title: "Pending Approval",
+      title: "Waiting for Review",
       subtitle:
         "Your documents have been submitted and payment has been received. Our team is reviewing your application.",
-      stepLabel: "Step 4 · Pending approval",
-      statusBadge: "Under review",
+      stepLabel: "Step 4 · Waiting for review",
+      statusBadge: "Waiting for Review",
+      statusApproved: "Approved",
       whatsNext: "What happens next?",
       bulletVerify: "• Our team will verify your documents",
       bulletNotify: "• You'll receive a notification once approved",
@@ -1189,6 +1190,15 @@ export const en = {
       title: "Vehicle verification pending",
       subtitle:
         "Your vehicle details have been submitted. You can go online after our team verifies your vehicle.",
+    },
+    rcGate: {
+      pendingTitle: "Document verification pending",
+      pendingSubtitle:
+        "Your Registration Certificate is under review. You can complete vehicle details after our team approves it.",
+      rejectedTitle: "Registration Certificate rejected",
+      rejectedSubtitle:
+        "Please re-upload a clear photo of your RC. Vehicle details unlock after the new document is approved.",
+      reuploadCta: "Re-upload Registration Certificate",
     },
     page: {
       title: "My vehicle",

@@ -30,6 +30,7 @@ import { colors } from "@/src/theme";
 import type { EvState } from "@/src/components/onboarding/ElectronicVerifyCard";
 import { PermissionBottomSheetShell } from "@/src/components/permissions/PermissionBottomSheetShell";
 import { useBankAccountDuplicateCheck } from "@/src/hooks/useBankAccountDuplicateCheck";
+import { isElectronicVerifyForceManualError } from "@/src/lib/electronic-verify-rate-limit";
 
 const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/i;
 const ACCOUNT_RE = /^\d{9,18}$/;
@@ -132,6 +133,7 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
   const [keyboard, setKeyboard] = useState<KeyboardMetrics | null>(null);
   const [bankEv, setBankEv] = useState<EvState>({ phase: "idle" });
   const [showFallbackForm, setShowFallbackForm] = useState(!bankElectronic);
+  const [verifyBlockedForBank, setVerifyBlockedForBank] = useState<string | null>(null);
   const [nameMismatchVisible, setNameMismatchVisible] = useState(false);
   const [nameMismatchBody, setNameMismatchBody] = useState("");
 
@@ -200,6 +202,10 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
     );
   }, [form.accountNumber, form.confirmAccountNumber]);
 
+  const bankFingerprint = `${form.accountNumber.replace(/\s/g, "")}|${form.ifsc.trim().toUpperCase()}`;
+  const bankVerifyLockedSameInput =
+    Boolean(verifyBlockedForBank) && verifyBlockedForBank === bankFingerprint;
+
   const canVerify =
     bankElectronic &&
     accountOk &&
@@ -208,7 +214,8 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
     bankEv.phase !== "verifying" &&
     bankEv.phase !== "verified" &&
     !dupCheck.duplicate &&
-    !dupCheck.checking;
+    !dupCheck.checking &&
+    !bankVerifyLockedSameInput;
 
   const canSubmit = useMemo(() => {
     if (dupCheck.duplicate || dupCheck.checking) return false;
@@ -241,6 +248,9 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
   const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
     setFieldError(null);
+    if (key === "accountNumber" || key === "ifsc") {
+      setVerifyBlockedForBank(null);
+    }
     if (
       (key === "accountNumber" || key === "ifsc") &&
       bankEv.phase === "verified"
@@ -287,6 +297,7 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
         const details = res.verifiedData ?? {};
         setBankEv({ phase: "verified", details });
         setShowFallbackForm(false);
+        setVerifyBlockedForBank(null);
         const bankName =
           typeof details.bank_name === "string" ? details.bank_name.trim() : "";
         const branch =
@@ -310,6 +321,7 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
           reasons: res.mismatchReasons,
         });
         if (bankMode === "hybrid") setShowFallbackForm(true);
+        setVerifyBlockedForBank(bankFingerprint);
         if (res.verifiedData?.bank_name) {
           setForm((prev) => ({
             ...prev,
@@ -331,11 +343,19 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
           verificationId: res.verificationId ?? null,
         });
         if (bankMode === "hybrid") setShowFallbackForm(true);
+        setVerifyBlockedForBank(bankFingerprint);
       }
     } catch (e) {
+      if (isElectronicVerifyForceManualError(e)) {
+        setBankEv({ phase: "manual" });
+        if (bankMode === "hybrid") setShowFallbackForm(true);
+        setVerifyBlockedForBank(null);
+        return;
+      }
       const message = extractApiErrorMessage(e, "Bank verification failed");
       setBankEv({ phase: "failed", error: message });
       if (bankMode === "hybrid") setShowFallbackForm(true);
+      setVerifyBlockedForBank(bankFingerprint);
     }
   };
 
@@ -360,6 +380,7 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
         ifsc: form.ifsc.trim().toUpperCase(),
         branch: form.branch.trim() || undefined,
         accountNumber,
+        providerVerified: bankEv.phase === "verified",
       });
       const pm = res.paymentMethod;
       if (pm?.crossCheckStatus === "mismatch") {

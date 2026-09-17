@@ -20,6 +20,18 @@ export function getSellingPrice(item: MenuItem): number {
 
 export function getBasePrice(item: MenuItem): number | null {
   if (item.basePrice != null && item.basePrice > item.price) return item.basePrice;
+  const flash =
+    item.flashSale && typeof item.flashSale === "object"
+      ? item.flashSale
+      : null;
+  if (flash) {
+    const original = Number(
+      (flash as { originalCustomerUnit?: unknown; original_customer_unit?: unknown })
+        .originalCustomerUnit ??
+        (flash as { original_customer_unit?: unknown }).original_customer_unit
+    );
+    if (Number.isFinite(original) && original > item.price) return original;
+  }
   const canon = item.canonicalPricing;
   if (canon && typeof canon === "object") {
     const strike = Number(

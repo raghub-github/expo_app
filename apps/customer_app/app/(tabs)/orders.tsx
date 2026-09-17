@@ -69,6 +69,7 @@ import {
 } from "@/lib/customer-order-status-display";
 import { resolveOrderCustomerPaidAmount } from "@/lib/orderBillBreakdown";
 import { textIncludes } from "@/lib/safe-text";
+import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 
 const GREEN = GatiMitraColors.primaryMint;
 const ERROR = GatiMitraColors.errorRed;
@@ -971,7 +972,7 @@ export default function OrdersScreen() {
                   </AppText>
                   {!search.trim() ? (
                     <TouchableOpacity
-                      onPress={() => router.navigate("/(tabs)/food")}
+                      onPress={() => navigatePrimaryTab("food", "OrdersEmpty.browseFood", router)}
                       style={styles.exploreBtn}
                       activeOpacity={0.9}
                     >

@@ -191,6 +191,7 @@ export type BillingAdminPlatformOfferRow = {
   ends_at: string | null;
   budget_total: string | null;
   budget_used: string | null;
+  flash_redemptions_active?: number | null;
   max_uses_total?: number | null;
   max_uses_per_user?: number | null;
   max_uses_per_day?: number | null;

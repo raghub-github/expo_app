@@ -134,12 +134,34 @@ function MapboxWebDeliveryMapInner({
 
   useEffect(() => {
     if (!mapReady || !followRiderRef.current) return;
-    if (payload.highlightPickupZone || payload.highlightDropZone) return;
-    if (payload.riderLat == null || payload.riderLng == null) return;
-    if (shouldSkipStationaryCamera(payload.riderSpeedMps)) return;
 
-    const centerPt = { latitude: payload.riderLat, longitude: payload.riderLng };
-    const bearing = payload.riderHeading ?? 0;
+    const followLat =
+      payload.cameraFollow && payload.followLat != null && payload.followLng != null
+        ? payload.followLat
+        : payload.riderLat;
+    const followLng =
+      payload.cameraFollow && payload.followLat != null && payload.followLng != null
+        ? payload.followLng
+        : payload.riderLng;
+    const followHeading =
+      payload.cameraFollow && payload.followHeading != null
+        ? payload.followHeading
+        : payload.riderHeading;
+    const followSpeed =
+      payload.cameraFollow && payload.followSpeedMps != null
+        ? payload.followSpeedMps
+        : payload.riderSpeedMps;
+
+    // Zone highlights used to block follow (store arrival view). Self-pickup
+    // navigation must keep following the customer even with a pickup zone.
+    if (!payload.cameraFollow && (payload.highlightPickupZone || payload.highlightDropZone)) {
+      return;
+    }
+    if (followLat == null || followLng == null) return;
+    if (shouldSkipStationaryCamera(followSpeed)) return;
+
+    const centerPt = { latitude: followLat, longitude: followLng };
+    const bearing = followHeading ?? 0;
     if (shouldThrottleNavigationCamera(lastFollowCameraRef.current, centerPt, bearing)) {
       return;
     }
@@ -150,12 +172,19 @@ function MapboxWebDeliveryMapInner({
       atMs: Date.now(),
     };
     cameraRef.current?.setCamera?.({
-      centerCoordinate: [payload.riderLng, payload.riderLat],
-      animationDuration: 420,
+      centerCoordinate: [followLng, followLat],
+      heading: Number.isFinite(bearing) ? bearing : undefined,
+      zoomLevel: payload.cameraFollow ? 16.2 : undefined,
+      animationDuration: payload.cameraFollow ? 380 : 420,
       animationMode: "easeTo",
     });
   }, [
     mapReady,
+    payload.cameraFollow,
+    payload.followLat,
+    payload.followLng,
+    payload.followHeading,
+    payload.followSpeedMps,
     payload.riderLat,
     payload.riderLng,
     payload.riderHeading,

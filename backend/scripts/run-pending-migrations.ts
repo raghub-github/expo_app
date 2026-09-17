@@ -292,7 +292,13 @@ async function main() {
           await sessionSql.end({ timeout: 5 });
         }
       } else {
-        await sql.unsafe(content);
+        // I/O-safe default budget for additive migrations (files may override).
+        await sql.unsafe("SET statement_timeout = '60s'");
+        try {
+          await sql.unsafe(content);
+        } finally {
+          await sql.unsafe("RESET statement_timeout");
+        }
       }
       const ms = Date.now() - started;
       await sql`

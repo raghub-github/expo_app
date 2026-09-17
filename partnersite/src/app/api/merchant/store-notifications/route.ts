@@ -55,7 +55,13 @@ export async function GET(req: NextRequest) {
     const storeId = new URL(req.url).searchParams.get('store_id');
     const gate = await assertStoreAccess(storeId);
     if (!gate.ok) {
-      return NextResponse.json({ error: gate.error }, { status: gate.status });
+      return NextResponse.json(
+        {
+          error: gate.error,
+          code: gate.status === 503 ? 'SERVICE_UNAVAILABLE' : undefined,
+        },
+        { status: gate.status }
+      );
     }
     const db = getDb();
     const clearedAt = await getPartnerNotificationsClearedAt(db, gate.storeIdNum);

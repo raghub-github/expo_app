@@ -56,6 +56,8 @@ function ShellInner({ children }: { children: ReactNode }) {
   const pendingStateDetail =
     pendingNavHref != null && isCxAppHomeStateDetailPath(pendingNavHref);
 
+  // Prefer real page as soon as the route is the state detail — never keep the
+  // skeleton up after URL settle (that forced multi-refresh).
   if (onStateDetail) {
     return <>{children}</>;
   }

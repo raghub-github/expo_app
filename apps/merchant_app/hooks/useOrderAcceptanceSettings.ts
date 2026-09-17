@@ -26,7 +26,9 @@ export function useOrderAcceptanceSettings() {
     queryKey: ["orderAcceptanceSettings", storeId],
     queryFn: () => fetchOrderAcceptanceSettings(storeId!, token!),
     enabled: Boolean(storeId && token),
-    staleTime: 5 * 60 * 1000,
+    staleTime: 60 * 1000,
+    refetchOnMount: "always",
+    refetchOnReconnect: true,
     placeholderData: DEFAULT_SETTINGS,
   });
 

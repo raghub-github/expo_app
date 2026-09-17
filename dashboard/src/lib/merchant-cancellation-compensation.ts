@@ -40,6 +40,9 @@ function isCustomerCancelWithinGrace(
   graceSeconds: number
 ): boolean {
   if (String(ctx.cancelledByType).toLowerCase() !== "customer") return false;
+  // Once merchant marked ready (or rider picked up), use compensation tiers —
+  // do not zero-out via grace even if cancel is within the window.
+  if (isOrderReady(ctx) || isPickedUp(ctx)) return false;
   const created = ctx.orderCreatedAt ? new Date(ctx.orderCreatedAt).getTime() : NaN;
   const cancelled = ctx.cancelledAt ? new Date(ctx.cancelledAt).getTime() : NaN;
   if (!Number.isFinite(created) || !Number.isFinite(cancelled)) return false;

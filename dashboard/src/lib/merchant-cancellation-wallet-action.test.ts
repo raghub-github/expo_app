@@ -106,6 +106,48 @@ describe("resolveMerchantCtmDebitAdjustment matrix", () => {
     expect(adj.kind).toBe("debit");
     expect(adj.amount).toBe(68.75);
   });
+
+  it("policy 80% keep overrides partial_debit 50% matrix", () => {
+    const adj = resolveMerchantCtmDebitAdjustment({
+      mode: "partial_debit",
+      ctmAmount: 100,
+      currentNetHeld: 0,
+      grossCredited: 0,
+      keepPctOverride: 80,
+      targetNetOverride: 80,
+    });
+    expect(adj.kind).toBe("credit");
+    expect(adj.amount).toBe(80);
+    expect(adj.keepPct).toBe(80);
+    expect(adj.targetNet).toBe(80);
+  });
+
+  it("policy 40% keep overrides partial_debit 50% matrix", () => {
+    const adj = resolveMerchantCtmDebitAdjustment({
+      mode: "partial_debit",
+      ctmAmount: 142,
+      currentNetHeld: 0,
+      grossCredited: 0,
+      keepPctOverride: 40,
+      targetNetOverride: 56.8,
+    });
+    expect(adj.kind).toBe("credit");
+    expect(adj.amount).toBe(56.8);
+    expect(adj.keepPct).toBe(40);
+  });
+
+  it("admin PARTIAL without override stays 50%", () => {
+    const adj = resolveMerchantCtmDebitAdjustment({
+      mode: "partial_debit",
+      ctmAmount: 142,
+      currentNetHeld: 0,
+      grossCredited: 0,
+    });
+    expect(adj.kind).toBe("credit");
+    expect(adj.amount).toBe(71);
+    expect(adj.keepPct).toBe(50);
+  });
+
   it("PARTIAL → NO_DEBIT credits only missing 50%", () => {
     const adj = resolveMerchantCtmDebitAdjustment({
       mode: "no_debit",

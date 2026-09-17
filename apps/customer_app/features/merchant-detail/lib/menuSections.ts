@@ -46,10 +46,49 @@ function itemHasImage(item: Pick<MenuItem, "imageUrl">): boolean {
   return Boolean(item.imageUrl?.trim());
 }
 
+/** Public — Classic / featured rails only surface dishes with photos. */
+export function menuItemHasImage(item: Pick<MenuItem, "imageUrl">): boolean {
+  return itemHasImage(item);
+}
+
 function sectionHasImages(sec: MenuSection): boolean {
   const catImg = sec.data[0]?.categoryImageUrl?.trim();
   if (catImg) return true;
   return sec.data.some(itemHasImage);
+}
+
+/**
+ * Classic inner page: keep category order, but each section leads with imaged
+ * dishes (2-col grid). Items without photos are collected for a trailing list.
+ */
+export function partitionSectionsForClassicImagedView(sections: MenuSection[]): {
+  imagedSections: MenuSection[];
+  noImageItems: MenuListRow[];
+  featuredImaged: MenuListRow[];
+} {
+  const imagedSections: MenuSection[] = [];
+  const noImageItems: MenuListRow[] = [];
+  const featuredPool: MenuListRow[] = [];
+
+  for (const sec of sections) {
+    const withImage: MenuListRow[] = [];
+    const without: MenuListRow[] = [];
+    for (const item of sec.data) {
+      if (itemHasImage(item)) withImage.push(item);
+      else without.push(item);
+    }
+    if (withImage.length > 0) {
+      imagedSections.push({ ...sec, data: withImage });
+      featuredPool.push(...withImage);
+    }
+    noImageItems.push(...without);
+  }
+
+  const featuredImaged = [...featuredPool]
+    .sort(compareMenuItemsForInnerPage)
+    .slice(0, 12) as MenuListRow[];
+
+  return { imagedSections, noImageItems, featuredImaged };
 }
 
 function sectionOrderVolume(sec: MenuSection): number {

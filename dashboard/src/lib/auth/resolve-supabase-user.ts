@@ -150,7 +150,7 @@ async function getUserSafe(
             data: { user: null },
             error: { name: "TimeoutError", message: "Auth probe timeout", code: "TIMEOUT" },
           } as AuthResult);
-        }, 2500);
+        }, 1200);
       }),
     ])) as AuthResult;
     return { user: result.data?.user ?? null, error: result.error ?? null };

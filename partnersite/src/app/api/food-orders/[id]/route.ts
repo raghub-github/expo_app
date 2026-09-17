@@ -13,7 +13,7 @@ import {
   actorTypeFromSource,
   recordOrderCancellation,
 } from '@/lib/record-order-cancellation';
-import { refundFieldsFromEngineResult } from '@gatimitra/financial-rules';
+import { refundFieldsFromEngineResult, resolvePostCancelAutoRefundPolicy } from '@gatimitra/financial-rules';
 import { triggerOrderAutoRefund } from '@/lib/triggerOrderAutoRefund';
 import {
   executeOrderCancellationFinancials,
@@ -303,16 +303,6 @@ export async function PATCH(
       console.warn('[food-orders PATCH] orders_core sync failed:', coreErr);
     }
 
-    if (newStatus === 'CANCELLED') {
-      const displayReasonEarly = (rejectedReason ?? '').trim() || 'Order cancelled';
-      const cancelledByTypeEarly = actorTypeFromSource(actionSource);
-      await triggerOrderAutoRefund({
-        orderCorePk: existing.order_id as number,
-        reason: displayReasonEarly,
-        actorRole: cancelledByTypeEarly,
-      });
-    }
-
     if (newStatus === 'ACCEPTED') {
       try {
         await appendAcceptanceTimeline(db, {
@@ -383,6 +373,9 @@ export async function PATCH(
         .maybeSingle();
       const cancelledByType = actorTypeFromSource(actionSource);
       const orderCtx = await lookupOrderContext(existing.order_id as number);
+      const orderGross = Number(
+        coreMoney?.grand_total ?? existing.food_items_total_value ?? orderCtx.grandTotal
+      );
       const engineResult = await executeOrderCancellationFinancials({
         orderCoreId: existing.order_id as number,
         ordersFoodId: orderIdNum,
@@ -390,10 +383,16 @@ export async function PATCH(
         merchantStoreId: existing.merchant_store_id as number,
         previousStatus: currentStatus,
         cancelledByType,
-        orderGross: Number(coreMoney?.grand_total ?? existing.food_items_total_value ?? orderCtx.grandTotal),
+        orderGross,
         serviceType: orderCtx.serviceType,
       });
       const refund = refundFieldsFromEngineResult(engineResult.raw);
+      const refundPolicy = resolvePostCancelAutoRefundPolicy({
+        actorRole: cancelledByType,
+        engineRefund: refund,
+        orderGross,
+        forceCustomerRefundWhenEngineSilent: cancelledByType === 'system',
+      });
       try {
         await recordOrderCancellation(db, {
           orderCorePk: existing.order_id as number,
@@ -407,12 +406,30 @@ export async function PATCH(
           previousStatus: currentStatus,
           acceptedAt: (existing.accepted_at as string | null) ?? null,
           grandTotal: coreMoney?.grand_total ?? 0,
-          refundStatus: refund.refundStatus,
-          refundAmount: refund.refundAmount,
+          refundStatus: refundPolicy.refundStatus,
+          refundAmount: refundPolicy.refundAmountForLedger,
           metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
         });
       } catch (cancelRowErr) {
         console.warn('[food-orders PATCH] order_cancellation_reasons failed:', cancelRowErr);
+      }
+      // Cancel-time auto-refund: store/system/merchant always; admin follows rule amount.
+      if (refundPolicy.shouldAutoExecute) {
+        await triggerOrderAutoRefund({
+          orderCorePk: existing.order_id as number,
+          reason: displayReason,
+          actorRole: cancelledByType,
+          amount: refundPolicy.executeAmount,
+        });
+      } else {
+        console.info(
+          '[food-orders PATCH] auto_refund skipped',
+          JSON.stringify({
+            coreId: existing.order_id,
+            actor: cancelledByType,
+            skip: refundPolicy.skipReason ?? null,
+          })
+        );
       }
     }
 

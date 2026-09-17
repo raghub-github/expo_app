@@ -91,8 +91,11 @@ export function MerchantOrderCardLayout({
 
   const customerLabel = useMemo(
     () =>
-      formatOrderCardCustomerLabel(order.customerName, order.customerStoreOrderOrdinal),
-    [order.customerName, order.customerStoreOrderOrdinal]
+      formatOrderCardCustomerLabel(
+        order.customerName,
+        order.customerStoreOrderOrdinal ?? order.customerStoreOrdersTotal
+      ),
+    [order.customerName, order.customerStoreOrderOrdinal, order.customerStoreOrdersTotal]
   );
 
   const defaultRiderContent =
@@ -225,11 +228,19 @@ export function MerchantOrderCardLayout({
           </Pressable>
           {detailsOpen ? (
             <View style={styles.itemsBox}>
+              <View style={styles.itemColumnsHeader}>
+                <Text style={styles.itemNameHeader}>Item name</Text>
+                <Text style={styles.qtyHeader}>Qty</Text>
+                <Text style={styles.priceHeader}>Price</Text>
+              </View>
               {visibleItems.map((item, idx) => (
                 <View key={`${order.id}-${idx}`}>
                   <OrderCardItemRow
                     item={item}
+                    index={idx + 1}
                     orderVeg={order.vegNonVeg}
+                    showQuantityColumn
+                    showPrice
                     onItemNamePress={() => onItemPress?.(item)}
                     onRowPress={openDetail}
                   />

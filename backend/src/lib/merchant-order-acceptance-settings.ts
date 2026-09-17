@@ -1,7 +1,12 @@
 /**
  * Platform + per-store slot settings for incoming-order alerts (partnersite / dashboard parity).
+ *
+ * Sound URLs are returned as short-lived R2 signed URLs when possible so mobile
+ * audio players (expo-audio) can play them directly. Proxy 302 redirects often
+ * fail in native players and silently fell back to the bundled chime ("wrong sound").
  */
 import type { Sql } from "postgres";
+import { getR2SignedUrl } from "../services/r2/r2Service.js";
 
 export type MerchantOrderAcceptanceSettings = {
   store_type: string;
@@ -23,10 +28,42 @@ const DEFAULTS: MerchantOrderAcceptanceSettings = {
   alert_sound_slot_choice: 0,
 };
 
+const SIGNED_SOUND_TTL_SEC = 60 * 60; // 1h — settings refetch keeps them fresh
+
 function trimUrl(v: unknown): string | null {
   if (v == null || typeof v !== "string") return null;
   const t = v.trim();
   return t === "" ? null : t;
+}
+
+/** Extract R2 object key from a stored proxy path or raw key. */
+function attachmentKeyFromStored(stored: string): string | null {
+  const t = stored.trim();
+  if (!t) return null;
+  try {
+    if (t.startsWith("http://") || t.startsWith("https://")) {
+      const u = new URL(t);
+      const key = u.searchParams.get("key");
+      return key?.trim() ? decodeURIComponent(key) : null;
+    }
+  } catch {
+    /* fall through */
+  }
+  const q = t.indexOf("?");
+  if ((t.includes("/attachments/proxy") || t.startsWith("/api/") || t.startsWith("/v1/")) && q >= 0) {
+    const params = new URLSearchParams(t.slice(q + 1));
+    const key = params.get("key");
+    if (key?.trim()) {
+      try {
+        return decodeURIComponent(key.trim());
+      } catch {
+        return key.trim();
+      }
+    }
+  }
+  // Raw R2 key (admin uploads sometimes store bare keys)
+  if (!t.includes("://") && !t.startsWith("/")) return t;
+  return null;
 }
 
 /** Stored DB paths are `/api/attachments/proxy?key=...` — mobile clients need absolute backend URLs. */
@@ -44,12 +81,28 @@ function toAbsoluteAttachmentUrl(stored: string | null): string | null {
   return `${base}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
-function slotsFromRow(row: Record<string, unknown> | undefined): [string | null, string | null, string | null] {
+async function toPlayableSoundUrl(stored: string | null): Promise<string | null> {
+  const trimmed = trimUrl(stored);
+  if (!trimmed) return null;
+  const key = attachmentKeyFromStored(trimmed);
+  if (key) {
+    try {
+      return await getR2SignedUrl(key, SIGNED_SOUND_TTL_SEC);
+    } catch {
+      /* fall back to proxy URL */
+    }
+  }
+  return toAbsoluteAttachmentUrl(trimmed);
+}
+
+async function slotsFromRow(
+  row: Record<string, unknown> | undefined
+): Promise<[string | null, string | null, string | null]> {
   if (!row) return [null, null, null];
   return [
-    toAbsoluteAttachmentUrl(trimUrl(row.alert_sound_url)),
-    toAbsoluteAttachmentUrl(trimUrl(row.alert_sound_url_2)),
-    toAbsoluteAttachmentUrl(trimUrl(row.alert_sound_url_3)),
+    await toPlayableSoundUrl(trimUrl(row.alert_sound_url)),
+    await toPlayableSoundUrl(trimUrl(row.alert_sound_url_2)),
+    await toPlayableSoundUrl(trimUrl(row.alert_sound_url_3)),
   ];
 }
 
@@ -117,7 +170,7 @@ export async function loadMerchantOrderAcceptanceSettings(
   if (!row) row = await loadPlatform("GENERAL");
   if (!row) return { ...DEFAULTS, store_type: storeType };
 
-  const slots = slotsFromRow(row);
+  const slots = await slotsFromRow(row);
   let choice = Math.max(0, Math.min(2, Math.floor(storedChoice)));
   if (!slots[choice]) {
     const first = slots.findIndex((u) => u != null);
@@ -223,7 +276,7 @@ export async function loadPlatformOrderAcceptanceSettingsForCategory(
   if (!row) row = await loadPlatform("GENERAL");
   if (!row) return { ...DEFAULTS, store_type: normalized };
 
-  const slots = slotsFromRow(row);
+  const slots = await slotsFromRow(row);
   let choice = 0;
   const first = slots.findIndex((u) => u != null);
   if (first >= 0) choice = first;

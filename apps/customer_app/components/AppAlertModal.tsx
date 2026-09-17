@@ -33,7 +33,7 @@ const VARIANT: Record<
     iconBg: "#ECFDF5",
   },
   warning: {
-    icon: "bicycle-outline",
+    icon: "restaurant-outline",
     iconColor: "#C2410C",
     iconBg: "#FFF7ED",
   },

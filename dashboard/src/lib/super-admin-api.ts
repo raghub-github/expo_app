@@ -20,7 +20,12 @@ export async function requireSuperAdminApi(
     };
   }
 
-  const perms = await getSuperAdminPermissions(user.id, user.email ?? "");
+  let perms = await getSuperAdminPermissions(user.id, user.email ?? "");
+  if (!perms) {
+    // One more pass after a short delay — DB/compile blips must not fail uploads.
+    await new Promise((r) => setTimeout(r, 250));
+    perms = await getSuperAdminPermissions(user.id, user.email ?? "");
+  }
   if (!perms) {
     return {
       ok: false,

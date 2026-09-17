@@ -64,8 +64,13 @@ async function postSupabaseBroadcast(
     },
     body: JSON.stringify({
       messages: [
-        { topic, event: DASH_MX_INCOMING_RESOLVED_EVENT, payload },
-        { topic: `realtime:${topic}`, event: DASH_MX_INCOMING_RESOLVED_EVENT, payload },
+        { topic, event: DASH_MX_INCOMING_RESOLVED_EVENT, payload, private: false },
+        {
+          topic: `realtime:${topic}`,
+          event: DASH_MX_INCOMING_RESOLVED_EVENT,
+          payload,
+          private: false,
+        },
       ],
     }),
   });

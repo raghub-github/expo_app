@@ -3,7 +3,9 @@ import { customerPriceFromBase } from "../commission/pricing.js";
 import { resolveStoreCommission } from "../commission/commission.resolver.js";
 import { resolveItemPricing } from "../pricing/canonicalItemPricing.js";
 import { loadMerchantOffersForPricing } from "../pricing/loadMerchantOffersForPricing.js";
-import type { MerchantOfferRow } from "../billing/types.js";
+import type { MerchantOfferRow, PlatformOfferRow } from "../billing/types.js";
+import { overlayFlashSaleOnMenuRows } from "../billing/flashSaleApply.js";
+import { loadActiveFoodFlashSalesForStore } from "../billing/flashSaleRedemption.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import { foodTypeIsListedAsVeg } from "../../lib/food-order-veg.js";
 import { listStores } from "./merchant.service.js";
@@ -21,7 +23,9 @@ export type FoodItemUnderPriceDto = {
   menuItemPk: number;
   name: string;
   imageUrl: string | null;
+  /** Payable customer unit (Boost then FLASH_SALE overlay when active). */
   price: number;
+  /** Strike / original customer unit when Boost or Flash Sale reduces `price`. */
   basePrice: number | null;
   discountPercentage: number | null;
   storePublicId: string;
@@ -29,6 +33,11 @@ export type FoodItemUnderPriceDto = {
   isVeg: boolean;
   isPopular: boolean;
   itemTags: string[];
+  flashSale?: {
+    offerId: number;
+    originalCustomerUnit: number;
+    flashPrice: number;
+  } | null;
 };
 
 export type StoreFoodItemsUnderPriceDto = {
@@ -115,7 +124,8 @@ function mapItemRow(
   r: ItemRow,
   commissionPercent: number,
   maxPrice: number,
-  offers: MerchantOfferRow[]
+  offers: MerchantOfferRow[],
+  flashOffers: PlatformOfferRow[]
 ): FoodItemUnderPriceDto | null {
   const netSelling = Number(r.selling_price);
   const priced = resolveItemPricing({
@@ -126,20 +136,61 @@ function mapItemRow(
     menuItemId: Number(r.id),
     extraAliases: r.item_id ? [String(r.item_id)] : [],
   });
-  const price = priced.customerItemPriceUnit;
-  if (!Number.isFinite(price) || price <= 0 || price > maxPrice) return null;
+  let price = priced.customerItemPriceUnit;
+  if (!Number.isFinite(price) || price <= 0) return null;
 
-  const strike = priced.merchantOfferType === "BOOST" ? priced.customerStrikeUnit : null;
+  const boostStrike = priced.merchantOfferType === "BOOST" ? priced.customerStrikeUnit : null;
   const customerBase =
-    strike != null && strike > price
-      ? strike
+    boostStrike != null && boostStrike > price
+      ? boostStrike
       : r.base_price != null
         ? customerPriceFromNetRupees(Number(r.base_price), commissionPercent)
         : null;
-  const basePrice =
+  let basePrice =
     customerBase != null && Number.isFinite(customerBase) && customerBase > price
       ? customerBase
       : null;
+
+  let flashSale: FoodItemUnderPriceDto["flashSale"] = null;
+  if (flashOffers.length > 0) {
+    const flashRow = {
+      id: Number(r.id),
+      item_id: r.item_id,
+      selling_price: price.toFixed(2),
+      in_stock: true,
+      is_active: true,
+    };
+    overlayFlashSaleOnMenuRows([flashRow], flashOffers);
+    const flashUnit = parseFloat(String(flashRow.selling_price));
+    const flashBlob = (flashRow as { flash_sale?: Record<string, unknown> }).flash_sale;
+    if (
+      Number.isFinite(flashUnit) &&
+      flashUnit >= 0 &&
+      flashUnit < price - 0.0001 &&
+      flashBlob &&
+      typeof flashBlob === "object"
+    ) {
+      const original =
+        Number(
+          (flashRow as { customer_strike_price?: string }).customer_strike_price ??
+            flashBlob.original_customer_unit ??
+            price
+        ) || price;
+      flashSale = {
+        offerId: Number(flashBlob.offer_id),
+        originalCustomerUnit: original,
+        flashPrice: flashUnit,
+      };
+      if (!Number.isInteger(flashSale.offerId) || flashSale.offerId < 1) {
+        flashSale = null;
+      } else {
+        basePrice = original > flashUnit ? original : basePrice;
+        price = flashUnit;
+      }
+    }
+  }
+
+  if (price > maxPrice) return null;
 
   const discountRaw = r.discount_percentage != null ? Number(r.discount_percentage) : null;
   const discountPercentage =
@@ -158,7 +209,26 @@ function mapItemRow(
     isVeg: foodTypeIsListedAsVeg(r.food_type),
     isPopular: r.is_popular === true,
     itemTags: Array.isArray(r.item_tags) ? r.item_tags.filter(Boolean).map(String) : [],
+    flashSale,
   };
+}
+
+async function flashOfferCacheForStores(
+  storePks: number[],
+  customerId?: number | null
+): Promise<Map<number, PlatformOfferRow[]>> {
+  const unique = [...new Set(storePks.filter((id) => id > 0))];
+  const map = new Map<number, PlatformOfferRow[]>();
+  await Promise.all(
+    unique.map(async (storePk) => {
+      try {
+        map.set(storePk, await loadActiveFoodFlashSalesForStore(storePk, customerId));
+      } catch {
+        map.set(storePk, []);
+      }
+    })
+  );
+  return map;
 }
 
 export async function listFoodItemsUnderPrice(params: {
@@ -167,9 +237,10 @@ export async function listFoodItemsUnderPrice(params: {
   maxPrice: number;
   limit?: number;
   vegOnly?: boolean;
+  customerId?: number | null;
 }): Promise<FoodItemUnderPriceDto[]> {
   const maxPrice = Math.max(1, Math.min(5000, Math.trunc(params.maxPrice)));
-  const limit = Math.max(1, Math.min(24, params.limit ?? 12));
+  const limit = Math.max(1, Math.min(60, params.limit ?? 12));
 
   const { items: stores } = await listStores({
     lat: params.lat,
@@ -225,6 +296,10 @@ export async function listFoodItemsUnderPrice(params: {
 
   const commissionMap = await commissionPercentByStorePk(rows.map((r) => r.store_pk));
   const offerCache = new Map<number, MerchantOfferRow[]>();
+  const flashCache = await flashOfferCacheForStores(
+    rows.map((r) => normalizeStorePk(r.store_pk)),
+    params.customerId
+  );
   const items: FoodItemUnderPriceDto[] = [];
   for (const row of rows) {
     const storePk = normalizeStorePk(row.store_pk);
@@ -233,7 +308,13 @@ export async function listFoodItemsUnderPrice(params: {
       offerCache.set(storePk, await loadMerchantOffersForPricing(storePk));
     }
     if (!matchesCustomerMerchantListStoreType(row.store_type, "FOOD")) continue;
-    const mapped = mapItemRow(row, percent, maxPrice, offerCache.get(storePk) ?? []);
+    const mapped = mapItemRow(
+      row,
+      percent,
+      maxPrice,
+      offerCache.get(storePk) ?? [],
+      flashCache.get(storePk) ?? []
+    );
     if (mapped) items.push(mapped);
     if (items.length >= limit) break;
   }
@@ -247,9 +328,11 @@ export async function listFoodItemsUnderPriceGrouped(params: {
   vegOnly?: boolean;
   maxStores?: number;
   itemsPerStore?: number;
+  customerId?: number | null;
 }): Promise<StoreFoodItemsUnderPriceDto[]> {
   const maxPrice = Math.max(1, Math.min(5000, Math.trunc(params.maxPrice)));
-  const maxStores = Math.max(1, Math.min(20, params.maxStores ?? 15));
+  // Classic explore rails need more than 20 nearby stores; keep a sane upper bound.
+  const maxStores = Math.max(1, Math.min(50, params.maxStores ?? 15));
   const itemsPerStore = Math.max(1, Math.min(10, params.itemsPerStore ?? 6));
 
   const { items: stores } = await listStores({
@@ -339,6 +422,10 @@ export async function listFoodItemsUnderPriceGrouped(params: {
 
   const commissionMap = await commissionPercentByStorePk(rows.map((r) => r.store_pk));
   const offerCache = new Map<number, MerchantOfferRow[]>();
+  const flashCache = await flashOfferCacheForStores(
+    rows.map((r) => normalizeStorePk(r.store_pk)),
+    params.customerId
+  );
   const grouped = new Map<string, FoodItemUnderPriceDto[]>();
   for (const row of rows) {
     const storePublicId = String(row.store_public_id);
@@ -350,7 +437,13 @@ export async function listFoodItemsUnderPriceGrouped(params: {
     if (!offerCache.has(storePk)) {
       offerCache.set(storePk, await loadMerchantOffersForPricing(storePk));
     }
-    const mapped = mapItemRow(row, percent, maxPrice, offerCache.get(storePk) ?? []);
+    const mapped = mapItemRow(
+      row,
+      percent,
+      maxPrice,
+      offerCache.get(storePk) ?? [],
+      flashCache.get(storePk) ?? []
+    );
     if (!mapped) continue;
     if (!matchesCustomerMerchantListStoreType(row.store_type, "FOOD")) continue;
     bucket.push(mapped);

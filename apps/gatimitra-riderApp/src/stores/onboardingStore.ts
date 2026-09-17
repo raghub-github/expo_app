@@ -66,6 +66,8 @@ export type OnboardingData = {
    * Prevents remount from dropping them back to vehicle/category and losing selection.
    */
   vehicleDocsStarted?: boolean;
+  /** Active doc code inside Step 3 (dl_rc + rental_ev); advances only via Continue/Skip/Back. */
+  vehicleDocWizardCode?: string;
 
   // Step 3b: Rental/EV alternative
   rentalProofUri?: string; // local URI before upload

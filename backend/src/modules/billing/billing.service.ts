@@ -28,6 +28,8 @@ import {
   evaluateCheckoutCouponEligibility,
 } from "./checkoutCouponEligibility.js";
 import { executeBillingPipeline } from "./executeBillingPipeline.js";
+import { applyFoodFlashSaleOverlayToItems, markFlashSaleOrderLines } from "./flashSaleApply.js";
+import { FLASH_SALE_PRICE_STALE, FLASH_SALE_UNAVAILABLE, isFlashSaleKind, isFoodFlashSale } from "./flashSale.js";
 import {
   applyDynamicSurchargesToBilling,
   resolveActiveDynamicSurchargesFromRefs,
@@ -595,6 +597,7 @@ export async function computeBillForOrder(
 
     const platformWithLimits = dataset.platformOffers.filter(
       (o) =>
+        isFlashSaleKind(o.offerKind) ||
         (o.maxUsesPerUser != null && o.maxUsesPerUser > 0) ||
         (o.maxUsesPerDay != null && o.maxUsesPerDay > 0) ||
         (o.maxUsesPerMonth != null && o.maxUsesPerMonth > 0)
@@ -694,6 +697,93 @@ export async function computeBillForOrder(
         dataset = { ...dataset, autoApplyCoupons };
       }
     }
+  }
+
+  // FOOD FLASH_SALE: exclude campaigns already used by this customer at this store
+  // before overlay so checkout cannot re-apply after a prior redemption.
+  if (input.customerId > 0 && resolved.merchantStoreId > 0) {
+    const flashIds = dataset.platformOffers
+      .filter((o) => isFlashSaleKind(o.offerKind) && isFoodFlashSale(o))
+      .map((o) => o.id);
+    if (flashIds.length > 0) {
+      const { usedFoodFlashOfferIdsForCustomerStore } = await import(
+        "./flashSaleRedemption.service.js"
+      );
+      const used = await usedFoodFlashOfferIdsForCustomerStore(
+        input.customerId,
+        resolved.merchantStoreId,
+        flashIds
+      );
+      if (used.size > 0) {
+        dataset = {
+          ...dataset,
+          platformOffers: dataset.platformOffers.filter((o) => !used.has(o.id)),
+        };
+      }
+    }
+  }
+
+  const flashOverlay = applyFoodFlashSaleOverlayToItems({
+    items: input.items,
+    ctx,
+    dataset,
+  });
+  if (flashOverlay.stalePrice) {
+    return {
+      ok: false,
+      code: FLASH_SALE_PRICE_STALE,
+      message: "Flash Sale prices changed. Please refresh and try again.",
+    };
+  }
+  if (flashOverlay.staleClientFlash) {
+    return {
+      ok: false,
+      code: FLASH_SALE_UNAVAILABLE,
+      message: "This Flash Sale is no longer available. Please refresh prices and try again.",
+    };
+  }
+  if (flashOverlay.overlay.lines.length > 0) {
+    input = { ...input, items: flashOverlay.items };
+    const nextItemSubtotal = input.items.reduce((s, i) => s + i.basePrice * i.quantity, 0);
+    const nextOrderLinesRaw = input.items.map((i) => {
+      const lineAddon = i.addons.reduce((a, ad) => a + ad.addonPrice * ad.quantity * i.quantity, 0);
+      const baseLineTotal = i.basePrice * i.quantity;
+      const lineTotal = baseLineTotal + lineAddon;
+      const rawQ = Number(i.quantity);
+      const quantity = Number.isFinite(rawQ) && rawQ > 0 ? Math.max(1, Math.floor(rawQ)) : 1;
+      const canonical = parseCanonicalPricing(
+        i.itemSnapshot && typeof i.itemSnapshot === "object"
+          ? (i.itemSnapshot as Record<string, unknown>).canonical_pricing
+          : null
+      );
+      const boostBaked = isStoreFundedItemOfferType(canonical?.merchantOfferType);
+      return {
+        menuItemId: String(i.menuItemId),
+        lineTotal,
+        quantity,
+        baseLineTotal,
+        addonLineTotal: lineAddon,
+        boostAlreadyInPrice: boostBaked,
+        canonicalPricing: canonical
+          ? ((i.itemSnapshot as Record<string, unknown>).canonical_pricing as Record<string, unknown>)
+          : null,
+        appliedOfferId: boostBaked ? canonical?.merchantOfferId : undefined,
+        appliedOfferLabel: boostBaked ? canonical?.merchantOfferName : undefined,
+        appliedOfferType: boostBaked ? (canonical?.merchantOfferRawType ?? "PERCENTAGE") : undefined,
+        appliedOfferDiscountPct: boostBaked ? canonical?.boostPercent : undefined,
+        appliedOfferDiscountFlat: boostBaked ? canonical?.boostFlat : undefined,
+        offerDiscountAmount: boostBaked ? 0 : undefined,
+      };
+    });
+    ctx.itemSubtotal = nextItemSubtotal;
+    ctx.orderLines = markOrderLinesDiscountEligibility(nextOrderLinesRaw, {
+      mrpIneligibleIds,
+      merchantOffers: dataset.merchantOffers,
+      now: ctx.now,
+      extraAliasesByLineId: menuIdAliases,
+    });
+    ctx.flashSaleOverlay = flashOverlay.overlay;
+    markFlashSaleOrderLines(ctx);
   }
 
   const billing = executeBillingPipeline(ctx, dataset);
@@ -1427,6 +1517,7 @@ export async function listCheckoutBillOffers(
 
     const platformWithLimits = dataset.platformOffers.filter(
       (o) =>
+        isFlashSaleKind(o.offerKind) ||
         (o.maxUsesPerUser != null && o.maxUsesPerUser > 0) ||
         (o.maxUsesPerDay != null && o.maxUsesPerDay > 0) ||
         (o.maxUsesPerMonth != null && o.maxUsesPerMonth > 0)

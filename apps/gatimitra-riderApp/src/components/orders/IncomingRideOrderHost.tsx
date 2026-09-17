@@ -69,6 +69,7 @@ import {
   markAcceptLatency,
   setAcceptLatencyOrderId,
 } from "@/src/lib/acceptOrderLatency";
+import { refreshRiderLocationBeforeAccept } from "@/src/lib/refreshRiderLocationBeforeAccept";
 
 const EMPTY_ORDERS: RiderOrderSummary[] = [];
 
@@ -455,17 +456,25 @@ export function IncomingRideOrderHost() {
   ]);
 
   useEffect(() => {
-    if (!isOnDuty || !modalVisible || !poolHeadId) return;
+    if (!isOnDuty || !poolHeadId) return;
     if (soundPlayedRef.current.has(poolHeadId)) return;
     soundPlayedRef.current.add(poolHeadId);
     const device = readRiderDeviceOrderAlerts();
     if (acceptanceSettings) {
+      riderDispatchLog("sound_started_at", {
+        offerId: poolHeadId,
+        sound_started_at: Date.now(),
+      });
       void playIncomingOrderAlert(acceptanceSettings, device);
       return;
     }
     if (!device.orderAlertsEnabled || !device.soundAlertsEnabled) return;
+    riderDispatchLog("sound_started_at", {
+      offerId: poolHeadId,
+      sound_started_at: Date.now(),
+    });
     void playOrderAlertSound(null, 8, volumeStepTo01(device.volumeStep), device.ringInSilent);
-  }, [isOnDuty, modalVisible, poolHeadId, acceptanceSettings]);
+  }, [isOnDuty, poolHeadId, acceptanceSettings]);
 
   useEffect(() => {
     return () => {
@@ -556,6 +565,9 @@ export function IncomingRideOrderHost() {
     const acceptRef = order.formattedOrderId?.trim() || id;
     const snap = order;
 
+    setAccepting(true);
+    setAcceptBusyLabel(t("orders.incoming.accepting", "Accepting..."));
+
     const finishAccept = () => {
       acceptingRef.current = false;
       markAcceptLatency("T9_SUCCESS_STATE");
@@ -573,39 +585,80 @@ export function IncomingRideOrderHost() {
       });
     };
 
-    acceptMutate(acceptRef, {
-      onSuccess: (data) => {
-        riderDispatchLog("ACCEPT_RESPONSE_RECEIVED", { orderId: id, status: "ok" });
-        riderDispatchLog("ORDER_ASSIGNED", { orderId: id });
-        seedRiderOrderDetailCache(queryClient, data, [id, acceptRef]);
-        finishAccept();
-      },
-      onError: async (err) => {
-        if (isRetryableRiderActionError(err) || classifyRiderActionFailure(err) === "busy") {
-          acceptingRef.current = true;
-          setAccepting(true);
-          const kind = classifyRiderActionFailure(err);
-          setAcceptBusyLabel(
-            kind === "timeout"
-              ? t("orders.incoming.checkingStatus", "Connection lost. Checking order status...")
-              : t("orders.incoming.waitingConnection", "Waiting for connection...")
-          );
-          return;
-        }
+    void (async () => {
+      // Best-effort fresh ping so GAP-2 does not evaluate a killed-app last-known point.
+      await refreshRiderLocationBeforeAccept();
 
-        acceptingRef.current = false;
-        setAccepting(false);
-        setAcceptBusyLabel(null);
-        riderDispatchLog("ACCEPT_RESPONSE_RECEIVED", {
-          orderId: id,
-          status: "error",
-          message: err instanceof Error ? err.message : String(err),
-        });
-        const apiMessage = extractRiderAcceptErrorMessage(err);
+      acceptMutate(acceptRef, {
+        onSuccess: (data) => {
+          riderDispatchLog("ACCEPT_RESPONSE_RECEIVED", { orderId: id, status: "ok" });
+          riderDispatchLog("ORDER_ASSIGNED", { orderId: id });
+          seedRiderOrderDetailCache(queryClient, data, [id, acceptRef]);
+          finishAccept();
+        },
+        onError: async (err) => {
+          if (isRetryableRiderActionError(err) || classifyRiderActionFailure(err) === "busy") {
+            acceptingRef.current = true;
+            setAccepting(true);
+            const kind = classifyRiderActionFailure(err);
+            setAcceptBusyLabel(
+              kind === "timeout"
+                ? t("orders.incoming.checkingStatus", "Connection lost. Checking order status...")
+                : t("orders.incoming.waitingConnection", "Waiting for connection...")
+            );
+            return;
+          }
 
-        if (err instanceof ApiError && err.status === 409) {
-          if (isOrderTakenByAnotherRiderError(err)) {
-            cancelIncomingDispatchOffer(queryClient, id, "accept_409");
+          acceptingRef.current = false;
+          setAccepting(false);
+          setAcceptBusyLabel(null);
+          riderDispatchLog("ACCEPT_RESPONSE_RECEIVED", {
+            orderId: id,
+            status: "error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          const apiMessage = extractRiderAcceptErrorMessage(err);
+
+          if (err instanceof ApiError && err.status === 409) {
+            if (isOrderTakenByAnotherRiderError(err)) {
+              cancelIncomingDispatchOffer(queryClient, id, "accept_409");
+              expiredRef.current.add(id);
+              offerShownAtRef.current.delete(id);
+              bumpPool();
+              closeModal();
+              setActiveOrderId(null);
+              return;
+            }
+
+            try {
+              const active = await riderApi.getActiveOrders();
+              const hit = active.find(
+                (o) =>
+                  o.id === id ||
+                  o.id === acceptRef ||
+                  (snap.formattedOrderId && o.formattedOrderId === snap.formattedOrderId)
+              );
+              if (hit) {
+                finishAccept();
+                return;
+              }
+            } catch {
+              /* ignore recovery probe */
+            }
+
+            Alert.alert(
+              t("orders.incoming.acceptFailedTitle", "Could not accept"),
+              isOrderNoLongerAvailableError(err)
+                ? t(
+                    "orders.incoming.orderNoLongerAvailable",
+                    "This order is no longer available."
+                  )
+                : apiMessage ??
+                    t(
+                      "orders.incoming.acceptUnavailableMessage",
+                      "Could not accept this order. Please try another offer."
+                    )
+            );
             expiredRef.current.add(id);
             offerShownAtRef.current.delete(id);
             bumpPool();
@@ -614,56 +667,18 @@ export function IncomingRideOrderHost() {
             return;
           }
 
-          try {
-            const active = await riderApi.getActiveOrders();
-            const hit = active.find(
-              (o) =>
-                o.id === id ||
-                o.id === acceptRef ||
-                (snap.formattedOrderId && o.formattedOrderId === snap.formattedOrderId)
-            );
-            if (hit) {
-              finishAccept();
-              return;
-            }
-          } catch {
-            /* ignore recovery probe */
-          }
-
           Alert.alert(
             t("orders.incoming.acceptFailedTitle", "Could not accept"),
-            isOrderNoLongerAvailableError(err)
-              ? t(
-                  "orders.incoming.orderNoLongerAvailable",
-                  "This order is no longer available."
-                )
-              : apiMessage ??
-                  t(
-                    "orders.incoming.acceptUnavailableMessage",
-                    "Could not accept this order. Please try another offer."
-                  )
+            apiMessage ??
+              t(
+                "orders.incoming.acceptRetryMessage",
+                "Something went wrong. Check your connection and try again."
+              )
           );
-          expiredRef.current.add(id);
-          offerShownAtRef.current.delete(id);
-          bumpPool();
-          closeModal();
-          setActiveOrderId(null);
-          return;
-        }
-
-        Alert.alert(
-          t("orders.incoming.acceptFailedTitle", "Could not accept"),
-          apiMessage ??
-            t(
-              "orders.incoming.acceptRetryMessage",
-              "Something went wrong. Check your connection and try again."
-            )
-        );
-        setAcceptSwipeResetKey((k) => k + 1);
-      },
-    });
-    setAccepting(true);
-    setAcceptBusyLabel(t("orders.incoming.accepting", "Accepting..."));
+          setAcceptSwipeResetKey((k) => k + 1);
+        },
+      });
+    })();
   }, [acceptMutate, closeModal, t, bumpPool, navigateAfterAccept, queryClient]);
 
   useEffect(() => {

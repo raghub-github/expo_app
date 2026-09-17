@@ -9334,7 +9334,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               }),
             ]);
             const ms = Date.now() - started;
-            if (ms > 2_000) {
+            if (ms > 3_000) {
               req.log.warn({ storeId, ms, count: orders.length }, "[food-orders GET] slow");
             }
             return reply.send({ orders });

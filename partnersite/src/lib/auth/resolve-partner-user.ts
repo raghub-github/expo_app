@@ -2,6 +2,10 @@
  * Cookie-first partner identity. Do not call Auth getUser() when the JWT cookie
  * already identifies the user — parallel getUser()/refresh races were logging
  * merchants out during Next compile (401 → /auth).
+ *
+ * Also: never call getUser() merely because cookie JSON failed to parse while
+ * sb-* session cookies are present. getUser()/setAll can clear those cookies and
+ * turn a transient miss into a hard logout (pending-count / notifications 401).
  */
 import { cookies } from "next/headers";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
@@ -86,6 +90,15 @@ export function requestHasPartnerAuthCookies(req?: {
   );
 }
 
+function readerHasSessionCookies(reader: CookieReader | null | undefined): boolean {
+  if (!reader) return false;
+  try {
+    return hasSupabaseAuthCookies(reader);
+  } catch {
+    return false;
+  }
+}
+
 export async function resolvePartnerUser(options?: {
   cookieReader?: CookieReader | null;
   cookieHeader?: string | null;
@@ -99,6 +112,25 @@ export async function resolvePartnerUser(options?: {
   const cookieUser = await readCookieUser(reader);
   if (cookieUser?.id) {
     return { user: cookieUser, error: null, fromCookie: true };
+  }
+
+  // Session cookies present but unreadable (chunk race / compile) — do NOT call
+  // getUser(). That path refreshes/clears cookies and logs the merchant out.
+  if (readerHasSessionCookies(reader)) {
+    return { user: null, error: null, fromCookie: false };
+  }
+  try {
+    const store = await cookies();
+    if (
+      hasSupabaseAuthCookies({
+        get: (name) => store.get(name),
+        getAll: () => store.getAll(),
+      })
+    ) {
+      return { user: null, error: null, fromCookie: false };
+    }
+  } catch {
+    /* ignore — fall through to getUser only when we truly have no cookies */
   }
 
   try {

@@ -7,8 +7,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   navigateFromPushData,
   usePushPermissionController,
-  enqueueInAppBannerFromPush,
-  FloatingInAppBannerHost,
+  setInAppBannerUiEnabled,
+  rememberPushPresented,
+  pushPresentationKey,
   type PushNotificationOpenPayload,
 } from "@gatimitra/expo-push-kit";
 import { useSessionStore } from "@/src/stores/sessionStore";
@@ -25,8 +26,15 @@ import { setRiderPushRefresh } from "@/src/lib/riderPushRefresh";
 import {
   RIDER_DISPATCH_OFFER_CHANNEL_ID,
   RIDER_DISPATCH_OFFER_SOUND,
+  RIDER_DISPATCH_FOOD_CHANNEL_ID,
+  RIDER_DISPATCH_FOOD_SOUND,
+  RIDER_DISPATCH_PARCEL_CHANNEL_ID,
+  RIDER_DISPATCH_PARCEL_SOUND,
+  RIDER_DISPATCH_RIDE_CHANNEL_ID,
+  RIDER_DISPATCH_RIDE_SOUND,
   isRiderDispatchOfferPushData,
 } from "@/src/lib/riderDispatchOfferChannel";
+import { installRiderForegroundNotificationHandler } from "@/src/lib/riderNotificationHandler";
 import {
   parseRiderNumericId,
   useRiderWalletFreezeLive,
@@ -34,10 +42,13 @@ import {
 import { useRiderBankStatusLive } from "@/src/hooks/useRiderBankStatusLive";
 import { handleRiderWalletRelatedPush } from "@/src/lib/riderWalletPushSync";
 
+// In-app notification pills OFF. Push / FCM / OS shade / token sync stay ON.
+setInAppBannerUiEnabled(false);
+
 /**
  * Registers Expo + native tokens via shared push controller (JWT role = rider).
  * Keeps rider-specific inbox, order invalidation, and deep-link callbacks.
- * Package + Firebase client must be `com.gatimitra.rider` (same as Merchant pattern).
+ * Does NOT render in-app notification pills — OS shade is the only tray UI.
  */
 export function RiderPushSetup() {
   const router = useRouter();
@@ -118,10 +129,24 @@ export function RiderPushSetup() {
           typeof payload.data?.orderId === "string" ? payload.data.orderId : undefined,
           "push_foreground"
         );
+        const nid =
+          typeof payload.data?.notification_id === "string"
+            ? payload.data.notification_id
+            : typeof payload.data?.notificationId === "string"
+              ? payload.data.notificationId
+              : null;
+        rememberPushPresented(
+          pushPresentationKey({
+            notificationId: nid,
+            templateCode: "RIDER_NEW_ORDER",
+            orderId:
+              typeof payload.data?.orderId === "string" ? payload.data.orderId : null,
+          })
+        );
         return;
       }
 
-      enqueueInAppBannerFromPush(payload);
+      // No in-app pill enqueue — OS shade owns presentation.
       const type = typeof payload.data.type === "string" ? payload.data.type : "";
       if (
         type === "new_order" ||
@@ -142,7 +167,33 @@ export function RiderPushSetup() {
     () => ({
       apiBaseUrl,
       androidPackageName: "com.gatimitra.rider",
+      // Own foreground handler so OS shade stays on when pills are disabled.
+      skipDefaultNotificationHandler: true,
       androidChannels: [
+        {
+          channelId: RIDER_DISPATCH_FOOD_CHANNEL_ID,
+          name: "Incoming food orders",
+          importance: 5,
+          sound: RIDER_DISPATCH_FOOD_SOUND,
+          vibrationPattern: [0, 450, 120, 450, 120, 450],
+          lightColor: "#0d9488",
+        },
+        {
+          channelId: RIDER_DISPATCH_PARCEL_CHANNEL_ID,
+          name: "Incoming parcel orders",
+          importance: 5,
+          sound: RIDER_DISPATCH_PARCEL_SOUND,
+          vibrationPattern: [0, 450, 120, 450, 120, 450],
+          lightColor: "#0d9488",
+        },
+        {
+          channelId: RIDER_DISPATCH_RIDE_CHANNEL_ID,
+          name: "Incoming ride requests",
+          importance: 5,
+          sound: RIDER_DISPATCH_RIDE_SOUND,
+          vibrationPattern: [0, 450, 120, 450, 120, 450],
+          lightColor: "#0d9488",
+        },
         {
           channelId: RIDER_DISPATCH_OFFER_CHANNEL_ID,
           name: "Incoming order requests",
@@ -190,6 +241,11 @@ export function RiderPushSetup() {
     autoStart: true,
   });
 
+  // Install OS presentation handler immediately — never wait on pill host mount.
+  useEffect(() => {
+    void installRiderForegroundNotificationHandler();
+  }, []);
+
   useEffect(() => {
     setRiderPushUnregister((opts) =>
       controller.unregisterCurrent({ ...opts, role: "rider" })
@@ -218,6 +274,10 @@ export function RiderPushSetup() {
       return;
     }
     controller.startLifecycle();
+    void installRiderForegroundNotificationHandler();
+    const restoreHandler = setTimeout(() => {
+      void installRiderForegroundNotificationHandler();
+    }, 300);
     void (async () => {
       let snap = await controller.refresh({ syncIfGranted: !expoGo });
       console.log("[push:rider] post-login refresh", {
@@ -229,9 +289,38 @@ export function RiderPushSetup() {
         error: snap.error,
         expoGo,
       });
+      if (
+        snap.lastBackendSyncOk === false ||
+        snap.syncStatus === "error" ||
+        (snap.error && String(snap.error).trim())
+      ) {
+        console.error("[push:rider] push_token_register_failed", {
+          phase: "post-login-refresh",
+          osStatus: snap.osStatus,
+          syncStatus: snap.syncStatus,
+          lastBackendSyncOk: snap.lastBackendSyncOk,
+          error: snap.error,
+        });
+      }
       if (expoGo) return;
       if (snap.osStatus === "granted") {
-        await controller.syncTokens();
+        const afterSync = await controller.syncTokens();
+        if (
+          afterSync.lastBackendSyncOk === false ||
+          afterSync.syncStatus === "error" ||
+          (afterSync.error && String(afterSync.error).trim()) ||
+          (!afterSync.expoPushToken && !afterSync.nativePushToken)
+        ) {
+          console.error("[push:rider] push_token_register_failed", {
+            phase: "post-login-sync",
+            osStatus: afterSync.osStatus,
+            syncStatus: afterSync.syncStatus,
+            lastBackendSyncOk: afterSync.lastBackendSyncOk,
+            hasExpo: !!afterSync.expoPushToken,
+            hasNative: !!afterSync.nativePushToken,
+            error: afterSync.error,
+          });
+        }
         return;
       }
       // Returning riders who skipped /(permissions) still need a grant + register.
@@ -250,14 +339,47 @@ export function RiderPushSetup() {
         hasNative: !!snap.nativePushToken,
         error: snap.error,
       });
+      if (
+        snap.lastBackendSyncOk === false ||
+        snap.syncStatus === "error" ||
+        (snap.error && String(snap.error).trim())
+      ) {
+        console.error("[push:rider] push_token_register_failed", {
+          phase: "post-login-permission",
+          osStatus: snap.osStatus,
+          syncStatus: snap.syncStatus,
+          lastBackendSyncOk: snap.lastBackendSyncOk,
+          error: snap.error,
+        });
+      }
     })();
+    return () => clearTimeout(restoreHandler);
   }, [hydrated, session?.accessToken, session?.role, controller, expoGo]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (s: AppStateStatus) => {
       if (s !== "active") return;
       if (!hydrated || !session?.accessToken || session.role !== "rider") return;
-      void controller.refresh({ syncIfGranted: !expoGo });
+      void installRiderForegroundNotificationHandler();
+      void (async () => {
+        const snap = await controller.refresh({ syncIfGranted: !expoGo });
+        if (
+          snap.osStatus === "granted" &&
+          !expoGo &&
+          !snap.expoPushToken &&
+          !snap.nativePushToken
+        ) {
+          const after = await controller.syncTokens();
+          if (!after.expoPushToken && !after.nativePushToken) {
+            console.error("[push:rider] push_token_register_failed", {
+              phase: "resume-self-heal",
+              osStatus: after.osStatus,
+              syncStatus: after.syncStatus,
+              error: after.error,
+            });
+          }
+        }
+      })();
     });
     return () => sub.remove();
   }, [hydrated, session?.accessToken, session?.role, controller, expoGo]);
@@ -265,7 +387,25 @@ export function RiderPushSetup() {
   useEffect(() => {
     if (!hydrated || !session?.accessToken || session.role !== "rider") return;
     if (snapshot.osStatus !== "granted" || expoGo) return;
-    void controller.syncTokens();
+    void (async () => {
+      const afterSync = await controller.syncTokens();
+      if (
+        afterSync.lastBackendSyncOk === false ||
+        afterSync.syncStatus === "error" ||
+        (afterSync.error && String(afterSync.error).trim()) ||
+        (!afterSync.expoPushToken && !afterSync.nativePushToken)
+      ) {
+        console.error("[push:rider] push_token_register_failed", {
+          phase: "os-granted-sync",
+          osStatus: afterSync.osStatus,
+          syncStatus: afterSync.syncStatus,
+          lastBackendSyncOk: afterSync.lastBackendSyncOk,
+          hasExpo: !!afterSync.expoPushToken,
+          hasNative: !!afterSync.nativePushToken,
+          error: afterSync.error,
+        });
+      }
+    })();
   }, [snapshot.osStatus, controller, hydrated, session?.accessToken, session?.role, expoGo]);
 
   useEffect(() => {
@@ -287,26 +427,6 @@ export function RiderPushSetup() {
     }
   }, [snapshot.osStatus, setPermissionStepGranted]);
 
-  return (
-    <FloatingInAppBannerHost
-      onPressBanner={(item) => {
-        if (!item.data) return;
-        if (isRiderDispatchOfferPushData(item.data)) {
-          ingestIncomingDispatchOffer(
-            queryClient,
-            typeof item.data.orderId === "string" ? item.data.orderId : undefined,
-            "push_banner"
-          );
-          router.replace("/(tabs)/orders");
-          return;
-        }
-        navigateFromPushData(router, {
-          ...item.data,
-          appRole: "rider",
-          orderPath:
-            item.data.orderId != null ? `/order/${String(item.data.orderId)}` : undefined,
-        });
-      }}
-    />
-  );
+  // No FloatingInAppBannerHost — pill UI must not gate push lifecycle.
+  return null;
 }

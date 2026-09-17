@@ -140,14 +140,28 @@ export function resolveMerchantCtmDebitAdjustment(args: {
   ctmAmount: number;
   currentNetHeld: number;
   grossCredited?: number;
+  /**
+   * Super-admin compensation policy keep % (0–100).
+   * When set (engine-auto), overrides the admin Full/Partial/No matrix.
+   * Admin refunds omit this and keep 0 / 50 / 100 via `mode`.
+   */
+  keepPctOverride?: number | null;
+  /** Exact target net from policy (preferred when provided). */
+  targetNetOverride?: number | null;
 }): MerchantCtmDebitAdjustment {
   const ctmAmount = round2(Math.max(0, args.ctmAmount));
   const currentNetHeld = round2(Math.max(0, args.currentNetHeld));
   const grossCredited = round2(
     Math.max(0, args.grossCredited ?? args.currentNetHeld)
   );
-  const keepPct = merchantDebitKeepPct(args.mode);
-  const targetNet = round2((ctmAmount * keepPct) / 100);
+  const keepPct =
+    args.keepPctOverride != null && Number.isFinite(Number(args.keepPctOverride))
+      ? Math.max(0, Math.min(100, round2(Number(args.keepPctOverride))))
+      : merchantDebitKeepPct(args.mode);
+  const targetNet =
+    args.targetNetOverride != null && Number.isFinite(Number(args.targetNetOverride))
+      ? round2(Math.max(0, Math.min(ctmAmount, Number(args.targetNetOverride))))
+      : round2((ctmAmount * keepPct) / 100);
   const delta = round2(targetNet - currentNetHeld);
   const ctmAlreadyCredited = grossCredited > 0.009;
 
@@ -161,7 +175,7 @@ export function resolveMerchantCtmDebitAdjustment(args: {
       keepPct,
       ctmAlreadyCredited,
       reason:
-        args.mode === "no_debit"
+        args.mode === "no_debit" || keepPct >= 99.991
           ? COMPENSATION_CREDIT_REASON
           : COMPENSATION_RECOVERY_REASON,
       adjustmentType: "NONE",

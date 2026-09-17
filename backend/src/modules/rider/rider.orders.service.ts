@@ -2586,15 +2586,15 @@ export async function acceptOrderForRider(
     });
   }
 
-  const acceptOpts = { skipPickupRadius: true };
-
+  // GAP-2 accept revalidation runs on the normal path (do not skip). Force-assign
+  // returns earlier via acceptForceAssignmentForRider before GAP-2.
   let summary: RiderOrderSummary;
   if (meta.orderType === "food") {
-    summary = await acceptFoodOrderForRider(riderId, orderRef, acceptOpts);
+    summary = await acceptFoodOrderForRider(riderId, orderRef);
   } else if (meta.orderType === "person_ride") {
-    summary = await acceptRideOrderForRider(riderId, orderRef, acceptOpts);
+    summary = await acceptRideOrderForRider(riderId, orderRef);
   } else if (meta.orderType === "parcel") {
-    summary = await acceptParcelOrderForRider(riderId, orderRef, acceptOpts);
+    summary = await acceptParcelOrderForRider(riderId, orderRef);
   } else {
     throw Object.assign(new Error("Order type not supported for rider accept"), { statusCode: 409 });
   }
@@ -2636,7 +2636,7 @@ export async function acceptOrderForRider(
 async function acceptFoodOrderForRider(
   riderId: number,
   orderRef: string,
-  _opts?: { skipPickupRadius?: boolean }
+  _opts?: { skipAcceptLocationRevalidation?: boolean }
 ): Promise<RiderOrderSummary> {
   const { acceptForceAssignmentForRider } = await import(
     "../../lib/force-assignment.service.js"
@@ -2749,7 +2749,7 @@ async function acceptFoodOrderForRider(
       serviceType: "food",
       pickupLat: preCheck.pickupLat,
       pickupLon: preCheck.pickupLon,
-      skip: _opts?.skipPickupRadius,
+      skip: _opts?.skipAcceptLocationRevalidation,
     });
   }
 
@@ -3026,7 +3026,7 @@ async function acceptFoodOrderForRider(
 async function acceptParcelOrderForRider(
   riderId: number,
   orderRef: string,
-  _opts?: { skipPickupRadius?: boolean }
+  _opts?: { skipAcceptLocationRevalidation?: boolean }
 ): Promise<RiderOrderSummary> {
   const db = getDb();
   const now = new Date();
@@ -3079,7 +3079,7 @@ async function acceptParcelOrderForRider(
       serviceType: "parcel",
       pickupLat: preCheck.pickupLat,
       pickupLon: preCheck.pickupLon,
-      skip: _opts?.skipPickupRadius,
+      skip: _opts?.skipAcceptLocationRevalidation,
     });
   }
 
@@ -3221,7 +3221,7 @@ async function acceptParcelOrderForRider(
 async function acceptRideOrderForRider(
   riderId: number,
   orderRef: string,
-  _opts?: { skipPickupRadius?: boolean }
+  _opts?: { skipAcceptLocationRevalidation?: boolean }
 ): Promise<RiderOrderSummary> {
   const db = getDb();
   const now = new Date();
@@ -3266,7 +3266,7 @@ async function acceptRideOrderForRider(
       serviceType: "person_ride",
       pickupLat: preCheck.pickupLat,
       pickupLon: preCheck.pickupLon,
-      skip: _opts?.skipPickupRadius,
+      skip: _opts?.skipAcceptLocationRevalidation,
     });
   }
 

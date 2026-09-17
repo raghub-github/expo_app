@@ -7,6 +7,14 @@ type Props = {
   size?: number;
 };
 
+/** FSSAI-style diet marks — saturated so they stay crisp on white cards. */
+const MARK = {
+  veg: { border: "#0B7A3E", fill: "#16A34A" },
+  non_veg: { border: "#B91C1C", fill: "#DC2626" },
+  egg: { border: "#C2410C", fill: "#EA580C" },
+  unknown: { border: "#64748B", fill: "#64748B" },
+} as const;
+
 /**
  * FSSAI-style diet marks: green = veg, red = non-veg, amber = egg.
  * Always paints a visible box so missing food_type still shows a clear placeholder.
@@ -14,12 +22,15 @@ type Props = {
 export function ItemVegMark({ vegNonveg, name, size = 14 }: Props) {
   const kind = resolveItemVegType(vegNonveg, name);
   const box = Math.max(14, size);
-  const inner = Math.max(5, Math.round(box * 0.42));
-
-  const borderColor =
-    kind === "veg" ? "#16A34A" : kind === "non_veg" ? "#DC2626" : kind === "egg" ? "#D97706" : "#94A3B8";
-  const fillColor =
-    kind === "veg" ? "#16A34A" : kind === "non_veg" ? "#DC2626" : kind === "egg" ? "#F59E0B" : "#CBD5E1";
+  const inner = Math.max(6, Math.round(box * 0.48));
+  const colors =
+    kind === "veg"
+      ? MARK.veg
+      : kind === "non_veg"
+        ? MARK.non_veg
+        : kind === "egg"
+          ? MARK.egg
+          : MARK.unknown;
 
   const label =
     kind === "veg"
@@ -37,7 +48,7 @@ export function ItemVegMark({ vegNonveg, name, size = 14 }: Props) {
         {
           width: box,
           height: box,
-          borderColor,
+          borderColor: colors.border,
         },
       ]}
       accessibilityLabel={label}
@@ -48,8 +59,8 @@ export function ItemVegMark({ vegNonveg, name, size = 14 }: Props) {
             styles.egg,
             {
               width: inner * 0.85,
-              height: inner * 1.15,
-              backgroundColor: fillColor,
+              height: inner * 1.2,
+              backgroundColor: colors.fill,
             },
           ]}
         />
@@ -60,8 +71,7 @@ export function ItemVegMark({ vegNonveg, name, size = 14 }: Props) {
             {
               width: inner,
               height: inner,
-              backgroundColor: fillColor,
-              opacity: kind ? 1 : 0.85,
+              backgroundColor: colors.fill,
             },
           ]}
         />
@@ -72,7 +82,7 @@ export function ItemVegMark({ vegNonveg, name, size = 14 }: Props) {
 
 const styles = StyleSheet.create({
   box: {
-    borderWidth: 1.75,
+    borderWidth: 2,
     borderRadius: 3,
     backgroundColor: "#FFFFFF",
     alignItems: "center",

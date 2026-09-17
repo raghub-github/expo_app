@@ -18,6 +18,8 @@ export type NavigateToMerchantOptions = {
    * Use for "similar restaurants" so Back returns to food home, not the prior store.
    */
   replace?: boolean;
+  /** Scroll + highlight this menu item after the store page paints (home `+` deep-link). */
+  focusItemId?: string | null;
 };
 
 /**
@@ -35,7 +37,7 @@ export function navigateToMerchant(
   if (!merchantId) return;
   const now = Date.now();
   if (now < navigateLockUntil) return;
-  navigateLockUntil = now + 320;
+  navigateLockUntil = now + 160;
 
   const isGrocery = (merchant?.storeType ?? "").trim().toUpperCase() === "GROCERY";
   const discovery = !isGrocery && peekCachedFoodHomeLayoutKey() === "discovery";
@@ -57,7 +59,9 @@ export function navigateToMerchant(
 
   const route = {
     pathname: "/home/merchant/[id]" as const,
-    params: buildMerchantDetailParams(merchantId, merchant),
+    params: buildMerchantDetailParams(merchantId, merchant, {
+      focusItemId: options?.focusItemId,
+    }),
   };
   if (replace) {
     router.replace(route);

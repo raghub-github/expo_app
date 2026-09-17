@@ -35,6 +35,7 @@ import { invalidateProfileCache, PROFILE_QUERY_KEY, writeCachedProfile } from "@
 import { CURRENT_SUBSCRIPTION_QUERY_KEY } from "@/lib/subscriptionCache";
 import { formatSubscriptionExpiryCountdown } from "@/services/subscription.service";
 import { resolveSubscriptionExpiryIso } from "@/lib/subscriptionExpiry";
+import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -113,7 +114,7 @@ export default function ProfileScreen() {
   const { data: referralConfig } = useQuery({
     queryKey: ["referral", "config", "customer"],
     queryFn: () => referralService.getConfig(),
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
   });
   const showReferralUi = referralConfig?.referralEnabled === true;
   const referralCopy = presentReferralCopy({
@@ -528,8 +529,8 @@ export default function ProfileScreen() {
               ? "Renew now to enjoy unlimited free deliveries and other GatiMitra member benefits."
               : `Join GMitra Plus on your next food order — save on delivery and unlock member-only offers.`
         }
-        onBrowseRestaurants={() => router.navigate("/(tabs)/food" as never)}
-        onRenew={() => router.navigate("/(tabs)/food" as never)}
+        onBrowseRestaurants={() => navigatePrimaryTab("food", "Profile.browseRestaurants", router)}
+        onRenew={() => navigatePrimaryTab("food", "Profile.renew", router)}
       />
 
       <ProfilePhotoSourceSheet

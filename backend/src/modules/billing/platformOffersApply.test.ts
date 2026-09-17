@@ -369,6 +369,32 @@ describe("platformOfferLocationVisible", () => {
     o.merchantIds = [42];
     assert.equal(platformOfferLocationVisible(ctx, o), false);
   });
+
+  it("FOOD FLASH_SALE MERCHANT is visible without geo bindings when store matches", () => {
+    const ctx = baseCtx();
+    ctx.platformOfferGeoBindingEffectiveIds = new Set();
+    const o = baseOffer();
+    o.offerKind = "FLASH_SALE";
+    o.serviceType = "FOOD";
+    o.targetScope = "MERCHANT";
+    o.merchantIds = [42];
+    o.conditions = {
+      flash_sale_items: [{ menu_item_id: "10", flash_price: 9 }],
+    };
+    assert.equal(platformOfferLocationVisible(ctx, o), true);
+    assert.equal(platformOfferEligible(ctx, o, 99), true);
+  });
+
+  it("FOOD FLASH_SALE MERCHANT stays hidden for a different store", () => {
+    const ctx = baseCtx();
+    ctx.platformOfferGeoBindingEffectiveIds = new Set();
+    const o = baseOffer();
+    o.offerKind = "FLASH_SALE";
+    o.serviceType = "FOOD";
+    o.targetScope = "MERCHANT";
+    o.merchantIds = [99];
+    assert.equal(platformOfferLocationVisible(ctx, o), false);
+  });
 });
 
 describe("platformOfferMerchantScopeMatches", () => {

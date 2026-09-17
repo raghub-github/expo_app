@@ -19,11 +19,12 @@ export function useCustomerServiceBlocks() {
     queryKey: CUSTOMER_SERVICE_BLOCKS_QUERY_KEY,
     queryFn: fetchCustomerServiceBlocks,
     enabled: hydrated && !!session,
-    staleTime: 20_000,
+    staleTime: 45_000,
     gcTime: 30 * 60 * 1000,
     refetchInterval: hydrated && session ? SERVICE_BLOCKS_POLL_MS : false,
     refetchIntervalInBackground: false,
     refetchOnReconnect: true,
+    refetchOnMount: false,
     retry: 1,
     placeholderData: (previous) => previous,
   });

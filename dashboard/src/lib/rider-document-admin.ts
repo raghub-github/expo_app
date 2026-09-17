@@ -39,6 +39,13 @@ async function syncParentDocumentFromFiles(documentId: number): Promise<void> {
       .set({
         fileUrl: PENDING_FILE_URL,
         r2Key: null,
+        verified: false,
+        // Enum only allows pending|approved|rejected|auto_verified|…
+        verificationStatus: "pending",
+        requiresManualReview: false,
+        verifiedAt: null,
+        rejectedReason: null,
+        verifierUserId: null,
         updatedAt: new Date(),
       })
       .where(eq(riderDocuments.id, documentId));
@@ -128,11 +135,35 @@ export async function removeRiderDocumentImage(params: {
 
   await deleteStoredObject(doc.r2Key, doc.fileUrl);
 
+  // Also clear any legacy riders.selfie_url object not mirrored on the doc row,
+  // plus the stable admin key (versioned app keys + latest.jpg).
+  if (baseType === "selfie" || baseType === "profile_photo") {
+    const [riderRow] = await db
+      .select({ selfieUrl: riders.selfieUrl })
+      .from(riders)
+      .where(eq(riders.id, riderId))
+      .limit(1);
+    if (riderRow?.selfieUrl) {
+      await deleteStoredObject(null, riderRow.selfieUrl);
+    }
+    await deleteStoredObject(`riders/${riderId}/documents/selfie/latest.jpg`, null);
+  }
+
+  // Clearing the image must also clear "awaiting review" — otherwise selfie/docs
+  // stay in Verification pending with no file left to approve.
+  // verification_status enum has no "not_started" — use pending + no file.
   const [updated] = await db
     .update(riderDocuments)
     .set({
       fileUrl: PENDING_FILE_URL,
       r2Key: null,
+      verified: false,
+      verificationStatus: "pending",
+      verificationMethod: "MANUAL_UPLOAD",
+      requiresManualReview: false,
+      verifiedAt: null,
+      rejectedReason: null,
+      verifierUserId: null,
       updatedAt: new Date(),
     })
     .where(eq(riderDocuments.id, documentId))
@@ -175,8 +206,32 @@ export async function uploadRiderDocumentImage(params: {
       : [];
 
   const replaceOldKey = existingFile?.r2Key ?? doc.r2Key ?? null;
-  if (replaceOldKey && replaceOldKey !== r2Key) {
-    await deleteStoredObject(replaceOldKey, existingFile?.fileUrl ?? doc.fileUrl);
+  const oldKeysToDelete = new Set<string>();
+  if (replaceOldKey?.trim()) oldKeysToDelete.add(replaceOldKey.trim());
+
+  // Selfie may have versioned rider-app keys + a separate riders.selfie_url object.
+  if (baseType === "selfie" || baseType === "profile_photo") {
+    for (const f of await db
+      .select({ r2Key: riderDocumentFiles.r2Key, fileUrl: riderDocumentFiles.fileUrl })
+      .from(riderDocumentFiles)
+      .where(eq(riderDocumentFiles.documentId, documentId))) {
+      if (f.r2Key?.trim()) oldKeysToDelete.add(f.r2Key.trim());
+    }
+    if (doc.r2Key?.trim()) oldKeysToDelete.add(doc.r2Key.trim());
+    const [riderRow] = await db
+      .select({ selfieUrl: riders.selfieUrl })
+      .from(riders)
+      .where(eq(riders.id, riderId))
+      .limit(1);
+    if (riderRow?.selfieUrl) {
+      await deleteStoredObject(null, riderRow.selfieUrl);
+    }
+  }
+
+  for (const key of oldKeysToDelete) {
+    if (key !== r2Key) {
+      await deleteStoredObject(key, null);
+    }
   }
 
   await uploadWithKey(file, r2Key);
@@ -228,6 +283,12 @@ export async function uploadRiderDocumentImage(params: {
   }
 
   await syncRiderProfileFields(riderId, baseType, proxyUrl, false);
+
+  // Admin selfie → Manual verified; rider app replace uses APP_VERIFIED (Auto verified).
+  if (baseType === "selfie" || baseType === "profile_photo") {
+    const { autoVerifyUploadedRiderSelfie } = await import("@/lib/rider-selfie-auto-verify");
+    await autoVerifyUploadedRiderSelfie(riderId, { source: "admin" }).catch(() => false);
+  }
 
   const [updated] = await db
     .select()

@@ -1,6 +1,7 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 import { useEffect, useRef } from "react";
-import { router, usePathname } from "expo-router";
+import { router, useLocalSearchParams, usePathname } from "expo-router";
+import { parseOnboardingWalkParam } from "@/src/lib/onboarding-walk-through";
 import {
   resolveEstablishedRiderHref,
   type ServerOnboardingStep,
@@ -27,10 +28,13 @@ function pathMatchesHref(pathname: string | null, href: string): boolean {
 /** Redirect verified / post-KYC riders away from document upload screens. */
 export function useOnboardingEstablishedRedirect(riderStatus?: RiderStatusSlice | null) {
   const pathname = usePathname();
+  const params = useLocalSearchParams<{ walk?: string | string[] }>();
+  const walkThrough = parseOnboardingWalkParam(params.walk);
   const lastHrefRef = useRef<string | null>(null);
   const navigatedRef = useRef(false);
 
   useEffect(() => {
+    if (walkThrough) return;
     if (!riderStatus || navigatedRef.current) return;
     const href = resolveEstablishedRiderHref(
       riderStatus.onboardingStatus,
@@ -57,5 +61,6 @@ export function useOnboardingEstablishedRedirect(riderStatus?: RiderStatusSlice 
     riderStatus?.paymentCompleted,
     riderStatus?.nextOnboardingStep,
     pathname,
+    walkThrough,
   ]);
 }

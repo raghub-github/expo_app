@@ -49,7 +49,7 @@ function formatOrderedAgo(iso: string): string {
   return `You ordered ${years} year${years > 1 ? "s" : ""} ago`;
 }
 
-const THUMB = 56;
+const THUMB = 64;
 const ACTION_W = 90;
 
 export const StorePastOrderRow = React.memo(function StorePastOrderRow({

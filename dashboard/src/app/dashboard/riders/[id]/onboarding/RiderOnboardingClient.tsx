@@ -17,6 +17,13 @@ import {
 } from "@/components/riders/DocumentSummaryBlock";
 import { PanSkipInlineControl } from "@/components/riders/PanSkipOverridePanel";
 import {
+  pickRcOwnerName,
+  rcDashboardStatusLabel,
+  readRcDocumentVersion,
+  readRcReviewHistory,
+  resolveRcVerificationState,
+} from "@/lib/rider-rc-verification-state";
+import {
   Edit,
   CheckCircle,
   XCircle,
@@ -25,6 +32,8 @@ import {
   AlertCircle,
   X,
   Upload,
+  Trash2,
+  FileText,
 } from "lucide-react";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { CopyTextButton } from "@/components/ui/CopyTextButton";
@@ -98,6 +107,8 @@ interface Document {
   r2Key: string | null;
   docNumber: string | null;
   verificationMethod: string;
+  verificationStatus?: string | null;
+  requiresManualReview?: boolean | null;
   verified: boolean;
   verifierUserId: number | null;
   verifierName: string | null;
@@ -279,9 +290,38 @@ function isNonImageFileRef(raw: string | null | undefined): boolean {
   return false;
 }
 
+/** True when URL / key points at a PDF (not a displayable raster image). */
+function isPdfAttachmentRef(raw: string | null | undefined): boolean {
+  const value = String(raw || "").trim().toLowerCase();
+  if (!value || isNonImageFileRef(value)) return false;
+  if (value.includes(".pdf")) return true;
+  if (value.includes("application%2fpdf") || value.includes("application/pdf")) return true;
+  if (value.includes("mime=pdf") || value.includes("content-type=pdf")) return true;
+  return false;
+}
+
 /** True when the doc has a real image/file the browser can show (any verify method). */
 function hasDocumentPreview(document: Document | null, fallbackUrl?: string | null): boolean {
   return Boolean(resolveDocumentPreviewUrl(document, fallbackUrl));
+}
+
+/** Summary-card thumb: only real uploaded bytes (never Cashfree stubs). */
+function summaryCardPreviewUrl(
+  document: Document | null,
+  docType: string,
+  selfieUrl?: string | null,
+): string | null {
+  const fallback = docType === "selfie" ? selfieUrl : null;
+  const url = resolveDocumentPreviewUrl(document, fallback);
+  if (!url) return null;
+  const hasRealUpload =
+    (Boolean(document?.r2Key) && !isNonImageFileRef(document?.r2Key)) ||
+    (Boolean(document?.fileUrl) &&
+      !isNonImageFileRef(document!.fileUrl) &&
+      document!.fileUrl !== "pending" &&
+      !String(document!.fileUrl).startsWith("placeholder")) ||
+    (docType === "selfie" && Boolean(fallback) && !isNonImageFileRef(fallback));
+  return hasRealUpload ? url : null;
 }
 
 function resolveDocumentPreviewUrl(
@@ -459,21 +499,88 @@ function resolveDocBlockMeta(
     };
   }
   if (doc?.rejectedReason) {
+    if (docType === "rc") {
+      const rcMeta = rcDashboardStatusLabel(resolveRcVerificationState(doc));
+      return { status: rcMeta.status, statusLabel: rcMeta.statusLabel, subtitle: doc.rejectedReason };
+    }
     return { status: "rejected", statusLabel: "Rejected", subtitle: "Needs re-upload" };
   }
+  if (docType === "rc" && doc) {
+    const rcMeta = rcDashboardStatusLabel(resolveRcVerificationState(doc));
+    if (rcMeta.status !== "missing") {
+      return rcMeta;
+    }
+  }
   if (doc?.verified) {
+    const status = String(doc.verificationStatus || "").toLowerCase();
+    const method = String(doc.verificationMethod || "").toUpperCase();
+    const isSelfie = docType === "selfie" || docType === "profile_photo";
+    // Rider-app selfie replace → Auto verified even if an older admin row lingered.
+    if (
+      isSelfie &&
+      (status === "auto_verified" ||
+        method === "APP_VERIFIED" ||
+        method.startsWith("CASHFREE_"))
+    ) {
+      return {
+        status: "verified",
+        statusLabel: "Auto verified",
+        subtitle: "App Verified",
+      };
+    }
+    // Agent approve / admin upload (`approved` / MANUAL_UPLOAD) → Manual verified.
+    if (status === "approved" || method === "MANUAL_UPLOAD") {
+      return {
+        status: "verified",
+        statusLabel: "Manual verified",
+        subtitle: "Approved by agent",
+      };
+    }
+    if (
+      status === "auto_verified" ||
+      method === "APP_VERIFIED" ||
+      method.startsWith("CASHFREE_") ||
+      method === "RAZORPAY_BANK"
+    ) {
+      return {
+        status: "verified",
+        statusLabel: "Auto verified",
+        subtitle: isAppVerifiedMethod(doc.verificationMethod)
+          ? "App Verified"
+          : isDashboardElectronicMethod(doc.verificationMethod)
+            ? "Dashboard electronic"
+            : "Cashfree",
+      };
+    }
     return {
       status: "verified",
-      statusLabel: "Verified",
-      subtitle: isAppVerifiedMethod(doc.verificationMethod)
-        ? "App Verified"
-        : isDashboardElectronicMethod(doc.verificationMethod)
-          ? "Dashboard electronic"
-          : "Manual",
+      statusLabel: "Manual verified",
+      subtitle: "Approved by agent",
     };
   }
+  const hasSubmittedFile =
+    Boolean(doc) &&
+    ((Boolean(doc!.r2Key) && !isNonImageFileRef(doc!.r2Key)) ||
+      (Boolean(doc!.fileUrl) &&
+        doc!.fileUrl !== "pending" &&
+        !String(doc!.fileUrl).startsWith("placeholder") &&
+        !isNonImageFileRef(doc!.fileUrl)));
+  // Row exists after admin remove (fileUrl=pending) — treat as missing, not pending review.
+  if (doc && !hasSubmittedFile) {
+    if (need === "not_needed") {
+      return {
+        status: "not_required",
+        statusLabel: "Not required",
+        subtitle: null,
+      };
+    }
+    if (need === "optional") {
+      return { status: "missing", statusLabel: "Optional", subtitle: "Not uploaded" };
+    }
+    return { status: "missing", statusLabel: "Missing", subtitle: "Not uploaded" };
+  }
   // Submitted but not verified — always show Pending (even if type is usually optional).
-  if (doc) {
+  if (doc && hasSubmittedFile) {
     return { status: "pending", statusLabel: "Pending", subtitle: "Awaiting verification" };
   }
   if (need === "not_needed") {
@@ -524,8 +631,9 @@ export default function RiderOnboardingClient() {
   } | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
-  const [editModalOpen, setEditModalOpen] = useState(false);
   const [editingDoc, setEditingDoc] = useState<Document | null>(null);
+  /** Edit/upload UI inside Document Detail shell — never a second stacked modal. */
+  const [detailEditing, setDetailEditing] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
   const [rejectingDoc, setRejectingDoc] = useState<Document | null>(null);
@@ -719,18 +827,41 @@ export default function RiderOnboardingClient() {
     );
   }
 
-  // Check access - only show access denied after loading is complete and user exists
-  // Don't block on permissions loading since server layout already verified RIDER access
-  if (!permissionsLoading && !dashboardAccessLoading && !isSuperAdmin && !hasRiderAccess) {
+  // Safety net only: server layout already enforces RIDER access. Require cached
+  // dashboard-access data so a brief cache miss after refetch never flashes Access Denied.
+  if (hasCachedDashboardAccess && !isSuperAdmin && !hasRiderAccess) {
     return (
-      <div className="space-y-6 p-6">
-        <div className="rounded-lg border border-red-200 bg-red-50 p-6">
-          <p className="text-red-600 font-semibold">Access Denied</p>
-          <p className="text-red-500 text-sm mt-2">
-            You don't have permission to access the Rider Dashboard. Please contact your administrator.
-          </p>
+      <ModalPortal>
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-md" aria-hidden />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rider-access-denied-title"
+            className="relative z-[201] w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            <h2
+              id="rider-access-denied-title"
+              className="text-lg font-semibold text-rose-700"
+            >
+              Access Denied
+            </h2>
+            <p className="mt-2 text-sm text-slate-600">
+              You don&apos;t have permission to access the Rider Dashboard. Please contact
+              your administrator.
+            </p>
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => router.push("/dashboard")}
+                className="rounded-lg bg-[#0A2342] px-4 py-2 text-sm font-semibold text-white hover:bg-[#0A2342]/90"
+              >
+                Back to dashboard
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      </ModalPortal>
     );
   }
 
@@ -739,20 +870,18 @@ export default function RiderOnboardingClient() {
     setViewerOpen(true);
   };
 
-  const handleEditDocument = (doc: Document) => {
-    // Only allow editing MANUAL_UPLOAD documents
-    if (isManualUploadMethod(doc.verificationMethod)) {
-      setEditingDoc(doc);
-      setEditModalOpen(true);
+  const handlePreviewSummaryImage = (docType: string, doc: Document | null) => {
+    const preview = summaryCardPreviewUrl(doc, docType, riderData?.rider?.selfieUrl);
+    if (!preview) return;
+    if (doc) {
+      handleViewDocument({ ...doc, fileUrl: preview });
+      return;
     }
-  };
-
-  const handleStartUpload = (docType: string) => {
-    if (isBlocked) return;
-    setEditingDoc({
+    // Selfie may live only on riders.selfie_url with no document row yet.
+    handleViewDocument({
       id: 0,
       docType,
-      fileUrl: "pending",
+      fileUrl: preview,
       r2Key: null,
       docNumber: null,
       verificationMethod: "MANUAL_UPLOAD",
@@ -769,7 +898,47 @@ export default function RiderOnboardingClient() {
       verifiedAt: null,
       createdAt: new Date().toISOString(),
     });
-    setEditModalOpen(true);
+  };
+
+  const handleEditDocument = (doc: Document) => {
+    const isSelfie = doc.docType === "selfie" || doc.docType === "profile_photo";
+    // Selfie: admin may replace/remove anytime (including App Verified / Auto verified).
+    if (isSelfie || isManualUploadMethod(doc.verificationMethod)) {
+      setEditingDoc(doc);
+      setDetailDocType(doc.docType);
+      setDetailEditing(true);
+    }
+  };
+
+  const handleStartUpload = (docType: string) => {
+    if (isBlocked) return;
+    const existing = getLatestDocument(docType);
+    if (existing && existing.id > 0) {
+      setEditingDoc(existing);
+    } else {
+      setEditingDoc({
+        id: 0,
+        docType,
+        fileUrl: "pending",
+        r2Key: null,
+        docNumber: null,
+        verificationMethod: "MANUAL_UPLOAD",
+        verified: false,
+        verifierUserId: null,
+        verifierName: null,
+        rejectedReason: null,
+        extractedName: null,
+        extractedDob: null,
+        extractedDataSummary: null,
+        lastVerificationId: null,
+        lastProviderReference: null,
+        metadata: null,
+        verifiedAt: null,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    setDetailDocType(docType);
+    setDetailEditing(true);
   };
 
   const handleSaveEdit = async (data: { docNumber?: string; file?: File }) => {
@@ -814,9 +983,9 @@ export default function RiderOnboardingClient() {
         throw new Error(result.error || "Failed to update document");
       }
 
-      setEditModalOpen(false);
+      setDetailEditing(false);
       setEditingDoc(null);
-      await fetchRiderData();
+      await refetchRiderDataInBackground();
     } catch (err) {
       console.error("Error updating document:", err);
       alert(err instanceof Error ? err.message : "Failed to update document");
@@ -825,26 +994,26 @@ export default function RiderOnboardingClient() {
     }
   };
 
-  const handleRemoveEdit = async () => {
-    if (!editingDoc) return;
-    if (editingDoc.id <= 0) {
-      setEditModalOpen(false);
+  const handleRemoveEdit = async (docOverride?: Document | null) => {
+    const target = docOverride ?? editingDoc;
+    if (!target) return;
+    if (target.id <= 0) {
       setEditingDoc(null);
       return;
     }
 
     try {
-      setActionLoading(documentActionKey(editingDoc));
+      setActionLoading(documentActionKey(target));
 
       const formData = new FormData();
-      formData.append("displayDocType", editingDoc.docType);
+      formData.append("displayDocType", target.docType);
       formData.append("removeImage", "true");
-      if (editingDoc.docNumber != null && String(editingDoc.docNumber).trim()) {
-        formData.append("docNumber", String(editingDoc.docNumber).trim());
+      if (target.docNumber != null && String(target.docNumber).trim()) {
+        formData.append("docNumber", String(target.docNumber).trim());
       }
 
       const response = await fetch(
-        `/api/riders/${riderId}/documents/${editingDoc.id}`,
+        `/api/riders/${riderId}/documents/${target.id}`,
         {
           method: "PUT",
           body: formData,
@@ -863,9 +1032,34 @@ export default function RiderOnboardingClient() {
         throw new Error(result.error || "Failed to remove document image");
       }
 
-      setEditModalOpen(false);
+      // Optimistic clear so Edit modal / cards never flash a broken preview.
+      if (target.docType === "selfie" || target.docType === "profile_photo") {
+        setRiderData((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            rider: { ...prev.rider, selfieUrl: null },
+            documents: prev.documents.map((d) =>
+              d.id === target.id
+                ? {
+                    ...d,
+                    fileUrl: "pending",
+                    r2Key: null,
+                    verified: false,
+                    verificationMethod: "MANUAL_UPLOAD",
+                    verificationStatus: "pending",
+                  }
+                : d,
+            ),
+          };
+        });
+      }
+
       setEditingDoc(null);
-      await fetchRiderData();
+      setDetailEditing(false);
+      setDetailDocType(null);
+      // Silent refresh — do not full-page "Loading rider verification…"
+      await refetchRiderDataInBackground();
     } catch (err) {
       console.error("Error removing document image:", err);
       alert(err instanceof Error ? err.message : "Failed to remove document image");
@@ -896,6 +1090,7 @@ export default function RiderOnboardingClient() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             displayDocType: doc.docType,
+            expectedDocumentVersion: readRcDocumentVersion(doc.metadata),
             ...(pendingEv
               ? {
                   electronicVerify: {
@@ -1128,6 +1323,7 @@ export default function RiderOnboardingClient() {
           body: JSON.stringify({
             reason: rejectReason.trim(),
             displayDocType: rejectingDoc.docType,
+            expectedDocumentVersion: readRcDocumentVersion(rejectingDoc.metadata),
           }),
         }
       );
@@ -1853,10 +2049,11 @@ export default function RiderOnboardingClient() {
                   : null);
             const kind =
               docType.startsWith("aadhaar") ? "aadhaar" : docType === "pan" ? "pan" : undefined;
-            const selfiePreview =
-              docType === "selfie"
-                ? resolveDocumentPreviewUrl(doc, riderData.rider.selfieUrl)
-                : null;
+            const previewUrl = summaryCardPreviewUrl(
+              doc,
+              docType,
+              riderData.rider.selfieUrl,
+            );
             return (
               <DocumentSummaryBlock
                 key={docType}
@@ -1869,8 +2066,22 @@ export default function RiderOnboardingClient() {
                     ? maskDocNumberForBlock(rawNumber, kind)
                     : "—"
                 }
-                previewImageUrl={selfiePreview || null}
-                onClick={() => setDetailDocType(docType)}
+                showDocumentNumber={DOC_TYPES_WITH_NUMBER.has(docType)}
+                previewImageUrl={previewUrl}
+                previewIsPdf={Boolean(previewUrl && isPdfAttachmentRef(previewUrl))}
+                onPreviewClick={() => handlePreviewSummaryImage(docType, doc)}
+                onClick={() => {
+                  // Missing selfie → one upload modal only (no Document Detail → Confirm → Edit chain).
+                  if (
+                    docType === "selfie" &&
+                    (meta.status === "missing" || meta.status === "rejected") &&
+                    !isBlocked
+                  ) {
+                    handleStartUpload(docType);
+                    return;
+                  }
+                  setDetailDocType(docType);
+                }}
               />
             );
           })}
@@ -1885,7 +2096,7 @@ export default function RiderOnboardingClient() {
             panSkipEnabledAt={riderData.rider.panSkipEnabledAt}
             panVerified={Boolean(getLatestDocument("pan")?.verified)}
             canEdit={canEditPanSkip && !isBlocked}
-            onUpdated={() => void fetchRiderData()}
+            onUpdated={() => void refetchRiderDataInBackground()}
             compact
           />
         </div>
@@ -1921,6 +2132,15 @@ export default function RiderOnboardingClient() {
                     ? maskDocNumberForBlock(doc?.docNumber)
                     : "—"
                 }
+                showDocumentNumber={DOC_TYPES_WITH_NUMBER.has(docType)}
+                previewImageUrl={summaryCardPreviewUrl(doc, docType)}
+                previewIsPdf={Boolean(
+                  (() => {
+                    const u = summaryCardPreviewUrl(doc, docType);
+                    return u && isPdfAttachmentRef(u);
+                  })(),
+                )}
+                onPreviewClick={() => handlePreviewSummaryImage(docType, doc)}
                 onClick={() => setDetailDocType(docType)}
               />
             );
@@ -1962,6 +2182,15 @@ export default function RiderOnboardingClient() {
                     ? maskDocNumberForBlock(doc?.docNumber)
                     : "—"
                 }
+                showDocumentNumber={DOC_TYPES_WITH_NUMBER.has(docType)}
+                previewImageUrl={summaryCardPreviewUrl(doc, docType)}
+                previewIsPdf={Boolean(
+                  (() => {
+                    const u = summaryCardPreviewUrl(doc, docType);
+                    return u && isPdfAttachmentRef(u);
+                  })(),
+                )}
+                onPreviewClick={() => handlePreviewSummaryImage(docType, doc)}
                 onClick={() => setDetailDocType(docType)}
               />
             );
@@ -2004,7 +2233,11 @@ export default function RiderOnboardingClient() {
               ).statusLabel
             : null
         }
-        onClose={() => setDetailDocType(null)}
+        onClose={() => {
+          setDetailDocType(null);
+          setDetailEditing(false);
+          setEditingDoc(null);
+        }}
       >
         {detailDocType ? (
           (() => {
@@ -2023,6 +2256,42 @@ export default function RiderOnboardingClient() {
                 ? getDocumentsByType("bank_proof")[0] ?? null
                 : doc;
             const actionDoc = isAdditional && docType === "bank_proof" ? realBankDoc : doc;
+
+            if (detailEditing && editingDoc) {
+              return (
+                <DocumentEditModal
+                  variant="embedded"
+                  hideChrome
+                  isOpen
+                  onClose={() => {
+                    setDetailEditing(false);
+                    setEditingDoc(null);
+                  }}
+                  onSave={handleSaveEdit}
+                  onRemove={handleRemoveEdit}
+                  currentDocNumber={editingDoc.docNumber}
+                  currentImageUrl={
+                    resolveDocumentPreviewUrl(
+                      editingDoc,
+                      editingDoc.docType === "selfie"
+                        ? riderData?.rider?.selfieUrl
+                        : null,
+                    ) || null
+                  }
+                  currentR2Key={
+                    editingDoc.fileUrl === "pending" || !editingDoc.r2Key
+                      ? null
+                      : editingDoc.r2Key
+                  }
+                  docType={editingDoc.docType}
+                  isLoading={
+                    actionLoading === documentActionKey(editingDoc) ||
+                    actionLoading === `upload:${editingDoc.docType}`
+                  }
+                />
+              );
+            }
+
             return (
               <DocumentCard
                 riderId={riderId}
@@ -2058,13 +2327,45 @@ export default function RiderOnboardingClient() {
                       resolveDocumentPreviewUrl(doc, previewFallback) || doc.fileUrl,
                   });
                 }}
-                onEdit={() =>
-                  actionDoc &&
-                  isManualUploadMethod(actionDoc.verificationMethod) &&
-                  !isBlocked &&
-                  handleEditDocument(actionDoc)
-                }
+                onEdit={() => {
+                  if (isBlocked) return;
+                  const isSelfie =
+                    docType === "selfie" || docType === "profile_photo";
+                  if (isSelfie) {
+                    if (actionDoc && actionDoc.id > 0) {
+                      handleEditDocument(actionDoc);
+                    } else {
+                      handleStartUpload(docType);
+                    }
+                    return;
+                  }
+                  if (
+                    actionDoc &&
+                    isManualUploadMethod(actionDoc.verificationMethod)
+                  ) {
+                    handleEditDocument(actionDoc);
+                  }
+                }}
                 onUpload={() => !isBlocked && handleStartUpload(docType)}
+                onRemoveImage={
+                  docType === "selfie" || docType === "profile_photo"
+                    ? async () => {
+                        if (isBlocked) return;
+                        if (!actionDoc || actionDoc.id <= 0) {
+                          handleStartUpload(docType);
+                          return;
+                        }
+                        const ok =
+                          typeof window !== "undefined"
+                            ? window.confirm(
+                                "Remove this selfie? The rider will need a new photo.",
+                              )
+                            : true;
+                        if (!ok) return;
+                        await handleRemoveEdit(actionDoc);
+                      }
+                    : undefined
+                }
                 onApprove={() =>
                   actionDoc &&
                   isManualUploadMethod(actionDoc.verificationMethod) &&
@@ -2126,24 +2427,6 @@ export default function RiderOnboardingClient() {
           }
           documentName={DOCUMENT_LABELS[selectedDocument.docType] ?? selectedDocument.docType ?? "Document"}
           documentNumber={selectedDocument.docNumber ?? null}
-        />
-      )}
-
-      {/* Edit Modal */}
-      {editingDoc && (
-        <DocumentEditModal
-          isOpen={editModalOpen}
-          onClose={() => {
-            setEditModalOpen(false);
-            setEditingDoc(null);
-          }}
-          onSave={handleSaveEdit}
-          onRemove={handleRemoveEdit}
-          currentDocNumber={editingDoc.docNumber}
-          currentImageUrl={editingDoc.fileUrl}
-          currentR2Key={editingDoc.r2Key}
-          docType={editingDoc.docType}
-          isLoading={actionLoading === documentActionKey(editingDoc)}
         />
       )}
 
@@ -2236,6 +2519,79 @@ const EV_KIND_BY_DOC_TYPE: Record<
 };
 
 // Document Card Component ? equal height, aligned, doc number always shown, image cache-bust
+function RcManualReviewPanel({ document }: { document: Document }) {
+  const state = resolveRcVerificationState(document);
+  const meta = document.metadata && typeof document.metadata === "object" ? document.metadata : {};
+  const summary =
+    document.extractedDataSummary && typeof document.extractedDataSummary === "object"
+      ? document.extractedDataSummary
+      : {};
+  const cashfree =
+    (summary.verifiedData && typeof summary.verifiedData === "object"
+      ? (summary.verifiedData as Record<string, unknown>)
+      : null) ||
+    (meta.cashfreeVerifiedData && typeof meta.cashfreeVerifiedData === "object"
+      ? (meta.cashfreeVerifiedData as Record<string, unknown>)
+      : null);
+  const ownerName =
+    String(meta.rcOwnerName || "").trim() || pickRcOwnerName(cashfree);
+  const aadhaarName = String(meta.aadhaarNameCompared || "").trim();
+  const version = readRcDocumentVersion(meta);
+  const history = readRcReviewHistory(meta);
+  if (
+    state !== "MANUAL_REVIEW_PENDING" &&
+    state !== "MANUAL_VERIFIED" &&
+    state !== "MANUAL_REJECTED" &&
+    state !== "NAME_MISMATCH" &&
+    history.length === 0
+  ) {
+    return null;
+  }
+  const label = rcDashboardStatusLabel(state);
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2.5 text-[12px] text-slate-800">
+      <p className="font-semibold text-amber-950">{label.statusLabel}</p>
+      <p className="mt-0.5 text-[11px] text-amber-900">{label.subtitle}</p>
+      <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
+        <p>
+          <span className="text-slate-500">RC owner (Cashfree)</span>
+          <span className="ml-1 font-medium">{ownerName || "—"}</span>
+        </p>
+        <p>
+          <span className="text-slate-500">Rider / Aadhaar name</span>
+          <span className="ml-1 font-medium">{aadhaarName || "—"}</span>
+        </p>
+        <p>
+          <span className="text-slate-500">Active version</span>
+          <span className="ml-1 font-mono font-medium">{version}</span>
+        </p>
+        {document.rejectedReason ? (
+          <p className="sm:col-span-2">
+            <span className="text-slate-500">Rejection reason</span>
+            <span className="ml-1 font-medium">{document.rejectedReason}</span>
+          </p>
+        ) : null}
+      </div>
+      {history.length > 0 ? (
+        <div className="mt-2 border-t border-amber-200/80 pt-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+            Previous submissions
+          </p>
+          <ul className="mt-1 space-y-1">
+            {history.map((row) => (
+              <li key={row.version} className="text-[11px] text-slate-600">
+                Version {row.version} · {row.status || "—"}
+                {row.rejectionReason ? ` · ${row.rejectionReason}` : ""}
+                {row.uploadedAt ? ` · ${new Date(row.uploadedAt).toLocaleString()}` : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 interface DocumentCardProps {
   riderId: number;
   docType: string;
@@ -2251,6 +2607,8 @@ interface DocumentCardProps {
   onView: () => void;
   onEdit: () => void;
   onUpload?: () => void;
+  /** Selfie (and similar): remove current image without opening the edit modal. */
+  onRemoveImage?: () => void | Promise<void>;
   onApprove: () => void;
   onReject: () => void;
   onElectronicVerified?: (
@@ -2286,6 +2644,7 @@ function DocumentCard({
   onView,
   onEdit,
   onUpload,
+  onRemoveImage,
   onApprove,
   onReject,
   onElectronicVerified,
@@ -2296,7 +2655,6 @@ function DocumentCard({
   allVersions,
   allowEmptyElectronicVerify = false,
 }: DocumentCardProps) {
-  const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [evModalOpen, setEvModalOpen] = useState(false);
   const [previewBroken, setPreviewBroken] = useState(false);
   const hasMultipleVersions = allVersions.length > 1;
@@ -2331,6 +2689,7 @@ function DocumentCard({
       : "?";
   const imageUrl = resolveDocumentPreviewUrl(document, fallbackPreviewUrl);
   const imageKey = imageUrl ? `${imageUrl}-${imageRefreshKey ?? document?.id ?? ""}` : "no-image";
+  const isPdfPreview = Boolean(imageUrl && isPdfAttachmentRef(imageUrl));
   const hasRealUpload =
     (Boolean(document?.r2Key) && !isNonImageFileRef(document?.r2Key)) ||
     (Boolean(document?.fileUrl) &&
@@ -2342,7 +2701,9 @@ function DocumentCard({
     Boolean(imageUrl) &&
     !previewBroken &&
     hasRealUpload &&
-    hasDocumentPreview(document, fallbackPreviewUrl);
+    hasDocumentPreview(document, fallbackPreviewUrl) &&
+    !isPdfPreview;
+  const showPdfPreview = Boolean(imageUrl) && hasRealUpload && isPdfPreview;
 
   useEffect(() => {
     setPreviewBroken(false);
@@ -2448,7 +2809,17 @@ function DocumentCard({
         )}
       </div>
 
-      {document && showPreview && imageUrl ? (
+      {document && showPdfPreview && imageUrl ? (
+        <button
+          type="button"
+          onClick={onView}
+          className="group relative flex h-28 w-full flex-col items-center justify-center gap-1.5 overflow-hidden rounded-lg border border-rose-200 bg-rose-50"
+        >
+          <FileText className="h-8 w-8 text-rose-600" />
+          <span className="text-xs font-bold uppercase tracking-wide text-rose-700">PDF attached</span>
+          <span className="text-[10px] font-semibold text-rose-600/80">Tap to view</span>
+        </button>
+      ) : document && showPreview && imageUrl ? (
         <button
           type="button"
           onClick={onView}
@@ -2496,11 +2867,24 @@ function DocumentCard({
         </p>
       ) : null}
 
+      {docType === "rc" && document ? (
+        <RcManualReviewPanel document={document} />
+      ) : null}
+
       {(() => {
+        const isSelfieDoc = docType === "selfie" || docType === "profile_photo";
+        const selfieHasImage =
+          isSelfieDoc &&
+          (Boolean(showPreview) ||
+            Boolean(fallbackPreviewUrl && !isNonImageFileRef(fallbackPreviewUrl)) ||
+            hasRealUpload);
+        // Cashfree / app-verified KYC docs hide manual actions — except selfie,
+        // which admins must always be able to remove or replace.
         const electronicOnly =
           document &&
           hasRealUpload &&
-          isElectronicallyVerifiedMethod(document.verificationMethod);
+          isElectronicallyVerifiedMethod(document.verificationMethod) &&
+          !isSelfieDoc;
         if (electronicOnly) return null;
 
         return (
@@ -2509,17 +2893,61 @@ function DocumentCard({
               Actions
             </p>
 
-            {canOfferEmptyActions ? (
+            {isSelfieDoc && selfieHasImage && !isDisabled ? (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {showPreview || imageUrl || fallbackPreviewUrl ? (
+                  <button
+                    type="button"
+                    onClick={onView}
+                    disabled={!showPreview && !imageUrl && !fallbackPreviewUrl}
+                    className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Eye className="h-3.5 w-3.5 shrink-0" />
+                    View
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={onEdit}
+                  disabled={isLoading || isDisabled}
+                  className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Upload a new selfie"
+                >
+                  <Upload className="h-3.5 w-3.5 shrink-0" />
+                  Upload new
+                </button>
+                {onRemoveImage ? (
+                  <button
+                    type="button"
+                    onClick={() => void onRemoveImage()}
+                    disabled={isLoading || isDisabled}
+                    className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="Remove selfie from storage and database"
+                  >
+                    {isLoading ? (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                    Remove
+                  </button>
+                ) : null}
+              </div>
+            ) : canOfferEmptyActions ? (
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {onUpload ? (
                   <button
                     type="button"
                     disabled={isLoading}
-                    onClick={() => setUploadModalOpen(true)}
+                    onClick={() => onUpload()}
                     className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
                   >
-                    <Upload className="h-3.5 w-3.5 shrink-0" />
-                    Upload manually
+                    {isLoading ? (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                    ) : (
+                      <Upload className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                    {isLoading ? "Uploading…" : "Upload manually"}
                   </button>
                 ) : null}
                 {canEv ? (
@@ -2535,15 +2963,15 @@ function DocumentCard({
               </div>
             ) : document && hasRealUpload && isManualUploadMethod(document.verificationMethod) ? (
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-                {showPreview || document.r2Key || imageUrl ? (
+                {showPreview || showPdfPreview || document.r2Key || imageUrl ? (
                   <button
                     type="button"
                     onClick={onView}
-                    disabled={!showPreview && !imageUrl}
+                    disabled={!showPreview && !showPdfPreview && !imageUrl}
                     className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Eye className="h-3.5 w-3.5 shrink-0" />
-                    View
+                    {showPdfPreview ? "View PDF" : "View"}
                   </button>
                 ) : null}
                 <button
@@ -2602,47 +3030,6 @@ function DocumentCard({
             ) : (
               <p className="text-center text-xs text-slate-500">No actions available.</p>
             )}
-
-            {uploadModalOpen ? (
-              <ModalPortal>
-                <div className="fixed inset-0 z-[160] flex items-center justify-center p-4">
-                  <button
-                    type="button"
-                    className="absolute inset-0 bg-slate-900/35 backdrop-blur-md"
-                    aria-label="Close"
-                    onClick={() => setUploadModalOpen(false)}
-                  />
-                  <div className="relative z-[161] w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
-                    <h4 className="text-base font-semibold text-[#0A2342]">Upload manually</h4>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Upload a document file from the dashboard if the rider cannot finish this step
-                      in the app.
-                    </p>
-                    <div className="mt-4 flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setUploadModalOpen(false)}
-                        className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isLoading}
-                        onClick={() => {
-                          setUploadModalOpen(false);
-                          onUpload?.();
-                        }}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#0A2342] px-3 py-1.5 text-sm font-semibold text-white"
-                      >
-                        {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                        Continue to upload
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </ModalPortal>
-            ) : null}
 
             {evModalOpen && canEv && EV_KIND_BY_DOC_TYPE[docType] ? (
               <ModalPortal>

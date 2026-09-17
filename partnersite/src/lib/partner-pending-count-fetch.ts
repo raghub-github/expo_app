@@ -52,8 +52,17 @@ export async function fetchPartnerPendingNewOrdersCount(
         `/api/merchant/pending-new-orders-count?store_id=${encodeURIComponent(key)}`,
         { credentials: 'include', cache: 'no-store' }
       );
+      // Soft auth outages (503) and cookie-miss races must not freeze the badge.
+      // Only hard session death should back off polls.
+      if (res.status === 503) {
+        return null;
+      }
       if (res.status === 401 || res.status === 403) {
-        authBlockedUntil = Date.now() + AUTH_BLOCK_MS;
+        const body = await res.json().catch(() => ({})) as { code?: string };
+        const code = String(body.code || '').toUpperCase();
+        if (code === 'SESSION_INVALID' || code === 'DEVICE_SESSION_INVALID') {
+          authBlockedUntil = Date.now() + AUTH_BLOCK_MS;
+        }
         return null;
       }
       const text = await res.text();

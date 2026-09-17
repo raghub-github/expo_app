@@ -87,3 +87,52 @@ test("expired access token is reported unusable (forces a real refresh, not a ca
   const fresh = readCookieAccessSession(cookieStoreFor("admin-A-uuid", "a@gatimitra.com", 3600));
   assert.equal(isCookieAccessTokenUsable(fresh), true);
 });
+
+test("chunked auth cookies win over a truncated base cookie", () => {
+  const jwt = fakeJwt("admin-chunk-uuid", "chunk@gatimitra.com");
+  const full = JSON.stringify({
+    access_token: jwt,
+    refresh_token: "rt-chunk",
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    user: { id: "admin-chunk-uuid", email: "chunk@gatimitra.com" },
+  });
+  const mid = Math.floor(full.length / 2);
+  const cookies = new Map<string, string>([
+    // Stale/truncated non-chunked base must not win.
+    ["sb-projref01-auth-token", full.slice(0, 40)],
+    ["sb-projref01-auth-token.0", full.slice(0, mid)],
+    ["sb-projref01-auth-token.1", full.slice(mid)],
+  ]);
+  const store = {
+    get: (name: string) => {
+      const v = cookies.get(name);
+      return v != null ? { value: v } : undefined;
+    },
+    getAll: () => Array.from(cookies, ([name, value]) => ({ name, value })),
+  };
+  const session = readCookieAccessSession(store);
+  assert.equal(session?.user.id, "admin-chunk-uuid");
+  assert.equal(session?.user.email, "chunk@gatimitra.com");
+});
+
+test("base64- prefixed supabase ssr cookie decodes", () => {
+  const jwt = fakeJwt("admin-b64-uuid", "b64@gatimitra.com");
+  const json = JSON.stringify({
+    access_token: jwt,
+    refresh_token: "rt-b64",
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    user: { id: "admin-b64-uuid", email: "b64@gatimitra.com" },
+  });
+  const encoded = `base64-${Buffer.from(json, "utf8").toString("base64")}`;
+  const cookies = new Map<string, string>([["sb-projref01-auth-token", encoded]]);
+  const store = {
+    get: (name: string) => {
+      const v = cookies.get(name);
+      return v != null ? { value: v } : undefined;
+    },
+    getAll: () => Array.from(cookies, ([name, value]) => ({ name, value })),
+  };
+  const session = readCookieAccessSession(store);
+  assert.equal(session?.user.id, "admin-b64-uuid");
+  assert.equal(session?.user.email, "b64@gatimitra.com");
+});

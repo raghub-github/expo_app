@@ -383,12 +383,16 @@ app.post<{
 // (order_cancellation refund_status=pending) and the customer never got paid back.
 //
 // Policy (who gets money back automatically):
-//   • system / auto-cancel            → full refund
-//   • merchant (store) cancel/reject  → full refund
+//   • system / auto-cancel            → full refund (or admin rule amount)
+//   • merchant (store) cancel/reject  → full refund (or admin rule amount)
 //   • rider-caused cancel             → full refund (fault only decides who is debited)
 //   • customer cancel                 → full refund only pre-accept (food.order-cancel.service);
 //                                       this internal hop still rejects actorRole=customer
-//   • agent/admin                     → dashboard engine flow, not this route
+//   • agent/admin                     → honor financial-rule amount; skip when silent /
+//                                       pending_approval / cancel_without_refund
+//
+// Callers should run the financial rule engine first, then pass amount when the
+// rule matched. Omit amount for a full refund of what the customer paid.
 //
 // Idempotent: autoRefundOnCancellation reclaims hollow Completed/NOOP rows
 // (no wallet/gateway movement) then re-executes; otherwise no-ops when a real

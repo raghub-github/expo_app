@@ -1,6 +1,6 @@
-import { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";
+import { refundFieldsFromEngineResult, resolvePostCancelAutoRefundPolicy } from "@gatimitra/financial-rules";
 
-export { refundFieldsFromEngineResult };
+export { refundFieldsFromEngineResult, resolvePostCancelAutoRefundPolicy };
 
 /** @deprecated Refund amounts must come from Financial Rule Engine execution. */
 export function resolveOrderCancellationRefund(input: {

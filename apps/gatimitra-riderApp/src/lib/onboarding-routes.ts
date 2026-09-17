@@ -1,4 +1,5 @@
 import type { OnboardingStep } from "@/src/stores/onboardingStore";
+import { isRcBlockingOnboardingPayment } from "@/src/lib/rc-verification-state";
 
 export type RiderOnboardingStatus =
   | "not_started"
@@ -98,6 +99,7 @@ export function resolveFirstIncompleteOnboardingStep(
     vehicleChoice?: string;
     vehicleOnboardingSubmittedFor?: string;
     bankAccountOnboardingDone?: boolean | null;
+    rcVerificationState?: string | null;
   }
 ): ServerOnboardingStep {
   const completed = completedSteps ?? [];
@@ -107,8 +109,9 @@ export function resolveFirstIncompleteOnboardingStep(
     Boolean(options?.vehicleChoice?.trim()) &&
     options?.vehicleOnboardingSubmittedFor === options?.vehicleChoice;
   if (
-    !vehicleSubmitted &&
-    !isOnboardingVehicleDocsComplete(completed, vehicleOnboardingFlow)
+    isRcBlockingOnboardingPayment(options?.rcVerificationState) ||
+    (!vehicleSubmitted &&
+      !isOnboardingVehicleDocsComplete(completed, vehicleOnboardingFlow))
   ) {
     return "dl_rc";
   }
@@ -126,7 +129,10 @@ export function canAccessOnboardingPaymentScreen(options?: {
   bankAccountOnboardingDone?: boolean | null;
   /** When true, skip bank gate (legacy callers / vehicle-only checks). */
   skipBankAccountCheck?: boolean;
+  /** Backend RC state machine — rejected / photo-required mismatch RC cannot pay. */
+  rcVerificationState?: string | null;
 }): boolean {
+  if (isRcBlockingOnboardingPayment(options?.rcVerificationState)) return false;
   const completed = options?.completedOnboardingSteps;
   const locallySubmitted =
     Boolean(options?.vehicleChoice?.trim()) &&
@@ -191,9 +197,13 @@ export function resolveOnboardingRouteFromServer(
     vehicleChoice?: string;
     vehicleOnboardingSubmittedFor?: string;
     bankAccountOnboardingDone?: boolean | null;
+    rcVerificationState?: string | null;
   }
 ): `/(onboarding)/${string}` | null {
   if (!serverStep || serverStep === "method_selection") return null;
+  if (isRcBlockingOnboardingPayment(options?.rcVerificationState)) {
+    return "/(onboarding)/dl-rc";
+  }
   if (serverStep === "payment" || serverStep === "bank_account") {
     const completed = options?.completedOnboardingSteps ?? [];
     const kycDone =
@@ -277,6 +287,38 @@ export function canAccessHome(status?: string | null, accountStatus?: string | n
   return status === "approved" || accountStatus === "ACTIVE";
 }
 
+/**
+ * Paid riders waiting for admin review land on home (sheet), not a full pending page.
+ * Still blocked from ON-DUTY until account is ACTIVE / approved.
+ */
+export function isRiderWaitingForOnboardingReview(status?: {
+  onboardingStatus?: string | null;
+  accountStatus?: string | null;
+  paymentCompleted?: boolean | null;
+} | null): boolean {
+  if (!status) return false;
+  if (String(status.accountStatus || "").toUpperCase() === "ACTIVE") return false;
+  if (status.onboardingStatus === "approved") return false;
+  if (status.onboardingStatus === "rejected") return true;
+  return (
+    status.onboardingStatus === "pending_approval" && status.paymentCompleted === true
+  );
+}
+
+/** Home tabs for live riders and paid waiting-for-review (sheet on home). */
+export function canAccessHomeTabs(
+  status?: string | null,
+  accountStatus?: string | null,
+  paymentCompleted?: boolean | null,
+): boolean {
+  if (canAccessHome(status, accountStatus)) return true;
+  return isRiderWaitingForOnboardingReview({
+    onboardingStatus: status,
+    accountStatus,
+    paymentCompleted,
+  });
+}
+
 /** Verified / post-KYC riders must not be sent back to document upload screens. */
 export function resolveEstablishedRiderHref(
   onboardingStatus?: string | null,
@@ -290,19 +332,22 @@ export function resolveEstablishedRiderHref(
   if (canAccessHome(onboardingStatus, accountStatus)) {
     return "/(tabs)/orders";
   }
-  // Pending Approval only when payment is confirmed completed.
+  // Paid pending / rejected → home + Waiting for Review sheet (never trap on full page).
+  if (
+    isRiderWaitingForOnboardingReview({
+      onboardingStatus,
+      accountStatus,
+      paymentCompleted: options?.paymentCompleted,
+    })
+  ) {
+    return "/(tabs)/orders";
+  }
   if (onboardingStatus === "pending_approval") {
-    if (options?.paymentCompleted === true) {
-      return "/(onboarding)/pending";
-    }
     // Unpaid / unknown payment — resume funnel (never trap on pending).
     const next = options?.nextOnboardingStep;
     if (next) return onboardingStepToRoute(next);
     if (options?.paymentCompleted === false) return "/(onboarding)/payment";
     return null;
-  }
-  if (onboardingStatus === "rejected") {
-    return "/(onboarding)/pending";
   }
   // Do NOT map kyc/approval APPROVED + in_progress → payment.
   return null;
@@ -399,6 +444,7 @@ export function resolveOnboardingHref(
     paymentCompleted?: boolean | null;
     referralPromptHandled?: boolean | null;
     workLocationConfirmed?: boolean | null;
+    rcVerificationState?: string | null;
   }
 ): `/(tabs)/orders` | `/(onboarding)/${string}` {
   const establishedHref = resolveEstablishedRiderHref(
@@ -412,13 +458,7 @@ export function resolveOnboardingHref(
   );
   if (establishedHref) return establishedHref;
 
-  // Only stay on pending when payment is confirmed.
-  if (status === "pending_approval" && options?.paymentCompleted === true) {
-    return "/(onboarding)/pending";
-  }
-  if (status === "rejected") {
-    return "/(onboarding)/pending";
-  }
+  // Paid pending / rejected are handled above via resolveEstablishedRiderHref → home.
 
   const completed = options?.completedOnboardingSteps ?? [];
 
@@ -441,6 +481,7 @@ export function resolveOnboardingHref(
     vehicleChoice: options?.vehicleChoice,
     vehicleOnboardingSubmittedFor: options?.vehicleOnboardingSubmittedFor,
     bankAccountOnboardingDone: options?.bankAccountOnboardingDone,
+    rcVerificationState: options?.rcVerificationState,
   });
 
   if (completed.length > 0) {
@@ -451,6 +492,7 @@ export function resolveOnboardingHref(
         vehicleChoice: options?.vehicleChoice,
         vehicleOnboardingSubmittedFor: options?.vehicleOnboardingSubmittedFor,
         bankAccountOnboardingDone: options?.bankAccountOnboardingDone,
+        rcVerificationState: options?.rcVerificationState,
       }
     );
     const resumeRoute = onboardingStepToRoute(resumeStep);
@@ -558,18 +600,64 @@ function onboardingRouteSegment(routeName: string): string {
     .trim();
 }
 
+/** dl-rc `?step=` value — open the last doc in the dl_rc capture group (incl. skipped RC). */
+export const ONBOARDING_DL_RC_LAST_DOC_STEP = "last_doc";
+
 /** Previous onboarding route for the Back button, or null on the first step. */
 export function previousOnboardingRoute(
-  currentRouteName: string
+  currentRouteName: string,
+  options?: {
+    vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment" | null;
+  }
 ): `/(onboarding)/${string}` | null {
   const seg = onboardingRouteSegment(currentRouteName);
-  // rental-ev is an alternate vehicle path, not the linear predecessor of bank.
-  // Sending bank → rental-ev causes the rental gate to bounce riders to payment.
-  if (seg === "bank-account") return "/(onboarding)/dl-rc";
-  if (seg === "rental-ev") return "/(onboarding)/dl-rc";
+  if (seg === "bank-account") {
+    if (options?.vehicleOnboardingFlow === "rental_ev") {
+      return "/(onboarding)/rental-ev?walk=1";
+    }
+    return `/(onboarding)/dl-rc?walk=1&step=${ONBOARDING_DL_RC_LAST_DOC_STEP}`;
+  }
+  if (seg === "rental-ev") {
+    return `/(onboarding)/dl-rc?walk=1&step=${ONBOARDING_DL_RC_LAST_DOC_STEP}`;
+  }
+  // Review completed PAN/selfie without auto-bounce (walk=1 keeps pan-selfie mounted).
+  if (seg === "dl-rc") return "/(onboarding)/pan-selfie?walk=1";
+  // walk=1 keeps bank-account from immediately bouncing forward to payment.
+  if (seg === "payment") return "/(onboarding)/bank-account?walk=1";
   const idx = ONBOARDING_FLOW_ROUTE_SEQUENCE.indexOf(seg as OnboardingRouteName);
   if (idx <= 0) return null;
-  return `/(onboarding)/${ONBOARDING_FLOW_ROUTE_SEQUENCE[idx - 1]}`;
+  const prev = ONBOARDING_FLOW_ROUTE_SEQUENCE[idx - 1];
+  if (prev === "pan-selfie") return "/(onboarding)/pan-selfie?walk=1";
+  if (prev === "bank-account") return "/(onboarding)/bank-account?walk=1";
+  return `/(onboarding)/${prev}`;
+}
+
+/**
+ * Immediate next screen for Continue while reviewing earlier steps (1→2→3).
+ * Unlike `resolveOnboardingHref` / first-incomplete resume, this never jumps to
+ * the furthest pending step (e.g. location must not skip to rental-ev).
+ */
+export function nextOnboardingRoute(
+  currentRouteName: string,
+  options?: {
+    vehicleOnboardingFlow?: "dl_rc" | "rental_ev" | "payment" | null;
+  }
+): `/(onboarding)/${string}` | null {
+  const seg = onboardingRouteSegment(currentRouteName);
+  if (seg === "location") return "/(onboarding)/aadhaar";
+  if (seg === "aadhaar") return "/(onboarding)/pan-selfie?walk=1";
+  if (seg === "pan-selfie") return "/(onboarding)/dl-rc";
+  if (seg === "dl-rc") {
+    return options?.vehicleOnboardingFlow === "rental_ev"
+      ? "/(onboarding)/rental-ev?doc=rental_proof"
+      : "/(onboarding)/bank-account";
+  }
+  if (seg === "rental-ev") return "/(onboarding)/bank-account";
+  if (seg === "bank-account") return "/(onboarding)/payment";
+  if (seg === "payment") return "/(onboarding)/pending";
+  const idx = ONBOARDING_FLOW_ROUTE_SEQUENCE.indexOf(seg as OnboardingRouteName);
+  if (idx < 0 || idx >= ONBOARDING_FLOW_ROUTE_SEQUENCE.length - 1) return null;
+  return `/(onboarding)/${ONBOARDING_FLOW_ROUTE_SEQUENCE[idx + 1]}`;
 }
 
 /** True when the current onboarding route has a previous step to go back to. */

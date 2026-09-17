@@ -85,6 +85,8 @@ export async function PATCH(
     const rejectedReason = body?.rejected_reason ?? null;
     const actionSource = normalizeActionSource(body?.action_source ?? "admin");
     const actionMode = normalizeActionMode(body?.accept_mode ?? body?.cancel_mode);
+    const formattedOrderId =
+      typeof body?.formatted_order_id === "string" ? body.formatted_order_id.trim() : "";
     const actionLabels = labelsForStatusUpdate({
       newStatus,
       actionSource,
@@ -98,7 +100,9 @@ export async function PATCH(
 
     const db = getDb();
 
-    const resolved = await resolveMerchantFoodOrder(db, storeInternalId, orderIdNum);
+    let resolved = await resolveMerchantFoodOrder(db, storeInternalId, orderIdNum, {
+      formattedOrderId: formattedOrderId || null,
+    });
     if (!resolved) {
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }

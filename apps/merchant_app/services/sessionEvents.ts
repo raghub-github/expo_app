@@ -1,11 +1,14 @@
 export type SessionRevokedPayload = {
   reason: "revoked" | "invalid_token";
+  /** Safe fingerprint of the token that was rejected — must match live session to logout. */
+  tokenFingerprint?: string | null;
 };
 
 type Listener = (payload: SessionRevokedPayload) => void;
 
 let listeners: Listener[] = [];
-let hasFired = false;
+/** Dedupe repeated notifies for the same rejected token fingerprint. */
+let lastNotifiedFingerprint: string | null = null;
 
 export function onSessionRevoked(listener: Listener): () => void {
   listeners.push(listener);
@@ -15,8 +18,10 @@ export function onSessionRevoked(listener: Listener): () => void {
 }
 
 export function notifySessionRevoked(payload: SessionRevokedPayload = { reason: "revoked" }) {
-  if (hasFired) return;
-  hasFired = true;
+  const fp = payload.tokenFingerprint?.trim() || null;
+  if (fp && fp === lastNotifiedFingerprint) return;
+  if (fp) lastNotifiedFingerprint = fp;
+
   for (const listener of listeners) {
     try {
       listener(payload);
@@ -27,6 +32,5 @@ export function notifySessionRevoked(payload: SessionRevokedPayload = { reason: 
 }
 
 export function resetSessionRevokedFlag() {
-  hasFired = false;
+  lastNotifiedFingerprint = null;
 }
-

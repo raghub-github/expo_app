@@ -42,6 +42,12 @@ type LayoutApiPayload = {
   gridFirstUnder250FilterLabel?: string;
   gridFirstUnder250TabImageUrl?: string | null;
   gridFirstUnder250HeroImageUrl?: string | null;
+  classicUnder250Enabled?: boolean;
+  classicUnder250MaxPrice?: number;
+  classicUnder250Title?: string;
+  classicUnder250FilterLabel?: string;
+  classicUnder250TabImageUrl?: string | null;
+  classicUnder250HeroImageUrl?: string | null;
   discoveryDealsAtMaxPrice?: number | null;
   discoveryDealsAtImageUrl?: string | null;
   discoveryDealsAtHeroImageUrl?: string | null;
@@ -243,23 +249,43 @@ export default function CxAppHomeStateDetailPage() {
       if (typeof json.gridFirstSubscriptionRowBgColor === "string") {
         setSubscriptionRowBgColor(json.gridFirstSubscriptionRowBgColor);
       }
-      if (typeof json.gridFirstUnder250Enabled === "boolean") {
-        setUnder250Enabled(json.gridFirstUnder250Enabled);
+      const keyForUnder = json.layoutKey ?? DEFAULT_FOOD_HOME_LAYOUT;
+      const useClassicUnder = keyForUnder === "classic";
+      const underEnabled = useClassicUnder
+        ? (json.classicUnder250Enabled ?? json.gridFirstUnder250Enabled)
+        : json.gridFirstUnder250Enabled;
+      const underTitle = useClassicUnder
+        ? (json.classicUnder250Title ?? json.gridFirstUnder250Title)
+        : json.gridFirstUnder250Title;
+      const underFilter = useClassicUnder
+        ? (json.classicUnder250FilterLabel ?? json.gridFirstUnder250FilterLabel)
+        : json.gridFirstUnder250FilterLabel;
+      const underMax = useClassicUnder
+        ? (json.classicUnder250MaxPrice ?? json.gridFirstUnder250MaxPrice)
+        : json.gridFirstUnder250MaxPrice;
+      const underTab = useClassicUnder
+        ? (json.classicUnder250TabImageUrl ?? json.gridFirstUnder250TabImageUrl)
+        : json.gridFirstUnder250TabImageUrl;
+      const underHero = useClassicUnder
+        ? (json.classicUnder250HeroImageUrl ?? json.gridFirstUnder250HeroImageUrl)
+        : json.gridFirstUnder250HeroImageUrl;
+      if (typeof underEnabled === "boolean") {
+        setUnder250Enabled(underEnabled);
       }
-      if (typeof json.gridFirstUnder250Title === "string") {
-        setUnder250Title(json.gridFirstUnder250Title);
+      if (typeof underTitle === "string") {
+        setUnder250Title(underTitle);
       }
-      if (typeof json.gridFirstUnder250FilterLabel === "string") {
-        setUnder250FilterLabel(json.gridFirstUnder250FilterLabel);
+      if (typeof underFilter === "string") {
+        setUnder250FilterLabel(underFilter);
       }
-      if (json.gridFirstUnder250MaxPrice != null) {
-        setUnder250MaxPrice(json.gridFirstUnder250MaxPrice);
+      if (underMax != null) {
+        setUnder250MaxPrice(underMax);
       }
-      if (json.gridFirstUnder250TabImageUrl !== undefined) {
-        setUnder250TabImageUrl(json.gridFirstUnder250TabImageUrl?.trim() || null);
+      if (underTab !== undefined) {
+        setUnder250TabImageUrl(underTab?.trim() || null);
       }
-      if (json.gridFirstUnder250HeroImageUrl !== undefined) {
-        setUnder250HeroImageUrl(json.gridFirstUnder250HeroImageUrl?.trim() || null);
+      if (underHero !== undefined) {
+        setUnder250HeroImageUrl(underHero?.trim() || null);
       }
       if (json.discoveryDealsAtMaxPrice !== undefined) {
         setDiscoveryDealsAtMaxPrice(parseDiscoveryDealsAtMaxPrice(json.discoveryDealsAtMaxPrice));
@@ -349,7 +375,11 @@ export default function CxAppHomeStateDetailPage() {
     }
   };
 
-  const gridFirstPanelEnabled = activeLayout === "grid_first" || previewLayout === "grid_first";
+  const isGridFirstContext =
+    activeLayout === "grid_first" || previewLayout === "grid_first";
+  const isClassicContext = activeLayout === "classic" || previewLayout === "classic";
+  /** Classic + grid_first share hero carousel + meals-under-price config. */
+  const sharedClassicGridPanelsEnabled = isGridFirstContext || isClassicContext;
   const discoveryPanelEnabled = activeLayout === "discovery" || previewLayout === "discovery";
 
   return (
@@ -456,7 +486,7 @@ export default function CxAppHomeStateDetailPage() {
 
           <GridFirstSubscriptionRowPanel
             stateId={stateId}
-            enabled={gridFirstPanelEnabled}
+            enabled={isGridFirstContext}
             initialEnabled={subscriptionRowEnabled}
             initialText={subscriptionRowText}
             initialBackgroundColor={subscriptionRowBgColor}
@@ -476,7 +506,8 @@ export default function CxAppHomeStateDetailPage() {
 
           <GridFirstUnder250Panel
             stateId={stateId}
-            enabled={gridFirstPanelEnabled}
+            enabled={sharedClassicGridPanelsEnabled}
+            layoutScope={isClassicContext ? "classic" : "grid_first"}
             initialEnabled={under250Enabled}
             initialMaxPrice={under250MaxPrice}
             initialTitle={under250Title}
@@ -490,19 +521,32 @@ export default function CxAppHomeStateDetailPage() {
               setUnder250FilterLabel(config.filterLabel);
               setUnder250TabImageUrl(config.tabImageUrl);
               setUnder250HeroImageUrl(config.heroImageUrl);
-              writeLayoutCache(stateId, {
-                layoutKey: activeLayout,
-                gridFirstHeroMedia: heroMediaItems,
-                gridFirstSubscriptionRowEnabled: subscriptionRowEnabled,
-                gridFirstSubscriptionRowText: subscriptionRowText,
-                gridFirstSubscriptionRowBgColor: subscriptionRowBgColor,
-                gridFirstUnder250Enabled: config.enabled,
-                gridFirstUnder250MaxPrice: config.maxPrice,
-                gridFirstUnder250Title: config.title,
-                gridFirstUnder250FilterLabel: config.filterLabel,
-                gridFirstUnder250TabImageUrl: config.tabImageUrl,
-                gridFirstUnder250HeroImageUrl: config.heroImageUrl,
-              });
+              writeLayoutCache(
+                stateId,
+                isClassicContext
+                  ? {
+                      layoutKey: activeLayout,
+                      classicUnder250Enabled: config.enabled,
+                      classicUnder250MaxPrice: config.maxPrice,
+                      classicUnder250Title: config.title,
+                      classicUnder250FilterLabel: config.filterLabel,
+                      classicUnder250TabImageUrl: config.tabImageUrl,
+                      classicUnder250HeroImageUrl: config.heroImageUrl,
+                    }
+                  : {
+                      layoutKey: activeLayout,
+                      gridFirstHeroMedia: heroMediaItems,
+                      gridFirstSubscriptionRowEnabled: subscriptionRowEnabled,
+                      gridFirstSubscriptionRowText: subscriptionRowText,
+                      gridFirstSubscriptionRowBgColor: subscriptionRowBgColor,
+                      gridFirstUnder250Enabled: config.enabled,
+                      gridFirstUnder250MaxPrice: config.maxPrice,
+                      gridFirstUnder250Title: config.title,
+                      gridFirstUnder250FilterLabel: config.filterLabel,
+                      gridFirstUnder250TabImageUrl: config.tabImageUrl,
+                      gridFirstUnder250HeroImageUrl: config.heroImageUrl,
+                    }
+              );
             }}
           />
 
@@ -544,10 +588,11 @@ export default function CxAppHomeStateDetailPage() {
             }}
           />
 
-          {gridFirstPanelEnabled && !syncingLayout ? (
+          {sharedClassicGridPanelsEnabled && !syncingLayout ? (
             <GridFirstHeroMediaPanel
               stateId={stateId}
               enabled
+              layoutScope={isClassicContext ? "classic" : "grid_first"}
               initialItems={heroMediaItems ?? []}
             />
           ) : null}

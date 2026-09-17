@@ -18,6 +18,11 @@ import {
 } from "@/src/hooks/useRiderVehicle";
 import { RIDER_VEHICLES_QUERY_KEY } from "@/src/hooks/useRiderVehicles";
 import { useVehicleGateStore } from "@/src/stores/vehicleGateStore";
+import {
+  isRcApprovedForVehicleSheet,
+  isRcManualReviewPending,
+  isRcRejectedOrNeedsReupload,
+} from "@/src/lib/rc-verification-state";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { resolveDutyServiceTypesForToggle } from "@/src/hooks/useRiderDutyServiceFilter";
 import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
@@ -30,43 +35,18 @@ import {
 import { useRef, useState } from "react";
 import type { RiderVehicleView } from "@/src/services/api/riderApi";
 import { openDutyWorkLocationSheet } from "@/src/stores/dutyWorkLocationSheetStore";
-
-function vehicleDutyLabel(v: RiderVehicleView): string {
-  const cls =
-    v.vehicleClass === "2_wheeler"
-      ? "2W"
-      : v.vehicleClass === "3_wheeler"
-        ? "3W"
-        : v.vehicleClass === "4_wheeler"
-          ? "4W"
-          : "Vehicle";
-  const fuel = v.fuelKind === "ev" ? "EV" : v.fuelKind === "petrol" ? "Petrol" : v.fuelKind || "";
-  const own = v.commercial ? "Commercial" : "Non-commercial";
-  return `${cls}${fuel ? ` · ${fuel}` : ""} · ${own} · ${v.registrationMasked || v.registrationNumber}`;
-}
-
-function promptSelectVehicleForDuty(
-  vehicles: RiderVehicleView[],
-  activeVehicleId: number | null
-): Promise<number | null> {
-  return new Promise((resolve) => {
-    Alert.alert(
-      "Select vehicle for today's work",
-      "You're going online with the vehicle you pick. Services available depend on that vehicle and your current location.",
-      [
-        ...vehicles.slice(0, 2).map((v) => ({
-          text: `${v.isActiveVehicle || v.id === activeVehicleId ? "✓ " : ""}${vehicleDutyLabel(v)}`,
-          onPress: () => resolve(v.id),
-        })),
-        {
-          text: "Cancel",
-          style: "cancel" as const,
-          onPress: () => resolve(null),
-        },
-      ]
-    );
-  });
-}
+import { useDutyVehiclePickStore } from "@/src/stores/dutyVehiclePickStore";
+import { classifyRiderActionFailure } from "@/src/lib/rider-action-kind";
+import { openDutyActionError } from "@/src/stores/dutyActionErrorStore";
+import { isRiderNetworkOnline } from "@/src/stores/riderNetworkStore";
+import {
+  resolveDutyGoOnFailureKind,
+  type DutyLocationFixResult,
+} from "@/src/lib/dutyToggleFailure";
+import { useOnboardingStore } from "@/src/stores/onboardingStore";
+import { useRiderStatus } from "@/src/hooks/useOnboarding";
+import { isRiderWaitingForOnboardingReview } from "@/src/lib/onboarding-routes";
+import { openWaitingForReviewSheet } from "@/src/stores/waitingForReviewSheetStore";
 
 async function loadRiderVehicleStatusForDutyGate(): Promise<RiderVehicleStatusResponse | null> {
   const token = useSessionStore.getState().session?.accessToken;
@@ -89,19 +69,24 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
 }
 
 /** Single GPS resolve for Duty ON — reused for precheck + PUT /duty. */
-async function resolveDutyToggleLocationFix(): Promise<{ lat: number; lon: number } | null> {
+async function resolveDutyToggleLocationFix(): Promise<DutyLocationFixResult> {
   try {
+    const servicesOn = await Location.hasServicesEnabledAsync();
+    if (!servicesOn) return { ok: false, reason: "services_disabled" };
+
     const perm = await Location.getForegroundPermissionsAsync();
-    if (perm.status !== "granted") return null;
+    if (perm.status !== "granted") return { ok: false, reason: "permission" };
+
     const fresh = await withTimeout(
       Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
       2500
     );
-    const loc = fresh ?? (await Location.getLastKnownPositionAsync({ maxAge: 60_000 }).catch(() => null));
-    if (!loc) return null;
-    return { lat: loc.coords.latitude, lon: loc.coords.longitude };
+    const loc =
+      fresh ?? (await Location.getLastKnownPositionAsync({ maxAge: 60_000 }).catch(() => null));
+    if (!loc) return { ok: false, reason: "unavailable" };
+    return { ok: true, lat: loc.coords.latitude, lon: loc.coords.longitude };
   } catch {
-    return null;
+    return { ok: false, reason: "unavailable" };
   }
 }
 
@@ -181,6 +166,9 @@ function parseWorkLocationMismatch(error: unknown): {
 function deferDutyQueryRefresh(queryClient: ReturnType<typeof useQueryClient>) {
   // Non-critical — never block Duty ON success on these.
   void queryClient.invalidateQueries({ queryKey: ["rider", "duty"] });
+  void queryClient.invalidateQueries({ queryKey: ["rider", "eligibility"] });
+  void queryClient.invalidateQueries({ queryKey: RIDER_VEHICLES_QUERY_KEY });
+  void queryClient.invalidateQueries({ queryKey: riderVehicleQueryKey });
   setTimeout(() => {
     void queryClient.invalidateQueries({ queryKey: ["rider", "subscription"] });
     void queryClient.invalidateQueries({ queryKey: ["rider", "earnings"] });
@@ -201,6 +189,8 @@ export function useDutyToggle() {
   const { data: subscriptionStatus } = useRiderSubscriptionStatus();
   const { data: dutyStatus } = useDutyStatus();
   const { data: earnings } = useEarningsSummary();
+  const riderId = useOnboardingStore((s) => s.data.riderId);
+  const { data: riderStatus } = useRiderStatus(riderId);
   const [localBusy, setLocalBusy] = useState(false);
   const inFlightRef = useRef(false);
 
@@ -222,6 +212,7 @@ export function useDutyToggle() {
     subscriptionStatus?.dues?.dispatchBlocked === true ||
     subscriptionStatus?.dues?.alertBanner?.variant === "restricted";
   const walletPenaltyBlocksDuty = restrictions?.penaltyDutyStopped === true;
+  const onboardingReviewBlocksDuty = isRiderWaitingForOnboardingReview(riderStatus);
 
   const dutyGoOnBlocked =
     accountFullyBlocked || subscriptionDutyBlocked || walletPenaltyBlocksDuty;
@@ -232,14 +223,16 @@ export function useDutyToggle() {
       serviceTypes,
       lat,
       lon,
+      vehicleId,
     }: {
       status: boolean;
       serviceTypes?: string[];
       lat?: number;
       lon?: number;
+      vehicleId?: number;
     }) => {
       const deviceId = await getOrCreateDeviceId();
-      return riderApi.updateDutyStatus(status, serviceTypes, { deviceId, lat, lon });
+      return riderApi.updateDutyStatus(status, serviceTypes, { deviceId, lat, lon, vehicleId });
     },
     onSuccess: (data) => {
       void useDutyStore.getState().setDutyStatus(data.isOnDuty);
@@ -257,15 +250,27 @@ export function useDutyToggle() {
     setLocalBusy(true);
     try {
       if (next) {
+        if (onboardingReviewBlocksDuty) {
+          openWaitingForReviewSheet();
+          return { ok: false, reason: "blocked" };
+        }
         if (dutyGoOnBlocked) {
           deferDutyQueryRefresh(queryClient);
           return { ok: false, blockedFromGoingOn: true, reason: "blocked" };
         }
 
+        // Network before GPS — never show "Location needed" when offline.
+        if (!isRiderNetworkOnline()) {
+          openDutyActionError({ kind: "network" }, () => {
+            void setDuty(true);
+          });
+          return { ok: false, reason: "network" };
+        }
+
         // Parallel: GPS once + vehicle status (cache-first, short refresh).
         const cached =
           queryClient.getQueryData<RiderVehicleStatusResponse>(riderVehicleQueryKey) ?? null;
-        const [fix, fetchedVehicle] = await Promise.all([
+        const [fixResult, fetchedVehicle] = await Promise.all([
           resolveDutyToggleLocationFix(),
           withTimeout(loadRiderVehicleStatusForDutyGate(), 2000),
         ]);
@@ -275,79 +280,98 @@ export function useDutyToggle() {
           queryClient.setQueryData(riderVehicleQueryKey, vehicleStatus);
         }
 
+        const rcState = vehicleStatus?.rcVerificationState ?? null;
+        if (isRcManualReviewPending(rcState) || isRcRejectedOrNeedsReupload(rcState)) {
+          // Pending/rejected RC: RiderVehiclePrompt shows the right gate sheet (not vehicle complete).
+          openVehicleSheet();
+          return { ok: false, reason: "vehicle" };
+        }
+
         if (!vehicleStatus?.isComplete) {
           openVehicleSheet();
           return { ok: false, reason: "vehicle" };
         }
 
-        if (!vehicleStatus.vehicle?.verified) {
+        if (!vehicleStatus.vehicle?.verified || !isRcApprovedForVehicleSheet(rcState)) {
           openVerificationModal();
           return { ok: false, reason: "vehicle" };
         }
 
         // Multi-vehicle pick only when cache/fleet says >1 — skip blocking list fetch
         // when we already know there is a single verified vehicle.
-        const fleetCache = queryClient.getQueryData<{
+        const fleetQueries = queryClient.getQueriesData<{
           vehicles?: RiderVehicleView[];
           activeVehicleId?: number | null;
-        }>(RIDER_VEHICLES_QUERY_KEY);
-        const cachedVerified = (fleetCache?.vehicles ?? []).filter(
+        }>({ queryKey: RIDER_VEHICLES_QUERY_KEY });
+        const fleetCache = fleetQueries.find(([, data]) => data?.vehicles)?.[1];
+        let fleetVehicles = fleetCache?.vehicles ?? [];
+        const cachedVerified = fleetVehicles.filter(
           (v) => v.verified && String(v.status).toLowerCase() !== "retired"
         );
         const needsFleetFetch = cachedVerified.length !== 1;
+        let selectedVehicleId: number | null = fleetCache?.activeVehicleId ?? null;
 
         if (needsFleetFetch) {
           try {
             const fleet = await withTimeout(riderApi.getVehicles(), 2500);
             if (fleet) {
               queryClient.setQueryData(RIDER_VEHICLES_QUERY_KEY, fleet);
-              const verified = (fleet.vehicles ?? []).filter(
+              fleetVehicles = fleet.vehicles ?? [];
+              const verified = fleetVehicles.filter(
                 (v) => v.verified && String(v.status).toLowerCase() !== "retired"
               );
               if (verified.length > 1) {
-                const picked = await promptSelectVehicleForDuty(
-                  verified,
-                  fleet.activeVehicleId ?? null
-                );
+                const picked = await useDutyVehiclePickStore
+                  .getState()
+                  .request(verified, fleet.activeVehicleId ?? null);
                 if (picked == null) {
                   return { ok: false, reason: "vehicle" };
                 }
-                if (picked !== fleet.activeVehicleId) {
-                  await riderApi.setActiveVehicle(picked);
-                  void queryClient.invalidateQueries({ queryKey: RIDER_VEHICLES_QUERY_KEY });
-                  void queryClient.invalidateQueries({ queryKey: riderVehicleQueryKey });
-                }
-              } else if (
-                verified.length === 1 &&
-                verified[0]!.id !== fleet.activeVehicleId
-              ) {
-                await riderApi.setActiveVehicle(verified[0]!.id);
-                void queryClient.invalidateQueries({ queryKey: RIDER_VEHICLES_QUERY_KEY });
-                void queryClient.invalidateQueries({ queryKey: riderVehicleQueryKey });
+                selectedVehicleId = picked;
+              } else if (verified.length === 1) {
+                selectedVehicleId = verified[0]!.id;
               }
             }
           } catch {
             // Non-fatal: fall through with current active vehicle.
           }
+        } else if (cachedVerified.length === 1) {
+          selectedVehicleId = cachedVerified[0]!.id;
         }
 
         let serviceTypes = resolveDutyServiceTypesForToggle(queryClient);
+        if (!serviceTypes?.length && selectedVehicleId != null) {
+          const chosen = fleetVehicles.find((v) => v.id === selectedVehicleId);
+          serviceTypes = (["food", "parcel", "person_ride"] as const).filter(
+            (s) => chosen?.services?.[s]?.eligible,
+          );
+        }
         if (!serviceTypes?.length) {
-          const stored = vehicleStatus.vehicle?.serviceTypes;
-          if (Array.isArray(stored) && stored.length > 0) {
-            serviceTypes = stored.map(String);
-          } else {
-            serviceTypes = ["food", "parcel", "person_ride"];
-          }
+          Alert.alert(
+            "Select a service",
+            "Turn on at least one service (Food, Parcel, or Person Ride) on Home, then go ON-DUTY.",
+          );
+          return { ok: false, reason: "vehicle" };
         }
 
-        if (!fix?.lat || !fix?.lon) {
-          Alert.alert(
-            "Location needed",
-            "Turn on GPS and try again. We need your current location before you can go ON-DUTY."
+        if (!fixResult.ok) {
+          // Fused location can fail when offline — re-check before GPS modal.
+          if (!isRiderNetworkOnline()) {
+            openDutyActionError({ kind: "network" }, () => {
+              void setDuty(true);
+            });
+            return { ok: false, reason: "network" };
+          }
+          openDutyActionError(
+            { kind: "location", locationReason: fixResult.reason },
+            () => {
+              void setDuty(true);
+            }
           );
           return { ok: false, reason: "location" };
         }
+
+        const fix = { lat: fixResult.lat, lon: fixResult.lon };
 
         // Precheck BEFORE PUT /duty — mismatch sheet must not appear after optimistic ON.
         try {
@@ -382,7 +406,21 @@ export function useDutyToggle() {
             });
             return { ok: false, reason: "location" };
           }
-        } catch {
+        } catch (preErr) {
+          // Soft for older backends; still surface true offline / unreachable.
+          if (!isRiderNetworkOnline()) {
+            openDutyActionError({ kind: "network" }, () => {
+              void setDuty(true);
+            });
+            return { ok: false, reason: "network" };
+          }
+          const preKind = classifyRiderActionFailure(preErr);
+          if (preKind === "network" || preKind === "timeout") {
+            openDutyActionError({ kind: "network" }, () => {
+              void setDuty(true);
+            });
+            return { ok: false, reason: "network" };
+          }
           // Soft: if precheck fails (older backend), PUT /duty still enforces mismatch.
         }
 
@@ -392,6 +430,7 @@ export function useDutyToggle() {
             serviceTypes,
             lat: fix.lat,
             lon: fix.lon,
+            vehicleId: selectedVehicleId ?? undefined,
           });
           await useDutyStore.getState().setDutyStatus(data.isOnDuty);
           if (!data.isOnDuty) {
@@ -426,12 +465,29 @@ export function useDutyToggle() {
             deferDutyQueryRefresh(queryClient);
             return { ok: false, blockedFromGoingOn: true, reason: "blocked" };
           }
-          Alert.alert(
-            "Could not go ON duty",
-            error instanceof Error ? error.message : "Check your connection and try again."
-          );
+          const onboardingPendingHaystack = `${
+            error instanceof Error ? error.message : ""
+          }\n${error instanceof HttpError ? error.body ?? "" : ""}`;
+          if (/ONBOARDING_VERIFICATION_PENDING|waiting for review/i.test(onboardingPendingHaystack)) {
+            openWaitingForReviewSheet();
+            return { ok: false, reason: "blocked" };
+          }
+          const failKind = resolveDutyGoOnFailureKind({
+            online: isRiderNetworkOnline(),
+            apiError: error,
+          });
+          openDutyActionError({ kind: failKind === "location" ? "server" : failKind }, () => {
+            void setDuty(true);
+          });
           return { ok: false, reason: "network" };
         }
+      }
+
+      if (!isRiderNetworkOnline()) {
+        openDutyActionError({ kind: "network" }, () => {
+          void setDuty(false);
+        });
+        return { ok: false, reason: "network" };
       }
 
       try {
@@ -442,9 +498,22 @@ export function useDutyToggle() {
         await useDutyStore.getState().setDutyStatus(data.isOnDuty);
         return { ok: true };
       } catch (error) {
-        Alert.alert(
-          "Could not go OFF duty",
-          error instanceof Error ? error.message : "Check your connection and try again."
+        const failKind = resolveDutyGoOnFailureKind({
+          online: isRiderNetworkOnline(),
+          apiError: error,
+        });
+        openDutyActionError(
+          {
+            kind: failKind === "location" ? "server" : failKind,
+            title: "Could not go OFF duty",
+            message:
+              error instanceof Error
+                ? error.message
+                : "Check your connection and try again.",
+          },
+          () => {
+            void setDuty(false);
+          }
         );
         return { ok: false, reason: "network" };
       }
@@ -464,5 +533,6 @@ export function useDutyToggle() {
     setDuty,
     isPending: updateDutyMutation.isPending || localBusy,
     dutyGoOnBlocked,
+    onboardingReviewBlocksDuty,
   };
 }

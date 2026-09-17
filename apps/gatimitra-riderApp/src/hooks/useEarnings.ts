@@ -1,5 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { riderApi } from "@/src/services/api/riderApi";
+import { useSessionStore } from "@/src/stores/sessionStore";
+import { isUnauthorizedError } from "@/src/services/http";
 
 export type EarningsSummary = Awaited<ReturnType<typeof riderApi.getEarningsSummary>>;
 
@@ -29,18 +31,28 @@ export const DEFAULT_EARNINGS_SUMMARY: EarningsSummary = {
 export const EARNINGS_QUERY_KEY = ["rider", "earnings", "summary"] as const;
 
 export function useEarningsSummary() {
+  const sessionHydrated = useSessionStore((s) => s.hydrated);
+  const accessToken = useSessionStore((s) => s.session?.accessToken);
+  const canFetch = sessionHydrated && Boolean(accessToken);
+
   return useQuery({
     queryKey: EARNINGS_QUERY_KEY,
     queryFn: () => riderApi.getEarningsSummary(),
+    enabled: canFetch,
     placeholderData: (previous) => previous ?? DEFAULT_EARNINGS_SUMMARY,
     staleTime: 60_000,
     gcTime: 10 * 60_000,
-    refetchInterval: 60_000,
-    retry: 2,
+    refetchInterval: canFetch ? 60_000 : false,
+    retry: (count, error) => {
+      if (isUnauthorizedError(error)) return false;
+      return count < 2;
+    },
   });
 }
 
 export function prefetchEarningsSummary(queryClient: ReturnType<typeof useQueryClient>) {
+  const token = useSessionStore.getState().session?.accessToken;
+  if (!token) return Promise.resolve();
   return queryClient.prefetchQuery({
     queryKey: EARNINGS_QUERY_KEY,
     queryFn: () => riderApi.getEarningsSummary(),

@@ -24,6 +24,7 @@ import {
 import type { BillingResult } from "../billing/types.js";
 import { isSubscriptionOptInTruthy } from "../../lib/customer-subscription-refund-allocation.js";
 import { reconcileActiveSubscriptionsForRefundedOrders } from "./customer-subscription-refund.service.js";
+import { isTransientDbError } from "../../lib/db/is-transient-db-error.js";
 
 export type CustomerBillingCycle = "weekly" | "monthly" | "yearly";
 
@@ -321,7 +322,14 @@ export async function getActiveCustomerSubscription(customerId: number) {
   try {
     await reconcileActiveSubscriptionsForRefundedOrders(customerId, sql);
   } catch (err) {
-    console.error("[customer-subscription] reconcile refunded-order subscriptions failed:", err);
+    if (isTransientDbError(err)) {
+      console.warn(
+        "[customer-subscription] reconcile skipped (transient DB):",
+        (err as { code?: string })?.code ?? (err as Error)?.message
+      );
+    } else {
+      console.error("[customer-subscription] reconcile refunded-order subscriptions failed:", err);
+    }
   }
   try {
     const rows = await sql`

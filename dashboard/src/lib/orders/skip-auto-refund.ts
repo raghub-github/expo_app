@@ -8,11 +8,9 @@ export function isIntentionalNoRefundCancel(input: {
   reasonCode?: string | null;
   metadata?: Record<string, unknown> | null;
 }): boolean {
-  const status = String(input.refundStatus ?? "").trim().toLowerCase();
-  if (status === "no_refund" || status === "none" || status === "skipped") {
-    return true;
-  }
-
+  // Bare refund_status=`no_refund` is NOT intentional — the financial rule
+  // engine stamps that for auto-cancels that still must refund the customer.
+  // Only explicit admin "Cancel without refund" signals skip auto-refund.
   const code = String(input.reasonCode ?? "").trim().toLowerCase();
   if (
     code === "cancelled_without_refund" ||

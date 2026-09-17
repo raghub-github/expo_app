@@ -15,6 +15,11 @@ import {
 import { isPanAlreadyRegistered, normalizePan } from "../../lib/rider-pan-registration-check.js";
 import { isDlAlreadyRegistered, normalizeDlNumber } from "../../lib/rider-dl-registration-check.js";
 import { isRcAlreadyRegistered, normalizeRcNumber } from "../../lib/rider-rc-registration-check.js";
+import {
+  filterSkippableOnboardingDocs,
+  loadVehicleDocRequirements,
+  validateRequiredVehicleDocs,
+} from "../../lib/rider-onboarding-vehicle-doc-rules.js";
 
 function parseRiderIdFromAuthSub(sub: string | undefined | null): number | null {
   if (!sub) return null;
@@ -451,10 +456,9 @@ export async function onboardingRoutes(app: FastifyInstance) {
           aadhaarNumber: z.string().min(1).max(20),
           riderId: z.string().optional(),
         }),
+        // Extra rate-limit fields are optional — keep response schema loose.
         response: {
-          200: z.object({
-            registered: z.boolean(),
-          }),
+          200: z.object({ registered: z.boolean() }).passthrough(),
         },
       },
     },
@@ -469,6 +473,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
       }
       const excludeId = resolveExcludeRiderId(req.auth?.sub, riderId);
       const registered = await isAadhaarAlreadyRegistered(digits, excludeId);
+      // check-* must NOT attach Verify Instantly rate-limit fields — opening the
+      // screen / typing a number must not consume or display a lock.
       return { registered };
     }
   );
@@ -482,9 +488,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
           riderId: z.string().optional(),
         }),
         response: {
-          200: z.object({
-            registered: z.boolean(),
-          }),
+          200: z.object({ registered: z.boolean() }).passthrough(),
         },
       },
     },
@@ -512,9 +516,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
           riderId: z.string().optional(),
         }),
         response: {
-          200: z.object({
-            registered: z.boolean(),
-          }),
+          200: z.object({ registered: z.boolean() }).passthrough(),
         },
       },
     },
@@ -542,9 +544,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
           riderId: z.string().optional(),
         }),
         response: {
-          200: z.object({
-            registered: z.boolean(),
-          }),
+          200: z.object({ registered: z.boolean() }).passthrough(),
         },
       },
     },
@@ -584,10 +584,14 @@ export async function onboardingRoutes(app: FastifyInstance) {
             vehicleCategoryCode: z.string().optional(),
             /** Specific model name when catalog label lists multiple models (e.g. "Hyundai i10"). */
             vehicleModelLabel: z.string().optional(),
+            /** Drop persisted vehicle type when category changed without a new type yet. */
+            clearVehicleChoice: z.boolean().optional(),
             onboardingFlow: z.enum(["dl_rc", "rental_ev", "payment"]).optional(),
             submitVehicleDocs: z.boolean().optional(),
             /** Optional docs the rider skipped during vehicle onboarding. */
             skippedOnboardingDocs: z.array(z.string()).optional(),
+            /** RC vehicle-type mismatch: switch catalog row to match RC, or re-enter RC. */
+            rcVehicleMismatchResolution: z.enum(["switch", "resubmit"]).optional(),
             /** Bank step: rider skipped linking for now (add later from Earnings). */
             skipped: z.boolean().optional(),
             rentalProofSignedUrl: z.string().optional(),
@@ -605,6 +609,12 @@ export async function onboardingRoutes(app: FastifyInstance) {
         }),
         response: {
           200: z.object({ success: z.boolean() }),
+          400: z.object({
+            error: z.string(),
+            message: z.string(),
+            missing: z.array(z.string()).optional(),
+            invalidSkips: z.array(z.string()).optional(),
+          }),
           403: z.object({
             error: z.string(),
             message: z.string(),
@@ -667,6 +677,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
               rejectedReason: riderDocuments.rejectedReason,
               metadata: riderDocuments.metadata,
               docNumber: riderDocuments.docNumber,
+              fileUrl: riderDocuments.fileUrl,
+              r2Key: riderDocuments.r2Key,
             })
             .from(riderDocuments)
             .where(
@@ -706,7 +718,12 @@ export async function onboardingRoutes(app: FastifyInstance) {
               method.startsWith("CASHFREE_") ||
               method === "RAZORPAY_BANK");
           const adminOk = Boolean(pan?.verified) && !pan?.rejectedReason;
-          if (!electronicallyOk && !adminOk) {
+          const hasPanNumber = Boolean(
+            String(pan?.docNumber || stepData.panNumber || "").trim(),
+          );
+          // Number already captured / pending admin review — do not block selfie next.
+          const submittedOk = hasPanNumber && !pan?.rejectedReason;
+          if (!electronicallyOk && !adminOk && !submittedOk) {
             return reply.code(403).send({
               error: "pan_required",
               message:
@@ -890,6 +907,18 @@ export async function onboardingRoutes(app: FastifyInstance) {
           });
         }
       } else if (step === "dl_rc") {
+        const rcMismatchResolution =
+          stepData.rcVehicleMismatchResolution === "switch" ||
+          stepData.rcVehicleMismatchResolution === "resubmit"
+            ? stepData.rcVehicleMismatchResolution
+            : null;
+        if (rcMismatchResolution === "resubmit") {
+          const { clearRiderRcElectronicVerification } = await import(
+            "../../lib/rider-rc-onboarding-vehicle-check.js"
+          );
+          await clearRiderRcElectronicVerification(riderIdInt);
+        }
+
         const selectionMeta: Record<string, unknown> = {
           vehicleChoice:
             typeof stepData.vehicleChoice === "string" ? stepData.vehicleChoice : undefined,
@@ -917,23 +946,13 @@ export async function onboardingRoutes(app: FastifyInstance) {
           hasOwnVehicle:
             typeof stepData.hasOwnVehicle === "boolean" ? stepData.hasOwnVehicle : undefined,
           skippedOnboardingDocs: Array.isArray(stepData.skippedOnboardingDocs)
-            ? (() => {
-                const raw = stepData.skippedOnboardingDocs
-                  .map((c) => String(c || "").trim())
-                  .filter(Boolean);
-                const choice = String(stepData.vehicleChoice || stepData.vehicleType || "").toLowerCase();
-                const flow = String(stepData.onboardingFlow || "").toLowerCase();
-                const isEv =
-                  flow === "rental_ev" ||
-                  /\bev[_-]?|electric|e[_-]?rickshaw/.test(choice);
-                // Petrol / non-EV cannot skip RC — strip any RC skip codes.
-                if (isEv) return raw;
-                return raw.filter(
-                  (c) => !/^(rc|registration_certificate|vehicle_rc)$/i.test(c),
-                );
-              })()
+            ? stepData.skippedOnboardingDocs
+                .map((c) => String(c || "").trim())
+                .filter(Boolean)
             : undefined,
         };
+        const clearVehicleChoice = stepData.clearVehicleChoice === true;
+        const switchVehicleToMatchRc = rcMismatchResolution === "switch";
 
         const submitVehicleDocs = stepData.submitVehicleDocs === true;
 
@@ -944,7 +963,9 @@ export async function onboardingRoutes(app: FastifyInstance) {
           selectionMeta.onboardingFlow ||
           selectionMeta.hasOwnVehicle !== undefined ||
           selectionMeta.skippedOnboardingDocs ||
-          submitVehicleDocs
+          clearVehicleChoice ||
+          submitVehicleDocs ||
+          rcMismatchResolution
         ) {
           const existingSelection = await db
             .select()
@@ -964,14 +985,45 @@ export async function onboardingRoutes(app: FastifyInstance) {
               : {};
           const prevChoice =
             typeof prevMeta.vehicleChoice === "string" ? prevMeta.vehicleChoice.trim() : "";
-          const nextChoice =
-            typeof selectionMeta.vehicleChoice === "string"
+          const nextChoice = clearVehicleChoice
+            ? ""
+            : typeof selectionMeta.vehicleChoice === "string"
               ? selectionMeta.vehicleChoice.trim()
               : prevChoice;
-          const choiceChanged = Boolean(nextChoice && prevChoice && nextChoice !== prevChoice);
+          const choiceChanged = Boolean(
+            !clearVehicleChoice && nextChoice && prevChoice && nextChoice !== prevChoice,
+          );
+          const prevCategory =
+            typeof prevMeta.vehicleCategoryCode === "string"
+              ? prevMeta.vehicleCategoryCode.trim()
+              : "";
+          const nextCategory =
+            typeof selectionMeta.vehicleCategoryCode === "string"
+              ? selectionMeta.vehicleCategoryCode.trim()
+              : prevCategory;
+          const categoryChanged = Boolean(
+            nextCategory && prevCategory && nextCategory !== prevCategory,
+          );
 
-          // Keep bank skip markers if the rider already skipped bank after vehicle submit.
-          if (Array.isArray(selectionMeta.skippedOnboardingDocs)) {
+          const requirementsForChoice = await loadVehicleDocRequirements(
+            nextChoice || prevChoice,
+          );
+
+          // Vehicle change: keep verified RC payload for reuse/recheck, but drop
+          // pending mismatch + recalculate optional-only skips. Proceed & Switch
+          // must NOT clear Cashfree RC data.
+          if ((choiceChanged || categoryChanged || clearVehicleChoice) && !switchVehicleToMatchRc) {
+            const prevSkipped = Array.isArray(prevMeta.skippedOnboardingDocs)
+              ? prevMeta.skippedOnboardingDocs.map((c) => String(c || "").trim()).filter(Boolean)
+              : [];
+            if (!Array.isArray(selectionMeta.skippedOnboardingDocs)) {
+              selectionMeta.skippedOnboardingDocs = prevSkipped.filter((c) =>
+                /^(bank_account|bank_proof)$/i.test(c),
+              );
+            }
+            delete prevMeta.rcVehicleTypeMismatchPending;
+            delete prevMeta.rcVehicleMismatchResolution;
+          } else if (Array.isArray(selectionMeta.skippedOnboardingDocs)) {
             const prevSkipped = Array.isArray(prevMeta.skippedOnboardingDocs)
               ? prevMeta.skippedOnboardingDocs.map((c) => String(c || "").trim()).filter(Boolean)
               : [];
@@ -983,6 +1035,20 @@ export async function onboardingRoutes(app: FastifyInstance) {
             );
           }
 
+          if (Array.isArray(selectionMeta.skippedOnboardingDocs)) {
+            // Soft-skips (geo/catalog) persist for onboarding payment. Always keep
+            // them on submitVehicleDocs so Food can unlock while DL stays Later.
+            const soft =
+              submitVehicleDocs ||
+              !(choiceChanged || categoryChanged || clearVehicleChoice) ||
+              switchVehicleToMatchRc;
+            selectionMeta.skippedOnboardingDocs = filterSkippableOnboardingDocs(
+              requirementsForChoice,
+              selectionMeta.skippedOnboardingDocs as string[],
+              { allowOnboardingSoftSkips: soft },
+            );
+          }
+
           const mergedMeta: Record<string, unknown> = {
             ...prevMeta,
             ...Object.fromEntries(
@@ -990,10 +1056,59 @@ export async function onboardingRoutes(app: FastifyInstance) {
             ),
           };
 
+          if (clearVehicleChoice) {
+            delete mergedMeta.vehicleChoice;
+            delete mergedMeta.vehicleModelLabel;
+            delete mergedMeta.onboardingFlow;
+            delete mergedMeta.vehicleDocsSubmittedFor;
+            delete mergedMeta.vehicleDocsSubmittedAt;
+          }
+
+          if (rcMismatchResolution === "switch") {
+            delete mergedMeta.rcVehicleTypeMismatchPending;
+            mergedMeta.rcVehicleMismatchResolution = "switch";
+            mergedMeta.rcVehicleMismatchResolvedAt = new Date().toISOString();
+          } else if (rcMismatchResolution === "resubmit") {
+            delete mergedMeta.rcVehicleTypeMismatchPending;
+            mergedMeta.rcVehicleMismatchResolution = "resubmit";
+            mergedMeta.rcVehicleMismatchResolvedAt = new Date().toISOString();
+          }
+
           if (submitVehicleDocs && nextChoice) {
+            if (
+              mergedMeta.rcVehicleTypeMismatchPending &&
+              typeof mergedMeta.rcVehicleTypeMismatchPending === "object"
+            ) {
+              return reply.code(409).send({
+                error: "rc_vehicle_type_mismatch_pending",
+                message:
+                  "Resolve the vehicle type mismatch on your RC before continuing onboarding.",
+              });
+            }
+            const riderDocs = await db
+              .select()
+              .from(riderDocuments)
+              .where(eq(riderDocuments.riderId, riderIdInt));
+            const skippedForValidate = Array.isArray(mergedMeta.skippedOnboardingDocs)
+              ? (mergedMeta.skippedOnboardingDocs as string[])
+              : [];
+            const validation = validateRequiredVehicleDocs(
+              requirementsForChoice,
+              riderDocs,
+              skippedForValidate,
+            );
+            if (!validation.ok) {
+              return reply.code(400).send({
+                error: "vehicle_docs_incomplete",
+                message:
+                  "Complete all required documents for this vehicle before continuing.",
+                missing: validation.missing,
+                invalidSkips: validation.invalidSkips,
+              });
+            }
             mergedMeta.vehicleDocsSubmittedFor = nextChoice;
             mergedMeta.vehicleDocsSubmittedAt = new Date().toISOString();
-          } else if (choiceChanged) {
+          } else if (choiceChanged || categoryChanged || clearVehicleChoice) {
             delete mergedMeta.vehicleDocsSubmittedFor;
             delete mergedMeta.vehicleDocsSubmittedAt;
           }
@@ -1235,18 +1350,31 @@ export async function onboardingRoutes(app: FastifyInstance) {
           };
 
           if (existingPan.length > 0) {
+            const prevUrl = String(existingPan[0]!.fileUrl || "").trim();
+            const keepRealPhoto =
+              Boolean(prevUrl) &&
+              prevUrl !== "pending" &&
+              !prevUrl.includes("cashfree_pan_verified") &&
+              !prevUrl.includes("pan_number_submitted") &&
+              !prevUrl.includes("electronic_verified");
             await db
               .update(riderDocuments)
               .set({
                 docNumber: panNormalized || existingPan[0]!.docNumber,
                 metadata: metadata,
+                // Never downgrade a real manual PAN photo to a stub on selfie Continue.
+                ...(keepRealPhoto
+                  ? {}
+                  : stepData.fileUrl
+                    ? { fileUrl: String(stepData.fileUrl) }
+                    : {}),
               })
               .where(eq(riderDocuments.id, existingPan[0]!.id));
           } else {
             await db.insert(riderDocuments).values({
               riderId: riderIdInt,
               docType: "pan",
-              fileUrl: stepData.fileUrl as string || "pending",
+              fileUrl: (stepData.fileUrl as string) || "pending",
               docNumber: panNormalized || null,
               metadata: metadata,
             });
@@ -1679,6 +1807,15 @@ export async function onboardingRoutes(app: FastifyInstance) {
       };
     },
   );
+
+  /**
+   * GET /electronic-verify-limits — legacy endpoint retained for older app builds.
+   * Verify Instantly rate limiting has been removed; always returns an empty map
+   * so clients never lock the button from attempt history.
+   */
+  app.get("/electronic-verify-limits", async () => {
+    return { success: true, limits: {} as Record<string, unknown> };
+  });
 
   /**
    * GET /verification-modes — per-document verification mode for RIDER
@@ -2149,6 +2286,15 @@ export async function onboardingRoutes(app: FastifyInstance) {
       }
       const rider = riderRows[0]!;
 
+      // Verify Instantly rate limiting removed — Cashfree runs unrestricted.
+      // Legitimate Cashfree failures still use hybrid/manual fallback below.
+      const sendVerifyResult = async (body: Record<string, unknown>) => {
+        return reply.send({
+          ...body,
+          docKind: b.docKind,
+        });
+      };
+
       if (b.docKind === "aadhaar") {
         const digits = normalizeAadhaarDigits(b.aadhaarNumber);
         if (digits && (await isAadhaarAlreadyRegistered(digits, riderIdInt))) {
@@ -2327,6 +2473,165 @@ export async function onboardingRoutes(app: FastifyInstance) {
           if (vehicleNumber.length < 7) {
             return reply.code(400).send({ success: false, error: "invalid_vehicle_number" });
           }
+
+          // Same already-verified RC after vehicle-type change: reuse Cashfree
+          // payload (no new attempt) and re-check vs current Category/Type.
+          {
+            const [existingRc] = await db
+              .select()
+              .from(riderDocuments)
+              .where(
+                and(
+                  eq(riderDocuments.riderId, riderIdInt),
+                  eq(riderDocuments.docType, "rc"),
+                ),
+              )
+              .limit(1);
+            const existingMeta =
+              existingRc?.metadata && typeof existingRc.metadata === "object"
+                ? (existingRc.metadata as Record<string, unknown>)
+                : {};
+            const {
+              extractReusableRcVerifiedData,
+              evaluateRcOnboardingVehicleMatch,
+              suggestOnboardingVehicleTypeFromRc,
+              RC_INCOMPATIBLE_REUSE_MESSAGE,
+            } = await import("../../lib/rider-rc-onboarding-vehicle-check.js");
+            const reusable = extractReusableRcVerifiedData({
+              docNumber: existingRc?.docNumber,
+              metadata: existingMeta,
+              requestedVehicleNumber: vehicleNumber,
+            });
+            if (reusable) {
+              const {
+                pickRcOwnerName,
+                rcOwnerAadhaarNamesMatch,
+              } = await import("../../lib/rider-rc-verification-state.js");
+              const { loadRiderAadhaarIdentity } = await import(
+                "../../lib/rider-aadhaar-cross-check.js"
+              );
+              const { readRiderOnboardingVehicleSelection } = await import(
+                "../../lib/rider-onboarding-progress.js"
+              );
+              const verifiedData = reusable.verifiedData;
+              const identity = await loadRiderAadhaarIdentity(riderIdInt);
+              const ownerName = pickRcOwnerName(verifiedData);
+              const namesMatch = rcOwnerAadhaarNamesMatch(ownerName, identity.name);
+              const requirePhoto = !namesMatch;
+
+              const selection = await readRiderOnboardingVehicleSelection(riderIdInt);
+              let vehicleTypeLabel: string | null = null;
+              let onboardingFlow: string | null = null;
+              if (selection.vehicleChoice) {
+                const [vRow] = await db
+                  .select({
+                    label: riderOnboardingVehicleTypes.label,
+                    onboardingFlow: riderOnboardingVehicleTypes.onboardingFlow,
+                  })
+                  .from(riderOnboardingVehicleTypes)
+                  .where(eq(riderOnboardingVehicleTypes.code, selection.vehicleChoice))
+                  .limit(1);
+                vehicleTypeLabel = vRow?.label ?? null;
+                onboardingFlow = vRow?.onboardingFlow ?? null;
+              }
+
+              const vehicleMatch = evaluateRcOnboardingVehicleMatch({
+                vehicleChoice: selection.vehicleChoice,
+                vehicleCategoryCode: selection.vehicleCategoryCode,
+                onboardingFlow,
+                vehicleTypeLabel,
+                verifiedData,
+              });
+              const vehicleTypeMismatch =
+                vehicleMatch.rcSignalKnown && !vehicleMatch.match;
+              const suggested = vehicleTypeMismatch
+                ? await suggestOnboardingVehicleTypeFromRc(verifiedData)
+                : null;
+
+              if (vehicleTypeMismatch) {
+                const selRow = await db
+                  .select()
+                  .from(riderDocuments)
+                  .where(
+                    and(
+                      eq(riderDocuments.riderId, riderIdInt),
+                      eq(riderDocuments.docType, "onboarding_vehicle_selection"),
+                    ),
+                  )
+                  .limit(1);
+                const prevSelMeta =
+                  selRow[0]?.metadata && typeof selRow[0].metadata === "object"
+                    ? (selRow[0]!.metadata as Record<string, unknown>)
+                    : {};
+                const nextSelMeta = {
+                  ...prevSelMeta,
+                  rcVehicleTypeMismatchPending: {
+                    at: new Date().toISOString(),
+                    rcLabel: vehicleMatch.rcLabel,
+                    selectedLabel: vehicleMatch.selectedLabel,
+                    suggested,
+                    regNo: vehicleNumber,
+                    reusedVerifiedRc: true,
+                  },
+                };
+                if (selRow.length > 0) {
+                  await db
+                    .update(riderDocuments)
+                    .set({ metadata: nextSelMeta })
+                    .where(eq(riderDocuments.id, selRow[0]!.id));
+                } else {
+                  await db.insert(riderDocuments).values({
+                    riderId: riderIdInt,
+                    docType: "onboarding_vehicle_selection",
+                    fileUrl: "n/a",
+                    metadata: nextSelMeta,
+                  });
+                }
+              }
+
+              return sendVerifyResult({
+                success: true,
+                outcome: "verified",
+                mode: "hybrid",
+                reusedVerifiedRc: true,
+                verifiedData: {
+                  ...verifiedData,
+                  onboardingVehicleMatch: {
+                    match: vehicleMatch.match,
+                    rcLabel: vehicleMatch.rcLabel,
+                    selectedLabel: vehicleMatch.selectedLabel,
+                    rcClass: vehicleMatch.rcClass,
+                    selectedClass: vehicleMatch.selectedClass,
+                    rcFuel: vehicleMatch.rcFuel,
+                    checkedAt: new Date().toISOString(),
+                    reused: true,
+                  },
+                },
+                requirePhoto,
+                photoHint: requirePhoto
+                  ? "Verified successfully, but the authorized name doesn’t match. Please upload a clear image of your RC."
+                  : undefined,
+                vehicleTypeMismatch,
+                vehicleMismatch: vehicleTypeMismatch
+                  ? {
+                      rcLabel: vehicleMatch.rcLabel,
+                      selectedLabel: vehicleMatch.selectedLabel,
+                      suggestedVehicleChoice: suggested?.vehicleChoice ?? null,
+                      suggestedVehicleCategoryCode: suggested?.vehicleCategoryCode ?? null,
+                      suggestedLabel: suggested?.label ?? null,
+                      suggestedOnboardingFlow: suggested?.onboardingFlow ?? null,
+                    }
+                  : undefined,
+                message: vehicleTypeMismatch ? RC_INCOMPATIBLE_REUSE_MESSAGE : undefined,
+                error: vehicleTypeMismatch ? "rc_vehicle_type_incompatible" : undefined,
+                // Do not allow blind re-verify of a known-incompatible plate.
+                blockReverifySameRc: vehicleTypeMismatch,
+                providerReference: null,
+                verificationId: null,
+              });
+            }
+          }
+
           outcome = await submitVehicleRc({ ...subject, vehicleNumber });
         }
 
@@ -2341,7 +2646,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
               (outcome.result.verifiedData as { url?: string } | undefined)?.url ?? ""
             ).trim();
             if (url) {
-              return reply.send({
+              return sendVerifyResult({
                 success: true,
                 outcome: "digilocker",
                 mode: outcome.policy.mode,
@@ -2350,7 +2655,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
                 verificationId: outcome.result.verificationId,
               });
             }
-            return reply.send({
+            return sendVerifyResult({
               success: true,
               outcome: "manual",
               mode: outcome.policy.mode,
@@ -2363,9 +2668,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
               unknown
             >;
 
-            // Identity docs only: cross-check PAN / DL against verified Aadhaar.
-            // RC is vehicle ownership — owner may differ from the rider; do not match.
-            // Bank: Cashfree name_match vs Aadhaar — mismatch → hybrid fallback form.
+            // PAN: hard mismatch vs Aadhaar (rider must use a matching PAN or Upload manually
+            // after failure). DL: soft requirePhoto so a clear image can go to PENDING review.
             if (b.docKind === "pan" || b.docKind === "driving_licence") {
               const {
                 crossCheckRiderDocument,
@@ -2376,19 +2680,46 @@ export async function onboardingRoutes(app: FastifyInstance) {
                 verifiedData,
               });
               if (!cross.ok) {
-                // Do not write mismatch stubs to rider_documents until the rider
-                // confirms the step with Continue (deferProjection path).
-                return reply.send({
+                if (b.docKind === "pan") {
+                  return sendVerifyResult({
+                    success: true,
+                    outcome: "mismatch",
+                    mode: outcome.policy.mode,
+                    allowManualUpload: true,
+                    error:
+                      cross.messages.join(". ") ||
+                      "Auto Verification Failed – Data Mismatch",
+                    mismatchReasons: cross.reasons,
+                    mismatchMessages: cross.messages,
+                    verifiedData: {
+                      ...verifiedData,
+                      crossCheck: {
+                        ok: false,
+                        reasons: cross.reasons,
+                        messages: cross.messages,
+                        aadhaar: cross.aadhaar,
+                        extracted: cross.extracted,
+                      },
+                    },
+                    providerReference: outcome.result.providerReference ?? null,
+                    verificationId: outcome.result.verificationId,
+                  });
+                }
+                return sendVerifyResult({
                   success: true,
-                  outcome: "mismatch",
+                  outcome: "verified",
                   mode: outcome.policy.mode,
+                  requirePhoto: true,
+                  photoHint:
+                    "Verified successfully, but the authorized name doesn’t match. Please upload a clear image of your driving licence.",
                   error:
                     cross.messages.join(". ") ||
-                    "Auto Verification Failed – Data Mismatch",
+                    "Authorized name does not match Aadhaar",
                   mismatchReasons: cross.reasons,
                   mismatchMessages: cross.messages,
                   verifiedData: {
                     ...verifiedData,
+                    requirePhoto: true,
                     crossCheck: {
                       ok: false,
                       reasons: cross.reasons,
@@ -2397,6 +2728,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
                       extracted: cross.extracted,
                     },
                   },
+                  providerReference: outcome.result.providerReference ?? null,
+                  verificationId: outcome.result.verificationId,
                 });
               }
             }
@@ -2432,24 +2765,30 @@ export async function onboardingRoutes(app: FastifyInstance) {
                   .replace(/[^A-Z0-9]/g, ""),
               };
               if (softFail) {
-                return reply.send({
+                return sendVerifyResult({
                   success: true,
                   outcome: "mismatch",
-                  mode: outcome.policy.mode,
+                  mode: "hybrid",
+                  allowManualFallback: true,
+                  allowManualUpload: true,
                   error:
-                    "Account holder name at bank does not match your Aadhaar name. You can still save for manual review.",
+                    "Account holder name at bank does not match your Aadhaar name. Please confirm details for manual review.",
                   mismatchMessages: [
                     "Name at bank does not match Aadhaar",
                     verifiedData.name_at_bank
                       ? `Bank name: ${String(verifiedData.name_at_bank)}`
                       : "",
                   ].filter(Boolean),
-                  verifiedData: enriched,
+                  verifiedData: {
+                    ...enriched,
+                    nameMismatch: true,
+                    requireManualReview: true,
+                  },
                   providerReference: outcome.result.providerReference ?? null,
                   verificationId: outcome.result.verificationId,
                 });
               }
-              return reply.send({
+              return sendVerifyResult({
                 success: true,
                 outcome: "verified",
                 mode: outcome.policy.mode,
@@ -2459,7 +2798,140 @@ export async function onboardingRoutes(app: FastifyInstance) {
               });
             }
 
-            return reply.send({
+            // RC: Cashfree proves the vehicle; owner vs Aadhaar is a soft gate.
+            // Name mismatch → still "verified" payload, but requirePhoto so the app
+            // collects an RC image for PENDING_MANUAL_REVIEW (never auto-approve).
+            if (b.docKind === "vehicle_rc") {
+              const {
+                pickRcOwnerName,
+                rcOwnerAadhaarNamesMatch,
+              } = await import("../../lib/rider-rc-verification-state.js");
+              const { loadRiderAadhaarIdentity } = await import(
+                "../../lib/rider-aadhaar-cross-check.js"
+              );
+              const {
+                evaluateRcOnboardingVehicleMatch,
+                suggestOnboardingVehicleTypeFromRc,
+              } = await import("../../lib/rider-rc-onboarding-vehicle-check.js");
+              const { readRiderOnboardingVehicleSelection } = await import(
+                "../../lib/rider-onboarding-progress.js"
+              );
+              const identity = await loadRiderAadhaarIdentity(riderIdInt);
+              const ownerName = pickRcOwnerName(verifiedData);
+              const namesMatch = rcOwnerAadhaarNamesMatch(ownerName, identity.name);
+              const requirePhoto = !namesMatch;
+
+              const selection = await readRiderOnboardingVehicleSelection(riderIdInt);
+              let vehicleTypeLabel: string | null = null;
+              let onboardingFlow: string | null = null;
+              if (selection.vehicleChoice) {
+                const [vRow] = await db
+                  .select({
+                    label: riderOnboardingVehicleTypes.label,
+                    onboardingFlow: riderOnboardingVehicleTypes.onboardingFlow,
+                  })
+                  .from(riderOnboardingVehicleTypes)
+                  .where(eq(riderOnboardingVehicleTypes.code, selection.vehicleChoice))
+                  .limit(1);
+                vehicleTypeLabel = vRow?.label ?? null;
+                onboardingFlow = vRow?.onboardingFlow ?? null;
+              }
+
+              const vehicleMatch = evaluateRcOnboardingVehicleMatch({
+                vehicleChoice: selection.vehicleChoice,
+                vehicleCategoryCode: selection.vehicleCategoryCode,
+                onboardingFlow,
+                vehicleTypeLabel,
+                verifiedData,
+              });
+              const vehicleTypeMismatch =
+                vehicleMatch.rcSignalKnown && !vehicleMatch.match;
+              const suggested = vehicleTypeMismatch
+                ? await suggestOnboardingVehicleTypeFromRc(verifiedData)
+                : null;
+
+              const enrichedVerifiedData = {
+                ...verifiedData,
+                onboardingVehicleMatch: {
+                  match: vehicleMatch.match,
+                  rcLabel: vehicleMatch.rcLabel,
+                  selectedLabel: vehicleMatch.selectedLabel,
+                  rcClass: vehicleMatch.rcClass,
+                  selectedClass: vehicleMatch.selectedClass,
+                  rcFuel: vehicleMatch.rcFuel,
+                  checkedAt: new Date().toISOString(),
+                },
+              };
+
+              if (vehicleTypeMismatch) {
+                const selRow = await db
+                  .select()
+                  .from(riderDocuments)
+                  .where(
+                    and(
+                      eq(riderDocuments.riderId, riderIdInt),
+                      eq(riderDocuments.docType, "onboarding_vehicle_selection"),
+                    ),
+                  )
+                  .limit(1);
+                const prevSelMeta =
+                  selRow[0]?.metadata && typeof selRow[0].metadata === "object"
+                    ? (selRow[0]!.metadata as Record<string, unknown>)
+                    : {};
+                const nextSelMeta = {
+                  ...prevSelMeta,
+                  rcVehicleTypeMismatchPending: {
+                    at: new Date().toISOString(),
+                    rcLabel: vehicleMatch.rcLabel,
+                    selectedLabel: vehicleMatch.selectedLabel,
+                    suggested,
+                    regNo: (b.vehicleNumber ?? "")
+                      .trim()
+                      .toUpperCase()
+                      .replace(/[^A-Z0-9]/g, ""),
+                  },
+                };
+                if (selRow.length > 0) {
+                  await db
+                    .update(riderDocuments)
+                    .set({ metadata: nextSelMeta })
+                    .where(eq(riderDocuments.id, selRow[0]!.id));
+                } else {
+                  await db.insert(riderDocuments).values({
+                    riderId: riderIdInt,
+                    docType: "onboarding_vehicle_selection",
+                    fileUrl: "n/a",
+                    metadata: nextSelMeta,
+                  });
+                }
+              }
+
+              return sendVerifyResult({
+                success: true,
+                outcome: "verified",
+                mode: outcome.policy.mode,
+                verifiedData: enrichedVerifiedData,
+                requirePhoto,
+                photoHint: requirePhoto
+                  ? "Verified successfully, but the authorized name doesn’t match. Please upload a clear image of your RC."
+                  : undefined,
+                vehicleTypeMismatch,
+                vehicleMismatch: vehicleTypeMismatch
+                  ? {
+                      rcLabel: vehicleMatch.rcLabel,
+                      selectedLabel: vehicleMatch.selectedLabel,
+                      suggestedVehicleChoice: suggested?.vehicleChoice ?? null,
+                      suggestedVehicleCategoryCode: suggested?.vehicleCategoryCode ?? null,
+                      suggestedLabel: suggested?.label ?? null,
+                      suggestedOnboardingFlow: suggested?.onboardingFlow ?? null,
+                    }
+                  : undefined,
+                providerReference: outcome.result.providerReference ?? null,
+                verificationId: outcome.result.verificationId,
+              });
+            }
+
+            return sendVerifyResult({
               success: true,
               outcome: "verified",
               mode: outcome.policy.mode,
@@ -2467,7 +2939,7 @@ export async function onboardingRoutes(app: FastifyInstance) {
             });
           }
           if (status === "manual_review" || status === "provider_processing") {
-            return reply.send({ success: true, outcome: "manual", mode: outcome.policy.mode });
+            return sendVerifyResult({ success: true, outcome: "manual", mode: outcome.policy.mode });
           }
           const raw =
             outcome.result.rawResponse && typeof outcome.result.rawResponse === "object"
@@ -2487,10 +2959,18 @@ export async function onboardingRoutes(app: FastifyInstance) {
               ? `Cashfree status: ${cashfreeStatus}`
               : null) ||
             "Document could not be verified.";
-          return reply.send({
+          // Invalid document number → no manual escape for RC (user must fix the number).
+          // Provider/temporary failures → allow manual upload fallback on every doc.
+          const invalidDocNumber =
+            /invalid|not[_ ]?found|no[_ ]?record|does not exist/i.test(failError) ||
+            /invalid|not_found|failed_at_source/i.test(String(outcome.result.status || ""));
+          const allowManualUpload =
+            b.docKind === "vehicle_rc" ? !invalidDocNumber : true;
+          return sendVerifyResult({
             success: true,
             outcome: "failed",
-            mode: outcome.policy.mode,
+            mode: allowManualUpload ? "hybrid" : outcome.policy.mode,
+            allowManualUpload,
             error: failError,
             reason: outcome.result.status,
             providerStatus: cashfreeStatus || null,
@@ -2505,31 +2985,46 @@ export async function onboardingRoutes(app: FastifyInstance) {
 
         const reason = outcome.reason;
         if (reason.startsWith("provider_error") || reason === "provider_not_configured") {
-          req.log?.error?.({ reason, detail: outcome.detail }, "rider_verify_document_provider_failure");
-          const uiMode =
-            outcome.policy.mode === "auto" || outcome.policy.mode === "hybrid"
-              ? outcome.policy.mode
-              : "hybrid";
           const detail =
             typeof outcome.detail === "string" && outcome.detail.trim()
               ? outcome.detail.trim()
               : null;
-          return reply.send({
+          const insufficient =
+            reason.includes("insufficient_balance") ||
+            /insufficient\s*balance/i.test(detail ?? "");
+          // Operational Cashfree wallet issues are expected — don't spam ERROR.
+          if (insufficient || reason === "provider_not_configured") {
+            req.log?.warn?.(
+              { reason, detail },
+              "rider_verify_document_provider_unavailable",
+            );
+          } else {
+            req.log?.error?.(
+              { reason, detail },
+              "rider_verify_document_provider_failure",
+            );
+          }
+          return sendVerifyResult({
             success: true,
             outcome: "failed",
-            mode: uiMode,
+            // Force hybrid UI so every doc (incl. auto policy) can fall back to manual upload
+            // when Cashfree is down / misconfigured.
+            mode: "hybrid",
+            allowManualUpload: true,
             reason,
-            error: detail
-              ? `Electronic verification failed: ${detail}`
-              : reason === "provider_not_configured"
-                ? "Electronic verification is not configured for this document."
-                : "Electronic verification is temporarily unavailable. Please try again or upload a photo for manual review.",
+            error: insufficient
+              ? "Electronic verification is temporarily unavailable. Please upload a clear photo for manual review."
+              : detail
+                ? `Electronic verification failed: ${detail}`
+                : reason === "provider_not_configured"
+                  ? "Electronic verification is not configured for this document. Please upload a clear photo for manual review."
+                  : "Electronic verification is temporarily unavailable. Please try again or upload a photo for manual review.",
             cashfreeHint:
               "If Cashfree was reached, check Secure ID → All tab (not Batch). Batch only lists CSV file uploads.",
           });
         }
         // Genuine policy manual — classic upload flow.
-        return reply.send({ success: true, outcome: "manual", mode: outcome.policy.mode });
+        return sendVerifyResult({ success: true, outcome: "manual", mode: outcome.policy.mode });
       } catch (e) {
         req.log?.error?.({ err: e }, "rider_verify_document_failed");
         return reply.code(500).send({ success: false, error: "internal_error" });
@@ -2574,7 +3069,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
           result.status === "failed" ||
           result.status === "rejected" ||
           result.status === "expired" ||
-          result.status === "consent_denied"
+          result.status === "consent_denied" ||
+          result.status === "duplicate"
         ) {
           return reply.send({
             success: true,

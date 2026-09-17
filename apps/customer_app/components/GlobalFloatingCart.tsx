@@ -35,10 +35,11 @@ import { useEnsureStoreLiveStatus } from "@/hooks/useEnsureStoreLiveStatus";
 import { closedStoreCtaCopy, getOpenSoonState } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { FloatingOrderTrackingPill } from "@/components/orders/FloatingOrderTrackingPill";
+import { isTerminalOrderStatus } from "@/lib/customer-order-status-display";
 import { EdgePeekTab } from "@/components/EdgePeekTab";
 import { FLOATING_EDGE_TAB_GAP } from "@/components/FloatingEdgeChrome";
 import { StoreText } from "@/components/store/StoreText";
-import { resolveFloatingCartBottomOffset, FLOATING_CART_UI_LIFT, PARCEL_TRACK_ABOVE_LEGAL_LIFT, FLOATING_CART_BAR_HEIGHT } from "@/constants/layout";
+import { resolveCustomerFloatingChromeBottom, PARCEL_TRACK_ABOVE_LEGAL_LIFT, FLOATING_CART_BAR_HEIGHT } from "@/constants/layout";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { prefetchSubscriptionPlans } from "@/lib/subscriptionCache";
 import { useAuthStore } from "@/store/authStore";
@@ -278,19 +279,36 @@ export function GlobalFloatingCart() {
   const merchantBannerUrl = useCartStore((s) => s.merchantBannerUrl);
   const stashedCarts = useCartStore((s) => s.stashedCarts);
   const clearCart = useCartStore((s) => s.clearCart);
+  const activateStashedCart = useCartStore((s) => s.activateStashedCart);
+  const discardCartSlot = useCartStore((s) => s.discardCartSlot);
   const activeOrdersRaw = useOrderStore((s) => s.activeOrders);
   const activeOrderFallback = useOrderStore((s) => s.activeOrder);
+  const removeActiveOrder = useOrderStore((s) => s.removeActiveOrder);
   const activeOrders = useMemo(
-    () => activeOrdersRaw.filter((o) => o.status !== "DELIVERED" && o.status !== "CANCELLED"),
+    () => activeOrdersRaw.filter((o) => !isTerminalOrderStatus(o.status)),
     [activeOrdersRaw]
   );
+
+  // Instantly drop completed/cancelled docks — normalize COMPLETED → DELIVERED etc.
+  useEffect(() => {
+    for (const o of activeOrdersRaw) {
+      if (!isTerminalOrderStatus(o.status)) continue;
+      removeActiveOrder(o.orderId);
+      if (o.formattedOrderId) removeActiveOrder(o.formattedOrderId);
+    }
+    if (activeOrderFallback && isTerminalOrderStatus(activeOrderFallback.status)) {
+      removeActiveOrder(activeOrderFallback.orderId);
+      if (activeOrderFallback.formattedOrderId) {
+        removeActiveOrder(activeOrderFallback.formattedOrderId);
+      }
+    }
+  }, [activeOrdersRaw, activeOrderFallback, removeActiveOrder]);
+
   const trackingOrders = useMemo(() => {
     const raw =
       activeOrders.length > 0
         ? activeOrders
-        : activeOrderFallback &&
-            activeOrderFallback.status !== "DELIVERED" &&
-            activeOrderFallback.status !== "CANCELLED"
+        : activeOrderFallback && !isTerminalOrderStatus(activeOrderFallback.status)
           ? [activeOrderFallback]
           : [];
     // Ride has its own home pill — never mix into food/parcel dock.
@@ -532,22 +550,13 @@ export function GlobalFloatingCart() {
   /** Prefer CART label when cart is showing; TRACK when only live orders. */
   const dockKind = showFloatingFoodCart ? "cart" : showActiveOrderTracking ? "track" : null;
 
-  const footingOwner = useFloatingDockUiStore((s) => s.footingOwner);
-  const expandNav = useFloatingDockUiStore((s) => s.expandNav);
-
-  const inTabs = segments[0] === "(tabs)";
-  // Shared bottom with FloatingEdgeChrome so HOME/CART/TRACK sit on the same row.
+  // Same bottom Y as CustomerTabBar — Track/cart must not hop when they replace the capsule.
   const bottomOffset =
-    resolveFloatingCartBottomOffset(insets.bottom, {
-      aboveTabBar: false,
-    }) +
-    (inTabs || isFoodServicePage || isGroceryServicePage ? FLOATING_CART_UI_LIFT : 0) +
+    resolveCustomerFloatingChromeBottom(insets.bottom) +
     // Courier: sit above prohibited-items + T&Cs footer, not on top of it.
     (isParcelServiceHome && showActiveOrderTracking ? PARCEL_TRACK_ABOVE_LEGAL_LIFT : 0);
 
-  // Publish dock visibility BEFORE paint. Also force footingOwner to dock whenever
-  // the cart is live and the user has not explicitly expanded nav — avoids a frame
-  // where footingOwner stays "nav" and only a ghost edge paints in the wrong place.
+  // Never mutate zustand during render — triggers "Cannot update GlobalFloatingCart while rendering".
   useLayoutEffect(() => {
     const store = useFloatingDockUiStore.getState();
     store.setDockVisible(visible, dockKind);
@@ -565,6 +574,50 @@ export function GlobalFloatingCart() {
     };
   }, []);
 
+  // Subscribe after sync publish so this render uses the latest footing.
+  const footingOwner = useFloatingDockUiStore((s) => s.footingOwner);
+  const expandNav = useFloatingDockUiStore((s) => s.expandNav);
+
+  const itemLabel = totalCount === 1 ? "1 item" : `${totalCount} items`;
+
+  // Must stay above any early return — conditional useMemo caused
+  // "Rendered more hooks than during the previous render".
+  const allCartRows = useMemo(() => {
+    const rows: Array<{
+      merchantId: string;
+      merchantName: string | null;
+      thumbUri: string | null;
+      itemLabel: string;
+      isActive: boolean;
+    }> = [];
+    if (merchantId && hasCart) {
+      rows.push({
+        merchantId,
+        merchantName,
+        thumbUri: resolvedThumbUri,
+        itemLabel,
+        isActive: true,
+      });
+    }
+    for (const [id, stash] of Object.entries(stashedCarts)) {
+      if (!stash.items.length) continue;
+      const qty = stash.items.reduce((n, i) => n + i.quantity, 0);
+      const rawThumb =
+        stash.items.find((i) => i.imageUrl)?.imageUrl ?? stash.merchantBannerUrl ?? null;
+      const abs = rawThumb?.trim()
+        ? toAbsoluteImageUrl(rawThumb) ?? rawThumb
+        : null;
+      rows.push({
+        merchantId: id,
+        merchantName: stash.merchantName,
+        thumbUri: abs,
+        itemLabel: qty === 1 ? "1 item" : `${qty} items`,
+        isActive: false,
+      });
+    }
+    return rows;
+  }, [hasCart, itemLabel, merchantId, merchantName, resolvedThumbUri, stashedCarts]);
+
   // Nav owns footing → CustomerTabBar shows CART/TRACK peek (no full bar).
   if (!visible || footingOwner !== "dock") return null;
 
@@ -577,8 +630,6 @@ export function GlobalFloatingCart() {
   const edgeSlideIn = SlideInLeft.duration(280).easing(Easing.out(Easing.cubic));
   const edgeSlideOut = SlideOutLeft.duration(220).easing(Easing.in(Easing.cubic));
   const compact = isCartCompact;
-  const itemLabel = totalCount === 1 ? "1 item" : `${totalCount} items`;
-
   /** HOME edge — same height as cart bar; hidden while Remove is expanded. */
   const withHomeEdge = (main: ReactNode) => (
     <View
@@ -600,7 +651,7 @@ export function GlobalFloatingCart() {
           <EdgePeekTab
             side="left"
             label="HOME"
-            height={compact ? 56 : FLOATING_CART_BAR_HEIGHT}
+            height={FLOATING_CART_BAR_HEIGHT}
             onPress={expandNav}
           />
         </Animated.View>
@@ -805,25 +856,21 @@ export function GlobalFloatingCart() {
           <AllCartsSheetModal
             visible={allCartsSheetVisible}
             onClose={() => setAllCartsSheetVisible(false)}
-            merchantName={merchantName}
-            merchantId={merchantId}
+            rows={allCartRows}
             cartSlotCount={cartSlotCount}
-            thumbUri={resolvedThumbUri}
-            itemLabel={itemLabel}
-            onViewMenu={() => {
+            onViewMenu={(id) => {
               setAllCartsSheetVisible(false);
-              handleViewMenuPress();
+              if (id !== merchantId) activateStashedCart(id);
+              navigateToMerchant(router, queryClient, id);
             }}
-            isStoreClosed={isCartStoreClosed}
-            closedCta={cartClosedCta}
-            cartOpenSoon={cartOpenSoon}
-            onViewCart={() => {
+            onViewCart={(id) => {
               setAllCartsSheetVisible(false);
+              if (id !== merchantId) activateStashedCart(id);
               handleCartPress();
             }}
-            onRemoveCart={() => {
-              setAllCartsSheetVisible(false);
-              clearCart();
+            onRemoveCart={(id) => {
+              discardCartSlot(id);
+              if (allCartRows.length <= 1) setAllCartsSheetVisible(false);
             }}
           />
         ) : null}
@@ -855,25 +902,21 @@ export function GlobalFloatingCart() {
       <AllCartsSheetModal
         visible={allCartsSheetVisible}
         onClose={() => setAllCartsSheetVisible(false)}
-        merchantName={merchantName}
-        merchantId={merchantId}
+        rows={allCartRows}
         cartSlotCount={cartSlotCount}
-        thumbUri={resolvedThumbUri}
-        itemLabel={itemLabel}
-        onViewMenu={() => {
+        onViewMenu={(id) => {
           setAllCartsSheetVisible(false);
-          handleViewMenuPress();
+          if (id !== merchantId) activateStashedCart(id);
+          navigateToMerchant(router, queryClient, id);
         }}
-        isStoreClosed={isCartStoreClosed}
-        closedCta={cartClosedCta}
-        cartOpenSoon={cartOpenSoon}
-        onViewCart={() => {
+        onViewCart={(id) => {
           setAllCartsSheetVisible(false);
+          if (id !== merchantId) activateStashedCart(id);
           handleCartPress();
         }}
-        onRemoveCart={() => {
-          setAllCartsSheetVisible(false);
-          clearCart();
+        onRemoveCart={(id) => {
+          discardCartSlot(id);
+          if (allCartRows.length <= 1) setAllCartsSheetVisible(false);
         }}
       />
     </View>
@@ -883,40 +926,34 @@ export function GlobalFloatingCart() {
 function AllCartsSheetModal({
   visible,
   onClose,
-  merchantName,
-  merchantId,
+  rows,
   cartSlotCount,
-  thumbUri,
-  itemLabel,
   onViewMenu,
   onViewCart,
   onRemoveCart,
-  isStoreClosed = false,
-  closedCta = { title: "Store closed", sub: "Opens later" },
-  cartOpenSoon = false,
 }: {
   visible: boolean;
   onClose: () => void;
-  merchantName: string | null;
-  merchantId: string | null;
+  rows: Array<{
+    merchantId: string;
+    merchantName: string | null;
+    thumbUri: string | null;
+    itemLabel: string;
+    isActive: boolean;
+  }>;
   cartSlotCount: number;
-  thumbUri: string | null;
-  itemLabel: string;
-  onViewMenu: () => void;
-  onViewCart: () => void;
-  onRemoveCart: () => void;
-  isStoreClosed?: boolean;
-  closedCta?: { title: string; sub: string };
-  cartOpenSoon?: boolean;
+  onViewMenu: (merchantId: string) => void;
+  onViewCart: (merchantId: string) => void;
+  onRemoveCart: (merchantId: string) => void;
 }) {
   const insets = useAppSafeAreaInsets();
-  const [thumbLoadFailed, setThumbLoadFailed] = useState(false);
-  const [rowRemoveExpanded, setRowRemoveExpanded] = useState(false);
+  const [failedThumbs, setFailedThumbs] = useState<Record<string, boolean>>({});
+  const [expandedRemoveId, setExpandedRemoveId] = useState<string | null>(null);
+  const statusMap = useStoreStatusStore((s) => s.statusMap);
 
   useEffect(() => {
-    setThumbLoadFailed(false);
-    if (!visible) setRowRemoveExpanded(false);
-  }, [thumbUri, visible]);
+    if (!visible) setExpandedRemoveId(null);
+  }, [visible]);
 
   const onCheckoutAllPress = () => {
     Alert.alert("Coming soon", CHECKOUT_ALL_COMING_SOON);
@@ -933,7 +970,9 @@ function AllCartsSheetModal({
             <View style={[styles.sheetCard, { paddingBottom: Math.max(insets.bottom, 14) }]}>
               <View style={styles.sheetHeaderTooltipBlock}>
                 <View style={styles.sheetHeaderRow}>
-                  <AppText style={styles.sheetTitle}>Your Carts ({cartSlotCount})</AppText>
+                  <AppText style={styles.sheetTitle}>
+                    Your Carts ({Math.max(rows.length, cartSlotCount)})
+                  </AppText>
                   <Pressable
                     style={styles.sheetCheckoutAllBtn}
                     onPress={onCheckoutAllPress}
@@ -958,84 +997,126 @@ function AllCartsSheetModal({
                 </View>
               </View>
 
-              {merchantId ? (
-                <View style={styles.sheetCartRow}>
-                  <View style={styles.sheetCartThumb}>
-                    {thumbUri && !thumbLoadFailed ? (
-                      <Image
-                        source={{ uri: thumbUri }}
-                        style={styles.gmThumbImg}
-                        contentFit="cover"
-                        cachePolicy="memory-disk"
-                        onError={() => setThumbLoadFailed(true)}
-                      />
-                    ) : (
-                      <View style={styles.gmThumbPlaceholder}>
-                        <Ionicons name="restaurant" size={20} color={GatiMitraColors.textSecondary} />
-                      </View>
-                    )}
-                  </View>
-                  <View style={styles.sheetCartMid}>
-                    <StoreText style={styles.sheetCartName} bold numberOfLines={1}>
-                      {merchantName ?? "Restaurant"}
-                    </StoreText>
-                    <Pressable style={styles.sheetViewMenuRow} onPress={onViewMenu} hitSlop={6}>
-                      <StoreText style={styles.sheetMenuLinkText} bold>
-                        View Menu
-                      </StoreText>
-                      <Ionicons name="chevron-forward" size={10} color={FLOAT_CART_GREEN} />
-                    </Pressable>
-                  </View>
-                    <View style={[styles.sheetCartActions, rowRemoveExpanded && styles.sheetCartActionsExpanded]}>
-                      <TouchableOpacity
-                        activeOpacity={isStoreClosed ? 1 : 0.92}
-                        onPress={onViewCart}
-                        disabled={isStoreClosed}
-                        style={[styles.sheetViewCartBtn, isStoreClosed && styles.gmViewCartCtaClosed]}
+              {rows.length === 0 ? (
+                <AppText style={styles.sheetEmpty}>No active cart.</AppText>
+              ) : (
+                <ScrollView
+                  style={styles.sheetRowsScroll}
+                  contentContainerStyle={styles.sheetRowsContent}
+                  showsVerticalScrollIndicator={rows.length > 3}
+                  bounces={rows.length > 3}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {rows.map((row) => {
+                    const thumbFailed = failedThumbs[row.merchantId] === true;
+                    const removeExpanded = expandedRemoveId === row.merchantId;
+                    const storeName = (row.merchantName ?? "").trim() || "Restaurant";
+                    const isClosed = statusMap[row.merchantId] === "CLOSED";
+                    return (
+                      <View
+                        key={row.merchantId}
+                        style={[styles.sheetCartRow, isClosed && styles.sheetCartRowClosed]}
                       >
+                        <View style={[styles.sheetCartThumb, isClosed && styles.sheetCartThumbClosed]}>
+                          {row.thumbUri && !thumbFailed ? (
+                            <Image
+                              source={{ uri: row.thumbUri }}
+                              style={styles.gmThumbImg}
+                              contentFit="cover"
+                              cachePolicy="memory-disk"
+                              onError={() =>
+                                setFailedThumbs((prev) => ({ ...prev, [row.merchantId]: true }))
+                              }
+                            />
+                          ) : (
+                            <View style={styles.gmThumbPlaceholder}>
+                              <Ionicons name="restaurant" size={20} color={GatiMitraColors.textSecondary} />
+                            </View>
+                          )}
+                        </View>
+                        <View style={styles.sheetCartMid}>
+                          <StoreText style={styles.sheetCartName} bold numberOfLines={1}>
+                            {storeName}
+                          </StoreText>
+                          {isClosed ? (
+                            <StoreText style={styles.sheetClosedHint} numberOfLines={1}>
+                              Kitchen closed
+                            </StoreText>
+                          ) : (
+                            <Pressable
+                              style={styles.sheetViewMenuRow}
+                              onPress={() => onViewMenu(row.merchantId)}
+                              hitSlop={6}
+                            >
+                              <StoreText style={styles.sheetMenuLinkText} bold>
+                                View Menu
+                              </StoreText>
+                              <Ionicons name="chevron-forward" size={10} color={FLOAT_CART_GREEN} />
+                            </Pressable>
+                          )}
+                        </View>
                         <View
                           style={[
-                            styles.sheetViewCartFill,
-                            isStoreClosed
-                              ? cartOpenSoon
-                                ? styles.gmViewCartFillOpenSoon
-                                : styles.gmViewCartFillClosed
-                              : null,
+                            styles.sheetCartActions,
+                            removeExpanded && styles.sheetCartActionsExpanded,
                           ]}
-                          pointerEvents="none"
                         >
-                          <StoreText style={styles.sheetViewCartBtnTitle} bold>
-                            {isStoreClosed ? closedCta.title : "View Cart"}
-                          </StoreText>
-                          <StoreText style={styles.sheetViewCartBtnSub} bold={!isStoreClosed}>
-                            {isStoreClosed ? closedCta.sub : itemLabel}
-                          </StoreText>
+                          <TouchableOpacity
+                            activeOpacity={0.92}
+                            disabled={isClosed}
+                            onPress={() => {
+                              if (isClosed) return;
+                              onViewCart(row.merchantId);
+                            }}
+                            style={[
+                              styles.sheetViewCartBtn,
+                              isClosed && styles.sheetViewCartBtnClosed,
+                            ]}
+                            accessibilityState={{ disabled: isClosed }}
+                            accessibilityLabel={
+                              isClosed
+                                ? `${storeName} closed`
+                                : `View cart for ${storeName}`
+                            }
+                          >
+                            <View
+                              style={[
+                                styles.sheetViewCartFill,
+                                isClosed && styles.sheetViewCartFillClosed,
+                              ]}
+                              pointerEvents="none"
+                            >
+                              <StoreText style={styles.sheetViewCartBtnTitle} bold>
+                                {isClosed ? "Store closed" : "View Cart"}
+                              </StoreText>
+                              <StoreText style={styles.sheetViewCartBtnSub} bold={!isClosed}>
+                                {isClosed ? storeName : row.itemLabel}
+                              </StoreText>
+                            </View>
+                          </TouchableOpacity>
+                          <Pressable
+                            style={styles.sheetRowClose}
+                            onPress={() =>
+                              setExpandedRemoveId(removeExpanded ? null : row.merchantId)
+                            }
+                            hitSlop={8}
+                          >
+                            <Ionicons name="close" size={18} color={GatiMitraColors.textSecondary} />
+                          </Pressable>
+                          {removeExpanded ? (
+                            <Pressable
+                              style={styles.sheetRemovePanel}
+                              onPress={() => onRemoveCart(row.merchantId)}
+                              hitSlop={6}
+                            >
+                              <AppText style={styles.sheetRemoveText}>Remove</AppText>
+                            </Pressable>
+                          ) : null}
                         </View>
-                      </TouchableOpacity>
-                      <Pressable
-                        style={styles.sheetRowClose}
-                        onPress={
-                          rowRemoveExpanded
-                            ? () => setRowRemoveExpanded(false)
-                            : () => setRowRemoveExpanded(true)
-                        }
-                        hitSlop={8}
-                      >
-                        <Ionicons name="close" size={18} color={GatiMitraColors.textSecondary} />
-                      </Pressable>
-                      {rowRemoveExpanded ? (
-                        <Pressable
-                          style={styles.sheetRemovePanel}
-                          onPress={onRemoveCart}
-                          hitSlop={6}
-                        >
-                          <AppText style={styles.sheetRemoveText}>Remove</AppText>
-                        </Pressable>
-                      ) : null}
-                    </View>
-                </View>
-              ) : (
-                <AppText style={styles.sheetEmpty}>No active cart.</AppText>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
               )}
             </View>
           </View>
@@ -1059,7 +1140,9 @@ const styles = StyleSheet.create({
     zIndex: 80,
     elevation: 80,
     flexDirection: "row",
-    alignItems: "center",
+    // Bottom-align so Home edge + cart bar share one baseline even when
+    // the cart shell is taller (All carts tab paddingTop).
+    alignItems: "flex-end",
     gap: 6,
     overflow: "visible",
   },
@@ -1095,7 +1178,8 @@ const styles = StyleSheet.create({
     right: 16,
   },
   dockPillHeight: {
-    minHeight: 60,
+    height: FLOATING_CART_BAR_HEIGHT,
+    minHeight: FLOATING_CART_BAR_HEIGHT,
   },
   gmShell: {
     width: "100%",
@@ -1105,7 +1189,8 @@ const styles = StyleSheet.create({
     alignItems: "stretch",
   },
   gmShellWithTab: {
-    paddingTop: 14,
+    // Room for All-carts pill fully above the bar (no overlap with View Cart).
+    paddingTop: 34,
   },
   gmShellCompact: {
     paddingTop: 0,
@@ -1113,7 +1198,7 @@ const styles = StyleSheet.create({
   },
   allCartsTab: {
     position: "absolute",
-    top: 0,
+    top: 2,
     alignSelf: "center",
     zIndex: 4,
     flexDirection: "row",
@@ -1152,7 +1237,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingLeft: 10,
     paddingRight: 6,
-    paddingVertical: 8,
+    paddingVertical: 0,
     gap: 4,
     borderWidth: 1,
     borderColor: FLOAT_BAR_BORDER,
@@ -1172,7 +1257,8 @@ const styles = StyleSheet.create({
   },
   gmBarCompact: {
     borderRadius: 14,
-    paddingVertical: 6,
+    // Keep outer height locked to FLOATING_CART_BAR_HEIGHT (via dockPillHeight).
+    paddingVertical: 0,
     paddingLeft: 8,
   },
   gmLeftPress: {
@@ -1256,7 +1342,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 42,
+    height: 48,
+    minHeight: 48,
     backgroundColor: FLOAT_CART_GREEN,
     borderRadius: FLOAT_CART_RADIUS,
   },
@@ -1284,9 +1371,9 @@ const styles = StyleSheet.create({
     fontSize: 9,
   },
   gmCloseBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: "rgba(255,255,255,0.85)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: FLOAT_BAR_BORDER,
@@ -1298,8 +1385,9 @@ const styles = StyleSheet.create({
     borderColor: DiscoveryColors.border,
   },
   gmCloseBtnCompact: {
-    width: 34,
-    height: 34,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     borderRadius: 17,
   },
   gmRightActions: {
@@ -1382,6 +1470,13 @@ const styles = StyleSheet.create({
       android: { elevation: 20 },
     }),
   },
+  sheetRowsScroll: {
+    maxHeight: 320,
+  },
+  sheetRowsContent: {
+    paddingBottom: 4,
+    gap: 12,
+  },
   sheetHeaderTooltipBlock: {
     marginBottom: 16,
   },
@@ -1459,12 +1554,19 @@ const styles = StyleSheet.create({
       android: { elevation: 2 },
     }),
   },
+  sheetCartRowClosed: {
+    opacity: 0.72,
+    backgroundColor: "#F8FAFC",
+  },
   sheetCartThumb: {
     width: 48,
     height: 48,
     borderRadius: 24,
     overflow: "hidden",
     backgroundColor: GatiMitraColors.mintSoft,
+  },
+  sheetCartThumbClosed: {
+    opacity: 0.85,
   },
   sheetCartMid: {
     flex: 1,
@@ -1475,6 +1577,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: StoreFonts.loraBold,
     color: GatiMitraColors.textPrimary,
+  },
+  sheetClosedHint: {
+    marginTop: 3,
+    fontSize: 12,
+    fontFamily: StoreFonts.loraBold,
+    color: "#94A3B8",
   },
   sheetViewMenuRow: {
     flexDirection: "row",
@@ -1503,14 +1611,21 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     minWidth: 102,
   },
+  sheetViewCartBtnClosed: {
+    opacity: 0.95,
+  },
   sheetViewCartFill: {
     paddingHorizontal: 14,
-    paddingVertical: 9,
+    paddingVertical: 0,
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 46,
+    height: 48,
+    minHeight: 48,
     backgroundColor: FLOAT_CART_GREEN,
     borderRadius: FLOAT_CART_RADIUS,
+  },
+  sheetViewCartFillClosed: {
+    backgroundColor: "#94A3B8",
   },
   sheetViewCartBtnTitle: {
     fontSize: 13,
@@ -1524,9 +1639,9 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   sheetRowClose: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: "#F3F4F6",
     alignItems: "center",
     justifyContent: "center",

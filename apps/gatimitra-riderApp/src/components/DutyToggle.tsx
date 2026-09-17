@@ -13,7 +13,10 @@ import { useTranslation } from "react-i18next";
 import { useDutyToggle } from "@/src/hooks/useDutyToggle";
 import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
 import { OffDutyConfirmModal } from "@/src/components/home/OffDutyConfirmModal";
+import { DutyVehicleSelectModal } from "@/src/components/duty/DutyVehicleSelectModal";
+import { useDutyVehiclePickStore } from "@/src/stores/dutyVehiclePickStore";
 import { openSubscriptionDutyBlockedSheet } from "@/src/stores/subscriptionDutyBlockedSheetStore";
+import { openWaitingForReviewSheet } from "@/src/stores/waitingForReviewSheetStore";
 import { headerControlText, HEADER_DUTY_PILL_WIDTH } from "@/src/theme/headerFonts";
 import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
@@ -62,7 +65,13 @@ export function DutyToggle({
   compactLabels = false,
 }: DutyToggleProps) {
   const { t } = useTranslation();
-  const { isOnDuty, setDuty, isPending, dutyGoOnBlocked } = useDutyToggle();
+  const { isOnDuty, setDuty, isPending, dutyGoOnBlocked, onboardingReviewBlocksDuty } =
+    useDutyToggle();
+  const goOnLocked = dutyGoOnBlocked || onboardingReviewBlocksDuty;
+  const pickVehicles = useDutyVehiclePickStore((s) => s.vehicles);
+  const pickInitial = useDutyVehiclePickStore((s) => s.initialId);
+  const pickCancel = useDutyVehiclePickStore((s) => s.cancel);
+  const pickConfirm = useDutyVehiclePickStore((s) => s.confirm);
   const { refetch: refetchSubscription } = useRiderSubscriptionStatus();
   const [confirmVisible, setConfirmVisible] = useState(false);
   /** Instant UI while go-ON API runs — off-duty already feels instant via confirm sheet. */
@@ -102,6 +111,11 @@ export function DutyToggle({
       return;
     }
 
+    if (onboardingReviewBlocksDuty) {
+      openWaitingForReviewSheet();
+      return;
+    }
+
     if (dutyGoOnBlocked) {
       void refetchSubscription();
       openSubscriptionDutyBlockedSheet();
@@ -120,9 +134,17 @@ export function DutyToggle({
       if (result?.blockedFromGoingOn) {
         openSubscriptionDutyBlockedSheet();
       }
-      // location mismatch opens its own sheet via useDutyToggle
+      // location mismatch / waiting-for-review open their own sheets via useDutyToggle
     });
-  }, [animValue, dutyGoOnBlocked, isOnDuty, isPending, refetchSubscription, setDuty]);
+  }, [
+    animValue,
+    dutyGoOnBlocked,
+    isOnDuty,
+    isPending,
+    onboardingReviewBlocksDuty,
+    refetchSubscription,
+    setDuty,
+  ]);
 
   const handleConfirmOffDuty = useCallback(() => {
     bumpTouchFeedback();
@@ -157,12 +179,21 @@ export function DutyToggle({
   }, [pressScale]);
 
   const modal = (
-    <OffDutyConfirmModal
-      visible={confirmVisible}
-      onCancel={() => setConfirmVisible(false)}
-      onConfirm={handleConfirmOffDuty}
-      loading={isPending}
-    />
+    <>
+      <OffDutyConfirmModal
+        visible={confirmVisible}
+        onCancel={() => setConfirmVisible(false)}
+        onConfirm={handleConfirmOffDuty}
+        loading={isPending}
+      />
+      <DutyVehicleSelectModal
+        visible={pickVehicles.length > 0}
+        vehicles={pickVehicles}
+        initialId={pickInitial}
+        onCancel={pickCancel}
+        onConfirm={pickConfirm}
+      />
+    </>
   );
 
   if (variant === "status") {
@@ -173,7 +204,7 @@ export function DutyToggle({
           disabled={isPending}
           style={[styles.statusPill, isPending && { opacity: 0.75 }]}
           accessibilityRole="switch"
-          accessibilityState={{ checked: isOnDuty, disabled: dutyGoOnBlocked }}
+          accessibilityState={{ checked: isOnDuty, disabled: goOnLocked }}
         >
           <View style={[styles.statusDot, { backgroundColor: isOnDuty ? "#22C55E" : "#9CA3AF" }]} />
           <Text style={[styles.statusText, { color: isOnDuty ? "#16A34A" : "#6B7280" }]}>
@@ -202,7 +233,7 @@ export function DutyToggle({
     const backgroundColor = animValue.interpolate({
       inputRange: [0, 1],
       outputRange: [
-        dutyGoOnBlocked && !displayOn ? LOCKED_RED : OFF_SLATE,
+        goOnLocked && !displayOn ? LOCKED_RED : OFF_SLATE,
         ON_GREEN,
       ],
     });
@@ -222,7 +253,7 @@ export function DutyToggle({
           accessibilityRole="switch"
           accessibilityState={{
             checked: displayOn,
-            disabled: dutyGoOnBlocked || isPending,
+            disabled: goOnLocked || isPending,
             busy: isPending,
           }}
           accessibilityLabel={

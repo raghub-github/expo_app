@@ -7,12 +7,13 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { useFocusEffect } from "@react-navigation/native";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { colors } from "@/src/theme";
+import { LORA_BOLD, LORA_REGULAR } from "@/src/theme/headerFonts";
 import { ProfileSubscriptionCard } from "@/src/components/profile/ProfileSubscriptionCard";
 import { useRiderSubscriptionPlans } from "@/src/hooks/useRiderSubscription";
 import { buildCurrentWeekDates, useRiderIncentives, todayIst } from "@/src/hooks/useRiderIncentives";
@@ -27,7 +28,7 @@ export default function OffersScreen() {
   const { t } = useTranslation();
   const tabBarHeight = useMeasuredTabBarHeight();
   const { rs } = useResponsiveLayout();
-  const padX = rs(20);
+  const padX = rs(16);
   const { isLoading: plansLoading } = useRiderSubscriptionPlans();
   const [weekAnchor, setWeekAnchor] = useState(todayIst());
   const [selectedDate, setSelectedDate] = useState(todayIst());
@@ -44,25 +45,40 @@ export default function OffersScreen() {
     }, []),
   );
 
-  const { data: incentives, isLoading: incentivesLoading, refetch, isRefetching, isError, error } = useRiderIncentives(
-    selectedDate,
-    activeFilter,
-  );
+  const {
+    data: incentives,
+    isLoading: incentivesLoading,
+    refetch,
+    isRefetching,
+    isError,
+    error,
+  } = useRiderIncentives(selectedDate, activeFilter);
 
   const filters = incentives?.filters?.length
     ? incentives.filters
     : [{ key: "all", label: "All", count: 0 }];
 
   return (
-    <SafeAreaView style={styles.root} edges={[]}>
+    <View style={styles.root}>
+      <LinearGradient
+        colors={[colors.primary[50], "#F8FAFC", "#FFFFFF"]}
+        locations={[0, 0.35, 1]}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+      />
       <ScrollView
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: tabBarHeight + rs(12) }}
+        contentContainerStyle={{ paddingBottom: tabBarHeight + rs(16) }}
         refreshControl={
-          <RefreshControl refreshing={isRefetching} onRefresh={() => refetch()} tintColor={colors.primary[500]} />
+          <RefreshControl
+            refreshing={isRefetching}
+            onRefresh={() => refetch()}
+            tintColor={colors.primary[500]}
+            colors={[colors.primary[500]]}
+          />
         }
       >
-        <View style={[styles.padTop, { paddingHorizontal: padX, paddingTop: rs(12) }]}>
+        <View style={[styles.hero, { paddingHorizontal: padX }]}>
           {plansLoading ? (
             <View style={styles.loadingBox}>
               <ActivityIndicator color={colors.primary[500]} />
@@ -79,68 +95,92 @@ export default function OffersScreen() {
           dateBadges={incentives?.dateBadges}
         />
 
-        <IncentiveFilterChips filters={filters} activeFilter={activeFilter} onChange={setActiveFilter} />
-
-        <Text
-          style={[styles.sectionTitle, flexShrinkText, { paddingHorizontal: padX }]}
-          numberOfLines={1}
-        >
-          {t("offers.activeOffers", "Active Offers")}
-        </Text>
+        <IncentiveFilterChips
+          filters={filters}
+          activeFilter={activeFilter}
+          onChange={setActiveFilter}
+        />
 
         {incentivesLoading ? (
           <View style={styles.loadingBox}>
             <ActivityIndicator color={colors.primary[500]} />
           </View>
         ) : isError ? (
-          <View style={[styles.comingSoon, { marginHorizontal: rs(16) }]}>
-            <Ionicons name="cloud-offline-outline" size={28} color={colors.gray[400]} />
-            <Text style={[styles.comingSoonText, flexShrinkText]} numberOfLines={2}>
+          <View style={[styles.emptyCard, { marginHorizontal: padX }]}>
+            <View style={styles.emptyIconWrap}>
+              <Ionicons name="cloud-offline-outline" size={28} color={colors.primary[600]} />
+            </View>
+            <Text style={[styles.emptyTitle, flexShrinkText]} numberOfLines={2}>
               {t("offers.loadFailed", "Could not load offers")}
             </Text>
-            <Text style={[styles.comingSoonSub, flexShrinkText]} numberOfLines={3}>
-              {extractApiErrorMessage(error, t("offers.checkLater", "Check back later for new offers"))}
+            <Text style={[styles.emptySub, flexShrinkText]} numberOfLines={3}>
+              {extractApiErrorMessage(
+                error,
+                t("offers.checkLater", "Check back later for new offers"),
+              )}
             </Text>
           </View>
         ) : incentives?.programs.length ? (
-          incentives.programs.map((program) => <DailyIncentiveCard key={program.id} program={program} />)
+          incentives.programs.map((program) => (
+            <DailyIncentiveCard key={program.id} program={program} />
+          ))
         ) : (
-          <View style={[styles.comingSoon, { marginHorizontal: rs(16) }]}>
-            <Ionicons name="gift-outline" size={28} color={colors.gray[400]} />
-            <Text style={[styles.comingSoonText, flexShrinkText]} numberOfLines={2}>
+          <View style={[styles.emptyCard, { marginHorizontal: padX }]}>
+            <View style={styles.emptyIconWrap}>
+              <Ionicons name="gift-outline" size={28} color={colors.primary[600]} />
+            </View>
+            <Text style={[styles.emptyTitle, flexShrinkText]} numberOfLines={2}>
               {t("offers.noOffers", "No active offers")}
             </Text>
-            <Text style={[styles.comingSoonSub, flexShrinkText]} numberOfLines={2}>
+            <Text style={[styles.emptySub, flexShrinkText]} numberOfLines={2}>
               {t("offers.checkLater", "Check back later for new offers")}
             </Text>
           </View>
         )}
-
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#F9FAFB" },
-  padTop: { marginBottom: 8, maxWidth: "100%" },
-  loadingBox: { paddingVertical: 24, alignItems: "center" },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: "#111827",
-    marginBottom: 12,
+  root: { flex: 1, backgroundColor: colors.primary[50] },
+  hero: {
+    paddingTop: 6,
+    paddingBottom: 6,
   },
-  comingSoon: {
-    backgroundColor: "#ffffff",
-    borderRadius: 14,
-    padding: 24,
+  loadingBox: { paddingVertical: 20, alignItems: "center" },
+  emptyCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 18,
+    paddingVertical: 32,
+    paddingHorizontal: 22,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#E5E7EB",
-    gap: 6,
-    maxWidth: "100%",
+    borderColor: colors.primary[100],
+    gap: 8,
   },
-  comingSoonText: { fontSize: 15, fontWeight: "700", color: "#374151", textAlign: "center" },
-  comingSoonSub: { fontSize: 13, color: "#6B7280", textAlign: "center" },
+  emptyIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: colors.primary[50],
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  emptyTitle: {
+    fontSize: 16,
+    lineHeight: 22,
+    fontFamily: LORA_BOLD,
+    fontWeight: "700",
+    color: "#0F172A",
+    textAlign: "center",
+  },
+  emptySub: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: LORA_REGULAR,
+    color: "#64748B",
+    textAlign: "center",
+  },
 });

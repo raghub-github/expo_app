@@ -105,35 +105,228 @@ export type VehicleOnboardingDocStep = OnboardingDocumentTypeDef & {
   optional: boolean;
 };
 
-export function resolveVehicleOnboardingDocs(
-  vehicleType: OnboardingVehicleType | undefined,
+const DOC_HINT_SHORT_LABEL: Record<string, string> = {
+  dl: "DL",
+  rc: "RC",
+  rental_proof: "Rental proof",
+  ev_proof: "EV proof",
+};
+
+function labelForDocCode(
+  code: string,
   catalog: OnboardingDocumentTypeDef[]
-): VehicleOnboardingDocStep[] {
-  const required = vehicleType?.documentRequirements?.required_docs ?? [];
-  const optional = vehicleType?.documentRequirements?.optional_docs ?? [];
-  const optionalSet = new Set(optional);
-  const codes = [...required, ...optional.filter((code) => !required.includes(code))];
+): string {
+  const key = String(code || "").trim().toLowerCase();
+  if (!key) return "";
+  const short = DOC_HINT_SHORT_LABEL[key];
+  if (short) return short;
   const activeByCode = new Map(
     catalog.filter((d) => d.isActive).map((d) => [d.code, d])
   );
-  return codes
-    .map((code) => {
-      const def = activeByCode.get(code);
-      if (!def) return null;
-      return { ...def, optional: optionalSet.has(code) };
-    })
-    .filter((d): d is VehicleOnboardingDocStep => Boolean(d))
-    .sort((a, b) => {
-      if (a.optional !== b.optional) return a.optional ? 1 : -1;
-      return a.sortOrder - b.sortOrder || a.id - b.id;
-    });
+  return activeByCode.get(key)?.label ?? key.replace(/_/g, " ");
+}
+
+function joinDocLabels(labels: string[]): string {
+  if (!labels.length) return "";
+  if (labels.length === 1) return labels[0]!;
+  return labels.join(" & ");
+}
+
+/**
+ * Select-vehicle card copy — required + optional docs in one line (optional
+ * docs joined with &; never labeled "Optional" on the card).
+ */
+export function formatVehicleRequiredDocsHint(
+  vehicleType: OnboardingVehicleType | undefined,
+  catalog: OnboardingDocumentTypeDef[] = FALLBACK_ONBOARDING_DOCUMENT_TYPES
+): string {
+  const required = (vehicleType?.documentRequirements?.required_docs ?? [])
+    .map((c) => String(c || "").trim())
+    .filter(Boolean);
+  const optional = (vehicleType?.documentRequirements?.optional_docs ?? [])
+    .map((c) => String(c || "").trim())
+    .filter(Boolean)
+    .filter((c) => !required.includes(c));
+
+  const allCodes = [...required, ...optional];
+  if (!allCodes.length) {
+    return vehicleType?.hint?.trim() || "No documents required";
+  }
+
+  const labels = allCodes.map((c) => labelForDocCode(c, catalog)).filter(Boolean);
+  return `Required: ${joinDocLabels(labels)}`;
+}
+
+/**
+ * Yellow info banner under the selected vehicle — same doc list as the card;
+ * no "optional" / skip copy (skip is only on doc steps in the wizard).
+ */
+export function formatVehicleDocsInfoMessage(
+  vehicleType: OnboardingVehicleType | undefined,
+  catalog: OnboardingDocumentTypeDef[] = FALLBACK_ONBOARDING_DOCUMENT_TYPES
+): string | null {
+  const required = (vehicleType?.documentRequirements?.required_docs ?? [])
+    .map((c) => String(c || "").trim())
+    .filter(Boolean);
+  const optional = (vehicleType?.documentRequirements?.optional_docs ?? [])
+    .map((c) => String(c || "").trim())
+    .filter(Boolean)
+    .filter((c) => !required.includes(c));
+
+  const allCodes = [...required, ...optional];
+  if (!allCodes.length) return null;
+
+  const labels = allCodes.map((c) => labelForDocCode(c, catalog)).filter(Boolean);
+  if (!labels.length) return null;
+
+  return `Upload ${joinDocLabels(labels)} (photo or PDF, max 5 MB).`;
+}
+
+/**
+ * Docs the rider must upload for this vehicle.
+ * Includes `required_docs` (required) and `optional_docs` (skippable).
+ * Pass `captureGroup` to scope steps to the dl-rc or rental-ev screen.
+ */
+export function resolveVehicleOnboardingDocs(
+  vehicleType: OnboardingVehicleType | undefined,
+  catalog: OnboardingDocumentTypeDef[],
+  opts?: { captureGroup?: OnboardingCaptureGroup }
+): VehicleOnboardingDocStep[] {
+  const required = vehicleType?.documentRequirements?.required_docs ?? [];
+  const optional = vehicleType?.documentRequirements?.optional_docs ?? [];
+  const activeByCode = new Map(
+    catalog.filter((d) => d.isActive).map((d) => [d.code, d])
+  );
+  const seen = new Set<string>();
+  const out: VehicleOnboardingDocStep[] = [];
+
+  const push = (code: string, isOptional: boolean) => {
+    const key = String(code || "").trim();
+    if (!key || seen.has(key)) return;
+    const def = activeByCode.get(key);
+    if (!def) return;
+    if (opts?.captureGroup && def.captureGroup !== opts.captureGroup) return;
+    seen.add(key);
+    out.push({ ...def, optional: isOptional });
+  };
+
+  for (const code of required) push(code, false);
+  for (const code of optional) push(code, true);
+
+  // Keep vehicle-type config order (required first, then optional).
+  return out;
+}
+
+/** All configured doc steps for a vehicle (dl_rc + rental_ev groups, de-duplicated). */
+/** Step 3 sub-steps: category (1) + vehicle (2) + each configured document. */
+export function vehicleOnboardingWizardStepTotal(
+  vehicleType: OnboardingVehicleType | undefined,
+  catalog: OnboardingDocumentTypeDef[]
+): number {
+  return 2 + mergeVehicleOnboardingDocSteps(vehicleType, catalog).length;
+}
+
+export function vehicleOnboardingWizardStepNumber(
+  phase: "category" | "vehicle" | "doc",
+  docCode: string | null | undefined,
+  vehicleType: OnboardingVehicleType | undefined,
+  catalog: OnboardingDocumentTypeDef[]
+): { current: number; total: number } {
+  const total = vehicleOnboardingWizardStepTotal(vehicleType, catalog);
+  if (phase === "category") return { current: 1, total };
+  if (phase === "vehicle") return { current: 2, total };
+  const docs = mergeVehicleOnboardingDocSteps(vehicleType, catalog);
+  const idx = docs.findIndex((d) => d.code === docCode);
+  if (idx < 0) return { current: 2, total };
+  return { current: 2 + idx + 1, total };
+}
+
+export function firstRentalEvDocCode(
+  vehicleType: OnboardingVehicleType | undefined,
+  catalog: OnboardingDocumentTypeDef[]
+): string {
+  return (
+    resolveVehicleOnboardingDocs(vehicleType, catalog, { captureGroup: "rental_ev" })[0]
+      ?.code ?? "rental_proof"
+  );
+}
+
+export function mergeVehicleOnboardingDocSteps(
+  vehicleType: OnboardingVehicleType | undefined,
+  catalog: OnboardingDocumentTypeDef[]
+): VehicleOnboardingDocStep[] {
+  const seen = new Set<string>();
+  const out: VehicleOnboardingDocStep[] = [];
+  for (const captureGroup of ["dl_rc", "rental_ev"] as const) {
+    for (const doc of resolveVehicleOnboardingDocs(vehicleType, catalog, {
+      captureGroup,
+    })) {
+      if (seen.has(doc.code)) continue;
+      seen.add(doc.code);
+      out.push(doc);
+    }
+  }
+  return out;
+}
+
+/** Both rental agreement and EV proof must be uploaded (DL/RC-style two steps). */
+export function isRentalEvDocsSatisfied(
+  data: import("@/src/stores/onboardingStore").OnboardingData,
+  docs: Array<OnboardingDocumentTypeDef & { optional?: boolean }>
+): boolean {
+  const rentalEvDocs = docs.filter(
+    (d) => d.code === "rental_proof" || d.code === "ev_proof" || d.captureGroup === "rental_ev"
+  );
+  const steps = rentalEvDocs.length ? rentalEvDocs : docs;
+  if (!steps.length) return false;
+  return steps.every((d) => isDocStepComplete(data, d) || isDocSkipped(data, d.code));
+}
+
+/** @deprecated Use isRentalEvDocsSatisfied — both docs are required now. */
+export function isRentalEvEitherOrSatisfied(
+  data: import("@/src/stores/onboardingStore").OnboardingData,
+  docs: Array<OnboardingDocumentTypeDef & { optional?: boolean }>
+): boolean {
+  return isRentalEvDocsSatisfied(data, docs);
+}
+
+/** Normalize wizard / catalog / geo codes so "dl" matches "driving_license" etc. */
+export function normalizeOnboardingDocCode(code: string): string {
+  const c = String(code || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  if (
+    c === "dl" ||
+    c === "driving_licence" ||
+    c === "driving_license" ||
+    c === "drivinglicence" ||
+    c === "drivinglicense"
+  ) {
+    return "dl";
+  }
+  if (
+    c === "rc" ||
+    c === "registration_certificate" ||
+    c === "vehicle_rc" ||
+    c === "registrationcertificate"
+  ) {
+    return "rc";
+  }
+  if (c === "bank" || c === "bank_account" || c === "bank_proof") {
+    return "bank_account";
+  }
+  return c;
 }
 
 export function isDocSkipped(
   data: import("@/src/stores/onboardingStore").OnboardingData,
-  code: string
+  code: string,
+  extraSkipped?: string[] | null,
 ): boolean {
-  return data.skippedOnboardingDocs?.includes(code) ?? false;
+  const want = normalizeOnboardingDocCode(code);
+  const list = [
+    ...(data.skippedOnboardingDocs ?? []),
+    ...(extraSkipped ?? []),
+  ];
+  return list.some((s) => normalizeOnboardingDocCode(s) === want);
 }
 
 export function isDocStepSatisfied(
@@ -141,10 +334,9 @@ export function isDocStepSatisfied(
   doc: OnboardingDocumentTypeDef,
   optional: boolean
 ): boolean {
-  // Intentional skip (geo-optional or catalog-optional) counts as satisfied for the wizard.
-  // Skip UI is only shown when policy allows; backend persists and re-validates.
-  if (isDocSkipped(data, doc.code)) return true;
-  void optional;
+  // Skips only satisfy optional docs for the *current* vehicle. A prior skip
+  // must never override a newly mandatory requirement after vehicle change.
+  if (optional && isDocSkipped(data, doc.code)) return true;
   return isDocStepComplete(data, doc);
 }
 
@@ -158,6 +350,20 @@ export function docRequiresBackPhoto(doc: OnboardingDocumentTypeDef): boolean {
   return doc.code === "dl";
 }
 
+/** Cashfree / DigiLocker stub file URLs — count as complete without photo sides. */
+export function isElectronicVerifiedDocUrl(url?: string | null): boolean {
+  const u = String(url || "").trim().toLowerCase();
+  if (!u) return false;
+  return (
+    u.includes("cashfree_dl_verified") ||
+    u.includes("cashfree_rc_verified") ||
+    u.includes("cashfree_pan_verified") ||
+    u.includes("digilocker_verified") ||
+    u.includes("aadhaar_masking_verified") ||
+    u.includes("electronic_verified")
+  );
+}
+
 export function isDocStepComplete(
   data: import("@/src/stores/onboardingStore").OnboardingData,
   doc: OnboardingDocumentTypeDef,
@@ -169,6 +375,13 @@ export function isDocStepComplete(
     state.textValue.trim().length >= Math.max(doc.minTextLength, 1);
   // Cashfree / DigiLocker electronic verify: number alone is enough — photos are not required.
   if (opts?.electronicallyVerified) {
+    return textOk;
+  }
+  // Persisted electronic stub (or absolutized stub path) — do not require DL back photo.
+  if (
+    isElectronicVerifiedDocUrl(state.signedUrl) ||
+    isElectronicVerifiedDocUrl(state.localUri)
+  ) {
     return textOk;
   }
   const frontOk = Boolean(state.signedUrl || state.localUri);
@@ -296,12 +509,24 @@ export function resolveVehicleWizardDocStep(
 
 export function filterSkippedDocsForVehicle(
   docs: Array<OnboardingDocumentTypeDef & { optional?: boolean }>,
-  skipped?: string[]
+  skipped?: string[],
+  opts?: { alsoKeep?: string[] },
 ): string[] | undefined {
   if (!skipped?.length) return undefined;
-  // Keep geo-skippable codes even when the vehicle catalog marks them required.
-  const vehicleCodes = new Set(docs.map((doc) => doc.code));
-  const filtered = skipped.filter((code) => vehicleCodes.has(code));
+  // Only optional docs for the current vehicle may remain skipped — unless
+  // explicitly allow-listed (e.g. geo canSkipDuringOnboarding).
+  const optionalCodes = new Set(
+    docs.filter((doc) => doc.optional).map((doc) => doc.code),
+  );
+  const alsoKeep = new Set(
+    (opts?.alsoKeep ?? []).map((c) => String(c || "").trim()).filter(Boolean),
+  );
+  const filtered = skipped.filter(
+    (code) =>
+      optionalCodes.has(code) ||
+      alsoKeep.has(code) ||
+      /^(bank_account|bank_proof)$/i.test(code),
+  );
   return filtered.length ? filtered : undefined;
 }
 

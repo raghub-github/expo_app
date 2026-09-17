@@ -452,6 +452,35 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
       },
     });
 
+    const parcelDiscounts = Array.isArray(billingSnapshot?.discounts)
+      ? (billingSnapshot!.discounts as Array<Record<string, unknown>>)
+      : [];
+    for (const d of parcelDiscounts) {
+      const meta =
+        d.meta && typeof d.meta === "object" ? (d.meta as Record<string, unknown>) : {};
+      const flashOfferId = Number(meta.platformOfferId ?? meta.platform_offer_id);
+      const kind = String(meta.offerKind ?? meta.offer_kind ?? "").toUpperCase();
+      if (!(flashOfferId > 0) || kind !== "FLASH_SALE") continue;
+      const { recordFlashSaleRedemptionAtPlacement } = await import(
+        "../billing/flashSaleRedemption.service.js"
+      );
+      const subsidyAmount = Math.abs(Number(d.amount) || 0);
+      const partnerStoreId = Number(meta.storeId ?? meta.store_id ?? meta.partnerId ?? 0);
+      await recordFlashSaleRedemptionAtPlacement(tx as PostgresJsDatabase<Record<string, unknown>>, {
+        platformOfferId: flashOfferId,
+        customerId: input.customerPk,
+        orderId: orderIdText,
+        serviceType: "PARCEL",
+        storeId: Number.isFinite(partnerStoreId) && partnerStoreId > 0 ? partnerStoreId : null,
+        originalItemPrice: fare,
+        flashSalePrice: Math.max(0, Math.round((fare - subsidyAmount) * 100) / 100),
+        subsidyAmount,
+        consumeMode: meta.consumeMode != null ? String(meta.consumeMode) : undefined,
+        orderSaleAmount: grandTotal,
+        snapshot: d,
+      });
+    }
+
     return {
       orderId: orderIdText,
       formattedOrderId: insertedCore?.formattedOrderId ?? null,

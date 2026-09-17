@@ -32,6 +32,16 @@ export type PlatformOfferUsageRow = {
   discount_total: string;
   budget_total: string | null;
   budget_used: string | null;
+  flash_subsidy_total?: string | null;
+  flash_original_total?: string | null;
+  flash_price_total?: string | null;
+  flash_refunded?: number;
+  flash_redemptions_active?: number;
+  flash_redemptions_lifetime?: number;
+  flash_customers?: number;
+  max_uses_total?: number | null;
+  remaining_budget?: number | null;
+  remaining_redemptions?: number | null;
 };
 
 export type PlatformOfferGeoUsageRow = {
@@ -82,6 +92,9 @@ export type PlatformOfferApplicationRow = {
   offer_title: string;
   order_pk: number | null;
   order_id_text: string | null;
+  /** Public customer code (e.g. GMC…) — preferred for display. */
+  customer_public_id: string | null;
+  /** Internal customers.id PK (legacy / join key). */
   customer_id: number | null;
   order_status: string | null;
   discount_amount: string;
@@ -212,7 +225,15 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
       COALESCE(a.sales_attributed, 0)::text AS sales_attributed,
       COALESCE(a.discount_total, 0)::text AS discount_total,
       o.budget_total::text AS budget_total,
-      o.budget_used::text AS budget_used
+      o.budget_used::text AS budget_used,
+      o.max_uses_total,
+      COALESCE(fs.flash_subsidy_total, 0)::text AS flash_subsidy_total,
+      COALESCE(fs.flash_original_total, 0)::text AS flash_original_total,
+      COALESCE(fs.flash_price_total, 0)::text AS flash_price_total,
+      COALESCE(fs.flash_refunded, 0)::int AS flash_refunded,
+      COALESCE(fs.flash_redemptions_active, 0)::int AS flash_redemptions_active,
+      COALESCE(fs_all.flash_redemptions_lifetime, 0)::int AS flash_redemptions_lifetime,
+      COALESCE(fs.flash_customers, 0)::int AS flash_customers
     FROM billing_platform_offers o
     LEFT JOIN LATERAL (
       SELECT
@@ -229,6 +250,25 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
       )
       WHERE oa.platform_offer_id = o.id
     ) a ON true
+    LEFT JOIN LATERAL (
+      SELECT
+        COALESCE(SUM(CASE WHEN r.status IN ('reserved', 'consumed') THEN r.subsidy_amount ELSE 0 END), 0) AS flash_subsidy_total,
+        COALESCE(SUM(CASE WHEN r.status IN ('reserved', 'consumed') THEN r.original_item_price ELSE 0 END), 0) AS flash_original_total,
+        COALESCE(SUM(CASE WHEN r.status IN ('reserved', 'consumed') THEN r.flash_sale_price ELSE 0 END), 0) AS flash_price_total,
+        COUNT(*) FILTER (WHERE r.status = 'refunded')::int AS flash_refunded,
+        COUNT(*) FILTER (WHERE r.status IN ('reserved', 'consumed'))::int AS flash_redemptions_active,
+        COUNT(DISTINCT CASE WHEN r.status IN ('reserved', 'consumed') THEN r.customer_id END)::int AS flash_customers
+      FROM flash_sale_redemptions r
+      WHERE r.platform_offer_id = o.id
+        AND r.applied_at >= ${fromIso}::timestamptz
+        AND r.applied_at <= ${toIso}::timestamptz
+    ) fs ON true
+    LEFT JOIN LATERAL (
+      SELECT
+        COUNT(*) FILTER (WHERE r.status IN ('reserved', 'consumed'))::int AS flash_redemptions_lifetime
+      FROM flash_sale_redemptions r
+      WHERE r.platform_offer_id = o.id
+    ) fs_all ON true
     ORDER BY a.orders_applied DESC NULLS LAST, o.id ASC
     LIMIT 200
   `;
@@ -504,11 +544,19 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
       o.name AS offer_name,
       oa.offer_title,
       oc.id::int AS order_pk,
-      COALESCE(oc.order_id, ('GM' || oa.order_id::text)) AS order_id_text,
+      COALESCE(
+        NULLIF(trim(oc.formatted_order_id), ''),
+        NULLIF(trim(oc.order_id), ''),
+        CASE
+          WHEN oa.order_id IS NOT NULL THEN ('GM' || lpad(oa.order_id::text, 8, '0'))
+          ELSE NULL
+        END
+      ) AS order_id_text,
+      COALESCE(NULLIF(trim(c.customer_id), ''), NULL) AS customer_public_id,
       oc.customer_id::int AS customer_id,
       COALESCE(oc.current_status, oc.status::text) AS order_status,
       COALESCE(oa.discount_amount, 0)::text AS discount_amount,
-      oc.grand_total::text AS sale_amount,
+      COALESCE(oc.grand_total, 0)::text AS sale_amount,
       oa.created_at::text AS applied_at,
       pou.status AS usage_status,
       COALESCE(
@@ -522,8 +570,10 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
     LEFT JOIN orders_core oc ON (
       oc.id = oa.order_id
       OR oc.order_id = ('GM' || oa.order_id::text)
+      OR oc.order_id = ('GM' || lpad(oa.order_id::text, 8, '0'))
       OR regexp_replace(COALESCE(oc.order_id, ''), '\\D', '', 'g') = oa.order_id::text
     )
+    LEFT JOIN customers c ON c.id = oc.customer_id
     LEFT JOIN platform_offer_usages pou
       ON pou.platform_offer_id = oa.platform_offer_id
      AND (
@@ -581,7 +631,22 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
       budget_consumed: budgetConsumed,
       budget_remaining: budgetTotal > 0 ? Math.max(0, budgetTotal - budgetConsumed) : null,
     },
-    perOffer,
+    perOffer: perOffer.map((row) => {
+      const budgetTotalOffer = num(row.budget_total);
+      const budgetUsedOffer = num(row.budget_used);
+      const remainingBudget =
+        budgetTotalOffer > 0 ? Math.max(0, budgetTotalOffer - budgetUsedOffer) : null;
+      const cap = row.max_uses_total;
+      const remainingRedemptions =
+        cap != null && Number.isFinite(cap) && cap > 0
+          ? Math.max(0, cap - (row.flash_redemptions_lifetime ?? row.flash_redemptions_active ?? 0))
+          : null;
+      return {
+        ...row,
+        remaining_budget: remainingBudget,
+        remaining_redemptions: remainingRedemptions,
+      };
+    }),
     geoWise,
     daily,
     monthly,

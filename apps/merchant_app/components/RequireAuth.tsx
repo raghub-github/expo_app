@@ -7,7 +7,7 @@ import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
 export function RequireAuth({ children }: { children: ReactNode }) {
   const { authState } = useAuth();
 
-  if (authState.status === "loading") {
+  if (authState.status === "loading" || authState.status === "logging_out") {
     return <MerchantBootstrapScreen />;
   }
 
@@ -22,7 +22,7 @@ export function RequireAuth({ children }: { children: ReactNode }) {
 export function RequireGuest({ children }: { children: ReactNode }) {
   const { authState } = useAuth();
 
-  if (authState.status === "loading") {
+  if (authState.status === "loading" || authState.status === "logging_out") {
     return <MerchantBootstrapScreen />;
   }
 

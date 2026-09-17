@@ -12,7 +12,8 @@ export type HomeBannerSlideType =
   | "account_restricted"
   | "penalty"
   | "ride_payment_hold"
-  | "subscription";
+  | "subscription"
+  | "network";
 
 export type HomeBannerSlide = {
   id: string;
@@ -26,6 +27,7 @@ const DEFAULT_DURATION_MS: Record<HomeBannerSlideType, number> = {
   penalty: 30_000,
   ride_payment_hold: 15_000,
   subscription: 15_000,
+  network: 12_000,
 };
 
 /** Shared height for top alert banners (icon + two text lines + CTA). */

@@ -121,6 +121,7 @@ function TransactionRow({ tx, dark }: { tx: WalletTransaction; dark: boolean }) 
   const isCredit = tx.amount >= 0;
   const amountStr = `${isCredit ? "+" : "−"} ₹${Math.abs(tx.amount).toFixed(2)}`;
   const { title, offerName } = unlockedOfferTxLines(tx);
+  const orderId = tx.formatted_order_id?.trim() || null;
 
   return (
     <View style={[styles.txCard, dark && styles.txCardDark]}>
@@ -134,6 +135,11 @@ function TransactionRow({ tx, dark }: { tx: WalletTransaction; dark: boolean }) 
         {offerName ? (
           <AppText style={[styles.txSubtitle, dark && styles.txSubtitleDark]} numberOfLines={2}>
             {offerName}
+          </AppText>
+        ) : null}
+        {orderId ? (
+          <AppText style={[styles.txOrderId, dark && styles.txOrderIdDark]} numberOfLines={1}>
+            {orderId}
           </AppText>
         ) : null}
         <AppText style={[styles.txDate, dark && styles.txDateDark]}>{formatTxDate(tx.created_at)}</AppText>
@@ -488,6 +494,13 @@ const styles = StyleSheet.create({
     color: "#374151",
     marginTop: 2,
   },
+  txOrderId: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#4B5563",
+    marginTop: 2,
+    letterSpacing: 0.2,
+  },
   txDate: {
     fontSize: 13,
     color: MUTED,
@@ -558,6 +571,7 @@ const styles = StyleSheet.create({
   },
   txTitleDark: { color: DiscoveryColors.text },
   txSubtitleDark: { color: DiscoveryColors.textMuted },
+  txOrderIdDark: { color: DiscoveryColors.textMuted },
   txDateDark: { color: DiscoveryColors.textDim },
   txAmountCreditDark: { color: "#4ADE80" },
   txAmountDebitDark: { color: "#F87171" },

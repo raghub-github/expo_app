@@ -15,12 +15,14 @@ import {
   BackHandler,
   Modal,
   Dimensions,
+  Keyboard,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useTranslation } from "react-i18next";
+import { useQueryClient } from "@tanstack/react-query";
 import * as ImagePicker from "expo-image-picker";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import {
@@ -32,15 +34,25 @@ import {
 } from "@/src/hooks/useOnboarding";
 import { ElectronicVerifyCard, type EvState } from "@/src/components/onboarding/ElectronicVerifyCard";
 import { PanNameMismatchSheet } from "@/src/components/onboarding/PanNameMismatchSheet";
-import { HeaderSkipLink } from "@/src/components/onboarding/OnboardingFormUi";
+import { OnboardingRemoveConfirmModal } from "@/src/components/onboarding/OnboardingRemoveConfirmModal";
+import {
+  ContinueButton,
+  HeaderSkipLink,
+  OnboardingStickyFooter,
+  onboardingHeaderPaddingTop,
+  onboardingStickyScrollPadding,
+} from "@/src/components/onboarding/OnboardingFormUi";
+import { withOnboardingWalkParam } from "@/src/lib/onboarding-walk-through";
 import {
   panAadhaarNamesMatch,
   pickPanHolderName,
 } from "@/src/lib/pan-aadhaar-name-match";
+import { isElectronicVerifyForceManualError } from "@/src/lib/electronic-verify-rate-limit";
 import { openOnboardingIssueSupportTicket } from "@/src/lib/rider-support-navigation";
 import { useOnboardingEstablishedRedirect } from "@/src/hooks/useOnboardingEstablishedRedirect";
-import { resolveRiderSelfieDisplayUrl, toAbsoluteImageUrl, withImageCacheBust } from "@/src/utils/mediaUrl";
+import { resolveOnboardingPhotoDisplayUrl, resolveRiderSelfieDisplayUrl, toAbsoluteImageUrl, withImageCacheBust } from "@/src/utils/mediaUrl";
 import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
+import { extractApiErrorMessage } from "@/src/services/http";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import {
   uploadToR2,
@@ -58,33 +70,84 @@ const ACCENT_DARK = "#22a745";
 const BG = "#f4fbf6";
 
 function isLocalSelfieUri(uri: string) {
+  const u = String(uri || "").trim();
+  if (!u) return false;
+  if (
+    u.startsWith("file:") ||
+    u.startsWith("content:") ||
+    u.startsWith("ph:") ||
+    u.startsWith("assets-library:") ||
+    u.startsWith("blob:")
+  ) {
+    return true;
+  }
+  // Some Android pickers return a bare filesystem path (no scheme).
+  if (u.startsWith("/") && !u.startsWith("//") && !u.includes("://")) {
+    return true;
+  }
+  return false;
+}
+
+/** True when URI is a remote / proxy attachment (already on R2). */
+function isRemotePanPhotoUri(uri: string | null | undefined): boolean {
+  const u = String(uri || "").trim();
+  if (!u || isLocalSelfieUri(u)) return false;
   return (
-    uri.startsWith("file:") ||
-    uri.startsWith("content:") ||
-    uri.startsWith("ph:") ||
-    uri.startsWith("assets-library:")
+    u.startsWith("http://") ||
+    u.startsWith("https://") ||
+    u.includes("/attachments/proxy")
   );
 }
 
-/** Camera temp files often vanish when CameraView unmounts — copy into app cache. */
-async function persistLocalSelfieCapture(uri: string): Promise<string> {
+function extractR2KeyFromPanPhotoUrl(uri: string | null | undefined): string | undefined {
+  const u = String(uri || "").trim();
+  if (!u) return undefined;
+  try {
+    const parsed = new URL(
+      u.startsWith("http://") || u.startsWith("https://")
+        ? u
+        : `https://local.invalid${u.startsWith("/") ? "" : "/"}${u}`
+    );
+    if (!parsed.pathname.includes("/attachments/proxy")) return undefined;
+    const key = parsed.searchParams.get("key")?.trim();
+    if (!key) return undefined;
+    try {
+      return decodeURIComponent(key);
+    } catch {
+      return key;
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/** Camera/gallery temp files often vanish — copy into app cache before Continue. */
+async function persistLocalCapture(
+  uri: string,
+  kind: "pan" | "selfie" = "selfie",
+): Promise<string> {
   if (Platform.OS === "web" || !isLocalSelfieUri(uri)) return uri;
   try {
     const FS = await import("expo-file-system/legacy");
     const dir = FS.cacheDirectory || FS.documentDirectory;
     if (!dir) return uri;
-    const dest = `${dir}onboarding-selfie-${Date.now()}.jpg`;
+    const dest = `${dir}onboarding-${kind}-${Date.now()}.jpg`;
     await FS.copyAsync({ from: uri, to: dest });
     const info = await FS.getInfoAsync(dest);
     if (!info.exists || (typeof info.size === "number" && info.size < 32)) {
-      throw new Error("copied selfie missing");
+      throw new Error(`copied ${kind} missing`);
     }
     return dest;
   } catch {
-    // Last resort: keep original URI (may die after camera unmount).
     return uri;
   }
 }
+
+/** @deprecated use persistLocalCapture — kept name for selfie call sites. */
+async function persistLocalSelfieCapture(uri: string): Promise<string> {
+  return persistLocalCapture(uri, "selfie");
+}
+
 
 const SELFIE_PREVIEW_W = Math.min(Dimensions.get("window").width - 40, 360);
 const SELFIE_PREVIEW_H = Math.round(SELFIE_PREVIEW_W * 1.22);
@@ -119,9 +182,9 @@ const PAN_COPY = {
   panPlaceholder: "ABCDE1234F",
   masked: "Masked",
   panPhotoLabel: "PAN Card Photo",
-  panPhotoHint: "Upload a clear photo of your physical PAN card",
+  panPhotoHint: "Upload one clear photo of your PAN card (front only — back not required)",
   panBoxTitle: "Add PAN card photo",
-  panBoxSub: "Tap here to capture or upload",
+  panBoxSub: "Front of card only — one photo",
   selfieLabel: "Live Selfie",
   selfieHint: "Blink your eyes when prompted — selfie captures automatically",
   selfieTips: [
@@ -178,45 +241,6 @@ function documentFileEntry(upload: { proxyUrl: string; key: string }) {
   ];
 }
 
-function ContinueButton({
-  label,
-  onPress,
-  disabled,
-  loading,
-  icon = "arrow-forward",
-}: {
-  label: string;
-  onPress: () => void;
-  disabled?: boolean;
-  loading?: boolean;
-  icon?: keyof typeof Ionicons.glyphMap;
-}) {
-  const inactive = Boolean(disabled || loading);
-
-  return (
-    <TouchableOpacity
-      activeOpacity={inactive ? 1 : 0.85}
-      onPress={() => {
-        if (!inactive) onPress();
-      }}
-      accessibilityRole="button"
-      accessibilityState={{ disabled: inactive }}
-      style={[styles.continueBtn, inactive && styles.continueBtnDisabled]}
-    >
-      {loading ? (
-        <ActivityIndicator color="#ffffff" />
-      ) : (
-        <>
-          <Text style={[styles.continueBtnText, inactive && styles.continueBtnTextDisabled]}>
-            {label}
-          </Text>
-          <Ionicons name={icon} size={18} color="#ffffff" />
-        </>
-      )}
-    </TouchableOpacity>
-  );
-}
-
 function FieldLabel({ label, required }: { label: string; required?: boolean }) {
   return (
     <Text style={styles.fieldLabel}>
@@ -236,7 +260,15 @@ function ChecklistItem({ done, label }: { done: boolean; label: string }) {
           <View style={styles.checkDot} />
         )}
       </View>
-      <Text style={[styles.checkLabel, done && styles.checkLabelDone]}>{label}</Text>
+      <Text
+        style={[styles.checkLabel, done && styles.checkLabelDone]}
+        numberOfLines={1}
+        ellipsizeMode="clip"
+        adjustsFontSizeToFit
+        minimumFontScale={0.72}
+      >
+        {label}
+      </Text>
     </View>
   );
 }
@@ -286,6 +318,7 @@ function PanPhotoSlot({
   onPress,
   onRemove,
   disabled,
+  removing,
   boxTitle,
   boxSub,
 }: {
@@ -293,48 +326,85 @@ function PanPhotoSlot({
   onPress: () => void;
   onRemove: () => void;
   disabled?: boolean;
+  removing?: boolean;
   boxTitle: string;
   boxSub: string;
 }) {
+  const [imgFailed, setImgFailed] = useState(false);
+  useEffect(() => {
+    setImgFailed(false);
+  }, [uri]);
+
+  const hasUri = Boolean(uri?.trim());
+  const showPreview = hasUri && !imgFailed;
+
   return (
     <View style={styles.panSlot}>
-      <Pressable
-        onPress={onPress}
-        disabled={disabled || Boolean(uri)}
-        accessibilityRole="button"
-        accessibilityLabel={boxTitle}
-        style={({ pressed }) => [
+      {/* Match Aadhaar: drop box is a View so the X is not nested inside a Pressable. */}
+      <View
+        style={[
           styles.panDropBox,
-          uri ? styles.panDropBoxFilled : null,
-          !uri && pressed && !disabled && styles.slotBoxPressed,
+          hasUri ? styles.panDropBoxFilled : null,
           disabled && styles.slotActionBtnDisabled,
         ]}
       >
-        {uri ? (
-          <Image source={{ uri }} style={styles.panPreview} resizeMode="cover" />
+        {showPreview ? (
+          <Image
+            key={uri!}
+            source={{ uri: uri! }}
+            style={styles.panPreview}
+            resizeMode="cover"
+            onError={() => setImgFailed(true)}
+            onLoad={() => setImgFailed(false)}
+            pointerEvents="none"
+          />
         ) : (
-          <View style={styles.panEmptyContent}>
-            <View style={styles.panEmptyIconCircle}>
-              <Ionicons name="camera-outline" size={26} color={ACCENT_DARK} />
+          <Pressable
+            onPress={onPress}
+            disabled={disabled || removing}
+            accessibilityRole="button"
+            accessibilityLabel={boxTitle}
+            style={({ pressed }) => [
+              styles.panDropBoxInnerEmpty,
+              pressed && !disabled && styles.slotBoxPressed,
+            ]}
+          >
+            <View style={styles.panEmptyContent} pointerEvents="none">
+              <View style={styles.panEmptyIconCircle}>
+                <Ionicons
+                  name={hasUri && imgFailed ? "alert-circle-outline" : "camera-outline"}
+                  size={26}
+                  color={ACCENT_DARK}
+                />
+              </View>
+              <Text style={styles.panTapTitle}>
+                {hasUri && imgFailed ? "Preview failed — tap to re-upload" : boxTitle}
+              </Text>
+              <Text style={styles.panTapSub}>
+                {hasUri && imgFailed ? "Choose camera or gallery again" : boxSub}
+              </Text>
             </View>
-            <Text style={styles.panTapTitle}>{boxTitle}</Text>
-            <Text style={styles.panTapSub}>{boxSub}</Text>
-          </View>
+          </Pressable>
         )}
 
-        {uri ? (
-          <Pressable
-            onPress={(e) => {
-              e.stopPropagation?.();
-              onRemove();
-            }}
+        {hasUri ? (
+          <TouchableOpacity
+            onPress={onRemove}
+            disabled={disabled || removing}
+            activeOpacity={0.75}
+            hitSlop={{ top: 14, right: 14, bottom: 14, left: 14 }}
+            accessibilityRole="button"
+            accessibilityLabel="Remove PAN photo"
             style={styles.slotRemoveBtn}
-            hitSlop={8}
           >
-            <Ionicons name="close-circle" size={22} color="#ffffff" />
-          </Pressable>
+            {removing ? (
+              <ActivityIndicator size="small" color={colors.gray[700]} />
+            ) : (
+              <Ionicons name="close" size={16} color={colors.gray[700]} />
+            )}
+          </TouchableOpacity>
         ) : null}
-      </Pressable>
+      </View>
     </View>
   );
 }
@@ -343,37 +413,81 @@ export default function PanSelfieScreen() {
   const { t } = useTranslation();
   const tx = (key: keyof typeof PAN_COPY) =>
     t(`onboarding.panSelfie.${key}`, { defaultValue: PAN_COPY[key] });
+  const insets = useSafeAreaInsets();
+  /** Bottom pad under Continue — clear home/gesture bar (matches other onboarding screens). */
+  const selfieBottomPad = Math.max(insets.bottom, 24) + 28;
+  /**
+   * Transparent OnboardingTopBar overlays content. Pad below status bar + chrome
+   * so the Step pill never sits under Back / Help.
+   */
+  const headerTopPad = onboardingHeaderPaddingTop(insets.top);
 
   const session = useSessionStore((s) => s.session);
   const { data, setData, setStep, hydrate } = useOnboardingStore();
-  const params = useLocalSearchParams<{ step?: string | string[] }>();
+  const params = useLocalSearchParams<{ step?: string | string[]; walk?: string | string[] }>();
   const stepParam = Array.isArray(params.step) ? params.step[0] : params.step;
+  const walkParam = Array.isArray(params.walk) ? params.walk[0] : params.walk;
   const openOnSelfieStep = stepParam === "selfie";
+  /** Continue from Aadhaar after Back — stay on this screen even if pan_selfie is complete. */
+  const walkThroughFromContinue =
+    walkParam === "1" || walkParam === "true" || walkParam === "yes";
   const saveStep = useSaveOnboardingStep();
   const saveDocument = useSaveDocument();
   const updateStage = useUpdateRiderStage();
-  const { data: riderStatus } = useRiderStatus(data.riderId, {
+  const { data: riderStatus, isFetched: riderStatusFetched } = useRiderStatus(data.riderId, {
     // Admin may enable/disable PAN skip while the rider is on this screen.
+    // Also picks up dashboard selfie remove quickly.
     refetchInterval: 5_000,
   });
   useOnboardingEstablishedRedirect(riderStatus);
 
   const [panNumber, setPanNumber] = useState(data.panNumber || "");
-  const [panPhotoUri, setPanPhotoUri] = useState<string | null>(data.panPhotoUri || null);
+  // Never seed state with a dead camera/gallery path when a remote proxy already exists.
+  const [panPhotoUri, setPanPhotoUri] = useState<string | null>(() => {
+    if (isRemotePanPhotoUri(data.panPhotoSignedUrl)) return null;
+    return data.panPhotoUri || null;
+  });
   const [selfieUri, setSelfieUri] = useState<string | null>(
     data.selfieUri || data.selfieSignedUrl || null
   );
   /** When true, do not re-hydrate selfie from server/store after user hits X / re-capture. */
   const selfieClearedByUserRef = useRef(false);
+  /**
+   * After Clear / keystroke edit — do not auto-fill PAN number from server.
+   * Photo restore from server is controlled separately (panPhotoClearedByUserRef).
+   */
+  const suppressPanNumberHydrateRef = useRef(false);
+  /** User explicitly removed the PAN photo this visit — don't restore until same PAN re-typed. */
+  const panPhotoClearedByUserRef = useRef(false);
+  /** X on photo preview — block all server/store restore until a new photo is picked. */
+  const [panPhotoRemovedIntentionally, setPanPhotoRemovedIntentionally] = useState(false);
+  const panPhotoRemovedIntentionallyRef = useRef(false);
+  const [removingPanPhoto, setRemovingPanPhoto] = useState(false);
+  const [panRemoveConfirmOpen, setPanRemoveConfirmOpen] = useState(false);
+  const queryClient = useQueryClient();
+  /** PAN that already has a manual photo on file (local or server). */
+  const uploadedPanNumberRef = useRef<string | null>(
+    data.panNumber && (data.panPhotoSignedUrl || data.panPhotoUri)
+      ? String(data.panNumber).replace(/[^A-Z0-9]/gi, "").toUpperCase()
+      : null
+  );
   /** Fresh local capture must upload on Continue (even if a prior signed URL exists). */
   const selfieNeedsUploadRef = useRef(false);
+  /** ScrollView + PAN field — keep input above keyboard (avoid KeyboardAvoidingView on Android New Arch). */
+  const scrollRef = useRef<ScrollView>(null);
+  const panFieldRef = useRef<View>(null);
+  const scrollYRef = useRef(0);
+  const [keyboardPad, setKeyboardPad] = useState(0);
   /** Fresh camera capture should show immediately even if an older server selfie exists. */
   const [preferLocalSelfie, setPreferLocalSelfie] = useState(
     Boolean(data.selfieUri && isLocalSelfieUri(data.selfieUri))
   );
-  const [wizardStep, setWizardStep] = useState<"pan" | "selfie">(
-    openOnSelfieStep ? "selfie" : "pan"
-  );
+  const [wizardStep, setWizardStep] = useState<"pan" | "selfie">(() => {
+    // Only deep-link `?step=selfie` (e.g. vehicle Back) opens selfie directly.
+    // Aadhaar → pan-selfie must always land on PAN first, then Continue → selfie.
+    if (openOnSelfieStep) return "selfie";
+    return "pan";
+  });
   const [panSkipped, setPanSkipped] = useState(false);
   /** Selfie step: gate screen first; camera UI only after "Capture selfie". */
   const [selfieCaptureOpen, setSelfieCaptureOpen] = useState(false);
@@ -427,7 +541,62 @@ export default function PanSelfieScreen() {
         selfiePreviewEpoch || selfieSignedUrl || riderStatus?.selfieUrl
       );
   const selfieValid = Boolean(selfiePreviewUri);
-  const panPhotoValid = Boolean(panPhotoUri || panPhotoSignedUrl);
+  const panPhotoValid =
+    !panPhotoRemovedIntentionally && Boolean(panPhotoUri || panPhotoSignedUrl);
+
+  const isRealPanPhotoUrl = (url?: string | null) => {
+    const u = String(url || "").trim();
+    if (!u) return false;
+    const lower = u.toLowerCase();
+    if (
+      lower === "pending" ||
+      lower === "n/a" ||
+      lower === "pan_number_submitted" ||
+      lower.includes("electronic_verified") ||
+      lower.includes("digilocker_verified")
+    ) {
+      return false;
+    }
+    return (
+      lower.startsWith("http://") ||
+      lower.startsWith("https://") ||
+      lower.startsWith("file:") ||
+      lower.startsWith("content:") ||
+      lower.startsWith("ph:") ||
+      lower.startsWith("/v1/attachments") ||
+      lower.startsWith("/api/attachments") ||
+      lower.includes("attachments/proxy")
+    );
+  };
+
+  /** Absolute / local URI for Image — relative proxy paths render as a white box. */
+  const panPhotoDisplayUri = (() => {
+    // X removed photo — never show server/store image until a new pick.
+    if (panPhotoRemovedIntentionally) {
+      return null;
+    }
+    // After Clear / digit-edit away from uploaded PAN, never show server/store image.
+    const typed = panNumber.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+    const matchesUploaded =
+      Boolean(uploadedPanNumberRef.current) &&
+      typed === uploadedPanNumberRef.current;
+    const userEditingAway =
+      panPhotoClearedByUserRef.current || suppressPanNumberHydrateRef.current;
+    if (userEditingAway && !matchesUploaded) {
+      // Still allow a fresh local capture while editing the number.
+      return resolveOnboardingPhotoDisplayUrl({ localUri: panPhotoUri });
+    }
+    // Prefer stable remote/proxy — local file:// often dies after Back / remount.
+    return resolveOnboardingPhotoDisplayUrl({
+      remotes: [
+        panPhotoSignedUrl,
+        data.panPhotoSignedUrl,
+        riderStatus?.panFrontUrl,
+        isRemotePanPhotoUri(panPhotoUri) ? panPhotoUri : null,
+      ],
+      localUri: panPhotoUri,
+    });
+  })();
 
   //   manual → classic photo flow; auto → number-only, failure blocks;
   //   hybrid → number-only, failure reveals the photo upload as fallback.
@@ -438,8 +607,24 @@ export default function PanSelfieScreen() {
   // Only clear electronic-verify state when the rider edits the PAN (not on server hydrate).
   const handlePanNumberChange = (text: string) => {
     const next = formatPan(text);
+    const prev = panNumber;
+    // Any keystroke (incl. backspace) — never re-autofill number from server while editing.
+    suppressPanNumberHydrateRef.current = true;
     setPanNumber(next);
-    setPanEv({ phase: "idle" });
+    // Doc number changed → hide local preview only. Keep store/server photo so
+    // header Back can restore the uploaded doc (do not wipe panPhotoSignedUrl in store).
+    if (next.toUpperCase() !== prev.toUpperCase()) {
+      if (panPhotoUri || panPhotoSignedUrl) {
+        if (/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(prev.toUpperCase())) {
+          uploadedPanNumberRef.current = prev.toUpperCase();
+        }
+        setPanPhotoUri(null);
+        setPanPhotoSignedUrl(null);
+      }
+    }
+    if (panEv.phase !== "failed" && panEv.phase !== "mismatch") {
+      setPanEv({ phase: "idle" });
+    }
     if (
       verifyBlockedForPan &&
       next.toUpperCase() !== verifyBlockedForPan.toUpperCase()
@@ -450,8 +635,139 @@ export default function PanSelfieScreen() {
     if (data.panVerified) void setData({ panVerified: false });
   };
 
+  /** Clear control on the PAN input — empties number so rider can type a new one + Verify Instantly. */
+  const clearPanNumberInput = () => {
+    const cleared = panNumber.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+    if (/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(cleared) && (panPhotoValid || panPhotoSignedUrl || data.panPhotoSignedUrl)) {
+      uploadedPanNumberRef.current = cleared;
+    }
+    suppressPanNumberHydrateRef.current = true;
+    panPhotoClearedByUserRef.current = true;
+    setPanNumber("");
+    setPanPhotoUri(null);
+    setPanPhotoSignedUrl(null);
+    setVerifyBlockedForPan(null);
+    setMismatchOpen(false);
+    setPanEv({ phase: "idle" });
+    void setData({
+      panNumber: undefined,
+      panVerified: false,
+    });
+  };
+
+  const clearPanPhotoOnly = () => {
+    if (removingPanPhoto) return;
+    setPanRemoveConfirmOpen(true);
+  };
+
+  const confirmClearPanPhotoOnly = () => {
+    void (async () => {
+      if (removingPanPhoto) return;
+      setRemovingPanPhoto(true);
+
+      // Capture keys before clearing local state.
+      const keyCandidates = [
+        extractR2KeyFromPanPhotoUrl(panPhotoSignedUrl),
+        extractR2KeyFromPanPhotoUrl(panPhotoUri),
+        extractR2KeyFromPanPhotoUrl(data.panPhotoSignedUrl),
+        extractR2KeyFromPanPhotoUrl(riderStatus?.panFrontUrl),
+        extractR2KeyFromProxyOrUrl(panPhotoSignedUrl),
+        extractR2KeyFromProxyOrUrl(data.panPhotoSignedUrl),
+        extractR2KeyFromProxyOrUrl(riderStatus?.panFrontUrl),
+        data.riderId
+          ? buildRiderDocumentKey(parseInt(data.riderId, 10), "pan", "single")
+          : null,
+      ].filter((k): k is string => Boolean(k && String(k).trim()));
+
+      const uniqueKeys = [...new Set(keyCandidates.map((k) => k.trim()))].filter(
+        (k) =>
+          k &&
+          k !== "attachments/proxy" &&
+          !k.endsWith("/attachments/proxy"),
+      );
+
+      // Optimistic UI — hide preview + disable Submit immediately.
+      panPhotoClearedByUserRef.current = true;
+      panPhotoRemovedIntentionallyRef.current = true;
+      setPanPhotoRemovedIntentionally(true);
+      setPanPhotoUri(null);
+      setPanPhotoSignedUrl(null);
+      setPanRemoveConfirmOpen(false);
+      const cleared = panNumber.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+      if (/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(cleared)) {
+        uploadedPanNumberRef.current = cleared;
+      }
+      void setData({
+        panPhotoUri: undefined,
+        panPhotoSignedUrl: undefined,
+        panVerified: false,
+      });
+      if (data.riderId) {
+        queryClient.setQueryData(["rider", data.riderId], (prev: any) =>
+          prev && typeof prev === "object"
+            ? { ...prev, panFrontUrl: null, panVerified: false }
+            : prev,
+        );
+      }
+      // Stay on manual upload path after remove — must re-add a photo.
+      if (panEv.phase !== "verified") {
+        setPanEv({ phase: "manual" });
+      }
+
+      try {
+        if (session?.accessToken) {
+          for (const key of uniqueKeys) {
+            try {
+              await deleteFromR2(key, session.accessToken);
+            } catch (err) {
+              console.warn("[PAN] R2 delete failed for", key, err);
+            }
+          }
+        }
+
+        // Clear DB photo so dashboard / status stop showing the old image.
+        // Backend also sweeps prior R2 keys when fileUrl becomes pending.
+        if (session?.accessToken && data.riderId) {
+          const riderId = parseInt(data.riderId, 10);
+          if (Number.isFinite(riderId) && riderId > 0) {
+            try {
+              await saveDocument.mutateAsync({
+                riderId,
+                docType: "pan",
+                fileUrl: "pending",
+                metadata: {
+                  panNumber: isValidPan(panNumber)
+                    ? panNumber.toUpperCase()
+                    : undefined,
+                  verificationMethod: "manual_upload",
+                  panVerified: false,
+                  requiresManualReview: true,
+                  photoRemovedAt: new Date().toISOString(),
+                },
+                files: [
+                  {
+                    side: "single",
+                    fileUrl: "pending",
+                    mimeType: "image/jpeg",
+                  },
+                ],
+              });
+            } catch (err) {
+              console.warn("[PAN] DB clear after photo remove failed", err);
+              notifyOnboardingToast(
+                "Photo cleared here, but server remove failed. Please try again.",
+              );
+            }
+          }
+        }
+      } finally {
+        setRemovingPanPhoto(false);
+      }
+    })();
+  };
+
   const lockPanActionsAfterFail = (pan: string) => {
-    // Block instant re-verify of the same failed number, but keep manual photo upload available.
+    // Block instant re-verify of the same failed / mismatched number until the rider edits it.
     setVerifyBlockedForPan(pan.toUpperCase());
   };
 
@@ -527,9 +843,15 @@ export default function PanSelfieScreen() {
           (typeof res.status === "string" ? `Verification status: ${res.status}` : null) ||
           "PAN could not be verified. Please check the number and try again.";
         setPanEv({ phase: "failed", error: failReason });
+        // Invalid / failed verify: keep Verify again faded until PAN number changes.
         lockPanActionsAfterFail(panNumber);
       }
     } catch (e) {
+      if (isElectronicVerifyForceManualError(e)) {
+        setPanEv({ phase: "manual" });
+        setVerifyBlockedForPan(null);
+        return;
+      }
       const msg =
         e instanceof Error && e.message
           ? e.message
@@ -539,13 +861,122 @@ export default function PanSelfieScreen() {
     }
   };
 
-  /** Photo needed? Manual mode, hybrid fallback, or after auto-verify failure. */
+  /** Photo needed? Manual / failed / mismatch — admin reviews the image. */
   const panPhotoRequiredNow =
     !panElectronic ||
     panEv.phase === "manual" ||
     panEv.phase === "failed" ||
-    panEv.phase === "mismatch";
-  const showPanPhotoBox = panPhotoRequiredNow || Boolean(panPhotoUri);
+    panEv.phase === "mismatch" ||
+    panPhotoValid ||
+    panPhotoRemovedIntentionally;
+  const showPanPhotoBox =
+    panPhotoRequiredNow ||
+    Boolean(panPhotoUri) ||
+    Boolean(panPhotoSignedUrl) ||
+    panPhotoRemovedIntentionally;
+  const typedPanNormalized = panNumber.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+  const serverPanNormalized = String(riderStatus?.panNumber || "")
+    .replace(/[^A-Z0-9]/gi, "")
+    .toUpperCase();
+  /** Same PAN already has a manual photo on file — never re-offer Verify Instantly for it. */
+  const samePanAlreadyManuallyUploaded =
+    /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(typedPanNormalized) &&
+    ((uploadedPanNumberRef.current != null &&
+      typedPanNormalized === uploadedPanNumberRef.current) ||
+      (typedPanNormalized === serverPanNormalized &&
+        isRealPanPhotoUrl(riderStatus?.panFrontUrl)));
+  /** Manual photo already chosen / submitted — hide Verify Instantly (unless countdown). */
+  const panManualSubmitted =
+    panPhotoValid ||
+    panEv.phase === "manual" ||
+    samePanAlreadyManuallyUploaded ||
+    (Boolean(panPhotoSignedUrl) && panEv.phase !== "verified");
+
+  // Remember server PAN+photo so Clear → re-type same number keeps Verify Instantly off.
+  useEffect(() => {
+    if (
+      /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(serverPanNormalized) &&
+      isRealPanPhotoUrl(riderStatus?.panFrontUrl)
+    ) {
+      uploadedPanNumberRef.current = serverPanNormalized;
+    }
+  }, [serverPanNormalized, riderStatus?.panFrontUrl]);
+
+  // Returning via Back with a photo already chosen → stay on manual path (hide Verify).
+  useEffect(() => {
+    if (!panManualSubmitted) return;
+    if (panEv.phase === "verified" || panEv.phase === "verifying") return;
+    if (panEv.phase !== "manual") setPanEv({ phase: "manual" });
+  }, [panManualSubmitted, panEv.phase]);
+
+  // Hydrate PAN photo from local store / server after Back or remount.
+  useEffect(() => {
+    // X removed photo — never auto-restore until rider picks a new image.
+    if (panPhotoRemovedIntentionally || panPhotoRemovedIntentionallyRef.current) return;
+    const matchesUploaded =
+      Boolean(uploadedPanNumberRef.current) &&
+      typedPanNormalized === uploadedPanNumberRef.current;
+    // Clear / digit-edit: keep photo gone until rider re-types the same uploaded PAN.
+    // Back land resets suppress + cleared flags once so store/DB photo can return.
+    const userEditingAway =
+      panPhotoClearedByUserRef.current || suppressPanNumberHydrateRef.current;
+    if (userEditingAway && !matchesUploaded) return;
+
+    const pickRemote = (u?: string | null) =>
+      isRemotePanPhotoUri(u) ? String(u).trim() : null;
+
+    const remote =
+      pickRemote(panPhotoSignedUrl) ||
+      pickRemote(data.panPhotoSignedUrl) ||
+      pickRemote(riderStatus?.panFrontUrl);
+
+    // Signed slot must never hold a camera/gallery path — that white-boxes Image.
+    if (panPhotoSignedUrl && isLocalSelfieUri(panPhotoSignedUrl)) {
+      setPanPhotoSignedUrl(null);
+      void setData({ panPhotoSignedUrl: undefined });
+    }
+
+    if (remote) {
+      // Drop dead local file:// so Back remount never prefers a vanished capture.
+      if (panPhotoUri && isLocalSelfieUri(panPhotoUri)) {
+        setPanPhotoUri(null);
+      }
+      if (panPhotoSignedUrl !== remote) {
+        setPanPhotoSignedUrl(remote);
+      }
+      if (
+        !isRemotePanPhotoUri(data.panPhotoSignedUrl) ||
+        data.panPhotoSignedUrl !== remote ||
+        data.panPhotoUri
+      ) {
+        void setData({
+          panPhotoSignedUrl: remote,
+          panPhotoUri: undefined,
+        });
+      }
+      return;
+    }
+
+    // No remote yet: keep a fresh local capture if present.
+    if (panPhotoUri) return;
+
+    const fromStoreLocal =
+      data.panPhotoUri && isLocalSelfieUri(data.panPhotoUri)
+        ? String(data.panPhotoUri)
+        : null;
+    if (fromStoreLocal) {
+      setPanPhotoUri(fromStoreLocal);
+    }
+  }, [
+    panPhotoUri,
+    panPhotoSignedUrl,
+    panPhotoRemovedIntentionally,
+    data.panPhotoSignedUrl,
+    data.panPhotoUri,
+    riderStatus?.panFrontUrl,
+    typedPanNormalized,
+    setData,
+  ]);
 
   const canContinuePan =
     adminPanSkip ||
@@ -553,13 +984,18 @@ export default function PanSelfieScreen() {
       !panAlreadyRegistered &&
       !checkingPan &&
       !uploading &&
-      !panActionsLocked &&
-      panEv.phase !== "mismatch" &&
+      !removingPanPhoto &&
+      !panPhotoRemovedIntentionally &&
       (panElectronicallyDone
         ? true
         : panElectronic
           ? panEv.phase === "verified" ||
-            (panEv.phase === "manual" && panPhotoValid)
+            (panPhotoValid &&
+              (panEv.phase === "manual" ||
+                panEv.phase === "failed" ||
+                panEv.phase === "mismatch" ||
+                panEv.phase === "idle" ||
+                panManualSubmitted))
           : panPhotoValid));
   const canContinueSelfie =
     selfieValid && !submitting && !uploading;
@@ -570,26 +1006,107 @@ export default function PanSelfieScreen() {
     return `XXXXX${panNumber.slice(5)}`;
   }, [panNumber]);
 
-  // Mismatch cannot open selfie — stay on PAN until verified Continue / admin skip.
+  // Mismatch / same-number verify lock: stay on PAN unless photo is ready for admin review.
+  // Respect durable panVerified so a status refetch after selfie upload cannot
+  // bounce the rider from Live Selfie back to the PAN form.
   useEffect(() => {
     if (wizardStep !== "selfie") return;
-    if (adminPanSkip || panSkipped) return;
+    if (adminPanSkip || panSkipped || data.panVerified === true) return;
+    if (panPhotoValid) return;
     if (panEv.phase === "mismatch" || panActionsLocked) {
       setWizardStep("pan");
       setSelfieCaptureOpen(false);
     }
-  }, [wizardStep, adminPanSkip, panSkipped, panEv.phase, panActionsLocked]);
+  }, [
+    wizardStep,
+    adminPanSkip,
+    panSkipped,
+    data.panVerified,
+    panEv.phase,
+    panActionsLocked,
+    panPhotoValid,
+  ]);
 
-  // Vehicle/category Back → pan-selfie?step=selfie
+  // Vehicle/category Back → pan-selfie?step=selfie only.
+  // Initial land is handled below (stayOnPanSelfieFromBackRef). Do not re-force
+  // selfie when the rider taps header Back to review PAN.
   useEffect(() => {
     if (!openOnSelfieStep) return;
-    if (panEv.phase === "mismatch" || panActionsLocked) return;
-    setWizardStep("selfie");
-  }, [openOnSelfieStep, panEv.phase, panActionsLocked]);
+    if (
+      (panEv.phase === "mismatch" || panActionsLocked) &&
+      !panPhotoValid
+    ) {
+      setWizardStep("pan");
+    }
+  }, [
+    openOnSelfieStep,
+    panEv.phase,
+    panActionsLocked,
+    panPhotoValid,
+  ]);
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  // Always stay when this screen is open — Back/Continue walk-through must not
+  // bounce to dl-rc. App index uses resolveOnboardingHref for cold-start resume.
+  const stayOnPanSelfieFromBackRef = useRef(true);
+  /** Restore number+photo once when landing via Back/walk — never again after user edits. */
+  const reviewLandHydratedOnceRef = useRef(false);
+
+  useEffect(() => {
+    if (!openOnSelfieStep && !walkThroughFromContinue) return;
+    stayOnPanSelfieFromBackRef.current = true;
+    // One-shot restore on Back land only. Do NOT keep resetting suppress on every render
+    // cycle — that was re-filling the PAN after the rider cleared digits.
+    if (!reviewLandHydratedOnceRef.current) {
+      reviewLandHydratedOnceRef.current = true;
+      suppressPanNumberHydrateRef.current = false;
+      panPhotoClearedByUserRef.current = false;
+    }
+    if (openOnSelfieStep) setWizardStep("selfie");
+  }, [openOnSelfieStep, walkThroughFromContinue]);
+
+  useEffect(() => {
+    if (!riderStatusFetched) return;
+    // Reviewing via Back / walk-through — do not force selfie or leave this screen.
+    if (stayOnPanSelfieFromBackRef.current) return;
+    if (openOnSelfieStep || walkThroughFromContinue) return;
+    if (wizardStep === "selfie") return;
+
+    const panAlreadySubmitted =
+      adminPanSkip ||
+      panSkipped ||
+      data.panVerified === true ||
+      serverPanVerified ||
+      panEv.phase === "verified" ||
+      Boolean(panPhotoSignedUrl || data.panPhotoSignedUrl);
+
+    const selfieMissing = !String(
+      riderStatus?.selfieUrl || data.selfieSignedUrl || selfieSignedUrl || ""
+    ).trim();
+
+    // First-time flow only: PAN done, selfie not yet — open selfie sub-step.
+    if (panAlreadySubmitted && selfieMissing) {
+      setWizardStep("selfie");
+    }
+  }, [
+    riderStatusFetched,
+    riderStatus?.selfieUrl,
+    data.panVerified,
+    data.panPhotoSignedUrl,
+    data.selfieSignedUrl,
+    adminPanSkip,
+    panSkipped,
+    serverPanVerified,
+    panEv.phase,
+    panPhotoSignedUrl,
+    selfieSignedUrl,
+    wizardStep,
+    openOnSelfieStep,
+    walkThroughFromContinue,
+  ]);
 
   // If admin turns PAN skip off while the rider already skipped, force back to PAN.
   useEffect(() => {
@@ -621,7 +1138,12 @@ export default function PanSelfieScreen() {
       .toUpperCase();
     const serverPanOk = /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(serverPan);
 
-    if (serverPanOk && !isValidPan(panNumber)) {
+    // Never auto-fill after Clear / backspace — rider must be able to type a new PAN.
+    if (
+      !suppressPanNumberHydrateRef.current &&
+      serverPanOk &&
+      !isValidPan(panNumber)
+    ) {
       setPanNumber(serverPan);
       void setData({ panNumber: serverPan, panSkipped: false });
     }
@@ -658,11 +1180,31 @@ export default function PanSelfieScreen() {
     if (selfieClearedByUserRef.current) {
       return;
     }
-    if (preferLocalSelfie && selfieUri) {
+    if (preferLocalSelfie && selfieUri && isLocalSelfieUri(selfieUri)) {
+      return;
+    }
+    // Admin removed selfie on dashboard — clear local cache so Capture UI shows.
+    if (
+      riderStatusFetched &&
+      riderStatus &&
+      !String(riderStatus.selfieUrl || "").trim()
+    ) {
+      if (selfieSignedUrl || selfieUri || data.selfieSignedUrl || data.selfieUri) {
+        selfieNeedsUploadRef.current = true;
+        setPreferLocalSelfie(false);
+        setSelfieSignedUrl(null);
+        setSelfieUri(null);
+        setSelfieCaptureOpen(false);
+        setSelfieViewerOpen(false);
+        setSelfiePreviewEpoch((n) => n + 1);
+        void setData({ selfieUri: undefined, selfieSignedUrl: undefined });
+      }
       return;
     }
     // Load server/store selfie for preview without changing wizard step.
     if (riderStatus?.selfieUrl) {
+      selfieNeedsUploadRef.current = false;
+      selfieClearedByUserRef.current = false;
       setPreferLocalSelfie(false);
       if (selfieSignedUrl !== riderStatus.selfieUrl) {
         setSelfieSignedUrl(riderStatus.selfieUrl);
@@ -672,6 +1214,7 @@ export default function PanSelfieScreen() {
         setSelfieUri(riderStatus.selfieUrl);
       }
     } else if (data.selfieSignedUrl) {
+      selfieNeedsUploadRef.current = false;
       setPreferLocalSelfie(false);
       if (!selfieSignedUrl) setSelfieSignedUrl(data.selfieSignedUrl);
       if (!selfieUri || isLocalSelfieUri(selfieUri)) setSelfieUri(data.selfieSignedUrl);
@@ -679,6 +1222,7 @@ export default function PanSelfieScreen() {
       if (!selfieUri) setSelfieUri(data.selfieUri);
     }
   }, [
+    riderStatusFetched,
     riderStatus?.selfieUrl,
     riderStatus?.panNumber,
     riderStatus?.panVerified,
@@ -724,7 +1268,24 @@ export default function PanSelfieScreen() {
         quality: 0.5,
       });
       if (!result.canceled && result.assets[0]) {
-        setPanPhotoUri(result.assets[0].uri);
+        const durable = await persistLocalCapture(result.assets[0].uri, "pan");
+        panPhotoClearedByUserRef.current = false;
+        panPhotoRemovedIntentionallyRef.current = false;
+        setPanPhotoRemovedIntentionally(false);
+        setPanPhotoUri(durable);
+        setPanPhotoSignedUrl(null);
+        // Failed Instant Verify → manual admin-review path.
+        if (panEv.phase === "failed" || panEv.phase === "mismatch") {
+          setPanEv({ phase: "manual" });
+        }
+        if (isValidPan(panNumber)) {
+          uploadedPanNumberRef.current = panNumber.toUpperCase();
+        }
+        void setData({
+          panPhotoUri: durable,
+          panPhotoSignedUrl: undefined,
+          panVerified: false,
+        });
       }
     } catch {
       notifyOnboardingToast(tx("captureFailed"));
@@ -743,7 +1304,23 @@ export default function PanSelfieScreen() {
         quality: 0.5,
       });
       if (!result.canceled && result.assets[0]) {
-        setPanPhotoUri(result.assets[0].uri);
+        const durable = await persistLocalCapture(result.assets[0].uri, "pan");
+        panPhotoClearedByUserRef.current = false;
+        panPhotoRemovedIntentionallyRef.current = false;
+        setPanPhotoRemovedIntentionally(false);
+        setPanPhotoUri(durable);
+        setPanPhotoSignedUrl(null);
+        if (panEv.phase === "failed" || panEv.phase === "mismatch") {
+          setPanEv({ phase: "manual" });
+        }
+        if (isValidPan(panNumber)) {
+          uploadedPanNumberRef.current = panNumber.toUpperCase();
+        }
+        void setData({
+          panPhotoUri: durable,
+          panPhotoSignedUrl: undefined,
+          panVerified: false,
+        });
       }
     } catch {
       notifyOnboardingToast(tx("uploadFailed"));
@@ -785,10 +1362,7 @@ export default function PanSelfieScreen() {
   };
 
   const showPanPhotoOptions = () => {
-    if (panActionsLocked) {
-      notifyOnboardingToast("Enter a different PAN number before uploading a photo.");
-      return;
-    }
+    // Never block photo upload after Verify fails / rate-limit — admin reviews the image.
     Alert.alert(tx("panPhotoPickerTitle"), tx("panPhotoPickerMessage"), [
       { text: tx("capture"), onPress: () => void handleCapturePanPhoto() },
       { text: tx("upload"), onPress: () => void handlePickPanPhoto() },
@@ -814,6 +1388,15 @@ export default function PanSelfieScreen() {
 
   const assertPanNameMatchesAadhaar = (): boolean => {
     if (adminPanSkip) return true;
+    // Manual / failed / mismatch + photo — agent reviews; do not hard-block Continue.
+    if (
+      panEv.phase === "manual" ||
+      panEv.phase === "failed" ||
+      panEv.phase === "mismatch" ||
+      panPhotoValid
+    ) {
+      return true;
+    }
     const aadhaarName = String(data.fullName || "").trim();
     const panName = pickPanHolderName(
       panEv.phase === "verified"
@@ -835,9 +1418,13 @@ export default function PanSelfieScreen() {
       await handleSkipPan();
       return;
     }
-    if (panEv.phase === "mismatch" || panActionsLocked) {
+    // Photo uploaded → admin reviews; never block Continue on invalid/mismatch verify.
+    if (
+      (panEv.phase === "mismatch" || panActionsLocked) &&
+      !panPhotoValid
+    ) {
       notifyOnboardingToast(
-        "PAN name must match Aadhaar. Enter a different PAN number and verify again before selfie."
+        "Upload a clear PAN photo for admin review, or enter a different PAN and verify again."
       );
       return;
     }
@@ -851,9 +1438,9 @@ export default function PanSelfieScreen() {
       return;
     }
 
-    // Electronic modes: the photo is only mandatory on the hybrid fallback.
+    // Electronic modes: photo mandatory on hybrid / Cashfree-down fallback only.
     if (
-      !panPhotoUri &&
+      !panPhotoValid &&
       panPhotoRequiredNow &&
       !(panElectronic && panEv.phase === "verified") &&
       !serverPanVerified
@@ -865,6 +1452,8 @@ export default function PanSelfieScreen() {
       panElectronic &&
       panMode === "auto" &&
       panEv.phase !== "verified" &&
+      panEv.phase !== "manual" &&
+      panEv.phase !== "failed" &&
       !serverPanVerified
     ) {
       notifyOnboardingToast("Please verify your PAN electronically to continue.");
@@ -888,10 +1477,22 @@ export default function PanSelfieScreen() {
     try {
       const riderId = parseInt(data.riderId, 10);
       let uploadedProxyUrl: string | null = null;
+      const manualFallback =
+        panEv.phase === "manual" ||
+        panEv.phase === "failed";
 
-      if (panPhotoUri) {
+      const localPanUri =
+        panPhotoUri && isLocalSelfieUri(panPhotoUri)
+          ? panPhotoUri
+          : data.panPhotoUri && isLocalSelfieUri(String(data.panPhotoUri))
+            ? String(data.panPhotoUri)
+            : null;
+
+      if (localPanUri) {
+        const durableUri = await persistLocalCapture(localPanUri, "pan");
+        if (durableUri !== panPhotoUri) setPanPhotoUri(durableUri);
         const panUploadResult = await uploadToR2(
-          panPhotoUri,
+          durableUri,
           "documents",
           session.accessToken,
           buildRiderDocumentKey(riderId, "pan", "single")
@@ -909,14 +1510,24 @@ export default function PanSelfieScreen() {
               : undefined,
           metadata: {
             panNumber: panNumber.toUpperCase(),
-            ...(panElectronicallyDone || panEv.phase === "verified"
+            ...(manualFallback
               ? {
-                  verificationMethod: "cashfree_pan",
-                  panVerified: true,
-                  verifiedDetails:
-                    panEv.phase === "verified" ? panEv.details : {},
+                  verificationMethod: "manual_upload",
+                  panVerified: false,
+                  requiresManualReview: true,
                 }
-              : {}),
+              : panElectronicallyDone || panEv.phase === "verified"
+                ? {
+                    verificationMethod: "cashfree_pan",
+                    panVerified: true,
+                    verifiedDetails:
+                      panEv.phase === "verified" ? panEv.details : {},
+                  }
+                : {
+                    verificationMethod: "manual_upload",
+                    panVerified: false,
+                    requiresManualReview: true,
+                  }),
           },
           files: documentFileEntry(panUploadResult),
         });
@@ -924,11 +1535,68 @@ export default function PanSelfieScreen() {
         uploadedProxyUrl = panUploadResult.proxyUrl;
         setPanPhotoSignedUrl(panUploadResult.proxyUrl);
       } else if (
-        panElectronicallyDone ||
-        panEv.phase === "verified" ||
-        data.panVerified === true
+        isRemotePanPhotoUri(panPhotoSignedUrl) ||
+        isRemotePanPhotoUri(panPhotoUri) ||
+        ((uploadedPanNumberRef.current === panNumber.toUpperCase() ||
+          (serverPanNormalized &&
+            panNumber.toUpperCase() === serverPanNormalized)) &&
+          (isRemotePanPhotoUri(data.panPhotoSignedUrl) ||
+            isRemotePanPhotoUri(riderStatus?.panFrontUrl)))
       ) {
-        // Persist electronic PAN only on Continue — verify-document defers DB projection.
+        // Already uploaded (Back → review) — keep photo for *this* PAN only.
+        uploadedProxyUrl =
+          (isRemotePanPhotoUri(panPhotoSignedUrl) ? panPhotoSignedUrl : null) ||
+          (isRemotePanPhotoUri(panPhotoUri) ? panPhotoUri : null) ||
+          (isRemotePanPhotoUri(data.panPhotoSignedUrl)
+            ? String(data.panPhotoSignedUrl)
+            : null) ||
+          (isRemotePanPhotoUri(riderStatus?.panFrontUrl)
+            ? String(riderStatus?.panFrontUrl)
+            : null);
+        const existingKey =
+          extractR2KeyFromPanPhotoUrl(uploadedProxyUrl) ||
+          buildRiderDocumentKey(riderId, "pan", "single");
+        await saveDocument.mutateAsync({
+          riderId,
+          docType: "pan",
+          fileUrl: uploadedProxyUrl!,
+          r2Key: existingKey,
+          extractedName:
+            panEv.phase === "verified"
+              ? pickPanHolderName(panEv.details) || undefined
+              : undefined,
+          metadata: {
+            panNumber: panNumber.toUpperCase(),
+            ...(manualFallback || !panElectronicallyDone
+              ? {
+                  verificationMethod: "manual_upload",
+                  panVerified: false,
+                  requiresManualReview: true,
+                }
+              : {
+                  verificationMethod: "cashfree_pan",
+                  panVerified: true,
+                  verifiedDetails:
+                    panEv.phase === "verified" ? panEv.details : {},
+                }),
+          },
+          files: [
+            {
+              side: "single" as const,
+              fileUrl: uploadedProxyUrl!,
+              r2Key: existingKey,
+              mimeType: "image/jpeg",
+            },
+          ],
+        });
+      } else if (
+        !panPhotoValid &&
+        !manualFallback &&
+        (panElectronicallyDone ||
+          panEv.phase === "verified" ||
+          data.panVerified === true)
+      ) {
+        // Persist electronic PAN only when there is no manual photo to upload.
         const verifiedDetails =
           panEv.phase === "verified" ? panEv.details : {};
         await saveDocument.mutateAsync({
@@ -943,8 +1611,8 @@ export default function PanSelfieScreen() {
             verifiedDetails,
           },
         });
-      } else {
-        // Manual number-only fallback: still persist PAN number on Submit.
+      } else if (!panPhotoValid && !panPhotoRequiredNow) {
+        // Number-only only when photo is not required (never after rate-limit lock).
         await saveDocument.mutateAsync({
           riderId,
           docType: "pan",
@@ -954,16 +1622,39 @@ export default function PanSelfieScreen() {
             verificationMethod: "manual_number",
           },
         });
+      } else {
+        // Photo required (rate-limit / manual / hybrid) but URI missing or unreadable.
+        notifyOnboardingToast(tx("panPhotoRequired"));
+        return;
       }
 
       setPanSkipped(false);
+      const nextSigned =
+        uploadedProxyUrl ||
+        (isRemotePanPhotoUri(panPhotoSignedUrl) ? panPhotoSignedUrl : null) ||
+        (isRemotePanPhotoUri(panPhotoUri) ? panPhotoUri : null) ||
+        undefined;
+      if (nextSigned && isValidPan(panNumber)) {
+        uploadedPanNumberRef.current = panNumber.toUpperCase();
+        suppressPanNumberHydrateRef.current = false;
+        panPhotoClearedByUserRef.current = false;
+      }
       await setData({
         panNumber: panNumber.toUpperCase(),
-        panPhotoUri: panPhotoUri ?? undefined,
-        panPhotoSignedUrl: uploadedProxyUrl ?? undefined,
+        // Do not keep camera/gallery temp paths — they white-box after Back.
+        panPhotoUri: undefined,
+        // Persist signed URL so Back → review still shows the manual upload.
+        panPhotoSignedUrl: nextSigned,
         panSkipped: false,
-        panVerified: true, // durable: PAN step complete (photo uploaded or electronically verified)
+        // Local "PAN step finished" so selfie opens. Server doc stays
+        // pending/requiresManualReview when manual — admin must approve.
+        // riderStatus.panVerified stays false until electronic/admin verify.
+        panVerified: true,
       });
+      if (nextSigned) {
+        setPanPhotoUri(null);
+        setPanPhotoSignedUrl(nextSigned);
+      }
 
       setWizardStep("selfie");
     } catch (e) {
@@ -1024,6 +1715,7 @@ export default function PanSelfieScreen() {
   }, [handleBack]);
 
   const handleContinue = async () => {
+    if (submitting || uploading) return;
     if (!selfiePreviewUri) {
       notifyOnboardingToast(tx("selfieRequired"));
       return;
@@ -1042,16 +1734,17 @@ export default function PanSelfieScreen() {
       notifyOnboardingToast(tx("panPhotoRequired"));
       return;
     }
-    // Mismatch: force back to PAN — selfie is not allowed until PAN Continue succeeds.
+    // Mismatch / same-number lock without photo → back to PAN for admin-review upload.
     if (
       !adminPanSkip &&
       !panSkipped &&
-      (panEv.phase === "mismatch" || panActionsLocked)
+      (panEv.phase === "mismatch" || panActionsLocked) &&
+      !panPhotoValid
     ) {
       setWizardStep("pan");
       setSelfieCaptureOpen(false);
       notifyOnboardingToast(
-        "PAN name must match Aadhaar. Fix PAN, then continue to selfie."
+        "Upload a clear PAN photo for admin review, then continue to selfie."
       );
       return;
     }
@@ -1070,29 +1763,37 @@ export default function PanSelfieScreen() {
     }
 
     setSubmitting(true);
-    const uploadedKeys: string[] = [];
+    setUploading(true);
     const previousSelfieKey =
       extractR2KeyFromProxyOrUrl(selfieSignedUrl) ||
       extractR2KeyFromProxyOrUrl(riderStatus?.selfieUrl) ||
       extractR2KeyFromProxyOrUrl(data.selfieSignedUrl);
+    /** Only delete R2 if upload succeeded but saveDocument never committed. */
+    let pendingRollbackKey: string | null = null;
+    const localCaptureBeforeUpload =
+      selfieUri && isLocalSelfieUri(selfieUri) ? selfieUri : null;
 
     try {
       const riderId = parseInt(data.riderId, 10);
-      let remoteSelfieUrl = selfieSignedUrl;
+      let remoteSelfieUrl =
+        selfieSignedUrl ||
+        (riderStatus?.selfieUrl ? String(riderStatus.selfieUrl) : null) ||
+        null;
 
       // Upload selfie only when Continue is pressed (never on capture / retake alone).
-      const localCaptureUri =
-        selfieUri && isLocalSelfieUri(selfieUri) ? selfieUri : null;
+      const localCaptureUri = localCaptureBeforeUpload;
+      const serverAlreadyHasSelfie = Boolean(
+        remoteSelfieUrl || String(riderStatus?.selfieUrl || "").trim(),
+      );
       const mustUpload =
-        selfieNeedsUploadRef.current ||
         Boolean(localCaptureUri) ||
+        (selfieNeedsUploadRef.current && !serverAlreadyHasSelfie) ||
         !remoteSelfieUrl;
 
       if (mustUpload) {
         const uploadSource = localCaptureUri;
         if (!uploadSource) {
           notifyOnboardingToast(tx("selfieRequired"));
-          setSubmitting(false);
           return;
         }
         const selfieUploadResult = await uploadToR2(
@@ -1101,7 +1802,7 @@ export default function PanSelfieScreen() {
           session.accessToken,
           buildRiderSelfieKey(riderId)
         );
-        uploadedKeys.push(selfieUploadResult.key);
+        pendingRollbackKey = selfieUploadResult.key;
 
         await saveDocument.mutateAsync({
           riderId,
@@ -1111,10 +1812,12 @@ export default function PanSelfieScreen() {
           files: documentFileEntry(selfieUploadResult),
           autoVerify: true,
         });
+        // Selfie row is durable — do not delete on later saveStep failures.
+        pendingRollbackKey = null;
 
         remoteSelfieUrl = selfieUploadResult.proxyUrl;
+        // Keep local preview until navigation succeeds (avoids blank frame on error).
         setSelfieSignedUrl(remoteSelfieUrl);
-        setPreferLocalSelfie(false);
         selfieNeedsUploadRef.current = false;
 
         // Remove previous R2 object when key changed (versioned selfie keys).
@@ -1132,7 +1835,6 @@ export default function PanSelfieScreen() {
 
       if (!remoteSelfieUrl) {
         notifyOnboardingToast(tx("selfieRequired"));
-        setSubmitting(false);
         return;
       }
 
@@ -1158,6 +1860,7 @@ export default function PanSelfieScreen() {
         stage: "KYC",
       });
 
+      setPreferLocalSelfie(false);
       await setData({
         ...(panSkipped
           ? { panSkipped: true }
@@ -1167,60 +1870,131 @@ export default function PanSelfieScreen() {
               panPhotoSignedUrl: panPhotoSignedUrl ?? undefined,
               panSkipped: false,
             }),
+        panVerified: true,
         selfieUri: undefined,
         selfieSignedUrl: remoteSelfieUrl,
-        // Fresh Step 3: never carry stale category/vehicle into DL/RC auto-skip.
-        vehicleCategoryCode: undefined,
-        vehicleChoice: undefined,
-        vehicleModelLabel: undefined,
-        vehicleOnboardingFlow: undefined,
-        vehicleOnboardingSubmittedFor: undefined,
-        vehicleDocsStarted: undefined,
+        // Keep any already-persisted Category/Type (back/forward or resume).
+        // Authoritative vehicle selection lives in store + onboarding_vehicle_selection.
       });
 
+      // Advance local step first so dl-rc does not bounce back on a stale
+      // nextOnboardingStep=pan_selfie from an in-flight status refetch.
+      stayOnPanSelfieFromBackRef.current = false;
       await setStep("dl_rc");
-      router.replace("/(onboarding)/dl-rc");
+      router.replace(
+        walkThroughFromContinue
+          ? withOnboardingWalkParam("/(onboarding)/dl-rc")
+          : "/(onboarding)/dl-rc"
+      );
     } catch (e) {
-      for (const key of uploadedKeys) {
+      if (pendingRollbackKey && session?.accessToken) {
         try {
-          await deleteFromR2(key, session.accessToken);
+          await deleteFromR2(pendingRollbackKey, session.accessToken);
         } catch (rollbackError) {
-          console.error(`[Rollback] Failed to delete R2 selfie ${key}:`, rollbackError);
+          console.error(
+            `[Rollback] Failed to delete R2 selfie ${pendingRollbackKey}:`,
+            rollbackError,
+          );
         }
       }
-      notifyOnboardingToast(e instanceof Error ? e.message : tx("uploadError"));
+      // Restore local preview if we still have the capture file after a failed continue.
+      if (localCaptureBeforeUpload) {
+        setPreferLocalSelfie(true);
+        setSelfieUri(localCaptureBeforeUpload);
+        selfieNeedsUploadRef.current = true;
+      }
+      notifyOnboardingToast(
+        extractApiErrorMessage(e, tx("uploadError")),
+      );
     } finally {
+      setUploading(false);
       setSubmitting(false);
     }
   };
 
+  const ensurePanFieldVisible = useCallback(() => {
+    requestAnimationFrame(() => {
+      panFieldRef.current?.measureInWindow((_x, y, _w, h) => {
+        scrollRef.current?.measureInWindow((_sx, sy, _sw, sh) => {
+          const clearance = 28;
+          const overflow = y + h + clearance - (sy + sh);
+          if (overflow > 0) {
+            scrollRef.current?.scrollTo({
+              y: Math.max(0, scrollYRef.current + overflow),
+              animated: true,
+            });
+          }
+        });
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    // Avoid KeyboardAvoidingView — Android New Arch can loop with nested SafeArea/ScrollView.
+    // adjustResize shrinks the window; flexGrow:1 then collapses scroll room unless we pad.
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const onShow = () => {
+      setKeyboardPad(220);
+      if (wizardStep === "pan") {
+        setTimeout(ensurePanFieldVisible, Platform.OS === "android" ? 80 : 16);
+      }
+    };
+    const onHide = () => setKeyboardPad(0);
+    const showSub = Keyboard.addListener(showEvt, onShow);
+    const hideSub = Keyboard.addListener(hideEvt, onHide);
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [wizardStep, ensurePanFieldVisible]);
+
   return (
     <View style={styles.root}>
-      <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <SafeAreaView style={styles.safeArea} edges={[]}>
         <View style={styles.flex}>
           <ScrollView
-            contentContainerStyle={styles.scrollContent}
+            ref={scrollRef}
+            contentContainerStyle={[
+              styles.scrollContent,
+              {
+                paddingBottom:
+                  onboardingStickyScrollPadding(insets.bottom) +
+                  (keyboardPad > 0 ? keyboardPad : 0),
+              },
+              keyboardPad > 0 ? { flexGrow: 0 } : null,
+            ]}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
             showsVerticalScrollIndicator={false}
+            onScroll={(e) => {
+              scrollYRef.current = e.nativeEvent.contentOffset.y;
+            }}
+            scrollEventThrottle={16}
           >
             <LinearGradient
               colors={["#dff5e4", BG]}
               start={{ x: 0.5, y: 0 }}
               end={{ x: 0.5, y: 1 }}
-              style={styles.header}
+              style={[styles.header, { paddingTop: headerTopPad }]}
             >
-              <View style={styles.headerTopRow}>
-                <View style={styles.headerSkipSpacer} />
-                {wizardStep === "pan" && adminPanSkip ? (
-                  <HeaderSkipLink
-                    label="Skip"
-                    onPress={() => void handleSkipPan()}
-                    disabled={uploading || submitting}
-                  />
-                ) : (
+              {wizardStep === "pan" && (adminPanSkip || panSkipped || data.panSkipped) ? (
+                <View style={styles.headerTopRow}>
                   <View style={styles.headerSkipSpacer} />
-                )}
-              </View>
+                  <HeaderSkipLink
+                    label={panSkipped || data.panSkipped ? "Skipped" : "Skip"}
+                    onPress={() => void handleSkipPan()}
+                    disabled={
+                      panSkipped ||
+                      data.panSkipped ||
+                      uploading ||
+                      submitting
+                    }
+                    skipped={Boolean(panSkipped || data.panSkipped)}
+                  />
+                </View>
+              ) : null}
 
               {adminPanSkip ? (
                 <Text style={styles.adminSkipNote}>{tx("adminSkipNote")}</Text>
@@ -1251,6 +2025,10 @@ export default function PanSelfieScreen() {
               </Text>
             </LinearGradient>
 
+            <View style={styles.stepProgressWrap}>
+              <StepProgress current={wizardStep} />
+            </View>
+
             {wizardStep === "selfie" ? (
               selfieValid ? (
                 <View style={styles.selfieGateWrap}>
@@ -1266,11 +2044,21 @@ export default function PanSelfieScreen() {
                       style={styles.selfiePreviewRect}
                       resizeMode="cover"
                       onError={() => {
+                        // Broken/removed R2 object — drop preview so Capture UI shows.
+                        selfieNeedsUploadRef.current = true;
+                        setPreferLocalSelfie(false);
+                        setSelfieSignedUrl(null);
+                        setSelfieUri(null);
+                        setSelfieViewerOpen(false);
+                        setSelfiePreviewEpoch((n) => n + 1);
+                        void setData({
+                          selfieUri: undefined,
+                          selfieSignedUrl: undefined,
+                        });
                         if (preferLocalSelfie) {
                           notifyOnboardingToast(
                             "Selfie preview failed — please retake your selfie."
                           );
-                          clearSelfieDraft();
                         }
                       }}
                     />
@@ -1279,22 +2067,14 @@ export default function PanSelfieScreen() {
                       <Text style={styles.selfiePreviewHintText}>Tap to view</Text>
                     </View>
                   </Pressable>
-                  <ContinueButton
-                    label={tx("retakeSelfie")}
-                    onPress={handleRetakeSelfie}
-                    disabled={uploading || submitting}
-                    icon="refresh"
-                  />
-                  <ContinueButton
-                    label={uploading ? tx("uploading") : tx("continue")}
-                    onPress={handleContinue}
-                    disabled={!canContinueSelfie}
-                    loading={submitting || uploading || saveStep.isPending}
-                    icon="arrow-forward"
-                  />
                 </View>
               ) : (
-                <View style={styles.selfieGateWrap}>
+                <View
+                  style={[
+                    styles.selfieGateWrap,
+                    { paddingBottom: selfieBottomPad },
+                  ]}
+                >
                   <Pressable
                     onPress={() => setSelfieCaptureOpen(true)}
                     style={({ pressed }) => [
@@ -1311,41 +2091,45 @@ export default function PanSelfieScreen() {
               )
             ) : (
             <View style={styles.formCard}>
-              <StepProgress current={wizardStep} />
-
-              <View style={styles.divider} />
-
               <>
                   <View style={styles.checklist}>
-                    <ChecklistItem
-                      done={panElectronicallyDone || panValid}
-                      label={
-                        panElectronicallyDone
-                          ? "PAN verified"
-                          : adminPanSkip
-                            ? "PAN optional (admin skip)"
-                            : "PAN number entered"
-                      }
-                    />
-                    <ChecklistItem
-                      done={
-                        panElectronicallyDone ||
-                        adminPanSkip ||
-                        panPhotoValid
-                      }
-                      label={
-                        panElectronicallyDone
-                          ? "PAN card photo not required"
-                          : adminPanSkip
-                            ? "Photo optional (admin skip)"
-                            : "PAN card photo added"
-                      }
-                    />
+                    <View style={styles.checkItemCell}>
+                      <ChecklistItem
+                        done={panElectronicallyDone || panValid}
+                        label={
+                          panElectronicallyDone
+                            ? "PAN verified"
+                            : adminPanSkip
+                              ? "PAN optional (admin skip)"
+                              : "PAN number entered"
+                        }
+                      />
+                    </View>
+                    <View style={styles.checkItemCell}>
+                      <ChecklistItem
+                        done={
+                          panElectronicallyDone ||
+                          adminPanSkip ||
+                          panPhotoValid
+                        }
+                        label={
+                          panElectronicallyDone
+                            ? "PAN card photo not required"
+                            : adminPanSkip
+                              ? "Photo optional (admin skip)"
+                              : "PAN card photo added"
+                        }
+                      />
+                    </View>
                   </View>
 
                   <View style={styles.divider} />
 
-                  <View style={styles.fieldGroup}>
+                  <View
+                    ref={panFieldRef}
+                    style={styles.fieldGroup}
+                    collapsable={false}
+                  >
                     <FieldLabel label={tx("panLabel")} required />
                     <View
                       style={[
@@ -1377,7 +2161,24 @@ export default function PanSelfieScreen() {
                         autoCapitalize="characters"
                         maxLength={10}
                         style={styles.panInput}
+                        onFocus={() => {
+                          setTimeout(
+                            ensurePanFieldVisible,
+                            Platform.OS === "android" ? 80 : 16
+                          );
+                        }}
                       />
+                      {panNumber.length > 0 ? (
+                        <Pressable
+                          onPress={clearPanNumberInput}
+                          hitSlop={10}
+                          accessibilityRole="button"
+                          accessibilityLabel="Clear PAN number"
+                          style={styles.panClearBtn}
+                        >
+                          <Ionicons name="close-circle" size={22} color={colors.gray[400]} />
+                        </Pressable>
+                      ) : null}
                       {panNumberAvailable ? (
                         <Ionicons name="checkmark-circle" size={22} color={ACCENT_DARK} />
                       ) : null}
@@ -1405,14 +2206,17 @@ export default function PanSelfieScreen() {
                           !panValid ||
                           panAlreadyRegistered ||
                           checkingPan ||
-                          panActionsLocked
+                          panActionsLocked ||
+                          samePanAlreadyManuallyUploaded
                         }
                         onVerify={() => void runPanElectronicVerify()}
                         onUploadManually={() => {
                           setPanEv({ phase: "manual" });
                           setVerifyBlockedForPan(null);
                         }}
-                        allowManualUpload
+                        allowManualUpload={!showPanPhotoBox}
+                        photoUploadVisible={showPanPhotoBox}
+                        manualSubmitted={panManualSubmitted}
                         verifyLabel="Verify PAN instantly"
                         retryLabel="Verify again"
                         documentLabel="PAN card"
@@ -1431,14 +2235,15 @@ export default function PanSelfieScreen() {
                     <FieldLabel label={tx("panPhotoLabel")} required={panPhotoRequiredNow && !adminPanSkip} />
                     <Text style={styles.sectionHint}>{tx("panPhotoHint")}</Text>
                     <PanPhotoSlot
-                      uri={panPhotoUri}
+                      uri={panPhotoDisplayUri}
                       onPress={showPanPhotoOptions}
-                      onRemove={() => setPanPhotoUri(null)}
-                      disabled={uploading}
+                      onRemove={clearPanPhotoOnly}
+                      disabled={uploading || removingPanPhoto}
+                      removing={removingPanPhoto}
                       boxTitle={tx("panBoxTitle")}
                       boxSub={tx("panBoxSub")}
                     />
-                    {panPhotoUri ? (
+                    {panPhotoDisplayUri || panPhotoUri || panPhotoSignedUrl ? (
                       <Pressable onPress={showPanPhotoOptions} style={styles.changePhotoLink}>
                         <Ionicons name="refresh-outline" size={14} color={ACCENT_DARK} />
                         <Text style={styles.changePhotoText}>Change photo</Text>
@@ -1447,18 +2252,39 @@ export default function PanSelfieScreen() {
                   </View>
                   ) : null}
 
-                  <View style={styles.panActionGroup}>
-                    <ContinueButton
-                      label={uploading ? tx("uploading") : tx("submitPan")}
-                      onPress={() => void handlePanStepContinue()}
-                      disabled={!canContinuePan}
-                      loading={uploading}
-                    />
-                  </View>
                 </>
             </View>
             )}
           </ScrollView>
+
+          {wizardStep === "pan" ? (
+            <OnboardingStickyFooter>
+              <ContinueButton
+                label={uploading ? tx("uploading") : tx("submitPan")}
+                onPress={() => void handlePanStepContinue()}
+                disabled={!canContinuePan}
+                loading={uploading}
+              />
+            </OnboardingStickyFooter>
+          ) : null}
+
+          {wizardStep === "selfie" && selfieValid ? (
+            <OnboardingStickyFooter>
+              <ContinueButton
+                label={tx("retakeSelfie")}
+                onPress={handleRetakeSelfie}
+                disabled={uploading || submitting}
+                icon="refresh"
+              />
+              <ContinueButton
+                label={uploading ? tx("uploading") : tx("continue")}
+                onPress={handleContinue}
+                disabled={!canContinueSelfie}
+                loading={submitting || uploading || saveStep.isPending}
+                icon="arrow-forward"
+              />
+            </OnboardingStickyFooter>
+          ) : null}
         </View>
       </SafeAreaView>
       <LiveSelfieCameraModal
@@ -1514,6 +2340,16 @@ export default function PanSelfieScreen() {
           openOnboardingIssueSupportTicket();
         }}
       />
+      <OnboardingRemoveConfirmModal
+        visible={panRemoveConfirmOpen}
+        loading={removingPanPhoto}
+        onCancel={() => {
+          if (!removingPanPhoto) setPanRemoveConfirmOpen(false);
+        }}
+        onConfirm={confirmClearPanPhotoOnly}
+        title="Remove PAN photo?"
+        message="Your image will be removed and you need to upload a new one."
+      />
     </View>
   );
 }
@@ -1536,16 +2372,29 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    paddingBottom: 40,
     backgroundColor: BG,
+  },
+  selfieGateWrap: {
+    alignSelf: "stretch",
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 8,
+    gap: 16,
+  },
+  selfieFooter: {
+    alignSelf: "stretch",
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    gap: 12,
+    backgroundColor: BG,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(0,0,0,0.06)",
   },
   header: {
     alignSelf: "stretch",
     paddingHorizontal: 20,
-    paddingTop: 80,
-    paddingBottom: 32,
+    paddingBottom: 12,
     alignItems: "center",
-    minHeight: 210,
   },
   headerTopRow: {
     width: "100%",
@@ -1607,7 +2456,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 1,
     borderColor: "rgba(57, 211, 83, 0.25)",
-    marginBottom: 12,
+    marginBottom: 8,
   },
   stepPillText: {
     fontSize: 12,
@@ -1616,31 +2465,38 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   title: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: "800",
     color: colors.gray[900],
     textAlign: "center",
-    marginBottom: 6,
+    marginBottom: 4,
     letterSpacing: -0.3,
     alignSelf: "stretch",
     paddingHorizontal: 4,
   },
   subtitle: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 18,
     color: colors.gray[600],
     textAlign: "center",
     alignSelf: "stretch",
     maxWidth: "100%",
     paddingHorizontal: 4,
   },
+  stepProgressWrap: {
+    alignSelf: "stretch",
+    paddingHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 10,
+  },
   formCard: {
     alignSelf: "stretch",
     marginHorizontal: 16,
+    marginTop: 12,
     backgroundColor: "#ffffff",
     borderRadius: 20,
-    padding: 20,
-    gap: 20,
+    padding: 16,
+    gap: 14,
     borderWidth: 1,
     borderColor: "rgba(57, 211, 83, 0.15)",
     ...Platform.select({
@@ -1660,18 +2516,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     alignSelf: "stretch",
-    paddingVertical: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: "#ffffff",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(57, 211, 83, 0.15)",
   },
   stepProgressItem: {
     alignItems: "center",
-    gap: 6,
+    gap: 4,
     flex: 1,
     minWidth: 0,
   },
   stepDot: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     borderWidth: 2,
     borderColor: colors.gray[300],
     backgroundColor: colors.gray[50],
@@ -1712,22 +2573,31 @@ const styles = StyleSheet.create({
     backgroundColor: ACCENT,
   },
   checklist: {
-    gap: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "nowrap",
+    gap: 8,
+  },
+  checkItemCell: {
+    flex: 1,
+    minWidth: 0,
   },
   checkItem: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 6,
+    minWidth: 0,
   },
   checkCircle: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     borderWidth: 1.5,
     borderColor: colors.gray[300],
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.gray[50],
+    flexShrink: 0,
   },
   checkCircleDone: {
     backgroundColor: ACCENT,
@@ -1740,7 +2610,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.gray[300],
   },
   checkLabel: {
-    fontSize: 13,
+    flexShrink: 1,
+    minWidth: 0,
+    fontSize: 12,
     color: colors.gray[500],
     fontWeight: "500",
   },
@@ -1783,6 +2655,10 @@ const styles = StyleSheet.create({
   },
   inputIcon: {
     marginRight: 10,
+  },
+  panClearBtn: {
+    marginLeft: 4,
+    padding: 2,
   },
   panInput: {
     flex: 1,
@@ -1842,6 +2718,12 @@ const styles = StyleSheet.create({
     borderColor: ACCENT,
     backgroundColor: "#ffffff",
   },
+  panDropBoxInnerEmpty: {
+    width: "100%",
+    minHeight: 152,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   panEmptyContent: {
     alignItems: "center",
     justifyContent: "center",
@@ -1894,9 +2776,20 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 8,
     right: 8,
-    backgroundColor: "rgba(0,0,0,0.45)",
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
     borderRadius: 14,
-    zIndex: 2,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.gray[300],
+    zIndex: 20,
+    elevation: 8,
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
   },
   slotBoxPressed: {
     opacity: 0.92,
@@ -1974,13 +2867,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: "#ffffff",
-  },
-  selfieGateWrap: {
-    alignSelf: "stretch",
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 24,
-    gap: 16,
   },
   selfiePreviewCard: {
     alignSelf: "center",

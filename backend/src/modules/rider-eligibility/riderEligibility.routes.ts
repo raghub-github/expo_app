@@ -234,54 +234,48 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
     const result = await listRiderVehiclesWithEligibility({ riderId });
 
     // Compact DL/RC verification attempt history (§45) for the agent view.
+    // Do NOT block the response on heal/cancel — those were stacking with
+    // rider-summary under dashboard load and causing intermittent 502s.
     let verificationHistory: Array<Record<string, unknown>> = [];
     try {
       const { getSql } = await import("../../db/client.js");
-      const {
-        healStuckInitiatedVerificationRequests,
-        cancelStaleInitiatedRequests,
-      } = await import("../verification/history.js");
 
-      // Repair / tidy before read so the agent doesn't see a wall of "initiated".
-      try {
-        await healStuckInitiatedVerificationRequests({
-          subjectType: "rider",
-          subjectId: riderId,
-        });
-      } catch {
-        /* best-effort */
-      }
-      try {
-        await cancelStaleInitiatedRequests({
-          subjectType: "rider",
-          subjectId: riderId,
-          documentKind: "driving_licence",
-        });
-        await cancelStaleInitiatedRequests({
-          subjectType: "rider",
-          subjectId: riderId,
-          documentKind: "vehicle_rc",
-        });
-      } catch {
-        /* best-effort */
-      }
-      // Abandon long-stuck initiated rows that never got a provider outcome event.
-      try {
-        await getSql()`
-          UPDATE public.verification_requests
-          SET
-            status = ${"cancelled"},
-            status_reason = ${"abandoned_incomplete_attempt"},
-            updated_at = NOW()
-          WHERE subject_type = ${"rider"}
-            AND subject_id = ${riderId}
-            AND document_kind IN ('driving_licence', 'vehicle_rc')
-            AND status = ${"initiated"}
-            AND created_at < NOW() - INTERVAL '2 minutes'
-        `;
-      } catch {
-        /* best-effort */
-      }
+      void (async () => {
+        try {
+          const {
+            healStuckInitiatedVerificationRequests,
+            cancelStaleInitiatedRequests,
+          } = await import("../verification/history.js");
+          await healStuckInitiatedVerificationRequests({
+            subjectType: "rider",
+            subjectId: riderId,
+          });
+          await cancelStaleInitiatedRequests({
+            subjectType: "rider",
+            subjectId: riderId,
+            documentKind: "driving_licence",
+          });
+          await cancelStaleInitiatedRequests({
+            subjectType: "rider",
+            subjectId: riderId,
+            documentKind: "vehicle_rc",
+          });
+          await getSql()`
+            UPDATE public.verification_requests
+            SET
+              status = ${"cancelled"},
+              status_reason = ${"abandoned_incomplete_attempt"},
+              updated_at = NOW()
+            WHERE subject_type = ${"rider"}
+              AND subject_id = ${riderId}
+              AND document_kind IN ('driving_licence', 'vehicle_rc')
+              AND status = ${"initiated"}
+              AND created_at < NOW() - INTERVAL '2 minutes'
+          `;
+        } catch {
+          /* best-effort background tidy */
+        }
+      })();
 
       const rows = (await getSql()`
         SELECT document_kind, status, status_reason, attempt_number, created_at
@@ -296,7 +290,14 @@ export async function riderEligibilityRoutes(app: FastifyInstance): Promise<void
     } catch {
       /* history is best-effort */
     }
-    return reply.send({ ...result, verificationHistory });
+    let dutyOn = false;
+    try {
+      const { getLatestDutyLog } = await import("../../lib/rider-duty-log.service.js");
+      dutyOn = (await getLatestDutyLog(riderId))?.status === "ON";
+    } catch {
+      /* optional */
+    }
+    return reply.send({ ...result, verificationHistory, dutyOn });
   });
 
   /* ── Admin ELIGIBILITY_OVERRIDE management (§31) — internal-secret gated ───────────── */

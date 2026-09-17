@@ -61,10 +61,10 @@ export function useHomeScreenLayout(_showWeather: boolean) {
       GRID_ROW_GAP * 2;
 
     const gridH = availableH - usedWithoutGrid;
-    // Prefer ~112–118px cards. Floor at 110 so 3 rows stay tappable on small phones
+    // Prefer ~118–126px cards. Floor at 116 so 3 rows stay tappable on small phones
     // even if that means the page scrolls.
     const fitted = Math.floor(gridH / 3) - 4;
-    const serviceCardH = Math.min(118, Math.max(110, fitted > 0 ? fitted : 110));
+    const serviceCardH = Math.min(126, Math.max(116, fitted > 0 ? fitted : 116));
 
     const sizes = {
       screenH,

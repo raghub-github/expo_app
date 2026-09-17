@@ -73,7 +73,16 @@ export {
   getInAppBannerSnapshot,
   subscribeInAppBanner,
   FloatingInAppBannerHost,
+  setInAppBannerUiEnabled,
+  isInAppBannerUiEnabled,
   isSystemShadeOnlyPush,
   isFoodOrderPush,
   type InAppBannerItem,
 } from "./floatingBanner";
+
+export {
+  wasPushPresented,
+  rememberPushPresented,
+  claimPushPresented,
+  pushPresentationKey,
+} from "./pushPresentationDedupe";

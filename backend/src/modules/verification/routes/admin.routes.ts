@@ -476,6 +476,28 @@ export const verificationAdminRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ success: true, doc_kind: "driving_licence", projected: "document_only" });
     });
 
+    admin.post<{
+      Body: { rider_id: number; approved: boolean };
+    }>("/notify-rider-rc-review", async (req, reply) => {
+      const riderId = Number(req.body?.rider_id);
+      if (!Number.isFinite(riderId) || riderId < 1) {
+        return reply.code(400).send({ error: "invalid_rider_id" });
+      }
+      try {
+        const { notifyRiderRcManualReview } = await import(
+          "../../../lib/notify-rider-rc-manual-review.js"
+        );
+        await notifyRiderRcManualReview({
+          riderId,
+          approved: req.body?.approved === true,
+        });
+        return reply.send({ success: true });
+      } catch (e) {
+        req.log?.warn?.({ err: e }, "notify_rider_rc_review_failed");
+        return reply.send({ success: false });
+      }
+    });
+
     // ── History ──
     admin.get<{ Params: { verificationId: string } }>(
       "/events/:verificationId",

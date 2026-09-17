@@ -1,8 +1,7 @@
 /**
- * Expo Go has no remote push — but the inbox notification row is written at placement.
- * Poll notifications and, on a new CREATED order row, fetch that food order, upsert
- * into the live board, and open the accept sheet. This recovers the path when
- * postgres_changes/realtime is dead and food-orders list was stuck empty.
+ * When a new CREATED-order notification appears in the merchant inbox feed,
+ * fetch that food order, upsert into the live board, and open the accept sheet.
+ * Inbox refresh is owned by NotificationProvider (realtime + throttled poll).
  */
 
 import { useEffect, useRef } from "react";
@@ -16,13 +15,11 @@ import { fetchFoodOrder } from "@/services/ordersApi";
 import { isNewOrderAcceptNotification } from "@/lib/merchant-notification-display";
 import type { MerchantNotification } from "@/context/NotificationContext";
 
-import { AppState } from "react-native";
-
 export default function IncomingOrderNotificationBridge() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
-  const { notifications, refresh } = useNotifications();
+  const { notifications } = useNotifications();
   const { upsertOrder } = useOrders();
   const { openIncomingOrderSheet } = useIncomingOrderSheet();
 
@@ -42,15 +39,6 @@ export default function IncomingOrderNotificationBridge() {
     seenNotifIdsRef.current = new Set();
     bootstrappedRef.current = false;
   }, [storeId]);
-
-  useEffect(() => {
-    if (!token || !storeId) return;
-    void refresh();
-    const onResume = AppState.addEventListener("change", (state) => {
-      if (state === "active") void refresh();
-    });
-    return () => onResume.remove();
-  }, [token, storeId, refresh]);
 
   useEffect(() => {
     const t = tokenRef.current;

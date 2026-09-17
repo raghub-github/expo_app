@@ -10,6 +10,7 @@ import type { FoodItemUnderPrice, StoreFoodItemsUnderPrice } from "@/services/fo
 import type { MenuItem } from "@/services/merchant.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 
 type Props = {
   store: StoreFoodItemsUnderPrice;
@@ -32,6 +33,13 @@ function toMenuItem(item: FoodItemUnderPrice): MenuItem {
     basePrice: item.basePrice ?? undefined,
     discountPercentage: item.discountPercentage ?? undefined,
     isVeg: item.isVeg,
+    flashSale: item.flashSale
+      ? {
+          offer_id: item.flashSale.offerId,
+          original_customer_unit: item.flashSale.originalCustomerUnit,
+          flash_price: item.flashSale.flashPrice,
+        }
+      : undefined,
   };
 }
 
@@ -133,11 +141,10 @@ export function MealsUnderPriceStoreBlock({
   const { width: windowWidth } = useWindowDimensions();
   const cardWidth = Math.round(windowWidth * 0.58);
   const imageHeight = Math.round(cardWidth * 0.7);
-  const snapInterval = cardWidth + CARD_GAP;
 
   const reviewHint = formatReviewHint(store.totalReviews);
   const ratingLabel = formatRating(store.avgRating);
-  const visibleItems = store.items;
+  const visibleItems = store.items.filter((item) => Boolean(item.imageUrl?.trim()));
   const dark = useMerchantUiDark();
 
   if (visibleItems.length === 0) return null;
@@ -176,12 +183,7 @@ export function MealsUnderPriceStoreBlock({
       </View>
 
       <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        decelerationRate="fast"
-        snapToInterval={snapInterval}
-        snapToAlignment="start"
-        disableIntervalMomentum
+        {...NATURAL_HORIZONTAL_SCROLL_PROPS}
         contentContainerStyle={styles.itemRow}
       >
         {visibleItems.map((item) => (

@@ -22,8 +22,12 @@ let stuckScrollTimer: ReturnType<typeof setTimeout> | null = null;
 /** Bumps whenever a list drag starts — in-flight card presses compare against this. */
 let scrollGeneration = 0;
 
-/** If the app backgrounds mid-fling, onMomentumScrollEnd may never fire. */
-const STUCK_SCROLL_MS = 1600;
+/**
+ * Watchdog if onMomentumScrollEnd never fires (background mid-fling).
+ * Must be longer than a natural list fling — 1.6s was killing card-animation
+ * pause mid-momentum and causing visible stutter / “stuck” deceleration.
+ */
+const STUCK_SCROLL_MS = 8000;
 
 function clearStuckTimer(): void {
   if (stuckScrollTimer) {

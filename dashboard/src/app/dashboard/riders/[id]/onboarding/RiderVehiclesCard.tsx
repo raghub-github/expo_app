@@ -6,10 +6,12 @@
  * active, and a compact DL/RC verification attempt history. Backend-authoritative.
  */
 import React, { useEffect, useState } from "react";
+import { formatDashboardEligibilityStatus } from "@/lib/riders/dashboard-eligibility-status";
 
 type Decision = { eligible: boolean; blocking: { code: string; reason: string }[]; missingDocuments: string[] };
 type Vehicle = {
   id: number;
+  registrationNumber?: string;
   registrationMasked: string;
   vehicleClass: string | null;
   vehicleType: string | null;
@@ -31,6 +33,7 @@ type HistoryRow = {
 type Payload = {
   vehicles: Vehicle[];
   activeVehicleId: number | null;
+  dutyOn?: boolean;
   verificationHistory?: HistoryRow[];
 };
 
@@ -78,23 +81,37 @@ export function RiderVehiclesCard({ riderId }: { riderId: number }) {
     );
   }
 
+  const active = data.vehicles.find((v) => v.isActiveVehicle) ?? null;
+  const activeLabel = active
+    ? `${classLabel(active.vehicleClass)} · ${active.registrationMasked}`
+    : "None";
+
   return (
     <div className="rounded-xl border border-blue-200 bg-white">
       <div className="border-b border-blue-100 px-5 py-3">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-blue-700">Vehicles ({data.vehicles.length}/2)</p>
-        <p className="text-xs text-slate-500">Per-vehicle service eligibility · approved RC counts as ownership proof</p>
+        <p className="text-xs text-slate-500">
+          {data.dutyOn
+            ? `Online status: ON-DUTY · Active vehicle: ${activeLabel}`
+            : "Online status: OFF-DUTY · Active vehicle: None"}
+        </p>
       </div>
 
       <div className="grid gap-3 px-5 py-4 sm:grid-cols-2">
         {data.vehicles.length === 0 ? (
           <p className="text-sm text-slate-400">No vehicles on file.</p>
         ) : (
-          data.vehicles.map((v) => (
+          data.vehicles.map((v, i) => (
             <div key={v.id} className={`rounded-lg border p-3 ${v.isActiveVehicle ? "border-teal-300 bg-teal-50/40" : "border-slate-200 bg-white"}`}>
               <div className="flex items-center justify-between gap-2">
                 <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    Vehicle {i + 1}
+                  </p>
                   <p className="text-sm font-semibold text-slate-900">{classLabel(v.vehicleClass)}</p>
-                  <p className="font-mono text-xs text-slate-500">{v.registrationMasked}</p>
+                  <p className="font-mono text-xs text-slate-700">
+                    RC: {v.registrationNumber || v.registrationMasked}
+                  </p>
                 </div>
                 {v.isActiveVehicle ? (
                   <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">Active</span>
@@ -118,9 +135,10 @@ export function RiderVehiclesCard({ riderId }: { riderId: number }) {
                         {!d?.eligible ? (
                           <span className="text-slate-500">
                             {" — "}
-                            {d?.missingDocuments?.length
-                              ? `needs ${d.missingDocuments.map(human).join(", ")}`
-                              : d?.blocking?.[0]?.reason ?? "not eligible"}
+                            {formatDashboardEligibilityStatus({
+                              blocking: d?.blocking,
+                              missingDocuments: d?.missingDocuments,
+                            })}
                           </span>
                         ) : null}
                       </span>

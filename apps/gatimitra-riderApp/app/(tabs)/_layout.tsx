@@ -12,6 +12,7 @@ import { RIDER_DUTY_STATUS_QUERY_KEY } from '@/src/hooks/useDutyStatus';
 import { riderApi } from '@/src/services/api/riderApi';
 import { prefetchRiderBankPaymentMethod } from '@/src/hooks/useRiderBankAccount';
 import { prefetchRiderSubscriptionStatus } from '@/src/hooks/useRiderSubscription';
+import { prefetchRiderVehicles } from '@/src/hooks/useRiderVehicles';
 import { TabAppChrome } from '@/src/components/header/TabAppChrome';
 import { RiderBootstrapScreen } from '@/src/components/RiderBootstrapScreen';
 import { RiderHomeLocationPrompt } from '@/src/components/home/RiderHomeLocationPrompt';
@@ -41,6 +42,7 @@ export default function TabLayout() {
   useEffect(() => {
     if (!accessToken || !canAccessTabs) return;
     void prefetchEarningsSummary(queryClient);
+    void prefetchRiderVehicles(queryClient);
     void queryClient.prefetchQuery({
       queryKey: RIDER_DUTY_STATUS_QUERY_KEY,
       queryFn: () => riderApi.getDutyStatus(),

@@ -45,6 +45,8 @@ export type MerchantListingFilters = {
   selectedCuisines?: string[];
   noPackagingCharges?: boolean;
   nearFast?: boolean;
+  /** When set, only merchants in this allow-list (Flash Deal outlets). */
+  flashDealStoreIds?: ReadonlySet<string> | null;
 };
 
 export function isTopBrandMerchant(m: MerchantSummary): boolean {
@@ -76,6 +78,9 @@ function passesNearFast(m: MerchantSummary): boolean {
 }
 
 function passesListingFilters(m: MerchantSummary, filters: MerchantListingFilters): boolean {
+  if (filters.flashDealStoreIds && filters.flashDealStoreIds.size > 0) {
+    if (!filters.flashDealStoreIds.has(String(m.id))) return false;
+  }
   if (filters.filterHasOffers && !m.offerText) return false;
   if (filters.noPackagingCharges && merchantHasPackagingCharge(m)) return false;
   if (filters.nearFast && !passesNearFast(m)) return false;

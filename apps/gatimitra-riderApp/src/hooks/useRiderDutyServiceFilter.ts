@@ -13,7 +13,6 @@ import { riderApi } from "@/src/services/api/riderApi";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import {
   buildEligibleServicePool,
-  computeEligibleDutyServices,
   geoAvailabilityToRiderServices,
   inferSelectedFromAllowedServices,
   migrateLegacyServiceFilter,
@@ -100,11 +99,8 @@ export function useRiderDutyServiceFilter() {
     ],
   );
 
-  // Backend-authoritative document + location eligibility. When enforcement is ACTIVE,
-  // a service the engine says the rider isn't eligible for (docs/vehicle/geo) is removed
-  // from the selectable pool, so it cannot be turned on / go online. Fail-open: with
-  // enforcement off or the decision unavailable, the pool is unchanged (never lock a rider
-  // offline on a network blip). Enforcement is the same one switch that gates dispatch.
+  // Engine eligibility is the selectable source of truth. The client pool is only
+  // a fallback while the status request is still loading.
   const { backend: eligibilityBackend, enforced: eligibilityEnforced } =
     useRiderServiceEligibilityStatus();
   const eligibleServices = useMemo(
@@ -128,7 +124,6 @@ export function useRiderDutyServiceFilter() {
     if (!hydrated || eligibleServices.length === 0) return;
     const normalized = normalizeSelectedServices(selectedServices, eligibleServices);
     if (selectedServices.length === 0) {
-      void setSelectedServicesStore(eligibleServices);
       return;
     }
     if (normalized.join(",") !== selectedServices.join(",")) {
@@ -165,31 +160,12 @@ export function useRiderDutyServiceFilter() {
 
   const pushDutySelection = useCallback(
     async (nextSelected: RiderServiceTypeValue[]) => {
-      const serviceTypes = computeEligibleDutyServices({
-        selectedServices: nextSelected,
-        geoEnabled,
-        vehicleServices,
-        blockedServices,
-        vehicleType,
-        vehicleCategoryCode,
-        categoryServiceByCode,
-        vehicleServiceByMapsToType,
-      });
+      const serviceTypes = nextSelected.filter((s) => eligibleServices.includes(s));
       if (serviceTypes.length === 0) return;
       if (!isOnDuty) return;
       await updateDutyMutation.mutateAsync(serviceTypes);
     },
-    [
-      geoEnabled,
-      vehicleServices,
-      blockedServices,
-      vehicleType,
-      vehicleCategoryCode,
-      categoryServiceByCode,
-      vehicleServiceByMapsToType,
-      isOnDuty,
-      updateDutyMutation,
-    ],
+    [eligibleServices, isOnDuty, updateDutyMutation],
   );
 
   const setSelectedServices = useCallback(
@@ -277,7 +253,7 @@ export function resolveDutyServiceTypesForToggle(
     vehicle?.vehicle?.vehicleCategory ?? null
   );
 
-  const eligible = buildEligibleServicePool({
+  const clientPool = buildEligibleServicePool({
     geoEnabled,
     vehicleServices,
     blockedServices,
@@ -285,24 +261,33 @@ export function resolveDutyServiceTypesForToggle(
     vehicleCategoryCode,
     categoryServiceByCode: assignments?.byCategory,
     vehicleServiceByMapsToType: assignments?.byMapsToVehicleType,
+  });
+
+  const eligQueries = queryClient.getQueriesData<{
+    services?: Record<string, { eligible?: boolean; blocking?: { code: string; reason: string }[] }>;
+  }>({ queryKey: ["rider", "eligibility", "status"] });
+  const elig = eligQueries.find(([, data]) => data?.services)?.[1];
+  const backend = elig?.services
+    ? {
+        food: elig.services.food as { eligible: boolean; blocking: { code: string; reason: string }[] },
+        parcel: elig.services.parcel as { eligible: boolean; blocking: { code: string; reason: string }[] },
+        person_ride: elig.services.person_ride as {
+          eligible: boolean;
+          blocking: { code: string; reason: string }[];
+        },
+      }
+    : null;
+
+  const eligible = resolveSelectableServices({
+    clientPool,
+    backend,
+    enforced: true,
   });
 
   const selected =
-    stored.length > 0
-      ? normalizeSelectedServices(stored, eligible)
-      : eligible;
+    stored.length > 0 ? normalizeSelectedServices(stored, eligible) : [];
 
-  const serviceTypes = computeEligibleDutyServices({
-    selectedServices: selected,
-    geoEnabled,
-    vehicleServices,
-    blockedServices,
-    vehicleType,
-    vehicleCategoryCode,
-    categoryServiceByCode: assignments?.byCategory,
-    vehicleServiceByMapsToType: assignments?.byMapsToVehicleType,
-  });
-  return serviceTypes.length > 0 ? serviceTypes : undefined;
+  return selected.length > 0 ? selected : undefined;
 }
 
 export { migrateLegacyServiceFilter };

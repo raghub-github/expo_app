@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Switch, View, PanResponder, Pressable } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useFocusEffect } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
@@ -60,8 +61,12 @@ export default function ManageCommunicationsScreen() {
   );
 
   const notificationSoundOptions = useMemo(
-    () => buildNotificationSoundOptions(acceptanceSettings.alert_sound_urls_by_slot ?? [null, null, null]),
-    [acceptanceSettings.alert_sound_urls_by_slot]
+    () =>
+      buildNotificationSoundOptions(
+        acceptanceSettings.alert_sound_urls_by_slot ?? [null, null, null],
+        acceptanceSettings.store_type
+      ),
+    [acceptanceSettings.alert_sound_urls_by_slot, acceptanceSettings.store_type]
   );
 
   const selectedSoundSlot = useMemo(() => {
@@ -80,6 +85,9 @@ export default function ManageCommunicationsScreen() {
       try {
         await patchOrderAcceptanceSoundSlot(storeId, token, slot);
         await updateDeviceAlerts({ alertSoundSlot: slot });
+        const slots = acceptanceSettings.alert_sound_urls_by_slot ?? [null, null, null];
+        const { cacheMerchantAlertSound } = await import("@/lib/merchantAlertSoundCache");
+        await cacheMerchantAlertSound({ url: slots[slot] ?? acceptanceSettings.alert_sound_url, slot });
         await queryClient.invalidateQueries({ queryKey: ["orderAcceptanceSettings", storeId] });
         const volume01 = Math.min(
           1,
@@ -168,6 +176,32 @@ export default function ManageCommunicationsScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Always pull Super Admin sound slots when opening this screen.
+  useFocusEffect(
+    useCallback(() => {
+      if (!storeId) return;
+      void queryClient.invalidateQueries({ queryKey: ["orderAcceptanceSettings", storeId] });
+    }, [storeId, queryClient])
+  );
+
+  // Keep device slot aligned with filled admin slots + server choice.
+  useEffect(() => {
+    if (!storeId || notificationSoundOptions.length === 0 || !deviceAlerts) return;
+    const preferred = resolveSelectedSoundSlot(
+      notificationSoundOptions,
+      deviceAlerts.alertSoundSlot ?? acceptanceSettings.alert_sound_slot_choice ?? 0
+    );
+    if (preferred !== deviceAlerts.alertSoundSlot) {
+      void updateDeviceAlerts({ alertSoundSlot: preferred });
+    }
+  }, [
+    storeId,
+    notificationSoundOptions,
+    deviceAlerts,
+    acceptanceSettings.alert_sound_slot_choice,
+    updateDeviceAlerts,
+  ]);
 
   const save = useCallback(
     async (patch: Partial<CommState>, key: string) => {
@@ -483,7 +517,8 @@ export default function ManageCommunicationsScreen() {
 
           {notificationSoundOptions.length === 0 ? (
             <Text style={[styles.sectionHint, { marginTop: 10 }]}>
-              No alert sounds configured yet. Ask admin to upload notification sounds for your store type.
+              No alert sounds configured yet. Ask admin to upload notification sounds for your store type
+              in Order acceptance settings.
             </Text>
           ) : (
             <>

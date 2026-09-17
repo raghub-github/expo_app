@@ -49,12 +49,18 @@ type Props = {
   hideChecklist?: boolean;
   /** Rendered between the number input and the photo slots (verify card). */
   afterTextSlot?: React.ReactNode;
+  /** Override the photo field label (e.g. "Upload RC Image"). */
+  photoFieldLabel?: string;
+  /** Override the empty photo slot title. */
+  photoBoxTitle?: string;
   /** When set (e.g. Cashfree DL/RC regex), overrides length-only text validation. */
   textFormatValid?: boolean;
   /** Faded placeholder inside the input (format example). */
   textPlaceholder?: string | null;
   /** Red inline error when entered value fails format validation. */
   formatErrorMessage?: string | null;
+  /** Force front + back slots (e.g. DL after Instant Verify failed). */
+  forceDualPhotos?: boolean;
 };
 
 export function VehicleDocumentCaptureStep({
@@ -83,12 +89,15 @@ export function VehicleDocumentCaptureStep({
   hidePhotos = false,
   hideChecklist = false,
   afterTextSlot = null,
+  photoFieldLabel,
+  photoBoxTitle,
   textFormatValid,
   textPlaceholder = null,
   formatErrorMessage = null,
+  forceDualPhotos = false,
 }: Props) {
   const iconName = (doc.icon ?? "document-outline") as keyof typeof Ionicons.glyphMap;
-  const needsBack = docRequiresBackPhoto(doc);
+  const needsBack = forceDualPhotos || docRequiresBackPhoto(doc);
   const textValid =
     textFormatValid !== undefined
       ? textFormatValid
@@ -99,7 +108,8 @@ export function VehicleDocumentCaptureStep({
   const backValid = !needsBack || Boolean(backPhotoUri);
   const textVerified =
     textValid && !checkingDuplicate && !alreadyRegistered && textValue.trim().length > 0;
-  const photoLabel = needsBack ? `${doc.label} photos` : `${doc.label} photo`;
+  const photoLabel = photoFieldLabel || (needsBack ? `${doc.label} photos` : `${doc.label} photo`);
+  const singleBoxTitle = photoBoxTitle || `Add ${doc.label}`;
   const textDone = textValid && !alreadyRegistered;
   const photoSkipped = optional && skipped && !frontValid;
   const photoDone = frontValid || photoSkipped;
@@ -127,11 +137,22 @@ export function VehicleDocumentCaptureStep({
 
       <View style={form.divider} />
 
+      {optional && skipped ? (
+        <View style={styles.skippedBanner}>
+          <Ionicons name="checkmark-circle" size={18} color="#047857" />
+          <Text style={styles.skippedBannerText}>
+            {doc.label} skipped — tap Continue to proceed
+          </Text>
+        </View>
+      ) : null}
+
       {hideChecklist ? null : (
         <>
-          <View style={styles.checklist}>
+          <View style={[styles.checklist, !needsBack ? styles.checklistSingleRow : null]}>
             {doc.requiresTextField ? (
-              <ChecklistItem done={textDone} label={textChecklistLabel} />
+              <View style={!needsBack ? styles.checklistCell : null}>
+                <ChecklistItem done={textDone} label={textChecklistLabel} />
+              </View>
             ) : null}
             {needsBack ? (
               <>
@@ -145,7 +166,9 @@ export function VehicleDocumentCaptureStep({
                 />
               </>
             ) : (
-              <ChecklistItem done={photoDone} label={singlePhotoChecklistLabel} />
+              <View style={styles.checklistCell}>
+                <ChecklistItem done={photoDone} label={singlePhotoChecklistLabel} />
+              </View>
             )}
           </View>
           <View style={form.divider} />
@@ -231,19 +254,18 @@ export function VehicleDocumentCaptureStep({
               <DocumentPhotoSlot
                 uri={photoUri}
                 onPress={onPhotoPress}
+                onChangePress={onPhotoPress}
                 onRemove={onRemovePhoto}
                 disabled={uploading}
+                uploading={uploading}
                 boxTitle="Add front"
                 boxSub="Tap to capture or upload"
                 icon={iconName}
                 viewerTitle={`${doc.label} · Front`}
+                changeLabel={changePhotoLabel}
+                removeTitle="Remove document?"
+                removeMessage="Your image will be removed and you need to upload a new one."
               />
-              {photoUri ? (
-                <Pressable onPress={onPhotoPress} style={form.changePhotoLink}>
-                  <Ionicons name="refresh-outline" size={14} color={ACCENT_DARK} />
-                  <Text style={form.changePhotoText}>{changePhotoLabel}</Text>
-                </Pressable>
-              ) : null}
             </View>
 
             <View style={styles.dualPhotoCol}>
@@ -251,40 +273,36 @@ export function VehicleDocumentCaptureStep({
               <DocumentPhotoSlot
                 uri={backPhotoUri}
                 onPress={onBackPhotoPress ?? onPhotoPress}
+                onChangePress={onBackPhotoPress ?? onPhotoPress}
                 onRemove={onRemoveBackPhoto ?? (() => undefined)}
                 disabled={uploading}
+                uploading={uploading}
                 boxTitle="Add back"
                 boxSub="Tap to capture or upload"
                 icon={iconName}
                 viewerTitle={`${doc.label} · Back`}
+                changeLabel={changePhotoLabel}
+                removeTitle="Remove document?"
+                removeMessage="Your image will be removed and you need to upload a new one."
               />
-              {backPhotoUri ? (
-                <Pressable onPress={onBackPhotoPress} style={form.changePhotoLink}>
-                  <Ionicons name="refresh-outline" size={14} color={ACCENT_DARK} />
-                  <Text style={form.changePhotoText}>{changePhotoLabel}</Text>
-                </Pressable>
-              ) : null}
             </View>
           </View>
         ) : (
-          <>
-            <DocumentPhotoSlot
-              uri={photoUri}
-              onPress={onPhotoPress}
-              onRemove={onRemovePhoto}
-              disabled={uploading}
-              boxTitle={`Add ${doc.label}`}
-              boxSub="Tap here to capture or upload"
-              icon={iconName}
-              viewerTitle={doc.label}
-            />
-            {photoUri ? (
-              <Pressable onPress={onPhotoPress} style={form.changePhotoLink}>
-                <Ionicons name="refresh-outline" size={14} color={ACCENT_DARK} />
-                <Text style={form.changePhotoText}>{changePhotoLabel}</Text>
-              </Pressable>
-            ) : null}
-          </>
+          <DocumentPhotoSlot
+            uri={photoUri}
+            onPress={onPhotoPress}
+            onChangePress={onPhotoPress}
+            onRemove={onRemovePhoto}
+            disabled={uploading}
+            uploading={uploading}
+            boxTitle={singleBoxTitle}
+            boxSub="Tap here to capture or upload"
+            icon={iconName}
+            viewerTitle={doc.label}
+            changeLabel={changePhotoLabel}
+            removeTitle="Remove document?"
+            removeMessage="Your image will be removed and you need to upload a new one."
+          />
         )}
       </View>
       )}
@@ -295,6 +313,16 @@ export function VehicleDocumentCaptureStep({
 const styles = StyleSheet.create({
   checklist: {
     gap: 10,
+  },
+  checklistSingleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "nowrap",
+    gap: 8,
+  },
+  checklistCell: {
+    flex: 1,
+    minWidth: 0,
   },
   dualPhotoRow: {
     flexDirection: "row",
@@ -340,5 +368,24 @@ const styles = StyleSheet.create({
   clearBtn: {
     padding: 2,
     marginLeft: 2,
+  },
+  skippedBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#ecfdf5",
+    borderWidth: 1,
+    borderColor: "#a7f3d0",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 4,
+  },
+  skippedBannerText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#047857",
+    lineHeight: 18,
   },
 });

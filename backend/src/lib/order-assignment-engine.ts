@@ -68,6 +68,22 @@ export function riderDispatchLocationMaxAgeMinutes(): number {
 
 export type RiderLocationFreshness = "FRESH" | "STALE" | "UNKNOWN";
 
+/** Stable exclusion codes for wave diagnostics (never APP_KILLED / WEBSOCKET_DISCONNECTED). */
+export type DispatchExclusionReason =
+  | "RIDER_OFFLINE"
+  | "LOCATION_STALE"
+  | "LOCATION_MISSING"
+  | "OUTSIDE_RADIUS"
+  | "SERVICE_NOT_ELIGIBLE"
+  | "VEHICLE_NOT_ELIGIBLE"
+  | "ACTIVE_ORDER_LIMIT"
+  | "SUBSCRIPTION_REQUIRED"
+  | "BLOCKED"
+  | "SUSPENDED"
+  | "NO_PUSH_TOKEN"
+  | "EXCLUDED"
+  | "OTHER";
+
 /** Pure classifier — duty status is never derived from this. */
 export function classifyRiderLocationFreshness(
   updatedAt: Date | null | undefined,
@@ -80,6 +96,65 @@ export function classifyRiderLocationFreshness(
   if (ageMs <= freshMaxSeconds * 1000) return "FRESH";
   if (ageMs <= staleMaxSeconds * 1000) return "STALE";
   return "UNKNOWN";
+}
+
+/**
+ * Pure location+duty+radius gate for NEW offers (unit-testable).
+ * App killed / WebSocket disconnected are intentionally absent — never exclusion reasons.
+ *
+ * Usable GPS = FRESH or STALE (age <= RIDER_DISPATCH_LOCATION_STALE_MAX_AGE_SECONDS).
+ * UNKNOWN (past usable window) → LOCATION_STALE; missing → LOCATION_MISSING.
+ * Duty OFF → RIDER_OFFLINE. Radius uses only usable GPS.
+ */
+export function decideNewOfferLocationRadiusGate(args: {
+  dutyOn: boolean;
+  /** null = no usable location row. */
+  freshness: RiderLocationFreshness | null;
+  distanceMeters: number | null;
+  radiusMeters: number;
+}): { eligible: boolean; reason: DispatchExclusionReason | "ELIGIBLE" } {
+  if (!args.dutyOn) return { eligible: false, reason: "RIDER_OFFLINE" };
+  if (args.freshness == null) return { eligible: false, reason: "LOCATION_MISSING" };
+  if (args.freshness === "UNKNOWN") return { eligible: false, reason: "LOCATION_STALE" };
+  if (
+    args.distanceMeters == null ||
+    !Number.isFinite(args.distanceMeters) ||
+    args.distanceMeters > args.radiusMeters
+  ) {
+    return { eligible: false, reason: "OUTSIDE_RADIUS" };
+  }
+  return { eligible: true, reason: "ELIGIBLE" };
+}
+
+/** FRESH before STALE before UNKNOWN — used so stale proximity cannot beat a live fix. */
+export function freshnessRank(freshness: RiderLocationFreshness): number {
+  if (freshness === "FRESH") return 0;
+  if (freshness === "STALE") return 1;
+  return 2;
+}
+
+/**
+ * Wave ranking helper: FRESH always above STALE (and STALE above UNKNOWN).
+ * Within the same freshness tier, preserves the caller's secondary order (distance/score)
+ * via a stable sort when the comparator returns 0.
+ */
+export function sortEligibleRidersFreshnessFirst<
+  T extends { freshness: RiderLocationFreshness }
+>(riders: readonly T[]): T[] {
+  return [...riders].sort(
+    (a, b) => freshnessRank(a.freshness) - freshnessRank(b.freshness)
+  );
+}
+
+/**
+ * NEW offers: if any FRESH riders are in radius, exclude STALE from the wave.
+ * STALE riders are only offered when zero FRESH candidates remain.
+ */
+export function preferFreshEligibleRiders<
+  T extends { freshness: RiderLocationFreshness }
+>(riders: readonly T[]): T[] {
+  const fresh = riders.filter((r) => r.freshness === "FRESH");
+  return fresh.length > 0 ? fresh : [...riders];
 }
 
 export type DispatchServiceType = "food" | "parcel" | "person_ride";
@@ -135,6 +210,9 @@ export type RiderAssignmentContext = {
   lat: number;
   lng: number;
   locationUpdatedAt: Date;
+  freshness: RiderLocationFreshness;
+  accuracyM: number | null;
+  gpsAgeSeconds: number;
 };
 
 export type DispatchPickupPoint = {
@@ -148,6 +226,9 @@ export type EligibleDispatchRider = {
   lng: number;
   distanceMeters: number;
   eligibleServices: DispatchServiceType[];
+  freshness: RiderLocationFreshness;
+  accuracyM: number | null;
+  gpsAgeSeconds: number;
 };
 
 export type DispatchOrderTarget = {
@@ -437,35 +518,65 @@ export async function computeRiderEligibleDispatchServices(
 
   if (latestDuty?.status !== "ON") return null;
 
+  try {
+    const { getSql } = await import("../db/client.js");
+    const { countActiveRiderDeviceSessions } = await import("./rider-device-sessions.js");
+    if ((await countActiveRiderDeviceSessions(getSql(), riderId)) === 0) {
+      try {
+        const { recordRiderDutyOffIfOnline } = await import("./rider-duty-log.service.js");
+        await recordRiderDutyOffIfOnline(riderId, "logout", {
+          metadata: { via: "no_active_device_session" },
+        });
+      } catch {
+        /* assignment still treats the rider as offline */
+      }
+      return null;
+    }
+  } catch {
+    /* fail-open if session table is unavailable — GPS freshness still gates new offers */
+  }
+
   const dutyServices = normalizeDispatchServices(latestDuty.serviceTypes);
   if (dutyServices.length === 0) return null;
 
   const vehicleProfile = await getRiderActiveVehicleProfile(riderId);
-  const { resolveAssignedDispatchServicesForProfile } = await import(
-    "./rider-vehicle-type-service-assignments.js"
+  const { eligibilityEnforcementMode, filterServicesByUnifiedEligibility } = await import(
+    "../modules/rider-eligibility/riderEligibility.service.js"
   );
-  const assignmentServices = await resolveAssignedDispatchServicesForProfile(vehicleProfile);
-  const hasVehicleProfile =
-    vehicleProfile.vehicleTypes.some((v) => v.trim().length > 0) ||
-    vehicleProfile.vehicleCategories.some((c) => c.trim().length > 0);
-  const vehicleServices = hasVehicleProfile
-    ? assignmentServices
-    : assignmentServices.length > 0
+
+  let vehicleServices: DispatchServiceType[];
+  if (eligibilityEnforcementMode() === "off") {
+    const { resolveAssignedDispatchServicesForProfile } = await import(
+      "./rider-vehicle-type-service-assignments.js"
+    );
+    const assignmentServices = await resolveAssignedDispatchServicesForProfile(vehicleProfile);
+    const hasVehicleProfile =
+      vehicleProfile.vehicleTypes.some((v) => v.trim().length > 0) ||
+      vehicleProfile.vehicleCategories.some((c) => c.trim().length > 0);
+    vehicleServices = hasVehicleProfile
       ? assignmentServices
-      : await getActiveVehicleServiceTypes(riderId);
+      : assignmentServices.length > 0
+        ? assignmentServices
+        : await getActiveVehicleServiceTypes(riderId);
+  } else {
+    const live = await loadRiderGps(riderId).catch(() => null);
+    const lastKnown = live ? null : await loadRiderGpsLastKnown(riderId).catch(() => null);
+    const gps =
+      live ??
+      (lastKnown && lastKnown.freshness !== "UNKNOWN" ? lastKnown : null);
+    vehicleServices = await filterServicesByUnifiedEligibility({
+      riderId,
+      requested: ["food", "parcel", "person_ride"],
+      lat: gps?.lat ?? null,
+      lng: gps?.lng ?? null,
+    });
+  }
   if (vehicleServices.length === 0) return null;
 
   const intersected = intersectServices(dutyServices, vehicleServices);
   const profileFiltered = filterDispatchServicesForRiderProfile(intersected, vehicleProfile);
-  const { filterDispatchServicesByVehicleAssignments } = await import(
-    "./rider-vehicle-type-service-assignments.js"
-  );
-  const vehicleFiltered = await filterDispatchServicesByVehicleAssignments(profileFiltered, {
-    vehicleTypes: vehicleProfile.vehicleTypes,
-    vehicleCategories: vehicleProfile.vehicleCategories,
-  });
   const restrictionSnapshot = await getRiderDispatchBlockSnapshot(riderId);
-  const unrestricted = filterUnrestrictedDispatchServices(vehicleFiltered, restrictionSnapshot);
+  const unrestricted = filterUnrestrictedDispatchServices(profileFiltered, restrictionSnapshot);
 
   return unrestricted.length > 0 ? unrestricted : null;
 }
@@ -479,19 +590,38 @@ export function riderHasEligibleDispatchService(
 
 export async function loadRiderGps(
   riderId: number
-): Promise<{ lat: number; lng: number; updatedAt: Date } | null> {
+): Promise<{
+  lat: number;
+  lng: number;
+  /** Effective GPS time used for freshness: gps_captured_at ?? updated_at. */
+  updatedAt: Date;
+  /** Server receive time (DB updated_at). */
+  serverReceivedAt: Date;
+  gpsCapturedAt: Date | null;
+  accuracyM: number | null;
+  freshness: RiderLocationFreshness;
+  gpsAgeSeconds: number;
+} | null> {
   const sqlClient = getSql();
   const started = Date.now();
   const [position] = (await sqlClient`
     SELECT
       COALESCE(rcl.lat, r.lat::float) AS lat,
       COALESCE(rcl.lng, r.lon::float) AS lng,
-      rcl.updated_at AS updated_at
+      rcl.updated_at AS updated_at,
+      rcl.gps_captured_at AS gps_captured_at,
+      rcl.accuracy_m AS accuracy_m
     FROM riders r
     LEFT JOIN rider_current_locations rcl ON rcl.rider_id = r.id
     WHERE r.id = ${riderId}
     LIMIT 1
-  `) as Array<{ lat: number | null; lng: number | null; updated_at: Date | null }>;
+  `) as Array<{
+    lat: number | null;
+    lng: number | null;
+    updated_at: Date | null;
+    gps_captured_at: Date | null;
+    accuracy_m: number | null;
+  }>;
 
   incrCounter(
     "rider_dispatch_gps_lookups_total",
@@ -509,44 +639,101 @@ export async function loadRiderGps(
     return null;
   }
 
-  const updatedAt = new Date(position.updated_at);
+  const serverReceivedAt = new Date(position.updated_at);
+  const gpsCapturedAt = position.gps_captured_at
+    ? new Date(position.gps_captured_at)
+    : null;
+  const updatedAt =
+    gpsCapturedAt && Number.isFinite(gpsCapturedAt.getTime())
+      ? gpsCapturedAt
+      : serverReceivedAt;
+  const nowMs = Date.now();
   const freshness = classifyRiderLocationFreshness(
     updatedAt,
-    Date.now(),
+    nowMs,
     riderDispatchLocationMaxAgeSeconds(),
     riderDispatchLocationStaleMaxAgeSeconds()
   );
   // Duty stays ON; NEW offers require last-known GPS within the stale window.
   if (freshness === "UNKNOWN") return null;
 
+  const gpsAgeSeconds = Math.max(0, (nowMs - updatedAt.getTime()) / 1000);
+  const accuracyRaw = position.accuracy_m != null ? Number(position.accuracy_m) : null;
+
   return {
     lat: Number(position.lat),
     lng: Number(position.lng),
     updatedAt,
+    serverReceivedAt,
+    gpsCapturedAt,
+    accuracyM: accuracyRaw != null && Number.isFinite(accuracyRaw) ? accuracyRaw : null,
+    freshness,
+    gpsAgeSeconds,
   };
 }
 
 /** Last known GPS with no freshness gate — pending-offer recovery / display only. */
 export async function loadRiderGpsLastKnown(
   riderId: number
-): Promise<{ lat: number; lng: number; updatedAt: Date } | null> {
+): Promise<{
+  lat: number;
+  lng: number;
+  updatedAt: Date;
+  serverReceivedAt: Date;
+  gpsCapturedAt: Date | null;
+  accuracyM: number | null;
+  freshness: RiderLocationFreshness;
+  gpsAgeSeconds: number;
+} | null> {
   const sqlClient = getSql();
   const [position] = (await sqlClient`
     SELECT
       COALESCE(rcl.lat, r.lat::float) AS lat,
       COALESCE(rcl.lng, r.lon::float) AS lng,
-      rcl.updated_at AS updated_at
+      rcl.updated_at AS updated_at,
+      rcl.gps_captured_at AS gps_captured_at,
+      rcl.accuracy_m AS accuracy_m
     FROM riders r
     LEFT JOIN rider_current_locations rcl ON rcl.rider_id = r.id
     WHERE r.id = ${riderId}
     LIMIT 1
-  `) as Array<{ lat: number | null; lng: number | null; updated_at: Date | null }>;
+  `) as Array<{
+    lat: number | null;
+    lng: number | null;
+    updated_at: Date | null;
+    gps_captured_at: Date | null;
+    accuracy_m: number | null;
+  }>;
 
   if (position?.lat == null || position.lng == null) return null;
+  const serverReceivedAt = position.updated_at
+    ? new Date(position.updated_at)
+    : new Date(0);
+  const gpsCapturedAt = position.gps_captured_at
+    ? new Date(position.gps_captured_at)
+    : null;
+  const updatedAt =
+    gpsCapturedAt && Number.isFinite(gpsCapturedAt.getTime())
+      ? gpsCapturedAt
+      : serverReceivedAt;
+  const nowMs = Date.now();
+  const freshness = classifyRiderLocationFreshness(
+    updatedAt,
+    nowMs,
+    riderDispatchLocationMaxAgeSeconds(),
+    riderDispatchLocationStaleMaxAgeSeconds()
+  );
+  const gpsAgeSeconds = Math.max(0, (nowMs - updatedAt.getTime()) / 1000);
+  const accuracyRaw = position.accuracy_m != null ? Number(position.accuracy_m) : null;
   return {
     lat: Number(position.lat),
     lng: Number(position.lng),
-    updatedAt: position.updated_at ? new Date(position.updated_at) : new Date(0),
+    updatedAt,
+    serverReceivedAt,
+    gpsCapturedAt,
+    accuracyM: accuracyRaw != null && Number.isFinite(accuracyRaw) ? accuracyRaw : null,
+    freshness,
+    gpsAgeSeconds,
   };
 }
 
@@ -644,6 +831,18 @@ export async function resolveOrderDispatchRadiusMeters(
   return fetchEffectiveDispatchRadiusMeters(serviceType, wave);
 }
 
+/**
+ * Authoritative ON_DUTY candidate set for a service.
+ *
+ * CRITICAL: duty state is independent of GPS age, app killed, and WebSocket.
+ * Location freshness is applied later in evaluateRiderDispatchEligibility
+ * (LOCATION_STALE / LOCATION_MISSING / OUTSIDE_RADIUS) — never by shrinking
+ * this list with a GPS age filter (that previously made onDutyCandidates=0
+ * for killed-app riders whose last ping aged past the stale window).
+ *
+ * Seed: riders with any current-location row OR a recent ON duty_log (48h),
+ * then LATERAL latest duty_logs must still be ON for the required service.
+ */
 async function loadOnDutyRiderIds(
   requiredService?: DispatchServiceType
 ): Promise<number[]> {
@@ -652,21 +851,25 @@ async function loadOnDutyRiderIds(
     requiredService != null ? JSON.stringify([requiredService]) : null;
   // Never DISTINCT ON the full duty_logs table — that hangs under load and
   // starves the pool (place ride Network Error + no dispatch offers).
-  // Only riders with GPS within the stale window can receive NEW offers.
-  // Duty ON is resolved separately via LATERAL duty_logs — never inferred from GPS.
   const rows = (await sqlClient`
     SELECT DISTINCT r.id AS rider_id
-    FROM rider_current_locations rcl
-    INNER JOIN riders r ON r.id = rcl.rider_id
+    FROM (
+      SELECT rider_id FROM rider_current_locations
+      UNION
+      SELECT DISTINCT dl.rider_id
+      FROM duty_logs dl
+      WHERE dl.status = 'ON'
+        AND dl.timestamp >= NOW() - INTERVAL '48 hours'
+    ) seed
+    INNER JOIN riders r ON r.id = seed.rider_id
     INNER JOIN LATERAL (
       SELECT dl.status, dl.service_types
       FROM duty_logs dl
-      WHERE dl.rider_id = rcl.rider_id
+      WHERE dl.rider_id = seed.rider_id
       ORDER BY dl.timestamp DESC
       LIMIT 1
     ) ld ON true
-    WHERE rcl.updated_at >= NOW() - (${riderDispatchLocationStaleMaxAgeSeconds()} * INTERVAL '1 second')
-      AND r.status NOT IN ('BLOCKED', 'BANNED')
+    WHERE r.status NOT IN ('BLOCKED', 'BANNED')
       AND r.deleted_at IS NULL
       AND ld.status = 'ON'
       AND jsonb_typeof(COALESCE(ld.service_types, '[]'::jsonb)) = 'array'
@@ -705,6 +908,62 @@ async function loadOnDutyRiderIds(
     .filter((id) => Number.isFinite(id) && id > 0);
 }
 
+/** Stable exclusion codes — see DispatchExclusionReason near classifyRiderLocationFreshness. */
+export function normalizeDispatchExclusionReason(reason: string): DispatchExclusionReason {
+  const r = String(reason ?? "").trim().toLowerCase();
+  if (r === "off_duty" || r === "rider_offline") return "RIDER_OFFLINE";
+  if (r === "location_stale" || r === "location_stale_or_missing" || r === "location_unknown") {
+    return "LOCATION_STALE";
+  }
+  if (r === "location_missing") return "LOCATION_MISSING";
+  if (r === "outside_wave_radius" || r === "outside_radius") return "OUTSIDE_RADIUS";
+  if (
+    r === "service_not_eligible" ||
+    r === "service_not_in_duty" ||
+    r.startsWith("ineligible_")
+  ) {
+    return "SERVICE_NOT_ELIGIBLE";
+  }
+  if (r === "vehicle_type_mismatch" || r === "vehicle_not_eligible") return "VEHICLE_NOT_ELIGIBLE";
+  if (r === "assignment_limit_or_active_order" || r === "active_order_limit") {
+    return "ACTIVE_ORDER_LIMIT";
+  }
+  if (r === "subscription_blocked" || r === "subscription_required") return "SUBSCRIPTION_REQUIRED";
+  if (r === "blacklisted_for_service" || r === "blocked") return "BLOCKED";
+  if (r === "suspended") return "SUSPENDED";
+  if (r === "no_push_token") return "NO_PUSH_TOKEN";
+  if (r === "excluded") return "EXCLUDED";
+  return "OTHER";
+}
+
+export type WaveEligibilityDiagnostics = {
+  orderId: string;
+  waveNumber: number;
+  configuredRadiusMeters: number;
+  totalOnDutyCandidates: number;
+  /** Backend does not track app/WS presence for eligibility — always false. */
+  presenceFilterApplied: false;
+  appForegroundCandidates: null;
+  appBackgroundCandidates: null;
+  appKilledCandidates: null;
+  websocketConnectedCandidates: null;
+  websocketDisconnectedCandidates: null;
+  freshLocationCandidates: number;
+  staleLocationCandidates: number;
+  missingLocationCandidates: number;
+  excludedByDutyState: number;
+  excludedByLocationStale: number;
+  excludedByLocationMissing: number;
+  excludedByRadius: number;
+  excludedByService: number;
+  excludedByVehicle: number;
+  excludedByActiveOrder: number;
+  excludedBySubscription: number;
+  excludedByOtherRules: number;
+  eligibleWithinRadius: number;
+  noEligibleRiders: boolean;
+};
+
 /**
  * Structured dispatch tracing. Toggle LIVE (no code change / no restart needed if
  * your process manager reloads env, else set before boot) via DISPATCH_TRACE=1.
@@ -728,10 +987,27 @@ type DispatchRiderTrace = {
   pickupLat?: number;
   pickupLng?: number;
   distanceMeters?: number;
+  freshness?: RiderLocationFreshness;
+  gpsAgeSeconds?: number;
+  accuracyM?: number | null;
 };
 
 function logRiderEligibilityDecision(data: DispatchRiderTrace): void {
   const tag = data.result === "eligible" ? "RIDER_ELIGIBLE" : "RIDER_FILTERED";
+  const locationClass =
+    data.result === "eligible"
+      ? data.freshness === "FRESH"
+        ? "FRESH"
+        : data.freshness === "STALE"
+          ? "STALE_FALLBACK"
+          : null
+      : data.reason === "LOCATION_STALE"
+        ? "LOCATION_STALE"
+        : data.reason === "LOCATION_MISSING"
+          ? "LOCATION_MISSING"
+          : data.freshness === "UNKNOWN"
+            ? "LOCATION_STALE"
+            : null;
   console.info(
     `[dispatch] ${tag}`,
     JSON.stringify({
@@ -741,6 +1017,13 @@ function logRiderEligibilityDecision(data: DispatchRiderTrace): void {
       service: data.serviceType,
       distance: data.distanceMeters ?? null,
       radius: data.configuredRadiusMeters,
+      freshness: data.freshness ?? null,
+      locationClass,
+      gpsAgeSeconds:
+        data.gpsAgeSeconds != null && Number.isFinite(data.gpsAgeSeconds)
+          ? Math.round(data.gpsAgeSeconds)
+          : null,
+      accuracyM: data.accuracyM ?? null,
     })
   );
   if (dispatchTraceEnabled()) {
@@ -793,10 +1076,10 @@ export async function evaluateRiderDispatchEligibility(
   };
 
   const preEligible = await computeRiderEligibleDispatchServices(riderId);
-  if (!preEligible?.includes(target.serviceType)) return reject("service_not_eligible");
+  if (!preEligible?.includes(target.serviceType)) return reject("SERVICE_NOT_ELIGIBLE");
 
   const { isRiderSubscriptionDispatchBlocked } = await import("./rider-subscription-wallet.js");
-  if (await isRiderSubscriptionDispatchBlocked(riderId)) return reject("subscription_blocked");
+  if (await isRiderSubscriptionDispatchBlocked(riderId)) return reject("SUBSCRIPTION_REQUIRED");
 
   const ctx = await resolveRiderAssignmentContext(riderId, {
     skipAssignmentCheck: true,
@@ -804,14 +1087,34 @@ export async function evaluateRiderDispatchEligibility(
   });
   if (!ctx) {
     const dutyOn = (await computeRiderEligibleDispatchServices(riderId)) != null;
-    return reject(dutyOn ? "location_stale_or_missing" : "off_duty");
+    if (!dutyOn) return reject("RIDER_OFFLINE");
+    // Duty stays ON; classify GPS without mutating duty.
+    const lastKnown = await loadRiderGpsLastKnown(riderId);
+    if (!lastKnown) return reject("LOCATION_MISSING");
+    // Usable NEW-offer window is RIDER_DISPATCH_LOCATION_STALE_MAX_AGE_SECONDS.
+    // Beyond that classifyRiderLocationFreshness → UNKNOWN → do not use for radius.
+    if (lastKnown.freshness === "UNKNOWN") {
+      return reject("LOCATION_STALE", {
+        freshness: lastKnown.freshness,
+        gpsAgeSeconds: lastKnown.gpsAgeSeconds,
+        riderLat: lastKnown.lat,
+        riderLng: lastKnown.lng,
+      });
+    }
+    // Duty ON + FRESH/STALE GPS present but context null → non-location gate.
+    return reject("OTHER", {
+      freshness: lastKnown.freshness,
+      gpsAgeSeconds: lastKnown.gpsAgeSeconds,
+      riderLat: lastKnown.lat,
+      riderLng: lastKnown.lng,
+    });
   }
-  if (!ctx.eligibleServices.includes(target.serviceType)) return reject("service_not_in_duty");
+  if (!ctx.eligibleServices.includes(target.serviceType)) return reject("SERVICE_NOT_ELIGIBLE");
 
   if (target.serviceType === "person_ride") {
     const riderVehicleTypes = await getRiderActiveVehicleTypeCodes(riderId);
     if (!riderMatchesPersonRideVehicleTypes(riderVehicleTypes, target.personRideVehicleTypes)) {
-      return reject("vehicle_type_mismatch", { riderLat: ctx.lat, riderLng: ctx.lng });
+      return reject("VEHICLE_NOT_ELIGIBLE", { riderLat: ctx.lat, riderLng: ctx.lng });
     }
   }
 
@@ -821,11 +1124,11 @@ export async function evaluateRiderDispatchEligibility(
       orderId: target.orderId,
       eventContext: "dispatch_offer",
     });
-    if (!assignmentOk) return reject("assignment_limit_or_active_order", { riderLat: ctx.lat, riderLng: ctx.lng });
+    if (!assignmentOk) return reject("ACTIVE_ORDER_LIMIT", { riderLat: ctx.lat, riderLng: ctx.lng });
   }
-  if (!ctx.eligibleServices.includes(target.serviceType)) return reject("service_not_in_duty");
+  if (!ctx.eligibleServices.includes(target.serviceType)) return reject("SERVICE_NOT_ELIGIBLE");
   if (await isRiderBlacklistedForService(riderId, target.serviceType)) {
-    return reject("blacklisted_for_service", { riderLat: ctx.lat, riderLng: ctx.lng });
+    return reject("BLOCKED", { riderLat: ctx.lat, riderLng: ctx.lng });
   }
 
   // Backend-authoritative document + geo service eligibility (verified DL/RC, vehicle
@@ -877,12 +1180,14 @@ export async function evaluateRiderDispatchEligibility(
       target.effectiveRadiusMeters
     )
   ) {
-    return reject("outside_wave_radius", {
+    return reject("OUTSIDE_RADIUS", {
       riderLat: ctx.lat,
       riderLng: ctx.lng,
       pickupLat: target.pickup.latitude,
       pickupLng: target.pickup.longitude,
       distanceMeters: Math.round(distanceMeters),
+      freshness: ctx.freshness,
+      gpsAgeSeconds: ctx.gpsAgeSeconds,
     });
   }
 
@@ -899,6 +1204,9 @@ export async function evaluateRiderDispatchEligibility(
       pickupLat: target.pickup.latitude,
       pickupLng: target.pickup.longitude,
       distanceMeters: Math.round(distanceMeters),
+      freshness: ctx.freshness,
+      gpsAgeSeconds: ctx.gpsAgeSeconds,
+      accuracyM: ctx.accuracyM,
     });
   } else {
     if (dispatchTraceEnabled()) {
@@ -912,6 +1220,9 @@ export async function evaluateRiderDispatchEligibility(
           result: "eligible",
           reason: "within_wave_radius",
           distanceMeters: Math.round(distanceMeters),
+          freshness: ctx.freshness,
+          gpsAgeSeconds: Math.round(ctx.gpsAgeSeconds),
+          accuracyM: ctx.accuracyM,
         })
       );
     }
@@ -923,6 +1234,9 @@ export async function evaluateRiderDispatchEligibility(
     lng: ctx.lng,
     distanceMeters,
     eligibleServices: ctx.eligibleServices,
+    freshness: ctx.freshness,
+    accuracyM: ctx.accuracyM,
+    gpsAgeSeconds: ctx.gpsAgeSeconds,
   };
 }
 
@@ -986,24 +1300,79 @@ export async function listEligibleRidersForDispatchOrder(
   const candidateIds = await loadOnDutyRiderIds(target.serviceType);
   const { fetchExcludedRiderIdsForOrder } = await import("./rider-dispatch-order-exclusion.js");
   const excludedRiderIds = await fetchExcludedRiderIdsForOrder(target.orderCoreId);
+
+  const diag: WaveEligibilityDiagnostics = {
+    orderId: target.orderId,
+    waveNumber: target.waveNumber,
+    configuredRadiusMeters: target.effectiveRadiusMeters,
+    totalOnDutyCandidates: candidateIds.length,
+    presenceFilterApplied: false,
+    appForegroundCandidates: null,
+    appBackgroundCandidates: null,
+    appKilledCandidates: null,
+    websocketConnectedCandidates: null,
+    websocketDisconnectedCandidates: null,
+    freshLocationCandidates: 0,
+    staleLocationCandidates: 0,
+    missingLocationCandidates: 0,
+    excludedByDutyState: 0,
+    excludedByLocationStale: 0,
+    excludedByLocationMissing: 0,
+    excludedByRadius: 0,
+    excludedByService: 0,
+    excludedByVehicle: 0,
+    excludedByActiveOrder: 0,
+    excludedBySubscription: 0,
+    excludedByOtherRules: 0,
+    eligibleWithinRadius: 0,
+    noEligibleRiders: false,
+  };
+
   const evaluated = await Promise.all(
     candidateIds.map(async (riderId) => {
+      // Location census — independent of app/WebSocket; never flips duty OFF.
+      const lastKnown = await loadRiderGpsLastKnown(riderId);
+      if (!lastKnown) {
+        diag.missingLocationCandidates += 1;
+      } else if (lastKnown.freshness === "FRESH") {
+        diag.freshLocationCandidates += 1;
+      } else {
+        // STALE (within usable window) or UNKNOWN (past usable window).
+        diag.staleLocationCandidates += 1;
+      }
+
       if (excludedRiderIds.has(riderId)) {
+        diag.excludedByOtherRules += 1;
         console.info(
           "[dispatch] RIDER_FILTERED",
           JSON.stringify({
             rider: riderId,
             order: target.orderId,
-            reason: "excluded",
+            reason: "EXCLUDED",
             service: target.serviceType,
           })
         );
         return null;
       }
-      return evaluateRiderDispatchEligibility(riderId, target, {
+      const lastRejectReason: { current?: string } = {};
+      const row = await evaluateRiderDispatchEligibility(riderId, target, {
         ignoreAssignmentLimit: options?.ignoreAssignmentLimit,
         logDecision: true,
+        lastRejectReason,
       });
+      if (!row) {
+        const code = normalizeDispatchExclusionReason(lastRejectReason.current ?? "OTHER");
+        if (code === "RIDER_OFFLINE") diag.excludedByDutyState += 1;
+        else if (code === "LOCATION_STALE") diag.excludedByLocationStale += 1;
+        else if (code === "LOCATION_MISSING") diag.excludedByLocationMissing += 1;
+        else if (code === "OUTSIDE_RADIUS") diag.excludedByRadius += 1;
+        else if (code === "SERVICE_NOT_ELIGIBLE") diag.excludedByService += 1;
+        else if (code === "VEHICLE_NOT_ELIGIBLE") diag.excludedByVehicle += 1;
+        else if (code === "ACTIVE_ORDER_LIMIT") diag.excludedByActiveOrder += 1;
+        else if (code === "SUBSCRIPTION_REQUIRED") diag.excludedBySubscription += 1;
+        else diag.excludedByOtherRules += 1;
+      }
+      return row;
     })
   );
   const eligible = evaluated.filter((row): row is EligibleDispatchRider => row != null);
@@ -1031,6 +1400,36 @@ export async function listEligibleRidersForDispatchOrder(
     ordered = sorted;
   }
 
+  // FRESH always ranks above STALE (secondary: existing distance/score order).
+  ordered = sortEligibleRidersFreshnessFirst(ordered);
+
+  const freshCount = ordered.filter((r) => r.freshness === "FRESH").length;
+  const staleCount = ordered.filter((r) => r.freshness === "STALE").length;
+  const staleExcludedWhenFreshPresent = freshCount > 0 ? staleCount : 0;
+  // Existing policy (preferFreshEligibleRiders + RIDER_DISPATCH_LOCATION_STALE_MAX_AGE_SECONDS):
+  // NEW offers: STALE only when zero FRESH riders remain in radius.
+  ordered = preferFreshEligibleRiders(ordered);
+  const locationOfferMode =
+    ordered.length === 0
+      ? "NONE"
+      : ordered[0]?.freshness === "FRESH"
+        ? "FRESH"
+        : "STALE_FALLBACK";
+
+  diag.eligibleWithinRadius = ordered.length;
+  diag.noEligibleRiders = ordered.length === 0;
+  if (diag.noEligibleRiders) {
+    console.info(
+      "[dispatch] NO_ELIGIBLE_RIDERS",
+      JSON.stringify({
+        ...diag,
+        locationOfferMode,
+        excludedByLocationStale: diag.excludedByLocationStale,
+        excludedByLocationMissing: diag.excludedByLocationMissing,
+      })
+    );
+  }
+
   // Always-on, low-volume (one line per order per wave): proves the wave radius
   // gate from Super Admin → Rider Assignment Controls is being applied live.
   console.info(
@@ -1041,10 +1440,49 @@ export async function listEligibleRidersForDispatchOrder(
       waveNumber: target.waveNumber,
       configuredRadiusMeters: target.effectiveRadiusMeters,
       onDutyCandidates: candidateIds.length,
+      totalOnDutyCandidates: diag.totalOnDutyCandidates,
       excluded: excludedRiderIds.size,
       eligibleWithinRadius: ordered.length,
       strategy: strategyName,
       nearestMeters: ordered[0]?.distanceMeters != null ? Math.round(ordered[0].distanceMeters) : null,
+      topFreshness: ordered[0]?.freshness ?? null,
+      /** FRESH | STALE_FALLBACK | NONE — STALE_FALLBACK = existing preferFresh policy. */
+      locationOfferMode,
+      freshCount,
+      staleCount,
+      staleExcludedWhenFreshPresent,
+      presenceFilterApplied: false,
+      appForegroundCandidates: null,
+      appBackgroundCandidates: null,
+      appKilledCandidates: null,
+      websocketConnectedCandidates: null,
+      websocketDisconnectedCandidates: null,
+      freshLocationCandidates: diag.freshLocationCandidates,
+      staleLocationCandidates: diag.staleLocationCandidates,
+      missingLocationCandidates: diag.missingLocationCandidates,
+      excludedByDutyState: diag.excludedByDutyState,
+      excludedByLocationStale: diag.excludedByLocationStale,
+      excludedByLocationMissing: diag.excludedByLocationMissing,
+      excludedByRadius: diag.excludedByRadius,
+      excludedByService: diag.excludedByService,
+      excludedByVehicle: diag.excludedByVehicle,
+      excludedByActiveOrder: diag.excludedByActiveOrder,
+      excludedBySubscription: diag.excludedBySubscription,
+      excludedByOtherRules: diag.excludedByOtherRules,
+      noEligibleRiders: diag.noEligibleRiders,
+      ranked: ordered.slice(0, 8).map((r) => ({
+        riderId: r.riderId,
+        distanceMeters: Math.round(r.distanceMeters),
+        freshness: r.freshness,
+        locationClass:
+          r.freshness === "FRESH"
+            ? "FRESH"
+            : r.freshness === "STALE"
+              ? "STALE_FALLBACK"
+              : "LOCATION_STALE",
+        gpsAgeSeconds: Math.round(r.gpsAgeSeconds),
+        accuracyM: r.accuracyM,
+      })),
     })
   );
   return ordered;
@@ -1108,6 +1546,9 @@ export async function resolveRiderAssignmentContext(
     lat: gps.lat,
     lng: gps.lng,
     locationUpdatedAt: gps.updatedAt,
+    freshness: gps.freshness,
+    accuracyM: gps.accuracyM,
+    gpsAgeSeconds: gps.gpsAgeSeconds,
   };
 }
 

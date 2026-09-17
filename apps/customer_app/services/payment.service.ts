@@ -89,6 +89,23 @@ export const paymentService = {
   },
 
   /**
+   * Report incomplete checkout payment — marks pending failed and triggers
+   * instant CUSTOMER_PAYMENT_FAILED push (same path as Razorpay webhook).
+   */
+  async reportCheckoutPaymentFailed(params: {
+    pendingId: string;
+    razorpayOrderId: string;
+    reason?: string;
+  }): Promise<{ ok: boolean }> {
+    const { data } = await api.post<{ ok: boolean }>(`${PAYMENT_PREFIX}/checkout/fail`, {
+      pendingId: params.pendingId,
+      razorpayOrderId: params.razorpayOrderId,
+      reason: params.reason,
+    });
+    return data;
+  },
+
+  /**
    * Build the Razorpay checkout page URL (opens in WebView). Amount is already in the Razorpay order.
    */
   getCheckoutPageUrl(params: {

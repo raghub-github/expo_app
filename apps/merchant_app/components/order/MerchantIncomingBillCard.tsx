@@ -110,6 +110,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
+    // No elevation/shadow — flat card on incoming modal
+    elevation: 0,
+    shadowOpacity: 0,
   },
   pressed: { opacity: 0.88 },
   summaryLabel: {
@@ -139,6 +142,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
     backgroundColor: "#FFFFFF",
+    elevation: 0,
+    shadowOpacity: 0,
   },
   row: {
     flexDirection: "row",

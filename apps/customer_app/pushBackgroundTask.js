@@ -21,19 +21,24 @@ if (!isExpoGo()) {
     const Notifications = require("expo-notifications");
     const {
       applyLiveProgressFromPush,
+      dismissLiveOrderProgressForOrder,
       liveProgressHandlerResult,
+      shouldClearLiveProgress,
     } = require("./lib/customerLiveOrderNotificationNative");
 
     Notifications.setNotificationHandler({
       handleNotification: async (notification) => {
         const data = notification?.request?.content?.data ?? {};
         const result = liveProgressHandlerResult(data);
-        if (result.updateSticky || result.suppress) {
-          try {
+        try {
+          if (result.clearProgress || shouldClearLiveProgress(data)) {
+            const oid = String(data.orderId || data.order_id || "").trim();
+            if (oid) await dismissLiveOrderProgressForOrder(oid);
+          } else if (result.updateSticky || result.suppress) {
             await applyLiveProgressFromPush(data);
-          } catch {
-            /* best-effort sticky update */
           }
+        } catch {
+          /* best-effort sticky update / clear */
         }
         return {
           shouldShowAlert: result.shouldShowAlert,
@@ -51,7 +56,11 @@ if (!isExpoGo()) {
   try {
     const Notifications = require("expo-notifications");
     const TaskManager = require("expo-task-manager");
-    const { applyLiveProgressFromPush } = require("./lib/customerLiveOrderNotificationNative");
+    const {
+      applyLiveProgressFromPush,
+      dismissLiveOrderProgressForOrder,
+      shouldClearLiveProgress,
+    } = require("./lib/customerLiveOrderNotificationNative");
     const BACKGROUND_NOTIFICATION_TASK = "BACKGROUND-NOTIFICATION-TASK";
     if (!TaskManager.isTaskDefined(BACKGROUND_NOTIFICATION_TASK)) {
       TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => {
@@ -59,7 +68,12 @@ if (!isExpoGo()) {
         const payload = data?.notification?.request?.content?.data ?? data?.data ?? null;
         if (payload && typeof payload === "object") {
           try {
-            await applyLiveProgressFromPush(payload);
+            if (shouldClearLiveProgress(payload)) {
+              const oid = String(payload.orderId || payload.order_id || "").trim();
+              if (oid) await dismissLiveOrderProgressForOrder(oid);
+            } else {
+              await applyLiveProgressFromPush(payload);
+            }
           } catch {
             /* best-effort */
           }

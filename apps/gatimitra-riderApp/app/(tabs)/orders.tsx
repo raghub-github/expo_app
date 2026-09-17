@@ -32,7 +32,7 @@ import { colors } from "@/src/theme";
 import { Button } from "@/src/components/ui/Button";
 import { permissionManager } from "@/src/services/permissions/permissionManager";
 import { type RiderMapViewHandle } from "@/src/components/RiderMapView";
-import { AccountRestrictedBanner, PenaltyBanner, OffDutyBanner, RidePaymentHoldBanner } from "@/src/components/home/HomeAlertBanners";
+import { AccountRestrictedBanner, PenaltyBanner, OffDutyBanner, RidePaymentHoldBanner, NetworkStatusBanner } from "@/src/components/home/HomeAlertBanners";
 import {
   HomeAlertBannerCarousel,
   homeBannerDuration,
@@ -40,8 +40,10 @@ import {
 } from "@/src/components/home/HomeAlertBannerCarousel";
 import { SubscriptionDuesBanner } from "@/src/components/subscription/SubscriptionDuesBanner";
 import { openSubscriptionDutyBlockedSheet } from "@/src/stores/subscriptionDutyBlockedSheetStore";
+import { openWaitingForReviewSheet } from "@/src/stores/waitingForReviewSheetStore";
 import { showRiderPaymentSuccess } from "@/src/stores/paymentSuccessSheetStore";
 import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
+import { useRiderNetworkStore } from "@/src/stores/riderNetworkStore";
 import { MapRightControls } from "@/src/components/home/MapRightControls";
 import { HomeMapTopChrome } from "@/src/components/home/HomeMapTopChrome";
 import {
@@ -69,7 +71,8 @@ export default function OrdersScreen() {
   const session = useSessionStore((s) => s.session);
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
   const homeFocused = useIsFocused();
-  const { setDuty, isPending: dutyPending, dutyGoOnBlocked } = useDutyToggle();
+  const { setDuty, isPending: dutyPending, dutyGoOnBlocked, onboardingReviewBlocksDuty } =
+    useDutyToggle();
   const tracker = useMemo(
     () =>
       createForegroundLocationTracker({
@@ -259,15 +262,27 @@ export default function OrdersScreen() {
     t,
   ]);
   const subscriptionBannerVisible =
-    subscriptionStatus?.dues?.alertBanner?.visible ?? false;
+    !onboardingReviewBlocksDuty &&
+    (subscriptionStatus?.dues?.alertBanner?.visible ?? false);
   const subscriptionDispatchBlocked = subscriptionStatus?.dues?.dispatchBlocked ?? false;
   // Avoid stacking two yellow Pay banners for the same ₹ dues (subscription + wallet).
   // Pager dots under Pay looked like a second/duplicate banner.
   const showPenaltyBanner = negativeWalletDue > 0 && !subscriptionBannerVisible;
   const primaryPaymentHold = ridePaymentHolds[0] ?? null;
+  const networkOnline = useRiderNetworkStore((s) => s.online);
 
   const homeBannerSlides = useMemo((): HomeBannerSlide[] => {
     const slides: HomeBannerSlide[] = [];
+
+    // Network first when offline so riders see connectivity ahead of dues/penalty.
+    if (!networkOnline) {
+      slides.push({
+        id: "network",
+        type: "network",
+        durationMs: homeBannerDuration("network"),
+        element: <NetworkStatusBanner />,
+      });
+    }
 
     if (showServiceRestrictedBanner) {
       slides.push({
@@ -320,6 +335,7 @@ export default function OrdersScreen() {
 
     return slides;
   }, [
+    networkOnline,
     showServiceRestrictedBanner,
     blockedServices,
     allServicesBlacklisted,
@@ -392,11 +408,19 @@ export default function OrdersScreen() {
   );
 
   useEffect(() => {
-    if (!subscriptionDispatchBlocked && !dutyGoOnBlocked) return;
+    if (!subscriptionDispatchBlocked && !dutyGoOnBlocked && !onboardingReviewBlocksDuty) {
+      return;
+    }
     if (!isOnDuty) return;
     void useDutyStore.getState().setDutyStatus(false);
     void queryClient.invalidateQueries({ queryKey: RIDER_DUTY_STATUS_QUERY_KEY });
-  }, [subscriptionDispatchBlocked, dutyGoOnBlocked, isOnDuty, queryClient]);
+  }, [
+    subscriptionDispatchBlocked,
+    dutyGoOnBlocked,
+    onboardingReviewBlocksDuty,
+    isOnDuty,
+    queryClient,
+  ]);
 
   const lastEmittedFixRef = useRef<CoalesceFixSnapshot | null>(null);
   const lastScreenFixRef = useRef<CoalesceFixSnapshot | null>(null);
@@ -830,9 +854,19 @@ export default function OrdersScreen() {
           <View style={styles.offDutyHost} pointerEvents="box-none" onLayout={onMapDockLayout}>
             <OffDutyBanner
               visible
-              dutyLocked={dutyGoOnBlocked || subscriptionDispatchBlocked}
+              lockReason={
+                onboardingReviewBlocksDuty
+                  ? "onboarding_review"
+                  : dutyGoOnBlocked || subscriptionDispatchBlocked
+                    ? "subscription"
+                    : null
+              }
               onTurnOn={() => {
                 if (dutyPending) return;
+                if (onboardingReviewBlocksDuty) {
+                  openWaitingForReviewSheet();
+                  return;
+                }
                 if (dutyGoOnBlocked || subscriptionDispatchBlocked) {
                   openSubscriptionDutyBlockedSheet();
                   return;

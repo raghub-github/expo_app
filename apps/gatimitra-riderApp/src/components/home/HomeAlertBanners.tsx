@@ -95,6 +95,35 @@ type PenaltyBannerProps = {
   paying?: boolean;
 };
 
+export function NetworkStatusBanner() {
+  const { t } = useTranslation();
+
+  return (
+    <View style={styles.networkWrap}>
+      <View style={styles.networkIcon}>
+        <Ionicons name="cloud-offline" size={16} color="#ffffff" />
+      </View>
+      <View style={styles.bannerTextCol}>
+        <Text style={styles.networkTitle}>
+          {t("home.networkOfflineTitle", "No internet connection")}
+        </Text>
+        <Text style={styles.networkSub}>
+          {t(
+            "home.networkOfflineSub",
+            "Check your network. Orders and duty sync pause until you are back online."
+          )}
+        </Text>
+      </View>
+      <View style={styles.ctaCol}>
+        <View style={styles.networkBadge}>
+          <Text style={styles.networkBadgeText}>{t("home.offline", "Offline")}</Text>
+        </View>
+        <BannerPagerIndicators />
+      </View>
+    </View>
+  );
+}
+
 export function PenaltyBanner({ amount, onPay, paying = false }: PenaltyBannerProps) {
   const { t } = useTranslation();
   if (amount <= 0) return null;
@@ -192,13 +221,51 @@ type OffDutyBannerProps = {
   visible: boolean;
   onTurnOn: () => void;
   loading?: boolean;
-  /** Subscription penalty duty stop — Turn On opens blocked sheet instead. */
+  /**
+   * Why duty cannot be turned ON.
+   * - subscription: dues / penalty lock (legacy “subscription penalty” copy)
+   * - onboarding_review: waiting for admin verification after payment
+   */
+  lockReason?: "subscription" | "onboarding_review" | null;
+  /** @deprecated use lockReason — true maps to subscription */
   dutyLocked?: boolean;
 };
 
-export function OffDutyBanner({ visible, onTurnOn, loading, dutyLocked = false }: OffDutyBannerProps) {
+export function OffDutyBanner({
+  visible,
+  onTurnOn,
+  loading,
+  lockReason = null,
+  dutyLocked = false,
+}: OffDutyBannerProps) {
   const { t } = useTranslation();
   if (!visible) return null;
+
+  const reason: "subscription" | "onboarding_review" | null =
+    lockReason ?? (dutyLocked ? "subscription" : null);
+  const locked = reason != null;
+
+  const title =
+    reason === "onboarding_review"
+      ? t("home.onboardingReviewDutyStopTitle", "Duty locked — verification pending")
+      : reason === "subscription"
+        ? t("home.subscriptionDutyStopTitle", "Duty stopped — subscription penalty")
+        : t("home.notReceivingOrders", "Not receiving new orders!");
+
+  const sub =
+    reason === "onboarding_review"
+      ? t(
+          "home.onboardingReviewDutyStopSub",
+          "You can turn ON duty after your documents are approved",
+        )
+      : reason === "subscription"
+        ? t(
+            "home.subscriptionDutyStopSub",
+            "Clear subscription dues to turn ON duty and receive orders",
+          )
+        : loading
+          ? t("home.turningOnDutySub", "Turning ON duty… please wait")
+          : t("home.turnOnDutySub", "Turn ON DUTY to start receiving orders");
 
   return (
     <View style={styles.offDutyWrap}>
@@ -207,26 +274,17 @@ export function OffDutyBanner({ visible, onTurnOn, loading, dutyLocked = false }
       </View>
       <View style={styles.bannerTextCol}>
         <Text style={styles.offDutyTitle} numberOfLines={2} ellipsizeMode="tail">
-          {dutyLocked
-            ? t("home.subscriptionDutyStopTitle", "Duty stopped — subscription penalty")
-            : t("home.notReceivingOrders", "Not receiving new orders!")}
+          {title}
         </Text>
         <Text style={styles.offDutySub} numberOfLines={2} ellipsizeMode="tail">
-          {dutyLocked
-            ? t(
-                "home.subscriptionDutyStopSub",
-                "Clear subscription dues to turn ON duty and receive orders"
-              )
-            : loading
-              ? t("home.turningOnDutySub", "Turning ON duty… please wait")
-              : t("home.turnOnDutySub", "Turn ON DUTY to start receiving orders")}
+          {sub}
         </Text>
       </View>
       <Pressable
         style={[
           styles.turnOnBtn,
           loading && styles.turnOnBtnLoading,
-          dutyLocked && styles.turnOnBtnLocked,
+          locked && styles.turnOnBtnLocked,
         ]}
         onPress={onTurnOn}
         disabled={loading}
@@ -237,12 +295,12 @@ export function OffDutyBanner({ visible, onTurnOn, loading, dutyLocked = false }
         accessibilityLabel={
           loading
             ? t("home.turningOn", "Turning on")
-            : dutyLocked
+            : locked
               ? t("home.whyDutyBlocked", "Why?")
               : t("home.turnOn", "Turn On")
         }
       >
-        {loading && !dutyLocked ? (
+        {loading && !locked ? (
           <View style={styles.turnOnBusyRow}>
             <ActivityIndicator size="small" color={colors.primary[600]} />
             <Text style={styles.turnOnBtnText} numberOfLines={1}>
@@ -251,10 +309,10 @@ export function OffDutyBanner({ visible, onTurnOn, loading, dutyLocked = false }
           </View>
         ) : (
           <Text
-            style={[styles.turnOnBtnText, dutyLocked && styles.turnOnBtnTextLocked]}
+            style={[styles.turnOnBtnText, locked && styles.turnOnBtnTextLocked]}
             numberOfLines={1}
           >
-            {dutyLocked
+            {locked
               ? t("home.whyDutyBlocked", "Why?")
               : t("home.turnOn", "Turn On")}
           </Text>
@@ -314,6 +372,51 @@ const styles = StyleSheet.create({
     paddingRight: 10,
     paddingVertical: 8,
     gap: 8,
+  },
+  networkWrap: {
+    flex: 1,
+    alignSelf: "stretch",
+    width: "100%",
+    height: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#111827",
+    paddingLeft: 10,
+    paddingRight: 10,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  networkIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  networkTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#ffffff",
+  },
+  networkSub: {
+    fontSize: 10,
+    color: "rgba(255,255,255,0.92)",
+    marginTop: 1,
+    lineHeight: 14,
+  },
+  networkBadge: {
+    backgroundColor: "#FEE2E2",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    flexShrink: 0,
+  },
+  networkBadgeText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#B91C1C",
   },
   restrictedWrap: {
     flex: 1,

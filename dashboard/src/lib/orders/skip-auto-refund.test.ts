@@ -4,8 +4,8 @@ import { describe, it } from "node:test";
 import { isIntentionalNoRefundCancel } from "./skip-auto-refund";
 
 describe("isIntentionalNoRefundCancel", () => {
-  it("skips when refund_status is no_refund", () => {
-    assert.equal(isIntentionalNoRefundCancel({ refundStatus: "no_refund" }), true);
+  it("does not skip when refund_status alone is no_refund (engine stamp)", () => {
+    assert.equal(isIntentionalNoRefundCancel({ refundStatus: "no_refund" }), false);
   });
 
   it("skips cancel_without_refund metadata", () => {

@@ -69,6 +69,8 @@ export type RiderVehicleStatusResponse = {
   onboardingVehicleCategoryCode?: string | null;
   onboardingPrefill?: RiderVehicleOnboardingPrefill | null;
   formMeta?: RiderVehicleFormMeta;
+  /** RC doc state — pending/rejected must not show the vehicle-complete sheet. */
+  rcVerificationState?: string | null;
 };
 
 export type UpsertRiderVehiclePayload = {

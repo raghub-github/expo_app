@@ -22,14 +22,11 @@ describe("optional DL/RC skip for onboarding progress", () => {
     assert.equal(isOnboardingDocSkipped(["dl"], "rc"), false);
   });
 
-  it("treats skipped required DL+RC as satisfied for onboarding funnel", () => {
+  it("treats skipped required docs as satisfied for onboarding progress", () => {
     assert.equal(
       vehicleStepCompleteByRequired([], ["dl", "rc"], ["dl", "rc"]),
       true,
     );
-  });
-
-  it("requires present DL when only RC was skipped", () => {
     assert.equal(
       vehicleStepCompleteByRequired([], ["dl", "rc"], ["rc"]),
       false,
@@ -42,9 +39,20 @@ describe("optional DL/RC skip for onboarding progress", () => {
       ),
       true,
     );
+    assert.equal(
+      vehicleStepCompleteByRequired(
+        [
+          { docType: "dl", fileUrl: "https://cdn/dl.jpg", verified: false },
+          { docType: "rc", fileUrl: "https://cdn/rc.jpg", verified: false },
+        ],
+        ["dl", "rc"],
+        [],
+      ),
+      true,
+    );
   });
 
-  it("requires present RC when only DL was skipped", () => {
+  it("treats soft-skipped DL as satisfied when RC is manually uploaded", () => {
     assert.equal(
       vehicleStepCompleteByRequired(
         [{ docType: "rc", fileUrl: "https://cdn/rc.jpg", verified: false }],
@@ -52,10 +60,6 @@ describe("optional DL/RC skip for onboarding progress", () => {
         ["dl"],
       ),
       true,
-    );
-    assert.equal(
-      vehicleStepCompleteByRequired([], ["dl", "rc"], ["dl"]),
-      false,
     );
   });
 

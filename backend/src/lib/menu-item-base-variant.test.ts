@@ -53,3 +53,30 @@ test("prependBaseMenuItemVariant skips duplicate base row", () => {
   assert.equal(out.length, 1);
   assert.ok(variantRepresentsBaseItem(variants[0]!, { name: "Cham Cham", price: 169, sizeValue: "250", sizeUnit: "grams" }));
 });
+
+test("prependBaseMenuItemVariant keeps distinct flavors that share size/price", () => {
+  const out = prependBaseMenuItemVariant(
+    {
+      name: "Paneer Momos - Steamed",
+      price: 106,
+      sizeValue: "10",
+      sizeUnit: "piece",
+    },
+    [
+      {
+        id: "22",
+        name: "Paneer Momos - Fried - 10 piece",
+        price: 106,
+        sizeValue: "10",
+        sizeUnit: "piece",
+        isDefault: true,
+        displayOrder: 0,
+      },
+    ]
+  );
+
+  assert.equal(out.length, 2);
+  assert.equal(out[0]?.id, BASE_MENU_ITEM_VARIANT_ID);
+  assert.equal(out[0]?.name, "Paneer Momos - Steamed");
+  assert.equal(out[1]?.name, "Paneer Momos - Fried - 10 piece");
+});

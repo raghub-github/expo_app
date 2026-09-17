@@ -247,6 +247,16 @@ select option {
   }
 }
 
+@keyframes authCallbackSpinnerStroke {
+  to {
+    stroke-dashoffset: -550;
+  }
+}
+
+.auth-callback-spinner-stroke {
+  animation: authCallbackSpinnerStroke 2.8s linear infinite;
+}
+
 @keyframes slideInRight {
   from {
     transform: translateX(100%);

@@ -4,13 +4,21 @@ import { useSessionStore } from "@/src/stores/sessionStore";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
 import {
-  canAccessHome,
+  canAccessHomeTabs,
   resolveEstablishedRiderHref,
   resolveOnboardingHref,
   type ServerOnboardingStep,
 } from "@/src/lib/onboarding-routes";
 import { isRiderNotFoundError } from "@/src/services/http";
 import { normalizeRiderId, riderIdFromSession } from "@/src/utils/normalizeRiderId";
+import { useOnboardingVehicleTypes } from "@/src/hooks/useOnboardingVehicleTypes";
+import { useOnboardingDocumentTypes } from "@/src/hooks/useOnboardingDocumentTypes";
+import { useRiderOnboardingSummary } from "@/src/hooks/useRiderOnboardingSummary";
+import {
+  filterSkippedDocsForVehicle,
+  mergeVehicleOnboardingDocSteps,
+} from "@/src/lib/onboarding-document-types";
+import { findVehicleType } from "@/src/lib/onboarding-vehicle-types";
 
 export function useOnboardingGate() {
   const sessionHydrated = useSessionStore((s) => s.hydrated);
@@ -56,6 +64,9 @@ export function useOnboardingGate() {
     void hydrateOnboarding();
   }, [hydrateSession, hydrateOnboarding]);
 
+  const { data: vehicleTypes = [] } = useOnboardingVehicleTypes();
+  const { data: documentCatalog = [] } = useOnboardingDocumentTypes();
+  const { summary: onboardingSummary } = useRiderOnboardingSummary();
   const { data: riderStatus, isError, error, isFetched } = useRiderStatus(riderId);
   const riderNotFound = isError && isRiderNotFoundError(error);
 
@@ -122,14 +133,38 @@ export function useOnboardingGate() {
     const serverSkipped = Array.isArray(riderStatus.skippedOnboardingDocs)
       ? riderStatus.skippedOnboardingDocs.map((c) => String(c || "").trim()).filter(Boolean)
       : [];
-    if (serverSkipped.length) {
-      const localSkipped = skippedOnboardingDocs ?? [];
+    const localSkipped = skippedOnboardingDocs ?? [];
+    if (serverSkipped.length || localSkipped.length) {
+      const choiceForSkip = String(
+        patch.vehicleChoice ?? vehicleChoice ?? serverChoice ?? "",
+      ).trim();
+      const vehicle = findVehicleType(vehicleTypes, choiceForSkip);
+      const allDocs = mergeVehicleOnboardingDocSteps(vehicle, documentCatalog);
       const merged = Array.from(new Set([...localSkipped, ...serverSkipped]));
-      if (
-        merged.length !== localSkipped.length ||
-        merged.some((c) => !localSkipped.includes(c))
-      ) {
-        patch.skippedOnboardingDocs = merged;
+      const norm = (arr: string[]) => arr.slice().sort().join("\0");
+      // Wait for catalog before filtering — otherwise required soft-skips (DL) get wiped.
+      if (!documentCatalog.length) {
+        if (norm(merged) !== norm(localSkipped)) {
+          patch.skippedOnboardingDocs = merged.length ? merged : undefined;
+        }
+      } else {
+        const geoKeep: string[] = [];
+        for (const d of onboardingSummary?.documents ?? []) {
+          if (!d.canSkipDuringOnboarding) continue;
+          const c = String(d.code || "").toUpperCase();
+          if (c === "DRIVING_LICENSE" || c === "DL") geoKeep.push("dl");
+          if (c === "REGISTRATION_CERTIFICATE" || c === "RC") geoKeep.push("rc");
+        }
+        // Soft-skips for any doc still on this vehicle row (matches backend allowOnboardingSoftSkips).
+        const vehicleCodes = allDocs.map((d) => d.code);
+        const alsoKeep = Array.from(new Set([...geoKeep, ...vehicleCodes]));
+        const vehicleFiltered =
+          filterSkippedDocsForVehicle(allDocs, merged, { alsoKeep }) ?? [];
+        const bankSkips = merged.filter((c) => /^(bank_account|bank_proof)$/i.test(c));
+        const filtered = Array.from(new Set([...vehicleFiltered, ...bankSkips]));
+        if (norm(filtered) !== norm(localSkipped)) {
+          patch.skippedOnboardingDocs = filtered.length ? filtered : undefined;
+        }
       }
     }
     if (riderStatus.bankAccountOnboardingDone && !bankAccountOnboardingDone) {
@@ -185,6 +220,9 @@ export function useOnboardingGate() {
     bankAccountOnboardingSkipped,
     localState,
     locationSource,
+    vehicleTypes,
+    documentCatalog,
+    onboardingSummary?.documents,
     setData,
   ]);
 
@@ -313,7 +351,11 @@ export function useOnboardingGate() {
     referralPromptHandled,
   ]);
 
-  const canAccessTabs = canAccessHome(effectiveOnboardingStatus, effectiveAccountStatus);
+  const canAccessTabs = canAccessHomeTabs(
+    effectiveOnboardingStatus,
+    effectiveAccountStatus,
+    riderStatus?.paymentCompleted,
+  );
 
   return {
     ready,

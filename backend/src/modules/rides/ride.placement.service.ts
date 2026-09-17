@@ -650,6 +650,33 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
       metadata: { rideType: input.rideType, estimatedFare, customerTipAmount },
     });
 
+    const rideDiscounts = Array.isArray(billingSnapshot?.discounts)
+      ? (billingSnapshot!.discounts as Array<Record<string, unknown>>)
+      : [];
+    for (const d of rideDiscounts) {
+      const meta =
+        d.meta && typeof d.meta === "object" ? (d.meta as Record<string, unknown>) : {};
+      const platformOfferId = Number(meta.platformOfferId ?? meta.platform_offer_id);
+      const kind = String(meta.offerKind ?? meta.offer_kind ?? "").toUpperCase();
+      if (!(platformOfferId > 0) || kind !== "FLASH_SALE") continue;
+      const { recordFlashSaleRedemptionAtPlacement } = await import(
+        "../billing/flashSaleRedemption.service.js"
+      );
+      const subsidyAmount = Math.abs(Number(d.amount) || 0);
+      await recordFlashSaleRedemptionAtPlacement(tx as PostgresJsDatabase<Record<string, unknown>>, {
+        platformOfferId,
+        customerId: input.customerPk,
+        orderId: orderIdText,
+        serviceType: "RIDE",
+        originalItemPrice: estimatedFare,
+        flashSalePrice: Math.max(0, Math.round((estimatedFare - subsidyAmount) * 100) / 100),
+        subsidyAmount,
+        consumeMode: meta.consumeMode != null ? String(meta.consumeMode) : undefined,
+        orderSaleAmount: grandTotal,
+        snapshot: d,
+      });
+    }
+
     return {
       orderId: orderIdText,
       formattedOrderId: insertedCore?.formattedOrderId ?? null,

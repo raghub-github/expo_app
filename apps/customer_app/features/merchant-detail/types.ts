@@ -33,6 +33,7 @@ export type MerchantListItemType =
   | "section_header"
   | "menu_item"
   | "menu_masonry"
+  | "featured_imaged_rail"
   | "footer"
   | "empty_menu"
   | "menu_skeleton"
@@ -77,6 +78,12 @@ export type MerchantFlashListItem =
       key: string;
       title: string;
       sectionIndex: number;
+      items: MenuListRow[];
+    }
+  | {
+      type: "featured_imaged_rail";
+      key: "featured_imaged_rail";
+      title: string;
       items: MenuListRow[];
     }
   | {

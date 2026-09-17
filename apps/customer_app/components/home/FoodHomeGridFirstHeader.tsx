@@ -202,7 +202,7 @@ export function FoodHomeGridFirstHeader({
   });
 
   const locationRow = showLocation ? (
-      <View style={styles.topRow}>
+      <View style={[styles.topRow, !heroReady && styles.topRowFlat]}>
         <TouchableOpacity
           style={styles.locationBlock}
           activeOpacity={0.85}
@@ -234,7 +234,7 @@ export function FoodHomeGridFirstHeader({
           </View>
         </TouchableOpacity>
 
-        <View style={styles.topActions}>
+        <View style={[styles.topActions, !heroReady && styles.topActionsFlat]}>
           {subscriptionName ? (
             <TouchableOpacity
               style={styles.subscriptionPill}
@@ -379,6 +379,10 @@ const styles = StyleSheet.create({
     zIndex: 3,
     elevation: 4,
   },
+  topRowFlat: {
+    elevation: 0,
+    shadowOpacity: 0,
+  },
   locationBlock: {
     flex: 1,
     minWidth: 0,
@@ -437,6 +441,10 @@ const styles = StyleSheet.create({
     paddingTop: 2,
     zIndex: 4,
     elevation: 5,
+  },
+  topActionsFlat: {
+    elevation: 0,
+    shadowOpacity: 0,
   },
   subscriptionPill: {
     flexDirection: "row",

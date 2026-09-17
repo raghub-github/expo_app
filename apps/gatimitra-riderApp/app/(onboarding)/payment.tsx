@@ -13,8 +13,9 @@ import {
   ActivityIndicator,
   Pressable,
   BackHandler,
+  AppState,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useNavigation } from "expo-router";
@@ -49,6 +50,7 @@ import {
   canAccessOnboardingPaymentScreen,
   type ServerOnboardingStep,
 } from "@/src/lib/onboarding-routes";
+import { isRcBlockingOnboardingPayment } from "@/src/lib/rc-verification-state";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
 import { setOnboardingBackOverride } from "@/src/lib/onboarding-back-override";
 import {
@@ -59,8 +61,10 @@ import {
   StepProgress,
   ErrorBanner,
   onboardingFormStyles as form,
+  onboardingHeaderPaddingTop,
 } from "@/src/components/onboarding/OnboardingFormUi";
 import { fetchRiderHiringStatus } from "@/src/services/onboardingGeo.service";
+import { extractApiErrorMessage } from "@/src/services/http";
 
 const ACCENT = "#39d353";
 const ACCENT_DARK = "#22a745";
@@ -132,6 +136,8 @@ function PriceRow({
 }
 
 export default function PaymentScreen() {
+  const insets = useSafeAreaInsets();
+  const headerTopPad = onboardingHeaderPaddingTop(insets.top);
   const navigation = useNavigation();
   const queryClient = useQueryClient();
   const session = useSessionStore((s) => s.session);
@@ -144,7 +150,9 @@ export default function PaymentScreen() {
   // Backend-authoritative service impact for the payment gate (§7): which services will be
   // available after paying, and which stay blocked until documents are verified.
   const { summary: onboardingSummary } = useRiderOnboardingSummary();
-  const { data: riderStatus, isFetched: riderStatusFetched } = useRiderStatus(data.riderId);
+  const { data: riderStatus, isFetched: riderStatusFetched } = useRiderStatus(data.riderId, {
+    refetchInterval: 8_000,
+  });
   useOnboardingEstablishedRedirect(riderStatus);
 
   const [loading, setLoading] = useState(false);
@@ -168,6 +176,15 @@ export default function PaymentScreen() {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active" && data.riderId) {
+        void queryClient.invalidateQueries({ queryKey: ["rider", data.riderId] });
+      }
+    });
+    return () => sub.remove();
+  }, [data.riderId, queryClient]);
 
   useEffect(() => {
     const nextTitle = feeConfig?.headline?.trim() || "GMitra Prime";
@@ -234,6 +251,13 @@ export default function PaymentScreen() {
   useEffect(() => {
     if (data.riderId && !riderStatusFetched) return;
 
+    if (isRcBlockingOnboardingPayment(riderStatus?.rcVerificationState)) {
+      if (gateBounceRef.current === "/(onboarding)/dl-rc") return;
+      gateBounceRef.current = "/(onboarding)/dl-rc";
+      router.replace("/(onboarding)/dl-rc");
+      return;
+    }
+
     const vehicleDone = isOnboardingVehicleDocsComplete(
       riderStatus?.completedOnboardingSteps,
       data.vehicleOnboardingFlow
@@ -252,6 +276,7 @@ export default function PaymentScreen() {
             completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
             vehicleOnboardingFlow: data.vehicleOnboardingFlow,
             skipBankAccountCheck: true,
+            rcVerificationState: riderStatus?.rcVerificationState,
           })
         ) {
           target = "/(onboarding)/dl-rc";
@@ -278,10 +303,17 @@ export default function PaymentScreen() {
     data.bankAccountOnboardingDone,
     riderStatus?.completedOnboardingSteps,
     riderStatus?.bankAccountOnboardingDone,
+    riderStatus?.rcVerificationState,
   ]);
 
   useEffect(() => {
     if (data.riderId && !riderStatusFetched) return;
+    if (isRcBlockingOnboardingPayment(riderStatus?.rcVerificationState)) {
+      if (gateBounceRef.current === "/(onboarding)/dl-rc") return;
+      gateBounceRef.current = "/(onboarding)/dl-rc";
+      router.replace("/(onboarding)/dl-rc");
+      return;
+    }
     const next = riderStatus?.nextOnboardingStep;
     if (!next || next === "payment" || next === "bank_account") return;
 
@@ -314,6 +346,7 @@ export default function PaymentScreen() {
     data.vehicleOnboardingFlow,
     data.vehicleChoice,
     data.vehicleOnboardingSubmittedFor,
+    riderStatus?.rcVerificationState,
   ]);
 
   const macroStepIndex = useMemo(() => {
@@ -330,27 +363,45 @@ export default function PaymentScreen() {
     data.vehicleOnboardingFlow,
   ]);
 
-  const documentsReadyForPayment = useMemo(
-    () =>
-      Boolean(data.bankAccountOnboardingDone || riderStatus?.bankAccountOnboardingDone) &&
-      (data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice?.trim() ||
-        canAccessOnboardingPaymentScreen({
-          vehicleChoice: data.vehicleChoice,
-          vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
-          completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
-          vehicleOnboardingFlow: data.vehicleOnboardingFlow,
-          bankAccountOnboardingDone:
-            data.bankAccountOnboardingDone || riderStatus?.bankAccountOnboardingDone,
-        })),
-    [
-      data.vehicleChoice,
-      data.vehicleOnboardingSubmittedFor,
-      data.vehicleOnboardingFlow,
-      data.bankAccountOnboardingDone,
-      riderStatus?.completedOnboardingSteps,
-      riderStatus?.bankAccountOnboardingDone,
-    ]
-  );
+  const documentsReadyForPayment = useMemo(() => {
+    if (isRcBlockingOnboardingPayment(riderStatus?.rcVerificationState)) return false;
+    const bankDone = Boolean(
+      data.bankAccountOnboardingDone || riderStatus?.bankAccountOnboardingDone,
+    );
+    if (!bankDone) return false;
+    const vehicleSubmitted =
+      Boolean(data.vehicleChoice?.trim()) &&
+      data.vehicleOnboardingSubmittedFor?.trim() === data.vehicleChoice.trim();
+    if (vehicleSubmitted) return true;
+    const softSkipped =
+      Boolean(data.vehicleChoice?.trim()) &&
+      Array.isArray(riderStatus?.skippedOnboardingDocs) &&
+      (riderStatus?.skippedOnboardingDocs?.length ?? 0) > 0 &&
+      isOnboardingVehicleDocsComplete(
+        riderStatus?.completedOnboardingSteps,
+        data.vehicleOnboardingFlow,
+      );
+    if (softSkipped) return true;
+    return canAccessOnboardingPaymentScreen({
+      vehicleChoice: data.vehicleChoice,
+      vehicleOnboardingSubmittedFor: data.vehicleOnboardingSubmittedFor,
+      completedOnboardingSteps: riderStatus?.completedOnboardingSteps,
+      vehicleOnboardingFlow: data.vehicleOnboardingFlow,
+      bankAccountOnboardingDone: bankDone,
+      rcVerificationState: riderStatus?.rcVerificationState,
+    });
+  }, [
+    data.vehicleChoice,
+    data.vehicleOnboardingSubmittedFor,
+    data.vehicleOnboardingFlow,
+    data.bankAccountOnboardingDone,
+    riderStatus?.completedOnboardingSteps,
+    riderStatus?.bankAccountOnboardingDone,
+    riderStatus?.rcVerificationState,
+    riderStatus?.skippedOnboardingDocs,
+  ]);
+
+  const rcPaymentBlocked = isRcBlockingOnboardingPayment(riderStatus?.rcVerificationState);
 
   const totalDisplay = useMemo(
     () => formatRupeeFromPaise(feeConfig?.totalPaise ?? 5782),
@@ -403,7 +454,7 @@ export default function PaymentScreen() {
     Alert.alert(
       "Payment Successful",
       "Payment confirmed. Your account will activate once remaining verification is complete.",
-      [{ text: "OK", onPress: () => router.replace("/(onboarding)/pending") }],
+      [{ text: "OK", onPress: () => router.replace("/(tabs)/orders") }],
     );
   }, []);
 
@@ -625,15 +676,34 @@ export default function PaymentScreen() {
         showPaymentFailedSheet("Payment is temporarily unavailable. Please try again shortly.");
       }
     } catch (e) {
-      showPaymentFailedSheet(
-        e instanceof Error ? e.message : "Failed to create payment order"
-      );
+      const message = extractApiErrorMessage(e, "Failed to create payment order");
+      const code =
+        e && typeof e === "object" && "body" in e
+          ? String((e as { body?: string }).body || "")
+          : e instanceof Error
+            ? e.message
+            : "";
+      const haystack = `${message}\n${code}`;
+      if (
+        /RC_VERIFICATION_PENDING|RC_VERIFICATION_REJECTED|RC_PHOTO_REQUIRED/i.test(haystack)
+      ) {
+        setLoading(false);
+        setError(message);
+        if (data.riderId) {
+          void queryClient.invalidateQueries({ queryKey: ["rider", data.riderId] });
+        }
+        router.replace("/(onboarding)/dl-rc");
+        return;
+      }
+      showPaymentFailedSheet(message);
     }
   };
 
   const handleBack = useCallback(() => {
     if (isPaying) return;
-    goBackOrReplace("/(onboarding)/bank-account");
+    // walk=1 stops bank-account from auto-forwarding back to payment when
+    // bank is already done/skipped — otherwise header Back looks broken.
+    goBackOrReplace("/(onboarding)/bank-account?walk=1");
   }, [isPaying]);
 
   useEffect(() => {
@@ -656,7 +726,7 @@ export default function PaymentScreen() {
   return (
     <View style={form.root}>
       <SafeAreaView style={form.safeArea} edges={["bottom"]}>
-        <View style={styles.body}>
+        <View style={styles.body} pointerEvents="box-none">
           <ScrollView
             style={styles.scroll}
             contentContainerStyle={[
@@ -665,11 +735,14 @@ export default function PaymentScreen() {
             ]}
             showsVerticalScrollIndicator
             keyboardShouldPersistTaps="handled"
-            scrollEnabled
+            keyboardDismissMode="on-drag"
             bounces
+            alwaysBounceVertical
             nestedScrollEnabled
+            // Keep scroll gestures on the main payment content (header is touch-through).
+            scrollEventThrottle={16}
           >
-            <View style={styles.introBlock}>
+            <View style={[styles.introBlock, { paddingTop: headerTopPad }]}>
               <StepProgress steps={ONBOARDING_STEPS} currentIndex={macroStepIndex} />
               <Text style={styles.introSubtitle}>
                 {feeConfig?.subtitle?.trim() ||
@@ -736,6 +809,33 @@ export default function PaymentScreen() {
                   </Text>
                 </View>
 
+                {rcPaymentBlocked ? (
+                  <View style={styles.rcBlockCard}>
+                    <Ionicons
+                      name="alert-circle-outline"
+                      size={20}
+                      color="#b91c1c"
+                    />
+                    <Text style={styles.rcBlockTitle}>
+                      {riderStatus?.rcVerificationState === "MANUAL_REJECTED"
+                        ? "RC Verification Failed"
+                        : "RC photo required"}
+                    </Text>
+                    <Text style={styles.rcBlockBody}>
+                      {riderStatus?.rcVerificationState === "MANUAL_REJECTED"
+                        ? riderStatus?.rcRejectedReason ||
+                          "Your RC verification could not be completed. Please upload the original RC card photo again."
+                        : "Please upload a clear original RC card photo before payment."}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.rcBlockAction}
+                      onPress={() => router.replace("/(onboarding)/dl-rc")}
+                    >
+                      <Text style={styles.rcBlockActionText}>Upload RC again</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+
                 {error ? <ErrorBanner message={error} /> : null}
               </LinearGradient>
             </View>
@@ -753,12 +853,14 @@ export default function PaymentScreen() {
               });
             }}
           >
+            {rcPaymentBlocked ? null : (
             <PayButton
               label={payButtonLabel}
               onPress={handleInitiatePayment}
               loading={isPaying}
               disabled={isPaying || !documentsReadyForPayment}
             />
+            )}
 
             <Text style={styles.footerNote}>
               {feeConfig?.footerNote?.trim() ||
@@ -784,10 +886,13 @@ export default function PaymentScreen() {
 const styles = StyleSheet.create({
   body: {
     flex: 1,
+    minHeight: 0,
+    width: "100%",
   },
   scroll: {
     flex: 1,
     minHeight: 0,
+    width: "100%",
   },
   scrollContent: {
     flexGrow: 1,
@@ -796,7 +901,6 @@ const styles = StyleSheet.create({
   },
   introBlock: {
     paddingHorizontal: 20,
-    paddingTop: 88,
     paddingBottom: 8,
     gap: 10,
     backgroundColor: BG,
@@ -950,6 +1054,38 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     color: "#334155",
+  },
+  rcBlockCard: {
+    gap: 8,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: "#fffbeb",
+    borderWidth: 1,
+    borderColor: "#fde68a",
+  },
+  rcBlockTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#111827",
+  },
+  rcBlockBody: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#4b5563",
+    fontWeight: "500",
+  },
+  rcBlockAction: {
+    alignSelf: "flex-start",
+    marginTop: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: "#111827",
+  },
+  rcBlockActionText: {
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "700",
   },
   footer: {
     paddingHorizontal: 16,

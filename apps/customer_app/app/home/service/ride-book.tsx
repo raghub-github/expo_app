@@ -15,6 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { RideBookMap } from "@/components/maps/RideBookMap";
 import type { CustomerMapRef } from "@/lib/customer-map-handle";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { resolveBottomSafeInset } from "@/constants/layout";
 import { resolvePlaceDisplayName } from "@/services/location.service";
 import { RideServiceUnavailableSheet } from "@/features/ride/RideServiceUnavailableSheet";
 import { haversineKm } from "@/lib/billSummary";
@@ -1304,7 +1305,10 @@ export default function RideBookScreen() {
 
       {!serviceUnavailableVisible ? (
         <View
-          style={[styles.bottomSheet, { paddingBottom: Math.max(insets.bottom, 12) }]}
+          style={[
+            styles.bottomSheet,
+            { paddingBottom: Math.max(resolveBottomSafeInset(insets.bottom), 16) + 8 },
+          ]}
           onLayout={(event) => {
             const h = event.nativeEvent.layout.height;
             if (h > 0) setBottomSheetHeight(h);
@@ -1838,7 +1842,7 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#E5E7EB",
     marginTop: 4,
-    marginBottom: 6,
+    marginBottom: 12,
   },
   payOffersHalf: {
     flex: 1,
@@ -1860,8 +1864,8 @@ const styles = StyleSheet.create({
   },
   bookBtn: {
     backgroundColor: GatiMitraColors.primaryMint,
-    paddingVertical: 12,
-    borderRadius: 28,
+    paddingVertical: 14,
+    borderRadius: 12,
     alignItems: "center",
     marginBottom: 0,
   },

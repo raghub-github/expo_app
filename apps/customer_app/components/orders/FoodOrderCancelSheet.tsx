@@ -22,6 +22,8 @@ import {
 } from "@/lib/customer-order-status-display";
 import { useQueryClient } from "@tanstack/react-query";
 import { refreshCustomerWallet } from "@/lib/refreshCustomerWallet";
+import { applyServerCustomerOrderStatus } from "@/lib/apply-customer-order-status";
+import { dismissLiveOrderProgressForOrder } from "@/components/LiveOrderProgressNotification";
 
 const MINT = GatiMitraColors.primaryMint;
 const TEXT = GatiMitraColors.textPrimaryNew;
@@ -133,6 +135,12 @@ export function FoodOrderCancelSheet({
         reasonText: reason.label,
         expectedRefundAmount: refund,
       });
+      applyServerCustomerOrderStatus({
+        queryClient,
+        orderIds: [order.orderId, order.formattedOrderId],
+        status: "CANCELLED",
+      });
+      void dismissLiveOrderProgressForOrder(order.orderId);
       setReasonSheetVisible(false);
       onClose();
       void refreshCustomerWallet(queryClient);

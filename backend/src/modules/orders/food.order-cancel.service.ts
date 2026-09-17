@@ -326,6 +326,8 @@ export async function cancelFoodOrderForCustomer(
       {
         orderCoreId: row.coreId,
         source: "customer_cancel",
+        cancelledByType: "customer",
+        cancelledByLabel: CUSTOMER_FOOD_CANCELLED_BY_LABEL,
       },
       sql
     );

@@ -10,6 +10,8 @@ import {
   useLanguageStore,
 } from "@/src/stores/languageStore";
 import { ProfileListCard } from "@/src/components/profile/ProfileListCard";
+import { useQueryClient } from "@tanstack/react-query";
+import { prefetchRiderVehicles } from "@/src/hooks/useRiderVehicles";
 
 type ProfileMenuSectionsProps = {
   riderName: string;
@@ -29,6 +31,7 @@ export function ProfileMenuSections({
   onLanguagePress,
 }: ProfileMenuSectionsProps) {
   const { t, i18n } = useTranslation();
+  const queryClient = useQueryClient();
   const permissions = usePermissionStore((s) => s.permissions);
   const selectedLanguage = useLanguageStore((s) => s.selectedLanguage);
 
@@ -74,7 +77,10 @@ export function ProfileMenuSections({
             iconBg: "#DBEAFE",
             title: t("profile.vehicle"),
             subtitle: vehicleSubtitle,
-            onPress: () => router.push("/vehicles"),
+            onPress: () => {
+              void prefetchRiderVehicles(queryClient);
+              router.push("/vehicles");
+            },
           },
           {
             key: "my-rides",

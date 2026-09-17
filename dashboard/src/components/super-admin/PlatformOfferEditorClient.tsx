@@ -27,6 +27,16 @@ import {
   type RideParcelPromoConfig,
 } from "@/lib/billing/rideParcelPromo";
 import { RideParcelPromoBuilder } from "@/components/super-admin/RideParcelPromoBuilder";
+import { FlashSaleFoodBuilder, type FlashSaleSelectedItem, type FlashSaleStoreRef } from "@/components/super-admin/FlashSaleFoodBuilder";
+import {
+  applyFlashSaleSaveDefaults,
+  buildFlashSaleConditions,
+  flashSaleBudgetRemaining,
+  flashSaleRemainingRedemptions,
+  isFlashSaleKind,
+  parseFlashSaleItems,
+  validateFlashSalePrice,
+} from "@/lib/billing/flashSale";
 import { cn } from "@/lib/utils";
 
 const cardCls =
@@ -139,6 +149,11 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
     emptyRideParcelPromoConfig("RIDE")
   );
   const [conditionsBaseline, setConditionsBaseline] = useState<Record<string, unknown> | null>(null);
+  const [flashStores, setFlashStores] = useState<FlashSaleStoreRef[]>([]);
+  const [flashItems, setFlashItems] = useState<FlashSaleSelectedItem[]>([]);
+  const [rideSampleFare, setRideSampleFare] = useState("");
+  const [editBudgetUsed, setEditBudgetUsed] = useState<string | null>(null);
+  const [editRedemptions, setEditRedemptions] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(mode === "create");
   /** When true, changing Name will refresh auto-generated coupon code. */
@@ -147,6 +162,69 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
   const offerKindUi = useMemo(() => getPlatformOfferKindSections(form.offer_kind), [form.offer_kind]);
   const isRideOrParcel =
     form.service_type === "RIDE" || form.service_type === "PARCEL";
+  const isFlashSale = isFlashSaleKind(form.offer_kind);
+
+  useEffect(() => {
+    if (!isFlashSale) return;
+    setForm((f) => {
+      const next = {
+        ...f,
+        max_uses_per_user: "1",
+        food_auto_apply: true,
+        offer_audience: "CUSTOMER",
+      };
+      if (f.max_uses_per_user === "1" && f.food_auto_apply === true && f.offer_audience === "CUSTOMER") {
+        return f;
+      }
+      return next;
+    });
+    if (isRideOrParcel && promoConfig.promo_type !== "PAY_FIXED") {
+      setPromoConfig((prev) => ({ ...prev, promo_type: "PAY_FIXED" }));
+    }
+  }, [isFlashSale, isRideOrParcel, promoConfig.promo_type]);
+
+  // Resolve store names / GMMC ids after edit hydrate (merchant_ids only has PKs).
+  useEffect(() => {
+    if (!hydrated || flashStores.length === 0) return;
+    const needsResolve = flashStores.some((s) => !s.publicId || /^Store #/.test(s.name));
+    if (!needsResolve) return;
+    let cancelled = false;
+    void (async () => {
+      const resolved = await Promise.all(
+        flashStores.map(async (s) => {
+          if (s.publicId && !/^Store #/.test(s.name)) return s;
+          try {
+            const r = await fetch(
+              `/api/super-admin/flash-sale/stores?id=${encodeURIComponent(String(s.id))}`,
+              { credentials: "include" }
+            );
+            const d = (await r.json().catch(() => ({}))) as {
+              stores?: Array<{ id: number; storeId: string; name: string }>;
+            };
+            const hit = (d.stores ?? []).find((x) => x.id === s.id);
+            if (!hit) return s;
+            return { id: s.id, name: hit.name, publicId: hit.storeId };
+          } catch {
+            return s;
+          }
+        })
+      );
+      if (cancelled) return;
+      setFlashStores(resolved);
+      setFlashItems((prev) =>
+        prev.map((it) => {
+          const st = resolved.find((x) => x.id === it.storeId);
+          if (!st) return it;
+          return { ...it, storeName: st.name, storePublicId: st.publicId };
+        })
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Only after hydrate; avoid loops when names update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated]);
 
   const onNameChange = (name: string) => {
     setForm((f) => {
@@ -171,6 +249,39 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
         ? (o.conditions as Record<string, unknown>)
         : {};
     setConditionsBaseline({ ...cond });
+    const parsedMerchantIds = (() => {
+      const raw = (o as { merchant_ids?: unknown }).merchant_ids;
+      const v = Array.isArray(raw) ? raw : [];
+      return v.map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0);
+    })();
+    const parsedFlash = parseFlashSaleItems(cond);
+    setFlashStores(
+      parsedMerchantIds.map((id) => ({
+        id,
+        name: `Store #${id}`,
+        publicId: "",
+      }))
+    );
+    setFlashItems(
+      parsedFlash.map((it) => ({
+        menuItemId: it.menuItemId,
+        storeId: it.storeId ?? parsedMerchantIds[0] ?? 0,
+        storeName:
+          it.storeId != null
+            ? `Store #${it.storeId}`
+            : parsedMerchantIds[0] != null
+              ? `Store #${parsedMerchantIds[0]}`
+              : "",
+        storePublicId: "",
+        name: it.menuItemId,
+        originalCustomerPrice: 0,
+        flashPrice: String(it.flashPrice),
+      }))
+    );
+    setEditBudgetUsed(o.budget_used != null ? String(o.budget_used) : null);
+    setEditRedemptions(
+      typeof o.flash_redemptions_active === "number" ? o.flash_redemptions_active : null
+    );
     const rawMenu = cond.menu_item_ids;
     const menu_item_ids = Array.isArray(rawMenu) ? rawMenu.map((x) => String(x)).join(", ") : "";
     const aud = String(o.offer_audience ?? "CUSTOMER").toUpperCase();
@@ -270,6 +381,26 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       return;
     }
     const rideParcelService = form.service_type === "RIDE" || form.service_type === "PARCEL";
+    const savingFlash = isFlashSaleKind(form.offer_kind);
+    if (savingFlash && !rideParcelService) {
+      if (flashStores.length < 1) {
+        setErr("Select at least one store for this Flash Sale.");
+        return;
+      }
+      const priced = flashItems.filter((it) => it.menuItemId && String(it.flashPrice).trim() !== "");
+      if (priced.length === 0) {
+        setErr("Select at least one item and set a Flash Sale price.");
+        return;
+      }
+      for (const it of priced) {
+        const orig = it.originalCustomerPrice > 0 ? it.originalCustomerPrice : null;
+        const priceErr = validateFlashSalePrice(Number(it.flashPrice), orig);
+        if (priceErr) {
+          setErr(`${it.name}: ${priceErr}`);
+          return;
+        }
+      }
+    }
     if (!rideParcelService) {
       const kindFormErr = validatePlatformOfferKindForm({
         offerKind: form.offer_kind,
@@ -341,7 +472,21 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
     delete conditions.min_order_value;
     delete conditions.user_segment;
     delete conditions.first_ride_only;
-    if (idTokens.length > 0) conditions.menu_item_ids = idTokens;
+    if (savingFlash && !rideParcelService) {
+      Object.assign(
+        conditions,
+        buildFlashSaleConditions({
+          items: flashItems.map((it) => ({
+            menuItemId: it.menuItemId,
+            flashPrice: Number(it.flashPrice),
+            storeId: it.storeId > 0 ? it.storeId : null,
+          })),
+        })
+      );
+    } else {
+      delete conditions.flash_sale_items;
+      if (idTokens.length > 0) conditions.menu_item_ids = idTokens;
+    }
     const stUpper = form.service_type.toUpperCase();
     if (form.first_ride_only && (stUpper === "RIDE" || stUpper === "ALL")) {
       conditions.first_ride_only = true;
@@ -382,22 +527,27 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
     }
 
     const foodPromoConfig = rideParcelService
-      ? promoConfig
-      : { auto_apply: form.food_auto_apply === true };
+      ? savingFlash
+        ? { ...promoConfig, promo_type: "PAY_FIXED" as const, auto_apply: promoConfig.auto_apply !== false }
+        : promoConfig
+      : { auto_apply: savingFlash ? true : form.food_auto_apply === true };
 
-    const payload: Record<string, unknown> = {
+    const payload: Record<string, unknown> = applyFlashSaleSaveDefaults({
       name: form.name || null,
       coupon_code: normalizePlatformOfferCouponCode(form.coupon_code),
       service_type: form.service_type,
-      offer_kind: rideParcelService ? "DISCOUNT" : form.offer_kind,
+      offer_kind: rideParcelService && !savingFlash ? "DISCOUNT" : form.offer_kind,
       offer_audience: aud === "MERCHANT" || aud === "RIDER" ? aud : "CUSTOMER",
       funding_mode: "PLATFORM_ONLY",
       platform_share_pct: 100,
       merchant_share_pct: 0,
-      target_scope: "GLOBAL",
+      target_scope: savingFlash && !rideParcelService ? "MERCHANT" : "GLOBAL",
       geo_level: null,
       geo_ids: [],
-      merchant_ids: [],
+      merchant_ids:
+        savingFlash && !rideParcelService
+          ? [...new Set(flashStores.map((s) => s.id).filter((id) => Number.isInteger(id) && id > 0))]
+          : [],
       customer_segment: form.customer_segment,
       starts_at: form.starts_at ? new Date(form.starts_at).toISOString() : null,
       ends_at: form.ends_at ? new Date(form.ends_at).toISOString() : null,
@@ -406,7 +556,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       max_discount_amount:
         String(form.max_discount_amount).trim() === "" ? null : Number(form.max_discount_amount),
       budget_total: budgetTotal,
-      max_uses_per_user: maxUsesPerUser,
+      max_uses_per_user: savingFlash ? 1 : maxUsesPerUser,
       max_uses_total: maxUsesTotal,
       max_uses_per_day: maxUsesPerDay,
       max_uses_per_month: maxUsesPerMonth,
@@ -426,7 +576,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       exclusion_group: form.exclusion_group.trim() || null,
       conditions,
       promo_config: foodPromoConfig,
-    };
+    });
 
     try {
       if (mode === "edit" && offerId != null) {
@@ -466,11 +616,20 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
   return (
     <div className="min-h-screen w-full bg-gradient-to-b from-slate-50/80 to-white px-4 pb-16 pt-4 sm:px-6 sm:pt-6 lg:px-8">
       <p className="mb-4 max-w-3xl text-sm text-slate-600">
-        Full offer configuration. Map geo coverage in{" "}
-        <Link href="/dashboard/super-admin/geo" className="font-medium text-indigo-600 hover:underline">
-          Geo &amp; coverage
-        </Link>{" "}
-        after save — unmapped offers stay hidden at checkout.
+        {isFlashSale ? (
+          <>
+            Flash Sale is store-targeted: it shows on that store&apos;s menu and applies at checkout for matching
+            items. Geo map bindings are optional for Flash Sale (unlike cart / delivery platform offers).
+          </>
+        ) : (
+          <>
+            Full offer configuration. Map geo coverage in{" "}
+            <Link href="/dashboard/super-admin/geo" className="font-medium text-indigo-600 hover:underline">
+              Geo &amp; coverage
+            </Link>{" "}
+            after save — unmapped offers stay hidden at checkout.
+          </>
+        )}
       </p>
 
       {err ? (
@@ -524,7 +683,11 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                     first_ride_only:
                       service_type === "RIDE" || service_type === "ALL" ? f.first_ride_only : false,
                     offer_kind:
-                      service_type === "RIDE" || service_type === "PARCEL" ? "DISCOUNT" : f.offer_kind,
+                      service_type === "RIDE" || service_type === "PARCEL"
+                        ? f.offer_kind === "FLASH_SALE"
+                          ? "FLASH_SALE"
+                          : "DISCOUNT"
+                        : f.offer_kind,
                   }));
                   if (service_type === "RIDE" || service_type === "PARCEL") {
                     setPromoConfig((prev) => ({
@@ -532,7 +695,8 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                         service_type === "PARCEL" ? "PARCEL" : "RIDE"
                       ),
                       ...prev,
-                      promo_type: prev.promo_type || "FLAT_OFF",
+                      promo_type:
+                        form.offer_kind === "FLASH_SALE" ? "PAY_FIXED" : prev.promo_type || "FLAT_OFF",
                     }));
                   }
                 }}
@@ -549,7 +713,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                 id="po-kind"
                 className={selectCls}
                 value={form.offer_kind}
-                disabled={isRideOrParcel}
+                disabled={false}
                 onChange={(e) => {
                   const kind = e.target.value;
                   setForm((f) => ({
@@ -558,11 +722,18 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                     ...(kind === "FREE_DELIVERY" && !String(f.delivery_discount_type).trim()
                       ? { delivery_discount_type: "FULL_WAIVE" }
                       : {}),
-                    ...(kind === "FREE_DELIVERY" ? { food_auto_apply: true } : {}),
+                    ...(kind === "FREE_DELIVERY" || kind === "FLASH_SALE" ? { food_auto_apply: true } : {}),
+                    ...(kind === "FLASH_SALE" ? { max_uses_per_user: "1", offer_audience: "CUSTOMER" } : {}),
                   }));
+                  if (kind === "FLASH_SALE" && (form.service_type === "RIDE" || form.service_type === "PARCEL")) {
+                    setPromoConfig((prev) => ({ ...prev, promo_type: "PAY_FIXED" }));
+                  }
                 }}
               >
-                {PLATFORM_OFFER_KINDS.map((k) => (
+                {(isRideOrParcel
+                  ? PLATFORM_OFFER_KINDS.filter((k) => k === "DISCOUNT" || k === "FLASH_SALE")
+                  : PLATFORM_OFFER_KINDS
+                ).map((k) => (
                   <option key={k} value={k}>
                     {k}
                   </option>
@@ -646,6 +817,23 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
           </div>
         </FormSection>
 
+        {!isRideOrParcel && offerKindUi.showFlashSaleBuilder ? (
+          <FormSection
+            title="Flash Sale items"
+            description="One or more outlets · per-item customer price. Catalogue and merchant CTC stay unchanged."
+          >
+            <FlashSaleFoodBuilder
+              stores={flashStores}
+              items={flashItems}
+              onStoresChange={setFlashStores}
+              onItemsChange={setFlashItems}
+            />
+            <p className="mt-2 text-[11px] text-slate-500">
+              Flash Sale is store-targeted via the outlets you add above — geo map bindings are optional.
+            </p>
+          </FormSection>
+        ) : null}
+
         {isRideOrParcel ? (
           <FormSection
             title={form.service_type === "PARCEL" ? "Parcel promo builder" : "Ride promo builder"}
@@ -664,6 +852,9 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
               couponCode={form.coupon_code}
               startsAt={form.starts_at}
               endsAt={form.ends_at}
+              flashSaleMode={isFlashSale}
+              sampleFare={rideSampleFare}
+              onSampleFareChange={setRideSampleFare}
             />
             <div className="mt-4 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
               <FormField label="Min order / fare" htmlFor="po-min-rp">
@@ -788,7 +979,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
           </FormSection>
         ) : null}
 
-        {!isRideOrParcel && !offerKindUi.showDeliveryBlock ? (
+        {!isRideOrParcel && !offerKindUi.showDeliveryBlock && !offerKindUi.showFlashSaleBuilder ? (
           <FormSection title="Apply behaviour" description="Whether checkout may auto-apply this platform offer.">
             <label className="flex items-center gap-2 text-sm text-slate-700">
               <input
@@ -902,6 +1093,20 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                 onChange={(e) => setForm((f) => ({ ...f, budget_total: e.target.value }))}
               />
             </FormField>
+            {isFlashSale && mode === "edit" ? (
+              <p className="sm:col-span-2 lg:col-span-3 xl:col-span-4 text-xs text-slate-600">
+                {editBudgetUsed != null
+                  ? `Budget used ₹${Number(editBudgetUsed).toFixed(2)}`
+                  : "Budget used ₹0.00"}
+                {flashSaleBudgetRemaining(form.budget_total || null, editBudgetUsed) != null
+                  ? ` · remaining ₹${flashSaleBudgetRemaining(form.budget_total || null, editBudgetUsed)!.toFixed(2)}`
+                  : ""}
+                {editRedemptions != null ? ` · ${editRedemptions} active redemption(s)` : ""}
+                {flashSaleRemainingRedemptions(form.max_uses_total || null, editRedemptions ?? 0) != null
+                  ? ` · ${flashSaleRemainingRedemptions(form.max_uses_total || null, editRedemptions ?? 0)} remaining`
+                  : ""}
+              </p>
+            ) : null}
             <FormField label="Consume mode" htmlFor="po-consume">
               <select
                 id="po-consume"
@@ -913,13 +1118,22 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                 <option value="ON_DELIVERED">On ride / order completed</option>
               </select>
             </FormField>
-            <FormField label="Per user limit" htmlFor="po-per-user" hint="e.g. 1 = once per customer.">
+            <FormField
+              label="Per user limit"
+              htmlFor="po-per-user"
+              hint={
+                isFlashSale
+                  ? "Flash Sale is always one redemption per customer per offer."
+                  : "e.g. 1 = once per customer."
+              }
+            >
               <input
                 id="po-per-user"
                 className={controlCls}
                 inputMode="numeric"
                 placeholder="unlimited"
-                value={form.max_uses_per_user}
+                disabled={isFlashSale}
+                value={isFlashSale ? "1" : form.max_uses_per_user}
                 onChange={(e) => setForm((f) => ({ ...f, max_uses_per_user: e.target.value }))}
               />
             </FormField>
@@ -933,26 +1147,30 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                 onChange={(e) => setForm((f) => ({ ...f, max_uses_total: e.target.value }))}
               />
             </FormField>
-            <FormField label="Daily / user" htmlFor="po-day">
-              <input
-                id="po-day"
-                className={controlCls}
-                inputMode="numeric"
-                placeholder="unlimited"
-                value={form.max_uses_per_day}
-                onChange={(e) => setForm((f) => ({ ...f, max_uses_per_day: e.target.value }))}
-              />
-            </FormField>
-            <FormField label="Monthly / user" htmlFor="po-month">
-              <input
-                id="po-month"
-                className={controlCls}
-                inputMode="numeric"
-                placeholder="unlimited"
-                value={form.max_uses_per_month}
-                onChange={(e) => setForm((f) => ({ ...f, max_uses_per_month: e.target.value }))}
-              />
-            </FormField>
+            {isFlashSale ? null : (
+              <>
+                <FormField label="Daily / user" htmlFor="po-day">
+                  <input
+                    id="po-day"
+                    className={controlCls}
+                    inputMode="numeric"
+                    placeholder="unlimited"
+                    value={form.max_uses_per_day}
+                    onChange={(e) => setForm((f) => ({ ...f, max_uses_per_day: e.target.value }))}
+                  />
+                </FormField>
+                <FormField label="Monthly / user" htmlFor="po-month">
+                  <input
+                    id="po-month"
+                    className={controlCls}
+                    inputMode="numeric"
+                    placeholder="unlimited"
+                    value={form.max_uses_per_month}
+                    onChange={(e) => setForm((f) => ({ ...f, max_uses_per_month: e.target.value }))}
+                  />
+                </FormField>
+              </>
+            )}
           </div>
 
           <div className="mt-4 flex flex-wrap gap-x-6 gap-y-3 rounded-xl border border-slate-100 bg-slate-50/50 p-4 text-sm text-slate-700">
@@ -974,7 +1192,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
               />
               Restore usage on refund
             </label>
-            <label className="flex cursor-pointer items-center gap-2.5">
+            <label className={cn("flex cursor-pointer items-center gap-2.5", isFlashSale && "hidden")}>
               <input
                 type="checkbox"
                 className={checkboxCls}

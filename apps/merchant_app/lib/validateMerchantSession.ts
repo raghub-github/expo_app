@@ -1,16 +1,26 @@
 /**
  * Server-side merchant session validation.
  * Presence of a SecureStore token / partner cache is never treated as logged-in.
+ *
+ * IMPORTANT: This module never clears auth storage. Callers must clear only when the
+ * failing token is still the live session (prevents old 401/validate from wiping a
+ * newer login).
  */
 
 import { getConfig } from "@/config/env";
 import type { PartnerData } from "@/context/AuthContext";
 import {
-  clearAllMerchantAuthArtifacts,
   readMerchantAccessToken,
   readMerchantTokenExpiresAt,
 } from "@/lib/merchantSessionStorage";
 import { refreshMerchantSessionIfNeeded } from "@/services/merchantSessionRefresh";
+import {
+  hasValidMerchantIdentity,
+  parsePartnerData as parsePartnerIdentity,
+} from "@/lib/merchantPartnerIdentity";
+
+export { hasValidMerchantIdentity };
+export type { MerchantIdentityPartner } from "@/lib/merchantPartnerIdentity";
 
 const VALIDATE_TIMEOUT_MS = 12_000;
 
@@ -22,17 +32,11 @@ export type MerchantSession = {
 
 export type SessionValidationResult =
   | { ok: true; session: MerchantSession }
-  | { ok: false; reason: "invalid" | "network" };
+  | { ok: false; reason: "invalid" | "network"; tokenAttempted: string | null };
 
 export function parsePartnerData(raw: unknown): PartnerData | null {
-  if (!raw || typeof raw !== "object") return null;
-  const p = raw as Partial<PartnerData>;
-  if (!p.parent || typeof p.parent !== "object" || p.parent.id == null) return null;
-  return {
-    parent: p.parent,
-    childStores: Array.isArray(p.childStores) ? p.childStores : [],
-    activeDevices: typeof p.activeDevices === "number" ? p.activeDevices : 0,
-  };
+  const parsed = parsePartnerIdentity(raw);
+  return parsed as PartnerData | null;
 }
 
 async function fetchPartnerMe(token: string, timeoutMs: number): Promise<Response> {
@@ -66,7 +70,7 @@ async function partnerFromMeResponse(res: Response): Promise<PartnerData | null>
 export async function validateMerchantSessionFromStore(): Promise<SessionValidationResult> {
   const stored = await readMerchantAccessToken();
   if (!stored?.trim()) {
-    return { ok: false, reason: "invalid" };
+    return { ok: false, reason: "invalid", tokenAttempted: null };
   }
 
   let token = stored.trim();
@@ -78,8 +82,7 @@ export async function validateMerchantSessionFromStore(): Promise<SessionValidat
     if (locallyExpired) {
       const refreshed = await refreshMerchantSessionIfNeeded({ force: true });
       if (!refreshed?.trim()) {
-        await clearAllMerchantAuthArtifacts();
-        return { ok: false, reason: "invalid" };
+        return { ok: false, reason: "invalid", tokenAttempted: token };
       }
       token = refreshed.trim();
     }
@@ -89,16 +92,14 @@ export async function validateMerchantSessionFromStore(): Promise<SessionValidat
     if (res.status === 401) {
       const refreshed = await refreshMerchantSessionIfNeeded({ force: true });
       if (!refreshed?.trim()) {
-        await clearAllMerchantAuthArtifacts();
-        return { ok: false, reason: "invalid" };
+        return { ok: false, reason: "invalid", tokenAttempted: token };
       }
       token = refreshed.trim();
       res = await fetchPartnerMe(token, VALIDATE_TIMEOUT_MS);
     }
 
     if (res.status === 401) {
-      await clearAllMerchantAuthArtifacts();
-      return { ok: false, reason: "invalid" };
+      return { ok: false, reason: "invalid", tokenAttempted: token };
     }
 
     const partner = await partnerFromMeResponse(res);
@@ -113,12 +114,9 @@ export async function validateMerchantSessionFromStore(): Promise<SessionValidat
       };
     }
 
-    // The token was ACCEPTED (not 401) but we couldn't read a partner — a transient 5xx, an
-    // unexpected body shape, or a slow gateway. Auth did NOT fail, so never log the merchant out
-    // here: return "network" so the caller keeps the persisted session and re-validates later.
-    // Only a confirmed 401 (above) or an expired token whose refresh failed clears the session.
-    return { ok: false, reason: "network" };
+    // Token accepted (not 401) but partner unreadable — transient; never treat as logout.
+    return { ok: false, reason: "network", tokenAttempted: token };
   } catch {
-    return { ok: false, reason: "network" };
+    return { ok: false, reason: "network", tokenAttempted: token };
   }
 }

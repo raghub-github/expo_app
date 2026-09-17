@@ -1314,6 +1314,49 @@ describe("v2 settlement — Boost on CTM, platform funding", () => {
     assert.equal(f.total, 20);
   });
 
+  it("FLASH_SALE platform subsidy is company-funded and does not cut merchant CTM", () => {
+    const b = buildSettlementBreakdownFromCtmRows(
+      [{ gross: 99, disc: 0, offerType: "NONE", net: 99, calculationVersion: 2 }],
+      {
+        discounts: [
+          {
+            amount: 90,
+            offerSource: "PLATFORM",
+            meta: {
+              platformOfferId: 7,
+              offerKind: "FLASH_SALE",
+              fundingMode: "PLATFORM_ONLY",
+              platformContribution: 90,
+              merchantContribution: 0,
+              doesNotReducePayable: true,
+              flashSale: true,
+            },
+          },
+        ],
+      },
+      15
+    );
+    assert.equal(b.itemTotal, 99);
+    assert.equal(b.platformMerchantShare, 0);
+    assert.equal(b.companyFundedDiscount, 90);
+    const f = platformFundingFromBilling({
+      discounts: [
+        {
+          amount: 90,
+          meta: {
+            platformOfferId: 7,
+            offerKind: "FLASH_SALE",
+            platformContribution: 90,
+            merchantContribution: 0,
+            doesNotReducePayable: true,
+          },
+        },
+      ],
+    });
+    assert.equal(f.companyShare, 90);
+    assert.equal(f.merchantShare, 0);
+  });
+
   it("TEST 5 — Plus delivery waiver does not change v2 item CTM", () => {
     const b = buildSettlementBreakdownFromCtmRows(
       [{ gross: 100, disc: 40, offerType: "BOOST", net: 60, calculationVersion: 2 }],

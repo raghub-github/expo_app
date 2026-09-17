@@ -17,8 +17,7 @@ import { useSessionStore } from "@/src/stores/sessionStore";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
 import { ProfileSubscriptionCard } from "@/src/components/profile/ProfileSubscriptionCard";
-import { ProfileInstagramCard } from "@/src/components/profile/ProfileInstagramCard";
-import { ProfileCommunityCards } from "@/src/components/profile/ProfileCommunityCards";
+import { ProfileSocialIconsRow } from "@/src/components/profile/ProfileSocialIconsRow";
 import { ProfileReferralCard } from "@/src/components/profile/ProfileReferralCard";
 import { ProfileLogoutRow } from "@/src/components/profile/ProfileLogoutRow";
 import { useLogoutSheetStore } from "@/src/stores/logoutSheetStore";
@@ -71,6 +70,7 @@ export function ProfilePage() {
   const pad = rs(16);
   const session = useSessionStore((s) => s.session);
   const onboardingData = useOnboardingStore((s) => s.data);
+  const setOnboardingData = useOnboardingStore((s) => s.setData);
   const riderId = session?.riderId ?? session?.userId;
   const { data: riderStatus, refetch: refetchRiderStatus } = useRiderStatus(riderId);
   const { data: vehicleStatus } = useRiderVehicle();
@@ -98,9 +98,26 @@ export function ProfilePage() {
   const rawAvatarUri = resolveRiderSelfieDisplayUrl({
     localSelfieUrl,
     serverSelfieUrl: riderStatus?.selfieUrl,
-    onboardingSignedUrl: onboardingData.selfieSignedUrl,
-    onboardingLocalUri: onboardingData.selfieUri,
+    // When server says no selfie (admin remove), ignore stale onboarding cache.
+    onboardingSignedUrl: riderStatus && !riderStatus.selfieUrl
+      ? null
+      : onboardingData.selfieSignedUrl,
+    onboardingLocalUri: riderStatus && !riderStatus.selfieUrl
+      ? null
+      : onboardingData.selfieUri,
   });
+
+  useEffect(() => {
+    if (!riderStatus) return;
+    if (String(riderStatus.selfieUrl || "").trim()) return;
+    if (!onboardingData.selfieSignedUrl && !onboardingData.selfieUri) return;
+    void setOnboardingData({ selfieUri: undefined, selfieSignedUrl: undefined });
+  }, [
+    riderStatus?.selfieUrl,
+    onboardingData.selfieSignedUrl,
+    onboardingData.selfieUri,
+    setOnboardingData,
+  ]);
 
   const avatarUri = useMemo(
     () => withImageCacheBust(rawAvatarUri, avatarBust || null),
@@ -268,13 +285,8 @@ export function ProfilePage() {
 
         <View style={styles.promoStack}>
           <ProfileSubscriptionCard />
-          <View style={styles.stackSpacer} />
-          <ProfileInstagramCard />
-          <View style={styles.stackSpacer} />
-          <ProfileCommunityCards />
-          <View style={styles.stackSpacer} />
+          <ProfileSocialIconsRow />
           <ProfileReferralCard referralCode={referralCode} riderName={riderName} />
-          <View style={styles.stackSpacer} />
           <ProfileMenuSections
             riderName={riderName}
             cityLabel={cityLabel}

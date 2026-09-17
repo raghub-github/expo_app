@@ -10,6 +10,7 @@ import { useRouter } from "expo-router";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { HomePopularRestaurantCard } from "./HomePopularRestaurantCard";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 
 const PAD = 16;
 
@@ -48,8 +49,7 @@ export function HomePopularRestaurants({
         </View>
       ) : (
         <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
+          {...NATURAL_HORIZONTAL_SCROLL_PROPS}
           contentContainerStyle={styles.scrollContent}
         >
           {merchants.slice(0, 10).map((m) => (

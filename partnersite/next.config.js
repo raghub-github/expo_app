@@ -8,7 +8,7 @@ const nextConfig = {
   output: 'standalone',
   reactCompiler: true,
   // Phone / LAN testing hits the machine IP, not localhost — allow Next dev assets.
-  allowedDevOrigins: ['10.52.43.181', '127.0.0.1', 'localhost'],
+  allowedDevOrigins: ['10.196.37.181', '127.0.0.1', 'localhost'],
   transpilePackages: [
     '@gatimitra/kot-print',
     '@gatimitra/bill-print',
@@ -66,7 +66,18 @@ const nextConfig = {
       // surfaces as ChunkLoadError before the chunk is ready.
       config.output = {
         ...config.output,
-        chunkLoadTimeout: 300_000,
+        chunkLoadTimeout: 600_000,
+      };
+    }
+    if (dev) {
+      // Keep compiled pages warm longer so refresh after a slow first compile
+      // does not immediately drop layout.js and re-trigger ChunkLoadError.
+      config.watchOptions = {
+        ...config.watchOptions,
+        aggregateTimeout: 400,
+        ignored: onOneDrive
+          ? ['**/node_modules/**', '**/.git/**', '**/Desktop/expo_app/.git/**']
+          : config.watchOptions?.ignored,
       };
     }
     return config;

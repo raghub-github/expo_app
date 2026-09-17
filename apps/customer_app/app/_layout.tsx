@@ -53,6 +53,8 @@ import { CustomerServiceBlockSheetHost } from "@/components/CustomerServiceBlock
 import { CustomerServiceBlocksSync } from "@/components/CustomerServiceBlocksSync";
 import { useSmsPermissionStore } from "@/store/smsPermissionStore";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
+import { ClassicFloatingSearchPill } from "@/components/home/ClassicFloatingSearchPill";
+import { AppAlertModal } from "@/components/AppAlertModal";
 import { AbandonedCartReminderBootstrap } from "@/components/AbandonedCartReminderBootstrap";
 import { MerchantNavTransitionShutter } from "@/components/MerchantNavTransitionShutter";
 import { CheckoutBottomSheetHost } from "@/components/checkout/CheckoutBottomSheetHost";
@@ -130,6 +132,15 @@ import { subscribeConfirmedAppState } from "@/lib/confirmedAppState";
 installGlobalErrorHandlers();
 installReleaseConsoleSilencer();
 
+/** Isolates cart dock crashes so overlay-hosts stay up; resets when cart changes. */
+function FloatingCartErrorBoundary() {
+  const resetKey = useCartStore((s) => `${s.merchantId ?? ""}:${s.items.length}:${s.lastUpdatedAt}`);
+  return (
+    <AppErrorBoundary source="floating-cart" resetKey={resetKey} fallback={() => null}>
+      <GlobalFloatingCart />
+    </AppErrorBoundary>
+  );
+}
 /** Storage key used by the in-app "Configure API URL" sheet on the login screen. */
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
 
@@ -438,12 +449,15 @@ export default function RootLayout() {
                 {/* Overlay hosts: a throw here must not blank the navigator behind them.
                     absoluteFill host so floating cart / edge peeks have a real window box. */}
                 <AppErrorBoundary source="overlay-hosts" fallback={() => null}>
-                  <View pointerEvents="box-none" style={StyleSheet.absoluteFillObject}>
+                  <View
+                    pointerEvents="box-none"
+                    style={[StyleSheet.absoluteFillObject, { zIndex: 40, elevation: 40 }]}
+                  >
                     <CheckoutBottomSheetHost />
                     <CheckoutPaymentFailureHost />
                     <CartCheckoutGateHost />
                     <CartUpdatedModal />
-                    <GlobalFloatingCart />
+                    <FloatingCartErrorBoundary />
                     <CustomerPermissionSheetsHost />
                     <ServiceBlockedGateHost />
                     <CustomerAccountBlockedGateHost />
@@ -454,6 +468,25 @@ export default function RootLayout() {
                     <MerchantNavTransitionShutter />
                   </View>
                 </AppErrorBoundary>
+                {/*
+                  Classic Food Search pill MUST sit outside the elev-40 overlay host.
+                  CustomerTabBar uses absoluteFill + elevation 50; on Android a child
+                  cannot outrank a higher-elevation sibling of its parent — so mounting
+                  the pill inside elev-40 left only a ghost white “Search” over food cards.
+                  Own host elev ≥ 100 paints above TabBar; pointerEvents box-none keeps
+                  HOME edge / nav taps working.
+                */}
+                <View
+                  pointerEvents="box-none"
+                  style={[
+                    StyleSheet.absoluteFillObject,
+                    // zIndex only — elevation on a transparent fill breaks child
+                    // backgrounds on Android (ghost Search label over food cards).
+                    { zIndex: 110 },
+                  ]}
+                >
+                  <ClassicFloatingSearchPill />
+                </View>
                 {/* Above navigator content so mint paints in the system-nav inset (tab bar
                     already draws this on main Home; Food / merchant pages need this layer). */}
                 <AndroidSystemNavigationFill />
@@ -539,22 +572,65 @@ function RiderOnlineCheckRealtimeSync() {
 
 function StoreStatusRealtimeSync() {
   useStoreStatusRealtime();
+  const [closedAlert, setClosedAlert] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
+
   useEffect(() => {
     useStoreStatusStore.getState().setOnStoreClosedCallback((storeId: string) => {
-      const cartMerchantId = useCartStore.getState().merchantId;
-      if (cartMerchantId === storeId) {
-        Alert.alert(
-          "Kitchen closed",
-          "This kitchen just closed. Ordering is temporarily unavailable.",
-          [{ text: "OK" }]
-        );
+      const cart = useCartStore.getState();
+      const slots: Array<{ id: string; name: string }> = [];
+      if (cart.merchantId) {
+        slots.push({
+          id: cart.merchantId,
+          name: (cart.merchantName ?? "").trim() || "Restaurant",
+        });
       }
+      for (const [id, stash] of Object.entries(cart.stashedCarts ?? {})) {
+        if (!id || id === cart.merchantId) continue;
+        slots.push({
+          id,
+          name: (stash.merchantName ?? "").trim() || "Restaurant",
+        });
+      }
+      const hit = slots.find((s) => s.id === storeId);
+      if (!hit) return;
+
+      // Include every cart kitchen that is currently CLOSED (multi-cart).
+      const closedNames = slots
+        .filter((s) => {
+          if (s.id === storeId) return true;
+          return useStoreStatusStore.getState().getStatus(s.id) === "CLOSED";
+        })
+        .map((s) => s.name);
+
+      const uniqueNames = [...new Set(closedNames)];
+      const message =
+        uniqueNames.length > 1
+          ? `${uniqueNames.join(", ")} just closed. Ordering from these kitchens is temporarily unavailable.`
+          : `${uniqueNames[0] ?? "This kitchen"} just closed. Ordering is temporarily unavailable.`;
+
+      setClosedAlert({
+        title: uniqueNames.length > 1 ? "Kitchens closed" : "Kitchen closed",
+        message,
+      });
     });
     return () => {
       useStoreStatusStore.getState().setOnStoreClosedCallback(null);
     };
   }, []);
-  return null;
+
+  return (
+    <AppAlertModal
+      visible={closedAlert != null}
+      title={closedAlert?.title ?? "Kitchen closed"}
+      message={closedAlert?.message ?? ""}
+      confirmLabel="OK"
+      variant="warning"
+      onClose={() => setClosedAlert(null)}
+    />
+  );
 }
 
 function LanguageSync() {
@@ -671,6 +747,7 @@ function PendingCheckoutPaymentResume() {
 function PendingReferralResume() {
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
+  const queryClient = useQueryClient();
 
   // First launch: read Play Install Referrer (Android) before / regardless of auth.
   useEffect(() => {
@@ -681,7 +758,13 @@ function PendingReferralResume() {
   useEffect(() => {
     if (!hydrated || !session?.accessToken) return;
     void (async () => {
-      const config = await referralService.getConfig().catch(() => null);
+      const config = await queryClient
+        .fetchQuery({
+          queryKey: ["referral", "config", "customer"],
+          queryFn: () => referralService.getConfig(),
+          staleTime: 5 * 60_000,
+        })
+        .catch(() => null);
       if (config?.referralEnabled !== true) return;
       // Prefer freshly captured Play Install Referrer, then any pending deep-link code.
       const capture = await capturePlayInstallReferrerOnce().catch(() => null);
@@ -717,7 +800,7 @@ function PendingReferralResume() {
         /* retry on next launch */
       }
     })();
-  }, [hydrated, session?.accessToken]);
+  }, [hydrated, session?.accessToken, queryClient]);
 
   return null;
 }
@@ -1110,7 +1193,15 @@ function RootStack({
           <Stack.Screen name="(auth)" />
           <Stack.Screen name="(onboarding)" />
           <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="search" />
+          <Stack.Screen
+            name="search"
+            options={{
+              // Opaque card — transparentModal + setOptions(slide_from_top) crashed on Android.
+              presentation: "card",
+              animation: "slide_from_bottom",
+              contentStyle: { backgroundColor: "#FFFFFF" },
+            }}
+          />
           <Stack.Screen name="location" />
           <Stack.Screen name="location-map" />
           <Stack.Screen name="location-address" />

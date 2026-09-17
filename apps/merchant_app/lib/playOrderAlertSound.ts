@@ -2,12 +2,12 @@ import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from "expo-aud
 import { Platform, Vibration } from "react-native";
 import type { OrderAcceptanceSettings } from "@/services/orderAcceptanceApi";
 import {
-  resolveAlertUrlFromSlots,
   resolveStrictAlertUrlFromSlot,
   volumeStepTo01,
   type DeviceOrderAlerts,
 } from "@/lib/deviceOrderAlerts";
-import { normalizeAlertSoundSlots, resolveAlertSoundUrl } from "@/lib/resolveAlertSoundUrl";
+import { normalizeAlertSoundSlots, resolveAlertSoundUrl, resolvePlayableAlertSoundUrl } from "@/lib/resolveAlertSoundUrl";
+import { getCachedMerchantAlertSoundUri } from "@/lib/merchantAlertSoundCache";
 
 const BUNDLED_NOTIFICATION = require("../assets/sounds/notification.wav");
 
@@ -40,8 +40,21 @@ export function resolveIncomingOrderChimeUrl(
   device: Pick<DeviceOrderAlerts, "alertSoundSlot">
 ): string | null {
   const slots = acceptanceSoundSlots(settings);
+  // Prefer device slot; fall back to store slot choice. Never silently swap to
+  // another slot's file — that played the "wrong" settings sound in production.
+  const preferred = Math.max(
+    0,
+    Math.min(
+      2,
+      Math.floor(
+        Number.isFinite(device.alertSoundSlot)
+          ? device.alertSoundSlot
+          : (settings.alert_sound_slot_choice ?? 0)
+      )
+    )
+  );
   return (
-    resolveAlertUrlFromSlots(slots, device.alertSoundSlot) ??
+    resolveStrictAlertUrlFromSlot(slots, preferred) ??
     resolveAlertSoundUrl(settings.alert_sound_url) ??
     null
   );
@@ -181,7 +194,7 @@ export async function playOrderAlertSound(
   url: string | null | undefined,
   repeatCount: number,
   volume01: number,
-  ringInSilent = true,
+  _ringInSilent = true,
   opts?: PlayOrderAlertOptions
 ): Promise<boolean> {
   const safeRepeats = Math.max(1, Math.min(5, Math.floor(repeatCount || 1)));
@@ -189,9 +202,17 @@ export async function playOrderAlertSound(
   // Do not tear down an in-flight session when nothing remains to play.
   if (already >= safeRepeats) return true;
 
+  // Prefer disk-cached Super Admin sound (push/background reliable), then remote.
+  const cached = await getCachedMerchantAlertSoundUri();
+  const playable =
+    cached ??
+    (await resolvePlayableAlertSoundUrl(url)) ??
+    resolveAlertSoundUrl(url) ??
+    "";
+
   const myRun = ++chimeRunId;
   releasePlayer(activePlayer);
-  const trimmed = resolveAlertSoundUrl(url) ?? "";
+  const trimmed = playable;
   const shouldVibrate = opts?.vibrate !== false && already === 0;
 
   if (Platform.OS !== "web" && shouldVibrate) {
@@ -199,8 +220,9 @@ export async function playOrderAlertSound(
   }
 
   try {
+    // Always audible for merchant order alerts (iOS silent switch + Android ringer off).
     await setAudioModeAsync({
-      playsInSilentMode: ringInSilent,
+      playsInSilentMode: true,
       shouldPlayInBackground: true,
       interruptionMode: "doNotMix",
       shouldRouteThroughEarpiece: false,
@@ -272,7 +294,8 @@ export async function playIncomingOrderAlert(
     chimeUrl,
     settings.alert_sound_repeat_count ?? 1,
     volumeStepTo01(device.volumeStep),
-    device.ringInSilent,
+    // Always ring through phone silent / vibrate mode for incoming orders.
+    true,
     opts
   );
 }

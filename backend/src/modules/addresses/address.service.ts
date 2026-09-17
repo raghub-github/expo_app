@@ -898,8 +898,21 @@ export async function reconcileActiveLocationWithGps(
     return asCurrent({ switchedToCurrent: false, reason: "no_bound_address", distanceM: null });
   }
 
-  const rows = await listAddresses(customerId);
-  const bound = rows.find((a) => a.id === boundId);
+  // Single-row fetch — avoid listAddresses (full table + sort) on every app open.
+  const db = getDb();
+  const [boundRow] = await db
+    .select()
+    .from(customerAddresses)
+    .where(
+      and(
+        eq(customerAddresses.id, boundId),
+        eq(customerAddresses.customerId, customerId),
+        eq(customerAddresses.isActive, true),
+        isNull(customerAddresses.deletedAt)
+      )
+    )
+    .limit(1);
+  const bound = boundRow ? rowToAddressRow(boundRow, boundId) : null;
   if (!bound) {
     await forceActiveLocationToCurrentGps(customerId, gps);
     logDecision({
@@ -935,40 +948,46 @@ export async function reconcileActiveLocationWithGps(
 
   // Near the bound saved address → keep it (same city / same locality).
   if (distanceM <= retentionRadiusM) {
-    // Refresh pin coords to the saved address; clear stale order lock if GPS is local again.
-    const db = getDb();
-    await db
-      .insert(customerActiveLocation)
-      .values({
-        customerId,
-        latitude: String(aLat),
-        longitude: String(aLng),
-        address: bound.fullAddress,
-        addressId: bound.id,
-        lockedForOrder: false,
-        orderId: null,
-      })
-      .onConflictDoUpdate({
-        target: customerActiveLocation.customerId,
-        set: {
+    const alreadyBound =
+      existing?.addressId === bound.id &&
+      Math.abs((parseFloat(String(existing.latitude)) || 0) - aLat) < 0.00001 &&
+      Math.abs((parseFloat(String(existing.longitude)) || 0) - aLng) < 0.00001 &&
+      !existing.lockedForOrder;
+
+    // Skip redundant upsert + MRU writes when the pin is already correct.
+    if (!alreadyBound) {
+      await db
+        .insert(customerActiveLocation)
+        .values({
+          customerId,
           latitude: String(aLat),
           longitude: String(aLng),
           address: bound.fullAddress,
           addressId: bound.id,
           lockedForOrder: false,
           orderId: null,
-          updatedAt: new Date(),
-        },
-      });
-    // Auto-restore of the active Saved Address updates MRU (persists across devices).
-    try {
-      await setAddressLastUsed(customerId, bound.id);
-    } catch (err) {
-      console.warn("[active-location] setAddressLastUsed failed on kept_nearby", {
-        customerId,
-        addressId: bound.id,
-        err: err instanceof Error ? err.message : String(err),
-      });
+        })
+        .onConflictDoUpdate({
+          target: customerActiveLocation.customerId,
+          set: {
+            latitude: String(aLat),
+            longitude: String(aLng),
+            address: bound.fullAddress,
+            addressId: bound.id,
+            lockedForOrder: false,
+            orderId: null,
+            updatedAt: new Date(),
+          },
+        });
+      try {
+        await setAddressLastUsed(customerId, bound.id);
+      } catch (err) {
+        console.warn("[active-location] setAddressLastUsed failed on kept_nearby", {
+          customerId,
+          addressId: bound.id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     logDecision({
       addressIdAfter: bound.id,
@@ -976,7 +995,7 @@ export async function reconcileActiveLocationWithGps(
       savedLatitude: aLat,
       savedLongitude: aLng,
       reason: "kept_nearby",
-      decision: "retain_saved_address",
+      decision: alreadyBound ? "retain_saved_address_noop" : "retain_saved_address",
     });
     return {
       latitude: aLat,

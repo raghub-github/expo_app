@@ -1,7 +1,7 @@
 import type { Sql } from "postgres";
 import { getSql, withSqlRetry } from "../db/client.js";
 import { executeOrderCancellationFinancials, lookupOrderContext } from "../lib/financial-rule-executor.js";
-import { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";
+import { refundFieldsFromEngineResult, resolvePostCancelAutoRefundPolicy } from "@gatimitra/financial-rules";
 import { recordCancellationTimeline } from "../lib/order-cancellation-timeline.js";
 import { recordOrderCancellation } from "../lib/record-order-cancellation.js";
 import { applyMerchantOrderCancellationLedger } from "../lib/apply-merchant-cancellation-ledger.js";
@@ -272,7 +272,20 @@ async function finalizeCancelledRow(
       },
       sql
     );
-    const refund = refundFieldsFromEngineResult(engineResult.raw);
+    const engineRefund = refundFieldsFromEngineResult(engineResult.raw);
+    // Accept-timeout is never the customer's fault — refund even when the rule
+    // engine returns no_refund / 0. Admin rule amounts still win when present.
+    const gross = Number(row.grand_total ?? orderCtx.grandTotal);
+    const refundPolicy = resolvePostCancelAutoRefundPolicy({
+      actorRole: "system",
+      engineRefund,
+      orderGross: gross,
+      forceCustomerRefundWhenEngineSilent: true,
+    });
+    const refund = {
+      refundStatus: refundPolicy.refundStatus,
+      refundAmount: refundPolicy.refundAmountForLedger,
+    };
     await recordOrderCancellation(sql, {
       orderCorePk: coreId,
       cancelledBy: "SYSTEM",
@@ -303,42 +316,49 @@ async function finalizeCancelledRow(
     } catch (ledgerErr) {
       log.error({ err: ledgerErr, coreId }, "order_acceptance_timeout_ledger_failed");
     }
-    // Auto-refund the customer 100% — merchant never accepted, so anything they
-    // paid must go back automatically. Best-effort: a refund failure leaves a
-    // retriable order_refunds row and must not abort the cancellation.
-    try {
-      const outcome = await autoRefundOnCancellation(
-        {
-          orderCoreId: coreId,
-          reason: `${MERCHANT_ACCEPT_TIMEOUT_LABEL} — ${MERCHANT_ACCEPT_TIMEOUT_REASON}`,
-          actorEmail: null,
-          actorRole: "system",
-        },
-        sql
-      );
-      if (outcome.triggered && outcome.refundId != null) {
-        const execStatus = String(outcome.result?.status ?? "").toUpperCase();
-        const kind =
-          execStatus === "COMPLETED" || execStatus === "NOOP"
-            ? "completed"
-            : execStatus === "FAILED"
-              ? "failed"
-              : "processing";
-        await syncOrderRefundCompletionMarkers(
+    // Auto-refund immediately on system accept-timeout cancel.
+    // Best-effort: a refund failure leaves a retriable order_refunds row.
+    if (refundPolicy.shouldAutoExecute) {
+      try {
+        const outcome = await autoRefundOnCancellation(
           {
             orderCoreId: coreId,
-            refundId: outcome.refundId,
-            kind,
+            reason: `${MERCHANT_ACCEPT_TIMEOUT_LABEL} — ${MERCHANT_ACCEPT_TIMEOUT_REASON}`,
+            actorEmail: null,
+            actorRole: "system",
+            amount: refundPolicy.executeAmount,
           },
           sql
         );
+        if (outcome.triggered && outcome.refundId != null) {
+          const execStatus = String(outcome.result?.status ?? "").toUpperCase();
+          const kind =
+            execStatus === "COMPLETED" || execStatus === "NOOP"
+              ? "completed"
+              : execStatus === "FAILED"
+                ? "failed"
+                : "processing";
+          await syncOrderRefundCompletionMarkers(
+            {
+              orderCoreId: coreId,
+              refundId: outcome.refundId,
+              kind,
+            },
+            sql
+          );
+        }
+        log.info(
+          { coreId, triggered: outcome.triggered, skipped: outcome.skippedReason, status: outcome.result?.status },
+          "order_acceptance_timeout_auto_refund"
+        );
+      } catch (refundErr) {
+        log.error({ err: refundErr, coreId }, "order_acceptance_timeout_auto_refund_failed");
       }
+    } else {
       log.info(
-        { coreId, triggered: outcome.triggered, skipped: outcome.skippedReason, status: outcome.result?.status },
-        "order_acceptance_timeout_auto_refund"
+        { coreId, skip: refundPolicy.skipReason ?? null, status: refundPolicy.refundStatus },
+        "order_acceptance_timeout_auto_refund_skipped"
       );
-    } catch (refundErr) {
-      log.error({ err: refundErr, coreId }, "order_acceptance_timeout_auto_refund_failed");
     }
     try {
       const ownerRows = (await sql`
@@ -384,8 +404,7 @@ async function finalizeCancelledRow(
         merchantStoreId: storeId,
         merchantName: owner?.store_name ?? null,
         reason: MERCHANT_ACCEPT_TIMEOUT_REASON,
-        // Accept-timeout always auto-refunds what the customer paid.
-        refundEligible: true,
+        refundEligible: refundPolicy.shouldAutoExecute || refundPolicy.refundStatus === "pending",
         refundStatus:
           refund.refundStatus === "no_refund" ? "pending" : refund.refundStatus,
         refundAmount:
@@ -547,6 +566,14 @@ async function repairUnrefundedMerchantCancelledOrders(
             OR NULLIF(TRIM(COALESCE(r.razorpay_refund_id, '')), '') IS NOT NULL
           )
       )
+      -- Do not hammer FAILED refunds every store sync (was looping coreId forever).
+      AND NOT EXISTS (
+        SELECT 1
+        FROM order_refunds r
+        WHERE r.order_id = c.id
+          AND UPPER(COALESCE(r.execution_status, '')) = 'FAILED'
+          AND COALESCE(r.failed_at, r.executed_at, r.created_at, NOW()) > NOW() - INTERVAL '24 hours'
+      )
     ORDER BY c.id DESC
     LIMIT ${limit}
   `) as Array<{ core_id: number; rejected_reason: string }>;
@@ -566,11 +593,17 @@ async function repairUnrefundedMerchantCancelledOrders(
         },
         sql
       );
-      if (outcome.triggered) {
+      const exec = String(outcome.result?.status ?? "").toUpperCase();
+      if (outcome.triggered && (exec === "COMPLETED" || exec === "NOOP")) {
         repaired += 1;
         log.info(
           { coreId, status: outcome.result?.status, skipped: outcome.skippedReason },
           "merchant_cancel_auto_refund_repair"
+        );
+      } else if (outcome.triggered) {
+        log.info(
+          { coreId, status: outcome.result?.status, skipped: outcome.skippedReason },
+          "merchant_cancel_auto_refund_repair_pending"
         );
       }
     } catch (err) {
@@ -640,21 +673,16 @@ export async function syncOrderAcceptanceTimeoutForStore(
     });
     await finalizeCancelledRows(sql, cancelledRows, log);
 
-    let repaired = 0;
-    let merchantRepaired = 0;
-    const nowMs = Date.now();
-    if (nowMs - lastRepairAtMs >= REPAIR_EVERY_MS) {
-      repaired = await repairUnrefundedAcceptTimeoutCancels(sql, log, {
-        merchantStoreId,
-        limit: 40,
-      });
-      lastRepairAtMs = nowMs;
-    }
-    // Lightweight safety net on every portal/app sync — only orders with no real refund movement.
-    merchantRepaired = await repairUnrefundedMerchantCancelledOrders(sql, log, {
+    // Store-scoped sync always runs repair so a missed refund is fixed on app open.
+    const repaired = await repairUnrefundedAcceptTimeoutCancels(sql, log, {
       merchantStoreId,
-      limit: 5,
+      limit: 40,
     });
+    const merchantRepaired = await repairUnrefundedMerchantCancelledOrders(sql, log, {
+      merchantStoreId,
+      limit: 40,
+    });
+    lastRepairAtMs = Date.now();
 
     const cancelled = cancelledRows.length;
     if (cancelled > 0 || autoAccepted > 0 || repaired > 0 || merchantRepaired > 0) {

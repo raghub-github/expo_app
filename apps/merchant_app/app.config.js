@@ -30,6 +30,14 @@ module.exports = ({ config }) => ({
       resizeMode: "contain",
       backgroundColor: MERCHANT_SPLASH_BG,
     },
+    // Light app chrome — dark status icons so time/battery stay readable on every screen.
+    androidStatusBar: {
+      ...(appJson.expo.androidStatusBar || {}),
+      hidden: false,
+      translucent: false,
+      backgroundColor: "#F8FAFC",
+      barStyle: "dark-content",
+    },
     ios: {
       ...appJson.expo.ios,
       ...config?.expo?.ios,
@@ -122,8 +130,15 @@ module.exports = ({ config }) => ({
           channels: [
             // Versioned id: Android channel sound is immutable after first create.
             {
-              id: "merchant_new_orders_alert",
+              id: "merchant_new_orders_alert_v2",
               name: "New order alerts",
+              importance: 5,
+              sound: "notification",
+            },
+            // Legacy channel — keep registered so older FCM payloads still resolve.
+            {
+              id: "merchant_new_orders_alert",
+              name: "New order alerts (legacy)",
               importance: 5,
               sound: "notification",
             },

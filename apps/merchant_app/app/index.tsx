@@ -11,7 +11,7 @@ export default function Index() {
     return <MerchantBootstrapScreen />;
   }
 
-  if (authState.status === "unauthenticated") {
+  if (authState.status === "unauthenticated" || authState.status === "logging_out") {
     return <Redirect href="/(auth)/welcome" />;
   }
 

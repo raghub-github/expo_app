@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { OfferAnalyticsModeToggle } from "@/components/super-admin/OfferAnalyticsModeToggle";
 
 type AnalyticsPayload = {
   range: { from: string; to: string };
@@ -31,6 +32,15 @@ type AnalyticsPayload = {
     discount_total: string;
     budget_total: string | null;
     budget_used: string | null;
+    flash_subsidy_total?: string | null;
+    flash_original_total?: string | null;
+    flash_price_total?: string | null;
+    flash_refunded?: number;
+    flash_redemptions_active?: number;
+    flash_customers?: number;
+    remaining_budget?: number | null;
+    remaining_redemptions?: number | null;
+    max_uses_total?: number | null;
   }>;
   geoWise: Array<{
     binding_id: number;
@@ -84,6 +94,7 @@ type AnalyticsPayload = {
     offer_title: string;
     order_pk: number | null;
     order_id_text: string | null;
+    customer_public_id: string | null;
     customer_id: number | null;
     order_status: string | null;
     discount_amount: string;
@@ -264,10 +275,13 @@ export default function PlatformOfferAnalyticsClient() {
   return (
     <div className="min-h-screen w-full bg-gradient-to-b from-slate-50/80 to-white px-4 pb-16 pt-4 sm:px-6 sm:pt-6 lg:px-8">
       <header className="mb-4 flex flex-wrap items-end justify-between gap-3">
-        <div className="space-y-0.5">
-          <h1 className="text-xl font-semibold tracking-tight text-slate-900">
-            Platform offer analytics & audit
-          </h1>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-xl font-semibold tracking-tight text-slate-900">
+              Platform offer analytics & audit
+            </h1>
+            <OfferAnalyticsModeToggle mode="normal" />
+          </div>
           <p className="text-xs text-slate-500">Usage, sales attribution, and admin mutations for platform offers.</p>
         </div>
         <DateRangeFilter
@@ -350,6 +364,20 @@ export default function PlatformOfferAnalyticsClient() {
                   <td className="px-3 py-2 tabular-nums">
                     {r.budget_used != null ? inr(r.budget_used) : "—"}
                     {r.budget_total != null ? ` / ${inr(r.budget_total)}` : ""}
+                    {String(r.offer_kind ?? "").toUpperCase() === "FLASH_SALE" ? (
+                      <div className="mt-0.5 text-[11px] font-normal normal-case tracking-normal text-slate-500">
+                        Subsidy {inr(r.flash_subsidy_total)} · original {inr(r.flash_original_total)}
+                        {r.flash_price_total != null ? ` → flash ${inr(r.flash_price_total)}` : ""}
+                        {r.remaining_budget != null ? ` · left ${inr(r.remaining_budget)}` : ""}
+                        {r.remaining_redemptions != null
+                          ? ` · ${r.remaining_redemptions} redemptions left`
+                          : ""}
+                        {r.flash_customers != null && r.flash_customers > 0
+                          ? ` · ${r.flash_customers} customers`
+                          : ""}
+                        {r.flash_refunded ? ` · ${r.flash_refunded} refunded` : ""}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2">{r.is_active ? "Active" : "Inactive"}</td>
                 </tr>
@@ -414,12 +442,25 @@ export default function PlatformOfferAnalyticsClient() {
                         {r.order_id_text}
                       </Link>
                     ) : r.order_pk != null ? (
-                      String(r.order_pk)
+                      <span className="text-slate-500">#{r.order_pk}</span>
                     ) : (
                       "—"
                     )}
                   </td>
-                  <td className="px-3 py-2 tabular-nums">{display(r.customer_id)}</td>
+                  <td className="px-3 py-2 font-mono text-xs">
+                    {r.customer_public_id ? (
+                      <Link
+                        href={`/dashboard/customers?q=${encodeURIComponent(r.customer_public_id)}`}
+                        className="text-indigo-600 hover:underline"
+                      >
+                        {r.customer_public_id}
+                      </Link>
+                    ) : r.customer_id != null ? (
+                      <span className="text-slate-500">#{r.customer_id}</span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
                   <td className="px-3 py-2">{display(r.order_status)}</td>
                   <td className="px-3 py-2">{display(r.state_name)}</td>
                   <td className="px-3 py-2 tabular-nums">{inr(r.sale_amount)}</td>

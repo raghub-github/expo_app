@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { validateMerchantFromSessionPreferParent } from "@/lib/auth/validate-merchant";
-import { partnerUserErrorStatus, resolvePartnerUser } from "@/lib/auth/resolve-partner-user";
+import { partnerUserErrorStatus, requestHasPartnerAuthCookies, resolvePartnerUser } from "@/lib/auth/resolve-partner-user";
 import { isNetworkOrTransientError } from "@/lib/auth/session-errors";
 import { hasActiveSessionForDevice, replaceSessionForDevice, generateDeviceId, touchSessionLastSeen } from "@/lib/auth/merchant-session-db";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
@@ -24,7 +24,13 @@ function getSupabaseAdmin() {
  */
 export async function GET(request: NextRequest) {
   try {
-    const resolved = await resolvePartnerUser();
+    const resolved = await resolvePartnerUser({
+      cookieReader: {
+        get: (name) => request.cookies.get(name),
+        getAll: () => request.cookies.getAll(),
+      },
+      cookieHeader: request.headers.get("cookie"),
+    });
     const user = resolved.user;
     const userError = resolved.error;
 
@@ -34,6 +40,14 @@ export async function GET(request: NextRequest) {
         return NextResponse.json(
           { success: false, error: mapped.error, code: mapped.code },
           { status: mapped.status }
+        );
+      }
+      // Cookies present but unreadable (e.g. stale compile / cookie-jar miss) —
+      // do not 401 or the client treats it as logout.
+      if (requestHasPartnerAuthCookies(request)) {
+        return NextResponse.json(
+          { success: false, error: "Service temporarily unavailable", code: "SERVICE_UNAVAILABLE" },
+          { status: 503 }
         );
       }
       return NextResponse.json(

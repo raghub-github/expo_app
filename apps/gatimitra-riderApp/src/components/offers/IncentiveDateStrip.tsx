@@ -1,8 +1,10 @@
-import React, { useEffect, useMemo, useRef } from "react";
-import { ScrollView, View, Text, Pressable, StyleSheet } from "react-native";
+import React, { useMemo } from "react";
+import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { buildCurrentWeekDates, formatStripDay, todayIst } from "@/src/hooks/useRiderIncentives";
+import { colors } from "@/src/theme";
+import { LORA_BOLD, POPPINS_BOLD, POPPINS_SEMIBOLD } from "@/src/theme/headerFonts";
 
 type Props = {
   selectedDate: string;
@@ -15,8 +17,6 @@ type Props = {
   weekAnchor?: string;
 };
 
-const ITEM_WIDTH = 52;
-
 export function IncentiveDateStrip({
   selectedDate,
   onSelectDate,
@@ -25,73 +25,142 @@ export function IncentiveDateStrip({
   weekAnchor,
 }: Props) {
   const { t } = useTranslation();
-  const scrollRef = useRef<ScrollView>(null);
   const today = weekAnchor ?? todayIst();
   const dates = useMemo(() => buildCurrentWeekDates(today), [today]);
 
-  useEffect(() => {
-    const idx = dates.indexOf(selectedDate);
-    if (idx >= 0) {
-      scrollRef.current?.scrollTo({ x: Math.max(0, idx * ITEM_WIDTH - 80), animated: true });
-    }
-  }, [dates, selectedDate]);
+  const showBadges = useMemo(() => {
+    if (specialDates && specialDates.size > 0) return true;
+    if (!dateBadges) return false;
+    return Object.values(dateBadges).some((v) => Boolean(String(v || "").trim()));
+  }, [dateBadges, specialDates]);
 
   return (
-    <ScrollView
-      ref={scrollRef}
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={styles.row}
-    >
-      {dates.map((dateStr) => {
-        const { dow, day, isToday } = formatStripDay(dateStr, today);
-        const selected = dateStr === selectedDate;
-        const badgeLabel = dateBadges?.[dateStr] ?? (specialDates?.has(dateStr) ? t("offers.special", "Special") : null);
+    <View style={styles.shell}>
+      <View style={styles.row}>
+        {dates.map((dateStr) => {
+          const { dow, day, isToday } = formatStripDay(dateStr, today);
+          const selected = dateStr === selectedDate;
+          const badgeLabel =
+            dateBadges?.[dateStr] ??
+            (specialDates?.has(dateStr) ? t("offers.special", "Special") : null);
+          const label = isToday ? t("offers.today", "Today") : dow;
 
-        return (
-          <Pressable key={dateStr} onPress={() => onSelectDate(dateStr)} style={styles.item}>
-            {badgeLabel ? (
-              <View style={styles.specialBadge}>
-                <Ionicons name="star" size={8} color="#7C3AED" style={styles.starIcon} />
-                <Text style={styles.specialText}>{badgeLabel}</Text>
-              </View>
-            ) : (
-              <View style={styles.specialSpacer} />
-            )}
-            <Text style={[styles.dow, selected && styles.dowSelected]}>
-              {isToday ? t("offers.today", "Today") : dow}
-            </Text>
-            <Text style={[styles.day, selected && styles.daySelected]}>{day}</Text>
-            {selected ? <View style={styles.underline} /> : <View style={styles.underlineSpacer} />}
-          </Pressable>
-        );
-      })}
-    </ScrollView>
+          return (
+            <Pressable
+              key={dateStr}
+              onPress={() => onSelectDate(dateStr)}
+              accessibilityRole="button"
+              accessibilityState={{ selected }}
+              accessibilityLabel={`${label} ${day}`}
+              style={[styles.item, selected && styles.itemSelected]}
+            >
+              {showBadges ? (
+                badgeLabel ? (
+                  <View style={styles.specialBadge}>
+                    <Ionicons name="star" size={7} color={colors.primary[700]} />
+                    <Text style={styles.specialText} numberOfLines={1}>
+                      {badgeLabel}
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.specialSpacer} />
+                )
+              ) : null}
+              <Text
+                style={[styles.dow, selected && styles.dowSelected]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.7}
+              >
+                {label}
+              </Text>
+              <Text style={[styles.day, selected && styles.daySelected]} numberOfLines={1}>
+                {day}
+              </Text>
+              <View style={[styles.dot, selected ? styles.dotSelected : styles.dotIdle]} />
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  row: { paddingHorizontal: 16, gap: 8, paddingBottom: 4 },
-  item: { alignItems: "center", minWidth: ITEM_WIDTH, paddingHorizontal: 2 },
+  shell: {
+    marginHorizontal: 16,
+    marginTop: 2,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.primary[100],
+    overflow: "hidden",
+  },
+  row: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  item: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 2,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  itemSelected: {
+    backgroundColor: colors.primary[50],
+  },
   specialBadge: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 3,
-    backgroundColor: "#F3E8FF",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    gap: 2,
+    backgroundColor: colors.primary[100],
+    paddingHorizontal: 4,
+    paddingVertical: 1,
     borderRadius: 999,
-    marginBottom: 4,
-    alignSelf: "center",
+    marginBottom: 2,
+    maxWidth: "100%",
   },
-  starIcon: { flexShrink: 0 },
-  specialText: { fontSize: 9, fontWeight: "700", color: "#7C3AED", flexShrink: 0 },
-  specialSpacer: { height: 20 },
-  dow: { fontSize: 12, color: "#9CA3AF", fontWeight: "600" },
-  dowSelected: { color: "#111827" },
-  day: { fontSize: 15, fontWeight: "700", color: "#6B7280", marginTop: 2 },
-  daySelected: { color: "#111827" },
-  underline: { marginTop: 6, height: 3, width: 28, borderRadius: 999, backgroundColor: "#EF4444" },
-  underlineSpacer: { marginTop: 6, height: 3, width: 28 },
+  specialText: {
+    fontSize: 8,
+    fontFamily: POPPINS_SEMIBOLD,
+    fontWeight: "700",
+    color: colors.primary[800],
+    flexShrink: 1,
+  },
+  specialSpacer: { height: 12, marginBottom: 2 },
+  dow: {
+    fontSize: 10,
+    lineHeight: 12,
+    fontFamily: LORA_BOLD,
+    fontWeight: "700",
+    color: "#94A3B8",
+    textAlign: "center",
+    includeFontPadding: false,
+  },
+  dowSelected: { color: colors.primary[800] },
+  day: {
+    marginTop: 1,
+    fontSize: 14,
+    lineHeight: 17,
+    fontFamily: POPPINS_BOLD,
+    fontWeight: "800",
+    color: "#64748B",
+    textAlign: "center",
+    includeFontPadding: false,
+  },
+  daySelected: { color: colors.primary[900] },
+  dot: {
+    marginTop: 3,
+    height: 2,
+    width: 12,
+    borderRadius: 999,
+  },
+  dotSelected: { backgroundColor: colors.primary[500] },
+  dotIdle: { backgroundColor: "transparent" },
 });

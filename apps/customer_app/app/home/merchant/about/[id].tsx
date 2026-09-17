@@ -8,7 +8,7 @@ import { AppText } from "@/components/AppText";
 import { View, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Share, Linking, Alert } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons, Feather } from "@expo/vector-icons";
 import { merchantService, setStoreBookmark } from "@/services/merchant.service";
 import { useStoreBookmarkMutations, useStoreBookmarks } from "@/hooks/useStoreBookmarks";
@@ -64,16 +64,28 @@ export default function MerchantAboutScreen() {
   const { isHidden: isStoreHidden, hideStore, unhideStore } = useHiddenStores();
   const saved = Boolean(storeId) && bookmarkSet.has(storeId);
 
+  const queryClient = useQueryClient();
+
   const { data: about, isLoading: aboutLoading, error: aboutError } = useQuery({
     queryKey: ["merchant-about", storeId],
     queryFn: () => merchantService.getMerchantAbout(storeId),
     enabled: !!storeId,
+    staleTime: 5 * 60_000,
+    // Prefetch from merchant info tap — show shell immediately when cache hits.
+    initialData: () => queryClient.getQueryData(["merchant-about", storeId]),
+    initialDataUpdatedAt: () =>
+      queryClient.getQueryState(["merchant-about", storeId])?.dataUpdatedAt,
   });
 
   const { data: merchant, isLoading: merchantLoading } = useQuery({
     queryKey: ["merchant", storeId],
     queryFn: () => merchantService.getMerchantById(storeId),
     enabled: !!storeId,
+    // Instant shell from merchant page cache — never block on a second detail fetch.
+    initialData: () => queryClient.getQueryData(["merchant", storeId]),
+    initialDataUpdatedAt: () =>
+      queryClient.getQueryState(["merchant", storeId])?.dataUpdatedAt,
+    staleTime: 60_000,
   });
 
   const canonicalStoreId = (merchant?.id ?? storeId).trim();
@@ -82,7 +94,8 @@ export default function MerchantAboutScreen() {
     (isStoreHidden(canonicalStoreId) || isStoreHidden(storeId));
 
   const scheduleNow = useScheduleTick(true);
-  const isLoading = aboutLoading || merchantLoading;
+  // Only full-screen spinner when we have neither about nor merchant shell.
+  const isLoading = !merchant && !about && (aboutLoading || merchantLoading);
 
   const displayName = about?.store_display_name ?? about?.store_name ?? merchant?.name ?? "Restaurant";
   const legalName = (about?.owner_name ?? about?.legal_name ?? "").trim() || null;
@@ -197,7 +210,7 @@ export default function MerchantAboutScreen() {
     );
   }
 
-  if (isLoading || !about) {
+  if (isLoading) {
     return (
       <View style={[styles.container, styles.center]}>
         <ActivityIndicator size="large" color={StoreTheme.accentMint} />
@@ -205,7 +218,7 @@ export default function MerchantAboutScreen() {
     );
   }
 
-  if (aboutError) {
+  if (aboutError && !merchant && !about) {
     return (
       <View style={[styles.container, styles.center]}>
         <AppText style={styles.errorText}>Could not load restaurant info</AppText>
@@ -235,7 +248,7 @@ export default function MerchantAboutScreen() {
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 96 }]}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom, 12) + 150 }]}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.card}>
@@ -331,10 +344,10 @@ export default function MerchantAboutScreen() {
           {legalName ? (
             <LegalRow label="Legal Name" value={legalName} />
           ) : null}
-          {about.gst_number ? (
+          {about?.gst_number ? (
             <LegalRow label="GST Number" value={about.gst_number} />
           ) : null}
-          {about.fssai_number ? (
+          {about?.fssai_number ? (
             <LegalRow label="FSSAI Lic No" value={about.fssai_number} />
           ) : null}
           <AppText style={styles.termsLine}>
@@ -344,7 +357,16 @@ export default function MerchantAboutScreen() {
         </View>
       </ScrollView>
 
-      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+      <View
+        style={[
+          styles.footer,
+          {
+            // Lift above system nav + any peeking bottom sheet / home indicator.
+            bottom: 12,
+            paddingBottom: Math.max(insets.bottom, 16) + 28,
+          },
+        ]}
+      >
         <TouchableOpacity style={styles.backMenuBtn} onPress={() => router.back()} activeOpacity={0.92}>
           <AppText style={styles.backMenuText}>Go back to menu</AppText>
         </TouchableOpacity>
@@ -558,8 +580,13 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     paddingHorizontal: 14,
-    paddingTop: 8,
+    paddingTop: 10,
     backgroundColor: PAGE_BG,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#E5E7EB",
+    // Lift above system nav / any bottom sheet peek.
+    zIndex: 20,
+    elevation: 8,
   },
   backMenuBtn: {
     backgroundColor: StoreTheme.accentMint,

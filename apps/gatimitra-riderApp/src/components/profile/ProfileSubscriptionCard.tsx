@@ -38,9 +38,9 @@ export function ProfileSubscriptionCard() {
 
   return (
     <ProfilePromoCard
-      colors={["#4C1D95", "#6D28D9", "#7C3AED"]}
-      shadowColor="#6D28D9"
-      icon={<MaterialCommunityIcons name="crown" size={22} color="#FBBF24" />}
+      colors={["#0F766E", "#14B8A6", "#2DD4BF"]}
+      shadowColor="#0D9488"
+      icon={<MaterialCommunityIcons name="crown" size={22} color="#FEF3C7" />}
       title={plan.planName}
       subtitle={subtitle}
       onPress={() => router.push("/your-subscription")}
