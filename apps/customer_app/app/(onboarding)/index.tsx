@@ -128,7 +128,11 @@ export default function OnboardingProfileScreen() {
         profile_completed: true,
         referred_by: referredBy,
       });
-      router.push("/(onboarding)/address");
+      // No delivery-address step at registration — go straight to permissions
+      // (which asks for the OS location permission) and let the home use the
+      // device's current GPS location. The user adds an address later, only when
+      // they choose to, from the address section.
+      router.push("/(onboarding)/permissions");
     } catch (err: unknown) {
       const ax = err as { response?: { data?: { message?: string }; status?: number }; message?: string; code?: string };
       const isNetworkError =
@@ -147,7 +151,7 @@ export default function OnboardingProfileScreen() {
                 customerReferralOn && hasReferralCode && referralId.trim() ? referralId.trim() : undefined,
             })
           );
-          router.push("/(onboarding)/address");
+          router.push("/(onboarding)/permissions");
           return;
         } catch {
           // fall through
