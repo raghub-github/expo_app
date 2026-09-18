@@ -93,6 +93,17 @@ ENV NEXT_PUBLIC_MERCHANT_R2_BASE_URL=${NEXT_PUBLIC_MERCHANT_R2_BASE_URL}
 ENV NEXT_PUBLIC_DISABLE_CURRENT_LOCATION=${NEXT_PUBLIC_DISABLE_CURRENT_LOCATION}
 ENV NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER=${NEXT_PUBLIC_ENABLE_PHONE_OTP_REGISTER}
 
+# @gatimitra/bill-print is source-only; its package.json `node` export condition
+# points at ./dist/index.js and Next 16's webpack SERVER build matches that `node`
+# condition — so the dist MUST exist before `next build`, or the build fails with
+#   Module not found: Can't resolve '@gatimitra/bill-print'
+# Bundle it self-contained via the pinned esbuild (not installed in this stage),
+# exactly like partnersite/Dockerfile. kot-print / print-utils have no `node`
+# condition, so they resolve to src (transpilePackages) and need no dist.
+RUN npx --yes esbuild@0.25.12 packages/bill-print/src/index.ts \
+      --bundle --format=esm --platform=node \
+      --outfile=packages/bill-print/dist/index.js
+
 # Targeted workspace build. Critically NOT `npm run build` (which would
 # pick up the root script `turbo run build` and try to build every
 # workspace).
