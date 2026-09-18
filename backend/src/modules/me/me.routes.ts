@@ -77,11 +77,12 @@ async function generateUniqueReferralCode(
 
 /**
  * Self-healing backfill: every eligible customer must own a referral code.
- * The PATCH-time generation can be missed (referral toggle was OFF at completion,
- * a transient DB error while minting was swallowed, or the flow completed the
- * profile without ever hitting the mint branch). This ensures the code the next
- * time the profile is read, so a new user never ends up permanently without one.
- * Returns the (possibly updated) row; a no-op + best-effort when not eligible.
+ * The PATCH-time generation can be missed (a transient DB error while minting was
+ * swallowed, or the flow completed the profile without ever hitting the mint
+ * branch). This ensures the code the next time the profile is read, so a user
+ * never ends up permanently without one. Minting is INDEPENDENT of the referral
+ * program toggle — every user should own a shareable code; the toggle only gates
+ * whether referrals are tracked/rewarded. No-op + best-effort when not eligible.
  */
 async function ensureCustomerReferralCode(
   db: ReturnType<typeof getDb>,
@@ -90,9 +91,6 @@ async function ensureCustomerReferralCode(
 ): Promise<typeof customers.$inferSelect> {
   if (!customerNeedsReferralCode(row)) return row;
   const fullName = (row.fullName ?? "").trim();
-  const settings = await getReferralSettings().catch(() => null);
-  const on = settings ? referralTrackingEnabled(settings, "customer") : true;
-  if (!on) return row;
   try {
     const code = (await generateUniqueReferralCode(db, fullName, row.customerId)).toUpperCase();
     // Guard on isNull so two concurrent reads can't both write — the loser's WHERE
@@ -448,19 +446,22 @@ export async function meRoutes(app: FastifyInstance) {
           const newProfileCompleted = body.profile_completed !== undefined ? body.profile_completed : existing.profileCompleted;
           const effectiveFullName = body.full_name !== undefined ? body.full_name : existing.fullName ?? "";
 
-          // Auto-generate unique referral code when user completes profile and doesn't have one yet.
-          // The Customer Referral service toggle is the source of truth — do not mint new codes while OFF.
+          // Auto-generate the user's OWN referral code whenever they complete their
+          // profile and don't have one yet. This is INDEPENDENT of the referral
+          // program toggle — every user should own a shareable code. The
+          // customer_referral_enabled toggle only gates whether referrals are
+          // TRACKED / REWARDED (see referredByToSet below), not code existence.
           let referralCodeToSet: string | null = existing.referralCode ?? null;
           const referralSettings = await getReferralSettings().catch(() => null);
           const customerReferralOn = referralSettings
             ? referralTrackingEnabled(referralSettings, "customer")
             : true;
           if (
-            customerReferralOn &&
-            newProfileCompleted &&
-            !existing.referralCode &&
-            effectiveFullName &&
-            effectiveFullName.trim().toLowerCase() !== "pending"
+            customerNeedsReferralCode({
+              referralCode: existing.referralCode,
+              profileCompleted: newProfileCompleted,
+              fullName: effectiveFullName,
+            })
           ) {
             try {
               referralCodeToSet = await generateUniqueReferralCode(db, effectiveFullName.trim(), customerId);
