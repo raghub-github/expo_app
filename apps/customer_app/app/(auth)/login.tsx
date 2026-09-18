@@ -163,6 +163,8 @@ export default function LoginScreen() {
   const remoteLogo = useAppAssetSource(CX.auth.logoWithName);
   const logoSource = !logoError && remoteLogo ? remoteLogo : BUNDLED_AUTH_LOGO;
   const [apiUrlModalVisible, setApiUrlModalVisible] = useState(false);
+  /** Dev-only "Configure API URL" affordance — never shown in release builds. */
+  const [showApiConfig, setShowApiConfig] = useState(false);
   const [apiUrlInput, setApiUrlInput] = useState("");
   const [apiUrlSaving, setApiUrlSaving] = useState(false);
   const [currentApiUrl, setCurrentApiUrl] = useState<string>(() => getConfig().apiBaseUrl);
@@ -256,6 +258,7 @@ export default function LoginScreen() {
     const digits = phoneDigits;
     sendOtpLockRef.current = true;
     setError("");
+    setShowApiConfig(false);
     setLoading(true);
     try {
       const phoneE164 = `${selectedCountry.dialCode}${digits}`;
@@ -272,14 +275,26 @@ export default function LoginScreen() {
         (ax?.code === "ECONNABORTED" ||
           rawMessage === "Network Error" ||
           rawMessage.toLowerCase().includes("network"));
-      const msg =
-        ax?.response?.data?.message ??
-        (rawMessage && !isNetworkError ? rawMessage : null);
+      // Only surface the backend's own user-facing message (e.g. "Too many
+      // attempts"); never raw JS/network/technical text — users don't understand
+      // it and it looks alarming. Everything else becomes a short, calm message.
+      const backendMsg =
+        typeof ax?.response?.data?.message === "string" && ax.response.data.message.trim()
+          ? ax.response.data.message.trim()
+          : null;
+      if (__DEV__ && isNetworkError) {
+        // Keep the detailed hint for developers, in the console only.
+        console.warn(
+          "[Login] Cannot reach server. Start backend (port 3000) or set EXPO_PUBLIC_DEV_HOST to your PC's LAN IP (EXPO_PUBLIC_API_PORT / EXPO_PUBLIC_API_BASE_URL)."
+        );
+      }
+      // Dev-only quick fix affordance — never shown to real users.
+      setShowApiConfig(__DEV__ && isNetworkError);
       setError(
-        msg ||
+        backendMsg ||
           (isNetworkError
-            ? "Cannot reach server. Run backend (npm run dev in backend/, default port 3000). On a physical device set EXPO_PUBLIC_DEV_HOST to your PC's LAN IP and use the same port as the backend (EXPO_PUBLIC_API_PORT or EXPO_PUBLIC_API_BASE_URL)."
-            : "Failed to send OTP. Try again.")
+            ? "We couldn’t reach our servers. Please check your internet connection and try again."
+            : "Something went wrong. Please try again in a moment.")
       );
     } finally {
       sendOtpLockRef.current = false;
@@ -392,7 +407,7 @@ export default function LoginScreen() {
                 />
               </View>
               {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
-              {error && error.toLowerCase().includes("cannot reach server") ? (
+              {__DEV__ && showApiConfig ? (
                 <TouchableOpacity
                   onPress={openApiUrlModal}
                   style={apiUrlStyles.configureBtn}
