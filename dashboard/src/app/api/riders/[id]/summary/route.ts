@@ -438,6 +438,8 @@ export async function GET(
         verificationStatus: riderDocuments.verificationStatus,
         verified: riderDocuments.verified,
         requiresManualReview: riderDocuments.requiresManualReview,
+        fileUrl: riderDocuments.fileUrl,
+        r2Key: riderDocuments.r2Key,
         updatedAt: riderDocuments.updatedAt,
       })
       .from(riderDocuments)
@@ -449,6 +451,8 @@ export async function GET(
         verificationStatus: string | null;
         verified: boolean | null;
         requiresManualReview: boolean | null;
+        fileUrl: string | null;
+        r2Key: string | null;
         updatedAt: Date | null;
       }>);
 
@@ -457,6 +461,18 @@ export async function GET(
         const type = String(row.docType || "").toLowerCase();
         if (SKIP_DOC_TYPES.has(type)) return false;
         if (row.verified === true) return false;
+        const fileUrl = String(row.fileUrl || "").trim();
+        const r2Key = String(row.r2Key || "").trim();
+        const hasRealFile =
+          Boolean(r2Key) ||
+          (Boolean(fileUrl) &&
+            fileUrl !== "pending" &&
+            !fileUrl.endsWith("/pending") &&
+            !fileUrl.startsWith("placeholder") &&
+            !fileUrl.startsWith("cashfree_") &&
+            !fileUrl.startsWith("digilocker_"));
+        // Admin-removed docs keep a row with fileUrl=pending — not awaiting review.
+        if (!hasRealFile) return false;
         const status = String(row.verificationStatus || "").toLowerCase();
         if (status === "approved" || status === "auto_verified") return false;
         if (status === "rejected") return false;
@@ -495,6 +511,51 @@ export async function GET(
         });
       }
     }
+
+    // Unverified fleet vehicles (e.g. 2nd RC under manual review) must surface the
+    // Verify CTA even when the rider is already ACTIVE / fully onboarded.
+    const unverifiedVehicleRows = await db
+      .select({
+        id: riderVehicles.id,
+        registrationNumber: riderVehicles.registrationNumber,
+        verified: riderVehicles.verified,
+        vehicleActiveStatus: riderVehicles.vehicleActiveStatus,
+        updatedAt: riderVehicles.updatedAt,
+      })
+      .from(riderVehicles)
+      .where(eq(riderVehicles.riderId, riderId))
+      .catch(() => [] as Array<{
+        id: number;
+        registrationNumber: string;
+        verified: boolean | null;
+        vehicleActiveStatus: string | null;
+        updatedAt: Date | null;
+      }>);
+
+    for (const v of unverifiedVehicleRows) {
+      const status = String(v.vehicleActiveStatus || "").toLowerCase();
+      if (status === "retired" || status === "replaced" || status === "deleted") continue;
+      if (v.verified === true) continue;
+      const plate = String(v.registrationNumber || "").trim().toUpperCase();
+      const key = `rc_vehicle_${v.id}`;
+      if (pendingByFamily.has("rc") || pendingByFamily.has(key)) continue;
+      pendingByFamily.set(key, {
+        id: v.id,
+        docType: "rc",
+        label: plate ? `RC (${plate})` : "Registration Certificate",
+        verificationStatus: "pending",
+        updatedAt:
+          v.updatedAt instanceof Date
+            ? v.updatedAt.toISOString()
+            : v.updatedAt
+              ? String(v.updatedAt)
+              : null,
+      });
+    }
+
+    // If any unverified vehicle exists and we already have a generic RC pending row,
+    // keep it — Verify CTA only needs length > 0. Prefer plate-specific labels when
+    // there was no pending RC document (handled above).
     const pendingManualDocumentsDeduped = [...pendingByFamily.values()];
 
     let recentPenalties: Array<Record<string, unknown>> = [];

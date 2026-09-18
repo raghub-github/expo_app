@@ -15,6 +15,10 @@ import {
   normalizeActionMode,
   normalizeActionSource,
 } from '@/lib/merchantOrderFoodActions';
+import {
+  refundFieldsFromEngineResult,
+  resolvePostCancelAutoRefundPolicy,
+} from '@gatimitra/financial-rules';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -126,30 +130,42 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
         displayReason
       );
       let engineResult: Awaited<ReturnType<typeof executeOrderCancellationFinancials>> | null = null;
+      const cancelledByType = actorTypeFromSource(actionSource);
+      let orderGross = 0;
       try {
         const orderCtx = await lookupOrderContext(coreId);
+        orderGross = Number(orderCtx.grandTotal ?? 0);
         engineResult = await executeOrderCancellationFinancials({
           orderCoreId: coreId,
           ordersFoodId: orderCtx.ordersFoodId ?? coreId,
           coreOrderId: orderCtx.coreOrderId,
           merchantStoreId: storeInternalId,
           previousStatus: String(coreRow.status ?? 'CREATED'),
-          cancelledByType: 'merchant',
-          orderGross: orderCtx.grandTotal,
+          cancelledByType,
+          orderGross,
           serviceType: orderCtx.serviceType,
         });
       } catch (engineErr) {
         console.warn('[orders-core PATCH] financial rule engine failed:', engineErr);
       }
+      const refund = refundFieldsFromEngineResult(engineResult?.raw);
+      const refundPolicy = resolvePostCancelAutoRefundPolicy({
+        actorRole: cancelledByType,
+        engineRefund: refund,
+        orderGross,
+        forceCustomerRefundWhenEngineSilent: cancelledByType === 'system',
+      });
       try {
         await recordOrderCancellation(db, {
           orderCorePk: coreId,
           cancelledBy: 'merchant',
           displayReason,
-          cancelledByType: actorTypeFromSource(actionSource),
+          cancelledByType,
           cancelledByLabel,
           actionSource,
           cancelMode: actionMode,
+          refundStatus: refundPolicy.refundStatus,
+          refundAmount: refundPolicy.refundAmountForLedger,
           metadata: {
             financial_rule_engine: engineResult?.raw ?? null,
             engine_applied: engineResult?.applied ?? false,
@@ -159,14 +175,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
         console.warn('[orders-core PATCH] order_cancellation_reasons failed:', cancelErr);
       }
 
-      // Move the money: recordOrderCancellation only stamps refund intent. Any
-      // non-customer cancel refunds the customer in full; customer-initiated
-      // cancels are refused by the helper and the backend.
-      await triggerOrderAutoRefund({
-        orderCorePk: coreId,
-        reason: displayReason,
-        actorRole: actorTypeFromSource(actionSource),
-      });
+      if (refundPolicy.shouldAutoExecute) {
+        await triggerOrderAutoRefund({
+          orderCorePk: coreId,
+          reason: displayReason,
+          actorRole: cancelledByType,
+          amount: refundPolicy.executeAmount,
+        });
+      }
     }
 
     return NextResponse.json({ ok: true, core_id: coreId, status: nextCore });

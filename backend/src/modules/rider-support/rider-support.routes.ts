@@ -181,7 +181,8 @@ async function loadOwnedRiderTicket(
   const mobile10 = mobileTail10(riderMobile);
   const rows = mobile10
     ? await sql`
-        SELECT id, status, rider_id, raised_by_id, raised_by_mobile
+        SELECT id, status, rider_id, raised_by_id, raised_by_mobile,
+               subject, ticket_title, metadata, tags
         FROM unified_tickets
         WHERE id = ${ticketIdNum}
           AND raised_by_type = 'RIDER'::unified_ticket_source
@@ -194,7 +195,8 @@ async function loadOwnedRiderTicket(
         LIMIT 1
       `
     : await sql`
-        SELECT id, status, rider_id, raised_by_id, raised_by_mobile
+        SELECT id, status, rider_id, raised_by_id, raised_by_mobile,
+               subject, ticket_title, metadata, tags
         FROM unified_tickets
         WHERE id = ${ticketIdNum}
           AND raised_by_type = 'RIDER'::unified_ticket_source
@@ -205,7 +207,34 @@ async function loadOwnedRiderTicket(
           )
         LIMIT 1
       `;
-  return (rows as Array<Record<string, unknown>>)[0] ?? null;
+  const row = (rows as Array<Record<string, unknown>>)[0] ?? null;
+  if (!row) return null;
+  if (isTicketHiddenFromRider(row)) return null;
+  return row;
+}
+
+function isTicketHiddenFromRider(row: Record<string, unknown>): boolean {
+  const subject = String(row.subject ?? "");
+  const title = String(row.ticket_title ?? "");
+  if (subject === "Onboarding Verification Pending") return true;
+  if (title === "ONBOARDING_VERIFICATION_PENDING") return true;
+  const meta =
+    row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+      ? (row.metadata as Record<string, unknown>)
+      : {};
+  if (meta.onboarding_verification_pending === true || meta.hidden_from_rider === true) {
+    return true;
+  }
+  const help =
+    meta.rider_help && typeof meta.rider_help === "object" && !Array.isArray(meta.rider_help)
+      ? (meta.rider_help as Record<string, unknown>)
+      : {};
+  if (help.visible_to_rider === false) return true;
+  const tags = Array.isArray(row.tags) ? row.tags.map((t) => String(t)) : [];
+  if (tags.includes("onboarding_verification_pending") || tags.includes("hidden_from_rider")) {
+    return true;
+  }
+  return false;
 }
 
 /** Link orphan Pre_login / null-rider tickets to this rider once they are authenticated. */
@@ -485,6 +514,8 @@ export async function riderSupportRoutes(app: FastifyInstance) {
         WHERE tt.is_active = TRUE
           AND tt.ticket_section::text = 'rider'
           AND (tt.group_id IS NULL OR tg.is_active = TRUE)
+          AND UPPER(TRIM(COALESCE(tt.title_code, ''))) <> 'ONBOARDING_VERIFICATION_PENDING'
+          AND LOWER(TRIM(COALESCE(tt.title_text, ''))) <> 'onboarding verification pending'
           AND NOT EXISTS (
             WITH RECURSIVE title_ancestors AS (
               SELECT id, parent_title_id, is_active
@@ -677,6 +708,15 @@ export async function riderSupportRoutes(app: FastifyInstance) {
     if (!descriptionRaw || descriptionRaw.length > 10000) {
       return reply.code(400).send({ error: "invalid_description" });
     }
+    // Internal agent-only onboarding verification tickets — riders cannot create or pick this title.
+    if (
+      subjectRaw === "Onboarding Verification Pending" ||
+      /^ONBOARDING_VERIFICATION_PENDING$/i.test(
+        typeof body.title_code === "string" ? body.title_code.trim() : "",
+      )
+    ) {
+      return reply.code(400).send({ error: "title_not_allowed" });
+    }
 
     let raisedByName: string | null = null;
     let raisedByMobile: string | null = null;
@@ -738,6 +778,15 @@ export async function riderSupportRoutes(app: FastifyInstance) {
     }
 
     if (titleRow) ticketTitleId = titleRow.id;
+
+    if (
+      titleRow &&
+      (String(titleRow.title_code || "").toUpperCase() === "ONBOARDING_VERIFICATION_PENDING" ||
+        String(titleRow.title_text || "").trim().toLowerCase() ===
+          "onboarding verification pending")
+    ) {
+      return reply.code(400).send({ error: "title_not_allowed" });
+    }
 
     const rawOrderId = body.order_id;
     let orderIdNum: number | null =
@@ -909,6 +958,15 @@ export async function riderSupportRoutes(app: FastifyInstance) {
               OR raised_by_id = ${me.id}
               OR RIGHT(REGEXP_REPLACE(COALESCE(raised_by_mobile, ''), '[^0-9]', '', 'g'), 10) = ${mobile10}
             )
+            AND NOT (
+              COALESCE(subject, '') = 'Onboarding Verification Pending'
+              OR COALESCE(ticket_title, '') = 'ONBOARDING_VERIFICATION_PENDING'
+              OR COALESCE(metadata->>'onboarding_verification_pending', '') = 'true'
+              OR COALESCE(metadata->>'hidden_from_rider', '') = 'true'
+              OR COALESCE(metadata->'rider_help'->>'visible_to_rider', '') = 'false'
+              OR 'onboarding_verification_pending' = ANY(COALESCE(tags, ARRAY[]::text[]))
+              OR 'hidden_from_rider' = ANY(COALESCE(tags, ARRAY[]::text[]))
+            )
           ORDER BY created_at DESC, id DESC
           LIMIT ${limit} OFFSET ${offset}
         `
@@ -922,6 +980,15 @@ export async function riderSupportRoutes(app: FastifyInstance) {
             AND (
               rider_id = ${me.id}
               OR raised_by_id = ${me.id}
+            )
+            AND NOT (
+              COALESCE(subject, '') = 'Onboarding Verification Pending'
+              OR COALESCE(ticket_title, '') = 'ONBOARDING_VERIFICATION_PENDING'
+              OR COALESCE(metadata->>'onboarding_verification_pending', '') = 'true'
+              OR COALESCE(metadata->>'hidden_from_rider', '') = 'true'
+              OR COALESCE(metadata->'rider_help'->>'visible_to_rider', '') = 'false'
+              OR 'onboarding_verification_pending' = ANY(COALESCE(tags, ARRAY[]::text[]))
+              OR 'hidden_from_rider' = ANY(COALESCE(tags, ARRAY[]::text[]))
             )
           ORDER BY created_at DESC, id DESC
           LIMIT ${limit} OFFSET ${offset}

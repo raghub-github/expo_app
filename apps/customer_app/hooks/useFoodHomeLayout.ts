@@ -2,7 +2,6 @@ import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
 import {
-  DEFAULT_FOOD_HOME_LAYOUT,
   DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW,
   DEFAULT_GRID_FIRST_UNDER_250,
   parseGridFirstSubscriptionRowBgColor,
@@ -93,10 +92,12 @@ export function useFoodHomeLayout(
 
   const effectiveLayout = (query.data ?? bootLayout) as FoodHomeLayoutResult | undefined;
   const layoutReady = !canQuery || effectiveLayout != null || query.isError;
-  const effectiveKey = effectiveLayout ? effectiveLayout.layoutKey : null;
-  const layoutKey: FoodHomeLayoutKey | null = layoutReady
-    ? (effectiveKey ?? DEFAULT_FOOD_HOME_LAYOUT)
-    : effectiveKey;
+  /**
+   * Never invent `classic` here — callers resolve cache/peek themselves.
+   * Forcing DEFAULT classic while GPS/layout is still loading made grid_first
+   * homes briefly run classic meals-under fetches.
+   */
+  const layoutKey: FoodHomeLayoutKey | null = effectiveLayout?.layoutKey ?? null;
 
   return {
     ...query,
@@ -133,6 +134,29 @@ export function useFoodHomeLayout(
     ),
     gridFirstUnder250HeroImageUrl: parseGridFirstUnder250ImageUrl(
       effectiveLayout?.gridFirstUnder250HeroImageUrl
+    ),
+    classicUnder250Enabled: parseGridFirstUnder250Enabled(
+      effectiveLayout?.classicUnder250Enabled ?? effectiveLayout?.gridFirstUnder250Enabled
+    ),
+    classicUnder250MaxPrice: parseGridFirstUnder250MaxPrice(
+      effectiveLayout?.classicUnder250MaxPrice ?? effectiveLayout?.gridFirstUnder250MaxPrice
+    ),
+    classicUnder250Title: parseGridFirstUnder250Title(
+      effectiveLayout?.classicUnder250Title ?? effectiveLayout?.gridFirstUnder250Title,
+      DEFAULT_GRID_FIRST_UNDER_250.title
+    ),
+    classicUnder250FilterLabel: parseGridFirstUnder250Title(
+      effectiveLayout?.classicUnder250FilterLabel ??
+        effectiveLayout?.gridFirstUnder250FilterLabel,
+      DEFAULT_GRID_FIRST_UNDER_250.filterLabel
+    ),
+    classicUnder250TabImageUrl: parseGridFirstUnder250ImageUrl(
+      effectiveLayout?.classicUnder250TabImageUrl ??
+        effectiveLayout?.gridFirstUnder250TabImageUrl
+    ),
+    classicUnder250HeroImageUrl: parseGridFirstUnder250ImageUrl(
+      effectiveLayout?.classicUnder250HeroImageUrl ??
+        effectiveLayout?.gridFirstUnder250HeroImageUrl
     ),
     discoveryDealsAtMaxPrice: parseDiscoveryCtaConfig(effectiveLayout).dealsAtMaxPrice,
     discoveryDealsAtImageUrl: parseDiscoveryCtaConfig(effectiveLayout).dealsAtImageUrl,

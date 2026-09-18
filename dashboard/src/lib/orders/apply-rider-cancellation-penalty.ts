@@ -59,6 +59,23 @@ function isRelationMissingError(e: unknown): boolean {
   return /relation .* does not exist/i.test(msg) || msg.includes("42P01");
 }
 
+/** Missing column (e.g. legacy wallet_ledger without created_at) — soft-fail, never 500 the refund modal. */
+function isUndefinedColumnError(e: unknown): boolean {
+  if (e && typeof e === "object") {
+    const o = e as { code?: string; message?: string };
+    if (o.code === "42703") return true;
+    if (typeof o.message === "string" && /column .* does not exist/i.test(o.message)) {
+      return true;
+    }
+  }
+  const msg = e instanceof Error ? e.message : String(e);
+  return /column .* does not exist/i.test(msg) || msg.includes("42703");
+}
+
+function isSoftSqlSchemaError(e: unknown): boolean {
+  return isRelationMissingError(e) || isUndefinedColumnError(e);
+}
+
 function normalizeFault(fault: string | null | undefined): string {
   return String(fault ?? "")
     .trim()
@@ -286,9 +303,9 @@ async function loadThreePlPenaltyScenarioOrderRow(
             OR order_id_text = oc.order_id
             OR order_id_text = oc.formatted_order_id
           )
-        ORDER BY assignment_sequence DESC NULLS LAST,
-                 assigned_at DESC NULLS LAST,
-                 created_at DESC
+        ORDER BY assigned_at DESC NULLS LAST,
+                 picked_up_at DESC NULLS LAST,
+                 id DESC
         LIMIT 1
       ) ora ON TRUE
       LEFT JOIN LATERAL (
@@ -300,16 +317,19 @@ async function loadThreePlPenaltyScenarioOrderRow(
         LIMIT 1
       ) da ON TRUE
       WHERE oc.id = $1
-        AND EXISTS (
-          SELECT 1
-          FROM order_rider_assignments ora_chk
-          WHERE ora_chk.rider_id = $2
-            AND (
-              ora_chk.order_core_id = oc.id
-              OR ora_chk.order_id = oc.id
-              OR ora_chk.order_id_text = oc.order_id
-              OR ora_chk.order_id_text = oc.formatted_order_id
-            )
+        AND (
+          oc.rider_id = $2
+          OR EXISTS (
+            SELECT 1
+            FROM order_rider_assignments ora_chk
+            WHERE ora_chk.rider_id = $2
+              AND (
+                ora_chk.order_core_id = oc.id
+                OR ora_chk.order_id = oc.id
+                OR ora_chk.order_id_text = oc.order_id
+                OR ora_chk.order_id_text = oc.formatted_order_id
+              )
+          )
         )
       LIMIT 1
     `,
@@ -349,9 +369,9 @@ async function loadPenaltyScenarioOrderRow(
             OR order_id_text = oc.order_id
             OR order_id_text = oc.formatted_order_id
           )
-        ORDER BY assignment_sequence DESC NULLS LAST,
-                 assigned_at DESC NULLS LAST,
-                 created_at DESC
+        ORDER BY assigned_at DESC NULLS LAST,
+                 picked_up_at DESC NULLS LAST,
+                 id DESC
         LIMIT 1
       ) ora ON TRUE
       LEFT JOIN LATERAL (
@@ -949,7 +969,7 @@ async function loadExistingRiderCancelPenalty(
         WHERE rider_id = $1
           AND entry_type = 'penalty'
           AND ref LIKE $2
-        ORDER BY created_at DESC NULLS LAST, id DESC
+        ORDER BY id DESC
         LIMIT 1
       `,
       [riderId, `${refPrefix}%`]
@@ -967,7 +987,7 @@ async function loadExistingRiderCancelPenalty(
             AND order_id = $2
             AND status = 'active'
             AND penalty_type = 'cancellation'
-          ORDER BY created_at DESC NULLS LAST, id DESC
+          ORDER BY id DESC
           LIMIT 1
         `,
         [riderId, orderCoreId]
@@ -1022,7 +1042,7 @@ async function loadExistingRiderCancelPenalty(
         "Penalty was already debited from this rider's wallet for this order.",
     };
   } catch (e) {
-    if (isRelationMissingError(e)) return null;
+    if (isSoftSqlSchemaError(e)) return null;
     throw e;
   }
 }
@@ -1139,7 +1159,7 @@ export async function previewThreePlRiderCancellationPenalty(args: {
       ledgerDescription: scenario.ledger_description,
     };
   } catch (e) {
-    if (isRelationMissingError(e)) {
+    if (isSoftSqlSchemaError(e)) {
       return {
         ...empty,
         skipped: "penalty_engine_not_migrated",

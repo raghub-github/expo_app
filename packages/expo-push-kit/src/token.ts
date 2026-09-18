@@ -11,6 +11,8 @@ export type AndroidChannelOptions = {
   lightColor?: string;
   /** Android raw sound name (no extension), e.g. `cx_notification`. */
   sound?: string;
+  /** Play over Do Not Disturb / silent (critical new-order alerts). */
+  bypassDnd?: boolean;
 };
 
 function resolveProjectId(): string | undefined {
@@ -58,6 +60,7 @@ export async function ensureAndroidChannel(opts: AndroidChannelOptions): Promise
     vibrationPattern: opts.vibrationPattern ?? [0, 250, 250, 250],
     lightColor: opts.lightColor ?? "#14b8a6",
     ...(opts.sound ? { sound: opts.sound } : {}),
+    ...(opts.bypassDnd === true ? { bypassDnd: true } : {}),
   });
 }
 

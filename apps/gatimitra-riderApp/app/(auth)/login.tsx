@@ -374,7 +374,8 @@ export default function LoginScreen() {
       status.onboardingStatus === "pending_approval" &&
       status.paymentCompleted === true
     ) {
-      router.replace("/(onboarding)/pending");
+      // Home + Waiting for Review sheet (no full pending page).
+      router.replace("/(tabs)/orders");
     } else if (
       !status.exists ||
       status.onboardingStatus === "not_started" ||

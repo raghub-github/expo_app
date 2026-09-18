@@ -4,7 +4,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getObjectByKey, headObjectByKey } from "@/lib/services/r2";
-import { extractR2KeyFromProxyUrl } from "@/lib/r2-proxy-url";
+import { extractR2KeyFromProxyUrl, isBogusAttachmentProxyKey } from "@/lib/r2-proxy-url";
 
 export const runtime = "nodejs";
 
@@ -14,7 +14,9 @@ function proxyObjectKey(request: NextRequest): string | null {
   const raw = (keyParam || urlParam || "").trim();
   if (!raw) return null;
   const unwrapped = extractR2KeyFromProxyUrl(raw);
-  return unwrapped || raw;
+  const key = unwrapped || raw;
+  if (isBogusAttachmentProxyKey(key)) return null;
+  return key;
 }
 
 export async function HEAD(request: NextRequest) {

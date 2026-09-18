@@ -79,7 +79,8 @@ import {
 import { OrderPanel } from '@/components/orders/OrderPanel';
 import { OrderCancellationBanner } from '@/components/orders/OrderCancellationBanner';
 import { OrderBillSidesheet } from '@/components/orders/OrderBillSidesheet';
-import { GatiMitraOrderPrintBill } from '@/components/orders/GatiMitraOrderPrintBill';
+import { printOrderBill } from '@/components/orders/GatiMitraOrderPrintBill';
+import { printOrderKot } from '@/components/orders/GatiMitraOrderPrintKOT';
 import { OrderCustomerSidesheet } from '@/components/orders/OrderCustomerSidesheet';
 import { RejectOrderSidesheet } from '@/components/orders/RejectOrderSidesheet';
 import { OrderRidersHistorySidesheet } from '@/components/orders/OrderRidersHistorySidesheet';
@@ -89,6 +90,7 @@ import type { OrderPricingBreakdown } from '@/lib/orderLineItems';
 import { resolveOrderOtps, type CachedOrderOtps } from '@/lib/orderOtps';
 import { prefetchMerchantOrderTimelineBundle } from '@/lib/merchantTimelineEnrichmentCache';
 import { merchantFoodRowId, merchantOrderApiId, merchantOrderTimelineUrl } from '@/lib/merchantOrderApiId';
+import { fetchMerchantStoreApi } from '@/lib/fetch-merchant-store-api';
 import {
   useInvalidateMerchantStoreQueries,
   useStoreOperationsQuery,
@@ -562,7 +564,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
   const [billSheetOpen, setBillSheetOpen] = useState(false);
   const [billSheetAllItemsOnly, setBillSheetAllItemsOnly] = useState(false);
   const [customerSheetOpen, setCustomerSheetOpen] = useState(false);
-  const [printBillOpen, setPrintBillOpen] = useState(false);
   const [timelineModalOpen, setTimelineModalOpen] = useState(false);
   const [riderTrackingOpen, setRiderTrackingOpen] = useState(false);
   const [dispatchModal, setDispatchModal] = useState<OrdersFoodRow | null>(null);
@@ -1306,6 +1307,9 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         city: storeMeta.city ?? null,
         cuisineLabel: storeMeta.cuisine_types?.[0] ?? null,
         fssaiNumber: null as string | null,
+        storeAddress:
+          (storeMeta as { full_address?: string | null }).full_address ?? null,
+        thermalPrinterWidthMm: 80 as const,
       };
     }
     if (selectedOrder) {
@@ -1314,10 +1318,66 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         city: null,
         cuisineLabel: null,
         fssaiNumber: null,
+        storeAddress: null,
+        thermalPrinterWidthMm: 80 as const,
       };
     }
     return null;
   }, [storeMeta, selectedOrder]);
+
+  const handlePrintKot = useCallback(
+    (order: OrdersFoodRow | null | undefined) => {
+      if (!order) return;
+      const withStore: OrdersFoodRow = {
+        ...order,
+        merchant_store_id:
+          order.merchant_store_id ??
+          (Number.isFinite(Number(storeId)) ? Number(storeId) : null),
+      };
+      printOrderKot(withStore, {
+        storeName: printStoreInfo?.storeName ?? order.restaurant_name,
+        storeAddress: printStoreInfo?.storeAddress ?? null,
+        thermalPrinterWidthMm: printStoreInfo?.thermalPrinterWidthMm ?? 80,
+      });
+    },
+    [printStoreInfo, storeId]
+  );
+
+  const pricingForPrint = useCallback(
+    (order: OrdersFoodRow): OrderPricingBreakdown => {
+      if (order.pricing) return order.pricing;
+      const lineSum = (order.items ?? []).reduce(
+        (acc, it) => acc + Number(it.total || (it.price || 0) * (it.quantity || 1)),
+        0
+      );
+      const total = resolveMerchantCtm(order);
+      return {
+        subtotal: lineSum,
+        packaging: 0,
+        taxes: 0,
+        discount: 0,
+        total: Number.isFinite(total) ? total : lineSum,
+      };
+    },
+    []
+  );
+
+  const handlePrintBill = useCallback(
+    (order: OrdersFoodRow | null | undefined) => {
+      if (!order || !printStoreInfo) {
+        if (!order) return;
+        printOrderBill(order, pricingForPrint(order), {
+          storeName: order.restaurant_name ?? 'Store',
+          city: null,
+          cuisineLabel: null,
+          fssaiNumber: null,
+        });
+        return;
+      }
+      printOrderBill(order, pricingForPrint(order), printStoreInfo);
+    },
+    [printStoreInfo, pricingForPrint]
+  );
 
   const acceptCountdown = useMemo(() => {
     if (!selectedOrder) return { label: undefined as string | undefined, disabled: false };
@@ -1540,15 +1600,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         return false;
       }
       setActionLoading(order.id);
-      const foodRowId = merchantFoodRowId(order) ?? order.id;
-      const coreId = merchantOrderApiId(order);
-      const pathIds =
-        order.core_only === true
-          ? [coreId]
-          : foodRowId === coreId
-            ? [foodRowId]
-            : [foodRowId, coreId];
-
       const payload = {
         status: newStatus,
         action_source: extra?.action_source ?? ('admin' as const),
@@ -1557,13 +1608,15 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
           ? { cancel_mode: extra?.cancel_mode ?? ('manual' as const) }
           : {}),
         ...(extra?.rejected_reason ? { rejected_reason: extra.rejected_reason } : {}),
+        ...(order.formatted_order_id
+          ? { formatted_order_id: String(order.formatted_order_id) }
+          : {}),
       };
 
       const tryUpdate = async (pathId: number): Promise<{ ok: boolean; data: unknown }> => {
-        const res = await fetch(`/api/merchant/stores/${storeId}/orders/${pathId}`, {
+        const res = await fetchMerchantStoreApi(`/api/merchant/stores/${storeId}/orders/${pathId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
           body: JSON.stringify(payload),
         });
         const data = await res.json().catch(() => ({}));
@@ -1571,10 +1624,33 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
       };
 
       try {
+        const foodRowId = merchantFoodRowId(order);
+        const coreId = merchantOrderApiId(order);
+        const pathIds = [
+          ...new Set(
+            [foodRowId, order.orders_food_row_id, order.id, coreId, order.core_order_id]
+              .map((n) => Number(n))
+              .filter((n) => Number.isFinite(n) && n > 0)
+          ),
+        ];
         let result: { ok: boolean; data: unknown } = { ok: false, data: {} };
         for (const pathId of pathIds) {
           result = await tryUpdate(pathId);
           if (result.ok) break;
+        }
+        if (!result.ok && order.formatted_order_id) {
+          const lookup = await fetchMerchantStoreApi(
+            `/api/merchant/stores/${storeId}/orders?formatted_order_id=${encodeURIComponent(
+              String(order.formatted_order_id)
+            )}&limit=1`,
+            { cache: 'no-store' }
+          );
+          const lookupData = (await lookup.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
+          const found = lookupData.orders?.[0];
+          const foundFood = found ? merchantFoodRowId(found) ?? found.id : null;
+          if (foundFood != null && Number.isFinite(Number(foundFood))) {
+            result = await tryUpdate(Number(foundFood));
+          }
         }
         if (!result.ok) {
           await new Promise((r) => setTimeout(r, 1200));
@@ -1698,10 +1774,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
       order={order}
       selected={(pipelineMainOrder ?? selectedOrder)?.id === order.id}
       onClick={() => openOrder(order)}
-      onPrintOrder={() => {
-        setSelectedOrder(order);
-        setPrintBillOpen(true);
-      }}
+      onPrintKot={() => handlePrintKot(order)}
+      onPrintOrder={() => handlePrintBill(order)}
       onTimeline={() => {
         setSelectedOrder(order);
         setTimelineModalOpen(true);
@@ -2500,7 +2574,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                       }
                       setTimelineModalOpen(true);
                     }}
-                    onPrintBill={() => setPrintBillOpen(true)}
+                    onPrintBill={() => handlePrintBill(selectedOrder)}
+                    onPrintKot={() => handlePrintKot(selectedOrder)}
                     onViewPastRiders={() => {
                       setRidersLogModalOrderId(merchantOrderApiId(selectedOrder));
                       setRidersLogModalOrderLabel(
@@ -2533,7 +2608,100 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                 {/* Desktop: detail + scrollable order list only when an order is open */}
                 <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_16rem] min-h-0 min-w-0 h-full w-full flex-1 overflow-hidden">
                   <div className="min-h-0 min-w-0 h-full overflow-y-auto overflow-x-hidden overscroll-y-contain border-r border-gray-200 bg-gray-50/80 p-3 sm:p-4 hide-scrollbar">
-                    {renderPipelineCard(pipelineMainOrder ?? selectedOrder)}
+                    {(pipelineMainOrder ?? selectedOrder) ? (
+                      <OrderPanel
+                        className="w-full"
+                        order={pipelineMainOrder ?? selectedOrder}
+                        pricing={pricingForPrint(pipelineMainOrder ?? selectedOrder)}
+                        formattedOrderId={
+                          <FormattedOrderId
+                            formattedOrderId={(pipelineMainOrder ?? selectedOrder).formatted_order_id}
+                            fallbackOrderId={(pipelineMainOrder ?? selectedOrder).order_id}
+                            size="lg"
+                          />
+                        }
+                        onOpenBill={() => {
+                          setBillSheetAllItemsOnly(false);
+                          setBillSheetOpen(true);
+                        }}
+                        onOpenCustomer={() => setCustomerSheetOpen(true)}
+                        onOpenAllItems={() => {
+                          setBillSheetAllItemsOnly(true);
+                          setBillSheetOpen(true);
+                        }}
+                        onOpenTimeline={() => {
+                          const o = pipelineMainOrder ?? selectedOrder;
+                          prefetchMerchantOrderTimelineBundle(
+                            storeId,
+                            merchantOrderApiId(o),
+                            merchantOrderTimelineUrl(storeId, o)
+                          );
+                          setTimelineModalOpen(true);
+                        }}
+                        onPrintBill={() => handlePrintBill(pipelineMainOrder ?? selectedOrder)}
+                        onPrintKot={() => handlePrintKot(pipelineMainOrder ?? selectedOrder)}
+                        onClose={closeOrderPanel}
+                        onViewPastRiders={() => {
+                          const o = pipelineMainOrder ?? selectedOrder;
+                          setRidersLogModalOrderId(merchantOrderApiId(o));
+                          setRidersLogModalOrderLabel(o.formatted_order_id || `#${o.order_id}`);
+                        }}
+                        onTrackRider={() => setRiderTrackingOpen(true)}
+                        onUniformFeedback={(inUniform) =>
+                          void submitRiderUniformFeedback(pipelineMainOrder ?? selectedOrder, inUniform)
+                        }
+                        uniformFeedback={
+                          uniformFeedbackByOrderId[(pipelineMainOrder ?? selectedOrder).id] ??
+                          (pipelineMainOrder ?? selectedOrder).merchant_rider_in_uniform ??
+                          null
+                        }
+                        otpCache={otpCache[(pipelineMainOrder ?? selectedOrder).id]}
+                        pickupVerified={otpVerified.has((pipelineMainOrder ?? selectedOrder).id)}
+                        rtoVerified={false}
+                        otpCode={
+                          resolveOrderOtps(
+                            pipelineMainOrder ?? selectedOrder,
+                            otpCache[(pipelineMainOrder ?? selectedOrder).id]
+                          ).pickup ?? undefined
+                        }
+                        otpType="PICKUP"
+                        nowMs={nowTick}
+                        panelMode="live"
+                        primaryAction={
+                          <ActionBtns
+                            order={pipelineMainOrder ?? selectedOrder}
+                            onAccept={() => updateStatus(pipelineMainOrder ?? selectedOrder, 'ACCEPTED')}
+                            onReject={() => setRejectModal(pipelineMainOrder ?? selectedOrder)}
+                            onPreparing={() =>
+                              updateStatus(pipelineMainOrder ?? selectedOrder, 'PREPARING')
+                            }
+                            onReady={() =>
+                              updateStatus(pipelineMainOrder ?? selectedOrder, 'READY_FOR_PICKUP')
+                            }
+                            onNeedMoreTime={() =>
+                              setPrepDelayOrder(pipelineMainOrder ?? selectedOrder)
+                            }
+                            onDispatch={() => {
+                              const o = pipelineMainOrder ?? selectedOrder;
+                              fetchOtp(o.id);
+                              setDispatchModal(o);
+                              setOtpInput('');
+                            }}
+                            onComplete={() =>
+                              updateStatus(pipelineMainOrder ?? selectedOrder, 'DELIVERED')
+                            }
+                            onRto={() => setRtoModalOrder(pipelineMainOrder ?? selectedOrder)}
+                            loading={actionLoading === (pipelineMainOrder ?? selectedOrder).id}
+                            otpVerified={otpVerified.has((pipelineMainOrder ?? selectedOrder).id)}
+                            topRightLayout
+                            hideRtoMenu
+                            acceptLabel={acceptCountdownFor(pipelineMainOrder ?? selectedOrder).label}
+                            acceptDisabled={acceptCountdownFor(pipelineMainOrder ?? selectedOrder).disabled}
+                            nowMs={nowTick}
+                          />
+                        }
+                      />
+                    ) : null}
                   </div>
                   {renderLiveOrderSwitcher()}
                 </div>
@@ -2613,7 +2781,8 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
                       }
                       setTimelineModalOpen(true);
                     }}
-                      onPrintBill={() => setPrintBillOpen(true)}
+                      onPrintBill={() => handlePrintBill(selectedOrder)}
+                      onPrintKot={() => handlePrintKot(selectedOrder)}
                       onTrackRider={() => setRiderTrackingOpen(true)}
                       onUniformFeedback={(inUniform) =>
                         void submitRiderUniformFeedback(selectedOrder, inUniform)
@@ -2869,21 +3038,6 @@ function OrdersPageContent({ storeId }: { storeId: string }) {
         open={customerSheetOpen && !!selectedOrder}
         onClose={() => setCustomerSheetOpen(false)}
         order={selectedOrder}
-      />
-      <GatiMitraOrderPrintBill
-        open={printBillOpen && !!selectedOrder}
-        onClose={() => setPrintBillOpen(false)}
-        order={selectedOrder}
-        pricing={
-          selectedOrderPricing ?? {
-            subtotal: 0,
-            packaging: 0,
-            taxes: 0,
-            discount: 0,
-            total: 0,
-          }
-        }
-        store={printStoreInfo}
       />
 
       {/* Dispatch modal – warning only; no OTP. Portaled so sidebar blurs. */}

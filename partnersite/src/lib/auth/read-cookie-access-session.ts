@@ -80,7 +80,8 @@ function parseSessionJson(raw: string): {
   user?: User;
 } | null {
   try {
-    let text = raw;
+    let text = raw.trim();
+    // URL-encoded JSON cookies
     if (text.startsWith("%")) {
       try {
         text = decodeURIComponent(text);
@@ -88,9 +89,24 @@ function parseSessionJson(raw: string): {
         /* keep */
       }
     }
+    // @supabase/ssr encodes as `base64-<payload>` (and sometimes URL-safe base64).
+    if (text.startsWith("base64-")) {
+      text = text.slice("base64-".length);
+      try {
+        const normalized = text.replace(/-/g, "+").replace(/_/g, "/");
+        const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+        const decoded = Buffer.from(padded, "base64").toString("utf8");
+        if (decoded.startsWith("{") || decoded.startsWith("[")) text = decoded;
+      } catch {
+        /* keep */
+      }
+    }
+    // base64-encoded JSON (some SSR cookie layouts without the prefix)
     if (!text.startsWith("{") && !text.startsWith("[")) {
       try {
-        const decoded = Buffer.from(text, "base64").toString("utf8");
+        const normalized = text.replace(/-/g, "+").replace(/_/g, "/");
+        const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+        const decoded = Buffer.from(padded, "base64").toString("utf8");
         if (decoded.startsWith("{") || decoded.startsWith("[")) text = decoded;
       } catch {
         /* keep */

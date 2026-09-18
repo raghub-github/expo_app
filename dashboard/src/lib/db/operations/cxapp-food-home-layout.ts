@@ -24,14 +24,17 @@ import {
 export type StateFoodHomeLayoutConfig = {
   layoutKey: FoodHomeLayoutKey;
   gridFirstHeroMedia: GridFirstHeroMediaItem[];
+  classicHeroMedia: GridFirstHeroMediaItem[];
   gridFirstSubscriptionRow: GridFirstSubscriptionRowConfig;
   gridFirstUnder250: GridFirstUnder250Config;
+  classicUnder250: GridFirstUnder250Config;
   discoveryCta: DiscoveryCtaConfig;
 };
 
 type LayoutRow = {
   layout_key: string;
   grid_first_hero_media: unknown;
+  classic_hero_media?: unknown;
   grid_first_subscription_row_enabled: boolean | null;
   grid_first_subscription_row_text: string | null;
   grid_first_subscription_row_bg_color: string | null;
@@ -41,6 +44,12 @@ type LayoutRow = {
   grid_first_under_250_filter_label: string | null;
   grid_first_under_250_tab_image_url: string | null;
   grid_first_under_250_hero_image_url: string | null;
+  classic_under_250_enabled?: boolean | null;
+  classic_under_250_max_price?: number | null;
+  classic_under_250_title?: string | null;
+  classic_under_250_filter_label?: string | null;
+  classic_under_250_tab_image_url?: string | null;
+  classic_under_250_hero_image_url?: string | null;
   discovery_deals_at_max_price?: number | null;
   discovery_deals_at_image_url?: string | null;
   discovery_deals_at_hero_image_url?: string | null;
@@ -62,8 +71,32 @@ function parseSubscriptionRow(row: LayoutRow | undefined): GridFirstSubscription
   };
 }
 
-function parseUnder250Row(row: LayoutRow | undefined): GridFirstUnder250Config {
+function parseUnder250FromColumns(
+  row: LayoutRow | undefined,
+  prefix: "grid_first" | "classic"
+): GridFirstUnder250Config {
   if (!row) return { ...DEFAULT_GRID_FIRST_UNDER_250 };
+  if (prefix === "classic") {
+    const hasClassic =
+      row.classic_under_250_max_price != null ||
+      row.classic_under_250_enabled != null ||
+      row.classic_under_250_title != null;
+    if (!hasClassic) return parseUnder250FromColumns(row, "grid_first");
+    return {
+      enabled: parseGridFirstUnder250Enabled(row.classic_under_250_enabled),
+      maxPrice: parseGridFirstUnder250MaxPrice(row.classic_under_250_max_price),
+      title: parseGridFirstUnder250Title(
+        row.classic_under_250_title,
+        DEFAULT_GRID_FIRST_UNDER_250.title
+      ),
+      filterLabel: parseGridFirstUnder250Title(
+        row.classic_under_250_filter_label,
+        DEFAULT_GRID_FIRST_UNDER_250.filterLabel
+      ),
+      tabImageUrl: parseGridFirstUnder250ImageUrl(row.classic_under_250_tab_image_url),
+      heroImageUrl: parseGridFirstUnder250ImageUrl(row.classic_under_250_hero_image_url),
+    };
+  }
   return {
     enabled: parseGridFirstUnder250Enabled(row.grid_first_under_250_enabled),
     maxPrice: parseGridFirstUnder250MaxPrice(row.grid_first_under_250_max_price),
@@ -95,6 +128,11 @@ function parseDiscoveryRow(row: LayoutRow | undefined): DiscoveryCtaConfig {
   });
 }
 
+function isMissingColumnError(err: unknown, needles: string[]): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return needles.some((n) => message.includes(n));
+}
+
 export async function getStateFoodHomeLayoutConfig(stateId: string): Promise<StateFoodHomeLayoutConfig> {
   const sql = getSql();
   let row: LayoutRow | undefined;
@@ -103,6 +141,7 @@ export async function getStateFoodHomeLayoutConfig(stateId: string): Promise<Sta
       SELECT
         layout_key::text AS layout_key,
         grid_first_hero_media,
+        classic_hero_media,
         grid_first_subscription_row_enabled,
         grid_first_subscription_row_text,
         grid_first_subscription_row_bg_color,
@@ -112,6 +151,12 @@ export async function getStateFoodHomeLayoutConfig(stateId: string): Promise<Sta
         grid_first_under_250_filter_label,
         grid_first_under_250_tab_image_url,
         grid_first_under_250_hero_image_url,
+        classic_under_250_enabled,
+        classic_under_250_max_price,
+        classic_under_250_title,
+        classic_under_250_filter_label,
+        classic_under_250_tab_image_url,
+        classic_under_250_hero_image_url,
         discovery_deals_at_max_price,
         discovery_deals_at_image_url,
         discovery_deals_at_hero_image_url,
@@ -127,18 +172,23 @@ export async function getStateFoodHomeLayoutConfig(stateId: string): Promise<Sta
     `;
     row = rows[0];
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const missingDiscovery =
-      message.includes("discovery_deals_at_max_price") ||
-      message.includes("discovery_deals_at_image_url") ||
-      message.includes("discovery_deals_at_hero_image_url") ||
-      message.includes("discovery_crazy_deals_image_url") ||
-      message.includes("discovery_free_packaging_image_url") ||
-      message.includes("discovery_deals_at_label") ||
-      message.includes("discovery_crazy_deals_label") ||
-      message.includes("discovery_free_packaging_label") ||
-      message.includes("discovery_cta_tiles");
-    if (!missingDiscovery) throw err;
+    if (
+      !isMissingColumnError(err, [
+        "classic_hero_media",
+        "classic_under_250",
+        "discovery_deals_at_max_price",
+        "discovery_deals_at_image_url",
+        "discovery_deals_at_hero_image_url",
+        "discovery_crazy_deals_image_url",
+        "discovery_free_packaging_image_url",
+        "discovery_deals_at_label",
+        "discovery_crazy_deals_label",
+        "discovery_free_packaging_label",
+        "discovery_cta_tiles",
+      ])
+    ) {
+      throw err;
+    }
     try {
       const rows = await sql<LayoutRow[]>`
         SELECT
@@ -155,52 +205,107 @@ export async function getStateFoodHomeLayoutConfig(stateId: string): Promise<Sta
           grid_first_under_250_hero_image_url,
           discovery_deals_at_max_price,
           discovery_deals_at_image_url,
+          discovery_deals_at_hero_image_url,
           discovery_crazy_deals_image_url,
           discovery_free_packaging_image_url,
           discovery_deals_at_label,
           discovery_crazy_deals_label,
-          discovery_free_packaging_label
+          discovery_free_packaging_label,
+          discovery_cta_tiles
         FROM cxapp_state_food_home_layout
         WHERE state_id = ${stateId}::uuid
         LIMIT 1
       `;
       row = rows[0];
     } catch (err2) {
-      const message2 = err2 instanceof Error ? err2.message : String(err2);
-      const missingLegacy =
-        message2.includes("discovery_deals_at_max_price") ||
-        message2.includes("discovery_deals_at_image_url") ||
-        message2.includes("discovery_crazy_deals_image_url") ||
-        message2.includes("discovery_free_packaging_image_url") ||
-        message2.includes("discovery_deals_at_label") ||
-        message2.includes("discovery_crazy_deals_label") ||
-        message2.includes("discovery_free_packaging_label");
-      if (!missingLegacy) throw err2;
-      const rows = await sql<LayoutRow[]>`
-        SELECT
-          layout_key::text AS layout_key,
-          grid_first_hero_media,
-          grid_first_subscription_row_enabled,
-          grid_first_subscription_row_text,
-          grid_first_subscription_row_bg_color,
-          grid_first_under_250_enabled,
-          grid_first_under_250_max_price,
-          grid_first_under_250_title,
-          grid_first_under_250_filter_label,
-          grid_first_under_250_tab_image_url,
-          grid_first_under_250_hero_image_url
-        FROM cxapp_state_food_home_layout
-        WHERE state_id = ${stateId}::uuid
-        LIMIT 1
-      `;
-      row = rows[0];
+      if (
+        !isMissingColumnError(err2, [
+          "discovery_deals_at_max_price",
+          "discovery_deals_at_image_url",
+          "discovery_deals_at_hero_image_url",
+          "discovery_crazy_deals_image_url",
+          "discovery_free_packaging_image_url",
+          "discovery_deals_at_label",
+          "discovery_crazy_deals_label",
+          "discovery_free_packaging_label",
+          "discovery_cta_tiles",
+        ])
+      ) {
+        throw err2;
+      }
+      try {
+        const rows = await sql<LayoutRow[]>`
+          SELECT
+            layout_key::text AS layout_key,
+            grid_first_hero_media,
+            grid_first_subscription_row_enabled,
+            grid_first_subscription_row_text,
+            grid_first_subscription_row_bg_color,
+            grid_first_under_250_enabled,
+            grid_first_under_250_max_price,
+            grid_first_under_250_title,
+            grid_first_under_250_filter_label,
+            grid_first_under_250_tab_image_url,
+            grid_first_under_250_hero_image_url,
+            discovery_deals_at_max_price,
+            discovery_deals_at_image_url,
+            discovery_crazy_deals_image_url,
+            discovery_free_packaging_image_url,
+            discovery_deals_at_label,
+            discovery_crazy_deals_label,
+            discovery_free_packaging_label
+          FROM cxapp_state_food_home_layout
+          WHERE state_id = ${stateId}::uuid
+          LIMIT 1
+        `;
+        row = rows[0];
+      } catch (err3) {
+        if (
+          !isMissingColumnError(err3, [
+            "discovery_deals_at_max_price",
+            "discovery_deals_at_image_url",
+            "discovery_crazy_deals_image_url",
+            "discovery_free_packaging_image_url",
+            "discovery_deals_at_label",
+            "discovery_crazy_deals_label",
+            "discovery_free_packaging_label",
+          ])
+        ) {
+          throw err3;
+        }
+        const rows = await sql<LayoutRow[]>`
+          SELECT
+            layout_key::text AS layout_key,
+            grid_first_hero_media,
+            grid_first_subscription_row_enabled,
+            grid_first_subscription_row_text,
+            grid_first_subscription_row_bg_color,
+            grid_first_under_250_enabled,
+            grid_first_under_250_max_price,
+            grid_first_under_250_title,
+            grid_first_under_250_filter_label,
+            grid_first_under_250_tab_image_url,
+            grid_first_under_250_hero_image_url
+          FROM cxapp_state_food_home_layout
+          WHERE state_id = ${stateId}::uuid
+          LIMIT 1
+        `;
+        row = rows[0];
+      }
     }
   }
+  const gridFirstHeroMedia = parseGridFirstHeroMediaItems(row?.grid_first_hero_media);
+  const classicHeroMedia =
+    row?.classic_hero_media !== undefined
+      ? parseGridFirstHeroMediaItems(row.classic_hero_media)
+      : gridFirstHeroMedia;
   return {
     layoutKey: parseFoodHomeLayoutKey(row?.layout_key) ?? DEFAULT_FOOD_HOME_LAYOUT,
-    gridFirstHeroMedia: parseGridFirstHeroMediaItems(row?.grid_first_hero_media),
+    gridFirstHeroMedia,
+    classicHeroMedia,
     gridFirstSubscriptionRow: parseSubscriptionRow(row),
-    gridFirstUnder250: parseUnder250Row(row),
+    gridFirstUnder250: parseUnder250FromColumns(row, "grid_first"),
+    classicUnder250: parseUnder250FromColumns(row, "classic"),
     discoveryCta: parseDiscoveryRow(row),
   };
 }
@@ -344,6 +449,43 @@ export async function saveStateGridFirstUnder250(
         updated_at = now()
     WHERE state_id = ${stateId}::uuid
   `;
+  return { enabled, maxPrice, title, filterLabel, tabImageUrl, heroImageUrl };
+}
+
+export async function saveStateClassicUnder250(
+  stateId: string,
+  config: GridFirstUnder250Config
+): Promise<GridFirstUnder250Config> {
+  await ensureStateFoodHomeLayoutRow(stateId);
+  const sql = getSql();
+  const enabled = parseGridFirstUnder250Enabled(config.enabled);
+  const maxPrice = parseGridFirstUnder250MaxPrice(config.maxPrice);
+  const title = parseGridFirstUnder250Title(config.title, DEFAULT_GRID_FIRST_UNDER_250.title);
+  const filterLabel = parseGridFirstUnder250Title(
+    config.filterLabel,
+    DEFAULT_GRID_FIRST_UNDER_250.filterLabel
+  );
+  const tabImageUrl = parseGridFirstUnder250ImageUrl(config.tabImageUrl);
+  const heroImageUrl = parseGridFirstUnder250ImageUrl(config.heroImageUrl);
+  try {
+    await sql`
+      UPDATE cxapp_state_food_home_layout
+      SET classic_under_250_enabled = ${enabled},
+          classic_under_250_max_price = ${maxPrice},
+          classic_under_250_title = ${title},
+          classic_under_250_filter_label = ${filterLabel},
+          classic_under_250_tab_image_url = ${tabImageUrl},
+          classic_under_250_hero_image_url = ${heroImageUrl},
+          updated_at = now()
+      WHERE state_id = ${stateId}::uuid
+    `;
+  } catch (err) {
+    if (!isMissingColumnError(err, ["classic_under_250"])) throw err;
+    // Pre-migration: refuse to write classic into grid columns (that caused the mix).
+    throw new Error(
+      "classic_under_250 columns missing — apply migration 0635_food_home_layout_under250_detach.sql"
+    );
+  }
   return { enabled, maxPrice, title, filterLabel, tabImageUrl, heroImageUrl };
 }
 

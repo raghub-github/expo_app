@@ -9,7 +9,7 @@ import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
 export default function AuthLayout() {
   const { authState } = useAuth();
 
-  if (authState.status === "loading") {
+  if (authState.status === "loading" || authState.status === "logging_out") {
     return <MerchantBootstrapScreen />;
   }
 
@@ -20,6 +20,10 @@ export default function AuthLayout() {
       screenOptions={{
         headerShown: false,
         animation: "slide_from_right",
+        statusBarHidden: false,
+        statusBarStyle: "dark",
+        statusBarTranslucent: false,
+        statusBarBackgroundColor: "#F8FAFC",
       }}
     >
       {signedIn ? (

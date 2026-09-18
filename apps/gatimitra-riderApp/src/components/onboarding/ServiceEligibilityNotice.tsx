@@ -8,6 +8,7 @@ import { View, Text, StyleSheet } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import type { RiderOnboardingSummary } from "@/src/services/api/riderApi";
+import { blockedServiceSlogan } from "@/src/lib/blocked-service-slogan";
 
 const SERVICE_ORDER = ["food", "parcel", "person_ride"] as const;
 
@@ -22,14 +23,6 @@ const SERVICE_ICON: Record<string, keyof typeof Ionicons.glyphMap> = {
   parcel: "cube-outline",
   person_ride: "bicycle-outline",
 };
-
-const DOC_LABEL: Record<string, string> = {
-  DRIVING_LICENSE: "Driving Licence",
-  REGISTRATION_CERTIFICATE: "Registration Certificate",
-};
-
-const human = (s: string) =>
-  DOC_LABEL[s] ?? s.replaceAll("_", " ").toLowerCase().replace(/^./, (c) => c.toUpperCase());
 
 function statusHeadline(status: string): { title: string; tone: string } {
   switch (status) {
@@ -46,19 +39,6 @@ function statusHeadline(status: string): { title: string; tone: string } {
     default:
       return { title: "Onboarding in progress", tone: "#475569" };
   }
-}
-
-function blockedSlogan(b: {
-  service: string;
-  missingDocuments: string[];
-  reasons: string[];
-}): string {
-  const label = SERVICE_LABEL[b.service] ?? b.service;
-  if (b.reasons[0]?.trim()) return b.reasons[0].trim();
-  if (b.missingDocuments.length) {
-    return `${label} needs ${b.missingDocuments.map(human).join(" + ")} to unlock.`;
-  }
-  return `${label} is unavailable until documents are verified.`;
 }
 
 function orderedServices(eligible: string[], blockedServices: string[]): string[] {
@@ -120,12 +100,14 @@ export function ServiceEligibilityNotice({
         isBlocked,
         detail: isBlocked
           ? blocked
-            ? blockedSlogan(blocked)
-            : "Locked until documents are verified"
-          : "Available after you pay this fee",
+            ? blockedServiceSlogan(blocked)
+            : "Not eligible right now"
+          : variant === "requiredFor"
+            ? "Available after you pay this fee"
+            : "Eligible for this service",
       };
     });
-  }, [summary]);
+  }, [summary, variant]);
 
   if (!summary) return null;
   const ob = summary.onboarding;
@@ -134,7 +116,7 @@ export function ServiceEligibilityNotice({
 
   if (variant === "requiredFor") {
     const uniqueFootnotes = Array.from(
-      new Set(blocked.map((b) => blockedSlogan(b)).filter(Boolean)),
+      new Set(blocked.map((b) => blockedServiceSlogan(b)).filter(Boolean)),
     );
 
     return (
@@ -244,7 +226,7 @@ export function ServiceEligibilityNotice({
   }
 
   const uniqueSlogans = Array.from(
-    new Set(blocked.map((b) => blockedSlogan(b)).filter(Boolean)),
+    new Set(blocked.map((b) => blockedServiceSlogan(b)).filter(Boolean)),
   );
 
   return (

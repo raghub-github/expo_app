@@ -198,9 +198,12 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
         const deviceId = typeof (payload as any).device_id === "string" ? (payload as any).device_id : undefined;
         if (deviceId) {
           const cachedValid = readDeviceSessionCache(sub, deviceId);
-          if (cachedValid === false) {
-            throwAuthError(401, "session_revoked", "Signed out from this device.");
-          } else if (cachedValid !== true) {
+          // Trust positive cache only. A cached "false" must re-hit the DB so a
+          // fresh login that reactivated the device is not rejected for ~45s
+          // (stale negative cache after logout).
+          if (cachedValid === true) {
+            // fast path — still refresh last_active below
+          } else {
             try {
               await withSqlRetry(async () => {
                 const sql = getSql();

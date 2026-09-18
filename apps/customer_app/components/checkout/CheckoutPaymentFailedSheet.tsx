@@ -1,4 +1,5 @@
-import { View, Pressable, StyleSheet, Modal, ActivityIndicator } from "react-native";
+import { View, Pressable, StyleSheet, Modal, ActivityIndicator, Text } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { AppText } from "@/components/AppText";
@@ -27,19 +28,21 @@ export function CheckoutPaymentFailedSheet({
   onChooseMethod,
   onLeave,
 }: Props) {
-  const amountText =
-    amountInr != null && amountInr > 0 ? `₹${formatCheckoutSavingsRupees(amountInr)}` : "your payment";
-  const method = methodLabel.trim() || "UPI";
+  const insets = useSafeAreaInsets();
+  const hasAmount = amountInr != null && Number.isFinite(amountInr) && amountInr > 0.005;
+  const amountText = hasAmount ? `₹${formatCheckoutSavingsRupees(amountInr)}` : null;
+  const method = methodLabel.trim() || "UPI / Cards";
+  const title = amountText ? `Payment of ${amountText} failed` : "Payment failed";
 
   return (
     <StoreBottomSheetShell
       visible={visible}
       onClose={onLeave}
-      maxHeightRatio={0.62}
+      maxHeightRatio={0.78}
       flushBottom
       sheetStyle={styles.sheet}
     >
-      <View style={styles.body}>
+      <View style={[styles.body, { paddingBottom: Math.max(insets.bottom, 20) }]}>
         <View style={styles.illustration}>
           <View style={styles.bill}>
             <Ionicons name="receipt-outline" size={42} color="#6B7280" />
@@ -52,22 +55,51 @@ export function CheckoutPaymentFailedSheet({
           </View>
         </View>
 
-        <AppText style={styles.title}>Payment of {amountText} failed</AppText>
+        <AppText style={styles.title}>{title}</AppText>
         <AppText style={styles.subtitle}>
-          If amount was deducted from {method} UPI, refund will be processed within 2 hours
+          If amount was deducted from {method}, refund will be processed within 5-7 days
         </AppText>
 
-        <Pressable onPress={onRetry} style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
-          <AppText style={styles.primaryText}>Try again</AppText>
-        </Pressable>
-        {onChooseMethod ? (
-          <Pressable onPress={onChooseMethod} style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}>
-            <AppText style={styles.secondaryText}>Choose another payment method</AppText>
+        {/* Explicit spacer — avoids text styles swallowing button margins. */}
+        <View style={styles.messageButtonGap} />
+
+        <View style={styles.actions}>
+          <Pressable
+            onPress={onRetry}
+            style={({ pressed }) => [styles.ctaPressable, pressed && styles.ctaPressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Try payment again"
+          >
+            <View style={[styles.cta, styles.ctaPrimary]}>
+              <Text style={styles.ctaPrimaryText}>Try again</Text>
+            </View>
           </Pressable>
-        ) : null}
-        <Pressable onPress={onLeave} style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}>
-          <AppText style={styles.secondaryText}>Leave — back to checkout</AppText>
-        </Pressable>
+
+          {onChooseMethod ? (
+            <Pressable
+              onPress={onChooseMethod}
+              style={({ pressed }) => [styles.ctaPressable, styles.ctaGap, pressed && styles.ctaPressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Choose another payment method"
+            >
+              <View style={[styles.cta, styles.ctaSecondary]}>
+                <Text style={styles.ctaSecondaryText} numberOfLines={1}>
+                  Choose another payment method
+                </Text>
+              </View>
+            </Pressable>
+          ) : null}
+
+          <Pressable
+            onPress={onLeave}
+            style={({ pressed }) => [styles.leavePressable, pressed && styles.ctaPressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Back to checkout"
+            hitSlop={8}
+          >
+            <Text style={styles.leaveText}>Back to checkout</Text>
+          </Pressable>
+        </View>
       </View>
     </StoreBottomSheetShell>
   );
@@ -78,9 +110,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   body: {
-    paddingHorizontal: 22,
+    width: "100%",
+    paddingHorizontal: 20,
     paddingTop: 18,
-    paddingBottom: 10,
     alignItems: "center",
   },
   illustration: {
@@ -126,6 +158,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   title: {
+    width: "100%",
     fontSize: 20,
     lineHeight: 26,
     fontFamily: StoreFonts.loraBold,
@@ -134,40 +167,80 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   subtitle: {
+    width: "100%",
     fontSize: 13,
     lineHeight: 19,
     fontFamily: StoreFonts.poppinsSemiBold,
     color: "#6B7280",
     textAlign: "center",
-    marginBottom: 22,
-    paddingHorizontal: 8,
+    paddingHorizontal: 4,
   },
-  primary: {
+  messageButtonGap: {
+    width: "100%",
+    height: 22,
+    flexShrink: 0,
+  },
+  actions: {
+    width: "100%",
+    alignSelf: "stretch",
+  },
+  ctaPressable: {
+    width: "100%",
+    borderRadius: 14,
+    overflow: "hidden",
+  },
+  ctaGap: {
+    marginTop: 10,
+  },
+  ctaPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.995 }],
+  },
+  cta: {
     width: "100%",
     minHeight: 52,
-    borderRadius: 12,
-    backgroundColor: GatiMitraColors.emerald,
+    paddingHorizontal: 16,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },
-  primaryText: {
+  ctaPrimary: {
+    backgroundColor: GatiMitraColors.deepMintStart,
+  },
+  ctaPrimaryText: {
     color: "#FFFFFF",
     fontSize: 16,
+    fontWeight: "800",
+    textAlign: "center",
     fontFamily: StoreFonts.poppinsBold,
   },
-  secondary: {
-    width: "100%",
-    minHeight: 48,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 4,
+  ctaSecondary: {
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1.5,
+    borderColor: GatiMitraColors.deepMintStart,
   },
-  secondaryText: {
-    color: GatiMitraColors.emerald,
+  ctaSecondaryText: {
+    color: GatiMitraColors.deepMintStart,
     fontSize: 15,
+    fontWeight: "700",
+    textAlign: "center",
     fontFamily: StoreFonts.poppinsSemiBold,
   },
-  pressed: { opacity: 0.82 },
+  leavePressable: {
+    width: "100%",
+    marginTop: 14,
+    minHeight: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  leaveText: {
+    color: "#6B7280",
+    fontSize: 14,
+    fontWeight: "600",
+    textAlign: "center",
+    fontFamily: StoreFonts.poppinsSemiBold,
+    textDecorationLine: "none",
+  },
 });
 
 export function CheckoutPaymentReturnOverlay({ visible }: { visible: boolean }) {

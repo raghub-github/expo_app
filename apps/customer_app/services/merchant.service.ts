@@ -118,6 +118,9 @@ export type MenuItem = {
    */
   listRowKey?: string;
   canonicalPricing?: Record<string, unknown>;
+  flashSale?: Record<string, unknown> | null;
+  /** Dish-level avg rating when API provides it (classic masonry corner pill). */
+  avgRating?: number | null;
 };
 
 export type MenuItemFullConfig = {
@@ -476,11 +479,24 @@ function normalizeMenuItem(raw: MenuItem & Record<string, unknown>): MenuItem {
       const n = Number(raw.orderCount ?? (raw as Record<string, unknown>).order_count);
       return Number.isFinite(n) && n > 0 ? Math.trunc(n) : raw.orderCount ?? 0;
     })(),
+    avgRating: (() => {
+      const rawRating = raw.avgRating ?? (raw as Record<string, unknown>).avg_rating;
+      if (rawRating == null || rawRating === "") return raw.avgRating ?? null;
+      const n = Number(rawRating);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    })(),
     canonicalPricing:
       raw.canonicalPricing ??
       (typeof raw.canonical_pricing === "object" && raw.canonical_pricing != null
         ? (raw.canonical_pricing as Record<string, unknown>)
         : raw.canonicalPricing),
+    flashSale:
+      (raw.flashSale as Record<string, unknown> | undefined) ??
+      (typeof raw.flash_sale === "object" && raw.flash_sale != null
+        ? (raw.flash_sale as Record<string, unknown>)
+        : (raw.canonicalPricing as { flash_sale?: Record<string, unknown> } | undefined)?.flash_sale ??
+          (raw.canonical_pricing as { flash_sale?: Record<string, unknown> } | undefined)?.flash_sale ??
+          undefined),
   };
 }
 

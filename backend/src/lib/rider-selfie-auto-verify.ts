@@ -116,10 +116,15 @@ export async function maybeAutoVerifyRiderSelfie(riderId: number): Promise<boole
 }
 
 /**
- * Profile selfie re-upload: always mark the stored selfie as auto-verified.
- * Onboarding still uses maybeAutoVerifyRiderSelfie (electronic KYC only).
+ * Mark stored selfie verified after upload.
+ * - Rider app upload → Auto verified (APP_VERIFIED)
+ * - Admin dashboard upload → Manual verified (MANUAL_UPLOAD / approved)
  */
-export async function autoVerifyUploadedRiderSelfie(riderId: number): Promise<boolean> {
+export async function autoVerifyUploadedRiderSelfie(
+  riderId: number,
+  opts?: { source?: "rider" | "admin" },
+): Promise<boolean> {
+  const source = opts?.source === "admin" ? "admin" : "rider";
   const db = getDb();
   const [selfie] = (await db
     .select({
@@ -136,12 +141,13 @@ export async function autoVerifyUploadedRiderSelfie(riderId: number): Promise<bo
 
   if (!selfie?.fileUrl || selfie.fileUrl === "pending") return false;
 
+  const isAdmin = source === "admin";
   await db
     .update(riderDocuments)
     .set({
       verified: true,
-      verificationStatus: "auto_verified",
-      verificationMethod: "APP_VERIFIED",
+      verificationStatus: isAdmin ? "approved" : "auto_verified",
+      verificationMethod: isAdmin ? "MANUAL_UPLOAD" : "APP_VERIFIED",
       verifiedAt: new Date(),
       requiresManualReview: false,
       rejectedReason: null,
@@ -149,7 +155,12 @@ export async function autoVerifyUploadedRiderSelfie(riderId: number): Promise<bo
         ...(selfie.metadata && typeof selfie.metadata === "object"
           ? (selfie.metadata as Record<string, unknown>)
           : {}),
-        autoVerifiedFromProfileUpload: true,
+        ...(isAdmin
+          ? { adminUploadedSelfie: true, autoVerifiedFromUpload: true }
+          : {
+              autoVerifiedFromRiderUpload: true,
+              replacedAdminSelfie: true,
+            }),
         autoVerifiedAt: new Date().toISOString(),
       },
       updatedAt: new Date(),

@@ -13,6 +13,11 @@ export type FoodItemUnderPrice = {
   isVeg: boolean;
   isPopular?: boolean;
   itemTags?: string[];
+  flashSale?: {
+    offerId: number;
+    originalCustomerUnit: number;
+    flashPrice: number;
+  } | null;
 };
 
 export type StoreFoodItemsUnderPrice = {

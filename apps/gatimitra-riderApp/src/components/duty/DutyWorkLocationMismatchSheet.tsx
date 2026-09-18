@@ -26,6 +26,8 @@ import { resolveOnboardingGeo } from "@/src/services/onboardingGeo.service";
 import { riderApi } from "@/src/services/api/riderApi";
 import { useDutyToggle } from "@/src/hooks/useDutyToggle";
 import { HttpError } from "@/src/services/http";
+import { openDutyActionError } from "@/src/stores/dutyActionErrorStore";
+import { isRiderNetworkOnline } from "@/src/stores/riderNetworkStore";
 import { showWorkingLocationSuccess } from "@/src/stores/workingLocationSuccessStore";
 
 const PRIMARY = "#15803D";
@@ -67,10 +69,17 @@ export function DutyWorkLocationMismatchSheet() {
     const lat = detected?.lat;
     const lon = detected?.lon;
     if (lat == null || lon == null || !Number.isFinite(lat) || !Number.isFinite(lon)) {
-      Alert.alert(
-        "Location needed",
-        "Could not read your current GPS. Turn on location and try going ON-DUTY again.",
-      );
+      if (!isRiderNetworkOnline()) {
+        openDutyActionError({ kind: "network" });
+        return;
+      }
+      openDutyActionError({
+        kind: "location",
+        locationReason: "unavailable",
+        title: "Location needed",
+        message:
+          "Could not read your current GPS. Turn on location and try going ON-DUTY again.",
+      });
       return;
     }
 

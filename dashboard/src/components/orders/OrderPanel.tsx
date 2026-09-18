@@ -2,13 +2,12 @@
 
 import React, { useEffect, useState } from 'react';
 import {
+  Bike,
   ChevronRight,
   Clock,
   HelpCircle,
-  MapPin,
   Phone,
   Printer,
-  UtensilsCrossed,
   X,
 } from 'lucide-react';
 import type { OrdersFoodRow } from '@/lib/types/food-orders';
@@ -23,47 +22,13 @@ import { formatRtoOtpDisplay, resolveOrderOtps, type CachedOrderOtps } from '@/l
 import { getUtensilsCustomerLabel } from '@/lib/orderUtensilsLabel';
 import { formatOrderDropAddress } from '@/lib/formatOrderAddress';
 import { RiderDeliveryPartnerCard } from '@/components/orders/RiderDeliveryPartnerCard';
+import { RiderAssignPendingCard } from '@/components/orders/RiderAssignPendingCard';
 import { deliveryEtaMinutesLabel } from '@/lib/order-prep-time';
+import { computeOrderItemQuantityCount } from '@/lib/merchantOrderFoodActions';
+import { isPartnerSelfPickupOrder } from '@/lib/partner-delivery-type';
 
 /** Panel preview only — full list via sidesheet (+N more). No scroll on items. */
 const ITEMS_PREVIEW_MAX = 4;
-
-function resolveItemVegType(vegNonveg?: string | null, name?: string | null): 'veg' | 'non_veg' | null {
-  const t = (vegNonveg ?? '').toLowerCase();
-  if (t.includes('non') || t === 'non_veg') return 'non_veg';
-  if (t.includes('veg')) return 'veg';
-  const n = (name ?? '').toLowerCase();
-  if (/\b(chicken|mutton|fish|prawn|shrimp|egg|meat|non[- ]?veg)\b/.test(n)) return 'non_veg';
-  if (/\b(paneer|dal|veg|sabzi|aloo|gobi)\b/.test(n)) return 'veg';
-  return null;
-}
-
-function ItemVegCheckbox({ vegNonveg, name }: { vegNonveg?: string | null; name?: string | null }) {
-  const kind = resolveItemVegType(vegNonveg, name);
-  const isVeg = kind === 'veg';
-  const isNonVeg = kind === 'non_veg';
-
-  const borderClass = isVeg
-    ? 'border-green-600'
-    : isNonVeg
-      ? 'border-red-600'
-      : 'border-black';
-
-  return (
-    <span
-      className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border bg-white ${borderClass}`}
-      aria-hidden
-    >
-      {isVeg ? (
-        <span className="h-2 w-2 rounded-full bg-green-600" />
-      ) : isNonVeg ? (
-        <span className="h-2 w-2 rounded-full bg-red-600" />
-      ) : (
-        <span className="h-2 w-2 rounded-full bg-white ring-1 ring-inset ring-gray-300" title="Unclassified" />
-      )}
-    </span>
-  );
-}
 
 function formatPlacedClock(dateStr: string) {
   return new Date(dateStr).toLocaleTimeString('en-IN', {
@@ -140,8 +105,9 @@ export type OrderPanelProps = {
   onOpenAllItems: () => void;
   onOpenTimeline: () => void;
   onPrintBill: () => void;
+  onPrintKot?: () => void;
   onClose?: () => void;
-  primaryAction: React.ReactNode;
+  primaryAction?: React.ReactNode;
   otpCode?: string;
   otpType?: string;
   otpCache?: CachedOrderOtps;
@@ -154,6 +120,8 @@ export type OrderPanelProps = {
   uniformFeedback?: boolean | null;
   className?: string;
   nowMs?: number;
+  /** Live pipeline vs completed order history (badge label). */
+  panelMode?: 'live' | 'history';
 };
 
 export function OrderPanel({
@@ -165,6 +133,7 @@ export function OrderPanel({
   onOpenAllItems,
   onOpenTimeline,
   onPrintBill,
+  onPrintKot,
   onClose,
   primaryAction,
   otpCode,
@@ -179,11 +148,12 @@ export function OrderPanel({
   uniformFeedback,
   className,
   nowMs,
+  panelMode = 'live',
 }: OrderPanelProps) {
   const items = order.items ?? [];
   const previewItems = items.slice(0, ITEMS_PREVIEW_MAX);
   const hasMoreItems = items.length > ITEMS_PREVIEW_MAX;
-  const [showPhone, setShowPhone] = useState(false);
+  const totalItemCount = computeOrderItemQuantityCount(order);
   const [selectedItem, setSelectedItem] = useState<OrderLineItem | null>(null);
 
   const storeOrdinalLabel = customerOrdinalLabel(order.customer_store_order_ordinal);
@@ -206,20 +176,41 @@ export function OrderPanel({
       : otps;
   const utensilsLabel = getUtensilsCustomerLabel(order);
   const rtoDisplay = formatRtoOtpDisplay(status, displayOtps.rto);
+  const isSelfPickup = isPartnerSelfPickupOrder(order);
+  const riderAssigned = !!(
+    order.rider_id ??
+    order.rider_details?.id ??
+    order.rider_name ??
+    order.rider_phone
+  );
+  const terminalStatus =
+    status === 'DELIVERED' ||
+    status === 'CANCELLED' ||
+    status === 'RTO' ||
+    Boolean(order.delivered_at) ||
+    Boolean(order.cancelled_at) ||
+    Boolean(order.is_rto);
+  const showPendingRiderAssign =
+    panelMode === 'live' && !isSelfPickup && !riderAssigned && !terminalStatus;
   const showRiderCard =
-    !!riderName || !!displayOtps.pickup || !!displayOtps.rto || !!otpCode || !!onViewPastRiders;
-  const isDelivered = status === "DELIVERED";
+    !isSelfPickup &&
+    (riderAssigned ||
+      !!riderName ||
+      !!displayOtps.pickup ||
+      !!displayOtps.rto ||
+      !!otpCode);
+  const isDelivered = status === 'DELIVERED';
   const packagingLabel =
-    order.customer_packaging_feedback === "good"
-      ? "Good"
-      : order.customer_packaging_feedback === "not_good"
-        ? "Not good"
+    order.customer_packaging_feedback === 'good'
+      ? 'Good'
+      : order.customer_packaging_feedback === 'not_good'
+        ? 'Not good'
         : null;
   const customerUniformLabel =
     order.customer_rider_in_uniform === true
-      ? "Yes"
+      ? 'Yes'
       : order.customer_rider_in_uniform === false
-        ? "No"
+        ? 'No'
         : null;
   const showCustomerFeedback =
     isDelivered && (packagingLabel != null || customerUniformLabel != null);
@@ -230,21 +221,35 @@ export function OrderPanel({
     >
       <div className="flex flex-col xl:flex-row divide-y xl:divide-y-0 xl:divide-x divide-dashed divide-gray-200 overflow-y-auto hide-scrollbar flex-1 min-h-0">
         <div className="flex flex-col p-4 xl:w-[30%] min-w-0 shrink-0">
-          <div className="mb-3 flex flex-col gap-2">
+          <div className="mb-3 flex items-center justify-between gap-2 min-w-0 flex-nowrap">
             <span
-              className="inline-flex max-w-full w-fit items-center rounded-md bg-violet-100 px-2.5 py-1 text-[10px] font-bold tracking-wide text-violet-800 whitespace-nowrap overflow-hidden text-ellipsis"
-              title="GatiMitra - LiveOps"
+              className={`inline-flex min-w-0 max-w-full items-center rounded-md px-2.5 py-1 text-[10px] font-bold tracking-wide whitespace-nowrap overflow-hidden text-ellipsis ${
+                panelMode === 'history'
+                  ? 'bg-slate-100 text-slate-700'
+                  : 'bg-violet-100 text-violet-800'
+              }`}
+              title={panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
             >
-              GatiMitra - LiveOps
+              {panelMode === 'history' ? 'Order history' : 'GatiMitra - LiveOps'}
             </span>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
+              {onPrintKot && !terminalStatus ? (
+                <button
+                  type="button"
+                  onClick={onPrintKot}
+                  className="inline-flex items-center justify-center rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-50"
+                >
+                  KOT
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={onPrintBill}
-                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
+                aria-label="Print bill"
+                title="Print bill"
+                className="inline-flex items-center justify-center rounded-lg border border-blue-200 bg-white px-2 py-1 text-blue-700 hover:bg-blue-50"
               >
-                <Printer size={13} />
-                Print bill
+                <Printer size={14} />
               </button>
             </div>
           </div>
@@ -252,7 +257,7 @@ export function OrderPanel({
           <div className="mb-2 pr-6">
             {formattedOrderId ?? (
               <p className="text-2xl font-bold text-gray-900 tracking-tight">
-                ID: {order.formatted_order_id || order.order_id}
+                {order.formatted_order_id || order.order_id}
               </p>
             )}
           </div>
@@ -268,16 +273,15 @@ export function OrderPanel({
                   <span className="truncate">{order.customer_name}</span>
                   <ChevronRight size={14} className="shrink-0" />
                 </button>
-                {order.customer_phone && (
-                  <button
-                    type="button"
-                    onClick={() => setShowPhone((v) => !v)}
-                    className="inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-800 shrink-0"
+                {order.customer_phone && !terminalStatus ? (
+                  <a
+                    href={`tel:${order.customer_phone}`}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
+                    aria-label="Call customer"
                   >
-                    <Phone size={14} />
-                    {showPhone ? order.customer_phone : 'Call'}
-                  </button>
-                )}
+                    <Phone size={14} aria-hidden />
+                  </a>
+                ) : null}
               </div>
               {storeOrdinalLabel && (
                 <p className="text-xs text-gray-500">{storeOrdinalLabel}</p>
@@ -285,7 +289,7 @@ export function OrderPanel({
             </div>
           )}
 
-          {addressText ? (
+          {isSelfPickup ? null : addressText ? (
             <p className="text-xs text-gray-600 leading-relaxed mb-4">
               {addressText}
               {dropProximity ? (
@@ -338,11 +342,15 @@ export function OrderPanel({
         </div>
 
         <div className="flex flex-col p-4 flex-[1.35] min-w-0 min-h-0">
+          <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-gray-500">
+            Order items ({totalItemCount})
+          </p>
           <MerchantOrderItemsList
-            items={previewItems as unknown as Parameters<typeof MerchantOrderItemsList>[0]["items"]}
+            items={previewItems as unknown as Parameters<typeof MerchantOrderItemsList>[0]['items']}
             requiresUtensils={order.requires_utensils}
             utensilsLabel={utensilsLabel}
             showQuantityColumn
+            showUtensilsBanner={false}
             onItemClick={(item) => setSelectedItem(item as OrderLineItem)}
           />
           {hasMoreItems ? (
@@ -357,7 +365,7 @@ export function OrderPanel({
 
           <MerchantOrderBillSummary
             className="mt-4 shrink-0"
-            items={items as unknown as Parameters<typeof MerchantOrderBillSummary>[0]["items"]}
+            items={items as unknown as Parameters<typeof MerchantOrderBillSummary>[0]['items']}
             pricing={pricing}
             onTotalClick={onOpenBill}
           />
@@ -374,7 +382,7 @@ export function OrderPanel({
               ) : null}
               {customerUniformLabel ? (
                 <p className="text-xs text-gray-800">
-                  <span className="font-semibold">Rider in GatiMitra uniform:</span>{" "}
+                  <span className="font-semibold">Rider in GatiMitra uniform:</span>{' '}
                   {customerUniformLabel}
                 </p>
               ) : null}
@@ -393,7 +401,11 @@ export function OrderPanel({
               <X size={18} />
             </button>
           )}
-          {showRiderCard && riderName ? (
+          {showPendingRiderAssign ? (
+            <div className="mt-6">
+              <RiderAssignPendingCard />
+            </div>
+          ) : showRiderCard && riderName ? (
             <RiderDeliveryPartnerCard
               className="mt-6 shrink-0"
               riderName={riderName}
@@ -409,9 +421,14 @@ export function OrderPanel({
               onUniformFeedback={isPickedUp ? onUniformFeedback : undefined}
               uniformFeedback={uniformFeedback}
             />
-          ) : null}
+          ) : (
+            <div className="mt-6 flex items-start gap-2 text-xs text-gray-500">
+              <Bike size={16} className="mt-0.5 shrink-0" aria-hidden />
+              <span>Delivery partner details appear when a rider is assigned.</span>
+            </div>
+          )}
 
-          <div className="mt-3 shrink-0 flex flex-col gap-2">
+          <div className="mt-auto shrink-0 flex flex-col gap-2 pt-3">
             {onViewPastRiders ? (
               <button
                 type="button"
@@ -425,7 +442,7 @@ export function OrderPanel({
               type="button"
               onClick={() => onOrderHelp?.()}
               disabled={!onOrderHelp}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-3 py-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-50"
+              className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-3 py-2.5 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
             >
               <HelpCircle size={16} />
               Order help

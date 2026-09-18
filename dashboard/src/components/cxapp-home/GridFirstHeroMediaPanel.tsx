@@ -18,6 +18,8 @@ type Props = {
   initialItems?: GridFirstHeroMediaItem[];
   /** API base path without trailing slash, e.g. food-layout or grocery-layout. */
   apiBasePath?: string;
+  /** Classic + grid_first share the same hero media column — label by active layout. */
+  layoutScope?: "classic" | "grid_first";
 };
 
 function mediaPreviewUrl(url: string): string {
@@ -29,6 +31,7 @@ export function GridFirstHeroMediaPanel({
   enabled,
   initialItems,
   apiBasePath = "food-layout",
+  layoutScope = "grid_first",
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<GridFirstHeroMediaItem[]>(() => initialItems ?? []);
@@ -38,6 +41,11 @@ export function GridFirstHeroMediaPanel({
   const [error, setError] = useState<string | null>(null);
 
   const heroApiBase = `/api/super-admin/cxapp-home/${apiBasePath}/${stateId}/hero-media`;
+  const isClassic = layoutScope === "classic";
+  const heading = isClassic ? "Classic hero carousel" : "Grid First hero carousel";
+  const subcopy = isClassic
+    ? `Upload images (jpg/png/webp/gif) or MP4 for the Classic food home hero (max ${MAX_GRID_FIRST_HERO_MEDIA} slides).`
+    : `Upload images (jpg/png/webp/gif) or MP4. The customer app hero auto-resizes to each slide's aspect ratio (max ${MAX_GRID_FIRST_HERO_MEDIA} slides).`;
 
   const loadItems = useCallback(async () => {
     if (!stateId) return;
@@ -127,11 +135,8 @@ export function GridFirstHeroMediaPanel({
     <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-slate-900">Grid First hero carousel</h3>
-          <p className="mt-0.5 text-xs text-slate-600">
-            Upload images (jpg/png/webp/gif) or MP4. The customer app hero auto-resizes to each
-            slide&apos;s aspect ratio (max {MAX_GRID_FIRST_HERO_MEDIA} slides).
-          </p>
+          <h3 className="text-sm font-semibold text-slate-900">{heading}</h3>
+          <p className="mt-0.5 text-xs text-slate-600">{subcopy}</p>
         </div>
         <button
           type="button"

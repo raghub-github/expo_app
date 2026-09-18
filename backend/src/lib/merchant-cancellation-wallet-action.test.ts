@@ -52,6 +52,47 @@ describe("merchant CTM debit matrix", () => {
     assert.equal(adj.amount, 50);
   });
 
+  it("policy 80% keep overrides partial_debit 50% matrix", () => {
+    const adj = resolveMerchantCtmDebitAdjustment({
+      mode: "partial_debit",
+      ctmAmount: 100,
+      currentNetHeld: 0,
+      grossCredited: 0,
+      keepPctOverride: 80,
+      targetNetOverride: 80,
+    });
+    assert.equal(adj.kind, "credit");
+    assert.equal(adj.amount, 80);
+    assert.equal(adj.keepPct, 80);
+    assert.equal(adj.targetNet, 80);
+  });
+
+  it("policy 40% keep overrides partial_debit 50% matrix", () => {
+    const adj = resolveMerchantCtmDebitAdjustment({
+      mode: "partial_debit",
+      ctmAmount: 142,
+      currentNetHeld: 0,
+      grossCredited: 0,
+      keepPctOverride: 40,
+      targetNetOverride: 56.8,
+    });
+    assert.equal(adj.kind, "credit");
+    assert.equal(adj.amount, 56.8);
+    assert.equal(adj.keepPct, 40);
+  });
+
+  it("admin PARTIAL without override stays 50%", () => {
+    const adj = resolveMerchantCtmDebitAdjustment({
+      mode: "partial_debit",
+      ctmAmount: 142,
+      currentNetHeld: 0,
+      grossCredited: 0,
+    });
+    assert.equal(adj.kind, "credit");
+    assert.equal(adj.amount, 71);
+    assert.equal(adj.keepPct, 50);
+  });
+
   it("NO_DEBIT + credited → no transaction", () => {
     const adj = resolveMerchantCtmDebitAdjustment({
       mode: "no_debit",

@@ -165,7 +165,29 @@ export function statusFromCustomerLifecyclePush(
   )
     .trim()
     .toUpperCase();
+  if (!code) return null;
   if (code.includes("CANCELLED") || code.includes("CANCELED")) return "CANCELLED";
+  if (code === "ORDER_CREATED" || code === "ORDER_PLACED") return "ORDER_PLACED";
+  if (code === "ORDER_ACCEPTED") return "ACCEPTED";
+  if (code === "ORDER_PREPARING") return "PREPARING";
+  if (code === "ORDER_FOOD_READY") return "READY_FOR_PICKUP";
+  if (code === "ORDER_RIDER_ASSIGNED") return "RIDER_ASSIGNED";
+  if (code === "ORDER_RIDER_AT_STORE") return "RIDER_AT_PICKUP";
+  if (code === "ORDER_OUT_FOR_DELIVERY") return "OUT_FOR_DELIVERY";
+  if (
+    code === "ORDER_RIDER_ARRIVING" ||
+    code === "CUSTOMER_DELIVERY_OTP_NEARBY"
+  ) {
+    return "REACHED_CUSTOMER";
+  }
+  if (code === "ORDER_DELIVERED" || code === "PARCEL_DELIVERED") return "DELIVERED";
+  if (code === "RIDE_COMPLETED") return "DELIVERED";
+  if (code === "RIDE_TRIP_STARTED") return "RIDE_IN_PROGRESS";
+  if (code === "RIDE_RIDER_ARRIVED" || code === "CUSTOMER_PICKUP_OTP_ARRIVED") {
+    return "RIDER_AT_PICKUP";
+  }
+  if (code === "PARCEL_PICKED_UP") return "PICKED_UP";
+  if (code === "PARCEL_RIDER_NEARBY") return "REACHED_CUSTOMER";
   return null;
 }
 

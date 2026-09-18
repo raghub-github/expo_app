@@ -20,10 +20,10 @@ import {
   ActivityIndicator,
   BackHandler,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { colors } from "@/src/theme";
 import {
@@ -40,18 +40,30 @@ import {
 import { canAccessOnboardingBankAccountScreen } from "@/src/lib/onboarding-routes";
 import { setOnboardingBackOverride } from "@/src/lib/onboarding-back-override";
 import { goBackOrReplace } from "@/src/lib/onboarding-navigation";
+import {
+  onboardingContinueHref,
+  parseOnboardingWalkParam,
+  withOnboardingWalkParam,
+} from "@/src/lib/onboarding-walk-through";
+import { ONBOARDING_DL_RC_LAST_DOC_STEP } from "@/src/lib/onboarding-routes";
 import { extractApiErrorMessage } from "@/src/services/http";
 import {
   ContinueButton,
   FieldLabel,
   ErrorBanner,
   SkipDocumentButton,
+  HeaderSkipLink,
+  OnboardingStickyFooter,
   onboardingFormStyles as form,
+  onboardingHeaderPaddingTop,
+  onboardingStickyScrollPadding,
 } from "@/src/components/onboarding/OnboardingFormUi";
+import { isDocSkipped } from "@/src/lib/onboarding-document-types";
 import { notifyOnboardingToast } from "@/src/lib/rider-onboarding-toast";
 import type { EvState } from "@/src/components/onboarding/ElectronicVerifyCard";
 import { useUnlockCountdown } from "@/src/hooks/useUnlockCountdown";
 import { useBankAccountDuplicateCheck } from "@/src/hooks/useBankAccountDuplicateCheck";
+import { isElectronicVerifyForceManualError } from "@/src/lib/electronic-verify-rate-limit";
 
 const ACCENT_DARK = "#22a745";
 const BG = "#f4fbf6";
@@ -65,6 +77,10 @@ function maskAccount(raw: string): string {
 }
 
 export default function BankAccountOnboardingScreen() {
+  const insets = useSafeAreaInsets();
+  const headerTopPad = onboardingHeaderPaddingTop(insets.top);
+  const walkParams = useLocalSearchParams<{ walk?: string | string[] }>();
+  const walkThrough = parseOnboardingWalkParam(walkParams.walk);
   const { data, setData, hydrate } = useOnboardingStore();
   const { data: riderStatus, isFetched: riderStatusFetched } = useRiderStatus(data.riderId);
   const createBank = useCreateRiderBankPaymentMethod();
@@ -94,6 +110,7 @@ export default function BankAccountOnboardingScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [bankEv, setBankEv] = useState<EvState>({ phase: "idle" });
   const [showFallbackForm, setShowFallbackForm] = useState(!bankElectronic);
+  const [verifyBlockedForBank, setVerifyBlockedForBank] = useState<string | null>(null);
   const bouncedToVehicleRef = useRef(false);
 
   useEffect(() => {
@@ -123,6 +140,7 @@ export default function BankAccountOnboardingScreen() {
 
   // Already skipped / completed → payment (and heal server if local-only skip).
   useEffect(() => {
+    if (walkThrough) return;
     if (!vehicleReady) return;
     if (!data.bankAccountOnboardingDone && !data.bankAccountOnboardingSkipped) return;
     if (
@@ -148,6 +166,7 @@ export default function BankAccountOnboardingScreen() {
     riderStatus?.bankAccountOnboardingSkipped,
     riderStatus?.bankAccountOnboardingDone,
     saveStep,
+    walkThrough,
   ]);
 
   useEffect(() => {
@@ -202,13 +221,18 @@ export default function BankAccountOnboardingScreen() {
     if (dupCheck.message) setError(dupCheck.message);
   }, [dupCheck.duplicate, dupCheck.message, bankElectronic]);
 
+  const bankFingerprint = `${accountNumber}|${ifsc.trim().toUpperCase()}`;
+  const bankVerifyLockedSameInput =
+    Boolean(verifyBlockedForBank) && verifyBlockedForBank === bankFingerprint;
+
   const canVerify =
     accountOk &&
     ifscOk &&
     Boolean(data.riderId) &&
     !dupCheck.duplicate &&
     !dupCheck.checking &&
-    !addLocked;
+    !addLocked &&
+    !bankVerifyLockedSameInput;
   const canFallbackSubmit =
     aadhaarName.length >= 2 &&
     accountOk &&
@@ -221,10 +245,12 @@ export default function BankAccountOnboardingScreen() {
 
   const handleBack = useCallback(() => {
     if (data.vehicleOnboardingFlow === "rental_ev") {
-      goBackOrReplace("/(onboarding)/rental-ev");
+      goBackOrReplace(withOnboardingWalkParam("/(onboarding)/rental-ev"));
       return;
     }
-    goBackOrReplace("/(onboarding)/dl-rc");
+    goBackOrReplace(
+      `/(onboarding)/dl-rc?walk=1&step=${ONBOARDING_DL_RC_LAST_DOC_STEP}`
+    );
   }, [data.vehicleOnboardingFlow]);
 
   useEffect(() => {
@@ -248,7 +274,10 @@ export default function BankAccountOnboardingScreen() {
       bankAccountOnboardingDone: true,
       ...(opts?.skipped ? { bankAccountOnboardingSkipped: true } : { bankAccountOnboardingSkipped: false }),
     });
-    router.replace("/(onboarding)/payment");
+    const href =
+      onboardingContinueHref("bank-account", { walk: walkThrough }) ??
+      "/(onboarding)/payment";
+    router.replace(href);
   };
 
   const handleSkipBankAccount = async () => {
@@ -312,6 +341,7 @@ export default function BankAccountOnboardingScreen() {
         bankName: resolvedBankName,
         ifsc: ifsc.trim().toUpperCase(),
         accountNumber,
+        providerVerified: opts?.fromElectronic === true || bankEv.phase === "verified",
       });
       await goToPayment();
     } catch (e) {
@@ -339,6 +369,7 @@ export default function BankAccountOnboardingScreen() {
         const details = res.verifiedData ?? {};
         setBankEv({ phase: "verified", details });
         setShowFallbackForm(false);
+        setVerifyBlockedForBank(null);
         if (typeof details.bank_name === "string" && details.bank_name.trim()) {
           setBankName(details.bank_name.trim());
         }
@@ -354,13 +385,14 @@ export default function BankAccountOnboardingScreen() {
             "Name at bank does not match Aadhaar",
           reasons: res.mismatchReasons,
         });
-        if (bankMode === "hybrid") setShowFallbackForm(true);
+        setShowFallbackForm(true);
+        setVerifyBlockedForBank(bankFingerprint);
         if (res.verifiedData?.bank_name) {
           setBankName(String(res.verifiedData.bank_name));
         }
       } else if (res.outcome === "manual") {
         setBankEv({ phase: "manual" });
-        if (bankMode === "hybrid") setShowFallbackForm(true);
+        setShowFallbackForm(true);
       } else {
         const exact =
           (typeof res.error === "string" && res.error.trim()) ||
@@ -372,15 +404,30 @@ export default function BankAccountOnboardingScreen() {
           providerReference: res.providerReference ?? null,
           verificationId: res.verificationId ?? null,
         });
-        if (bankMode === "hybrid") setShowFallbackForm(true);
+        setShowFallbackForm(true);
+        setVerifyBlockedForBank(bankFingerprint);
       }
     } catch (e) {
+      if (isElectronicVerifyForceManualError(e)) {
+        setBankEv({ phase: "manual" });
+        setShowFallbackForm(true);
+        setVerifyBlockedForBank(null);
+        return;
+      }
       const message = extractApiErrorMessage(e, "Bank verification failed");
       setBankEv({ phase: "failed", error: message });
-      if (bankMode === "hybrid") setShowFallbackForm(true);
+      setShowFallbackForm(true);
+      setVerifyBlockedForBank(bankFingerprint);
       notifyOnboardingToast(message);
     }
   };
+
+  const bankSkipped = Boolean(
+    data.bankAccountOnboardingSkipped ||
+      riderStatus?.bankAccountOnboardingSkipped ||
+      isDocSkipped(data, "bank_account", riderStatus?.skippedOnboardingDocs) ||
+      isDocSkipped(data, "bank_proof", riderStatus?.skippedOnboardingDocs),
+  );
 
   const verifiedDetails =
     bankEv.phase === "verified" ? bankEv.details : null;
@@ -404,10 +451,13 @@ export default function BankAccountOnboardingScreen() {
 
   return (
     <View style={form.root}>
-      <SafeAreaView style={form.safeArea} edges={["top", "bottom"]}>
+      <SafeAreaView style={form.safeArea} edges={[]}>
         <View style={form.flex}>
           <ScrollView
-            contentContainerStyle={form.scrollContent}
+            contentContainerStyle={[
+              form.scrollContent,
+              { paddingBottom: onboardingStickyScrollPadding(insets.bottom) },
+            ]}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             keyboardDismissMode="on-drag"
@@ -416,11 +466,29 @@ export default function BankAccountOnboardingScreen() {
               colors={["#dff5e4", BG]}
               start={{ x: 0.5, y: 0 }}
               end={{ x: 0.5, y: 1 }}
-              style={form.header}
+              style={[form.header, { paddingTop: headerTopPad }]}
             >
-              <View style={form.stepPill}>
-                <Ionicons name="business-outline" size={14} color={ACCENT_DARK} />
-                <Text style={form.stepPillText}>Step 4 · Bank Account Verification</Text>
+              <View style={styles.stepPillRow}>
+                <View style={form.stepPill}>
+                  <Ionicons name="business-outline" size={14} color={ACCENT_DARK} />
+                  <Text style={form.stepPillText}>Step 4 · Bank Account Verification</Text>
+                </View>
+                {!alreadyLinked ? (
+                  <View style={styles.stepPillSkipSlot}>
+                    <HeaderSkipLink
+                      label={bankSkipped ? "Skipped" : "Skip"}
+                      onPress={() => void handleSkipBankAccount()}
+                      disabled={
+                        bankSkipped ||
+                        !vehicleReady ||
+                        submitting ||
+                        createBank.isPending ||
+                        bankEv.phase === "verifying"
+                      }
+                      skipped={bankSkipped}
+                    />
+                  </View>
+                ) : null}
               </View>
 
               <Text style={form.title}>Bank Account</Text>
@@ -484,6 +552,7 @@ export default function BankAccountOnboardingScreen() {
                         onChangeText={(v) => {
                           setAccountNumber(v.replace(/\D/g, "").slice(0, 18));
                           if (bankEv.phase === "verified") setBankEv({ phase: "idle" });
+                          setVerifyBlockedForBank(null);
                           setError(null);
                         }}
                         style={form.textInput}
@@ -504,6 +573,7 @@ export default function BankAccountOnboardingScreen() {
                         onChangeText={(v) => {
                           setIfsc(v.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 11));
                           if (bankEv.phase === "verified") setBankEv({ phase: "idle" });
+                          setVerifyBlockedForBank(null);
                           setError(null);
                         }}
                         style={form.textInput}
@@ -529,10 +599,17 @@ export default function BankAccountOnboardingScreen() {
                       ) : (
                         <>
                           <Ionicons name="flash" size={16} color="#fff" />
-                          <Text style={styles.verifyBtnText}>Verify Instantly</Text>
+                          <Text style={styles.verifyBtnText}>
+                            Verify Instantly
+                          </Text>
                         </>
                       )}
                     </TouchableOpacity>
+                  ) : null}
+                  {bankVerifyLockedSameInput ? (
+                    <Text style={styles.noticeHint}>
+                      Change account number or IFSC to try Verify Instantly again.
+                    </Text>
                   ) : null}
 
                   {bankEv.phase === "verified" ? (
@@ -631,79 +708,80 @@ export default function BankAccountOnboardingScreen() {
                 </Text>
               ) : null}
 
-              <ContinueButton
-                label={
-                  alreadyLinked || data.bankAccountOnboardingDone
-                    ? "Continue to payment"
-                    : addLocked
-                      ? `Try after ${countdown.label ?? "—"}`
-                      : bankEv.phase === "verified"
-                        ? "Continue"
-                        : showFallbackForm || !bankElectronic
-                          ? "Save & continue"
-                          : "Verify & continue"
-                }
-                onPress={() => {
-                  if (alreadyLinked || data.bankAccountOnboardingDone) {
-                    void goToPayment();
-                    return;
-                  }
-                  if (addLocked) {
-                    const msg = `Locked due to security reasons. Try after ${countdown.label ?? "—"}.`;
-                    setError(msg);
-                    notifyOnboardingToast(msg);
-                    return;
-                  }
-                  if (bankEv.phase === "verified") {
-                    void saveBankAndContinue({ fromElectronic: true });
-                    return;
-                  }
-                  if (bankElectronic && !showFallbackForm) {
-                    void runBankVerify();
-                    return;
-                  }
-                  if (!canFallbackSubmit || !confirmOk) {
-                    setError(
-                      accountMismatch
-                        ? "Account numbers do not match"
-                        : "Please fill account number, confirm, IFSC and bank name",
-                    );
-                    return;
-                  }
-                  void saveBankAndContinue();
-                }}
-                disabled={
-                  submitting ||
-                  createBank.isPending ||
-                  !vehicleReady ||
-                  bankEv.phase === "verifying" ||
-                  (alreadyLinked || data.bankAccountOnboardingDone
-                    ? false
-                    : addLocked
-                      ? true
-                      : bankEv.phase === "verified"
-                        ? false
-                        : showFallbackForm || !bankElectronic
-                          ? !canFallbackSubmit
-                          : !canVerify)
-                }
-                loading={submitting || createBank.isPending || bankQuery.isLoading}
-              />
-
-              {!alreadyLinked && !data.bankAccountOnboardingDone ? (
-                <SkipDocumentButton
-                  label="Skip for now — add from Earnings later"
-                  onPress={() => void handleSkipBankAccount()}
-                  disabled={
-                    !vehicleReady ||
-                    submitting ||
-                    createBank.isPending ||
-                    bankEv.phase === "verifying"
-                  }
-                />
-              ) : null}
             </View>
           </ScrollView>
+          <OnboardingStickyFooter>
+            <ContinueButton
+              label={
+                alreadyLinked || data.bankAccountOnboardingDone || bankSkipped
+                  ? "Continue to payment"
+                  : addLocked
+                    ? `Try after ${countdown.label ?? "—"}`
+                    : bankEv.phase === "verified"
+                      ? "Continue"
+                      : showFallbackForm || !bankElectronic
+                        ? "Save & continue"
+                        : "Verify & continue"
+              }
+              onPress={() => {
+                if (alreadyLinked || data.bankAccountOnboardingDone || bankSkipped) {
+                  void goToPayment();
+                  return;
+                }
+                if (addLocked) {
+                  const msg = `Locked due to security reasons. Try after ${countdown.label ?? "—"}.`;
+                  setError(msg);
+                  notifyOnboardingToast(msg);
+                  return;
+                }
+                if (bankEv.phase === "verified") {
+                  void saveBankAndContinue({ fromElectronic: true });
+                  return;
+                }
+                if (bankElectronic && !showFallbackForm) {
+                  void runBankVerify();
+                  return;
+                }
+                if (!canFallbackSubmit || !confirmOk) {
+                  setError(
+                    accountMismatch
+                      ? "Account numbers do not match"
+                      : "Please fill account number, confirm, IFSC and bank name",
+                  );
+                  return;
+                }
+                void saveBankAndContinue();
+              }}
+              disabled={
+                submitting ||
+                createBank.isPending ||
+                !vehicleReady ||
+                bankEv.phase === "verifying" ||
+                (alreadyLinked || data.bankAccountOnboardingDone || bankSkipped
+                  ? false
+                  : addLocked
+                    ? true
+                    : bankEv.phase === "verified"
+                      ? false
+                      : showFallbackForm || !bankElectronic
+                        ? !canFallbackSubmit
+                        : !canVerify)
+              }
+              loading={submitting || createBank.isPending || bankQuery.isLoading}
+            />
+            {!alreadyLinked && !data.bankAccountOnboardingDone && !bankSkipped ? (
+              <SkipDocumentButton
+                label="Skip for now — add from Earnings later"
+                onPress={() => void handleSkipBankAccount()}
+                disabled={
+                  !vehicleReady ||
+                  submitting ||
+                  createBank.isPending ||
+                  bankEv.phase === "verifying"
+                }
+              />
+            ) : null}
+          </OnboardingStickyFooter>
         </View>
       </SafeAreaView>
     </View>
@@ -711,9 +789,25 @@ export default function BankAccountOnboardingScreen() {
 }
 
 const styles = StyleSheet.create({
+  stepPillRow: {
+    alignSelf: "stretch",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 8,
+    minHeight: 32,
+  },
+  stepPillSkipSlot: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    bottom: 0,
+    justifyContent: "center",
+  },
   body: {
     paddingHorizontal: 20,
     gap: 14,
+    paddingTop: 12,
     paddingBottom: 24,
   },
   hint: {

@@ -65,7 +65,11 @@ async function authorizeRiderDocumentUpdate(riderId: number, documentId: number)
     };
   }
 
-  if (currentDoc.verificationMethod === "APP_VERIFIED") {
+  // Selfie / profile photo can always be replaced or removed by admin —
+  // rider-app APP_VERIFIED still stores a real image on R2 + riders.selfie_url.
+  const docType = String(currentDoc.docType || "").toLowerCase();
+  const isSelfieDoc = docType === "selfie" || docType === "profile_photo";
+  if (currentDoc.verificationMethod === "APP_VERIFIED" && !isSelfieDoc) {
     return {
       error: NextResponse.json(
         {

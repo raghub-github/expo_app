@@ -2,8 +2,9 @@
 
 import type { OrderItemCustomisationDetail } from "@/lib/order-item-customisation";
 import {
-  customerDiscountLinesFromBilling,
   discountTotalFromBilling,
+  orderDiscountGrantedSummaryFromBilling,
+  payableCustomerDiscountLinesFromBilling,
   type OrderDiscountOfferSource,
 } from "@/lib/merchant-billing-discount";
 import {
@@ -626,7 +627,14 @@ export function buildOrderPricingSummary(
   const donationAmount = round2(
     asNum(snap.donation_amount) || asNum(core.donation_amount) || asNum(core.donationAmount)
   );
-  const discount = discountTotalFromBilling(snap);
+  // Payable bill lines only — Flash Sale / free-delivery are already netted into
+  // item_total / delivery_fee. Subtracting them again invents "Additional charge".
+  const payableDiscountLines = payableCustomerDiscountLinesFromBilling(snap);
+  const discountGranted = orderDiscountGrantedSummaryFromBilling(snap);
+  const discount =
+    discountGranted.amount != null && discountGranted.amount > 0.005
+      ? discountGranted.amount
+      : discountTotalFromBilling(snap);
 
   pushCharge("packaging", "Packaging", packaging);
   if (packagingTax > 0 && gst <= 0) {
@@ -690,40 +698,23 @@ export function buildOrderPricingSummary(
   }
 
   pushCharge("delivery", "Delivery Fee", deliveryFee);
-  // Membership free-delivery discount needs a matching Delivery Fee charge (quoted),
-  // otherwise CTC reconciliation invents a fake positive residual.
-  if (
-    deliveryFee <= 0.005 &&
-    deliveryDisplay.waived &&
-    deliveryDisplay.quoted != null &&
-    deliveryDisplay.quoted > 0.005
-  ) {
-    pushCharge("delivery", "Delivery Fee", deliveryDisplay.quoted);
-  }
+  // Do not re-add quoted delivery when membership waived: free-delivery is already
+  // netted into delivery_fee (0) and is excluded from payable discount lines.
+  // Strikethrough uses deliveryFeeQuoted / deliveryFeeWaived on the summary.
   if (gst > 0) {
     lines.push({ key: "gst", label: "GST", amount: gst, kind: "tax" });
   }
 
-  if (discount > 0) {
-    const discountLines = customerDiscountLinesFromBilling(snap);
-    if (discountLines.length > 0) {
-      discountLines.forEach((d, i) => {
-        lines.push({
-          key: `discount_${i}`,
-          label: d.label,
-          amount: d.amount,
-          kind: "discount",
-          discountTag: d.tag,
-        });
-      });
-    } else {
+  if (payableDiscountLines.length > 0) {
+    payableDiscountLines.forEach((d, i) => {
       lines.push({
-        key: "discount",
-        label: resolveNamedDiscountFallbackLabel(snap) ?? "Discount",
-        amount: discount,
+        key: `discount_${i}`,
+        label: d.label,
+        amount: d.amount,
         kind: "discount",
+        discountTag: d.tag,
       });
-    }
+    });
   }
 
   const checkoutMeta =
@@ -934,7 +925,7 @@ function resolveBillCreditLabel(
   existingLines: OrderPricingLine[]
 ): string | null {
   const existing = new Set(existingLines.map((l) => l.label.trim().toLowerCase()));
-  const discountLines = customerDiscountLinesFromBilling(snap);
+  const discountLines = payableCustomerDiscountLinesFromBilling(snap);
   for (const d of discountLines) {
     if (Math.abs(d.amount - amount) > 0.02) continue;
     if (existing.has(d.label.trim().toLowerCase())) continue;
@@ -1025,6 +1016,26 @@ export function customerDiscountFromOrderPricing(
   if (!pricing) return { amount: null, offerSource: null };
 
   const customer = pricing.customer ?? pricing;
+  // Prefer granted savings total (includes Flash Sale + free delivery already
+  // netted into item/delivery — those are omitted from payable bill lines).
+  if (customer.discount != null && customer.discount > 0.005) {
+    const discountLines = customer.lines?.filter((l) => l.kind === "discount") ?? [];
+    const tags = new Set(
+      discountLines
+        .map((l) => l.discountTag)
+        .filter(Boolean) as Array<"platform" | "store" | "mixed">,
+    );
+    let offerSource: OrderDiscountOfferSource | null = null;
+    if (tags.size === 1) {
+      const only = [...tags][0];
+      offerSource =
+        only === "platform" ? "Platform" : only === "store" ? "Store" : "Mixed";
+    } else if (tags.size > 1) {
+      offerSource = "Mixed";
+    }
+    return { amount: customer.discount, offerSource };
+  }
+
   const discountLines = customer.lines?.filter((l) => l.kind === "discount") ?? [];
 
   if (discountLines.length > 0) {
@@ -1045,10 +1056,6 @@ export function customerDiscountFromOrderPricing(
       offerSource = "Mixed";
     }
     return { amount, offerSource };
-  }
-
-  if (customer.discount != null && customer.discount > 0) {
-    return { amount: customer.discount, offerSource: null };
   }
 
   return { amount: null, offerSource: null };

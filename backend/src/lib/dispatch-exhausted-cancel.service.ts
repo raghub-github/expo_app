@@ -18,7 +18,7 @@
 
 import { getSql } from "../db/client.js";
 import { executeOrderCancellationFinancials, lookupOrderContext } from "./financial-rule-executor.js";
-import { refundFieldsFromEngineResult } from "@gatimitra/financial-rules";
+import { refundFieldsFromEngineResult, resolvePostCancelAutoRefundPolicy } from "@gatimitra/financial-rules";
 import { recordCancellationTimeline } from "./order-cancellation-timeline.js";
 import { recordOrderCancellation } from "./record-order-cancellation.js";
 import { applyMerchantOrderCancellationLedger } from "./apply-merchant-cancellation-ledger.js";
@@ -199,22 +199,17 @@ export async function cancelDispatchExhaustedOrder(
     );
     const engineRefund = refundFieldsFromEngineResult(engineResult.raw);
 
-    // System no-rider cancel is never the customer's fault - always capture refund
-    // intent (pending) even when the rule engine returns no_refund / 0. Otherwise
-    // Payment Details → Refund Records stays empty and OCR says no_refund.
+    // System no-rider cancel is never the customer's fault. Admin rule amounts
+    // still win when present; otherwise full paid refund.
     const gross = num(row.grand_total ?? orderCtx.grandTotal);
-    const refundAmount =
-      engineRefund.refundAmount != null && num(engineRefund.refundAmount) > 0.005
-        ? num(engineRefund.refundAmount)
-        : gross > 0.005
-          ? gross
-          : null;
-    const refundStatus =
-      refundAmount != null && refundAmount > 0.005
-        ? engineRefund.refundStatus === "no_refund"
-          ? "pending"
-          : engineRefund.refundStatus || "pending"
-        : "pending";
+    const refundPolicy = resolvePostCancelAutoRefundPolicy({
+      actorRole: "system",
+      engineRefund,
+      orderGross: gross,
+      forceCustomerRefundWhenEngineSilent: true,
+    });
+    const refundAmount = refundPolicy.refundAmountForLedger;
+    const refundStatus = refundPolicy.refundStatus;
 
     await recordOrderCancellation(sql, {
       orderCorePk: orderCoreId,
@@ -250,62 +245,72 @@ export async function cancelDispatchExhaustedOrder(
       );
     }
 
-    // Customer refund - full (no rider found, not the customer's fault).
+    // Customer refund — fire immediately on auto-cancel.
     let refundOutcomeStatus = refundStatus;
-    try {
-      const outcome = await autoRefundOnCancellation(
-        {
-          orderCoreId,
-          reason: `${NO_RIDER_LABEL} - ${NO_RIDER_REASON}`,
-          actorEmail: null,
-          actorRole: "system",
-          amount:
-            refundAmount != null && refundAmount > 0.005 ? refundAmount : null,
-        },
-        sql
-      );
-      if (outcome.triggered && outcome.refundId != null) {
-        const execStatus = String(outcome.result?.status ?? "").toUpperCase();
-        const kind =
-          execStatus === "COMPLETED" || execStatus === "NOOP"
-            ? "completed"
-            : execStatus === "FAILED"
-              ? "failed"
-              : "processing";
-        await syncOrderRefundCompletionMarkers(
+    if (refundPolicy.shouldAutoExecute) {
+      try {
+        const outcome = await autoRefundOnCancellation(
           {
             orderCoreId,
-            refundId: outcome.refundId,
-            kind,
-            refundAmount:
-              refundAmount != null && refundAmount > 0.005 ? refundAmount : null,
+            reason: `${NO_RIDER_LABEL} - ${NO_RIDER_REASON}`,
+            actorEmail: null,
+            actorRole: "system",
+            amount: refundPolicy.executeAmount,
           },
           sql
         );
-        refundOutcomeStatus =
-          kind === "completed"
-            ? "completed"
-            : kind === "failed"
-              ? "failed"
-              : "pending";
-      } else if (outcome.skippedReason === "already_refunded") {
-        refundOutcomeStatus = "completed";
+        if (outcome.triggered && outcome.refundId != null) {
+          const execStatus = String(outcome.result?.status ?? "").toUpperCase();
+          const kind =
+            execStatus === "COMPLETED" || execStatus === "NOOP"
+              ? "completed"
+              : execStatus === "FAILED"
+                ? "failed"
+                : "processing";
+          await syncOrderRefundCompletionMarkers(
+            {
+              orderCoreId,
+              refundId: outcome.refundId,
+              kind,
+              refundAmount:
+                refundAmount != null && refundAmount > 0.005 ? refundAmount : null,
+            },
+            sql
+          );
+          refundOutcomeStatus =
+            kind === "completed"
+              ? "completed"
+              : kind === "failed"
+                ? "failed"
+                : "pending";
+        } else if (outcome.skippedReason === "already_refunded") {
+          refundOutcomeStatus = "completed";
+        }
+        console.info(
+          "[dispatch] exhausted_auto_refund",
+          JSON.stringify({
+            orderCoreId,
+            triggered: outcome.triggered,
+            skipped: outcome.skippedReason,
+            status: outcome.result?.status ?? null,
+            refundId: outcome.refundId ?? null,
+          })
+        );
+      } catch (refundErr) {
+        console.error(
+          "[dispatch] exhausted refund failed",
+          orderCoreId,
+          (refundErr as Error).message
+        );
       }
+    } else {
       console.info(
-        "[dispatch] exhausted_auto_refund",
+        "[dispatch] exhausted_auto_refund_skipped",
         JSON.stringify({
           orderCoreId,
-          triggered: outcome.triggered,
-          skipped: outcome.skippedReason,
-          status: outcome.result?.status ?? null,
-          refundId: outcome.refundId ?? null,
+          skip: refundPolicy.skipReason ?? null,
+          status: refundPolicy.refundStatus,
         })
-      );
-    } catch (refundErr) {
-      console.error(
-        "[dispatch] exhausted refund failed",
-        orderCoreId,
-        (refundErr as Error).message
       );
     }
 

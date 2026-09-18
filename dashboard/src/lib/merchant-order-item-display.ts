@@ -171,6 +171,16 @@ export function merchantLineTotalForItem(item: NormalizedOrderLineItem): number 
   ) {
     return menuRupee(item.netLineTotal);
   }
+  // Prefer already-mapped merchant line total over raw catalog when present.
+  const mappedTotal = Number(item.total);
+  if (
+    Number.isFinite(mappedTotal) &&
+    mappedTotal > 0.005 &&
+    item.catalogLineTotal != null &&
+    mappedTotal < Number(item.catalogLineTotal) - 0.005
+  ) {
+    return menuRupee(mappedTotal);
+  }
   if (item.catalogLineTotal != null && item.catalogLineTotal > 0.005) {
     return menuRupee(item.catalogLineTotal);
   }
@@ -205,6 +215,13 @@ export function merchantItemCatalogAndNet(item: NormalizedOrderLineItem): {
     item.offerDiscount > 0.005
   ) {
     net = menuRupee(Math.max(0, catalog - Number(item.offerDiscount)));
+  } else if (
+    Number.isFinite(Number(item.total)) &&
+    Number(item.total) > 0.005 &&
+    (!hasCatalog || Number(item.total) < catalog - 0.005)
+  ) {
+    // Full hydrate sets `total` to merchant CTM; prefer it over catalog-only lite payloads.
+    net = menuRupee(Number(item.total));
   } else if (!hasCatalog && !item.ctmFromSnapshot) {
     net = lineTotal;
   }
@@ -233,7 +250,7 @@ export function merchantItemCatalogAndNet(item: NormalizedOrderLineItem): {
       ? badge ?? (kind === 'boost' ? formatBoostOfferBadge() : item.offerLabel ?? null)
       : kind === 'boost'
         ? badge ?? formatBoostOfferBadge()
-        : null,
+        : badge,
     offerKind: kind,
   };
 }
@@ -287,14 +304,11 @@ export function syncMerchantOrderLineDisplayAmounts(
     if (it.ctmFromSnapshot) {
       const gross = Number(it.catalogLineTotal ?? mappedLine) || mappedLine;
       const net = Number(it.netLineTotal ?? gross) || gross;
-      const promo =
-        it.isItemPromo === true ||
-        (it.offerDiscount != null && it.offerDiscount > 0.005);
-      const display = promo ? net : gross;
+      // Merchant-app / partnersite: frozen CTM lines always display net CTM.
       return {
         ...it,
-        total: display,
-        price: display / qty,
+        total: net,
+        price: net / qty,
         catalogLineTotal: gross,
         netLineTotal: net,
       };

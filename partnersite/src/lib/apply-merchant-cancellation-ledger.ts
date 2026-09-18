@@ -299,6 +299,12 @@ async function applyCompensationCredit(
     return { applied: true, ledgerId: existingId };
   }
 
+  const formattedOrderId = await resolveFormattedOrderId(sql, args.orderCoreId);
+  const publicOrderId =
+    formattedOrderId && !/^#?\d+$/.test(formattedOrderId)
+      ? formattedOrderId.replace(/^#/, "")
+      : null;
+
   const rows = await sql<{ ledger_id: number | null }[]>`
     SELECT merchant_wallet_credit(
       ${args.walletId}::bigint,
@@ -311,6 +317,7 @@ async function applyCompensationCredit(
       ${description}::text,
       ${JSON.stringify({
         orders_core_id: args.orderCoreId,
+        ...(publicOrderId ? { formatted_order_id: publicOrderId } : {}),
         entry_type: "order_cancellation",
         balance_impact: "credit",
         merchant_keeps_amount: amount,
@@ -373,7 +380,11 @@ async function recordCancellationInfoLedger(
   const amount = round2(args.amount);
   if (!(amount > 0)) return null;
 
-  const formattedOrderId = (await resolveFormattedOrderId(sql, args.orderCoreId)) ?? `#${args.orderCoreId}`;
+  const formattedOrderId = await resolveFormattedOrderId(sql, args.orderCoreId);
+  const publicOrderId =
+    formattedOrderId && !/^#?\d+$/.test(formattedOrderId)
+      ? formattedOrderId.replace(/^#/, "")
+      : null;
   const idempotencyKey = `merchant_cancel_info:${args.orderCoreId}`;
   const cancelledByBrand = resolveCancelledByBrandForLedger(
     args.cancelledByType,
@@ -381,7 +392,7 @@ async function recordCancellationInfoLedger(
     args.source
   );
   const description = buildCancellationInfoLedgerDescription({
-    formattedOrderId,
+    formattedOrderId: publicOrderId ?? "Order",
     balanceImpact: args.balanceImpact,
     compensationMeta: args.compensationMeta,
   });
@@ -419,6 +430,7 @@ async function recordCancellationInfoLedger(
             entry_type: "order_cancellation",
             balance_impact: args.balanceImpact,
             orders_core_id: args.orderCoreId,
+            ...(publicOrderId ? { formatted_order_id: publicOrderId } : {}),
             trigger_source: args.source,
             actor_system_user_id: args.actorSystemUserId ?? null,
             cancelled_by_type: args.cancelledByType ?? null,
@@ -457,7 +469,12 @@ async function applyCanonicalCtmCancellationLedger(
   sql: postgres.Sql,
   input: ApplyMerchantOrderCancellationLedgerInput,
   mode: MerchantDebitMode,
-  options?: { adminOverride?: boolean }
+  options?: {
+    adminOverride?: boolean;
+    keepPctOverride?: number | null;
+    targetNetOverride?: number | null;
+    engineMeta?: Record<string, unknown>;
+  }
 ): Promise<ApplyMerchantOrderCancellationLedgerResult> {
   const adminOverride = options?.adminOverride !== false;
   const ctx = await resolveOrderWalletContext(sql, input.orderCoreId);
@@ -502,6 +519,8 @@ async function applyCanonicalCtmCancellationLedger(
     ctmAmount: ctmTotal,
     currentNetHeld: ctmState.netHeld,
     grossCredited: ctmState.grossCredited,
+    keepPctOverride: options?.keepPctOverride,
+    targetNetOverride: options?.targetNetOverride,
   });
 
   const compensationMeta = {
@@ -522,7 +541,11 @@ async function applyCanonicalCtmCancellationLedger(
         earning_credited: ctmState.earningCredited,
       },
     }),
+    ...(options?.engineMeta ?? {}),
     admin_override: adminOverride,
+    compensation_pct: adj.keepPct,
+    merchant_keeps_amount: adj.targetNet,
+    clawback_amount: round2(Math.max(0, ctmTotal - adj.targetNet)),
   };
 
   if (adj.kind === "none") {
@@ -670,6 +693,9 @@ export async function applyMerchantOrderCancellationLedger(
     if (engineMode) {
       return await applyCanonicalCtmCancellationLedger(sql, effectiveInput, engineMode, {
         adminOverride: false,
+        keepPctOverride: plan.resolved?.compensationPct ?? null,
+        targetNetOverride: plan.resolved?.merchantKeepsAmount ?? null,
+        engineMeta: compensationMetadataForLedger(plan.resolved, plan.display),
       });
     }
 

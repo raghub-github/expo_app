@@ -673,7 +673,7 @@ export default function OrderSuccessScreen() {
             {
               // Cards sit clearly below the curve for balance.
               paddingTop: settledHeroHeight + 28,
-              paddingBottom: Math.max(insets.bottom, 16) + 120,
+              paddingBottom: Math.max(insets.bottom, 16) + 148,
             },
           ]}
           showsVerticalScrollIndicator={false}
@@ -756,7 +756,7 @@ export default function OrderSuccessScreen() {
       <Animated.View
         style={[
           styles.bottomBar,
-          { paddingBottom: Math.max(insets.bottom, 14) },
+          { paddingBottom: Math.max(insets.bottom + 20, 28) },
           bottomBarStyle,
         ]}
         pointerEvents={receiptInteractive ? "auto" : "none"}
@@ -944,7 +944,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     zIndex: 4,
-    paddingTop: 8,
+    paddingTop: 12,
     paddingHorizontal: 14,
     backgroundColor: "#FFFFFF",
     borderTopWidth: StyleSheet.hairlineWidth,

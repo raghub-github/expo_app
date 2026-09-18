@@ -15,7 +15,7 @@ import {
   resolveRiderAssignmentContext,
   resolveOrderDispatchRadiusMeters,
   haversineDistanceMeters,
-  riderDispatchLocationStaleMaxAgeSeconds,
+  riderDispatchLocationMaxAgeSeconds,
   type DispatchServiceType,
 } from "./order-assignment-engine.js";
 
@@ -25,7 +25,7 @@ export async function enforceRiderAcceptLocationRevalidation(args: {
   serviceType: DispatchServiceType;
   pickupLat: number | string | null | undefined;
   pickupLon: number | string | null | undefined;
-  /** Admin force-assign bypass. */
+  /** Admin force-assign / rare deliberate bypass of GAP-2. */
   skip?: boolean;
 }): Promise<void> {
   if (args.skip) return;
@@ -34,6 +34,7 @@ export async function enforceRiderAcceptLocationRevalidation(args: {
 
   try {
     const [ctx, radiusMeters] = await Promise.all([
+      // allowStaleGps: load last-known so we can measure age; FRESH window still rejects STALE.
       resolveRiderAssignmentContext(args.riderId, { skipAssignmentCheck: true, allowStaleGps: true }),
       resolveOrderDispatchRadiusMeters(args.orderCoreId, args.serviceType).catch(() => 0),
     ]);
@@ -47,12 +48,14 @@ export async function enforceRiderAcceptLocationRevalidation(args: {
       ? Math.max(0, (Date.now() - ctx.locationUpdatedAt.getTime()) / 1000)
       : Number.POSITIVE_INFINITY;
 
+    // Accept requires FRESH GPS (not the wider STALE offer window). A terminated app that
+    // moved away still has last-known coords near pickup; only a recent ping proves position.
     const decision = evaluateRiderAcceptRevalidation({
       hasGps: ctx != null,
       gpsAgeSeconds,
       distanceMeters,
       radiusMeters,
-      staleMaxSeconds: riderDispatchLocationStaleMaxAgeSeconds(),
+      staleMaxSeconds: riderDispatchLocationMaxAgeSeconds(),
     });
 
     if (!decision.allow) {

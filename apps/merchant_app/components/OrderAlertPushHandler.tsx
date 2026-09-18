@@ -7,7 +7,6 @@
  *   TAP / open — dismiss tray/OS sound, then start remaining JS / modal chime
  */
 import { useEffect, useRef } from "react";
-import Constants from "expo-constants";
 import { AppState, type AppStateStatus } from "react-native";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
@@ -17,6 +16,7 @@ import {
   registerMerchantNotificationResponseHandler,
 } from "@/lib/merchantPushDispatch";
 import { isMerchantNewOrderPushData } from "@/lib/merchantNewOrderChannel";
+import { installMerchantForegroundNotificationHandler } from "@/lib/merchantNotificationHandler";
 import {
   continueOrStartNewOrderAlert,
   dismissNativeNewOrderAlerts,
@@ -44,12 +44,25 @@ export default function OrderAlertPushHandler() {
     void (async () => {
       const dev = await readDeviceOrderAlertsAsync(sid);
       rememberIncomingOrderAlertConfig(settingsRef.current, dev);
+      try {
+        const { cacheMerchantAlertSound } = await import("@/lib/merchantAlertSoundCache");
+        const { resolveIncomingOrderChimeUrl } = await import("@/lib/playOrderAlertSound");
+        const url = resolveIncomingOrderChimeUrl(settingsRef.current, dev);
+        await cacheMerchantAlertSound({
+          url,
+          slot: dev.alertSoundSlot ?? settingsRef.current.alert_sound_slot_choice ?? 0,
+        });
+      } catch {
+        /* cache is best-effort */
+      }
     })();
   }, [storeId, acceptanceSettings]);
 
   useEffect(() => {
-    if (Constants.appOwnership === "expo") return;
+    // Expo Go has no FCM — still wire local-notification received/tap → alert manager.
+    // Production uses the same path for remote FCM.
     void hydrateNewOrderAlertManager();
+    void installMerchantForegroundNotificationHandler();
 
     async function playFromPushData(
       data: Record<string, unknown>,

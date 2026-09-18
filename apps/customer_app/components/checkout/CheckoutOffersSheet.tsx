@@ -58,6 +58,11 @@ export type CheckoutOffersSheetProps = {
    * Prefer this over listing `estimatedSavingsInr` which is a rough % of subtotal.
    */
   itemDealSavingsByOfferId?: Record<number, number>;
+  /**
+   * FLASH_SALE subsidy already folded into Item total (from billing discounts meta.flashSale).
+   * Shown as Applied — not as a tap-to-APPLY platform coupon.
+   */
+  flashSaleSavingsByOfferId?: Record<number, number>;
   couponInput: string;
   onCouponInputChange: (v: string) => void;
   couponError: string | null;
@@ -172,7 +177,9 @@ function OfferRow({
           </CheckoutText>
         ) : null}
         {applied && savings != null && savings > 0 ? (
-          <CheckoutText style={styles.offerSaved}>You save ₹{Math.round(savings)}</CheckoutText>
+          <CheckoutText style={styles.offerSaved}>
+            You save ₹{formatCheckoutSavingsRupees(savings)}
+          </CheckoutText>
         ) : null}
       </View>
       {applied ? (
@@ -219,6 +226,7 @@ export function CheckoutOffersSheet({
   cartSubtotal = 0,
   merchantId,
   itemDealSavingsByOfferId = {},
+  flashSaleSavingsByOfferId = {},
   couponInput,
   onCouponInputChange,
   couponError,
@@ -495,9 +503,55 @@ export function CheckoutOffersSheet({
     (Boolean(appliedCouponCode) &&
       appliedDiscounts.some((d) => d.amount > 0.005));
 
+  const appliedFlashSaleRows = useMemo(() => {
+    const byId = new Map<
+      number,
+      { id: number; name: string | null; couponCode?: string | null; summary: string; amount: number }
+    >();
+    for (const [idStr, amount] of Object.entries(flashSaleSavingsByOfferId)) {
+      const id = Number(idStr);
+      if (!(id > 0) || !(amount > 0.005)) continue;
+      const listed =
+        data?.platformOffers.find((o) => o.id === id) ??
+        data?.platformOffersIneligible?.find((o) => o.id === id);
+      byId.set(id, {
+        id,
+        name: listed?.name ?? "Flash Sale",
+        couponCode: listed?.couponCode ?? null,
+        summary: listed?.summary?.trim() || "FLASH SALE",
+        amount,
+      });
+    }
+    // Listing-only FLASH_SALE rows that already match cart savings (id may be missing from bill meta).
+    for (const o of [...(data?.platformOffers ?? []), ...(data?.platformOffersIneligible ?? [])]) {
+      if (String(o.offerKind ?? "").toUpperCase() !== "FLASH_SALE") continue;
+      if (byId.has(o.id)) continue;
+      const amount = flashSaleSavingsByOfferId[o.id];
+      if (!(amount > 0.005)) continue;
+      byId.set(o.id, {
+        id: o.id,
+        name: o.name,
+        couponCode: o.couponCode,
+        summary: o.summary?.trim() || "FLASH SALE",
+        amount,
+      });
+    }
+    return [...byId.values()];
+  }, [flashSaleSavingsByOfferId, data?.platformOffers, data?.platformOffersIneligible]);
+
+  const appliedFlashSaleIds = useMemo(
+    () => new Set(appliedFlashSaleRows.map((r) => r.id)),
+    [appliedFlashSaleRows]
+  );
+
+  const flashSaleSavingsTotal = appliedFlashSaleRows.reduce((s, r) => s + r.amount, 0);
+
+  const isFlashSalePlatformOffer = (offerKind: string | null | undefined) =>
+    String(offerKind ?? "").toUpperCase() === "FLASH_SALE";
+
   const subscriptionSavings = subscriptionBenefits.reduce((s, d) => s + d.amount, 0);
   const promoSavings = appliedDiscounts.reduce((s, d) => s + d.amount, 0);
-  const totalSavings = subscriptionSavings + promoSavings;
+  const totalSavings = subscriptionSavings + promoSavings + flashSaleSavingsTotal;
   const { height: windowHeight } = useWindowDimensions();
   // Explicit maxHeight — flex:1 inside a wrap-sized sheet collapses the list to 0 height.
   const listMaxHeight = Math.max(220, Math.round(windowHeight * 0.55));
@@ -595,6 +649,25 @@ export function CheckoutOffersSheet({
                     </View>
                   ) : null}
 
+                  {appliedFlashSaleRows.length > 0 ? (
+                    <View style={styles.section}>
+                      <CheckoutText style={styles.sectionLabel}>FLASH DEALS</CheckoutText>
+                      <CheckoutText style={styles.sectionHint}>
+                        Auto-applied on matching items — already in your item price
+                      </CheckoutText>
+                      {appliedFlashSaleRows.map((row) => (
+                        <OfferRow
+                          key={`flash-${row.id}`}
+                          title={displayPlatformOfferTitle(row.name, "Flash Sale")}
+                          subtitle={row.summary}
+                          couponCode={row.couponCode}
+                          applied
+                          savings={row.amount}
+                        />
+                      ))}
+                    </View>
+                  ) : null}
+
                   {hasAppliedPromo ? (
                     <View style={styles.section}>
                       <CheckoutText style={styles.sectionLabel}>APPLIED ON THIS ORDER</CheckoutText>
@@ -662,11 +735,25 @@ export function CheckoutOffersSheet({
                     </View>
                   ) : null}
 
-                  {(data?.platformOffers.length ?? 0) > 0 || livePlatformReadyFromLocked.length > 0 ? (
+                  {(data?.platformOffers.filter(
+                    (o) =>
+                      !isFlashSalePlatformOffer(o.offerKind) &&
+                      !appliedFlashSaleIds.has(o.id)
+                  ).length ?? 0) > 0 ||
+                  livePlatformReadyFromLocked.filter(
+                    (o) =>
+                      !isFlashSalePlatformOffer(o.offerKind) &&
+                      !appliedFlashSaleIds.has(o.id)
+                  ).length > 0 ? (
                     <View style={styles.section}>
                       <CheckoutText style={styles.sectionLabel}>AVAILABLE OFFERS</CheckoutText>
                       {data!.platformOffers
-                        .filter((o) => !livePlatformAvailableIdsHidden.has(o.id))
+                        .filter(
+                          (o) =>
+                            !livePlatformAvailableIdsHidden.has(o.id) &&
+                            !isFlashSalePlatformOffer(o.offerKind) &&
+                            !appliedFlashSaleIds.has(o.id)
+                        )
                         .map((o) => {
                         const isApplied = appliedPlatformOfferId === o.id;
                         return (
@@ -682,7 +769,13 @@ export function CheckoutOffersSheet({
                           />
                         );
                       })}
-                      {livePlatformReadyFromLocked.map((o) => {
+                      {livePlatformReadyFromLocked
+                        .filter(
+                          (o) =>
+                            !isFlashSalePlatformOffer(o.offerKind) &&
+                            !appliedFlashSaleIds.has(o.id)
+                        )
+                        .map((o) => {
                         const isApplied = appliedPlatformOfferId === o.id;
                         return (
                           <OfferRow
@@ -700,13 +793,23 @@ export function CheckoutOffersSheet({
                     </View>
                   ) : null}
 
-                  {livePlatformLocked.length > 0 ? (
+                  {livePlatformLocked.filter(
+                    (o) =>
+                      !isFlashSalePlatformOffer(o.offerKind) &&
+                      !appliedFlashSaleIds.has(o.id)
+                  ).length > 0 ? (
                     <View style={styles.section}>
                       <CheckoutText style={styles.sectionLabel}>UNLOCK MORE</CheckoutText>
                       <CheckoutText style={styles.sectionHint}>
                         Add more to cart or tap GATICASH
                       </CheckoutText>
-                      {livePlatformLocked.map((o) => {
+                      {livePlatformLocked
+                        .filter(
+                          (o) =>
+                            !isFlashSalePlatformOffer(o.offerKind) &&
+                            !appliedFlashSaleIds.has(o.id)
+                        )
+                        .map((o) => {
                         const unlockable =
                           isOfferGatiCashUnlockable(o.reason) &&
                           isFairGatiCashUnlock(o.liveGap, o.estimatedSavingsInr ?? 0);
@@ -943,6 +1046,7 @@ export function CheckoutOffersSheet({
                   (data?.coupons.length ?? 0) === 0 &&
                   (data?.merchantOffers.length ?? 0) === 0 &&
                   (data?.platformOffers.length ?? 0) === 0 &&
+                  appliedFlashSaleRows.length === 0 &&
                   livePlatformLocked.length === 0 &&
                   livePlatformReadyFromLocked.length === 0 &&
                   liveMerchantLocked.length === 0 &&

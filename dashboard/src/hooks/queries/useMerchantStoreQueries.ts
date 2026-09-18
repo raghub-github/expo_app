@@ -7,6 +7,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { STORE_KEY } from "@/hooks/useStore";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import {
+  readCachedStoreOpenFromEngine,
   readStoreOperationsCache,
   writeStoreOperationsCache,
 } from "@/lib/merchants/partner-store-ops-cache";
@@ -21,6 +22,19 @@ const SHARED_OPTIONS = {
   refetchOnMount: false,
   retry: 1,
 } as const;
+
+/** Minimal ops payload so Store Status can paint before the network round-trip. */
+function placeholderStoreOperations(storeId: string): Record<string, unknown> | undefined {
+  const cached = readStoreOperationsCache(storeId);
+  if (cached && cached.operational_status != null) return cached;
+  const open = readCachedStoreOpenFromEngine(storeId);
+  if (open == null) return undefined;
+  return {
+    success: true,
+    operational_status: open ? "OPEN" : "CLOSED",
+    _placeholder: true,
+  };
+}
 
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { credentials: "include", cache: "no-store" });
@@ -80,7 +94,7 @@ export function useStoreWalletQuery(storeId: string | null) {
 /** Shared query: store operations. Single request per storeId, cached 5min. */
 export function useStoreOperationsQuery(storeId: string | null) {
   const url = storeId ? `/api/merchant/stores/${storeId}/store-operations` : null;
-  const cachedOps = storeId ? readStoreOperationsCache(storeId) : null;
+  const seedOps = storeId ? placeholderStoreOperations(storeId) : undefined;
 
   return useQuery({
     queryKey: queryKeys.merchantStore.storeOperations(storeId ?? ""),
@@ -91,9 +105,10 @@ export function useStoreOperationsQuery(storeId: string | null) {
     },
     enabled: Boolean(storeId && url),
     ...SHARED_OPTIONS,
-    // Instant paint from session cache (partnersite-style) while network refreshes.
-    initialData: cachedOps ?? undefined,
-    initialDataUpdatedAt: cachedOps ? Date.now() - 60_000 : undefined,
+    // Instant paint from session/engine cache while network refreshes.
+    initialData: seedOps,
+    initialDataUpdatedAt: seedOps ? Date.now() - 60_000 : undefined,
+    placeholderData: seedOps,
     // Partner Site / merchant app toggles update DB; tab back to dashboard should resync even if Realtime missed.
     refetchOnWindowFocus: true,
     refetchOnMount: true,

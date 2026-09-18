@@ -1,4 +1,5 @@
 import React, { useCallback, useState } from "react";
+import { StyleSheet, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { router, useFocusEffect } from "expo-router";
@@ -43,15 +44,24 @@ export function ProfileReferralCard({ referralCode: _referralCode, riderName: _r
   if (!visible) return null;
 
   return (
-    <ProfilePromoCard
-      colors={["#0F766E", "#0D9488", "#14B8A6"]}
-      icon={<Ionicons name="gift-outline" size={20} color="#FFFFFF" />}
-      title={t("profile.referAndEarn", "Refer & Earn")}
-      subtitle={
-        liveSubtitle ??
-        t("profile.referAndEarnSub", "Invite another rider and earn rewards when they complete the required milestones.")
-      }
-      onPress={() => router.push("/referrals")}
-    />
+    <View style={styles.wrap}>
+      <ProfilePromoCard
+        colors={["#0F766E", "#0D9488", "#14B8A6"]}
+        icon={<Ionicons name="gift-outline" size={20} color="#FFFFFF" />}
+        title={t("profile.referAndEarn", "Refer & Earn")}
+        subtitle={
+          liveSubtitle ??
+          t("profile.referAndEarnSub", "Invite another rider and earn rewards when they complete the required milestones.")
+        }
+        onPress={() => router.push("/referrals")}
+      />
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  wrap: {
+    marginBottom: 14,
+  },
+});
+

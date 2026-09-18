@@ -1,4 +1,5 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
+// Aadhaar verify stays on-screen until the rider taps Continue (no auto-advance).
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   View,
@@ -14,7 +15,7 @@ import {
   TouchableOpacity,
   BackHandler,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -36,12 +37,16 @@ import { useSessionStore } from "@/src/stores/sessionStore";
 import { uploadToR2, deleteFromR2, buildRiderDocumentKey } from "@/src/services/storage/cloudflareR2";
 import { useSaveDocument, useUpdateRiderStage } from "@/src/hooks/useDocuments";
 import { ElectronicVerifyCard, type EvState } from "@/src/components/onboarding/ElectronicVerifyCard";
+import { OnboardingRemoveConfirmModal } from "@/src/components/onboarding/OnboardingRemoveConfirmModal";
+import { isElectronicVerifyForceManualError } from "@/src/lib/electronic-verify-rate-limit";
 import {
   DigilockerInAppBrowser,
   type DigilockerInAppResult,
 } from "@/src/components/onboarding/DigilockerInAppBrowser";
+import { onboardingHeaderPaddingTop, OnboardingStickyFooter, ContinueButton as SharedContinueButton, onboardingStickyScrollPadding } from "@/src/components/onboarding/OnboardingFormUi";
 import { colors } from "@/src/theme";
 import { riderDigilockerHttpsReturn } from "@/src/lib/digilocker";
+import { resolveOnboardingPhotoDisplayUrl, isLocalMediaUri } from "@/src/utils/mediaUrl";
 
 let DateTimePicker: React.ComponentType<any> | null = null;
 try {
@@ -258,6 +263,8 @@ function AadhaarPhotoSlot({
   onBoxPress: () => void;
   disabled?: boolean;
 }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
   return (
     <View style={styles.photoSlot}>
       <Text style={styles.photoSlotLabel} numberOfLines={1}>
@@ -290,8 +297,15 @@ function AadhaarPhotoSlot({
         </Pressable>
 
         {uri ? (
-          <Pressable onPress={onRemove} style={styles.slotRemoveBtn} hitSlop={8}>
-            <Ionicons name="close-circle" size={20} color="#ffffff" />
+          <Pressable
+            onPress={() => setConfirmOpen(true)}
+            style={styles.slotRemoveBtn}
+            hitSlop={8}
+            disabled={disabled}
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${sideLabel}`}
+          >
+            <Ionicons name="close" size={14} color={colors.gray[700]} />
           </Pressable>
         ) : null}
       </View>
@@ -330,6 +344,17 @@ function AadhaarPhotoSlot({
           </View>
         </Pressable>
       </View>
+
+      <OnboardingRemoveConfirmModal
+        visible={confirmOpen}
+        onCancel={() => setConfirmOpen(false)}
+        onConfirm={() => {
+          setConfirmOpen(false);
+          onRemove();
+        }}
+        title="Remove Aadhaar photo?"
+        message="Your image will be removed and you need to upload a new one."
+      />
     </View>
   );
 }
@@ -338,6 +363,8 @@ export default function AadhaarScreen() {
   const { t } = useTranslation();
   const tx = (key: keyof typeof AADHAAR_COPY, options?: Record<string, unknown>) =>
     t(`onboarding.aadhaar.${key}`, { defaultValue: AADHAAR_COPY[key], ...options });
+  const insets = useSafeAreaInsets();
+  const headerTopPad = onboardingHeaderPaddingTop(insets.top);
 
   const session = useSessionStore((s) => s.session);
   const { data, setData, setStep, hydrate } = useOnboardingStore();
@@ -360,24 +387,42 @@ export default function AadhaarScreen() {
   // explicitly. Auto-forward here trapped Back from PAN → Aadhaar → PAN.
 
   const [aadhaarNumber, setAadhaarNumber] = useState(data.aadhaarNumber || "");
+  /** Keep last full 12-digit UID even if the input later shows DigiLocker masked form. */
+  const fullAadhaarDigitsRef = useRef(
+    data.aadhaarNumber && /^\d{12}$/.test(String(data.aadhaarNumber).replace(/\D/g, ""))
+      ? String(data.aadhaarNumber).replace(/\D/g, "")
+      : "",
+  );
   const [fullName, setFullName] = useState(data.fullName || "");
   const [dob, setDob] = useState(data.dob || "");
   const [dobDate, setDobDate] = useState<Date | null>(
     data.dob ? parseDobString(data.dob) : null
   );
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const [aadhaarFrontUri, setAadhaarFrontUri] = useState<string | null>(
-    data.aadhaarFrontPhotoUri || data.aadhaarPhotoUri || null
+  const [aadhaarFrontUri, setAadhaarFrontUri] = useState<string | null>(() =>
+    resolveOnboardingPhotoDisplayUrl({
+      remotes: [data.aadhaarFrontPhotoSignedUrl, data.aadhaarPhotoSignedUrl],
+      localUri: data.aadhaarFrontPhotoUri || data.aadhaarPhotoUri,
+    })
   );
-  const [aadhaarBackUri, setAadhaarBackUri] = useState<string | null>(
-    data.aadhaarBackPhotoUri || null
+  const [aadhaarBackUri, setAadhaarBackUri] = useState<string | null>(() =>
+    resolveOnboardingPhotoDisplayUrl({
+      remotes: [data.aadhaarBackPhotoSignedUrl],
+      localUri: data.aadhaarBackPhotoUri,
+    })
   );
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const aadhaarDigits = aadhaarNumber.replace(/\D/g, "");
-  const aadhaarValid = aadhaarDigits.length === 12;
-  const aadhaarCheckQuery = useAadhaarRegistrationCheck(aadhaarDigits, data.riderId);
+  const resolvedFullAadhaar =
+    aadhaarDigits.length === 12
+      ? aadhaarDigits
+      : fullAadhaarDigitsRef.current.length === 12
+        ? fullAadhaarDigitsRef.current
+        : "";
+  const aadhaarValid = resolvedFullAadhaar.length === 12;
+  const aadhaarCheckQuery = useAadhaarRegistrationCheck(resolvedFullAadhaar, data.riderId);
   const aadhaarAlreadyRegistered = aadhaarCheckQuery.data?.registered === true;
   const checkingAadhaar =
     aadhaarValid &&
@@ -468,12 +513,38 @@ export default function AadhaarScreen() {
       : identityMethods.manualUpload;
   const aadhaarElectronic = allowDigilocker && (aadhaarMode === "auto" || aadhaarMode === "hybrid");
   const [aadhaarEv, setAadhaarEv] = useState<EvState>({ phase: "idle" });
+
+  // Restore manual photo previews from signed proxy after Back (local file:// dies).
+  useEffect(() => {
+    const front = resolveOnboardingPhotoDisplayUrl({
+      remotes: [data.aadhaarFrontPhotoSignedUrl, data.aadhaarPhotoSignedUrl],
+    });
+    const back = resolveOnboardingPhotoDisplayUrl({
+      remotes: [data.aadhaarBackPhotoSignedUrl],
+    });
+    if (front) {
+      setAadhaarFrontUri((prev) => {
+        if (!prev || isLocalMediaUri(prev)) return front;
+        return prev;
+      });
+    }
+    if (back) {
+      setAadhaarBackUri((prev) => {
+        if (!prev || isLocalMediaUri(prev)) return back;
+        return prev;
+      });
+    }
+  }, [
+    data.aadhaarFrontPhotoSignedUrl,
+    data.aadhaarPhotoSignedUrl,
+    data.aadhaarBackPhotoSignedUrl,
+  ]);
+
   const [digilockerSessionUrl, setDigilockerSessionUrl] = useState<string | null>(null);
   const [verifiedFrontKey, setVerifiedFrontKey] = useState<string | null>(null);
   const [verifiedFrontProxy, setVerifiedFrontProxy] = useState<string | null>(null);
   const [verifiedBackKey, setVerifiedBackKey] = useState<string | null>(null);
   const [verifiedBackProxy, setVerifiedBackProxy] = useState<string | null>(null);
-  const autoAdvanceAfterVerifyRef = React.useRef(false);
 
   // Restore DigiLocker success if Aadhaar is already complete on the server (app reopen / remount).
   useEffect(() => {
@@ -686,7 +757,7 @@ export default function AadhaarScreen() {
       const res = await verifyDocument.mutateAsync({
         riderId: data.riderId,
         docKind: "aadhaar",
-        aadhaarNumber: aadhaarValid ? aadhaarDigits : undefined,
+        aadhaarNumber: aadhaarValid ? resolvedFullAadhaar : undefined,
         redirectUrl,
       });
 
@@ -719,6 +790,10 @@ export default function AadhaarScreen() {
         }
       });
     } catch (e) {
+      if (isElectronicVerifyForceManualError(e)) {
+        setAadhaarEv({ phase: "manual" });
+        return;
+      }
       setAadhaarEv({
         phase: "failed",
         error: e instanceof Error ? e.message : tx("digilockerOpenFailed"),
@@ -818,7 +893,11 @@ export default function AadhaarScreen() {
       if (aadhaarEv.phase === "verified") {
         return !(aadhaarValid && aadhaarAlreadyRegistered);
       }
-      if (aadhaarEv.phase === "failed" || aadhaarEv.phase === "manual" || !allowDigilocker) {
+      if (
+        aadhaarEv.phase === "failed" ||
+        aadhaarEv.phase === "manual" ||
+        !allowDigilocker
+      ) {
         return (
           aadhaarValid &&
           !aadhaarAlreadyRegistered &&
@@ -866,6 +945,9 @@ export default function AadhaarScreen() {
     const prevLast4 = aadhaarLast4(aadhaarNumber);
     const nextLast4 = aadhaarLast4(next);
     setAadhaarNumber(next);
+    if (nextDigits.length === 12) {
+      fullAadhaarDigitsRef.current = nextDigits;
+    }
     // Only clear verified state when the document number actually changes.
     if (prevDigits !== nextDigits || prevLast4 !== nextLast4) {
       setAadhaarEv({ phase: "idle" });
@@ -937,7 +1019,16 @@ export default function AadhaarScreen() {
   };
 
   const handleContinue = async () => {
-    if (aadhaarElectronic && aadhaarMode === "auto" && aadhaarEv.phase !== "verified") {
+    const manualFallbackReady =
+      aadhaarEv.phase === "failed" ||
+      aadhaarEv.phase === "manual" ||
+      aadhaarEv.phase === "mismatch";
+    if (
+      aadhaarElectronic &&
+      aadhaarMode === "auto" &&
+      aadhaarEv.phase !== "verified" &&
+      !manualFallbackReady
+    ) {
       notifyOnboardingToast(tx("verifyRequired"));
       return;
     }
@@ -945,8 +1036,8 @@ export default function AadhaarScreen() {
     const electronicOk = aadhaarElectronic && aadhaarEv.phase === "verified";
     const hybridFallback =
       aadhaarElectronic &&
-      aadhaarMode === "hybrid" &&
-      (aadhaarEv.phase === "failed" || aadhaarEv.phase === "manual");
+      (aadhaarMode === "hybrid" || aadhaarMode === "auto") &&
+      manualFallbackReady;
 
     if (!electronicOk) {
       if (!aadhaarValid) {
@@ -1022,7 +1113,7 @@ export default function AadhaarScreen() {
           extractedName: fullName.trim(),
           extractedDob: dob,
           metadata: {
-            aadhaarNumber: aadhaarNumber.replace(/\D/g, ""),
+            aadhaarNumber: resolvedFullAadhaar || aadhaarNumber.replace(/\D/g, ""),
             verificationMethod: hybridFallback ? "hybrid_manual_fallback" : "manual",
           },
           files: [
@@ -1056,7 +1147,7 @@ export default function AadhaarScreen() {
           extractedName: fullName.trim() || undefined,
           extractedDob: dob || undefined,
           metadata: {
-            aadhaarNumber: aadhaarNumber.replace(/\D/g, "") || undefined,
+            aadhaarNumber: resolvedFullAadhaar || undefined,
             verificationMethod: "cashfree_digilocker",
             digilockerVerified: true,
             verifiedDetails: digilockerDetails,
@@ -1082,7 +1173,7 @@ export default function AadhaarScreen() {
         frontProxyUrl = frontProxy || "digilocker_verified";
       }
 
-      const digits = aadhaarNumber.replace(/\D/g, "");
+      const digits = resolvedFullAadhaar || aadhaarNumber.replace(/\D/g, "");
       const resolvedName =
         fullName.trim() ||
         (aadhaarEv.phase === "verified"
@@ -1106,6 +1197,7 @@ export default function AadhaarScreen() {
             : hybridFallback
               ? "hybrid_manual"
               : "manual",
+          ...(aadhaarEv.phase === "verified" ? { verifiedDetails: aadhaarEv.details } : {}),
         },
       });
 
@@ -1118,17 +1210,26 @@ export default function AadhaarScreen() {
         aadhaarNumber: digits.length === 12 ? digits : data.aadhaarNumber,
         fullName: resolvedName || fullName.trim(),
         dob,
-        aadhaarFrontPhotoUri: aadhaarFrontUri || undefined,
-        aadhaarBackPhotoUri: aadhaarBackUri || undefined,
+        // Drop camera/gallery temp paths — they white-box after Back.
+        aadhaarFrontPhotoUri: undefined,
+        aadhaarBackPhotoUri: undefined,
         aadhaarFrontPhotoSignedUrl: frontProxyUrl,
         aadhaarBackPhotoSignedUrl: undefined,
-        aadhaarPhotoUri: aadhaarFrontUri || undefined,
+        aadhaarPhotoUri: undefined,
         aadhaarPhotoSignedUrl: frontProxyUrl,
         currentStep: "aadhaar_name",
       });
+      if (frontProxyUrl) {
+        setAadhaarFrontUri(
+          resolveOnboardingPhotoDisplayUrl({ remotes: [frontProxyUrl] })
+        );
+      }
 
       await setStep("pan_selfie");
-      router.replace("/(onboarding)/pan-selfie");
+      // Always open PAN step — never deep-link selfie from Aadhaar Continue.
+      // `walk=1` keeps pan-selfie from auto-skipping to dl-rc when KYC is already done
+      // (Continue after header Back must stay sequential 1→2→3).
+      router.replace("/(onboarding)/pan-selfie?walk=1");
     } catch (e) {
       for (const key of uploadedKeys) {
         try {
@@ -1140,32 +1241,21 @@ export default function AadhaarScreen() {
       const message = e instanceof Error ? e.message : tx("uploadError");
       notifyOnboardingToast(message);
       console.error("[Aadhaar] Continue failed:", e);
-      autoAdvanceAfterVerifyRef.current = false;
     } finally {
       setSubmitting(false);
       setUploading(false);
     }
   };
 
-  // After DigiLocker succeeds, persist + jump to next incomplete step (no extra Continue tap).
-  useEffect(() => {
-    if (aadhaarEv.phase !== "verified") return;
-    if (autoAdvanceAfterVerifyRef.current || submitting || uploading) return;
-    const completed = riderStatus?.completedOnboardingSteps ?? [];
-    // Server already advanced — forward effect handles navigation.
-    if (completed.includes("aadhaar_name")) return;
-    autoAdvanceAfterVerifyRef.current = true;
-    void handleContinue();
-    // handleContinue closes over latest form/verify state; re-run only when phase flips to verified.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot after DigiLocker
-  }, [aadhaarEv.phase]);
-
   return (
     <View style={styles.root}>
-      <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <SafeAreaView style={styles.safeArea} edges={[]}>
         <View style={styles.flex}>
           <ScrollView
-            contentContainerStyle={styles.scrollContent}
+            contentContainerStyle={[
+              styles.scrollContent,
+              { paddingBottom: onboardingStickyScrollPadding(insets.bottom) },
+            ]}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
@@ -1173,7 +1263,7 @@ export default function AadhaarScreen() {
               colors={["#dff5e4", BG]}
               start={{ x: 0.5, y: 0 }}
               end={{ x: 0.5, y: 1 }}
-              style={styles.header}
+              style={[styles.header, { paddingTop: headerTopPad }]}
             >
               <View style={styles.stepPill}>
                 <Ionicons name="card-outline" size={14} color={ACCENT_DARK} />
@@ -1360,7 +1450,12 @@ export default function AadhaarScreen() {
                     }
                     onVerify={() => void runAadhaarElectronicVerify()}
                     onUploadManually={() => setAadhaarEv({ phase: "manual" })}
-                    allowManualUpload={allowManual !== false}
+                    allowManualUpload={allowManual !== false && !showPhotoBox}
+                    photoUploadVisible={showPhotoBox}
+                    manualSubmitted={
+                      Boolean(aadhaarFrontUri && aadhaarBackUri) ||
+                      aadhaarEv.phase === "manual"
+                    }
                     verifyLabel={tx("verifyDigilocker")}
                     retryLabel="Verify again"
                     documentLabel="Aadhaar"
@@ -1395,14 +1490,16 @@ export default function AadhaarScreen() {
               </View>
               ) : null}
 
-              <ContinueButton
-                label={tx("continue")}
-                onPress={handleContinue}
-                disabled={!canContinue}
-                loading={submitting}
-              />
             </View>
           </ScrollView>
+          <OnboardingStickyFooter>
+            <SharedContinueButton
+              label={tx("continue")}
+              onPress={handleContinue}
+              disabled={!canContinue}
+              loading={submitting}
+            />
+          </OnboardingStickyFooter>
         </View>
       </SafeAreaView>
 
@@ -1437,8 +1534,7 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 64,
-    paddingBottom: 20,
+    paddingBottom: 14,
     alignItems: "center",
     alignSelf: "stretch",
   },
@@ -1491,6 +1587,7 @@ const styles = StyleSheet.create({
   formCard: {
     alignSelf: "stretch",
     marginHorizontal: 16,
+    marginTop: 12,
     backgroundColor: "#ffffff",
     borderRadius: 20,
     padding: 20,
@@ -1713,9 +1810,16 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 4,
     right: 4,
-    backgroundColor: "rgba(0,0,0,0.45)",
+    width: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
     borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.gray[300],
     zIndex: 2,
+    elevation: 4,
   },
   slotBoxPressed: {
     opacity: 0.92,

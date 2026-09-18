@@ -172,6 +172,16 @@ describe("rideParcelPromo — discount math", () => {
     assert.equal(amt, 151);
   });
 
+  it("FLASH_SALE kind still uses PAY_FIXED customer fare math", () => {
+    const ctx = baseCtx();
+    const o = baseOffer({
+      offerKind: "FLASH_SALE",
+      promoConfig: { promo_type: "PAY_FIXED", pay_fixed: 1 },
+      maxDiscountAmount: null,
+    });
+    assert.equal(computeRideParcelPromoDiscount(ctx, o, 95), 94);
+  });
+
   it("FARE_CAP discounts excess over cap", () => {
     const ctx = baseCtx();
     const o = baseOffer({

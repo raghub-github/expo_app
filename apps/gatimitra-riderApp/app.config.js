@@ -156,7 +156,12 @@ module.exports = {
         {
           icon: "./assets/images/rideraap.png",
           color: "#C4E8D1",
-          sounds: ["./assets/sounds/notification.wav"],
+          sounds: [
+            "./assets/sounds/notification.wav",
+            "./assets/sounds/food_order.wav",
+            "./assets/sounds/parcel_order.wav",
+            "./assets/sounds/ride_order.wav",
+          ],
           defaultChannel: "rider_default",
           enableBackgroundRemoteNotifications: true,
         }
@@ -165,6 +170,24 @@ module.exports = {
         "../../packages/expo-push-kit/plugin/withAndroidPushChannels.js",
         {
           channels: [
+            {
+              id: "rider_dispatch_food_v1",
+              name: "Incoming food orders",
+              importance: 5,
+              sound: "food_order",
+            },
+            {
+              id: "rider_dispatch_parcel_v1",
+              name: "Incoming parcel orders",
+              importance: 5,
+              sound: "parcel_order",
+            },
+            {
+              id: "rider_dispatch_ride_v1",
+              name: "Incoming ride requests",
+              importance: 5,
+              sound: "ride_order",
+            },
             {
               id: "rider_dispatch_offers_alert",
               name: "Incoming order requests",

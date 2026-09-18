@@ -1,5 +1,10 @@
 /**
  * Shared Android live-order sticky + tray dedupe (plain JS for pushBackgroundTask).
+ *
+ * Tray model:
+ *   progress (placed → picked up) — one sticky id, replaced in place
+ *   OTP (reach customer)          — new row; progress auto-cleared
+ *   final (delivered / cancelled) — new row; user clears manually
  */
 
 const CHANNEL_ID = "customer_live_order";
@@ -29,6 +34,45 @@ function progressBar(step, steps) {
 function isGmLiveProgressPush(data) {
   if (!data || typeof data !== "object") return false;
   return data.gmLiveProgress === true || data.gmLiveProgress === "true";
+}
+
+function liveKindFromData(data) {
+  if (!data || typeof data !== "object") return null;
+  const kind = String(data.gmLiveKind ?? "").trim().toLowerCase();
+  if (kind === "progress" || kind === "otp" || kind === "final") return kind;
+  if (isGmLiveProgressPush(data)) return "progress";
+  const code = String(
+    data.gmType ?? data.template_code ?? data.templateCode ?? data.type ?? ""
+  )
+    .trim()
+    .toUpperCase();
+  if (
+    code === "CUSTOMER_DELIVERY_OTP_NEARBY" ||
+    code === "CUSTOMER_PICKUP_OTP_ARRIVED" ||
+    code === "ORDER_RIDER_ARRIVING" ||
+    code === "PARCEL_RIDER_NEARBY"
+  ) {
+    return "otp";
+  }
+  if (
+    code.includes("DELIVERED") ||
+    code.includes("COMPLETED") ||
+    code.includes("CANCELLED") ||
+    code.includes("CANCELED")
+  ) {
+    return "final";
+  }
+  if (data.gmClearLiveProgress === true || data.gmClearLiveProgress === "true") {
+    return "final";
+  }
+  return null;
+}
+
+function shouldClearLiveProgress(data) {
+  if (!data || typeof data !== "object") return false;
+  if (data.gmClearLiveProgress === true || data.gmClearLiveProgress === "true") return true;
+  const kind = liveKindFromData(data);
+  return kind === "otp" || kind === "final";
 }
 
 function isOrderLifecyclePush(data) {
@@ -89,6 +133,16 @@ function orderIdsFromPresentedItem(item) {
   return ids;
 }
 
+function orderIdFromPushData(data) {
+  if (!data || typeof data !== "object") return "";
+  const raw =
+    (typeof data.orderId === "string" && data.orderId) ||
+    (typeof data.order_id === "string" && data.order_id) ||
+    (typeof data.orderIdText === "string" && data.orderIdText) ||
+    "";
+  return String(raw).trim();
+}
+
 async function ensureChannel(Notifications) {
   if (channelReady) return;
   await Notifications.setNotificationChannelAsync(CHANNEL_ID, {
@@ -100,6 +154,54 @@ async function ensureChannel(Notifications) {
     showBadge: true,
   });
   channelReady = true;
+}
+
+/**
+ * Dismiss progress sticky + FCM twins for an order (OTP / final / cancel).
+ * Does not dismiss OTP or final tray rows — those stay until the user clears.
+ */
+async function dismissLiveOrderProgressForOrder(orderId) {
+  const id = String(orderId ?? "").trim();
+  if (!id) return;
+  const orderKey = id.toUpperCase();
+  lastPostedSig.delete(id);
+  lastPostedStep.delete(id);
+  pendingLiveByOrder.delete(id);
+
+  const Notifications = require("expo-notifications");
+  await Notifications.dismissNotificationAsync(ongoingId(id)).catch(() => undefined);
+
+  let presented = [];
+  try {
+    presented = await Notifications.getPresentedNotificationsAsync();
+  } catch {
+    return;
+  }
+
+  for (const item of presented) {
+    const identifier = item?.request?.identifier ?? "";
+    if (!identifier) continue;
+    const keys = orderIdsFromPresentedItem(item);
+    if (!keys.some((k) => k === orderKey)) continue;
+
+    if (String(identifier).startsWith("customer-live-order-")) {
+      await Notifications.dismissNotificationAsync(identifier).catch(() => undefined);
+      continue;
+    }
+
+    const data = item?.request?.content?.data ?? {};
+    const kind = liveKindFromData(data);
+    // Keep OTP + final rows for manual clear.
+    if (kind === "otp" || kind === "final") continue;
+    if (
+      isGmLiveProgressPush(data) ||
+      data.type === "live_order_progress" ||
+      kind === "progress" ||
+      isOrderLifecyclePush(data)
+    ) {
+      await Notifications.dismissNotificationAsync(identifier).catch(() => undefined);
+    }
+  }
 }
 
 async function postOrUpdateLiveNotification(args) {
@@ -138,6 +240,7 @@ async function postOrUpdateLiveNotification(args) {
         body: `${args.body}\n${bar}`,
         data: {
           type: "live_order_progress",
+          gmLiveKind: "progress",
           liveService: args.service ?? "food",
           orderId: args.orderId,
           screen: href,
@@ -161,6 +264,8 @@ async function postOrUpdateLiveNotification(args) {
         const keys = orderIdsFromPresentedItem(item);
         if (!keys.some((k) => k === orderKey)) continue;
         const data = item?.request?.content?.data ?? {};
+        const kind = liveKindFromData(data);
+        if (kind === "otp" || kind === "final") continue;
         if (
           isGmLiveProgressPush(data) ||
           isOrderLifecyclePush(data) ||
@@ -181,6 +286,12 @@ async function postOrUpdateLiveNotification(args) {
 }
 
 async function applyLiveProgressFromPush(data) {
+  const orderId = orderIdFromPushData(data);
+  if (orderId && shouldClearLiveProgress(data)) {
+    await dismissLiveOrderProgressForOrder(orderId);
+    return;
+  }
+
   const live = isGmLiveProgressPush(data);
   if (!live) return;
 
@@ -192,7 +303,6 @@ async function applyLiveProgressFromPush(data) {
         ? "parcel"
         : "food";
 
-  const orderId = typeof data.orderId === "string" ? data.orderId.trim() : "";
   if (!orderId) return;
 
   const step = Number(data.liveStep);
@@ -248,6 +358,8 @@ async function applyLiveProgressFromPush(data) {
 
 /**
  * Remove stale FCM tray rows for active orders — keep only the sticky per orderId.
+ * Also drops orphan progress stickies/twins whose order is no longer active
+ * (fixes cancelled orders still showing "Waiting for store confirmation").
  */
 async function dismissStaleLiveOrderTrayNotifications(activeOrderIds, opts) {
   const active = normalizeActiveIdSet(activeOrderIds);
@@ -269,6 +381,7 @@ async function dismissStaleLiveOrderTrayNotifications(activeOrderIds, opts) {
     const data = item?.request?.content?.data ?? {};
     const keys = orderIdsFromPresentedItem(item);
     const matchesActive = keys.some((k) => active.has(k));
+    const kind = liveKindFromData(data);
 
     if (identifier.startsWith("customer-live-order-")) {
       const stickyOrderId = identifier.slice("customer-live-order-".length).toUpperCase();
@@ -278,18 +391,20 @@ async function dismissStaleLiveOrderTrayNotifications(activeOrderIds, opts) {
       continue;
     }
 
-    if (!matchesActive) continue;
+    // OTP + final stay until the user clears them.
+    if (kind === "otp" || kind === "final") continue;
 
     const isLive =
       isGmLiveProgressPush(data) ||
       isOrderLifecyclePush(data) ||
-      data.type === "live_order_progress";
+      data.type === "live_order_progress" ||
+      kind === "progress";
 
-    if (isLive) {
-      // Historical FCM shade rows for this active order — never keep them
-      // around to "replay" when the customer opens the app.
-      await Notifications.dismissNotificationAsync(identifier).catch(() => undefined);
-    }
+    if (!isLive) continue;
+
+    // Active: drop FCM twins (sticky owns the tray).
+    // Inactive / cancelled: drop leftover progress FCM rows (stuck "Waiting…").
+    await Notifications.dismissNotificationAsync(identifier).catch(() => undefined);
   }
 }
 
@@ -297,7 +412,7 @@ function liveProgressHandlerResult(data) {
   // Customer has NO Incoming Order / repeating offer chime (merchant + rider only).
   // Order/ride/parcel lifecycle uses cx_notification (JS while open; OS channel bg/kill).
   //
-  //   OPEN       — sticky only (no FCM twin in shade); CX played in-app
+  //   OPEN       — sticky only for progress; OTP/final show OS row
   //   BACKGROUND — shade list + CX channel sound; sticky if process alive
   //   KILLED     — handler does not run; FCM notification + CX channel sound
   let appActive = false;
@@ -306,8 +421,26 @@ function liveProgressHandlerResult(data) {
   } catch {
     appActive = false;
   }
-  if (isGmLiveProgressPush(data) || isOrderLifecyclePush(data)) {
-    if (appActive) {
+
+  const kind = liveKindFromData(data);
+  const isProgress = isGmLiveProgressPush(data) || kind === "progress";
+  const isLifecycle = isOrderLifecyclePush(data);
+
+  if (isProgress || isLifecycle) {
+    if (kind === "otp" || kind === "final" || shouldClearLiveProgress(data)) {
+      // New OTP / final tray rows — always show; clear progress in handler.
+      return {
+        suppress: false,
+        shouldShowAlert: true,
+        shouldPlaySound: true,
+        shouldSetBadge: true,
+        shouldShowBanner: true,
+        shouldShowList: true,
+        updateSticky: false,
+        clearProgress: true,
+      };
+    }
+    if (appActive && isProgress) {
       return {
         suppress: true,
         shouldShowAlert: false,
@@ -316,6 +449,7 @@ function liveProgressHandlerResult(data) {
         shouldShowBanner: false,
         shouldShowList: false,
         updateSticky: true,
+        clearProgress: false,
       };
     }
     return {
@@ -325,7 +459,8 @@ function liveProgressHandlerResult(data) {
       shouldSetBadge: true,
       shouldShowBanner: true,
       shouldShowList: true,
-      updateSticky: true,
+      updateSticky: isProgress,
+      clearProgress: false,
     };
   }
   return {
@@ -336,6 +471,7 @@ function liveProgressHandlerResult(data) {
     shouldShowBanner: true,
     shouldShowList: true,
     updateSticky: false,
+    clearProgress: false,
   };
 }
 
@@ -343,9 +479,12 @@ module.exports = {
   CHANNEL_ID,
   ongoingId,
   applyLiveProgressFromPush,
+  dismissLiveOrderProgressForOrder,
   dismissStaleLiveOrderTrayNotifications,
   isGmLiveProgressPush,
   isOrderLifecyclePush,
+  liveKindFromData,
   liveProgressHandlerResult,
   postOrUpdateLiveNotification,
+  shouldClearLiveProgress,
 };

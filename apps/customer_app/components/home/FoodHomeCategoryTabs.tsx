@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, View, useWindowDimensions } from "react-native";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -426,12 +427,7 @@ export function FoodHomeCategoryTabs({
 
   return (
     <ScrollView
-      horizontal
-      nestedScrollEnabled
-      showsHorizontalScrollIndicator={false}
-      decelerationRate="fast"
-      delaysContentTouches={false}
-      keyboardShouldPersistTaps="handled"
+      {...NATURAL_HORIZONTAL_SCROLL_PROPS}
       contentContainerStyle={[
         styles.content,
         {

@@ -48,8 +48,9 @@ export function merchantStickySearchFadeStart(heroBannerHeight: number): number 
 /**
  * Gap under status bar before sticky search.
  * Merchant page owns safe-top itself (root spacer is hidden on this screen).
+ * Slightly roomier than the global status→header gap so the pill sits a touch lower.
  */
-export const MERCHANT_HEADER_TOP_EXTRA = STATUS_BAR_TO_HEADER_GAP;
+export const MERCHANT_HEADER_TOP_EXTRA = STATUS_BAR_TO_HEADER_GAP + 6;
 
 /** @deprecated Use `merchantHeaderTopGutter()`. */
 export const MERCHANT_HEADER_TOP_GUTTER = MERCHANT_HEADER_TOP_EXTRA;
@@ -105,8 +106,9 @@ export const MENU_ITEM_ROW_HEIGHT = 202;
 
 /** Compact vertical category rail beside the masonry menu grid. */
 export const CATEGORY_RAIL_WIDTH = 88;
-export const MENU_MASONRY_GUTTER = 8;
+export const MENU_MASONRY_GUTTER = 12;
 export const MENU_MASONRY_CARD_RADIUS = 14;
+export const MENU_MASONRY_EDGE_PAD = 16;
 
 /** Min height for menu-loading skeleton — fills viewport below hero/info so scroll never hits blank. */
 export const MENU_LOADING_FILL_MIN_HEIGHT = Math.max(

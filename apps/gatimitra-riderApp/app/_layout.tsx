@@ -32,7 +32,9 @@ import { RiderDutyLocationPing } from "@/src/components/RiderDutyLocationPing";
 import { isRiderWsEnabled } from "@/src/config/env";
 import { IncomingRideOrderHost } from "@/src/components/orders/IncomingRideOrderHost";
 import { SubscriptionDutyBlockedSheetHost } from "@/src/components/subscription/SubscriptionDutyBlockedSheetHost";
+import { WaitingForReviewSheetHost } from "@/src/components/onboarding/WaitingForReviewSheetHost";
 import { DutyWorkLocationMismatchSheetHost } from "@/src/components/duty/DutyWorkLocationMismatchSheet";
+import { DutyActionErrorModalHost } from "@/src/components/duty/DutyActionErrorModalHost";
 import { WorkingLocationSuccessModal } from "@/src/components/duty/WorkingLocationSuccessModal";
 import { RiderPaymentSuccessSheet } from "@/src/components/ui/RiderPaymentSuccessSheet";
 import { ActiveOrderResumeBootstrap } from "@/src/components/orders/ActiveOrderResumeBootstrap";
@@ -59,7 +61,7 @@ if (Platform.OS !== "web") {
 export { ErrorBoundary } from "expo-router";
 
 SplashScreen.preventAutoHideAsync().catch(() => {
-  // Expo Go / some Android builds cannot activate keep-awake — non-fatal
+  // Splash hide can fail on some Expo Go builds — non-fatal
 });
 
 export default function RootLayout() {
@@ -224,7 +226,9 @@ function RootLayoutNav() {
 
           <IncomingRideOrderHost />
           <SubscriptionDutyBlockedSheetHost />
+          <WaitingForReviewSheetHost />
           <DutyWorkLocationMismatchSheetHost />
+          <DutyActionErrorModalHost />
           <WorkingLocationSuccessModal />
           <RiderDocumentUpdateSheetHost />
           <RiderPaymentSuccessSheet />

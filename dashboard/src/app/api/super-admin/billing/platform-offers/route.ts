@@ -81,12 +81,14 @@ const postSchema = z.object({
   }
   const kindErr = validatePlatformOfferKindFieldsForApi({
     offer_kind: d.offer_kind,
+    service_type: d.service_type,
     buy_qty: d.buy_qty,
     get_qty: d.get_qty,
     conditions: d.conditions,
     discount_type: d.discount_type,
     value_numeric: d.value_numeric,
     delivery_discount_type: d.delivery_discount_type,
+    merchant_ids: d.merchant_ids,
   });
   if (kindErr) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: kindErr, path: ["offer_kind"] });

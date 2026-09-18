@@ -51,7 +51,7 @@ export type EvState =
       /** Soft RC owner mismatch still keeps Cashfree rows for display. */
       details?: Record<string, unknown>;
     }
-  | { phase: "manual" };
+  | { phase: "manual"; /** Why Instant Verify was skipped / blocked (shown to rider). */ reason?: string; /** Keep Cashfree rows visible next to manual upload. */ details?: Record<string, unknown> };
 
 const DETAIL_LABELS: Record<string, string> = {
   registered_name: "Registered name",
@@ -308,6 +308,21 @@ export function ElectronicVerifyCard(props: {
   onUploadManually?: () => void;
   /** When false, hide Upload manually (e.g. DigiLocker-only policies). Default: true. */
   allowManualUpload?: boolean;
+  /**
+   * When the parent already shows a photo upload slot below this card,
+   * hide the redundant "Upload manually" button.
+   */
+  photoUploadVisible?: boolean;
+  /**
+   * Rider already chose / completed manual photo submit for this doc
+   * (e.g. returned via Back). Hide Verify Instantly unless rate-limit
+   * countdown must stay visible on the locked button.
+   */
+  manualSubmitted?: boolean;
+  /** True when a front photo URI is already present — hide the blue upload hint. */
+  hasUploadedPhoto?: boolean;
+  /** Remaining countdown label while rate-limited (e.g. "2h 15m"). */
+  cooldownLabel?: string | null;
   verifyLabel: string;
   retryLabel?: string;
   verifiedTitle?: string;
@@ -328,6 +343,10 @@ export function ElectronicVerifyCard(props: {
     onVerify,
     onUploadManually,
     allowManualUpload = true,
+    photoUploadVisible = false,
+    manualSubmitted = false,
+    hasUploadedPhoto = false,
+    cooldownLabel = null,
     verifyLabel,
     retryLabel,
     verifiedTitle,
@@ -347,16 +366,24 @@ export function ElectronicVerifyCard(props: {
       ? `${state.phase}:${state.error}`
       : null;
 
-  const verifiedRows = useMemo(
-    () => (state.phase === "verified" ? buildVerifiedRows(state.details) : []),
-    [state],
-  );
+  const verifiedRows = useMemo(() => {
+    if (state.phase === "verified") return buildVerifiedRows(state.details);
+    if (state.phase === "mismatch" && state.details) return buildVerifiedRows(state.details);
+    if (state.phase === "manual" && state.details) return buildVerifiedRows(state.details);
+    return [];
+  }, [state]);
 
   const dobOk = !requiresDob || Boolean(dobYmd);
-  const verifyDisabled = Boolean(disabled) || state.phase === "verifying" || !dobOk;
-  /** Manual upload must stay tappable even when Verify again is locked (e.g. same PAN). */
+  const cooldownActive = Boolean(cooldownLabel);
+  const verifyDisabled =
+    Boolean(disabled) || state.phase === "verifying" || !dobOk || cooldownActive;
+  /** Manual upload must stay tappable even when Verify again is locked (same number or 24h). */
   const manualUploadDisabled = state.phase === "verifying";
   const pickerDisabled = state.phase === "verifying" || Boolean(disabled);
+  const isRcDoc =
+    documentLabel.toLowerCase().includes("rc") ||
+    documentLabel.toLowerCase().includes("registration");
+  const isPanDoc = documentLabel.toLowerCase().includes("pan");
 
   if (state.phase === "verified") {
     const hasDetailRows = verifiedRows.length > 0;
@@ -364,7 +391,7 @@ export function ElectronicVerifyCard(props: {
       verifiedTitle || defaultVerifiedTitle(documentLabel, requiresDob);
     const hint = state.requirePhoto
       ? state.photoHint ||
-        "RC details fetched. Owner name does not match Aadhaar — upload a clear RC photo to continue."
+        "Verified successfully, but the authorized name doesn’t match. Please upload a clear image of your RC."
       : verifiedHint || defaultVerifiedHint(documentLabel, hasDetailRows);
     return (
       <View style={[styles.card, styles.cardVerified]}>
@@ -389,7 +416,11 @@ export function ElectronicVerifyCard(props: {
           <View style={[styles.notice, styles.noticeWarn, { marginTop: 8 }]}>
             <Ionicons name="alert-circle" size={16} color="#b45309" />
             <View style={{ flex: 1, gap: 4 }}>
-              <Text style={styles.noticeWarnTitle}>RC photo required</Text>
+              <Text style={styles.noticeWarnTitle}>
+                {isRcDoc
+                  ? "RC owner name does not match Aadhaar"
+                  : "Photo required for manual review"}
+              </Text>
               <Text style={styles.noticeWarnText}>{hint}</Text>
             </View>
           </View>
@@ -400,26 +431,81 @@ export function ElectronicVerifyCard(props: {
     );
   }
 
-  const buttonLabel =
-    state.phase === "verifying"
+  const fetchedDetailsBanner =
+    verifiedRows.length > 0 ? (
+      <View style={[styles.card, styles.cardVerified]}>
+        <View style={styles.headerRow}>
+          <Ionicons name="shield-checkmark" size={18} color="#059669" />
+          <Text style={styles.verifiedTitle}>
+            {verifiedTitle || defaultVerifiedTitle(documentLabel, requiresDob)}
+          </Text>
+        </View>
+        {verifiedRows.map((row) => (
+          <View key={row.label} style={styles.detailRow}>
+            <Text style={styles.detailLabel}>{row.label}</Text>
+            <Text style={styles.detailValue}>{row.value}</Text>
+          </View>
+        ))}
+        <Text style={styles.verifiedHint}>
+          Upload a clear photo below to continue. These details stay on file for review.
+        </Text>
+      </View>
+    ) : null;
+
+  const buttonLabel = cooldownActive
+    ? `Try again in ${cooldownLabel}`
+    : state.phase === "verifying"
       ? "Verifying…"
       : state.phase === "failed" || state.phase === "manual" || state.phase === "mismatch"
         ? retryLabel || "Verify again"
         : verifyLabel;
 
   const showFailureNotice = Boolean(failureKey);
-  const showDualFailActions =
+  /**
+   * When the primary cooldown banner + button already explain the 2/24h lock,
+   * do not repeat the same rate-limit copy in the failed/manual notices.
+   */
+  const failureLooksLikeRateLimit =
+    (state.phase === "failed" || state.phase === "mismatch") &&
+    (() => {
+      const m = String(state.error || "").toLowerCase();
+      return (
+        m.includes("verify instantly") ||
+        m.includes("24 hours") ||
+        m.includes("try again after the countdown") ||
+        m.includes("limit reached")
+      );
+    })();
+  const showRateLimitDuplicateFailure =
+    showFailureNotice && state.phase === "failed" && !(cooldownActive && failureLooksLikeRateLimit);
+  const showManualNotice = state.phase === "manual" && !cooldownActive;
+  const manualReason =
+    state.phase === "manual" && typeof state.reason === "string" && state.reason.trim()
+      ? state.reason.trim()
+      : null;
+  /**
+   * Dual actions (Verify again + Upload manually) only when parent allows manual
+   * AND photo upload UI is not already visible below the card.
+   */
+  const showUploadManuallyBtn =
     (state.phase === "failed" || state.phase === "mismatch") &&
     allowManualUpload &&
+    !photoUploadVisible &&
     typeof onUploadManually === "function";
-  /** After Upload manually — hide Verify / Upload buttons; photos + Continue live below. */
-  const hideActionButtons = state.phase === "manual";
+  const showDualFailActions = showUploadManuallyBtn;
+  /** Hide Verify only after rider chose / restored a manual photo path without
+   *  an API failure reason. API-driven manual (reason set) keeps Verify again. */
+  const hideActionButtons =
+    !cooldownActive &&
+    (manualSubmitted || (state.phase === "manual" && !manualReason));
 
   const applyPickedDate = (selected: Date) => {
     onDobChange?.(dateToYmd(selected));
   };
 
   return (
+    <View style={{ gap: 10 }}>
+      {fetchedDetailsBanner}
     <View style={styles.card}>
       {requiresDob ? (
         <View style={styles.dobBlock}>
@@ -498,9 +584,9 @@ export function ElectronicVerifyCard(props: {
           >
             {/* This row only renders in the mismatch/failed phase; tapping "Verify again" moves the
                 card to the "verifying" layout, so the spinner never belongs here. */}
-            <Ionicons name="refresh" size={16} color="#fff" />
+            <Ionicons name={cooldownActive ? "time-outline" : "refresh"} size={16} color="#fff" />
             <Text style={[styles.buttonText, verifyDisabled && styles.buttonTextDisabled]}>
-              Verify again
+              {buttonLabel}
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -543,18 +629,21 @@ export function ElectronicVerifyCard(props: {
             </Text>
             <Text style={styles.noticeWarnReason}>Reason: {state.error}</Text>
             <Text style={styles.noticeWarnText}>
-              {documentLabel.toLowerCase().includes("pan")
-                ? "Enter a different PAN that matches your Aadhaar name, then tap Verify again — or upload a clear photo manually."
-                : documentLabel.toLowerCase().includes("rc") ||
-                    documentLabel.toLowerCase().includes("registration")
-                  ? "Upload a clear photo of a valid RC below to continue, or tap Verify again."
-                  : `Check the ${documentLabel} details against your Aadhaar name, then Verify again or Upload manually.`}
+              {isPanDoc
+                ? photoUploadVisible
+                  ? "Upload a clear photo of your PAN below, or enter a different PAN number to try Verify again."
+                  : "Upload a clear photo of a valid PAN below, or enter a different PAN and tap Verify again."
+                : isRcDoc
+                  ? "Verified successfully, but the authorized name doesn’t match. Please upload a clear image of your RC."
+                  : documentLabel.toLowerCase().includes("licen")
+                    ? "Verified successfully, but the authorized name doesn’t match. Please upload clear front and back images of your driving licence."
+                    : `Check the ${documentLabel} details against your Aadhaar name, then upload a clear photo or Verify again.`}
             </Text>
           </View>
         </View>
       ) : null}
 
-      {showFailureNotice && state.phase === "failed" ? (
+      {showRateLimitDuplicateFailure ? (
         <View
           style={[
             styles.notice,
@@ -578,20 +667,43 @@ export function ElectronicVerifyCard(props: {
               Reason: {state.error}
             </Text>
             <Text style={mode === "auto" ? styles.noticeErrorText : styles.noticeWarnText}>
-              Tap Verify again to retry with Cashfree, or Upload manually to submit a clear photo
-              for review.
+              {isRcDoc && !allowManualUpload
+                ? "Please enter a valid RC number and try again."
+                : photoUploadVisible || (allowManualUpload && isPanDoc)
+                  ? "Enter a different number to try Verify again, or upload a clear photo below for review."
+                  : allowManualUpload
+                    ? "Tap Verify again to retry, or Upload manually to submit a clear photo for review."
+                    : "Please check the document number and try again."}
             </Text>
           </View>
         </View>
       ) : null}
-      {state.phase === "manual" ? (
-        <View style={[styles.notice, styles.noticeInfo]}>
-          <Ionicons name="cloud-upload-outline" size={16} color="#4f46e5" />
-          <Text style={styles.noticeInfoText}>
-            Upload the required photos below, then tap Continue.
-          </Text>
-        </View>
+      {showManualNotice ? (
+        manualReason ? (
+          <View style={[styles.notice, styles.noticeWarn]}>
+            <Ionicons name="alert-circle" size={16} color="#b45309" />
+            <View style={{ flex: 1, gap: 4 }}>
+              <Text style={styles.noticeWarnTitle}>Couldn't verify automatically</Text>
+              <Text style={styles.noticeWarnReason}>Reason: {manualReason}</Text>
+              <Text style={styles.noticeWarnText}>
+                {photoUploadVisible
+                  ? "Upload a clear photo below for admin review, or tap Verify Instantly to try again."
+                  : "Tap Verify Instantly to try again, or upload a clear photo below for review."}
+              </Text>
+            </View>
+          </View>
+        ) : hasUploadedPhoto ? null : (
+          <View style={[styles.notice, styles.noticeInfo]}>
+            <Ionicons name="cloud-upload-outline" size={16} color="#4f46e5" />
+              <Text style={styles.noticeInfoText}>
+                {documentLabel.toLowerCase().includes("licen")
+                  ? "Upload clear front and back photos below, then tap Continue."
+                  : "Upload the required photos below, then tap Continue."}
+              </Text>
+          </View>
+        )
       ) : null}
+    </View>
     </View>
   );
 }

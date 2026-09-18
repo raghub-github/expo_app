@@ -17,8 +17,15 @@ export const RIDER_SECURE_KEYS = new Set<string>([
   "gm_device_id_v1",
 ]);
 
+/** Expo SecureStore rejects empty keys and any char outside [A-Za-z0-9._-]. */
+const SECURE_STORE_KEY_RE = /^[A-Za-z0-9._-]+$/;
+
 function isSecureKey(key: string): boolean {
   return RIDER_SECURE_KEYS.has(key);
+}
+
+function isSecureStoreCompatibleKey(key: string): boolean {
+  return key.length > 0 && SECURE_STORE_KEY_RE.test(key);
 }
 
 async function secureGet(key: string): Promise<string | null> {
@@ -82,7 +89,9 @@ export async function getItem(key: string): Promise<string | null> {
     const fromAsync = await asyncGet(key);
     if (fromAsync != null) return fromAsync;
 
-    // Migrate legacy large blobs that used to live in SecureStore (often failed silently).
+    // Migrate legacy blobs that used to live in SecureStore (often failed silently).
+    // Skip incompatible keys (e.g. ":" ) — SecureStore throws Invalid key warnings.
+    if (!isSecureStoreCompatibleKey(key)) return null;
     const legacy = await secureGet(key);
     if (legacy == null) return null;
     try {
@@ -135,7 +144,9 @@ export async function setItem(key: string, value: string): Promise<void> {
 
   await asyncSet(key, value);
   // Drop any legacy SecureStore copy so we don't keep oversized values there.
-  await secureDelete(key);
+  if (isSecureStoreCompatibleKey(key)) {
+    await secureDelete(key);
+  }
 }
 
 export async function removeItem(key: string): Promise<void> {

@@ -54,15 +54,17 @@ function BillSavingsBanner({
   totalSaved,
   subscriptionWaived,
   planName,
+  flashSaleSaved = 0,
 }: {
   totalSaved: number;
   subscriptionWaived: number;
   planName: string;
+  flashSaleSaved?: number;
 }) {
   const dark = useMerchantUiDark();
   const total = formatCheckoutSavingsRupees(totalSaved);
   const subWaivedNum = Math.round(subscriptionWaived * 100) / 100;
-  const subWaived = formatCheckoutSavingsRupees(subscriptionWaived);
+  const flashNum = Math.round(flashSaleSaved * 100) / 100;
 
   return (
     <View style={styles.savingsBannerOuter}>
@@ -70,10 +72,19 @@ function BillSavingsBanner({
       <View style={[styles.savingsBanner, dark && styles.savingsBannerDark]}>
         <CheckoutText style={[styles.savingsText, dark && styles.savingsTextDark]}>
           🥳 You saved ₹{total}
-          {subWaivedNum > 0.005 ? (
+          {flashNum > 0.005 || subWaivedNum > 0.005 ? (
             <>
-              , including ₹{subWaived} with{" "}
-              <CheckoutText style={styles.savingsBrand}>{planName}</CheckoutText>
+              , including
+              {flashNum > 0.005
+                ? ` ₹${formatCheckoutSavingsRupees(flashSaleSaved)} with Flash Sale`
+                : null}
+              {flashNum > 0.005 && subWaivedNum > 0.005 ? " + " : null}
+              {subWaivedNum > 0.005 ? (
+                <>
+                  {flashNum > 0.005 ? null : " "}₹{formatCheckoutSavingsRupees(subscriptionWaived)}{" "}
+                  with <CheckoutText style={styles.savingsBrand}>{planName}</CheckoutText>
+                </>
+              ) : null}
             </>
           ) : (
             " on this order"
@@ -331,6 +342,11 @@ export type BillSummarySheetProps = {
   itemTotalStrikeAmount?: number | null;
   /** Applied savings for banner + "You saved" row (item deals + bill discounts). */
   youSavedAmount?: number;
+  /**
+   * FLASH_SALE subsidy already in Item total — show as an explanatory line (does not
+   * reduce To pay again).
+   */
+  flashSaleBillLine?: { label: string; amount: number } | null;
   /** GatiCash wallet applied on checkout (INR). */
   gatiCashApplyAmount?: number;
   /** Missed-offer GatiCash credit selected for after order (INR, informational only). */
@@ -369,6 +385,7 @@ export function BillSummarySheet({
   itemTotalNetOverride = null,
   itemTotalStrikeAmount = null,
   youSavedAmount = 0,
+  flashSaleBillLine = null,
   gatiCashApplyAmount = 0,
   missedOfferWalletPendingAmount = 0,
   missedOfferUnlockDiscount = 0,
@@ -669,6 +686,19 @@ export function BillSummarySheet({
                     }
                   />
 
+                  {flashSaleBillLine != null && flashSaleBillLine.amount > 0.005 ? (
+                    <BillLineRow
+                      label={flashSaleBillLine.label}
+                      rowStyle={styles.membershipBenefitRow}
+                      labelStyle={styles.membershipBenefitLabel}
+                      valueNode={
+                        <CheckoutText style={styles.waivedValue}>
+                          − {fmt(flashSaleBillLine.amount)}
+                        </CheckoutText>
+                      }
+                    />
+                  ) : null}
+
                   {serverBill.addonTotal > 0.005 ? (
                     <BillLineRow label="Add-ons" value={fmt(serverBill.addonTotal)} />
                   ) : null}
@@ -862,6 +892,7 @@ export function BillSummarySheet({
                       totalSaved={savingsBannerTotal}
                       subscriptionWaived={subscriptionWaivedInr}
                       planName={subscriptionPlanName}
+                      flashSaleSaved={flashSaleBillLine?.amount ?? 0}
                     />
                   ) : null}
 

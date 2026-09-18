@@ -58,13 +58,24 @@ export async function getMerchantStorePushTokens(sql: Sql, storeId: number): Pro
 /** Native Android FCM tokens for this store (and parent merchant user). */
 export async function getMerchantStoreNativeFcmTokens(
   sql: Sql,
-  storeId: number
+  storeId: number,
+  opts?: {
+    /**
+     * Critical new-order alerts: include tokens with NULL last_seen or any age.
+     * Only DeviceNotRegistered / invalid-token purge should drop them — do not
+     * gate MERCHANT_NEW_ORDER on 90-day dormancy.
+     */
+    ignoreStaleness?: boolean;
+  }
 ): Promise<string[]> {
   try {
     // CRITICAL: exclude partnersite/dashboard/browser web FCM tokens.
     // Those share the merchant user_id; treating them as "native" made
     // selectMerchantPushDelivery drop Expo phone tokens, so killed/background
     // pushes only hit the browser and the Partner app never rang.
+    const staleFilter = opts?.ignoreStaleness
+      ? sql``
+      : sql`AND (nd.last_seen_at IS NULL OR nd.last_seen_at >= now() - interval '90 days')`;
     const rows = await sql`
       SELECT DISTINCT nd.native_token AS token
       FROM public.native_device_push_tokens nd
@@ -82,7 +93,7 @@ export async function getMerchantStoreNativeFcmTokens(
               AND ms.deleted_at IS NULL
           )
         )
-        AND (nd.last_seen_at IS NULL OR nd.last_seen_at >= now() - interval '90 days')
+        ${staleFilter}
     `;
     return [
       ...new Set(
@@ -120,7 +131,9 @@ async function sendMerchantNativeFcm(
         : typeof payload.data?.deep_link === "string"
           ? String(payload.data.deep_link)
           : null;
-  const isNewOrderAlert = payload.channelId === "merchant_new_orders_alert";
+  const isNewOrderAlert =
+    payload.channelId === "merchant_new_orders_alert" ||
+    payload.channelId === "merchant_new_orders_alert_v2";
   const playSound = payload.playSound !== false;
   const results = await Promise.all(
     tokens.map(async (token) => {
@@ -177,7 +190,8 @@ async function sendMerchantExpoPush(tokens: string[], payload: PushPayload): Pro
   if (!expoTokens.length) return;
   const silent = payload.playSound === false;
   const sound =
-    payload.channelId === "merchant_new_orders_alert"
+    payload.channelId === "merchant_new_orders_alert" ||
+    payload.channelId === "merchant_new_orders_alert_v2"
       ? "notification"
       : silent
         ? null
@@ -419,15 +433,22 @@ async function notifyMerchantStore(
     skipInbox?: boolean;
     /** Skip native FCM when another path (notificationService) already fans out. */
     skipNative?: boolean;
+    /** Critical new-order: include dormant native FCM tokens (any last_seen age). */
+    ignoreTokenStaleness?: boolean;
   }
 ): Promise<void> {
   if (!args.skipInbox) {
     await insertMerchantStoreNotification(sql, args);
   }
   const expoCandidateTokens = await getMerchantStorePushTokens(sql, args.storeId);
+  // Default: retain dormant tokens for merchant app pushes. Only explicit
+  // ignoreTokenStaleness:false re-enables the 90-day last_seen filter.
+  const ignoreStaleness = args.ignoreTokenStaleness !== false;
   const nativeFcmTokens = args.skipNative
     ? []
-    : await getMerchantStoreNativeFcmTokens(sql, args.storeId);
+    : await getMerchantStoreNativeFcmTokens(sql, args.storeId, {
+        ignoreStaleness,
+      });
   const { expoTokens, nativeTokens } = selectMerchantPushDelivery({
     expoCandidateTokens,
     nativeFcmTokens,
@@ -461,6 +482,23 @@ async function notifyMerchantStore(
     }
   } else if (expoTokens.length > 0) {
     await sendMerchantExpoPush(expoTokens, pushPayload);
+  } else {
+    const isCriticalNewOrder =
+      args.channelId === "merchant_new_orders_alert" ||
+      args.channelId === "merchant_new_orders_alert_v2" ||
+      String(args.pushData?.type ?? "").toLowerCase() === "merchant_new_order" ||
+      String(args.pushData?.template_code ?? "").toUpperCase() === "MERCHANT_NEW_ORDER";
+    if (isCriticalNewOrder) {
+      console.error(
+        `[merchant-push] push_failure reason=NO_PUSH_TOKEN store=${args.storeId} ` +
+          `type=${args.type} title=${JSON.stringify(args.title)} ` +
+          `(inbox may exist; FCM not sent)`,
+      );
+    } else {
+      console.warn(
+        `[merchant-push] no Expo/native tokens for store=${args.storeId} type=${args.type}`,
+      );
+    }
   }
 }
 
@@ -477,7 +515,6 @@ async function getMerchantStoreScopedNativeFcmTokens(
         AND nd.store_id = ${storeId}
         AND lower(coalesce(nd.platform, '')) <> 'web'
         AND lower(coalesce(nd.source, '')) NOT IN ('partnersite', 'browser', 'dashboard')
-        AND (nd.last_seen_at IS NULL OR nd.last_seen_at >= now() - interval '90 days')
     `;
     const scoped = [
       ...new Set(
@@ -831,9 +868,11 @@ export async function notifyMerchantStoreNewOrderPush(
     body: args.body,
     orderId: args.foodOrderId,
     actionUrl: args.href,
-    channelId: "merchant_new_orders_alert",
+    channelId: "merchant_new_orders_alert_v2",
     skipInbox: true,
     playSound: true,
+    // Critical new-order: do not drop dormant FCM tokens on last_seen age alone.
+    ignoreTokenStaleness: true,
     // Unique per order so multiple pending new-orders never replace each other.
     collapseKey: `gm_new_order_${args.foodOrderId ?? args.orderIdText}`,
     tag: `merchant-new-order-${args.foodOrderId ?? args.orderIdText}`,

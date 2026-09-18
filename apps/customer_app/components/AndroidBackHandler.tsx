@@ -14,6 +14,7 @@ import {
   safeRouterBack,
   type SafeRouterBackFallback,
 } from "@/lib/safeRouterBack";
+import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 
 type AndroidBackHandlerProps = {
   /** When set, used instead of segment-based fallback when the stack cannot go back. */
@@ -33,7 +34,7 @@ export function AndroidBackHandler({ fallback, preferFallback = false }: Android
       const root = segments[0];
       // Food tab hides the main dock — back should return to Home, not exit the app.
       if (root === "(tabs)" && segments[1] === "food" && !fallback) {
-        router.navigate("/(tabs)/" as never);
+        navigatePrimaryTab("index", "AndroidBackHandler.food→home", router);
         return true;
       }
       // Main tabs sit on top of index/auth screens opened via replace — router.back() throws GO_BACK.

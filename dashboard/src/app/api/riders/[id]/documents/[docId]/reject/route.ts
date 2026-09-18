@@ -102,7 +102,7 @@ export async function POST(
 
     // Parse request body
     const body = await request.json();
-    const { reason, displayDocType: rawDisplayDocType } = body;
+    const { reason, displayDocType: rawDisplayDocType, expectedDocumentVersion } = body;
 
     if (!reason || typeof reason !== "string" || reason.trim().length === 0) {
       return NextResponse.json(
@@ -128,6 +128,8 @@ export async function POST(
     // Reject document
     const rejectedDoc = await rejectRiderDocument(documentId, agent.id, reason.trim(), {
       displayDocType,
+      expectedDocumentVersion:
+        typeof expectedDocumentVersion === "number" ? expectedDocumentVersion : null,
     });
 
     if (!rejectedDoc) {
@@ -138,7 +140,8 @@ export async function POST(
     }
 
     // If this is a critical document (aadhaar, pan, dl, rc), update KYC status to REJECTED
-    const criticalDocs = ["aadhaar", "pan", "dl", "rc"];
+    // Identity docs can reject KYC. RC name-mismatch photo rejection must allow re-upload.
+    const criticalDocs = ["aadhaar", "pan", "dl"];
     const isCriticalDoc = criticalDocs.includes(currentDoc.docType);
     
     if (isCriticalDoc) {
@@ -167,6 +170,14 @@ export async function POST(
           reason: reason.trim(),
           isCriticalDocument: isCriticalDoc,
           kycStatusUpdated: isCriticalDoc,
+          documentVersion:
+            currentDoc.metadata && typeof currentDoc.metadata === "object"
+              ? (currentDoc.metadata as Record<string, unknown>).documentVersion ?? null
+              : null,
+          previousStatus: currentDoc.verificationStatus,
+          newStatus: rejectedDoc.verificationStatus,
+          action:
+            String(currentDoc.docType) === "rc" ? "RC_MANUAL_REVIEW_REJECTED" : "DOCUMENT_REJECTED",
         },
         ipAddress: request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || undefined,
         userAgent: request.headers.get("user-agent") || undefined,

@@ -76,6 +76,7 @@ function extractVisibleDiscountLines(snapshot: Record<string, unknown>): OrderBi
     };
     if (line.hidden) continue;
     if (line.meta?.source === "customer_subscription_delivery_waived_marker") continue;
+    if (line.meta?.doesNotReducePayable === true || line.meta?.flashSale === true) continue;
 
     const amount = Math.abs(num(line.amount));
     if (amount <= 0.005) continue;

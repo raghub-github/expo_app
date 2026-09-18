@@ -185,6 +185,11 @@ export type BillContext = {
    */
   platformOfferLifetimeUseCounts?: Map<number, number>;
   /**
+   * FOOD FLASH_SALE overlay applied before the billing pipeline.
+   * Customer item prices are already rewritten; subsidy lines must not reduce payable again.
+   */
+  flashSaleOverlay?: import("./flashSale.js").FlashSaleOverlaySummary;
+  /**
    * Count of this customer's completed Person Ride orders (`orders_core.order_type =
    * person_ride` + delivered). Used only for `conditions.first_ride_only`.
    * Omit / null = unknown → first-ride offers fail closed (cannot be bypassed).

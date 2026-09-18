@@ -30,7 +30,33 @@ export function isSubscriptionBenefitDiscount(d: CheckoutDiscountLike): boolean 
 export function isCheckoutPromoDiscount(d: CheckoutDiscountLike): boolean {
   if (d.hidden) return false;
   if ((d.amount ?? 0) <= 0.005) return false;
+  if (d.meta?.doesNotReducePayable === true || d.meta?.flashSale === true) return false;
   return !isSubscriptionBenefitDiscount(d);
+}
+
+/** Platform FLASH_SALE subsidy — already folded into Item total (hidden / doesNotReducePayable). */
+export function isFlashSaleDiscount(d: CheckoutDiscountLike): boolean {
+  if ((d.amount ?? 0) <= 0.005) return false;
+  if (d.meta?.flashSale === true) return true;
+  return String(d.meta?.offerKind ?? "").toUpperCase() === "FLASH_SALE";
+}
+
+export function extractFlashSaleDiscounts<T extends CheckoutDiscountLike>(
+  discounts: T[] | null | undefined
+): T[] {
+  return (discounts ?? []).filter(isFlashSaleDiscount);
+}
+
+export function flashSaleSavingsByOfferId(
+  discounts: CheckoutDiscountLike[] | null | undefined
+): Record<number, number> {
+  const map: Record<number, number> = {};
+  for (const d of extractFlashSaleDiscounts(discounts)) {
+    const id = d.meta?.platformOfferId;
+    if (typeof id !== "number" || !(id > 0)) continue;
+    map[id] = (map[id] ?? 0) + (Number(d.amount) || 0);
+  }
+  return map;
 }
 
 export function splitCheckoutDiscounts<T extends CheckoutDiscountLike>(

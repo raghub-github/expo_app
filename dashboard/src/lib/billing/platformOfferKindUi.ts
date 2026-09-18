@@ -7,6 +7,7 @@ export type PlatformOfferKindSections = {
   showBuyXGetYFields: boolean;
   showFreeMenuFields: boolean;
   showExclusionGroup: boolean;
+  showFlashSaleBuilder: boolean;
   /** Labels for cart/value row when it targets a fee bucket in checkout. */
   cartBlockTitle: string;
   cartValueHint: string;
@@ -19,7 +20,6 @@ const CART_LIKE: PlatformOfferKind[] = [
   "FLAT_DISCOUNT",
   "CASHBACK",
   "LOYALTY_REWARD",
-  "FLASH_SALE",
   "BUNDLE_DISCOUNT",
   "COUPON",
 ];
@@ -57,6 +57,21 @@ function isFeeKind(kind: string): kind is keyof typeof FEE_KINDS {
 export function getPlatformOfferKindSections(offerKind: string): PlatformOfferKindSections {
   const k = (offerKind || "DISCOUNT").toUpperCase();
 
+  if (k === "FLASH_SALE") {
+    return {
+      showCartDiscount: false,
+      showDeliveryBlock: false,
+      showBuyXGetYFields: false,
+      showFreeMenuFields: false,
+      showExclusionGroup: false,
+      showFlashSaleBuilder: true,
+      cartBlockTitle: "Flash Sale price",
+      cartValueHint: "",
+      kindNotice:
+        "Flash Sale sets the final customer item/fare price at runtime. Catalogue prices, merchant CTC, and rider Fare Engine amounts stay unchanged. The platform funds the difference.",
+    };
+  }
+
   if (k === "FREE_DELIVERY") {
     return {
       showCartDiscount: false,
@@ -64,6 +79,7 @@ export function getPlatformOfferKindSections(offerKind: string): PlatformOfferKi
       showBuyXGetYFields: false,
       showFreeMenuFields: false,
       showExclusionGroup: false,
+      showFlashSaleBuilder: false,
       cartBlockTitle: "Cart (items subtotal)",
       cartValueHint: "",
       kindNotice: "This kind uses the delivery block only. Checkout promo codes are created under Checkout coupon.",
@@ -77,6 +93,7 @@ export function getPlatformOfferKindSections(offerKind: string): PlatformOfferKi
       showBuyXGetYFields: true,
       showFreeMenuFields: false,
       showExclusionGroup: true,
+      showFlashSaleBuilder: false,
       cartBlockTitle: "Discount on “get” items",
       cartValueHint:
         "After buy quantity is met, this percent or fixed amount applies to the subtotal of the cheapest get-quantity units (eligible lines only if menu IDs are set).",
@@ -91,6 +108,7 @@ export function getPlatformOfferKindSections(offerKind: string): PlatformOfferKi
       showBuyXGetYFields: false,
       showFreeMenuFields: true,
       showExclusionGroup: false,
+      showFlashSaleBuilder: false,
       cartBlockTitle: "Cart (items subtotal)",
       cartValueHint: "",
       kindNotice:
@@ -105,6 +123,7 @@ export function getPlatformOfferKindSections(offerKind: string): PlatformOfferKi
       showBuyXGetYFields: false,
       showFreeMenuFields: false,
       showExclusionGroup: true,
+      showFlashSaleBuilder: false,
       cartBlockTitle: "Cart (items subtotal)",
       cartValueHint: "Applied only when the billing request has subscription opt-in.",
       kindNotice: "Only applies at checkout when subscriptionOptIn is true on the calculate request.",
@@ -119,6 +138,7 @@ export function getPlatformOfferKindSections(offerKind: string): PlatformOfferKi
       showBuyXGetYFields: false,
       showFreeMenuFields: false,
       showExclusionGroup: true,
+      showFlashSaleBuilder: false,
       cartBlockTitle: f.title,
       cartValueHint: f.hint,
     };
@@ -131,6 +151,7 @@ export function getPlatformOfferKindSections(offerKind: string): PlatformOfferKi
       showBuyXGetYFields: false,
       showFreeMenuFields: false,
       showExclusionGroup: true,
+      showFlashSaleBuilder: false,
       cartBlockTitle: "Cart (items subtotal)",
       cartValueHint: "",
       kindNotice:
@@ -145,6 +166,7 @@ export function getPlatformOfferKindSections(offerKind: string): PlatformOfferKi
       showBuyXGetYFields: false,
       showFreeMenuFields: false,
       showExclusionGroup: true,
+      showFlashSaleBuilder: false,
       cartBlockTitle: "Cart (items subtotal)",
       cartValueHint: "",
     };
@@ -156,6 +178,7 @@ export function getPlatformOfferKindSections(offerKind: string): PlatformOfferKi
     showBuyXGetYFields: false,
     showFreeMenuFields: false,
     showExclusionGroup: true,
+    showFlashSaleBuilder: false,
     cartBlockTitle: "Cart (items subtotal)",
     cartValueHint: "",
   };
@@ -192,18 +215,24 @@ export function validatePlatformOfferKindForm(args: {
     /* delivery type validated elsewhere; allow empty cart value */
   }
 
+  if (k === "FLASH_SALE") {
+    return null;
+  }
+
   return null;
 }
 
 /** Server/API validation: full body (POST) or merged row (PATCH). */
 export function validatePlatformOfferKindFieldsForApi(d: {
   offer_kind?: string;
+  service_type?: string;
   buy_qty?: number | null;
   get_qty?: number | null;
   conditions?: Record<string, unknown>;
   discount_type?: string;
   value_numeric?: number | null;
   delivery_discount_type?: string | null;
+  merchant_ids?: unknown;
 }): string | null {
   const cond = d.conditions ?? {};
   const menuStr = Array.isArray(cond.menu_item_ids)
@@ -221,6 +250,23 @@ export function validatePlatformOfferKindFieldsForApi(d: {
   if (k === "FREE_DELIVERY") {
     const t = String(d.delivery_discount_type ?? "").trim();
     if (!t) return "FREE_DELIVERY requires delivery_discount_type.";
+  }
+  if (k === "FLASH_SALE") {
+    const st = String(d.service_type ?? "FOOD").toUpperCase();
+    if (st === "FOOD" || st === "ALL") {
+      const items = Array.isArray(cond.flash_sale_items) ? cond.flash_sale_items : [];
+      if (items.length === 0) return "Flash Sale requires at least one store item and a Flash Sale price.";
+      for (const row of items) {
+        if (!row || typeof row !== "object") return "Invalid Flash Sale item.";
+        const r = row as Record<string, unknown>;
+        const id = String(r.menu_item_id ?? r.menuItemId ?? "").trim();
+        const price = Number(r.flash_price ?? r.flashPrice);
+        if (!id) return "Each Flash Sale item needs a menu item id.";
+        if (!Number.isFinite(price) || price < 0) return "Flash Sale price cannot be negative.";
+      }
+      const merchants = Array.isArray(d.merchant_ids) ? d.merchant_ids : [];
+      if (merchants.length < 1) return "Flash Sale requires at least one store.";
+    }
   }
   const feeKinds = [
     "PACKAGING_DISCOUNT",

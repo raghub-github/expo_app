@@ -155,7 +155,23 @@ async function finalizeCancelledRows(
         },
         sql
       );
-      const refund = refundFieldsFromEngineResult(engineResult.raw);
+      const engineRefund = refundFieldsFromEngineResult(engineResult.raw);
+      const gross = Number(row.grand_total ?? orderCtx.grandTotal);
+      const refundAmount =
+        engineRefund.refundAmount != null && Number(engineRefund.refundAmount) > 0.005
+          ? Number(engineRefund.refundAmount)
+          : Number.isFinite(gross) && gross > 0.005
+            ? gross
+            : null;
+      const refund = {
+        refundStatus:
+          refundAmount != null && refundAmount > 0.005
+            ? engineRefund.refundStatus === "no_refund"
+              ? "pending"
+              : engineRefund.refundStatus || "pending"
+            : "pending",
+        refundAmount,
+      };
       if (supabaseAdmin) {
         await recordOrderCancellation(supabaseAdmin, {
           orderCorePk: coreId,

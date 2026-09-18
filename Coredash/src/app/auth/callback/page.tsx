@@ -6,6 +6,13 @@ import { getBrowserSupabase } from "@/lib/supabase/client";
 import { wipeCoredashBrowserAuth } from "@/lib/auth/browser-wipe";
 import { logAuthEvent } from "@/lib/auth/log";
 
+/**
+ * Google OAuth return path — same auth restriction as email OTP:
+ * 1) exchange code / read session
+ * 2) /api/auth/can-login (active super admin only)
+ * 3) /api/auth/set-cookie (re-checks system_users + SUPER_ADMIN)
+ * On any failure: wipe local + cookie auth and send to /login?denied=1
+ */
 function CallbackInner() {
   const router = useRouter();
 
@@ -33,9 +40,25 @@ function CallbackInner() {
 
       const { data } = await supabase.auth.getSession();
       const session = data.session;
-      if (!session?.access_token || !session.refresh_token || !session.user?.id) {
+      const email = session?.user?.email?.trim().toLowerCase() ?? "";
+      if (!session?.access_token || !session.refresh_token || !session.user?.id || !email) {
         await wipeCoredashBrowserAuth();
-        if (!cancelled) router.replace("/login");
+        if (!cancelled) router.replace("/login?denied=1");
+        return;
+      }
+
+      // Same gate as email OTP sendOtp() — reject before cookie is written.
+      const gate = await fetch("/api/auth/can-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ email }),
+      });
+      const gateJson = (await gate.json()) as { success?: boolean };
+      if (!gate.ok || !gateJson.success) {
+        logAuthEvent("LOGIN_REJECT", { userId: session.user.id, email, reason: "oauth_can_login_denied" });
+        await wipeCoredashBrowserAuth(session.user.id);
+        if (!cancelled) router.replace("/login?denied=1");
         return;
       }
 
@@ -54,10 +77,10 @@ function CallbackInner() {
         !res.ok ||
         !json.success ||
         json.userId !== session.user.id ||
-        (json.email || "").trim().toLowerCase() !== (session.user.email || "").trim().toLowerCase()
+        (json.email || "").trim().toLowerCase() !== email
       ) {
         await wipeCoredashBrowserAuth(session.user.id);
-        if (!cancelled) router.replace(`/login?denied=1`);
+        if (!cancelled) router.replace("/login?denied=1");
         return;
       }
       logAuthEvent("LOGIN", {

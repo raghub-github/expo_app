@@ -22,6 +22,37 @@ export type OrderRefundTimelineStep = {
   at: string | null;
 };
 
+/** Keep unique stages only (drop duplicate processed/completed from API). */
+export function uniqueOrderRefundTimeline(
+  steps: OrderRefundTimelineStep[]
+): OrderRefundTimelineStep[] {
+  const out: OrderRefundTimelineStep[] = [];
+  const seen = new Set<string>();
+  for (const step of steps) {
+    const keyRaw = String(step.key ?? "").trim().toLowerCase();
+    const labelRaw = String(step.label ?? "").trim().toLowerCase();
+    let stage = keyRaw;
+    if (stage.startsWith("initiated")) stage = "initiated";
+    else if (stage.startsWith("processed")) stage = "processed";
+    else if (stage.startsWith("completed")) stage = "completed";
+    else if (labelRaw.includes("refund processed")) stage = "processed";
+    else if (labelRaw.includes("refund completed")) stage = "completed";
+    else if (labelRaw.includes("initiated")) {
+      stage = keyRaw.startsWith("initiated-") ? keyRaw : "initiated";
+    }
+    const dedupeKey =
+      stage === "processed" || stage === "completed"
+        ? stage
+        : stage === "initiated" && !keyRaw.startsWith("initiated-")
+          ? "initiated"
+          : keyRaw || labelRaw;
+    if (!dedupeKey || seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push(step);
+  }
+  return out;
+}
+
 export type OrderRefundSlab = {
   amount: number;
   reference: string | null;
@@ -197,20 +228,30 @@ export function OrderRefundCard({ refund }: { refund: OrderRefundCardData }) {
     () => refundInfoMessage(refundKind, completed),
     [refundKind, completed]
   );
-  const timeline =
-    refund.timeline?.length > 0
-      ? refund.timeline
-      : [
-          {
-            key: "initiated",
-            label: `Refund initiated for ${formatMoney(amount)}`,
-            at: refund.initiatedAt,
-          },
-          { key: "processed", label: "Refund processed", at: refund.processedAt },
-          ...(completed
-            ? [{ key: "completed", label: "Refund completed", at: refund.completedAt }]
-            : []),
-        ];
+  const timeline = useMemo(() => {
+    const raw =
+      refund.timeline?.length > 0
+        ? refund.timeline
+        : [
+            {
+              key: "initiated",
+              label: `Refund initiated for ${formatMoney(amount)}`,
+              at: refund.initiatedAt,
+            },
+            { key: "processed", label: "Refund processed", at: refund.processedAt },
+            ...(completed
+              ? [{ key: "completed", label: "Refund completed", at: refund.completedAt }]
+              : []),
+          ];
+    return uniqueOrderRefundTimeline(raw);
+  }, [
+    refund.timeline,
+    refund.initiatedAt,
+    refund.processedAt,
+    refund.completedAt,
+    amount,
+    completed,
+  ]);
 
   const allStepsDone =
     completed ||

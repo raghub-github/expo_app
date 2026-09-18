@@ -27,6 +27,39 @@ const config = defaultConfig;
 
 config.cacheStores = ({ FileStore }) => {
   const store = new FileStore({ root: metroCacheDir });
+  const origGet = store.get.bind(store);
+  const origSet = store.set.bind(store);
+  // Metro FileStore uses fs/promises — graceful-fs does NOT wrap those.
+  // On Windows/OneDrive, EMFILE must be treated as a cache miss, not a hard crash.
+  store.get = async (key) => {
+    try {
+      return await origGet(key);
+    } catch (err) {
+      const code = err && typeof err === "object" ? err.code : null;
+      if (code === "EMFILE" || code === "ENFILE" || code === "EAGAIN") {
+        return undefined;
+      }
+      throw err;
+    }
+  };
+  store.set = async (key, value) => {
+    try {
+      return await origSet(key, value);
+    } catch (err) {
+      const code = err && typeof err === "object" ? err.code : null;
+      if (
+        code === "EMFILE" ||
+        code === "ENFILE" ||
+        code === "EAGAIN" ||
+        code === "ENOSPC" ||
+        code === "EPERM" ||
+        code === "EBUSY"
+      ) {
+        return;
+      }
+      throw err;
+    }
+  };
   store.clear = () => {
     const tryRm = (target) => {
       try {
@@ -64,7 +97,16 @@ config.cacheStores = ({ FileStore }) => {
 };
 
 try {
-  config.fileMapCacheDirectory = metroFileMapDir;
+  // Windows/OneDrive: skipping file-map disk persist avoids EMFILE on cache write
+  // (DiskCacheManager uses fs/promises, not graceful-fs).
+  const noFileMap =
+    process.env.METRO_NO_FILEMAP_CACHE === "1" ||
+    (process.platform === "win32" && process.env.METRO_NO_FILEMAP_CACHE !== "0");
+  if (noFileMap) {
+    delete config.fileMapCacheDirectory;
+  } else {
+    config.fileMapCacheDirectory = metroFileMapDir;
+  }
 } catch {
   // older metro may ignore unknown option
 }
@@ -73,6 +115,10 @@ try {
 // includes dashboard, backend, customer_app, merchant_app, all workers, etc.
 // Watching the whole tree on OneDrive/Windows exhausts file handles → EMFILE →
 // Metro process dies (looks like the port was "auto killed").
+//
+// Also do NOT watch the entire workspace node_modules — that balloons
+// metro-file-map until DiskCacheManager serialize throws
+// "Data cannot be cloned, out of memory".
 const packagesFolder = path.resolve(workspaceRoot, "packages");
 const gatimitraWorkspacePackages = [
   "contracts",
@@ -86,7 +132,8 @@ const gatimitraWorkspacePackages = [
 config.watchFolders = [
   projectRoot,
   packagesFolder,
-  path.resolve(workspaceRoot, "node_modules"),
+  // Only the workspace packages we actually resolve — not the whole monorepo node_modules tree.
+  ...gatimitraWorkspacePackages.map((pkg) => path.resolve(packagesFolder, pkg)),
 ].filter((p, i, arr) => arr.indexOf(p) === i);
 
 config.resolver.nodeModulesPaths = [

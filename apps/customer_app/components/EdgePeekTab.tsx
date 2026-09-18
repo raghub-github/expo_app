@@ -1,12 +1,13 @@
 /**
  * Dining-style edge peek — hangs half off the screen edge beside cart/nav.
- * Distinct navy fill so it never blends with white nav or mint cart.
+ * Brand mint fill so it matches GatiMitra active nav (not navy/blue).
  */
 
 import { Pressable, StyleSheet, Text, View, Platform } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { ComponentProps } from "react";
 import { FLOATING_CART_BAR_HEIGHT } from "@/constants/layout";
+import { GatiMitraColors } from "@/constants/gatimitra";
 
 export type EdgePeekSide = "left" | "right";
 export type EdgePeekLabel = "HOME" | "CART" | "TRACK" | "FILTERS";
@@ -28,9 +29,9 @@ const PEEK_TOTAL_W = PEEK_VISIBLE + PEEK_OVERHANG;
 export const EDGE_PEEK_GAP = 6;
 export const EDGE_PEEK_ROW_GAP = PEEK_VISIBLE + EDGE_PEEK_GAP;
 
-/** Navy — clearly not white nav / mint cart. */
-const EDGE_BG = "#1E3A5F";
-const EDGE_FG = "#FFFFFF";
+/** GatiMitra brand green — matches bottom-nav active pill. */
+const EDGE_BG = GatiMitraColors.deepMintStart;
+const EDGE_FG = "#0F172A";
 
 const ICON: Record<EdgePeekLabel, ComponentProps<typeof Ionicons>["name"]> = {
   HOME: "home",
@@ -61,17 +62,17 @@ export function EdgePeekTab({
       accessibilityLabel={label}
       onPress={onPress}
       unstable_pressDelay={0}
-      hitSlop={6}
+      hitSlop={8}
       collapsable={false}
       style={({ pressed }) => [
         styles.hit,
-        isLeft ? styles.hitLeft : styles.hitRight,
-        { height: pillH },
+        { height: pillH, width: PEEK_VISIBLE },
         pressed && styles.pressed,
       ]}
     >
       <View
         collapsable={false}
+        pointerEvents="none"
         style={[
           styles.pill,
           isLeft ? styles.pillLeft : styles.pillRight,
@@ -89,20 +90,16 @@ export function EdgePeekTab({
 
 const styles = StyleSheet.create({
   hit: {
-    width: PEEK_TOTAL_W,
     zIndex: 2,
     justifyContent: "center",
-  },
-  hitLeft: {
-    marginLeft: -PEEK_OVERHANG,
-  },
-  hitRight: {
-    marginRight: -PEEK_OVERHANG,
+    overflow: "visible",
   },
   pressed: {
     opacity: 0.9,
   },
   pill: {
+    position: "absolute",
+    top: 0,
     width: PEEK_TOTAL_W,
     paddingHorizontal: 8,
     alignItems: "center",
@@ -121,11 +118,13 @@ const styles = StyleSheet.create({
     }),
   },
   pillLeft: {
+    left: -PEEK_OVERHANG,
     borderTopRightRadius: 16,
     borderBottomRightRadius: 16,
     paddingLeft: PEEK_OVERHANG + 4,
   },
   pillRight: {
+    right: -PEEK_OVERHANG,
     borderTopLeftRadius: 16,
     borderBottomLeftRadius: 16,
     paddingRight: PEEK_OVERHANG + 4,

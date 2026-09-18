@@ -115,18 +115,37 @@ export async function loadRiderEligibilityAttributes(
       .limit(1);
   }
   if (!vehicle) {
-    [vehicle] = await db
-      .select(vehicleCols)
+    // Offline / no selected vehicle: only auto-bind when the rider has exactly one
+    // garage vehicle. Two vehicles must be chosen explicitly at ON-DUTY.
+    const garage = await db
+      .select({
+        id: riderVehicles.id,
+        status: riderVehicles.vehicleActiveStatus,
+        vehicleType: riderVehicles.vehicleType,
+        vehicleCategory: riderVehicles.vehicleCategory,
+        fuelType: riderVehicles.fuelType,
+        isCommercial: riderVehicles.isCommercial,
+        ownershipType: riderVehicles.ownershipType,
+        verified: riderVehicles.verified,
+        fitnessExpiry: riderVehicles.fitnessExpiry,
+        permitExpiry: riderVehicles.permitExpiry,
+      })
       .from(riderVehicles)
-      .where(
-        and(
-          eq(riderVehicles.riderId, riderId),
-          eq(riderVehicles.isActive, true),
-          isNull(riderVehicles.deletedAt)
-        )
-      )
-      .orderBy(desc(riderVehicles.verified))
-      .limit(1);
+      .where(and(eq(riderVehicles.riderId, riderId), isNull(riderVehicles.deletedAt)));
+    const live = garage.filter((row) => String(row.status ?? "active").toLowerCase() !== "retired");
+    if (live.length === 1) {
+      const only = live[0]!;
+      vehicle = {
+        vehicleType: only.vehicleType,
+        vehicleCategory: only.vehicleCategory,
+        fuelType: only.fuelType,
+        isCommercial: only.isCommercial,
+        ownershipType: only.ownershipType,
+        verified: only.verified,
+        fitnessExpiry: only.fitnessExpiry,
+        permitExpiry: only.permitExpiry,
+      };
+    }
   }
 
   const docs = await db
@@ -246,7 +265,46 @@ export async function resolveRiderServiceEligibilityAtPickup(args: {
 
   const decision = resolveRiderServiceEligibility(attributes, policy);
   const overrides = await loadActiveOverridesForRider(args.riderId);
-  return applyEligibilityOverride(decision, overrides[args.service]);
+  let finalDecision = applyEligibilityOverride(decision, overrides[args.service]);
+
+  try {
+    const { resolveGeoServiceAvailability } = await import(
+      "../geo/geoServiceAvailability.service.js"
+    );
+    const coverage = await resolveGeoServiceAvailability({
+      lat: args.pickupLat,
+      lng: args.pickupLng,
+      pincode: args.pickupPincode,
+      state: args.pickupState,
+    });
+    if (coverage.found) {
+      const on =
+        args.service === "food"
+          ? coverage.coverageFood
+          : args.service === "parcel"
+            ? coverage.coverageParcel
+            : coverage.coverageRide;
+      if (!on) {
+        const block = {
+          code: "SERVICE_DISABLED" as const,
+          reason: "Oops! This service isn’t available in your area yet.",
+          requiredAction: undefined,
+        };
+        const already = finalDecision.blocking.some((b) => b.code === "SERVICE_DISABLED");
+        finalDecision = {
+          ...finalDecision,
+          eligible: false,
+          blocking: already ? finalDecision.blocking : [block, ...finalDecision.blocking],
+          reasonCode: "SERVICE_DISABLED",
+          nextAction: "CONTINUE",
+        };
+      }
+    }
+  } catch {
+    /* never wedge accept on coverage lookup */
+  }
+
+  return finalDecision;
 }
 
 /** All rider-facing services, in display order. */
@@ -373,10 +431,197 @@ export async function resolveRiderAllServiceEligibilityAtLocation(args: {
     services[service] = applyEligibilityOverride(decision, overrides[service]);
   }
 
+  // Layer 2 — Geo & coverage customer toggles (states/... is_food/parcel/ride_enabled).
+  // Docs/vehicle may pass, but an OFF coverage toggle still locks the service.
+  await applyGeoCoverageServiceGates(services, {
+    lat: args.lat ?? null,
+    lng: args.lng ?? null,
+    pincode: livePincode,
+    state: liveState,
+  });
+
   return { attributes, resolvedGeo, services };
 }
 
-/* ─────────────────────────── Enforcement (accept/assign) ─────────────────────── */
+/**
+ * AND Geo & coverage FOOD/PARCEL/RIDE toggles onto engine decisions.
+ * Uses coverage* flags (before Prevent Services) so duty eligibility matches the
+ * Super Admin Geo & coverage tree the ops team toggles.
+ */
+export async function applyGeoCoverageServiceGates(
+  services: Record<EligibilityService, EligibilityDecision>,
+  location: {
+    lat?: number | null;
+    lng?: number | null;
+    pincode?: string | null;
+    state?: string | null;
+  },
+): Promise<void> {
+  try {
+    const { resolveGeoServiceAvailability } = await import(
+      "../geo/geoServiceAvailability.service.js"
+    );
+    const coverage = await resolveGeoServiceAvailability({
+      lat: location.lat,
+      lng: location.lng,
+      pincode: location.pincode,
+      state: location.state,
+    });
+    // Unknown geo → do not invent an OFF lock (engine policy already ran).
+    if (!coverage.found) return;
+
+    const enabled: Record<EligibilityService, boolean> = {
+      food: coverage.coverageFood === true,
+      parcel: coverage.coverageParcel === true,
+      person_ride: coverage.coverageRide === true,
+    };
+
+    for (const service of ALL_ELIGIBILITY_SERVICES) {
+      if (enabled[service]) continue;
+      const current = services[service];
+      const alreadyDisabled = current.blocking.some((b) => b.code === "SERVICE_DISABLED");
+      const block = {
+        code: "SERVICE_DISABLED" as const,
+        reason: "Oops! This service isn’t available in your area yet.",
+        requiredAction: undefined,
+      };
+      services[service] = {
+        ...current,
+        eligible: false,
+        blocking: alreadyDisabled ? current.blocking : [block, ...current.blocking],
+        reasonCode: "SERVICE_DISABLED",
+        nextAction: "CONTINUE",
+      };
+    }
+  } catch (err) {
+    console.warn(
+      "[rider-eligibility] geo coverage gate skipped:",
+      (err as Error)?.message ?? err,
+    );
+  }
+}
+
+/** Registered working location — used when the app has no live GPS yet. */
+export async function loadRiderRegisteredLocation(riderId: number): Promise<{
+  lat: number | null;
+  lng: number | null;
+  pincode: string | null;
+  state: string | null;
+}> {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      lat: riders.lat,
+      lon: riders.lon,
+      pincode: riders.pincode,
+      state: riders.state,
+    })
+    .from(riders)
+    .where(eq(riders.id, riderId))
+    .limit(1);
+  return {
+    lat: row?.lat ?? null,
+    lng: row?.lon ?? null,
+    pincode: row?.pincode ?? null,
+    state: row?.state ?? null,
+  };
+}
+
+export function applyRestrictionBlocks(
+  services: Record<EligibilityService, EligibilityDecision>,
+  snapshot: {
+    allServicesBlocked: boolean;
+    blockedServices: EligibilityService[];
+  },
+): Record<EligibilityService, EligibilityDecision> {
+  const next = { ...services };
+  for (const service of ALL_ELIGIBILITY_SERVICES) {
+    const blocked =
+      snapshot.allServicesBlocked || snapshot.blockedServices.includes(service);
+    if (!blocked) continue;
+    const current = next[service];
+    const code = snapshot.allServicesBlocked ? "ACCOUNT_RESTRICTED" : "ADMIN_BLOCKED";
+    const label = service === "person_ride" ? "Person Ride" : service;
+    const reason = snapshot.allServicesBlocked
+      ? "Your account is restricted from receiving orders."
+      : `You are currently blocked from ${label} orders.`;
+    next[service] = {
+      ...current,
+      eligible: false,
+      blocking: [
+        { code, reason, requiredAction: "Contact support if you believe this is a mistake." },
+        ...current.blocking,
+      ],
+      reasonCode: code,
+      nextAction: "CONTINUE",
+    };
+  }
+  return next;
+}
+
+/**
+ * Rider-facing + assignment-facing eligibility: engine at a location, then account
+ * restriction / blacklist / wallet blocks. Home, KYC, Vehicles, duty toggle, and
+ * dispatch must share this interpretation.
+ */
+export async function resolveRiderUnifiedServiceEligibility(args: {
+  riderId: number;
+  lat?: number | null;
+  lng?: number | null;
+  pincode?: string | null;
+  state?: string | null;
+}): Promise<{
+  attributes: RiderEligibilityInput;
+  resolvedGeo: { level: string; refId: string } | null;
+  services: Record<EligibilityService, EligibilityDecision>;
+}> {
+  let lat = args.lat ?? null;
+  let lng = args.lng ?? null;
+  let pincode = args.pincode ?? null;
+  let state = args.state ?? null;
+  const hasCoords =
+    lat != null &&
+    lng != null &&
+    Number.isFinite(Number(lat)) &&
+    Number.isFinite(Number(lng)) &&
+    !(Number(lat) === 0 && Number(lng) === 0);
+  if (!hasCoords && !pincode && !state) {
+    const registered = await loadRiderRegisteredLocation(args.riderId);
+    lat = registered.lat;
+    lng = registered.lng;
+    pincode = registered.pincode;
+    state = registered.state;
+  }
+
+  const result = await resolveRiderAllServiceEligibilityAtLocation({
+    riderId: args.riderId,
+    lat,
+    lng,
+    pincode,
+    state,
+  });
+  const { getRiderDispatchBlockSnapshot } = await import("../../lib/rider-account-restrictions.js");
+  const snapshot = await getRiderDispatchBlockSnapshot(args.riderId);
+  return {
+    ...result,
+    services: applyRestrictionBlocks(result.services, snapshot),
+  };
+}
+
+export async function filterServicesByUnifiedEligibility(args: {
+  riderId: number;
+  requested: EligibilityService[];
+  lat?: number | null;
+  lng?: number | null;
+}): Promise<EligibilityService[]> {
+  if (eligibilityEnforcementMode() === "off") return args.requested;
+  const { services } = await resolveRiderUnifiedServiceEligibility({
+    riderId: args.riderId,
+    lat: args.lat,
+    lng: args.lng,
+  });
+  return args.requested.filter((s) => services[s]?.eligible === true);
+}
 
 /**
  * Rollout mode for eligibility ENFORCEMENT at order accept/assignment:

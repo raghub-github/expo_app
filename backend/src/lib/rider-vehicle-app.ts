@@ -2,7 +2,7 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 
 import { getDb, getSql } from "../db/client.js";
 
-import { riderVehicles } from "../db/schema.js";
+import { riderVehicles, riders } from "../db/schema.js";
 
 import {
   mapFuelTypeFromDb,
@@ -274,6 +274,9 @@ export type RiderVehicleStatusResponse = {
   onboardingPrefill: RiderVehicleOnboardingPrefill | null;
 
   formMeta: RiderVehicleFormMeta;
+
+  /** RC doc state machine — gates the post-onboarding vehicle complete sheet. */
+  rcVerificationState: string | null;
 
 };
 
@@ -619,55 +622,52 @@ export function computeRiderVehicleFormMeta(
 
 
 export async function getActiveRiderVehicleRow(riderId: number) {
-
   const db = getDb();
 
-  const [row] = await db
-
-    .select()
-
-    .from(riderVehicles)
-
-    .where(
-
-      and(
-
-        eq(riderVehicles.riderId, riderId),
-
-        eq(riderVehicles.isActive, true),
-
-        isNull(riderVehicles.deletedAt),
-
-      ),
-
-    )
-
-    .orderBy(desc(riderVehicles.updatedAt))
-
+  const [rider] = await db
+    .select({ activeVehicleId: riders.activeVehicleId })
+    .from(riders)
+    .where(eq(riders.id, riderId))
     .limit(1);
 
+  if (rider?.activeVehicleId != null) {
+    const [chosen] = await db
+      .select()
+      .from(riderVehicles)
+      .where(
+        and(
+          eq(riderVehicles.id, rider.activeVehicleId),
+          eq(riderVehicles.riderId, riderId),
+          isNull(riderVehicles.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (chosen) return chosen;
+  }
 
+  const [row] = await db
+    .select()
+    .from(riderVehicles)
+    .where(
+      and(
+        eq(riderVehicles.riderId, riderId),
+        eq(riderVehicles.isActive, true),
+        isNull(riderVehicles.deletedAt),
+      ),
+    )
+    .orderBy(desc(riderVehicles.updatedAt))
+    .limit(1);
 
   if (row) return row;
 
-
-
   const [fallback] = await db
-
     .select()
-
     .from(riderVehicles)
-
     .where(and(eq(riderVehicles.riderId, riderId), isNull(riderVehicles.deletedAt)))
-
     .orderBy(desc(riderVehicles.updatedAt))
-
     .limit(1);
 
-
-
   return fallback ?? null;
-
 }
 
 
@@ -677,10 +677,12 @@ async function readOnboardingVehicleSelectionForApp(riderId: number): Promise<{
   onboardingVehicleCategoryCode: string | null;
   onboardingPrefill: RiderVehicleOnboardingPrefill | null;
   rcElectronicallyVerified: boolean;
+  rcVerificationState: string | null;
 }> {
   const { readRiderOnboardingVehicleSelection } = await import(
     "./rider-onboarding-progress.js"
   );
+  const { resolveRcVerificationState } = await import("./rider-rc-verification-state.js");
   const {
     resolveVehicleTypeFromOnboardingChoice,
     suggestAcTypeForCategory,
@@ -691,12 +693,30 @@ async function readOnboardingVehicleSelectionForApp(riderId: number): Promise<{
   const choice = selection.vehicleChoice;
   const categoryCode = selection.vehicleCategoryCode;
 
+  const db = getDb();
+  const { riderDocuments } = await import("../db/schema.js");
+  const [rcDoc] = await db
+    .select({
+      fileUrl: riderDocuments.fileUrl,
+      r2Key: riderDocuments.r2Key,
+      verified: riderDocuments.verified,
+      verificationMethod: riderDocuments.verificationMethod,
+      verificationStatus: riderDocuments.verificationStatus,
+      requiresManualReview: riderDocuments.requiresManualReview,
+      metadata: riderDocuments.metadata,
+    })
+    .from(riderDocuments)
+    .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, "rc")))
+    .limit(1);
+  const rcVerificationState = rcDoc ? resolveRcVerificationState(rcDoc) : null;
+
   if (!choice && !selection.registrationNumber) {
     return {
       onboardingVehicleChoice: choice,
       onboardingVehicleCategoryCode: categoryCode,
       onboardingPrefill: null,
       rcElectronicallyVerified: selection.rcElectronicallyVerified,
+      rcVerificationState,
     };
   }
 
@@ -704,9 +724,7 @@ async function readOnboardingVehicleSelectionForApp(riderId: number): Promise<{
 
   let vehicleTypeLabel: string | null = resolved.customTypeLabel;
   if (choice) {
-    const db = (await import("../db/client.js")).getDb();
     const { riderOnboardingVehicleTypes } = await import("../db/schema.js");
-    const { eq, and } = await import("drizzle-orm");
     const [catalogRow] = await db
       .select({ label: riderOnboardingVehicleTypes.label })
       .from(riderOnboardingVehicleTypes)
@@ -737,6 +755,7 @@ async function readOnboardingVehicleSelectionForApp(riderId: number): Promise<{
       suggestedIsCommercial: suggestIsCommercialForCategory(categoryCode),
     },
     rcElectronicallyVerified: selection.rcElectronicallyVerified,
+    rcVerificationState,
   };
 }
 
@@ -750,7 +769,7 @@ export async function getRiderVehicleStatusForApp(
 
   const row = await getActiveRiderVehicleRow(riderId);
 
-  const { rcElectronicallyVerified, ...onboardingPublic } = onboardingSelection;
+  const { rcElectronicallyVerified, rcVerificationState, ...onboardingPublic } = onboardingSelection;
   const formMetaOpts = {
     electronicRc: rcElectronicallyVerified || isCashfreeRcVehicleRow(row),
     hasRegistration: Boolean(
@@ -762,6 +781,15 @@ export async function getRiderVehicleStatusForApp(
     ),
   };
 
+  // Backfill agent ticket if payment done + RC still awaiting manual review.
+  if (rcVerificationState === "MANUAL_REVIEW_PENDING") {
+    void import("./onboarding-verification-pending-ticket.js")
+      .then(({ ensureOnboardingVerificationPendingTicket }) =>
+        ensureOnboardingVerificationPendingTicket(riderId),
+      )
+      .catch(() => undefined);
+  }
+
   if (!row) {
 
     return {
@@ -769,6 +797,7 @@ export async function getRiderVehicleStatusForApp(
       isComplete: false,
       vehicle: null,
       formMeta: computeRiderVehicleFormMeta(null, formMetaOpts),
+      rcVerificationState,
       ...onboardingPublic,
     };
 
@@ -785,6 +814,8 @@ export async function getRiderVehicleStatusForApp(
     vehicle,
 
     formMeta: computeRiderVehicleFormMeta(row, formMetaOpts),
+
+    rcVerificationState,
 
     ...onboardingPublic,
 

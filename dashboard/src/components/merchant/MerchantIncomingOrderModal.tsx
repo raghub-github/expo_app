@@ -180,6 +180,7 @@ export function MerchantIncomingOrderModal() {
   const [settings, setSettings] = useState<AcceptanceSettings>(DEFAULT_SETTINGS);
   const shownInsertIds = useRef<Set<string>>(new Set());
   const hydrateBusyRef = useRef(false);
+  const hydratedCoreIdsRef = useRef<Set<number>>(new Set());
   const chimeRunIdRef = useRef(0);
   const chimeAudioRef = useRef<HTMLAudioElement | null>(null);
   const autoCancelFiredForOrderIdRef = useRef<number | null>(null);
@@ -264,24 +265,12 @@ export function MerchantIncomingOrderModal() {
     return () => window.removeEventListener('partner-order-acceptance-settings-changed', onRefresh);
   }, [reloadAcceptanceSettings]);
 
-  const fetchByFoodRow = useCallback(
-    async (foodRowId: number) => {
-      if (!storeId) return null;
-      const res = await fetchMerchantStoreApi(
-        `/api/merchant/stores/${storeId}/orders?orders_food_id=${foodRowId}`
-      );
-      const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
-      if (!res.ok || !Array.isArray(data.orders) || data.orders.length === 0) return null;
-      return data.orders[0] ?? null;
-    },
-    [storeId]
-  );
-
   const fetchByCoreId = useCallback(
     async (coreId: number) => {
       if (!storeId) return null;
       const res = await fetchMerchantStoreApi(
-        `/api/merchant/stores/${storeId}/orders?orders_core_id=${coreId}`
+        `/api/merchant/stores/${storeId}/orders?orders_core_id=${coreId}`,
+        { cache: 'no-store' }
       );
       const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
       if (!res.ok || !Array.isArray(data.orders) || data.orders.length === 0) return null;
@@ -290,15 +279,11 @@ export function MerchantIncomingOrderModal() {
     [storeId]
   );
 
-  const fetchIncomingLite = useCallback(
-    async (coreId: number, foodRowId?: number) => {
+  const fetchByFoodRow = useCallback(
+    async (foodRowId: number) => {
       if (!storeId) return null;
-      const qs =
-        Number.isFinite(foodRowId) && Number(foodRowId) > 0
-          ? `orders_food_id=${foodRowId}&lightweight=1`
-          : `orders_core_id=${coreId}&lightweight=1`;
       const res = await fetchMerchantStoreApi(
-        `/api/merchant/stores/${storeId}/orders?${qs}`,
+        `/api/merchant/stores/${storeId}/orders?orders_food_id=${foodRowId}`,
         { cache: 'no-store' }
       );
       const data = (await res.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
@@ -310,32 +295,48 @@ export function MerchantIncomingOrderModal() {
 
   useEffect(() => {
     if (!storeId || !modalOrder) return;
+    const coreId = Number(modalOrder.order_id);
+    if (!Number.isFinite(coreId) || coreId <= 0) return;
+    if (hydratedCoreIdsRef.current.has(coreId)) return;
+
     const items = (Array.isArray(modalOrder.items) ? modalOrder.items : []) as NormalizedOrderLineItem[];
+    // Lightweight payloads omit pricing + total_ctm. Require full merchant pricing hydrate.
+    const hasMerchantPricing =
+      modalOrder.pricing != null &&
+      (Number(modalOrder.total_ctm) > 0 ||
+        items.some((it) => it.ctmFromSnapshot === true) ||
+        items.some(
+          (it) =>
+            it.netLineTotal != null &&
+            it.catalogLineTotal != null &&
+            Number(it.netLineTotal) < Number(it.catalogLineTotal) - 0.005
+        ));
     const needsHydrate =
       !modalOrder.customer_name ||
       items.length === 0 ||
       (modalOrder as unknown as Record<string, unknown>).is_bulk_order === undefined ||
-      !items.some(
-        (it) =>
-          it.ctmFromSnapshot === true ||
-          (it.netLineTotal != null &&
-            it.catalogLineTotal != null &&
-            Math.abs(Number(it.netLineTotal) - Number(it.catalogLineTotal)) > 0.005) ||
-          (it.netLineTotal != null && Number(it.netLineTotal) > 0 && Number(it.total) > 0 &&
-            Math.abs(Number(it.netLineTotal) - Number(it.total)) < 0.5)
-      );
-    if (!needsHydrate) return;
+      !hasMerchantPricing;
+    if (!needsHydrate) {
+      hydratedCoreIdsRef.current.add(coreId);
+      return;
+    }
     if (hydrateBusyRef.current) return;
     hydrateBusyRef.current = true;
     void (async () => {
       try {
-        const full = await fetchByCoreId(modalOrder.order_id);
-        if (full) setModalOrder(full);
+        const foodRowId = merchantFoodRowId(modalOrder);
+        const full =
+          (foodRowId != null ? await fetchByFoodRow(foodRowId) : null) ??
+          (await fetchByCoreId(modalOrder.order_id));
+        if (full && Number(modalOrderRef.current?.order_id) === coreId) {
+          setModalOrder(full);
+        }
       } finally {
+        hydratedCoreIdsRef.current.add(coreId);
         hydrateBusyRef.current = false;
       }
     })();
-  }, [storeId, modalOrder?.order_id, fetchByCoreId]);
+  }, [storeId, modalOrder?.order_id, fetchByCoreId, fetchByFoodRow]);
 
   const openIfNew = useCallback(
     async (seed: OrdersFoodRow | null): Promise<boolean> => {
@@ -455,10 +456,20 @@ export function MerchantIncomingOrderModal() {
     resolvedChannelRef.current = resolvedChannel;
     resolvedChannel
       .on("broadcast", { event: DASH_MX_INCOMING_RESOLVED_EVENT }, (msg) => {
-        const payload = (msg as { payload?: { coreId?: number; foodId?: number } }).payload;
+        const payload = (msg as { payload?: { coreId?: number; foodId?: number; status?: string } })
+          .payload;
         const open = modalOrderRef.current;
         if (!open || !payload) return;
         if (incomingRowMatchesOpen(open, { coreId: payload.coreId, foodId: payload.foodId })) {
+          closeRef.current({ markDismissed: true });
+          return;
+        }
+        // Store-wide resolve without ids — close if anything left CREATED for this store.
+        if (
+          payload.coreId == null &&
+          payload.foodId == null &&
+          String(payload.status || "").toUpperCase() !== "CREATED"
+        ) {
           closeRef.current({ markDismissed: true });
         }
       })
@@ -720,38 +731,59 @@ export function MerchantIncomingOrderModal() {
     mode: 'auto' | 'manual' = 'manual'
   ) => {
     if (!storeId || !modalOrder) return;
-    const foodRowId = merchantFoodRowId(modalOrder) ?? modalOrder.id;
+    const foodRowId = merchantFoodRowId(modalOrder);
     const coreId = merchantOrderApiId(modalOrder);
-    const pathIds =
-      modalOrder.core_only === true
-        ? [coreId]
-        : foodRowId === coreId
-          ? [foodRowId]
-          : [foodRowId, coreId];
+    const actingOrder = modalOrder;
+    const pathIds = [
+      ...new Set(
+        [foodRowId, actingOrder.orders_food_row_id, actingOrder.id, coreId, actingOrder.core_order_id]
+          .map((n) => Number(n))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      ),
+    ];
     const payload = {
       status,
       action_source: status === 'CANCELLED' && mode === 'auto' ? ('system' as const) : ('admin' as const),
       ...(status === 'ACCEPTED' ? { accept_mode: mode, preparation_time_minutes: prepMinutes } : {}),
       ...(status === 'CANCELLED' ? { cancel_mode: mode } : {}),
+      ...(actingOrder.formatted_order_id
+        ? { formatted_order_id: String(actingOrder.formatted_order_id) }
+        : {}),
       ...extra,
     };
+    // Close + dismiss immediately so the sheet cannot stick open while PATCH retries.
+    addDismissed(actingOrder.order_id);
+    close({ markDismissed: true });
     setActionLoading(true);
     try {
       const tryUpdate = async (pathId: number) => {
-        const res = await fetch(`/api/merchant/stores/${storeId}/orders/${pathId}`, {
+        const res = await fetchMerchantStoreApi(`/api/merchant/stores/${storeId}/orders/${pathId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
           body: JSON.stringify(payload),
         });
         const data = await res.json().catch(() => ({}));
-        return { ok: res.ok, data };
+        return { ok: res.ok, data, status: res.status };
       };
 
-      let result: { ok: boolean; data: unknown } = { ok: false, data: {} };
+      let result: { ok: boolean; data: unknown; status?: number } = { ok: false, data: {} };
       for (const pathId of pathIds) {
         result = await tryUpdate(pathId);
         if (result.ok) break;
+      }
+      if (!result.ok && actingOrder.formatted_order_id) {
+        const lookup = await fetchMerchantStoreApi(
+          `/api/merchant/stores/${storeId}/orders?formatted_order_id=${encodeURIComponent(
+            String(actingOrder.formatted_order_id)
+          )}&limit=1`,
+          { cache: 'no-store' }
+        );
+        const lookupData = (await lookup.json().catch(() => ({}))) as { orders?: OrdersFoodRow[] };
+        const found = lookupData.orders?.[0];
+        const foundFood = found ? merchantFoodRowId(found) ?? found.id : null;
+        if (foundFood != null && Number.isFinite(Number(foundFood))) {
+          result = await tryUpdate(Number(foundFood));
+        }
       }
       if (!result.ok) {
         await new Promise((r) => setTimeout(r, 1200));
@@ -770,17 +802,15 @@ export function MerchantIncomingOrderModal() {
         void resolvedChannelRef.current?.send({
           type: "broadcast",
           event: DASH_MX_INCOMING_RESOLVED_EVENT,
-          payload: { coreId, foodId: foodRowId },
+          payload: { coreId, foodId: foodRowId ?? actingOrder.id },
         });
       } catch {
         /* other devices still poll / realtime */
       }
       toast(status === 'ACCEPTED' ? 'Order accepted' : 'Order rejected', 'success');
-      close({ markDismissed: true });
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Could not update order';
       if (isInvalidOrderTransitionError(msg)) {
-        close({ markDismissed: true });
         return;
       }
       toast(msg, 'error');
@@ -815,19 +845,22 @@ export function MerchantIncomingOrderModal() {
 
   useEffect(() => {
     if (!modalOrder || !storeId) return;
+    let cancelled = false;
     const sync = async () => {
       const open = modalOrderRef.current;
-      if (!open) return;
+      if (!open || cancelled) return;
       const syncCoreId = Number(open.order_id);
       if (!Number.isFinite(syncCoreId)) return;
       try {
-        const full = await fetchIncomingLite(
-          syncCoreId,
-          Number.isFinite(Number(open.id)) ? Number(open.id) : undefined
-        );
-        if (Number(modalOrderRef.current?.order_id) !== syncCoreId) return;
+        const foodRowId = merchantFoodRowId(open);
+        // Full CTM/status fetch (partnersite parity) — never lightweight for open modal.
+        const full =
+          (foodRowId != null ? await fetchByFoodRow(foodRowId) : null) ??
+          (await fetchByCoreId(syncCoreId));
+        if (cancelled || Number(modalOrderRef.current?.order_id) !== syncCoreId) return;
         if (full && !isIncomingPending(full)) {
           close({ markDismissed: true });
+          return;
         }
       } catch {
         /* ignore */
@@ -835,8 +868,24 @@ export function MerchantIncomingOrderModal() {
     };
     void sync();
     const t = window.setInterval(() => void sync(), OPEN_ORDER_SYNC_MS);
-    return () => window.clearInterval(t);
-  }, [modalOrder?.order_id, storeId, fetchIncomingLite, close]);
+    const onFocus = () => void sync();
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void sync();
+    };
+    const onRefresh = () => void sync();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('merchant-pending-orders-refresh', onRefresh);
+    window.addEventListener('merchant-incoming-order-scan', onRefresh);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('merchant-pending-orders-refresh', onRefresh);
+      window.removeEventListener('merchant-incoming-order-scan', onRefresh);
+    };
+  }, [modalOrder?.order_id, storeId, fetchByCoreId, fetchByFoodRow, close]);
 
   if (typeof document === 'undefined') return null;
   if (!storeId || !Number.isFinite(storeInternalId)) return null;
@@ -867,7 +916,7 @@ export function MerchantIncomingOrderModal() {
                   storeDefaultPrepMinutes={storeDefaultPrepMinutes}
                   soundMuted={soundMuted}
                   onMuteToggle={toggleMute}
-                  onClose={() => close({ markDismissed: false })}
+                  onClose={() => close({ markDismissed: true })}
                   onAccept={() => void patchStatus('ACCEPTED', undefined, 'manual')}
                   onReject={() => setRejectOpen(true)}
                   onViewAllItems={() => {

@@ -24,7 +24,10 @@ export type RiderAcceptRevalidationInput = {
   distanceMeters: number;
   /** Current-wave configured pickup radius, meters. */
   radiusMeters: number;
-  /** Max acceptable GPS age — the STALE window, not the tighter fresh window. */
+  /**
+   * Max acceptable GPS age at accept. Callers should pass the FRESH window
+   * (`RIDER_DISPATCH_LOCATION_MAX_AGE_SECONDS`), not the wider STALE offer window.
+   */
   staleMaxSeconds: number;
 };
 

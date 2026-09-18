@@ -40,7 +40,7 @@ export default function NewOrderAutoOpenHandler() {
           vibrationPattern: [0, 400, 200, 400],
           lightColor: "#3EB489",
           sound: MERCHANT_NEW_ORDER_SOUND,
-          bypassDnd: false,
+          bypassDnd: true,
           lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
           enableVibrate: true,
         });

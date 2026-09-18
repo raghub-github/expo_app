@@ -133,7 +133,7 @@ const styles = StyleSheet.create({
   okayBtn: {
     backgroundColor: GatiMitraColors.primaryMint,
     paddingVertical: 16,
-    borderRadius: 28,
+    borderRadius: 20,
     alignItems: "center",
   },
   okayBtnText: {

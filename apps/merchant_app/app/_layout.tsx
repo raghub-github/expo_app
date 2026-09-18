@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import "react-native-gesture-handler";
-import { LogBox, Platform, StatusBar as RNStatusBar, View } from "react-native";
+import { AppState, LogBox, Platform, StatusBar as RNStatusBar, View } from "react-native";
 import { Stack, usePathname, useRouter } from "expo-router";
 import { useFonts } from "expo-font";
 import { Lora_400Regular, Lora_700Bold } from "@expo-google-fonts/lora";
@@ -64,19 +64,60 @@ LogBox.ignoreLogs([
   "[expo-av]",
 ]);
 
+/** Screens that own a dark canvas and need light status icons. */
+const LIGHT_STATUS_BAR_PATH_RE = /packaging-tips/i;
+
+const DEFAULT_STATUS_BAR_BG = GatiMitraMerchant.surfaceWarm;
+
+function applyMerchantStatusBar(opts?: { lightIcons?: boolean; backgroundColor?: string }) {
+  const lightIcons = opts?.lightIcons === true;
+  const bg = opts?.backgroundColor ?? DEFAULT_STATUS_BAR_BG;
+  RNStatusBar.setHidden(false);
+  if (Platform.OS === "android") {
+    RNStatusBar.setTranslucent(false);
+    RNStatusBar.setBackgroundColor(bg);
+  }
+  RNStatusBar.setBarStyle(lightIcons ? "light-content" : "dark-content");
+}
+
+/**
+ * Keep the system status bar visible with dark icons on light chrome.
+ * Re-applies on route change + AppState resume so modal screens can't leave
+ * light-content icons stuck on white headers.
+ */
+function MerchantStatusBarSync() {
+  const pathname = usePathname();
+  const lightIcons = LIGHT_STATUS_BAR_PATH_RE.test(pathname ?? "");
+
+  useEffect(() => {
+    applyMerchantStatusBar({ lightIcons });
+  }, [lightIcons, pathname]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        applyMerchantStatusBar({
+          lightIcons: LIGHT_STATUS_BAR_PATH_RE.test(pathname ?? ""),
+        });
+      }
+    });
+    return () => sub.remove();
+  }, [pathname]);
+
+  return (
+    <StatusBar
+      style={lightIcons ? "light" : "dark"}
+      backgroundColor={lightIcons ? "#0B1A14" : DEFAULT_STATUS_BAR_BG}
+      translucent={false}
+      hidden={false}
+    />
+  );
+}
+
 /** Don't hold splash forever if font download/cache stalls (common with --offline). */
 const FONTS_READY_FALLBACK_MS = 8000;
 /** Keep the branded splash on screen long enough to actually be read. */
 const MIN_SPLASH_VISIBLE_MS = 1200;
-
-function AndroidStatusBarSync({ color }: { color: string }) {
-  useEffect(() => {
-    RNStatusBar.setTranslucent(false);
-    RNStatusBar.setBackgroundColor(color);
-    RNStatusBar.setBarStyle("dark-content");
-  }, [color]);
-  return null;
-}
 
 function MerchantStackRecovery({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -127,7 +168,7 @@ function MerchantNavigator() {
     }
   }, [authState.status, router]);
 
-  if (authState.status === "loading") {
+  if (authState.status === "loading" || authState.status === "logging_out") {
     return <MerchantBootstrapScreen />;
   }
 
@@ -142,6 +183,10 @@ function MerchantNavigator() {
             headerShown: false,
             contentStyle: { backgroundColor: GatiMitraMerchant.background },
             animation: "slide_from_right",
+            statusBarHidden: false,
+            statusBarStyle: "dark",
+            statusBarTranslucent: false,
+            statusBarBackgroundColor: GatiMitraMerchant.surfaceWarm,
           }}
         >
           <Stack.Screen name="index" />
@@ -283,15 +328,7 @@ function MerchantAppShell({
                         <NotificationProvider>
                           <NotificationPermissionGateProvider>
                             <SubscriptionProvider>
-                              <StatusBar
-                                style="dark"
-                                backgroundColor={GatiMitraMerchant.surfaceWarm}
-                                translucent={false}
-                                hidden={false}
-                              />
-                              {Platform.OS === "android" ? (
-                                <AndroidStatusBarSync color={GatiMitraMerchant.surfaceWarm} />
-                              ) : null}
+                              <MerchantStatusBarSync />
                               <IncomingOrderSheetProvider>
                                 {authReady && minSplashElapsed ? <MerchantNavigator /> : null}
                                 <PlayInAppUpdateBootstrap />

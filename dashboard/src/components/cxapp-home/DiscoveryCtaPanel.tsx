@@ -266,12 +266,21 @@ export function DiscoveryCtaPanel({
         const form = new FormData();
         form.append("file", file);
         form.append("target", target);
-        const res = await fetch(
-          `/api/super-admin/cxapp-home/food-layout/${stateId}/discovery-cta/upload-image`,
-          { method: "POST", body: form }
-        );
-        const json = (await res.json()) as { url?: string; error?: string };
-        if (!res.ok) throw new Error(json.error ?? "Upload failed");
+        const endpoint = `/api/super-admin/cxapp-home/food-layout/${stateId}/discovery-cta/upload-image`;
+        let res: Response | null = null;
+        let json: { url?: string; error?: string } = {};
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) {
+            await new Promise((r) => setTimeout(r, 400 * attempt));
+          }
+          res = await fetch(endpoint, { method: "POST", body: form });
+          json = (await res.json().catch(() => ({}))) as {
+            url?: string;
+            error?: string;
+          };
+          if (res.status !== 503 && res.status !== 499) break;
+        }
+        if (!res || !res.ok) throw new Error(json.error ?? "Upload failed");
         const url = parseGridFirstUnder250ImageUrl(json.url);
         if (!url) throw new Error("Upload failed");
         if (target.startsWith("hero__")) {

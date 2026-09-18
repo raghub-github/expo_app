@@ -177,7 +177,7 @@ const styles = StyleSheet.create({
   bannerDeco: {
     width: 56,
     height: 56,
-    borderRadius: 28,
+    borderRadius: 20,
     backgroundColor: "rgba(255,255,255,0.2)",
     alignItems: "center",
     justifyContent: "center",

@@ -273,7 +273,7 @@ function LiveOrderCardDefault({
   const { visible: visibleItems, moreCount } = sliceOrderLineItems(order.lineItems);
   const customerLabel = formatOrderCardCustomerLabel(
     order.customerName,
-    order.customerStoreOrderOrdinal
+    order.customerStoreOrderOrdinal ?? order.customerStoreOrdersTotal
   );
 
   const primaryActionLabel = (() => {
@@ -335,11 +335,18 @@ function LiveOrderCardDefault({
       </View>
 
       <View style={styles.itemsSection}>
+        <View style={styles.itemColumnsHeader}>
+          <Text style={styles.itemNameHeader}>Item name</Text>
+          <Text style={styles.qtyHeader}>Qty</Text>
+          <Text style={styles.priceHeader}>Price</Text>
+        </View>
         {visibleItems.map((item, idx) => (
           <OrderCardItemRow
             key={`${order.id}-${idx}`}
             item={item}
-            orderVeg={item.vegNonveg}
+            index={idx + 1}
+            orderVeg={order.vegNonVeg}
+            showQuantityColumn
             onItemNamePress={() => onItemPress(item)}
             onRowPress={onViewDetail}
             showPrice
@@ -473,6 +480,37 @@ const styles = StyleSheet.create({
   },
   moreBtn: { marginTop: 4 },
   itemsSection: { marginBottom: 8 },
+  itemColumnsHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingBottom: 6,
+    marginBottom: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: GatiMitraMerchant.divider,
+  },
+  itemNameHeader: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 11,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  qtyHeader: {
+    width: 48,
+    minWidth: 48,
+    textAlign: "center",
+    fontSize: 11,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
+  priceHeader: {
+    width: 72,
+    minWidth: 72,
+    textAlign: "right",
+    fontSize: 11,
+    fontWeight: "700",
+    color: GatiMitraMerchant.textSecondary,
+  },
   itemRow: {
     flexDirection: "row",
     justifyContent: "space-between",

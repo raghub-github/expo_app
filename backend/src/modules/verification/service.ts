@@ -821,13 +821,27 @@ export async function pollDigilockerForSubject(args: {
     document_consent: statusBody.document_consent ?? null,
   };
 
-  const { maskAadhaarNumber, normalizeAadhaarVerifiedDetails } = await import("../../lib/mask-aadhaar.js");
+  const { maskAadhaarNumber, normalizeAadhaarVerifiedDetails, fullAadhaarDigits } = await import("../../lib/mask-aadhaar.js");
   const normalized = normalizeAadhaarVerifiedDetails(verifiedData);
-  // Never persist full Aadhaar UID in verified payloads / business identifier.
+  // Capture full UID before we overwrite display fields with the masked form.
+  const fullFromProvider =
+    normalized.fullAadhaar ||
+    fullAadhaarDigits(
+      String(
+        verifiedData.aadhaar_number ||
+          verifiedData.uid ||
+          verifiedData.masked_aadhaar ||
+          "",
+      ),
+    );
+  // Never persist full Aadhaar UID in display fields / business identifier.
   if (normalized.maskedAadhaar) {
     verifiedData.uid = normalized.maskedAadhaar;
     verifiedData.aadhaar_number = normalized.maskedAadhaar;
     verifiedData.masked_aadhaar = normalized.maskedAadhaar;
+  }
+  if (fullFromProvider) {
+    verifiedData.aadhaar_number_full = fullFromProvider;
   }
   if (normalized.name && !verifiedData.name) {
     verifiedData.name = normalized.name;
@@ -863,12 +877,45 @@ export async function pollDigilockerForSubject(args: {
     providerArtifacts: [],
   };
 
-  await applyAsyncTerminalOutcome(row.id, current as VerificationStatus, outcome);
+  try {
+    await applyAsyncTerminalOutcome(row.id, current as VerificationStatus, outcome);
+  } catch (e) {
+    // Last resort: if a parallel poll already verified this request, succeed.
+    const landed = (await sql`
+      SELECT status::text AS status
+        FROM public.verification_requests
+       WHERE id = ${row.id}
+       LIMIT 1
+    `) as unknown as Array<{ status: string }>;
+    const landedStatus = String(landed[0]?.status || "").toLowerCase();
+    if (landedStatus === "verified") {
+      return {
+        status: "verified",
+        verified: true,
+        verifiedData,
+        statusReason: "digilocker_authenticated",
+        verificationId: row.verification_id,
+      };
+    }
+    throw e;
+  }
+
+  if (outcome.status === "duplicate") {
+    return {
+      status: "duplicate",
+      verified: false,
+      statusReason:
+        outcome.statusReason ||
+        "This document number is already verified on another account.",
+      verificationId: row.verification_id,
+      verifiedData,
+    };
+  }
 
   return {
-    status: "verified",
-    verified: true,
-    verifiedData,
+    status: outcome.status === "verified" ? "verified" : outcome.status,
+    verified: outcome.status === "verified",
+    verifiedData: outcome.status === "verified" ? verifiedData : undefined,
     statusReason: outcome.statusReason,
     verificationId: row.verification_id,
   };

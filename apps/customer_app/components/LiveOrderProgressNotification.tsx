@@ -3,8 +3,14 @@
  * Supports food, person-ride, and parcel. Updates in place (progress bar) instead
  * of stacking shade rows.
  *
+ * AUTHORITATIVE business alerts (order accepted / picked up / delivered / …)
+ * are backend → FCM via customer-lifecycle-notify. This sticky is PRESENTATION
+ * only: it mirrors order state the app already has while foregrounded and
+ * updates from gmLiveProgress push metadata. It does not invent FCM pushes.
+ * Sound is omitted so it never doubles the FCM channel chime.
+ *
  * Driven by:
- *   1) activeOrders in orderStore (hydration + polling)
+ *   1) activeOrders in orderStore (hydration + polling) — silent sticky UI
  *   2) push metadata with gmLiveProgress (backend lifecycle templates)
  */
 
@@ -12,9 +18,14 @@ import { useEffect, useRef } from "react";
 import { Platform, AppState } from "react-native";
 import Constants from "expo-constants";
 import { useOrderStore, type ActiveOrder, type ActiveOrderService } from "@/store/orderStore";
-import { collectOrderAliases } from "@/lib/customer-order-status-machine";
+import {
+  collectOrderAliases,
+  isCustomerOrderTerminalStatus,
+} from "@/lib/customer-order-status-machine";
+import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
 import {
   applyLiveProgressFromPush as applyLiveProgressNative,
+  dismissLiveOrderProgressForOrder as dismissLiveOrderProgressNative,
   dismissStaleLiveOrderTrayNotifications,
   postOrUpdateLiveNotification as postOrUpdateLiveNative,
 } from "@/lib/customerLiveOrderNotificationNative";
@@ -32,11 +43,14 @@ type LiveUi = {
 };
 
 function liveUiFood(order: ActiveOrder): LiveUi {
-  const s = String(order.status ?? "").toUpperCase();
+  const s = normalizeCustomerOrderStatus(order.status);
   const eta = order.etaMinutes > 0 ? order.etaMinutes : null;
   const store = order.storeName?.trim() || "Store";
 
-  if (s === "DELIVERED") {
+  if (isCustomerOrderTerminalStatus(s) || s === "DELIVERED") {
+    if (s === "CANCELLED" || s === "PAYMENT_FAILED" || s === "FAILED" || s === "RTO") {
+      return { title: "Order cancelled", body: "This order was cancelled", step: 0, steps: 5, terminal: true };
+    }
     return { title: "Delivered", body: "Enjoy your meal!", step: 5, steps: 5, terminal: true };
   }
   if (s === "CANCELLED") {
@@ -202,6 +216,21 @@ export async function applyLiveProgressFromPush(data: Record<string, unknown>): 
   await applyLiveProgressNative(data);
 }
 
+/** Clear sticky live-progress after cancel / terminal (food cancel sheet + order detail). */
+export async function dismissLiveOrderProgressForOrder(orderId: string): Promise<void> {
+  const id = String(orderId ?? "").trim();
+  if (!id) return;
+  if (Platform.OS !== "android" || isExpoGo()) {
+    await dismissLive(id);
+    return;
+  }
+  try {
+    await dismissLiveOrderProgressNative(id);
+  } catch {
+    await dismissLive(id);
+  }
+}
+
 async function dismissLive(orderId: string): Promise<void> {
   try {
     const Notifications = await import("expo-notifications");
@@ -234,7 +263,7 @@ export function LiveOrderProgressNotification() {
         if (lastSigRef.current[order.orderId] === sig) continue;
         lastSigRef.current[order.orderId] = sig;
         if (ui.terminal) {
-          void dismissLive(order.orderId);
+          void dismissLiveOrderProgressForOrder(order.orderId);
           delete lastSigRef.current[order.orderId];
           continue;
         }
@@ -250,7 +279,7 @@ export function LiveOrderProgressNotification() {
 
       for (const id of knownIdsRef.current) {
         if (!nextIds.has(id)) {
-          void dismissLive(id);
+          void dismissLiveOrderProgressForOrder(id);
           delete lastSigRef.current[id];
         }
       }

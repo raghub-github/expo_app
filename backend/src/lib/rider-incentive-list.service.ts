@@ -614,7 +614,7 @@ export async function listRiderIncentives(args: {
     { key: "all", label: "All", count: counts.all },
     { key: "surge", label: "Surge", count: counts.surge },
     { key: "incentive", label: "Incentive", count: counts.incentive },
-    { key: "peak", label: "Peak Inc.", count: counts.peak },
+    { key: "peak", label: "Peak", count: counts.peak },
   ].filter((f) => f.key === "all" || f.count > 0);
 
   const dateBadges = await buildWeekDateBadges({

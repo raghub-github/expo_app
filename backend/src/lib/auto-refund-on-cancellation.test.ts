@@ -23,8 +23,8 @@ describe("auto-refund actor gates", () => {
 });
 
 describe("isIntentionalNoRefundCancel", () => {
-  it("skips when refund_status is no_refund", () => {
-    assert.equal(isIntentionalNoRefundCancel({ refundStatus: "no_refund" }), true);
+  it("does not skip when refund_status alone is no_refund (engine stamp)", () => {
+    assert.equal(isIntentionalNoRefundCancel({ refundStatus: "no_refund" }), false);
   });
 
   it("skips when metadata marks cancel_without_refund", () => {

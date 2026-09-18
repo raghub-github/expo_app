@@ -12,6 +12,8 @@ export type CreateRiderBankAccountInput = {
   ifsc: string;
   branch?: string;
   accountNumber: string;
+  /** True only after Cashfree bank verify in the same flow. */
+  providerVerified?: boolean;
 };
 
 export const RIDER_BANK_LIST_QUERY_KEY = ["rider", "payment-methods", "bank", "list"] as const;

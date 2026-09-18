@@ -51,6 +51,7 @@ import {
 import { queueSupervisorHref } from "@/lib/tickets/queue-supervisor-paths";
 import { usePermission } from "@/hooks/usePermission";
 import { usePermissions } from "@/hooks/usePermissions";
+import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
 import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import {
   parsePortalParam,
@@ -102,6 +103,8 @@ export function RightSidebar({
   const currentRoute = useCurrentRoute();
   const rightSidebarCtx = useRightSidebar();
   const { hasDashboardAccess, isSuperAdmin, canPerformAction } = usePermission();
+  const { data: dashboardAccessData, isLoading: dashboardAccessLoading } =
+    useDashboardAccessQuery();
   const { canTogglePortal = false } = usePermissions();
   const {
     hasAdminMerchantAccess,
@@ -112,12 +115,14 @@ export function RightSidebar({
   const cleanPathname = useMemo(() => pathname.split('?')[0].split('#')[0], [pathname]);
 
   const pushSidebarHref = useCallback(
-    (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+    (event: React.MouseEvent<HTMLAnchorElement> | React.PointerEvent<HTMLAnchorElement>, href: string) => {
+      if ("button" in event && event.button !== 0) return;
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const target = href.split("?")[0].split("#")[0];
       if (isDashboardNavAlreadyAtTarget(cleanPathname, target)) return;
-      // Imperative push so a layout re-render cannot swallow the first Link click.
+      // Imperative push on pointerdown so badge/prefetch remounts cannot swallow the first click.
       event.preventDefault();
+      event.stopPropagation();
       router.push(href);
     },
     [cleanPathname, router]
@@ -518,6 +523,18 @@ export function RightSidebar({
     cleanPathname.startsWith("/dashboard/riders/");
   const isMerchantsDashboard = currentDashboard?.href === "/dashboard/merchants";
 
+  // No RIDER access → hide the Riders right rail entirely (matches Access Denied modal).
+  // Wait until access is known so we don't hide the rail during the first load flash.
+  if (
+    isRiderDashboard &&
+    !isSuperAdmin &&
+    !dashboardAccessLoading &&
+    dashboardAccessData != null &&
+    !hasDashboardAccess("RIDER")
+  ) {
+    return null;
+  }
+
   const selectedRiderSearch = (searchParams.get("search") || "").trim();
   const merchantsRailHasContent =
     isMerchantsDashboard &&
@@ -528,7 +545,7 @@ export function RightSidebar({
       Boolean(showMerchantSearchSkeleton));
 
   // Don't show right sidebar if not in a specific dashboard.
-  // Riders: always show (nav includes tools that don't need a selected rider).
+  // Riders: always show when access exists (nav includes tools that don't need a selected rider).
   // Merchants: only when admin CTAs, store nav, or search card exist.
   if (
     !isInSpecificDashboard ||
@@ -991,11 +1008,16 @@ export function RightSidebar({
                     <Link
                       key={route.href}
                       href={appendMerchantPortal(appendRiderSearch(route.href))}
-                      prefetch
+                      prefetch={false}
                       scroll={false}
-                      onClick={(event) => {
+                      onPointerDown={(event) => {
                         const href = appendMerchantPortal(appendRiderSearch(route.href));
                         pushSidebarHref(event, href);
+                      }}
+                      onClick={(event) => {
+                        // pointerdown already navigated; block default to avoid double push.
+                        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                        event.preventDefault();
                       }}
                       onMouseEnter={() => {
                         const href = appendMerchantPortal(appendRiderSearch(route.href));

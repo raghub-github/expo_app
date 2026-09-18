@@ -4,6 +4,10 @@
  *
  * Expo Go (SDK 53+) errors if expo-notifications is imported — skip there.
  * Production / dev-client builds still register the handler + background task.
+ *
+ * NEW ORDER sound: when Manage communication has cached the Super Admin sound
+ * locally, mute the OS channel chime and play that file instead (same tone as
+ * the in-app alert). If no cache yet, fall back to the bundled channel sound.
  */
 function isExpoGo() {
   try {
@@ -38,6 +42,52 @@ function isStoreStatusData(data) {
     typ === "MERCHANT_OUTSIDE_DELIVERY" ||
     typ === "MERCHANT_GO_ONLINE"
   );
+}
+
+async function readCachedAlertLocalUri() {
+  try {
+    const SecureStore = require("expo-secure-store");
+    const raw = await SecureStore.getItemAsync("merchant_alert_sound_cache_v1");
+    if (!raw) return null;
+    const meta = JSON.parse(raw);
+    const uri = typeof meta?.localUri === "string" ? meta.localUri.trim() : "";
+    return uri || null;
+  } catch {
+    return null;
+  }
+}
+
+async function playCachedAlertSound(localUri) {
+  if (!localUri) return false;
+  try {
+    const { createAudioPlayer, setAudioModeAsync } = require("expo-audio");
+    await setAudioModeAsync({
+      playsInSilentMode: true,
+      shouldPlayInBackground: true,
+      interruptionMode: "doNotMix",
+      shouldRouteThroughEarpiece: false,
+    });
+    const player = createAudioPlayer({ uri: localUri }, { downloadFirst: false });
+    player.loop = false;
+    player.volume = 1;
+    player.play();
+    // Detach after a generous clip window — background task must not hang.
+    setTimeout(() => {
+      try {
+        player.pause();
+      } catch {
+        /* ignore */
+      }
+      try {
+        player.remove();
+      } catch {
+        /* ignore */
+      }
+    }, 12_000);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 if (!isExpoGo()) {
@@ -75,10 +125,21 @@ if (!isExpoGo()) {
             shouldShowList: true,
           };
         }
-        // Killed: this handler never runs; OS uses merchant_new_orders_alert.
-        // Background (process alive): OS channel sound (shouldPlaySound true).
-        // Foreground: mute OS — Incoming Order modal / JS owns the chime.
-        const suppressOsSound = isNewOrder && appActive;
+
+        let cachedUri = null;
+        if (isNewOrder) {
+          cachedUri = await readCachedAlertLocalUri();
+          // App open → JS/modal owns sound. Background with cache → play Manage communication tone.
+          if (!appActive && cachedUri) {
+            void playCachedAlertSound(cachedUri);
+          }
+        }
+
+        // Mute OS bundled chime whenever we will play the selected store alert
+        // (foreground JS, or background cached file). Keep OS sound only as
+        // fallback when nothing is cached yet (e.g. first install).
+        const suppressOsSound =
+          (isNewOrder && appActive) || (isNewOrder && !!cachedUri);
         return {
           shouldShowAlert: true,
           shouldPlaySound: !suppressOsSound,
@@ -97,8 +158,20 @@ if (!isExpoGo()) {
     const TaskManager = require("expo-task-manager");
     const BACKGROUND_NOTIFICATION_TASK = "BACKGROUND-NOTIFICATION-TASK";
     if (!TaskManager.isTaskDefined(BACKGROUND_NOTIFICATION_TASK)) {
-      TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, () => {
-        /* OS displays notification+data payloads; this keeps Expo from dropping them. */
+      TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => {
+        if (error) return;
+        try {
+          const notification = data?.notification ?? data;
+          const content = notification?.request?.content ?? notification?.content ?? {};
+          const payload = content?.data ?? {};
+          if (!isMerchantNewOrderData(payload)) return;
+          const cachedUri = await readCachedAlertLocalUri();
+          if (cachedUri) {
+            await playCachedAlertSound(cachedUri);
+          }
+        } catch {
+          /* best-effort */
+        }
       });
     }
     Notifications.registerTaskAsync(BACKGROUND_NOTIFICATION_TASK).catch(() => {});

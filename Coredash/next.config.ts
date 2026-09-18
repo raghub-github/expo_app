@@ -13,7 +13,6 @@ const nextConfig: NextConfig = {
     "@supabase/supabase-js",
     "@supabase/ssr",
   ],
-  transpilePackages: ["geist"],
   devIndicators: false,
   experimental: {
     optimizePackageImports: ["lucide-react", "recharts"],

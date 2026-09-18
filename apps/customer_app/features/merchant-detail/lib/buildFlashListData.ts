@@ -8,6 +8,7 @@ import type {
   MenuSection,
   MerchantScrollIndexMap,
 } from "../types";
+import { partitionSectionsForClassicImagedView } from "./menuSections";
 
 export type BuildFlashListInput = {
   sections: MenuSection[];
@@ -31,6 +32,12 @@ export type BuildFlashListInput = {
   hideInfoCard?: boolean;
   /** Masonry + rail for discovery only. Classic / grid-first keep list rows. */
   masonry?: boolean;
+  /**
+   * Classic Toing-style store only: horizontal featured imaged rail +
+   * 2-col imaged grids first; dishes without photos trail as list rows.
+   * Grid-first must stay list rows (classicImagedLayout=false).
+   */
+  classicImagedLayout?: boolean;
 };
 
 function itemMatchesPairingAnchor(
@@ -96,6 +103,7 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
     pairingCompanionItems,
     hideInfoCard = false,
     masonry = false,
+    classicImagedLayout = false,
   } = input;
 
   const data: MerchantFlashListItem[] = [];
@@ -109,6 +117,13 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
     data.push(row);
     return data.length - 1;
   };
+
+  const useMasonryBody = masonry || classicImagedLayout;
+  const classicPart =
+    classicImagedLayout && !menuPending
+      ? partitionSectionsForClassicImagedView(sections)
+      : null;
+  const bodySections = classicPart?.imagedSections ?? sections;
 
   if (!masonry) {
     push({ type: "hero", key: "hero" });
@@ -150,8 +165,17 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
     if (sections.length === 0) {
       push({ type: "empty_menu", key: "empty_menu" });
     } else {
-      sections.forEach((sec, sectionIndex) => {
-        if (masonry) {
+      if (classicPart && classicPart.featuredImaged.length >= 2) {
+        push({
+          type: "featured_imaged_rail",
+          key: "featured_imaged_rail",
+          title: "Worth A Try",
+          items: classicPart.featuredImaged,
+        });
+      }
+
+      bodySections.forEach((sec, sectionIndex) => {
+        if (useMasonryBody) {
           const masonryIdx = push({
             type: "menu_masonry",
             key: `menu_masonry-${sectionIndex}-${sec.title}`,
@@ -239,6 +263,35 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
           }
         });
       });
+
+      // Classic: text-only dishes after imaged grids.
+      if (classicPart && classicPart.noImageItems.length > 0) {
+        const moreIdx = push({
+          type: "section_header",
+          key: "hdr-more-items",
+          title: "More items",
+          sectionIndex: bodySections.length,
+        });
+        if (!sectionByTitle.has("more items")) {
+          sectionByTitle.set("more items", moreIdx);
+        }
+        classicPart.noImageItems.forEach((item, itemIndex) => {
+          const rowIdx = push({
+            type: "menu_item",
+            key: `noimg-${item.listRowKey}`,
+            item,
+            sectionIndex: bodySections.length,
+            itemIndex,
+            isLastInSection: itemIndex === classicPart.noImageItems.length - 1,
+            showDivider: true,
+          });
+          menuItemByKey.set(item.listRowKey, rowIdx);
+          menuItemByKey.set(item.id, rowIdx);
+          if (item.menuItemId != null) {
+            menuItemByKey.set(String(item.menuItemId), rowIdx);
+          }
+        });
+      }
     }
     push({ type: "footer", key: "footer" });
   }

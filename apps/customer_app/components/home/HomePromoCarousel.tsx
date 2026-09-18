@@ -25,6 +25,9 @@ import { getAppAssetUrl, useAppAssetsStore } from "@/store/appAssetsStore";
 import { CX } from "@/lib/appAssetKeys";
 import { AppText } from "@/components/AppText";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
+import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
+import { requestFoodHomeFlashDealFilter } from "@/lib/foodHomePendingFilters";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import { useQueryClient } from "@tanstack/react-query";
 import { useIsFocused } from "@react-navigation/native";
 
@@ -82,6 +85,8 @@ const DOT_ACTIVE = GatiMitraColors.splashMint;
 type Slide = {
   id: string;
   kind: "merchant" | "platform";
+  /** FLASH_SALE / offer_type from featured API — drives title + tap filter. */
+  offerType: string | null;
   showLimitedBadge: boolean;
   title: string;
   sub: string;
@@ -95,6 +100,7 @@ const DEFAULT_FALLBACK_SLIDES: Slide[] = [
   {
     id: "fallback-1",
     kind: "merchant",
+    offerType: null,
     showLimitedBadge: false,
     title: "Offers for you",
     sub: "Get deals on your first order",
@@ -105,6 +111,7 @@ const DEFAULT_FALLBACK_SLIDES: Slide[] = [
   {
     id: "fallback-2",
     kind: "merchant",
+    offerType: null,
     showLimitedBadge: false,
     title: "Flat deals nearby",
     sub: "Explore restaurants on GatiMitra",
@@ -152,6 +159,13 @@ function hasCustomMerchantBanner(slide: Slide, imageFailed: boolean): boolean {
   return slide.kind === "merchant" && !!slide.imageUrl && !imageFailed;
 }
 
+function isFlashSaleOffer(offer: HomeBannerOffer): boolean {
+  const type = String(offer.offer_type ?? "").toUpperCase();
+  if (type === "FLASH_SALE" || type.includes("FLASH")) return true;
+  const title = String(offer.title ?? "");
+  return /flash\s*sale|flat\s*deals\s*@/i.test(title);
+}
+
 function parseTitle(title: string, offer: HomeBannerOffer): string {
   const raw = (title ?? "").trim();
   if (!raw) return "Offers for you";
@@ -160,7 +174,13 @@ function parseTitle(title: string, offer: HomeBannerOffer): string {
   const pct = offer.discount_percentage;
   const val = offer.discount_value;
 
+  // Flash Sale / "Flat DEALS @ ₹9" — never append a trailing "Off".
+  if (isFlashSaleOffer(offer) || /deals\s*@/i.test(raw)) {
+    return raw.replace(/\s+OFF\s*$/i, "").trim() || raw;
+  }
+
   if (type === "FREE_DELIVERY" || /free delivery/i.test(raw)) return "Free Delivery";
+  if (/\bOFF\b/i.test(raw)) return raw;
   if (pct != null && pct > 0) return `Flat ${Math.round(pct)}% OFF`;
   if (val != null && val > 0) return `Flat ₹${Math.round(val)} OFF`;
   if (/%\s*OFF/i.test(raw)) {
@@ -207,6 +227,7 @@ function offerToSlide(offer: HomeBannerOffer, mode: "home" | "food" | "ride"): S
   return {
     id: offer.id,
     kind: offer.kind,
+    offerType: offer.offer_type?.trim() || null,
     showLimitedBadge: shouldShowLimitedTimeBadge(offer.valid_till),
     title: parseTitle(offer.title, offer),
     sub: buildSubline(offer, mode),
@@ -333,6 +354,7 @@ export function HomePromoCarousel({
   const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const userScrollingRef = useRef(false);
   useAppAssetsStore((s) => s.assets);
   const isScreenFocused = useIsFocused();
 
@@ -369,6 +391,7 @@ export function HomePromoCarousel({
     if (!isScreenFocused) return;
     if (slides.length < 2) return;
     const timer = setInterval(() => {
+      if (userScrollingRef.current) return;
       setActiveIndex((prev) => {
         const next = (prev + 1) % slides.length;
         scrollRef.current?.scrollTo({
@@ -385,7 +408,9 @@ export function HomePromoCarousel({
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const x = e.nativeEvent.contentOffset.x;
       const idx = Math.round(x / (CARD_W + SLIDE_GAP));
-      setActiveIndex(Math.max(0, Math.min(idx, slides.length - 1)));
+      const next = Math.max(0, Math.min(idx, slides.length - 1));
+      // Skip no-op index updates so fling doesn't re-render every frame.
+      setActiveIndex((prev) => (prev === next ? prev : next));
     },
     [slides.length]
   );
@@ -396,11 +421,20 @@ export function HomePromoCarousel({
         router.push("/home/service/ride" as never);
         return;
       }
+      const isFlash =
+        String(slide.offerType ?? "").toUpperCase() === "FLASH_SALE" ||
+        /flash/i.test(String(slide.offerType ?? "")) ||
+        /flash\s*sale|flat\s*deals\s*@/i.test(slide.title);
+      if (isFlash) {
+        requestFoodHomeFlashDealFilter();
+        navigatePrimaryTab("food", "HomePromoCarousel:flashDeal", router);
+        return;
+      }
       if (slide.storeId) {
         navigateToMerchant(router, queryClient, slide.storeId);
         return;
       }
-      router.navigate("/(tabs)/food" as never);
+      navigatePrimaryTab("food", "HomePromoCarousel", router);
     },
     [router, queryClient, mode]
   );
@@ -413,19 +447,20 @@ export function HomePromoCarousel({
     <View style={[styles.wrap, { minHeight: cardHeight + 20 }]}>
       <ScrollView
         ref={scrollRef}
-        horizontal
-        nestedScrollEnabled
+        {...NATURAL_HORIZONTAL_SCROLL_PROPS}
         scrollEnabled={slides.length > 1}
-        bounces={false}
-        pagingEnabled={false}
-        snapToInterval={CARD_W + SLIDE_GAP}
-        snapToAlignment="start"
-        decelerationRate="fast"
-        showsHorizontalScrollIndicator={false}
-        delaysContentTouches={false}
-        keyboardShouldPersistTaps="handled"
+        onScrollBeginDrag={() => {
+          userScrollingRef.current = true;
+        }}
+        onMomentumScrollEnd={() => {
+          userScrollingRef.current = false;
+        }}
+        onScrollEndDrag={(e) => {
+          const vx = e.nativeEvent.velocity?.x ?? 0;
+          if (Math.abs(vx) < 0.12) userScrollingRef.current = false;
+        }}
         onScroll={onScroll}
-        scrollEventThrottle={16}
+        scrollEventThrottle={32}
         contentContainerStyle={styles.scrollContent}
       >
         {slides.map((slide, index) => (

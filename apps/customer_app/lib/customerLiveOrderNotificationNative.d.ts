@@ -1,4 +1,5 @@
 export function applyLiveProgressFromPush(data: Record<string, unknown>): Promise<void>;
+export function dismissLiveOrderProgressForOrder(orderId: string): Promise<void>;
 export function dismissStaleLiveOrderTrayNotifications(
   activeOrderIds: Set<string> | string[],
   opts?: { force?: boolean }

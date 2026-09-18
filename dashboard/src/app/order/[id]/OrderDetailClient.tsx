@@ -21,6 +21,7 @@ import RiderRouteMap from "./RiderRouteMap";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { useIsActiveRoute } from "@/hooks/useIsActiveRoute";
 import { usePageVisible } from "@/hooks/usePageVisible";
+import { supabase } from "@/lib/supabase/client";
 import { Check, ChevronDown, Copy, History, RefreshCw, X } from "lucide-react";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
@@ -1549,6 +1550,137 @@ export default function OrderDetailClient({
   const handleRefreshOrder = useCallback(() => {
     setRefetchTrigger((t) => t + 1);
   }, []);
+
+  const liveFingerprintRef = useRef<string>("");
+  const orderCoreIdForLive = order?.id ?? null;
+
+  // Auto-refresh when order status / rider assignment changes (realtime + poll fallback)
+  useEffect(() => {
+    liveFingerprintRef.current = "";
+    if (!isOrderPage || orderCoreIdForLive == null) return;
+
+    const coreId = orderCoreIdForLive;
+    let cancelled = false;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const bump = () => {
+      if (cancelled) return;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        if (!cancelled) setRefetchTrigger((t) => t + 1);
+      }, 250);
+    };
+
+    const applyFingerprint = (next: string) => {
+      if (!next || next === liveFingerprintRef.current) return false;
+      liveFingerprintRef.current = next;
+      bump();
+      return true;
+    };
+
+    const painted = orderRef.current;
+    if (painted && painted.id === coreId) {
+      liveFingerprintRef.current = [
+        String(painted.status ?? ""),
+        String(painted.currentStatus ?? ""),
+        painted.riderId ?? "",
+      ].join("|");
+    }
+
+    const channel = supabase
+      .channel(`order_detail_live:${coreId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "orders_core",
+          filter: `id=eq.${coreId}`,
+        },
+        (payload) => {
+          const row = payload.new as {
+            status?: string;
+            current_status?: string | null;
+            rider_id?: number | null;
+          };
+          const next = [
+            String(row.status ?? ""),
+            String(row.current_status ?? ""),
+            row.rider_id ?? "",
+          ].join("|");
+          applyFingerprint(next);
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "orders_food",
+          filter: `order_id=eq.${coreId}`,
+        },
+        () => {
+          bump();
+        }
+      )
+      .subscribe();
+
+    const schedulePoll = (ms: number) => {
+      if (cancelled) return;
+      pollTimer = setTimeout(() => {
+        void poll();
+      }, ms);
+    };
+
+    const poll = async () => {
+      if (cancelled) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        schedulePoll(5000);
+        return;
+      }
+      try {
+        const res = await fetch(`/api/orders/${coreId}/live-snapshot`, {
+          credentials: "include",
+          cache: "no-store",
+          headers: { "Cache-Control": "no-store" },
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          success?: boolean;
+          status?: string;
+          currentStatus?: string;
+          riderId?: number | null;
+        };
+        if (res.ok && body.success) {
+          const next = [
+            String(body.status ?? ""),
+            String(body.currentStatus ?? ""),
+            body.riderId ?? "",
+          ].join("|");
+          applyFingerprint(next);
+        }
+      } catch {
+        /* keep last known */
+      } finally {
+        schedulePoll(3500);
+      }
+    };
+
+    void poll();
+
+    const onVis = () => {
+      if (document.visibilityState === "visible") void poll();
+    };
+    document.addEventListener("visibilitychange", onVis);
+
+    return () => {
+      cancelled = true;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      if (pollTimer) clearTimeout(pollTimer);
+      document.removeEventListener("visibilitychange", onVis);
+      void supabase.removeChannel(channel);
+    };
+  }, [orderCoreIdForLive, isOrderPage]);
 
   const refreshRiderAssignmentArtifacts = useCallback(
     (coreOrderId: number, riderId: number, previousRiderId: number | null) => {

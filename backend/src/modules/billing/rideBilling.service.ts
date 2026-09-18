@@ -312,6 +312,7 @@ export async function computeBillForRide(
   if (input.customerId > 0) {
     const platformWithLimits = dataset.platformOffers.filter(
       (o) =>
+        String(o.offerKind ?? "").toUpperCase() === "FLASH_SALE" ||
         (o.maxUsesPerUser != null && o.maxUsesPerUser > 0) ||
         (o.maxUsesPerDay != null && o.maxUsesPerDay > 0) ||
         (o.maxUsesPerMonth != null && o.maxUsesPerMonth > 0)

@@ -25,6 +25,7 @@ const transactionSchema = z.object({
   balance_after: z.number().nullable(),
   reference_id: z.string().nullable(),
   reference_type: z.string().nullable(),
+  formatted_order_id: z.string().nullable(),
   status: z.string().nullable(),
   created_at: z.string(),
 });
@@ -349,19 +350,41 @@ export async function meWalletRoutes(app: FastifyInstance) {
       try {
         rows = (await sql`
           SELECT
-            id,
-            transaction_id,
-            transaction_type,
-            amount,
-            balance_after,
-            reference_id,
-            reference_type,
-            description,
-            status,
-            created_at
-          FROM customer_wallet_transactions
-          WHERE customer_id = ${resolved.internalId}
-          ORDER BY created_at DESC
+            cwt.id,
+            cwt.transaction_id,
+            cwt.transaction_type,
+            cwt.amount,
+            cwt.balance_after,
+            cwt.reference_id,
+            cwt.reference_type,
+            cwt.description,
+            cwt.status,
+            cwt.created_at,
+            COALESCE(
+              NULLIF(BTRIM(o.formatted_order_id), ''),
+              NULLIF(BTRIM(o.order_id), ''),
+              CASE
+                WHEN cwt.reference_id ~* '^GM[A-Z]?[0-9]+'
+                  THEN cwt.reference_id
+                ELSE NULL
+              END
+            ) AS formatted_order_id
+          FROM customer_wallet_transactions cwt
+          LEFT JOIN LATERAL (
+            SELECT formatted_order_id, order_id
+            FROM orders_core
+            WHERE cwt.reference_id IS NOT NULL
+              AND BTRIM(cwt.reference_id) <> ''
+              AND (
+                order_id = cwt.reference_id
+                OR formatted_order_id = cwt.reference_id
+                OR id::text = cwt.reference_id
+              )
+            ORDER BY id DESC
+            LIMIT 1
+          ) o ON TRUE
+          WHERE cwt.customer_id = ${resolved.internalId}
+          ORDER BY cwt.created_at DESC
           LIMIT ${limit + 1}
           OFFSET ${offset}
         `) as Record<string, unknown>[];
@@ -384,6 +407,10 @@ export async function meWalletRoutes(app: FastifyInstance) {
             mappedType === "debit" || mappedType === "expired"
               ? -Math.abs(rawAmount)
               : Math.abs(rawAmount);
+          const formattedOrderId =
+            row.formatted_order_id != null && String(row.formatted_order_id).trim()
+              ? String(row.formatted_order_id).trim()
+              : null;
 
           return {
             id: String(row.id),
@@ -395,6 +422,7 @@ export async function meWalletRoutes(app: FastifyInstance) {
             balance_after: row.balance_after != null ? Number(row.balance_after) : null,
             reference_id: row.reference_id != null ? String(row.reference_id) : null,
             reference_type: referenceType,
+            formatted_order_id: formattedOrderId,
             status: row.status != null ? String(row.status) : null,
             created_at: new Date(String(row.created_at)).toISOString(),
           };

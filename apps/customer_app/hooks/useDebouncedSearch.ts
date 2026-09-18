@@ -61,7 +61,7 @@ async function runSearch(
     storeId: d.storeId,
   }));
 
-  const restaurants: MerchantSummary[] = (res.stores ?? []).map((s) => ({
+  let restaurants: MerchantSummary[] = (res.stores ?? []).map((s) => ({
     id: s.id,
     name: s.name,
     imageUrl: s.imageUrl ?? undefined,
@@ -72,6 +72,18 @@ async function runSearch(
     storeType: (s as { storeType?: string | null }).storeType ?? undefined,
   }));
 
+  // Item-led queries: keep dishes, and only stores that actually sell a matched dish.
+  // Avoid dumping every nearby kitchen when the user typed "burger".
+  const preferStores = res.preferStores === true;
+  if (dishes.length > 0 && !preferStores) {
+    const storeIdsFromDishes = new Set(
+      dishes.map((d) => String(d.storeId ?? "").trim()).filter(Boolean)
+    );
+    if (storeIdsFromDishes.size > 0) {
+      restaurants = restaurants.filter((r) => storeIdsFromDishes.has(String(r.id)));
+    }
+  }
+
   return {
     category,
     dishes,
@@ -79,7 +91,7 @@ async function runSearch(
     didYouMean: res.didYouMean ?? null,
     correctedQuery: res.correctedQuery ?? null,
     searchInsteadOriginal: res.searchInsteadOriginal ?? null,
-    preferStores: res.preferStores === true,
+    preferStores,
   };
 }
 
@@ -95,7 +107,7 @@ export function useDebouncedSearch(
   const enabled = debouncedQuery.length >= 1;
   const resolvedStoreType = (storeType ?? "FOOD").trim().toUpperCase() || "FOOD";
 
-  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
+  const { data, isFetching, isError, error, refetch, isPending } = useQuery({
     queryKey: ["food-search", debouncedQuery, lat, lng, vegOnly === true, resolvedStoreType],
     queryFn: ({ signal }) =>
       runSearch(debouncedQuery, {
@@ -108,11 +120,17 @@ export function useDebouncedSearch(
     enabled,
     staleTime: 5 * 1000,
     retry: 1,
+    // Keep prior hits while a new keystroke refetch is in flight — avoids stuck skeletons.
+    placeholderData: (prev) => prev,
   });
+
+  const hasCachedResults = !!data;
 
   return {
     results: enabled ? data ?? { category: null, dishes: [], restaurants: [] } : null,
-    isLoading: enabled && (isLoading || isFetching),
+    // First paint only — never blank the list while a keystroke refetch runs.
+    isLoading: enabled && isPending && !hasCachedResults,
+    isFetching: enabled && isFetching,
     isError: enabled && isError,
     errorMessage: isError ? (error instanceof Error ? error.message : "Search failed") : null,
     refetch,

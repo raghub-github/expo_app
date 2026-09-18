@@ -8,6 +8,13 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getRiderWithDocuments, getRiderById, syncRiderOnboardingState, checkOnboardingPaymentCompleted, isRiderEligibleForApprovalQueue } from "@/lib/db/operations/riders";
 import { expandRiderDocumentsForDashboard } from "@/lib/rider-document-display";
 import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
+import { isBogusAttachmentProxyKey } from "@/lib/r2-proxy-url";
+import {
+  parseDisplayDocType,
+  proxyUrlFromR2Key,
+  stableRiderDocumentKey,
+  type DocumentSide,
+} from "@/lib/rider-document-keys";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getDb } from "@/lib/db/client";
 import { riderWallet, walletLedger, riderPenalties, withdrawalRequests, onboardingPayments, riderWorkingLocationHistory } from "@/lib/db/schema";
@@ -97,16 +104,42 @@ export async function GET(
     }
 
     // Regenerate signed URLs for documents and their files (multi-file: front/back)
-    function riderDocumentViewUrl(doc: { r2Key?: string | null; fileUrl?: string | null }): string {
-      const raw = doc.r2Key?.trim() || doc.fileUrl?.trim() || "";
-      return resolveAttachmentProxyUrl(raw);
+    function riderDocumentViewUrl(doc: {
+      r2Key?: string | null;
+      fileUrl?: string | null;
+      docType?: string | null;
+      side?: string | null;
+    }): string {
+      const keyRaw = doc.r2Key?.trim() || "";
+      const fileRaw = doc.fileUrl?.trim() || "";
+      const fromKey =
+        keyRaw && !isBogusAttachmentProxyKey(keyRaw)
+          ? resolveAttachmentProxyUrl(keyRaw)
+          : "";
+      if (fromKey) return fromKey;
+      const fromFile = fileRaw ? resolveAttachmentProxyUrl(fileRaw) : "";
+      if (fromFile) return fromFile;
+      // Recover mangled r2Key=attachments/proxy (legacy extractKeyFromSignedUrl bug).
+      const docType = String(doc.docType || "").trim();
+      if (!docType) return "";
+      const sideRaw = String(doc.side || "").toLowerCase();
+      const parsed = parseDisplayDocType(docType);
+      const side: DocumentSide =
+        sideRaw === "front" || sideRaw === "back" || sideRaw === "single"
+          ? sideRaw
+          : parsed.side;
+      return proxyUrlFromR2Key(stableRiderDocumentKey(riderId, parsed.baseType, side));
     }
 
     const documentsWithUrls = riderData.documents.map((doc: any) => {
       const files = (doc.files || []).map(
         (f: { fileUrl: string; r2Key?: string | null; side?: string; id: number; sortOrder?: number }) => ({
           ...f,
-          fileUrl: riderDocumentViewUrl(f),
+          fileUrl: riderDocumentViewUrl({
+            ...f,
+            docType: doc.docType,
+            side: f.side,
+          }),
         })
       );
       return {

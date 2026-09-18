@@ -1356,12 +1356,12 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [finishCustomerFeedbackAndShowSuccess]);
 
   const handleRestaurantFeedbackSkip = useCallback(() => {
+    closeRestaurantFeedback();
     submitMerchantFeedback.mutate(
       { orderId, skipped: true },
       {
         onSuccess: (data) => {
           syncRiderOrderDetailCache(queryClient, orderId, data);
-          closeRestaurantFeedback();
         },
         onError: (err) => {
           Alert.alert(
@@ -1378,6 +1378,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
   const handleRestaurantFeedbackSubmit = useCallback(
     (payload: { rating: number; tags: string[]; messages: string[] }) => {
+      closeRestaurantFeedback();
       submitMerchantFeedback.mutate(
         {
           orderId,
@@ -1388,7 +1389,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
         {
           onSuccess: (data) => {
             syncRiderOrderDetailCache(queryClient, orderId, data);
-            closeRestaurantFeedback();
           },
           onError: (err) => {
             Alert.alert(
@@ -1416,6 +1416,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       messages: string[];
       comment?: string;
     }) => {
+      // Close immediately so Skip/Submit both dismiss the sheet on tap.
+      closeCustomerFeedback();
       submitCustomerFeedback.mutate(
         {
           orderId,
@@ -1425,7 +1427,6 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
           comment: payload.comment,
         },
         {
-          onSuccess: closeCustomerFeedback,
           onError: (err) => {
             Alert.alert(
               t("orders.activeRide.updateFailedTitle", "Update failed"),

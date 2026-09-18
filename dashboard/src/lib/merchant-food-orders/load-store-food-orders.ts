@@ -366,6 +366,34 @@ export async function loadMerchantStoreFoodOrders(
     const uniformByCoreId = await loadMerchantRiderUniformByOrderCoreIds(db, coreIds);
     const customerUniformByCoreId = await loadCustomerRiderUniformByOrderCoreIds(db, coreIds);
 
+    const pickupTokenByCoreId = new Map<
+      number,
+      { token: string | null; kot_number: string | null }
+    >();
+    if (coreIds.length > 0) {
+      try {
+        const { data: toks } = await db
+          .from("order_pickup_tokens")
+          .select("order_id, token, kot_number")
+          .in("order_id", coreIds);
+        for (const t of toks || []) {
+          const row = t as {
+            order_id: number;
+            token: string | null;
+            kot_number: string | null;
+          };
+          const oid = Number(row.order_id);
+          if (!Number.isFinite(oid)) continue;
+          pickupTokenByCoreId.set(oid, {
+            token: row.token != null ? String(row.token) : null,
+            kot_number: row.kot_number != null ? String(row.kot_number) : null,
+          });
+        }
+      } catch (tokErr) {
+        console.warn("[loadMerchantStoreFoodOrders] order_pickup_tokens:", tokErr);
+      }
+    }
+
     const ordersWithDetails = await Promise.all(
       coreRows.map(async (core) => {
         const coreId = Number(core.id);
@@ -446,17 +474,15 @@ export async function loadMerchantStoreFoodOrders(
             };
           });
         } else {
+          // Merchant-app / partnersite parity: frozen CTM lines display net CTM.
           items = items.map((it) => {
             const qty = Math.max(1, it.quantity || 1);
             const gross = Number(it.catalogLineTotal ?? it.total) || 0;
             const net = Number(it.netLineTotal ?? gross) || gross;
-            const promo =
-              it.isItemPromo === true ||
-              (it.offerDiscount != null && it.offerDiscount > 0.005);
             return {
               ...it,
-              total: promo ? net : gross,
-              price: (promo ? net : gross) / qty,
+              total: net,
+              price: net / qty,
             };
           });
         }
@@ -485,11 +511,11 @@ export async function loadMerchantStoreFoodOrders(
             })),
             billingSnapEarly
           ) as AnnotatedLine[];
+          // Keep merchant-mapped `total`/`price` (partnersite food-orders parity).
+          // Annotation only attaches catalog/net/offer metadata for strike-through UI.
           items = items.map((it, i) => {
             const a = annotated[i];
             if (!a) return it;
-            const qty = Math.max(1, it.quantity || 1);
-            const net = Number(a.net_line_total ?? it.total) || Number(it.total) || 0;
             return {
               ...it,
               catalogLineTotal: a.catalog_line_total,
@@ -498,8 +524,6 @@ export async function loadMerchantStoreFoodOrders(
               offerLabel: a.offer_label,
               isItemPromo: a.is_item_promo,
               appliedOfferType: a.applied_offer_type ?? it.appliedOfferType,
-              total: net,
-              price: net / qty,
             };
           });
         } else {
@@ -675,6 +699,20 @@ export async function loadMerchantStoreFoodOrders(
           cancelled_by: (food?.cancelled_by as string | null) ?? (core.cancelled_by as string | null) ?? null,
           cancelled_by_type: (food?.cancelled_by_type as string | null) ?? (core.cancelled_by_type as string | null) ?? null,
           cancellation_details: food?.cancellation_details ?? core.cancellation_details ?? null,
+          pickup_otp:
+            (food?.pickup_otp as string | null) ??
+            ((core as Record<string, unknown>).pickup_otp as string | null) ??
+            null,
+          pickup_token: pickupTokenByCoreId.get(coreId)?.token ?? null,
+          kot_number: pickupTokenByCoreId.get(coreId)?.kot_number ?? null,
+          payment_method:
+            ((core as Record<string, unknown>).payment_method as string | null) ??
+            (food?.payment_method as string | null) ??
+            null,
+          delivery_type:
+            ((core as Record<string, unknown>).delivery_type as string | null) ??
+            (food?.delivery_type as string | null) ??
+            null,
           created_at: String(food?.created_at ?? core.created_at),
           updated_at: String(food?.updated_at ?? core.updated_at),
           items,

@@ -210,8 +210,8 @@ export async function getAuthenticatedApiUser(
   }
 
   const resolved = await resolveSupabaseUser({
-    maxAttempts: 3,
-    retryDelayMs: 300,
+    maxAttempts: 2,
+    retryDelayMs: 200,
     cookieReader,
   });
 

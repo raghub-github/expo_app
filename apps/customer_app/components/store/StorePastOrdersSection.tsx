@@ -97,11 +97,13 @@ export function StorePastOrdersSection({
       >
         <View style={styles.headerText}>
           <AppText style={[styles.title, dark && styles.titleDark]}>
-            Your Orders and Collections
+            {dark ? "Your Orders and Collections" : "Want to repeat?"}
           </AppText>
-          <AppText style={[styles.sub, dark && styles.subDark]}>
-            Past customisations are pre-selected
-          </AppText>
+          {dark ? (
+            <AppText style={[styles.sub, dark && styles.subDark]}>
+              Past customisations are pre-selected
+            </AppText>
+          ) : null}
         </View>
         <Ionicons
           name={expanded ? "chevron-up" : "chevron-down"}

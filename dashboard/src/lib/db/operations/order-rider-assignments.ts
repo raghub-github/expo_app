@@ -20,7 +20,7 @@ export interface OrderRiderAssignmentRecord {
 
 /**
  * List all rider assignments for an order from order_rider_assignments.
- * Assumes orders_core.id == orders.id for the given order.
+ * `orderId` is orders_core.id — matches core id, legacy order_id, and order_id_text refs.
  */
 export async function listOrderRiderAssignmentsForOrder(
   orderId: number
@@ -49,21 +49,26 @@ export async function listOrderRiderAssignmentsForOrder(
       ora.delivered_at          AS "deliveredAt",
       ora.cancelled_at          AS "cancelledAt",
       ora.cancellation_reason   AS "cancellationReason"
-    FROM order_rider_assignments ora
+    FROM orders_core oc
+    INNER JOIN order_rider_assignments ora ON (
+      ora.order_core_id = oc.id
+      OR ora.order_id = oc.id
+      OR NULLIF(TRIM(ora.order_id_text), '') = NULLIF(TRIM(oc.order_id), '')
+      OR NULLIF(TRIM(ora.order_id_text), '') = NULLIF(TRIM(oc.formatted_order_id), '')
+    )
     LEFT JOIN riders r ON r.id = ora.rider_id
     LEFT JOIN LATERAL (
       SELECT op.code
       FROM order_provider_mapping opm
       INNER JOIN order_providers op ON op.id = opm.provider_id
-      WHERE opm.order_id = ${orderId}
-      ORDER BY opm.created_at DESC NULLS LAST
+      WHERE opm.order_id = oc.id
+      ORDER BY opm.id DESC
       LIMIT 1
     ) op ON TRUE
-    WHERE ora.order_core_id = ${orderId}
-       OR ora.order_id = ${orderId}
-    ORDER BY ora.assignment_sequence DESC NULLS LAST,
-             ora.assigned_at DESC NULLS LAST,
-             ora.created_at DESC
+    WHERE oc.id = ${orderId}
+    ORDER BY ora.assigned_at DESC NULLS LAST,
+             ora.picked_up_at DESC NULLS LAST,
+             ora.id DESC
   `;
 
   return (rows as any[]).map((r) => ({

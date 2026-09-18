@@ -10,6 +10,11 @@ export type RiderBankPaymentMethodInput = {
   ifsc: string;
   branch?: string | null;
   accountNumber: string;
+  /**
+   * True only when Cashfree (or equivalent provider) already verified this account
+   * in the same flow. Manual / hybrid fallback saves stay pending for agent review.
+   */
+  providerVerified?: boolean;
 };
 
 export type RiderBankPaymentMethodView = {
@@ -373,6 +378,7 @@ export async function createRiderBankPaymentMethod(
   let nameMismatchMessages: string[] | null = null;
   let crossCheckStatus: "ok" | "mismatch" | null = null;
   let pendingReason: string | null = null;
+  const providerVerified = input.providerVerified === true;
   try {
     const { loadRiderAadhaarIdentity } = await import("./rider-aadhaar-cross-check.js");
     const { crossCheckAgainstAadhaar } = await import("./rider-cross-document-match.js");
@@ -383,17 +389,23 @@ export async function createRiderBankPaymentMethod(
         aadhaar,
         extractedName: accountHolderName,
       });
-      if (cross.ok) {
+      if (cross.ok && providerVerified) {
+        // Only Cashfree-verified + name-match may auto-verify. Manual entry stays pending.
         verificationStatus = "verified";
         crossCheckStatus = "ok";
-      } else {
+      } else if (!cross.ok) {
         nameMismatchMessages = cross.messages;
         crossCheckStatus = "mismatch";
         pendingReason = [
-          "Bank details verified by provider (Cashfree). Manual review required because account holder name does not match Aadhaar.",
+          providerVerified
+            ? "Bank details verified by provider (Cashfree). Manual review required because account holder name does not match Aadhaar."
+            : "Bank details submitted for manual review because account holder name does not match Aadhaar.",
           ...(cross.messages ?? []),
           `Aadhaar name: ${aadhaar.name.trim()}. Account holder: ${accountHolderName}.`,
         ].join(" ");
+      } else {
+        pendingReason =
+          "Bank details submitted manually — awaiting agent verification.";
       }
     } else {
       pendingReason =

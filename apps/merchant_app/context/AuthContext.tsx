@@ -4,6 +4,9 @@
  * The only source of truth is a validated backend session (JWT + active device row).
  * Cached partner JSON, selected-store snapshots, and navigation history are never
  * treated as proof of login.
+ *
+ * Auth epoch: every login/logout bumps a generation so stale bootstrap / validate /
+ * 401 callbacks cannot wipe a newer session (fixes OTP → open → logout after seconds).
  */
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -16,17 +19,23 @@ import {
   MERCHANT_SUPABASE_USER_ID_KEY,
   MERCHANT_TOKEN_KEY,
   clearAllMerchantAuthArtifacts,
+  clearMerchantSessionToken,
   readMerchantAccessToken,
   readMerchantTokenExpiresAt,
   writeMerchantSessionToken,
 } from "@/lib/merchantSessionStorage";
 import { merchantQueryClient } from "@/lib/merchantQueryClient";
-import { parsePartnerData, validateMerchantSessionFromStore } from "@/lib/validateMerchantSession";
+import {
+  hasValidMerchantIdentity,
+  parsePartnerData,
+  validateMerchantSessionFromStore,
+} from "@/lib/validateMerchantSession";
 import { decideInitialAuth } from "@/lib/merchantSessionBootstrap";
 import {
   onMerchantTokenRefreshed,
   refreshMerchantSessionIfNeeded,
 } from "@/services/merchantSessionRefresh";
+import { authTokenFingerprint, logMerchantAuth } from "@/lib/merchantAuthLog";
 
 export type PartnerParent = {
   id: number;
@@ -69,10 +78,17 @@ export type MerchantAuthSession = {
   supabaseUserId: string | null;
 };
 
+/**
+ * BOOTING → loading
+ * AUTHENTICATED → authenticated
+ * UNAUTHENTICATED → unauthenticated
+ * LOGGING_OUT → logging_out (protected screens blocked)
+ */
 export type AuthState =
   | { status: "loading" }
   | { status: "authenticated"; session: MerchantAuthSession }
-  | { status: "unauthenticated" };
+  | { status: "unauthenticated" }
+  | { status: "logging_out" };
 
 type AuthContextValue = {
   authState: AuthState;
@@ -93,6 +109,9 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+const NO_MERCHANT_MESSAGE =
+  "Merchant account not found. Please use a registered merchant number or contact support.";
+
 async function getStoredSupabaseUserId(): Promise<string | null> {
   try {
     const raw = await SecureStore.getItemAsync(MERCHANT_SUPABASE_USER_ID_KEY);
@@ -106,8 +125,7 @@ async function persistPartner(partner: PartnerData): Promise<void> {
   await SecureStore.setItemAsync(MERCHANT_PARTNER_KEY, JSON.stringify(partner));
 }
 
-/** Last known partner snapshot — used to stay signed in when a cold-start validation can't reach
- *  the server (offline / timeout / transient 5xx). Never proof of auth on its own. */
+/** Last known partner snapshot — never proof of auth on its own. */
 async function readCachedPartner(): Promise<PartnerData | null> {
   try {
     const raw = await SecureStore.getItemAsync(MERCHANT_PARTNER_KEY);
@@ -140,6 +158,12 @@ function bestEffortBackgroundCleanup(accessToken: string | null): void {
     }
     if (!accessToken) return;
     try {
+      const { logoutAllUserSessions } = await import("@/services/userSessionsApi");
+      await logoutAllUserSessions(accessToken, true);
+    } catch {
+      /* best-effort server revoke */
+    }
+    try {
       const { unregisterPushTokenOnBackend } = await import("@gatimitra/expo-push-kit");
       const { apiBaseUrl } = getConfig();
       await unregisterPushTokenOnBackend(apiBaseUrl, accessToken, {
@@ -170,6 +194,8 @@ function bestEffortBackgroundCleanup(accessToken: string | null): void {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [authState, setAuthState] = useState<AuthState>({ status: "loading" });
   const tokenRef = useRef<string | null>(null);
+  /** Bumped on every login / logout so stale async auth work cannot clobber the live session. */
+  const authEpochRef = useRef(0);
 
   const token = authState.status === "authenticated" ? authState.session.token : null;
   const partner = authState.status === "authenticated" ? authState.session.partner : null;
@@ -177,12 +203,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     authState.status === "authenticated" ? authState.session.supabaseUserId : null;
   tokenRef.current = token;
 
-  const applyAuthenticated = useCallback((session: MerchantAuthSession) => {
+  const applyAuthenticated = useCallback((session: MerchantAuthSession, epoch: number) => {
+    if (epoch !== authEpochRef.current) {
+      logMerchantAuth("AUTH_BOOT_IGNORED_STALE", {
+        reason: "applyAuthenticated_epoch_mismatch",
+        epoch,
+        liveEpoch: authEpochRef.current,
+      });
+      return;
+    }
     tokenRef.current = session.token;
     setAuthState({ status: "authenticated", session });
   }, []);
 
-  const applyUnauthenticated = useCallback(() => {
+  const applyUnauthenticated = useCallback((epoch: number, reason?: string) => {
+    if (epoch !== authEpochRef.current) {
+      logMerchantAuth("AUTH_BOOT_IGNORED_STALE", {
+        reason: reason ?? "applyUnauthenticated_epoch_mismatch",
+        epoch,
+        liveEpoch: authEpochRef.current,
+      });
+      return;
+    }
     tokenRef.current = null;
     setAuthState({ status: "unauthenticated" });
   }, []);
@@ -194,12 +236,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       newSupabaseUserId?: string | null,
       expiresAt?: number | null
     ) => {
+      logMerchantAuth("AUTH_LOGIN_START", {
+        tokenFp: authTokenFingerprint(newToken),
+      });
+
+      if (!hasValidMerchantIdentity(newPartner)) {
+        logMerchantAuth("AUTH_LOGIN_REJECTED_NO_MERCHANT", {});
+        throw new Error(NO_MERCHANT_MESSAGE);
+      }
+
+      // Invalidate any in-flight bootstrap / background validate from the prior epoch.
+      authEpochRef.current += 1;
+      const epoch = authEpochRef.current;
       resetSessionRevokedFlag();
+
       const exp =
-        expiresAt != null && Number.isFinite(expiresAt) && expiresAt > 0
+        expiresAt != null && Number.isFinite(expiresAt) && expiresAt > 1_000_000_000
           ? Math.floor(expiresAt)
-          : Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365;
+          : expiresAt != null && Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt < 1_000_000_000
+            ? // Guard: relative TTLs must never be persisted as absolute unix seconds.
+              Math.floor(Date.now() / 1000) + Math.floor(expiresAt)
+            : Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365;
+
+      // Persist BEFORE marking authenticated so force-kill mid-login cannot leave a
+      // half-state that bootstrap misreads.
       await writeMerchantSessionToken(newToken, exp);
+      logMerchantAuth("AUTH_SESSION_PERSISTED", {
+        tokenFp: authTokenFingerprint(newToken),
+        expiresAt: exp,
+      });
 
       let sb: string | null = null;
       if (newSupabaseUserId !== undefined) {
@@ -212,21 +277,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         sb = await getStoredSupabaseUserId();
       }
 
-      // Login just minted this session on the server — it is the source of truth.
-      applyAuthenticated({ token: newToken, partner: newPartner, supabaseUserId: sb });
       await persistPartner(newPartner);
+      logMerchantAuth("AUTH_MERCHANT_RESOLVED", {
+        parentId: newPartner.parent.id,
+        merchantId: newPartner.parent.parent_merchant_id,
+      });
+
+      applyAuthenticated({ token: newToken, partner: newPartner, supabaseUserId: sb }, epoch);
+      logMerchantAuth("AUTH_LOGIN_SUCCESS", {
+        tokenFp: authTokenFingerprint(newToken),
+        epoch,
+      });
 
       try {
         const { apiBaseUrl } = getConfig();
         const res = await fetch(`${apiBaseUrl}/v1/merchant-partner/me`, {
           headers: { Authorization: `Bearer ${newToken}` },
         });
+        if (epoch !== authEpochRef.current) return;
         if (res.ok) {
           const data = await res.json();
           const partnerData = parsePartnerData(data);
           if (partnerData) {
             await persistPartner(partnerData);
-            applyAuthenticated({ token: newToken, partner: partnerData, supabaseUserId: sb });
+            applyAuthenticated({ token: newToken, partner: partnerData, supabaseUserId: sb }, epoch);
           }
         }
       } catch {
@@ -238,17 +312,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(async () => {
     const accessToken = tokenRef.current ?? (await readMerchantAccessToken());
+    logMerchantAuth("AUTH_LOGOUT_START", {
+      tokenFp: authTokenFingerprint(accessToken),
+    });
 
-    // Unmount the authenticated tree immediately, then persist the wipe so a
-    // force-kill cannot restore Home from a leftover token.
-    applyUnauthenticated();
+    // Invalidate stale async work first.
+    authEpochRef.current += 1;
+    const epoch = authEpochRef.current;
+
+    setAuthState({ status: "logging_out" });
+    tokenRef.current = null;
     resetSessionRevokedFlag();
     merchantQueryClient.clear();
+
+    // Token must be gone from disk before UI settles — force-kill after Logout
+    // must not restore Home from a leftover SecureStore JWT.
+    await clearMerchantSessionToken();
     await clearAllMerchantAuthArtifacts();
+
+    applyUnauthenticated(epoch, "signOut");
+    logMerchantAuth("AUTH_LOGOUT_COMPLETE", { epoch });
     bestEffortBackgroundCleanup(accessToken);
   }, [applyUnauthenticated]);
 
   const refreshPartner = useCallback(async () => {
+    const epoch = authEpochRef.current;
     const t = tokenRef.current ?? (await readMerchantAccessToken());
     if (!t) return;
     const { apiBaseUrl } = getConfig();
@@ -256,13 +344,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const res = await fetch(`${apiBaseUrl}/v1/merchant-partner/me`, {
         headers: { Authorization: `Bearer ${t}` },
       });
+      if (epoch !== authEpochRef.current) return;
       if (!res.ok) return;
       const data = await res.json();
       const partnerData = parsePartnerData(data);
       if (!partnerData) return;
       await persistPartner(partnerData);
       const sb = await getStoredSupabaseUserId();
-      applyAuthenticated({ token: t, partner: partnerData, supabaseUserId: sb });
+      applyAuthenticated({ token: t, partner: partnerData, supabaseUserId: sb }, epoch);
     } catch {
       // keep existing partner
     }
@@ -270,8 +359,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const unsub = onMerchantTokenRefreshed((newToken) => {
+      const epoch = authEpochRef.current;
       setAuthState((prev) => {
         if (prev.status !== "authenticated") return prev;
+        if (epoch !== authEpochRef.current) return prev;
         tokenRef.current = newToken;
         return { status: "authenticated", session: { ...prev.session, token: newToken } };
       });
@@ -279,43 +370,87 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return unsub;
   }, []);
 
-  // Background re-validation of an already-restored session. Never blocks the UI; only a
-  // server-CONFIRMED revocation (invalid) signs out. Network failures keep the session.
+  const invalidateIfStillCurrent = useCallback(
+    async (tokenAttempted: string | null, epoch: number, reason: string) => {
+      if (epoch !== authEpochRef.current) {
+        logMerchantAuth("AUTH_VALIDATE_IGNORED_STALE", { reason, epoch });
+        return;
+      }
+      const live = await readMerchantAccessToken();
+      if (live?.trim() && tokenAttempted && live.trim() !== tokenAttempted) {
+        logMerchantAuth("AUTH_VALIDATE_IGNORED_STALE", {
+          reason: "token_replaced",
+          attemptedFp: authTokenFingerprint(tokenAttempted),
+          liveFp: authTokenFingerprint(live),
+        });
+        return;
+      }
+      if (tokenRef.current && tokenAttempted && tokenRef.current !== tokenAttempted) {
+        logMerchantAuth("AUTH_VALIDATE_IGNORED_STALE", {
+          reason: "memory_token_replaced",
+        });
+        return;
+      }
+      logMerchantAuth("AUTH_SESSION_INVALID", { reason });
+      authEpochRef.current += 1;
+      const nextEpoch = authEpochRef.current;
+      await clearAllMerchantAuthArtifacts();
+      applyUnauthenticated(nextEpoch, reason);
+    },
+    [applyUnauthenticated]
+  );
+
+  // Background re-validation. Only a server-CONFIRMED revocation signs out.
   const validateInBackground = useCallback(
-    async (sbId: string | null, cancelledRef: { current: boolean }) => {
+    async (sbId: string | null, epoch: number, tokenAtStart: string) => {
       const result = await validateMerchantSessionFromStore();
-      if (cancelledRef.current) return;
+      if (epoch !== authEpochRef.current) {
+        logMerchantAuth("AUTH_VALIDATE_IGNORED_STALE", { reason: "bg_validate" });
+        return;
+      }
       if (result.ok) {
         await persistPartner(result.session.partner);
-        if (cancelledRef.current) return;
-        applyAuthenticated({
-          token: result.session.token,
-          partner: result.session.partner,
-          supabaseUserId: sbId,
+        if (epoch !== authEpochRef.current) return;
+        applyAuthenticated(
+          {
+            token: result.session.token,
+            partner: result.session.partner,
+            supabaseUserId: sbId,
+          },
+          epoch
+        );
+        logMerchantAuth("AUTH_SESSION_VALID", {
+          tokenFp: authTokenFingerprint(result.session.token),
         });
         return;
       }
       if (result.reason === "invalid") {
-        await clearAllMerchantAuthArtifacts();
-        if (!cancelledRef.current) applyUnauthenticated();
+        await invalidateIfStillCurrent(
+          result.tokenAttempted ?? tokenAtStart,
+          epoch,
+          "bg_validate_invalid"
+        );
       }
-      // reason === "network": keep the restored session; AppState-active re-validates later.
+      // network: keep session
     },
-    [applyAuthenticated, applyUnauthenticated]
+    [applyAuthenticated, invalidateIfStillCurrent]
   );
 
   useEffect(() => {
-    const cancelledRef = { current: false };
+    const bootEpoch = authEpochRef.current;
+    logMerchantAuth("AUTH_BOOT_START", { epoch: bootEpoch });
+    let cancelled = false;
     (async () => {
-      // Fast, LOCAL reads only — no network in the critical path, so the branded splash never
-      // waits on "Checking your session..." on a normal open.
       const [token, expiresAtSec, cachedPartner, sbId] = await Promise.all([
         readMerchantAccessToken(),
         readMerchantTokenExpiresAt(),
         readCachedPartner(),
         getStoredSupabaseUserId(),
       ]);
-      if (cancelledRef.current) return;
+      if (cancelled || bootEpoch !== authEpochRef.current) {
+        logMerchantAuth("AUTH_BOOT_IGNORED_STALE", { reason: "after_local_read" });
+        return;
+      }
 
       const decision = decideInitialAuth({
         token,
@@ -325,75 +460,109 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (decision.kind === "authenticated" && cachedPartner) {
-        // Trust the valid local session → render the app immediately, then verify in the background.
-        applyAuthenticated({
-          token: decision.token,
-          partner: cachedPartner,
-          supabaseUserId: sbId,
+        logMerchantAuth("AUTH_SESSION_FOUND", {
+          tokenFp: authTokenFingerprint(decision.token),
+          mode: "optimistic",
         });
-        void validateInBackground(sbId, cancelledRef);
+        applyAuthenticated(
+          {
+            token: decision.token,
+            partner: cachedPartner,
+            supabaseUserId: sbId,
+          },
+          bootEpoch
+        );
+        void validateInBackground(sbId, bootEpoch, decision.token);
         return;
       }
 
       if (decision.kind === "unauthenticated") {
-        if (!cancelledRef.current) applyUnauthenticated();
+        applyUnauthenticated(bootEpoch, "boot_no_token");
         return;
       }
 
-      // decision.kind === "validate": no fast path (first run after update, token without a cached
-      // partner, or a locally-expired token). Fall back to the network validate — the only case that
-      // may briefly hold the splash, and it is rare.
       const result = await validateMerchantSessionFromStore();
-      if (cancelledRef.current) return;
+      if (cancelled || bootEpoch !== authEpochRef.current) {
+        logMerchantAuth("AUTH_BOOT_IGNORED_STALE", { reason: "after_network_validate" });
+        return;
+      }
       if (result.ok) {
         await persistPartner(result.session.partner);
-        if (cancelledRef.current) return;
-        applyAuthenticated({
-          token: result.session.token,
-          partner: result.session.partner,
-          supabaseUserId: sbId,
+        if (bootEpoch !== authEpochRef.current) return;
+        applyAuthenticated(
+          {
+            token: result.session.token,
+            partner: result.session.partner,
+            supabaseUserId: sbId,
+          },
+          bootEpoch
+        );
+        logMerchantAuth("AUTH_SESSION_VALID", {
+          tokenFp: authTokenFingerprint(result.session.token),
         });
         return;
       }
       if (result.reason === "invalid") {
-        await clearAllMerchantAuthArtifacts();
-        if (!cancelledRef.current) applyUnauthenticated();
+        await invalidateIfStillCurrent(
+          result.tokenAttempted ?? token?.trim() ?? null,
+          bootEpoch,
+          "boot_invalid"
+        );
         return;
       }
-      // network: keep a persisted token + cached partner if we have them; else login.
+      // network: keep persisted token + cached partner if present
       if (token?.trim() && cachedPartner) {
-        applyAuthenticated({ token: token.trim(), partner: cachedPartner, supabaseUserId: sbId });
+        applyAuthenticated(
+          { token: token.trim(), partner: cachedPartner, supabaseUserId: sbId },
+          bootEpoch
+        );
         return;
       }
-      if (!cancelledRef.current) applyUnauthenticated();
+      applyUnauthenticated(bootEpoch, "boot_network_no_cache");
     })();
     return () => {
-      cancelledRef.current = true;
+      cancelled = true;
     };
-  }, [applyAuthenticated, applyUnauthenticated, validateInBackground]);
+    // Mount-once bootstrap. Epoch guards protect against login races.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (authState.status !== "authenticated") return undefined;
+    const epochAtSubscribe = authEpochRef.current;
+    const tokenAtSubscribe = tokenRef.current;
     const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
       if (state !== "active") return;
       void (async () => {
+        const liveEpoch = authEpochRef.current;
+        if (liveEpoch !== epochAtSubscribe) return;
+        if (tokenRef.current && tokenAtSubscribe && tokenRef.current !== tokenAtSubscribe) return;
+
         const next = await refreshMerchantSessionIfNeeded();
+        if (liveEpoch !== authEpochRef.current) return;
         if (next) {
           setAuthState((prev) => {
             if (prev.status !== "authenticated") return prev;
+            if (liveEpoch !== authEpochRef.current) return prev;
             tokenRef.current = next;
             return { status: "authenticated", session: { ...prev.session, token: next } };
           });
         }
         const result = await validateMerchantSessionFromStore();
+        if (liveEpoch !== authEpochRef.current) return;
         if (result.ok) return;
         if (result.reason === "invalid") {
-          await signOut();
+          logMerchantAuth("AUTH_SESSION_EXPIRED", { source: "appstate" });
+          await invalidateIfStillCurrent(
+            result.tokenAttempted ?? tokenRef.current,
+            liveEpoch,
+            "appstate_invalid"
+          );
         }
       })();
     });
     return () => sub.remove();
-  }, [authState.status, signOut]);
+  }, [authState.status, token, invalidateIfStillCurrent]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -401,7 +570,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token,
       partner,
       supabaseUserId,
-      isLoading: authState.status === "loading",
+      isLoading: authState.status === "loading" || authState.status === "logging_out",
       isAuthenticated: authState.status === "authenticated",
       setTokenAndPartner,
       signOut,

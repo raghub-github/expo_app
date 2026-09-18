@@ -16,6 +16,13 @@ const DEFAULT_WHILE_LOADING: GeoEnabledServices = {
   parcels: true,
 };
 
+/** No pin / no data — food, ride (person), parcel tiles paint inactive. */
+const ALL_DISABLED: GeoEnabledServices = {
+  food: false,
+  ride: false,
+  parcels: false,
+};
+
 /** Stable React Query key — pincode-first; coords bucketed ~110m like merchants. */
 export function geoServicesQueryKey(args: {
   pincode?: string | null;
@@ -56,7 +63,9 @@ export function useGeoServiceAvailability(args: {
       if (!result.ok) throw new Error(result.error);
       return result.availability;
     },
+    // Prefer waiting for a real pin — never fire geo/services with only a UI label.
     enabled: canQuery,
+
     // Emergency blocks must surface without a manual refresh. usePreventServicesRealtime
     // pushes an invalidation within ~1s of an admin change; these settings are the
     // safety net when Realtime is unavailable and for schedule-based expiry.
@@ -71,16 +80,16 @@ export function useGeoServiceAvailability(args: {
   });
 
   const enabledServices: GeoEnabledServices = (() => {
-    if (!canQuery) return DEFAULT_WHILE_LOADING;
+    if (!canQuery) return ALL_DISABLED;
     if (query.isLoading && !query.data) return DEFAULT_WHILE_LOADING;
-    if (!query.data) return DEFAULT_WHILE_LOADING;
-    // Main home / tab bar: use coverage* so Prevent Services does not grey out
-    // tiles — user can enter the inner page, where ServiceBlockedGateHost runs.
-    // On error, keepPreviousData still supplies last successful coverage.
-    const food = query.data.coverageFood ?? query.data.food;
-    const ride = query.data.coverageRide ?? query.data.ride;
-    const parcels = query.data.coverageParcel ?? query.data.parcel;
-    return { food, ride, parcels };
+    if (!query.data) return ALL_DISABLED;
+    // Home tiles + Food tab: use merged food/ride/parcel (coverage AND Prevent).
+    // Inactive services grey out like E-Commerce; inner gates still apply on enter.
+    return {
+      food: query.data.food === true,
+      ride: query.data.ride === true,
+      parcels: query.data.parcel === true,
+    };
   })();
 
   /**

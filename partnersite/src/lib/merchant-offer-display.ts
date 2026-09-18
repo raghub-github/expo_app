@@ -97,6 +97,9 @@ export function resolveMerchantOfferBadge(opts: {
   const { offerType, offerLabel } = opts;
   const t = normalizeMerchantOfferType(offerType);
   // Prefer stored type over label text — Boost titles must never become BOGO badges.
+  if (t === "FLASH_SALE") {
+    return { kind: "other", badge: "Flash Sale" };
+  }
   if (t === "BOOST" || t === "PERCENTAGE" || t === "FLAT") {
     return { kind: "boost", badge: formatBoostOfferBadge(offerLabel) };
   }

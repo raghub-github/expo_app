@@ -8,23 +8,23 @@ import {
   MENU_ITEM_CONFIG_CACHE_TTL_MS,
 } from "@/lib/menu-item-config-cache";
 import { normalizeMenuItemFullConfig } from "@/lib/normalize-menu-item-full-config";
+import {
+  buildMenuItemFullConfigFallback,
+  menuItemNeedsServerOptions,
+  resolveFullConfigItemId,
+} from "@/lib/menuItemFullConfigFallback";
 
 export {
   getCachedMenuItemFullConfig,
   setCachedMenuItemFullConfig,
   clearCachedMenuItemFullConfig,
+  buildMenuItemFullConfigFallback,
+  menuItemNeedsServerOptions,
+  resolveFullConfigItemId,
 };
 
 export function menuItemConfigQueryKey(storeId: string, itemId: string) {
   return ["menu-item-full-config", storeId, itemId] as const;
-}
-
-/** API `item_id`; cart lines may use numeric menu PK only. */
-export function resolveFullConfigItemId(item: Pick<MenuItem, "id" | "menuItemId">): string {
-  const idStr = String(item.id ?? "").trim();
-  const pkStr = item.menuItemId != null ? String(item.menuItemId) : "";
-  if (idStr && idStr !== pkStr) return idStr;
-  return pkStr || idStr;
 }
 
 /** True when a fetched full-config belongs to the sheet's requested item key. */
@@ -45,13 +45,17 @@ export function menuItemNeedsCustomization(
   item: MenuItem,
   storeId?: string | null
 ): boolean {
-  if (item.hasVariants || item.hasAddons || item.hasCustomizations) return true;
+  if (menuItemNeedsServerOptions(item)) return true;
   if (!storeId) return false;
   const configItemId = resolveFullConfigItemId(item);
   const cached = getCachedMenuItemFullConfig(storeId, configItemId);
   if (!cached) return false;
-  const normalized = normalizeMenuItemFullConfig(cached);
-  return (normalized.variants?.length ?? 0) > 0 || (normalized.customizations?.length ?? 0) > 0;
+  try {
+    const normalized = normalizeMenuItemFullConfig(cached);
+    return (normalized.variants?.length ?? 0) > 0 || (normalized.customizations?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Push a memory-cache hit into React Query so the sheet can paint without waiting. */
@@ -62,12 +66,14 @@ export function seedMenuItemFullConfigQuery(
 ): MenuItemFullConfig | undefined {
   if (!storeId || !itemId) return undefined;
   const queryKey = menuItemConfigQueryKey(storeId, itemId);
+  const existing = queryClient.getQueryData<MenuItemFullConfig>(queryKey);
+  if (existing) return existing;
   const cached = getCachedMenuItemFullConfig(storeId, itemId);
   if (cached) {
     queryClient.setQueryData(queryKey, cached);
     return cached;
   }
-  return queryClient.getQueryData<MenuItemFullConfig>(queryKey);
+  return undefined;
 }
 
 export async function prefetchMenuItemFullConfig(

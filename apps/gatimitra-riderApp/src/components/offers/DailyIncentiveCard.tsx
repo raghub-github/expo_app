@@ -5,6 +5,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { LORA_BOLD } from "@/src/theme/headerFonts";
+import { colors } from "@/src/theme";
 import type { RiderIncentiveProgram, IncentiveTier } from "@/src/hooks/useRiderIncentives";
 import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
@@ -133,6 +134,10 @@ function MilestoneProgressLine({
 export function DailyIncentiveCard({ program }: Props) {
   const { t } = useTranslation();
   const { rs } = useResponsiveLayout();
+  const isActiveOffer =
+    program.isLive ||
+    program.lockedReason === "GMITRA_MAX_REQUIRED" ||
+    String(program.riderStatus || "").toUpperCase() === "ACTIVE";
 
   return (
     <View style={[styles.card, { marginHorizontal: rs(16), paddingHorizontal: rs(16) }]}>
@@ -155,10 +160,10 @@ export function DailyIncentiveCard({ program }: Props) {
             </View>
           </View>
         </View>
-        {program.isLive ? (
-          <View style={[rowLayout.row, styles.liveBadge, rowLayout.noShrink]}>
-            <View style={styles.liveDot} />
-            <Text style={styles.liveText}>{t("offers.live", "LIVE")}</Text>
+        {isActiveOffer ? (
+          <View style={[rowLayout.row, styles.activePill, rowLayout.noShrink]}>
+            <View style={styles.activeDot} />
+            <Text style={styles.activePillText}>{t("offers.active", "Active")}</Text>
           </View>
         ) : null}
       </View>
@@ -222,7 +227,7 @@ export function DailyIncentiveCard({ program }: Props) {
           accessibilityRole="button"
           accessibilityLabel={t("offers.gmitraMaxRequired", "Subscribe to GMitra Max to unlock this incentive")}
         >
-          <Ionicons name="lock-closed" size={14} color="#7C3AED" style={rowLayout.noShrink} />
+          <Ionicons name="lock-closed" size={14} color={colors.primary[700]} style={rowLayout.noShrink} />
           <Text style={[styles.lockedText, flexShrinkText]} numberOfLines={2}>
             {t("offers.gmitraMaxRequired", "Subscribe to GMitra Max to unlock this incentive")}
           </Text>
@@ -238,6 +243,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingTop: 16,
     paddingBottom: 14,
+    marginTop: 4,
     marginBottom: 4,
     borderWidth: 1,
     borderColor: "#E5E7EB",
@@ -261,15 +267,27 @@ const styles = StyleSheet.create({
   metaSep: { fontSize: 11, color: "#D1D5DB", fontWeight: "700" },
   subtitle: { fontSize: 11, color: "#6B7280" },
   serviceText: { fontWeight: "700", color: "#374151" },
-  liveBadge: {
-    gap: 4,
-    backgroundColor: "#FEF2F2",
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 999,
+  activePill: {
+    gap: 5,
+    backgroundColor: colors.primary[50],
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.primary[200],
   },
-  liveDot: { width: 5, height: 5, borderRadius: 999, backgroundColor: "#EF4444" },
-  liveText: { fontSize: 9, fontWeight: "800", color: "#EF4444", letterSpacing: 0.4 },
+  activeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: colors.primary[500],
+  },
+  activePillText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: colors.primary[800],
+    letterSpacing: 0.2,
+  },
   earnHeadline: {
     fontFamily: LORA_BOLD,
     fontSize: 20,
@@ -340,7 +358,13 @@ const progress = StyleSheet.create({
     overflow: "visible",
   },
   labelRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 8 },
-  sectionLabel: { fontSize: 9, fontWeight: "800", color: "#9CA3AF", letterSpacing: 0.3, textTransform: "uppercase" },
+  sectionLabel: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: "#9CA3AF",
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
+  },
   amountRow: { flexDirection: "row", marginBottom: 10 },
   amountCol: { flex: 1, alignItems: "center" },
   amountText: { fontSize: 11, fontWeight: "800", color: "#CBD5E1" },

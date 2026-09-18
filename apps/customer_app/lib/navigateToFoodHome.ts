@@ -20,19 +20,13 @@ import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
 import { prioritizeVisibleMerchantBanners, prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
 import { prefetchMerchantCardImages } from "@/lib/imageEngine";
+import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 
-/** Block double pressIn+press from stacking navigations. */
-let navigateLockUntil = 0;
 /** True while a Food listing instance (tab or /home) is mounted. */
 let foodHomeRouteMounted = false;
 
-const FOOD_TAB_HREF = "/(tabs)/food" as const;
-
 export function markFoodHomeRouteMounted(mounted: boolean): void {
   foodHomeRouteMounted = mounted;
-  if (!mounted) {
-    navigateLockUntil = Math.min(navigateLockUntil, Date.now() + 280);
-  }
 }
 
 export function isFoodHomeRouteMounted(): boolean {
@@ -91,36 +85,41 @@ function warmNearbyMerchantImagery(): void {
   }
 }
 
-function logFoodNav(phase: string, t0?: number): void {
-  if (!__DEV__) return;
-  const ms = t0 != null ? ` +${Date.now() - t0}ms` : "";
-  // eslint-disable-next-line no-console
-  console.log(`[FOOD_NAV] ${phase}${ms}`);
-}
-
 /**
  * Open Food listing via the Food TAB (same path as Orders/Profile).
  * Never awaits APIs — navigate first, warm cache after interactions.
+ * Uses primary-tab epoch guard (no timed navigate lock).
+ *
+ * Merchant /home stack sits above tabs. If Food is already the active tab,
+ * `navigatePrimaryTab("food")` is a same-tab no-op — so we must dismiss the
+ * overlay stack first or HOME edge / Food taps appear broken.
  */
 export function navigateToFoodHome(router: Router): void {
-  const t0 = Date.now();
-  logFoodNav("press", t0);
-
-  const now = Date.now();
-  if (now < navigateLockUntil) {
-    logFoodNav("deduped", t0);
-    return;
-  }
-  // Long enough that pressIn + late onPress cannot stack a second Home→Food trip.
-  navigateLockUntil = now + 1200;
-
   resetFoodHomeListScrollGuard();
-  logFoodNav("navigation-start", t0);
-  // Tab navigate reuses a mounted Food screen when freezeOnBlur keeps it alive.
-  router.navigate(FOOD_TAB_HREF as never);
+
+  try {
+    const dismissAll = (router as { dismissAll?: () => void }).dismissAll;
+    if (typeof dismissAll === "function") {
+      dismissAll.call(router);
+    } else {
+      const canDismiss = (router as { canDismiss?: () => boolean }).canDismiss;
+      const dismiss = (router as { dismiss?: () => void }).dismiss;
+      if (typeof canDismiss === "function" && typeof dismiss === "function") {
+        let guard = 0;
+        while (canDismiss.call(router) && guard++ < 12) {
+          dismiss.call(router);
+        }
+      } else if (typeof router.canGoBack === "function" && router.canGoBack()) {
+        router.back();
+      }
+    }
+  } catch {
+    /* ignore — still jump to Food tab below */
+  }
+
+  navigatePrimaryTab("food", "navigateToFoodHome", router);
 
   InteractionManager.runAfterInteractions(() => {
-    logFoodNav("after-interactions-warm", t0);
     try {
       seedNearbyMerchantsListOnly();
       warmNearbyMerchantImagery();

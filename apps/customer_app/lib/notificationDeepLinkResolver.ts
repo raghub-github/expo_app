@@ -14,13 +14,13 @@ function asString(v: unknown): string {
 }
 
 const SERVICE_ROUTES: Record<string, string> = {
-  food: "/home",
+  food: "/(tabs)/food",
   ride: "/home/service/ride",
   parcels: "/home/service/parcels",
   grocery: "/home/grocery",
   ecom: "/home/shop",
   "near-me": "/home/service/near-me",
-  vouchers: "/home",
+  vouchers: "/(tabs)/",
 };
 
 function storeTypeForService(serviceId: string): string | null {
@@ -44,7 +44,8 @@ export function resolveNotificationDeepLink(
   const storeId = asString(data.target_store_id || data.targetStoreId || data.target_id);
   const targetId = asString(data.target_id || data.targetId);
 
-  if (targetType === "HOME" || targetType === "FOOD_HOME") return "/home";
+  if (targetType === "HOME") return "/(tabs)/";
+  if (targetType === "FOOD_HOME") return "/(tabs)/food";
   if (targetType === "GROCERY_HOME") return "/home/grocery";
   if (targetType === "RIDES") return "/home/service/ride";
   if (targetType === "PARCEL") return "/home/service/parcels";
@@ -57,11 +58,12 @@ export function resolveNotificationDeepLink(
   if (targetType === "CUSTOM_DEEP_LINK") {
     const path = asString(data.customDeepLink || data.custom_deep_link) || targetId;
     if (path.startsWith("/") && !path.startsWith("//") && !path.includes("..")) return path;
-    return "/home";
+    return "/(tabs)/";
   }
 
   if (targetType === "SERVICE" && serviceId) {
-    return SERVICE_ROUTES[serviceId] ?? "/home";
+    if (serviceId === "food") return "/(tabs)/food";
+    return SERVICE_ROUTES[serviceId] ?? "/(tabs)/";
   }
 
   if (targetType === "CATEGORY" && categoryId) {

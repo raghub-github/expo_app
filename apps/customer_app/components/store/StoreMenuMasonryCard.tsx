@@ -22,10 +22,12 @@ import {
 import { getBasePrice, getItemDiet, getSellingPrice } from "./storeMenuUtils";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { ensureMenuItemImageWarm } from "@/lib/prefetchMenuItemImages";
+import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { formatOfferRupee, computeCatalogDiscountPercent, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { MENU_MASONRY_CARD_RADIUS } from "@/features/merchant-detail/constants/layout";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
+import { ClassicCornerRatingPill } from "@/components/home/ClassicCornerRatingPill";
 
 export type StoreMenuMasonryCardProps = {
   item: MenuItem;
@@ -152,6 +154,7 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
   const basePrice = getBasePrice(item);
   const { payable: payableAmount, strike: strikeAmount, showStrike: showDiscount } =
     resolveMenuOfferPriceDisplay({ sellingPrice, basePrice, itemOffer });
+  // catalogDiscountPct still used for on-image % OFF badge
   const catalogDiscountPct =
     basePrice != null && basePrice > sellingPrice
       ? computeCatalogDiscountPercent(basePrice, sellingPrice)
@@ -161,10 +164,14 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
   const displayName = item.name.replace(/\s+/g, " ").trim();
   const descriptionText = formatCardDescription(item.description);
   const prepLabel = formatPrepLabel(item.prepTimeMinutes);
+  const itemRating =
+    item.avgRating != null && Number.isFinite(item.avgRating) && item.avgRating > 0
+      ? item.avgRating.toFixed(1)
+      : null;
 
   return (
     <View style={[styles.card, dark && styles.cardDark, highlighted && (dark ? styles.cardHighlightedDark : styles.cardHighlighted)]}>
-      <View style={styles.imageBlock} collapsable={false}>
+      <View style={[styles.imageBlock, { width: photoPx, height: photoPx }]} collapsable={false}>
         <Pressable
           accessibilityRole={onItemPress ? "button" : undefined}
           accessibilityLabel={onItemPress ? `View ${item.name} details` : undefined}
@@ -237,21 +244,39 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
                 </View>
               </View>
             ) : null}
-            {prepLabel ? (
-              <View style={[styles.timeBadge, dark && styles.timeBadgeDark]}>
-                <AppText style={[styles.timeBadgeText, dark && styles.timeBadgeTextDark]} numberOfLines={1}>
+            {itemRating ? (
+              dark ? (
+                <ClassicCornerRatingPill rating={itemRating} cardRadius={MENU_MASONRY_CARD_RADIUS} />
+              ) : (
+                <View style={styles.ratingBottomLeft} pointerEvents="none">
+                  <Ionicons name="star" size={9} color="#FFFFFF" />
+                  <AppText style={styles.ratingBottomLeftText}>{itemRating}</AppText>
+                </View>
+              )
+            ) : dark && prepLabel ? (
+              <View style={[styles.timeBadge, styles.timeBadgeDark]}>
+                <AppText style={[styles.timeBadgeText, styles.timeBadgeTextDark]} numberOfLines={1}>
                   {prepLabel}
                 </AppText>
               </View>
-            ) : isHighlyReordered ? (
-              <View style={[styles.timeBadge, dark && styles.timeBadgeDark]}>
-                <AppText style={[styles.timeBadgeText, dark && styles.timeBadgeTextDark]} numberOfLines={1}>
+            ) : null}
+            {/* Classic: prep under heart; + / stepper live in the details row below the image. */}
+            {!dark && prepLabel ? (
+              <View style={styles.classicPrepUnderHeart} pointerEvents="none">
+                <AppText style={styles.classicPrepTopRightText} numberOfLines={1}>
+                  {prepLabel}
+                </AppText>
+              </View>
+            ) : null}
+            {(isHighlyReordered || item.isPopular) && catalogDiscountPct == null ? (
+              <View style={styles.popularTopLeft} pointerEvents="none">
+                <AppText style={styles.popularTopLeftText} numberOfLines={1}>
                   Popular
                 </AppText>
               </View>
-            ) : item.isRecommended ? (
-              <View style={[styles.timeBadge, dark && styles.timeBadgeDark]}>
-                <AppText style={[styles.timeBadgeText, dark && styles.timeBadgeTextDark]} numberOfLines={1}>
+            ) : dark && !itemRating && item.isRecommended ? (
+              <View style={[styles.timeBadge, styles.timeBadgeDark]}>
+                <AppText style={[styles.timeBadgeText, styles.timeBadgeTextDark]} numberOfLines={1}>
                   ★ Rec
                 </AppText>
               </View>
@@ -260,9 +285,13 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
         </Pressable>
 
         <View style={styles.imageTopRow} pointerEvents="box-none">
-          <View style={styles.dietBadge} pointerEvents="none">
-            <DietIndicator type={diet} />
-          </View>
+          {dark ? (
+            <View style={styles.dietBadge} pointerEvents="none">
+              <DietIndicator type={diet} />
+            </View>
+          ) : (
+            <View style={styles.heartHit} />
+          )}
           {onBookmark ? (
             <Pressable
               style={({ pressed }) => [styles.heartHit, pressed && styles.pressed]}
@@ -285,7 +314,7 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
         </View>
       </View>
 
-      <View style={[styles.body, dark && styles.bodyDark]}>
+      <View style={[styles.body, dark && styles.bodyDark, !dark && styles.bodyClassic]}>
         <Pressable
           disabled={!onItemPress}
           delayPressIn={0}
@@ -295,16 +324,21 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
           onPress={handleItemPress}
           style={({ pressed }) => [pressed && onItemPress && styles.pressed]}
         >
-          <AppText style={[styles.name, dark && styles.nameDark]} numberOfLines={dark ? 1 : 2} ellipsizeMode="tail">
-            {displayName}
-          </AppText>
-          {!dark && descriptionText ? (
-            <AppText style={styles.desc} numberOfLines={1} ellipsizeMode="tail">
-              {descriptionText}
+          {!dark ? (
+            <View style={styles.nameRowClassic}>
+              <DietIndicator type={diet} />
+              <AppText style={styles.nameClassic} numberOfLines={2} ellipsizeMode="tail">
+                {displayName}
+              </AppText>
+            </View>
+          ) : (
+            <AppText style={[styles.name, styles.nameDark]} numberOfLines={1} ellipsizeMode="tail">
+              {displayName}
             </AppText>
-          ) : !dark && (item.categoryName || item.category) ? (
-            <AppText style={styles.desc} numberOfLines={1}>
-              {(item.categoryName ?? item.category ?? "").trim()}
+          )}
+          {!dark && descriptionText ? (
+            <AppText style={styles.descClassic} numberOfLines={2} ellipsizeMode="tail">
+              {descriptionText}
             </AppText>
           ) : null}
           {!dark && isCustomisable ? (
@@ -312,24 +346,37 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
           ) : null}
         </Pressable>
 
-        <View style={styles.priceRow}>
+        <View style={[styles.priceRow, !dark && styles.priceRowClassic]}>
           <View style={styles.priceCol}>
-            {showDiscount && strikeAmount != null ? (
+            {!dark ? (
+              <>
+                <View style={styles.priceOfferRow}>
+                  {showDiscount && strikeAmount != null ? (
+                    <AppText style={styles.strikeClassic}>{formatOfferRupee(strikeAmount)}</AppText>
+                  ) : null}
+                  <AppText style={styles.classicPrice}>
+                    {formatOfferRupee(showDiscount ? payableAmount : sellingPrice)}
+                  </AppText>
+                </View>
+              </>
+            ) : showDiscount && strikeAmount != null ? (
               <View style={styles.priceOfferRow}>
-                <AppText style={[styles.salePrice, dark && styles.salePriceDark]}>{formatOfferRupee(payableAmount)}</AppText>
-                <AppText style={[styles.strike, dark && styles.strikeDark]}>{formatOfferRupee(strikeAmount)}</AppText>
+                <AppText style={[styles.salePrice, styles.salePriceDark]}>
+                  {formatOfferRupee(payableAmount)}
+                </AppText>
+                <AppText style={[styles.strike, styles.strikeDark]}>
+                  {formatOfferRupee(strikeAmount)}
+                </AppText>
               </View>
             ) : (
-              <AppText style={[styles.salePrice, dark && styles.salePriceDark]}>{formatOfferRupee(sellingPrice)}</AppText>
+              <AppText style={[styles.salePrice, styles.salePriceDark]}>
+                {formatOfferRupee(sellingPrice)}
+              </AppText>
             )}
             {outOfStock ? <AppText style={styles.oosText}>Out of stock</AppText> : null}
           </View>
-          {outOfStock ? (
-            <View style={styles.oosChip}>
-              <AppText style={styles.oosChipText}>Sold</AppText>
-            </View>
-          ) : (
-            <View style={styles.addSlot}>
+          {!outOfStock ? (
+            <View style={[styles.addSlot, !dark && styles.addSlotClassic]}>
               <StoreMenuInstantCartControl
                 itemKey={`${merchantId}:${item.listRowKey ?? item.id}`}
                 merchantId={merchantId}
@@ -343,7 +390,11 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
                 accessibilityLabel={`${item.name} quantity`}
               />
             </View>
-          )}
+          ) : dark ? (
+            <View style={styles.oosChip}>
+              <AppText style={styles.oosChipText}>Sold</AppText>
+            </View>
+          ) : null}
         </View>
       </View>
     </View>
@@ -353,7 +404,7 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
 const styles = StyleSheet.create({
   card: {
     width: "100%",
-    overflow: "hidden",
+    overflow: "visible",
     backgroundColor: "#FFFFFF",
     borderRadius: MENU_MASONRY_CARD_RADIUS,
     borderWidth: StyleSheet.hairlineWidth,
@@ -382,8 +433,10 @@ const styles = StyleSheet.create({
     borderTopRightRadius: MENU_MASONRY_CARD_RADIUS,
   },
   imageBlock: {
-    width: "100%",
     position: "relative",
+    overflow: "visible",
+    zIndex: 2,
+    alignSelf: "center",
   },
   imageWrap: {
     overflow: "hidden",
@@ -492,6 +545,88 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
   },
+  popularTopLeft: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    zIndex: 3,
+    backgroundColor: GatiMitraColors.deepMintStart,
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  popularTopLeftText: {
+    color: "#FFFFFF",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  ratingBottomLeft: {
+    position: "absolute",
+    left: 8,
+    bottom: 8,
+    zIndex: 3,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: GatiMitraColors.deepMintStart,
+    borderRadius: 8,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  ratingBottomLeftText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  classicPrepUnderHeart: {
+    position: "absolute",
+    top: 36,
+    right: 8,
+    zIndex: 3,
+    backgroundColor: "rgba(245, 230, 211, 0.94)",
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    maxWidth: "48%",
+  },
+  classicPrepTopRightText: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#6B4F2A",
+  },
+  nameRowClassic: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+  },
+  nameClassic: {
+    flex: 1,
+    fontFamily: StoreFonts.loraBold,
+    fontWeight: "700",
+    fontSize: 14,
+    color: StoreTheme.textPrimary,
+    lineHeight: 18,
+    letterSpacing: -0.2,
+  },
+  descClassic: {
+    marginTop: 3,
+    fontSize: 11,
+    lineHeight: 15,
+    color: StoreTheme.textSecondary,
+  },
+  classicPrice: {
+    fontFamily: StoreFonts.poppinsBold,
+    fontSize: 15,
+    fontWeight: "800",
+    color: GatiMitraColors.textPrimaryNew,
+    letterSpacing: -0.2,
+  },
+  strikeClassic: {
+    fontFamily: StoreFonts.poppinsSemiBold,
+    fontSize: 12,
+    color: StoreTheme.textSecondary,
+    textDecorationLine: "line-through",
+  },
   timeBadgeDark: {
     backgroundColor: "rgba(0,0,0,0.62)",
   },
@@ -525,6 +660,13 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 8,
     gap: 4,
+  },
+  bodyClassic: {
+    paddingTop: 10,
+    paddingBottom: 10,
+    gap: 6,
+    overflow: "visible",
+    zIndex: 4,
   },
   bodyDark: {
     paddingTop: 6,
@@ -566,6 +708,12 @@ const styles = StyleSheet.create({
     gap: 6,
     marginTop: 4,
     minHeight: MENU_COMPACT_CONTROL_HEIGHT,
+  },
+  priceRowClassic: {
+    alignItems: "center",
+    marginTop: 6,
+    zIndex: 8,
+    overflow: "visible",
   },
   priceCol: {
     flex: 1,
@@ -618,8 +766,16 @@ const styles = StyleSheet.create({
     color: StoreTheme.textMuted,
   },
   addSlot: {
-    width: 92,
-    height: MENU_COMPACT_CONTROL_HEIGHT,
+    width: 108,
+    height: MENU_COMPACT_CONTROL_HEIGHT + 20,
     justifyContent: "center",
+    overflow: "visible",
+    zIndex: 8,
+  },
+  addSlotClassic: {
+    width: 108,
+    alignItems: "stretch",
+    overflow: "visible",
+    zIndex: 8,
   },
 });

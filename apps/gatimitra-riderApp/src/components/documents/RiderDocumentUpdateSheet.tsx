@@ -42,9 +42,11 @@ import {
   isValidCashfreeRcNumber,
   normalizeCashfreeDocNumber,
 } from "@/src/lib/cashfree-doc-formats";
+import { pickRcOwnerName, softPersonNamesMatch } from "@/src/lib/pan-aadhaar-name-match";
 import { uploadToR2, deleteFromR2, buildRiderDocumentKey } from "@/src/services/storage/cloudflareR2";
 import { notifyOnboardingToast, friendlyOnboardingError } from "@/src/lib/rider-onboarding-toast";
 import { RIDER_ONBOARDING_SUMMARY_QUERY_KEY } from "@/src/hooks/useRiderOnboardingSummary";
+import { RIDER_VEHICLES_QUERY_KEY } from "@/src/hooks/useRiderVehicles";
 import { RiderFonts } from "@/src/theme/fonts";
 import { normalizeRiderId } from "@/src/utils/normalizeRiderId";
 import type { DocumentUpdateCode } from "@/src/stores/documentUpdateSheetStore";
@@ -61,6 +63,7 @@ type Props = {
   onSuccess?: (documentCode: DocumentUpdateCode) => void;
   /** Always DOCUMENT_UPDATE for this sheet — explicit for clarity / tests. */
   mode?: DocumentUpdateMode;
+  addAnotherVehicle?: boolean;
 };
 
 function documentFileEntries(
@@ -97,11 +100,13 @@ export function RiderDocumentUpdateSheet({
   onClose,
   onSuccess,
   mode = "DOCUMENT_UPDATE",
+  addAnotherVehicle = false,
 }: Props) {
   void mode; // DOCUMENT_UPDATE only — Skip / next-step never apply here.
   const queryClient = useQueryClient();
   const session = useSessionStore((s) => s.session);
   const onboardingRiderId = useOnboardingStore((s) => s.data.riderId);
+  const aadhaarName = useOnboardingStore((s) => String(s.data.fullName || "").trim());
   const setOnboardingData = useOnboardingStore((s) => s.setData);
   const saveDocument = useSaveDocument();
   const verifyDocument = useVerifyDocument();
@@ -141,6 +146,7 @@ export function RiderDocumentUpdateSheet({
   const [frontUri, setFrontUri] = useState<string | null>(null);
   const [backUri, setBackUri] = useState<string | null>(null);
   const [ev, setEv] = useState<EvState>({ phase: "idle" });
+  const [allowManualOnFail, setAllowManualOnFail] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successFlash, setSuccessFlash] = useState(false);
@@ -153,6 +159,7 @@ export function RiderDocumentUpdateSheet({
     setFrontUri(null);
     setBackUri(null);
     setEv({ phase: "idle" });
+    setAllowManualOnFail(false);
     setBusy(false);
     setError(null);
     setSuccessFlash(false);
@@ -171,11 +178,14 @@ export function RiderDocumentUpdateSheet({
   const electronicallyVerified = ev.phase === "verified" && !ev.requirePhoto;
   const requirePhotoAfterVerify = ev.phase === "verified" && Boolean(ev.requirePhoto);
   /**
-   * Photos only after "Upload manually" (or soft-verify that requires a photo).
-   * Failed / mismatch keep Verify again + Upload manually — no upload slots yet.
+   * Photos after soft-verify requirePhoto, manual path, or Cashfree-down fallback.
+   * Invalid RC numbers keep allowManualOnFail=false so upload stays hidden.
    */
   const showPhotos =
-    !electronic || ev.phase === "manual" || requirePhotoAfterVerify;
+    !electronic ||
+    requirePhotoAfterVerify ||
+    ev.phase === "manual" ||
+    (ev.phase === "failed" && allowManualOnFail);
 
   const numberValid =
     documentCode === "dl"
@@ -188,25 +198,27 @@ export function RiderDocumentUpdateSheet({
     electronicallyVerified ||
     (Boolean(frontUri) && (!needsBack || Boolean(backUri)));
 
-  /** Electronic path: must verify or choose manual before Save. */
+  /** Electronic path: must verify (or mismatch photo / fail fallback) before Save. */
   const electronicGateOk =
     !electronic ||
     electronicallyVerified ||
+    requirePhotoAfterVerify ||
     ev.phase === "manual" ||
-    requirePhotoAfterVerify;
+    (ev.phase === "failed" && allowManualOnFail);
 
   const canSubmit =
     Boolean(docDef) && numberValid && photosReady && electronicGateOk && !busy;
 
   /**
-   * Hide Save until auto-verify succeeds, or manual path has photos ready.
-   * Failed: only Verify again + Upload manually (no Continue yet).
+   * Hide Save until auto-verify succeeds, or manual/mismatch path has photos ready.
    */
   const showSaveButton =
     !electronic
       ? numberValid && photosReady
       : electronicallyVerified ||
-        ((ev.phase === "manual" || requirePhotoAfterVerify) &&
+        ((requirePhotoAfterVerify ||
+          ev.phase === "manual" ||
+          (ev.phase === "failed" && allowManualOnFail)) &&
           photosReady &&
           numberValid);
 
@@ -299,6 +311,7 @@ export function RiderDocumentUpdateSheet({
               riderId: riderIdStr,
               docKind: "vehicle_rc",
               vehicleNumber: normalized,
+              ...(addAnotherVehicle ? { addAnotherVehicle: true } : {}),
             },
       );
       if (res.outcome === "verified") {
@@ -306,24 +319,49 @@ export function RiderDocumentUpdateSheet({
         verifiedDetailsRef.current = Object.keys(details).length > 0 ? details : null;
         setFrontUri(null);
         setBackUri(null);
-        const requirePhoto = Boolean(
+        const requirePhotoFromApi = Boolean(
           (details as { requirePhoto?: boolean }).requirePhoto ||
             (res as { requirePhoto?: boolean }).requirePhoto,
         );
+        let requirePhoto = requirePhotoFromApi;
+        let photoHint = requirePhotoFromApi
+          ? "Upload a clear document photo to finish."
+          : undefined;
+        if (documentCode === "rc") {
+          const ownerName = pickRcOwnerName(details);
+          const ownerMatched =
+            Boolean(ownerName) &&
+            Boolean(aadhaarName) &&
+            softPersonNamesMatch(ownerName, aadhaarName);
+          requirePhoto = requirePhotoFromApi || !ownerMatched;
+          photoHint = requirePhoto
+            ? "Verified successfully, but the authorized name doesn’t match. Please upload a clear image of your RC."
+            : undefined;
+        } else if (documentCode === "dl" && requirePhotoFromApi) {
+          photoHint =
+            (typeof (res as { photoHint?: string }).photoHint === "string" &&
+              (res as { photoHint?: string }).photoHint) ||
+            "Verified successfully, but the authorized name doesn’t match. Please upload a clear image of your driving licence.";
+        }
         setEv({
           phase: "verified",
           details,
           requirePhoto,
-          photoHint: requirePhoto
-            ? "Upload a clear document photo to finish."
-            : undefined,
+          photoHint,
         });
         return;
       }
       if (res.outcome === "mismatch") {
+        const details = res.verifiedData ?? {};
+        verifiedDetailsRef.current = Object.keys(details).length > 0 ? details : null;
         setEv({
-          phase: "mismatch",
-          error: res.error || res.reason || "Details did not match. Upload a clear photo.",
+          phase: "verified",
+          details,
+          requirePhoto: true,
+          photoHint:
+            documentCode === "rc"
+              ? "Verified successfully, but the authorized name doesn’t match. Please upload a clear image of your RC."
+              : "Verified successfully, but the authorized name doesn’t match. Please upload a clear image of your driving licence.",
         });
         return;
       }
@@ -335,8 +373,12 @@ export function RiderDocumentUpdateSheet({
         documentCode === "dl"
           ? "Invalid DL number. Please check and try again."
           : documentCode === "rc"
-            ? "Invalid RC number. Please check and try again."
+            ? "Invalid RC number. Please enter a valid RC number and try again."
             : "Verification failed. Try again or upload a photo.";
+      const allowManual =
+        (res as { allowManualUpload?: boolean }).allowManualUpload !== false ||
+        documentCode === "dl";
+      setAllowManualOnFail(allowManual);
       setEv({
         phase: "failed",
         error: friendlyOnboardingError(
@@ -349,8 +391,9 @@ export function RiderDocumentUpdateSheet({
         documentCode === "dl"
           ? "Invalid DL number. Please check and try again."
           : documentCode === "rc"
-            ? "Invalid RC number. Please check and try again."
+            ? "Invalid RC number. Please enter a valid RC number and try again."
             : "Couldn't verify right now. Try again or upload a photo.";
+      setAllowManualOnFail(true);
       setEv({
         phase: "failed",
         error: friendlyOnboardingError(e, verifyCatchFallback),
@@ -363,10 +406,12 @@ export function RiderDocumentUpdateSheet({
       queryClient.invalidateQueries({ queryKey: RIDER_ONBOARDING_SUMMARY_QUERY_KEY }),
       queryClient.invalidateQueries({ queryKey: ["rider", "me", "documents"] }),
       queryClient.invalidateQueries({ queryKey: ["rider", "eligibility"] }),
+      queryClient.invalidateQueries({ queryKey: RIDER_VEHICLES_QUERY_KEY }),
+      // Avoid invalidating the entire ["rider"] tree — that remounts duty/orders mid-sheet close
+      // and was a common crash path after adding a second RC.
       Number.isFinite(riderIdNum)
-        ? queryClient.invalidateQueries({ queryKey: ["rider", String(riderIdNum)] })
+        ? queryClient.invalidateQueries({ queryKey: ["rider", String(riderIdNum), "status"] })
         : Promise.resolve(),
-      queryClient.invalidateQueries({ queryKey: ["rider"] }),
     ]);
   };
 
@@ -396,13 +441,18 @@ export function RiderDocumentUpdateSheet({
       const metadata: Record<string, unknown> = {
         [metadataKeyForDocText(documentCode)]: textValue,
         updateContext: "DOCUMENT_UPDATE",
+        ...(addAnotherVehicle && documentCode === "rc" ? { addAnotherVehicle: true } : {}),
       };
       if (verifiedDetailsRef.current) {
         metadata.verifiedDetails = verifiedDetailsRef.current;
         if (documentCode === "dl") metadata.verificationMethod = "cashfree_dl";
         if (documentCode === "rc") {
-          metadata.verificationMethod = "cashfree_rc";
           metadata.cashfreeVerifiedData = verifiedDetailsRef.current;
+          if (requirePhotoAfterVerify || ev.phase === "mismatch") {
+            metadata.rcOwnerAadhaarMismatch = true;
+          } else {
+            metadata.verificationMethod = "cashfree_rc";
+          }
         }
       }
 
@@ -455,10 +505,12 @@ export function RiderDocumentUpdateSheet({
               dlPhotoSignedUrl: frontUpload?.proxyUrl,
               dlBackPhotoSignedUrl: backUpload?.proxyUrl,
             }
-          : {
-              rcNumber: textValue,
-              rcPhotoSignedUrl: frontUpload?.proxyUrl,
-            },
+          : addAnotherVehicle
+            ? {}
+            : {
+                rcNumber: textValue,
+                rcPhotoSignedUrl: frontUpload?.proxyUrl,
+              },
       );
 
       await invalidateDocQueries();
@@ -467,7 +519,9 @@ export function RiderDocumentUpdateSheet({
       notifyOnboardingToast(
         documentCode === "dl"
           ? "Driving Licence uploaded successfully"
-          : "Registration Certificate uploaded successfully",
+          : addAnotherVehicle
+            ? "Second vehicle submitted for verification"
+            : "Registration Certificate uploaded successfully",
       );
       onSuccess?.(documentCode);
 
@@ -492,8 +546,13 @@ export function RiderDocumentUpdateSheet({
     }
   };
 
-  const title = docDef?.label ?? (documentCode === "dl" ? "Driving Licence" : "Document");
-  const subtitle = electronic
+  const title =
+    addAnotherVehicle && documentCode === "rc"
+      ? "Add another vehicle"
+      : docDef?.label ?? (documentCode === "dl" ? "Driving Licence" : "Document");
+  const subtitle = addAnotherVehicle && documentCode === "rc"
+    ? "Enter a different RC. The second vehicle must be a different type (2W / 3W / 4W)."
+    : electronic
     ? "Verify instantly first. If that fails, upload clear photos for review."
     : docDef?.hint ??
       (needsBack
@@ -554,13 +613,21 @@ export function RiderDocumentUpdateSheet({
             <ElectronicVerifyCard
               mode={evMode === "auto" ? "auto" : "hybrid"}
               state={ev}
-              disabled={busy || !numberValid}
-              onVerify={() => void runElectronicVerify()}
+              disabled={busy || !numberValid || electronicallyVerified}
+              onVerify={() => {
+                setAllowManualOnFail(false);
+                void runElectronicVerify();
+              }}
               onUploadManually={() => {
                 setEv({ phase: "manual" });
                 setError(null);
               }}
-              allowManualUpload
+              allowManualUpload={
+                documentCode === "dl" ||
+                allowManualOnFail ||
+                ev.phase === "manual" ||
+                requirePhotoAfterVerify
+              }
               verifyLabel="Verify instantly"
               retryLabel="Verify again"
               documentLabel={title}
@@ -581,9 +648,18 @@ export function RiderDocumentUpdateSheet({
 
         {showPhotos ? (
           <View style={styles.photos}>
-            {ev.phase === "manual" ? (
+            {ev.phase === "manual" || (ev.phase === "failed" && allowManualOnFail) ? (
               <Text style={styles.manualHint}>
                 Add all required photos, then tap Continue.
+              </Text>
+            ) : null}
+            {requirePhotoAfterVerify ? (
+              <Text style={styles.manualHint}>
+                {documentCode === "rc"
+                  ? "Upload RC Image"
+                  : documentCode === "dl"
+                    ? "Upload DL Image"
+                    : "Upload document image"}
               </Text>
             ) : null}
             {parts.includes("front") ? (
@@ -592,7 +668,18 @@ export function RiderDocumentUpdateSheet({
                 onPress={() => showPhotoOptions("front")}
                 onRemove={() => setFrontUri(null)}
                 disabled={busy || electronicallyVerified}
-                boxTitle={needsBack ? "Upload Front" : "Upload photo"}
+                uploading={busy && !electronicallyVerified}
+                boxTitle={
+                  documentCode === "rc"
+                    ? "Upload RC Image"
+                    : documentCode === "dl"
+                      ? needsBack
+                        ? "Upload Front"
+                        : "Upload DL Image"
+                      : needsBack
+                        ? "Upload Front"
+                        : "Upload photo"
+                }
                 boxSub="Camera or gallery"
                 viewerTitle={`${title} front`}
               />
@@ -603,6 +690,7 @@ export function RiderDocumentUpdateSheet({
                 onPress={() => showPhotoOptions("back")}
                 onRemove={() => setBackUri(null)}
                 disabled={busy || electronicallyVerified}
+                uploading={busy && !electronicallyVerified}
                 boxTitle="Upload Back"
                 boxSub="Camera or gallery"
                 viewerTitle={`${title} back`}

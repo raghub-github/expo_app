@@ -80,7 +80,7 @@ function parseSessionJson(raw: string): {
   user?: User;
 } | null {
   try {
-    let text = raw;
+    let text = raw.trim();
     // URL-encoded JSON cookies
     if (text.startsWith("%")) {
       try {
@@ -89,10 +89,24 @@ function parseSessionJson(raw: string): {
         /* keep */
       }
     }
-    // base64-encoded JSON (some SSR cookie layouts)
+    // @supabase/ssr encodes as `base64-<payload>` (and sometimes URL-safe base64).
+    if (text.startsWith("base64-")) {
+      text = text.slice("base64-".length);
+      try {
+        const normalized = text.replace(/-/g, "+").replace(/_/g, "/");
+        const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+        const decoded = Buffer.from(padded, "base64").toString("utf8");
+        if (decoded.startsWith("{") || decoded.startsWith("[")) text = decoded;
+      } catch {
+        /* keep */
+      }
+    }
+    // base64-encoded JSON (some SSR cookie layouts without the prefix)
     if (!text.startsWith("{") && !text.startsWith("[")) {
       try {
-        const decoded = Buffer.from(text, "base64").toString("utf8");
+        const normalized = text.replace(/-/g, "+").replace(/_/g, "/");
+        const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+        const decoded = Buffer.from(padded, "base64").toString("utf8");
         if (decoded.startsWith("{") || decoded.startsWith("[")) text = decoded;
       } catch {
         /* keep */
@@ -121,8 +135,8 @@ function collectAuthCookieValue(
   }
 
   for (const base of baseNames) {
-    const direct = getCookie(base);
-    if (direct && direct.length > 20) return direct;
+    // Always assemble chunks when .0 exists — a truncated/stale non-chunked
+    // base cookie must not win over the chunked session (causes parse miss → 503).
     const chunks: string[] = [];
     for (let i = 0; i < 10; i++) {
       const part = getCookie(`${base}.${i}`);
@@ -130,6 +144,9 @@ function collectAuthCookieValue(
       chunks.push(part);
     }
     if (chunks.length > 0) return chunks.join("");
+
+    const direct = getCookie(base);
+    if (direct && direct.length > 20) return direct;
   }
 
   const legacy = getCookie("sb-access-token");

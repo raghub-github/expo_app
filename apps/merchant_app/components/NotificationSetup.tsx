@@ -11,6 +11,7 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   navigateFromPushData,
   usePushPermissionController,
+  setInAppBannerUiEnabled,
   type PushNotificationOpenPayload,
 } from "@gatimitra/expo-push-kit";
 import { useAuth } from "@/context/AuthContext";
@@ -45,6 +46,9 @@ import {
   isStoreStatusPushData,
   storeStatusStateFromPush,
 } from "@/lib/storeStatusNotification";
+
+// In-app notification pills OFF. Push / FCM / OS shade / token sync stay ON.
+setInAppBannerUiEnabled(false);
 
 const LORA = "Lora_400Regular";
 const LORA_BOLD = "Lora_700Bold";
@@ -263,6 +267,7 @@ export default function NotificationSetup() {
           // AndroidImportance.MAX — heads-up + lockscreen for killed-app new orders.
           importance: 5,
           sound: MERCHANT_NEW_ORDER_SOUND,
+          bypassDnd: true,
         },
         {
           channelId: "merchant_new_orders",
@@ -426,6 +431,7 @@ export default function NotificationSetup() {
   }, [controller]);
 
   // Login / store change: restart listeners (logout calls stopLifecycle) and re-sync tokens.
+  // Pill UI is disabled separately — this path must always keep FCM registration alive.
   useEffect(() => {
     if (!authToken) return;
     controller.startLifecycle();
@@ -435,7 +441,48 @@ export default function NotificationSetup() {
     const restoreHandler = setTimeout(() => {
       void installMerchantForegroundNotificationHandler();
     }, 300);
-    void controller.refresh({ syncIfGranted: !expoGo });
+    void (async () => {
+      const snap = await controller.refresh({ syncIfGranted: !expoGo });
+      console.log("[push:merchant] post-login refresh", {
+        osStatus: snap.osStatus,
+        syncStatus: snap.syncStatus,
+        lastBackendSyncOk: snap.lastBackendSyncOk,
+        hasExpo: !!snap.expoPushToken,
+        hasNative: !!snap.nativePushToken,
+        error: snap.error,
+        expoGo,
+      });
+      if (
+        snap.lastBackendSyncOk === false ||
+        snap.syncStatus === "error" ||
+        (snap.error && String(snap.error).trim())
+      ) {
+        console.error("[push:merchant] push_token_register_failed", {
+          phase: "post-login-refresh",
+          osStatus: snap.osStatus,
+          syncStatus: snap.syncStatus,
+          lastBackendSyncOk: snap.lastBackendSyncOk,
+          error: snap.error,
+        });
+      }
+      if (expoGo || snap.osStatus !== "granted") return;
+      const after = await controller.syncTokens();
+      if (
+        after.lastBackendSyncOk === false ||
+        after.syncStatus === "error" ||
+        (!after.expoPushToken && !after.nativePushToken)
+      ) {
+        console.error("[push:merchant] push_token_register_failed", {
+          phase: "post-login-sync",
+          osStatus: after.osStatus,
+          syncStatus: after.syncStatus,
+          lastBackendSyncOk: after.lastBackendSyncOk,
+          hasExpo: !!after.expoPushToken,
+          hasNative: !!after.nativePushToken,
+          error: after.error,
+        });
+      }
+    })();
     return () => clearTimeout(restoreHandler);
   }, [authToken, storeId, partner?.childStores?.length, controller, expoGo]);
 
@@ -455,9 +502,28 @@ export default function NotificationSetup() {
   useEffect(() => {
     const sub = AppState.addEventListener("change", (s: AppStateStatus) => {
       if (s !== "active" || (!authToken && !isAuthenticated)) return;
+      void installMerchantForegroundNotificationHandler();
       void refreshOsPermission().then((perm) => {
         if (perm.osStatus === "granted") {
-          void controller.refresh({ syncIfGranted: !expoGo });
+          void (async () => {
+            const snap = await controller.refresh({ syncIfGranted: !expoGo });
+            if (
+              !expoGo &&
+              snap.osStatus === "granted" &&
+              !snap.expoPushToken &&
+              !snap.nativePushToken
+            ) {
+              const after = await controller.syncTokens();
+              if (!after.expoPushToken && !after.nativePushToken) {
+                console.error("[push:merchant] push_token_register_failed", {
+                  phase: "resume-self-heal",
+                  osStatus: after.osStatus,
+                  syncStatus: after.syncStatus,
+                  error: after.error,
+                });
+              }
+            }
+          })();
           return;
         }
         if (!dismissedRef.current) setAutoGateVisible(true);

@@ -179,7 +179,7 @@ export function MerchantOrderItemsList({
                           <button
                             type="button"
                             onClick={() => onItemClick(item)}
-                            className={`block text-left font-semibold text-stone-900 underline decoration-stone-300 underline-offset-2 hover:decoration-emerald-600 ${
+                            className={`inline-block max-w-full text-left font-semibold text-stone-900 underline decoration-stone-300 decoration-dashed underline-offset-2 hover:decoration-emerald-600 ${
                               compact ? 'text-[13px]' : 'text-sm font-bold'
                             }`}
                           >
@@ -192,7 +192,7 @@ export function MerchantOrderItemsList({
                           </button>
                         ) : (
                           <span
-                            className={`block font-semibold text-stone-900 ${
+                            className={`inline-block max-w-full font-semibold text-stone-900 underline decoration-stone-300 decoration-dashed underline-offset-2 ${
                               compact ? 'text-[13px]' : 'text-sm font-bold'
                             }`}
                           >

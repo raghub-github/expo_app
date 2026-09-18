@@ -80,6 +80,50 @@ describe("rider onboarding docs from dashboard", () => {
     );
   });
 
+  it("completes DL/RC when RC is pending manual review; blocks rejected / name-mismatch without photo", () => {
+    const dl = { docType: "dl", fileUrl: "https://cdn/dl.jpg", verified: true };
+    assert.equal(
+      dlRcOnboardingComplete([
+        dl,
+        {
+          docType: "rc",
+          fileUrl: "https://cdn/rc.jpg",
+          verified: false,
+          verificationStatus: "pending",
+          verificationMethod: "MANUAL_UPLOAD",
+          metadata: { rcOwnerAadhaarMismatch: true, rcVerificationState: "MANUAL_REVIEW_PENDING" },
+        },
+      ]),
+      true,
+    );
+    assert.equal(
+      dlRcOnboardingComplete([
+        dl,
+        {
+          docType: "rc",
+          fileUrl: "https://cdn/rc.jpg",
+          verified: false,
+          verificationStatus: "rejected",
+          metadata: { rcOwnerAadhaarMismatch: true, rcVerificationState: "MANUAL_REJECTED" },
+        },
+      ]),
+      false,
+    );
+    assert.equal(
+      dlRcOnboardingComplete([
+        dl,
+        {
+          docType: "rc",
+          fileUrl: "https://cdn/rc.jpg",
+          verified: true,
+          verificationStatus: "approved",
+          metadata: { rcOwnerAadhaarMismatch: true, rcVerificationState: "MANUAL_VERIFIED" },
+        },
+      ]),
+      true,
+    );
+  });
+
   it("completes DL/RC when dashboard verifies both docs", () => {
     assert.equal(
       dlRcOnboardingComplete([
@@ -103,7 +147,32 @@ describe("rider onboarding docs from dashboard", () => {
       false,
     );
     assert.equal(
-      panSelfieOnboardingComplete([{ docType: "selfie", fileUrl: "https://cdn/selfie.jpg" }]),
+      panSelfieOnboardingComplete([
+        { docType: "selfie", fileUrl: "https://cdn/selfie.jpg" },
+        { docType: "pan", fileUrl: "electronic_verified", verified: true, verificationMethod: "APP_VERIFIED" },
+      ]),
+      true,
+    );
+    // Manual PAN photo + selfie is enough for onboarding funnel (admin reviews later).
+    assert.equal(
+      panSelfieOnboardingComplete([
+        { docType: "selfie", fileUrl: "https://cdn/selfie.jpg" },
+        { docType: "pan", fileUrl: "https://cdn/pan.jpg", verified: false },
+      ]),
+      true,
+    );
+    // Pending manual PAN must NOT look electronically verified.
+    assert.equal(
+      panSelfieOnboardingComplete([
+        { docType: "selfie", fileUrl: "https://cdn/selfie.jpg" },
+        {
+          docType: "pan",
+          fileUrl: "https://cdn/pan.jpg",
+          verified: false,
+          verificationStatus: "pending",
+          verificationMethod: "MANUAL_UPLOAD",
+        },
+      ]),
       true,
     );
   });

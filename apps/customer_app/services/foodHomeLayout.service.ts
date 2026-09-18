@@ -30,6 +30,12 @@ export type FoodHomeLayoutResult = {
   gridFirstUnder250FilterLabel: string;
   gridFirstUnder250TabImageUrl: string | null;
   gridFirstUnder250HeroImageUrl: string | null;
+  classicUnder250Enabled: boolean;
+  classicUnder250MaxPrice: number;
+  classicUnder250Title: string;
+  classicUnder250FilterLabel: string;
+  classicUnder250TabImageUrl: string | null;
+  classicUnder250HeroImageUrl: string | null;
   discoveryDealsAtMaxPrice: number | null;
   discoveryDealsAtImageUrl: string | null;
   discoveryDealsAtHeroImageUrl: string | null;
@@ -41,9 +47,54 @@ export type FoodHomeLayoutResult = {
   discoveryCtaTiles: DiscoveryCtaTile[];
 };
 
+function mapUnder250(
+  enabled: unknown,
+  maxPrice: unknown,
+  title: unknown,
+  filterLabel: unknown,
+  tabImageUrl: unknown,
+  heroImageUrl: unknown
+) {
+  return {
+    enabled: parseGridFirstUnder250Enabled(enabled),
+    maxPrice: parseGridFirstUnder250MaxPrice(maxPrice),
+    title: parseGridFirstUnder250Title(title, DEFAULT_GRID_FIRST_UNDER_250.title),
+    filterLabel: parseGridFirstUnder250Title(
+      filterLabel,
+      DEFAULT_GRID_FIRST_UNDER_250.filterLabel
+    ),
+    tabImageUrl: parseGridFirstUnder250ImageUrl(tabImageUrl),
+    heroImageUrl: parseGridFirstUnder250ImageUrl(heroImageUrl),
+  };
+}
+
 function mapFoodHomeLayoutResponse(
   data: Partial<FoodHomeLayoutResult> & { ok?: boolean }
 ): FoodHomeLayoutResult {
+  const gridUnder = mapUnder250(
+    data.gridFirstUnder250Enabled,
+    data.gridFirstUnder250MaxPrice,
+    data.gridFirstUnder250Title,
+    data.gridFirstUnder250FilterLabel,
+    data.gridFirstUnder250TabImageUrl,
+    data.gridFirstUnder250HeroImageUrl
+  );
+  // Older APIs only returned grid_* — classic falls back once until classic_* ships.
+  const hasClassic =
+    data.classicUnder250Enabled != null ||
+    data.classicUnder250MaxPrice != null ||
+    data.classicUnder250Title != null;
+  const classicUnder = hasClassic
+    ? mapUnder250(
+        data.classicUnder250Enabled,
+        data.classicUnder250MaxPrice,
+        data.classicUnder250Title,
+        data.classicUnder250FilterLabel,
+        data.classicUnder250TabImageUrl,
+        data.classicUnder250HeroImageUrl
+      )
+    : { ...gridUnder };
+
   return {
     layoutKey: data.layoutKey ?? "classic",
     stateId: data.stateId ?? null,
@@ -57,18 +108,18 @@ function mapFoodHomeLayoutResponse(
     gridFirstSubscriptionRowBgColor: parseGridFirstSubscriptionRowBgColor(
       data.gridFirstSubscriptionRowBgColor
     ),
-    gridFirstUnder250Enabled: parseGridFirstUnder250Enabled(data.gridFirstUnder250Enabled),
-    gridFirstUnder250MaxPrice: parseGridFirstUnder250MaxPrice(data.gridFirstUnder250MaxPrice),
-    gridFirstUnder250Title: parseGridFirstUnder250Title(
-      data.gridFirstUnder250Title,
-      DEFAULT_GRID_FIRST_UNDER_250.title
-    ),
-    gridFirstUnder250FilterLabel: parseGridFirstUnder250Title(
-      data.gridFirstUnder250FilterLabel,
-      DEFAULT_GRID_FIRST_UNDER_250.filterLabel
-    ),
-    gridFirstUnder250TabImageUrl: parseGridFirstUnder250ImageUrl(data.gridFirstUnder250TabImageUrl),
-    gridFirstUnder250HeroImageUrl: parseGridFirstUnder250ImageUrl(data.gridFirstUnder250HeroImageUrl),
+    gridFirstUnder250Enabled: gridUnder.enabled,
+    gridFirstUnder250MaxPrice: gridUnder.maxPrice,
+    gridFirstUnder250Title: gridUnder.title,
+    gridFirstUnder250FilterLabel: gridUnder.filterLabel,
+    gridFirstUnder250TabImageUrl: gridUnder.tabImageUrl,
+    gridFirstUnder250HeroImageUrl: gridUnder.heroImageUrl,
+    classicUnder250Enabled: classicUnder.enabled,
+    classicUnder250MaxPrice: classicUnder.maxPrice,
+    classicUnder250Title: classicUnder.title,
+    classicUnder250FilterLabel: classicUnder.filterLabel,
+    classicUnder250TabImageUrl: classicUnder.tabImageUrl,
+    classicUnder250HeroImageUrl: classicUnder.heroImageUrl,
     discoveryDealsAtMaxPrice: parseDiscoveryCtaConfig(data).dealsAtMaxPrice,
     discoveryDealsAtImageUrl: parseDiscoveryCtaConfig(data).dealsAtImageUrl,
     discoveryDealsAtHeroImageUrl: parseDiscoveryCtaConfig(data).dealsAtHeroImageUrl,
@@ -80,6 +131,37 @@ function mapFoodHomeLayoutResponse(
     discoveryCtaTiles: parseDiscoveryCtaConfig(data).tiles,
   };
 }
+
+const FALLBACK_LAYOUT: FoodHomeLayoutResult = {
+  layoutKey: "classic",
+  stateId: null,
+  stateName: null,
+  gridFirstHeroMedia: [],
+  gridFirstSubscriptionRowEnabled: false,
+  gridFirstSubscriptionRowText: DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text,
+  gridFirstSubscriptionRowBgColor: DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.backgroundColor,
+  gridFirstUnder250Enabled: false,
+  gridFirstUnder250MaxPrice: DEFAULT_GRID_FIRST_UNDER_250.maxPrice,
+  gridFirstUnder250Title: DEFAULT_GRID_FIRST_UNDER_250.title,
+  gridFirstUnder250FilterLabel: DEFAULT_GRID_FIRST_UNDER_250.filterLabel,
+  gridFirstUnder250TabImageUrl: DEFAULT_GRID_FIRST_UNDER_250.tabImageUrl,
+  gridFirstUnder250HeroImageUrl: DEFAULT_GRID_FIRST_UNDER_250.heroImageUrl,
+  classicUnder250Enabled: DEFAULT_GRID_FIRST_UNDER_250.enabled,
+  classicUnder250MaxPrice: DEFAULT_GRID_FIRST_UNDER_250.maxPrice,
+  classicUnder250Title: DEFAULT_GRID_FIRST_UNDER_250.title,
+  classicUnder250FilterLabel: DEFAULT_GRID_FIRST_UNDER_250.filterLabel,
+  classicUnder250TabImageUrl: DEFAULT_GRID_FIRST_UNDER_250.tabImageUrl,
+  classicUnder250HeroImageUrl: DEFAULT_GRID_FIRST_UNDER_250.heroImageUrl,
+  discoveryDealsAtMaxPrice: DEFAULT_DISCOVERY_CTA.dealsAtMaxPrice,
+  discoveryDealsAtImageUrl: DEFAULT_DISCOVERY_CTA.dealsAtImageUrl,
+  discoveryDealsAtHeroImageUrl: DEFAULT_DISCOVERY_CTA.dealsAtHeroImageUrl,
+  discoveryCrazyDealsImageUrl: DEFAULT_DISCOVERY_CTA.crazyDealsImageUrl,
+  discoveryFreePackagingImageUrl: DEFAULT_DISCOVERY_CTA.freePackagingImageUrl,
+  discoveryDealsAtLabel: DEFAULT_DISCOVERY_CTA.dealsAtLabel,
+  discoveryCrazyDealsLabel: DEFAULT_DISCOVERY_CTA.crazyDealsLabel,
+  discoveryFreePackagingLabel: DEFAULT_DISCOVERY_CTA.freePackagingLabel,
+  discoveryCtaTiles: DEFAULT_DISCOVERY_CTA.tiles,
+};
 
 export async function getFoodHomeLayout(params: {
   pincode?: string;
@@ -98,29 +180,6 @@ export async function getFoodHomeLayout(params: {
     });
     return mapFoodHomeLayoutResponse(data);
   } catch {
-    return {
-      layoutKey: "classic",
-      stateId: null,
-      stateName: null,
-      gridFirstHeroMedia: [],
-      gridFirstSubscriptionRowEnabled: false,
-      gridFirstSubscriptionRowText: DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text,
-      gridFirstSubscriptionRowBgColor: DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.backgroundColor,
-      gridFirstUnder250Enabled: DEFAULT_GRID_FIRST_UNDER_250.enabled,
-      gridFirstUnder250MaxPrice: DEFAULT_GRID_FIRST_UNDER_250.maxPrice,
-      gridFirstUnder250Title: DEFAULT_GRID_FIRST_UNDER_250.title,
-      gridFirstUnder250FilterLabel: DEFAULT_GRID_FIRST_UNDER_250.filterLabel,
-      gridFirstUnder250TabImageUrl: DEFAULT_GRID_FIRST_UNDER_250.tabImageUrl,
-      gridFirstUnder250HeroImageUrl: DEFAULT_GRID_FIRST_UNDER_250.heroImageUrl,
-      discoveryDealsAtMaxPrice: DEFAULT_DISCOVERY_CTA.dealsAtMaxPrice,
-      discoveryDealsAtImageUrl: DEFAULT_DISCOVERY_CTA.dealsAtImageUrl,
-      discoveryDealsAtHeroImageUrl: DEFAULT_DISCOVERY_CTA.dealsAtHeroImageUrl,
-      discoveryCrazyDealsImageUrl: DEFAULT_DISCOVERY_CTA.crazyDealsImageUrl,
-      discoveryFreePackagingImageUrl: DEFAULT_DISCOVERY_CTA.freePackagingImageUrl,
-      discoveryDealsAtLabel: DEFAULT_DISCOVERY_CTA.dealsAtLabel,
-      discoveryCrazyDealsLabel: DEFAULT_DISCOVERY_CTA.crazyDealsLabel,
-      discoveryFreePackagingLabel: DEFAULT_DISCOVERY_CTA.freePackagingLabel,
-      discoveryCtaTiles: DEFAULT_DISCOVERY_CTA.tiles,
-    };
+    return { ...FALLBACK_LAYOUT };
   }
 }

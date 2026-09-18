@@ -4,9 +4,20 @@
  * so the rider app skips already-finished steps without re-submit errors.
  */
 
+import { isRcCompleteForOnboardingProgress } from "./rider-rc-verification-state.js";
+
 export type OnboardingDocRow = {
   id?: number;
   docType: string;
+  fileUrl?: string | null;
+  verified?: boolean | null;
+  verificationMethod?: string | null;
+  verificationStatus?: string | null;
+  metadata?: unknown;
+};
+
+/** Loose shape for upload/electronic completeness (RC helpers omit docType). */
+export type OnboardingDocUsableInput = {
   fileUrl?: string | null;
   verified?: boolean | null;
   verificationMethod?: string | null;
@@ -27,7 +38,7 @@ export function isPlaceholderOnboardingFileUrl(fileUrl?: string | null): boolean
 }
 
 export function isAdminOrElectronicallyCompleteDoc(
-  doc?: OnboardingDocRow | null,
+  doc?: OnboardingDocUsableInput | null,
 ): boolean {
   if (!doc) return false;
   if (doc.verified === true) return true;
@@ -47,7 +58,10 @@ export function isAdminOrElectronicallyCompleteDoc(
   if (
     url.includes("electronic_verified") ||
     url.includes("digilocker_verified") ||
-    url.includes("aadhaar_masking_verified")
+    url.includes("aadhaar_masking_verified") ||
+    url.includes("cashfree_dl_verified") ||
+    url.includes("cashfree_rc_verified") ||
+    url.includes("cashfree_pan_verified")
   ) {
     return true;
   }
@@ -56,7 +70,7 @@ export function isAdminOrElectronicallyCompleteDoc(
 }
 
 /** Real upload OR dashboard/electronic complete (pending stubs do not count). */
-export function isOnboardingDocUsable(doc?: OnboardingDocRow | null): boolean {
+export function isOnboardingDocUsable(doc?: OnboardingDocUsableInput | null): boolean {
   if (!doc) return false;
   if (isAdminOrElectronicallyCompleteDoc(doc)) return true;
   return !isPlaceholderOnboardingFileUrl(doc.fileUrl);
@@ -92,8 +106,8 @@ export function isOnboardingDocSkipped(skipped: string[], code: string): boolean
 
 /**
  * Vehicle catalog required_docs satisfied for onboarding funnel progress.
- * Intentional skips (persisted on onboarding_vehicle_selection) count as satisfied
- * so optional geo DL/RC do not block bank/payment. Service eligibility stays separate.
+ * Codes in skippedDocs (optional or geo soft-skips) count as satisfied so
+ * Parcel/Ride can stay "Later" while Food unlocks after payment.
  */
 export function vehicleStepCompleteByRequired(
   docs: OnboardingDocRow[],
@@ -111,7 +125,11 @@ export function vehicleStepCompleteByRequired(
     }
     const norm = normalizeOnboardingDocCode(code);
     const docType = norm === "rc" ? "rc" : code;
-    return isOnboardingDocUsable(docs.find((d) => d.docType === docType || d.docType === code));
+    const row = docs.find((d) => d.docType === docType || d.docType === code);
+    if (norm === "rc") {
+      return isRcCompleteForOnboardingProgress(row, false, isOnboardingDocUsable);
+    }
+    return isOnboardingDocUsable(row);
   });
 }
 
@@ -156,13 +174,14 @@ function findDlDoc(docs: OnboardingDocRow[]): OnboardingDocRow | undefined {
 export function dlRcOnboardingComplete(docs: OnboardingDocRow[]): boolean {
   const dl = findDlDoc(docs);
   const rc = docs.find((d) => d.docType === "rc");
-  if (isOnboardingDocUsable(dl) && isOnboardingDocUsable(rc)) return true;
+  const rcOk = isRcCompleteForOnboardingProgress(rc, false, isOnboardingDocUsable);
+  if (isOnboardingDocUsable(dl) && rcOk) return true;
   const dlFront = docs.find((d) => d.docType === "dl_front");
   const dlBack = docs.find((d) => d.docType === "dl_back");
   return (
     isOnboardingDocUsable(dlFront) &&
     isOnboardingDocUsable(dlBack) &&
-    isOnboardingDocUsable(rc)
+    rcOk
   );
 }
 
@@ -179,12 +198,17 @@ export function panSelfieOnboardingComplete(
   if (!selfieOk) return false;
   if (opts?.panSkipOverride === true) return true;
   const pan = docs.find((d) => d.docType === "pan");
-  return isAdminOrElectronicallyCompleteDoc(pan);
+  // Funnel progress only: a real PAN file (or electronic stub) lets the rider
+  // continue onboarding. Manual uploads stay verificationStatus=pending /
+  // requiresManualReview for admin — do NOT require verified=true here.
+  // Service eligibility still uses panDocVerified / eligibility engine separately.
+  return isOnboardingDocUsable(pan);
 }
 
 export function rentalEvOnboardingComplete(docs: OnboardingDocRow[]): boolean {
+  // Funnel: both files uploaded. Verification may still be pending for admin.
   return (
-    isOnboardingDocUsable(docs.find((d) => d.docType === "rental_proof")) ||
+    isOnboardingDocUsable(docs.find((d) => d.docType === "rental_proof")) &&
     isOnboardingDocUsable(docs.find((d) => d.docType === "ev_proof"))
   );
 }

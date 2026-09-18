@@ -179,7 +179,7 @@ const styles = StyleSheet.create({
   },
   confirmBtn: {
     backgroundColor: GatiMitraColors.primaryMint,
-    borderRadius: 28,
+    borderRadius: 20,
     paddingVertical: 16,
     alignItems: "center",
   },
@@ -193,7 +193,7 @@ const styles = StyleSheet.create({
   },
   keepBtn: {
     marginTop: 10,
-    borderRadius: 28,
+    borderRadius: 20,
     paddingVertical: 16,
     alignItems: "center",
     borderWidth: 1.5,

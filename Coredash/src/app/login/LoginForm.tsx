@@ -177,15 +177,21 @@ export default function LoginForm() {
   async function google() {
     setGoogleLoading(true);
     try {
+      // Restriction matches email OTP: after Google returns, /auth/callback
+      // calls /api/auth/can-login then /api/auth/set-cookie (super admin only).
+      // Email cannot be pre-checked before the OAuth redirect.
       const supabase = getBrowserSupabase();
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: { redirectTo: `${window.location.origin}/auth/callback` },
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+          queryParams: { prompt: "select_account" },
+        },
       });
       if (error) throw error;
     } catch (err) {
       setGoogleLoading(false);
-      toast.error(err instanceof Error ? err.message : "Google sign-in failed");
+      failAuth(err);
     }
   }
 

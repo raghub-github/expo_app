@@ -549,6 +549,7 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/super-admin/geo": "Geo & coverage",
   "/dashboard/super-admin/offers-coupons": "Offers & coupons",
   "/dashboard/super-admin/offers-coupons/analytics": "Platform offer analytics",
+  "/dashboard/super-admin/offers-coupons/flash-tracker": "Flash Sale tracker",
   "/dashboard/super-admin/offers-coupons/new": "Create platform offer",
   "/dashboard/super-admin/offers-coupons/coupons/new": "Create checkout coupon",
   "/dashboard/super-admin/cxapp-home": "Super Admin",
@@ -578,6 +579,7 @@ function resolveSuperAdminBackHref(cleanPath: string): string {
   // Offers & coupons nested pages → list
   if (
     cleanPath === "/dashboard/super-admin/offers-coupons/analytics" ||
+    cleanPath === "/dashboard/super-admin/offers-coupons/flash-tracker" ||
     cleanPath === "/dashboard/super-admin/offers-coupons/new" ||
     cleanPath === "/dashboard/super-admin/offers-coupons/coupons/new" ||
     /^\/dashboard\/super-admin\/offers-coupons\/\d+\/edit$/.test(cleanPath) ||

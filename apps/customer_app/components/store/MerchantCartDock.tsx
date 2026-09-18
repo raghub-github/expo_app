@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo } from "react";
+import { StyleSheet, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useCartStore, type CartItem } from "@/store/cartStore";
 import { useCartChromeStore } from "@/store/cartChromeStore";
@@ -33,6 +34,9 @@ export type MerchantCartDockProps = {
  * Isolated cart-total subscriber for the merchant menu's Continue dock.
  * Shows immediately from cartChrome flash (pressIn) — does not wait for the
  * Zustand cart write / menu-host work that used to block the first paint.
+ *
+ * No HOME / edge peek on store inner (classic, grid_first, discovery) — back
+ * chrome handles leave; edge peeks belong on Food tab chrome only.
  */
 export function MerchantCartDock({
   merchantId,
@@ -95,7 +99,6 @@ export function MerchantCartDock({
   const cartItemsForDock = useCartStore((s) =>
     merchantCartMatchesRoute(s.merchantId, merchantId) ? s.items : EMPTY_CART_ITEMS
   );
-  const syncCartPrices = useCartStore((s) => s.syncPricesFromMap);
 
   // Flash is authoritative while pending — including flashCount === 0 (instant hide).
   const displayCount = flashActive ? flashCount : totalInCart;
@@ -166,15 +169,23 @@ export function MerchantCartDock({
   if (!showDock) return null;
 
   return (
-    <MerchantMenuCartSheet
-      items={cartItemsForDock}
-      totalCount={displayCount}
-      onContinue={onContinue}
-      disabled={isStoreClosedForStatus}
-      isStoreClosed={isStoreClosedForStatus}
-      offerBannerText={offerBannerText}
-      bottomInset={bottomInset}
-      reserveOfferStrip={reserveOfferStrip}
-    />
+    <View style={styles.dockStack} pointerEvents="box-none" collapsable={false}>
+      <MerchantMenuCartSheet
+        items={cartItemsForDock}
+        totalCount={displayCount}
+        onContinue={onContinue}
+        disabled={isStoreClosedForStatus}
+        isStoreClosed={isStoreClosedForStatus}
+        offerBannerText={offerBannerText}
+        bottomInset={bottomInset}
+        reserveOfferStrip={reserveOfferStrip}
+      />
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  dockStack: {
+    width: "100%",
+  },
+});

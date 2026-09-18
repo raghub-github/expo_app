@@ -29,8 +29,10 @@ export async function pingLocation(args: {
   session: Session;
   deviceId: string;
   fix: RiderLocationFix;
+  /** Bypass client throttle — use for accept-time freshness only. */
+  force?: boolean;
 }): Promise<RiderLocationPingResponse> {
-  if (!consumeLocationPingSlot()) {
+  if (!args.force && !consumeLocationPingSlot()) {
     return {
       accepted: true,
       serverTsMs: Date.now(),
@@ -40,6 +42,9 @@ export async function pingLocation(args: {
       recommendedPingIntervalMs: 30_000,
       trackingMode: "idle",
     };
+  }
+  if (args.force) {
+    lastPingSentAtMs = Date.now();
   }
 
   const cfg = getRiderAppConfig();

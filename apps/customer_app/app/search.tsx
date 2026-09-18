@@ -55,6 +55,8 @@ import { CX } from "@/lib/appAssetKeys";
 import { merchantService, type MerchantSummary } from "@/services/merchant.service";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 
+const CLASSIC_PLACEHOLDERS = ["Try 'Pizza'", "Try 'Fries'", "Try 'Biryani'", "Try 'Burger'"] as const;
+
 const { width, height } = Dimensions.get("window");
 const PAD = 16;
 /** Circular mind grid — 3 columns like polished discovery UIs. */
@@ -147,9 +149,12 @@ export default function SearchScreen() {
     voice?: string;
     q?: string | string[];
     storeType?: string | string[];
+    classic?: string | string[];
   }>();
   const insets = useSafeAreaInsets();
   const voiceMode = params.voice === "1";
+  const classicSearch =
+    (Array.isArray(params.classic) ? params.classic[0] : params.classic) === "1";
   const searchStoreType = useMemo(() => {
     const raw = Array.isArray(params.storeType) ? params.storeType[0] : params.storeType;
     const st = String(raw ?? "FOOD").trim().toUpperCase();
@@ -158,11 +163,24 @@ export default function SearchScreen() {
 
   const [query, setQuery] = React.useState(() => normalizeSearchParam(params.q));
   const inputRef = useRef<TextInput>(null);
+  const [classicPlaceholderIdx, setClassicPlaceholderIdx] = React.useState(0);
 
   React.useEffect(() => {
     const next = normalizeSearchParam(params.q);
     if (next) setQuery(next);
   }, [params.q]);
+
+  // Classic: keep default stack animation — do not call setOptions(presentation)
+  // (transparentModal + slide_from_top crashed the app on Android when opening Search).
+
+  // Rotate a single placeholder — never stack two strings.
+  useEffect(() => {
+    if (!classicSearch || query.trim().length > 0) return;
+    const t = setInterval(() => {
+      setClassicPlaceholderIdx((i) => (i + 1) % CLASSIC_PLACEHOLDERS.length);
+    }, 2200);
+    return () => clearInterval(t);
+  }, [classicSearch, query]);
   const { items: recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, hydrate } = useRecentSearchStore();
   const coords = useLocationStore((s) => s.coords);
   const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
@@ -332,11 +350,49 @@ export default function SearchScreen() {
     <>
       <AndroidBackHandler />
       <KeyboardAvoidingView
-        style={styles.container}
+        style={[styles.container, styles.containerOpaque]}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         keyboardVerticalOffset={0}
       >
-      {/* Sticky header */}
+      {/* Classic header — mint search field */}
+      {classicSearch ? (
+        <View
+          style={[
+            styles.classicHeader,
+            { paddingTop: HEADER_PADDING_TOP, paddingBottom: HEADER_VERTICAL_PADDING },
+          ]}
+        >
+          <View style={styles.classicTitleRow}>
+            <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
+              <Ionicons name="arrow-back" size={22} color={GatiMitraColors.textPrimaryNew} />
+            </TouchableOpacity>
+            <AppText style={styles.classicTitle} numberOfLines={1}>
+              Search for tasty & budget meals
+            </AppText>
+            <View style={styles.classicTitleSpacer} />
+          </View>
+          <View style={styles.classicSearchPill}>
+            <TextInput
+              ref={inputRef}
+              style={styles.classicSearchInput}
+              placeholder={CLASSIC_PLACEHOLDERS[classicPlaceholderIdx]}
+              placeholderTextColor="#9CA3AF"
+              value={query}
+              onChangeText={setQuery}
+              returnKeyType="search"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus
+              selectionColor={GatiMitraColors.primaryMint}
+            />
+            {query.length > 0 ? (
+              <TouchableOpacity onPress={handleClearInput} style={styles.clearBtn} hitSlop={8}>
+                <Ionicons name="close" size={18} color="#9CA3AF" />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+      ) : (
       <View style={[styles.header, { paddingTop: HEADER_PADDING_TOP, paddingBottom: HEADER_VERTICAL_PADDING }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={8}>
           <Ionicons name="arrow-back" size={22} color={GatiMitraColors.primaryMint} />
@@ -367,8 +423,42 @@ export default function SearchScreen() {
           />
         </View>
       </View>
+      )}
 
       {showDefaultView ? (
+        classicSearch ? (
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.idleScrollContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            {discoveryChips.length > 0 ? (
+              <>
+                <AppText style={styles.slogan}>Crave it, find it</AppText>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.moodChips}
+                  style={styles.moodChipsScroll}
+                >
+                  {discoveryChips.map((chip) => (
+                    <TouchableOpacity
+                      key={chip.id}
+                      style={styles.moodChip}
+                      onPress={() => handleDiscoveryChipPress(chip.slug, chip.categoryName)}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="sparkles" size={14} color={CHIP_ICON} />
+                      <AppText style={styles.moodChipText}>{chip.label}</AppText>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </>
+            ) : null}
+            <View style={{ height: 24 }} />
+          </ScrollView>
+        ) : (
         <ScrollView
           style={styles.scroll}
           contentContainerStyle={styles.idleScrollContent}
@@ -472,6 +562,7 @@ export default function SearchScreen() {
             </View>
           )}
         </ScrollView>
+        )
       ) : (
         <ScrollView
           style={styles.scroll}
@@ -479,11 +570,11 @@ export default function SearchScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {showSkeleton ? (
+          {showSkeleton && !(results && (results.dishes.length > 0 || results.restaurants.length > 0 || results.category)) ? (
             <View style={styles.skeletonWrap}>
               <RestaurantListSkeleton count={5} />
             </View>
-          ) : isError ? (
+          ) : isError && !(results && (results.dishes.length > 0 || results.restaurants.length > 0)) ? (
             <View style={styles.emptyStateOuter}>
               <AppText style={styles.resultSectionTitle}>Couldn’t search</AppText>
               <AppText style={styles.resultSectionEmpty}>
@@ -501,6 +592,8 @@ export default function SearchScreen() {
             <SearchResultsList
               results={results}
               storeType={searchStoreType}
+              classic={classicSearch}
+              highlightQuery={query.trim()}
               suggestions={suggestions}
               onSuggestionPress={(text) => {
                 setQuery(text);
@@ -527,6 +620,8 @@ export default function SearchScreen() {
 function SearchResultsList({
   results,
   storeType = "FOOD",
+  classic = false,
+  highlightQuery = "",
   suggestions = [],
   onSuggestionPress,
   onDidYouMeanPress,
@@ -537,6 +632,8 @@ function SearchResultsList({
 }: {
   results: SearchResults;
   storeType?: string;
+  classic?: boolean;
+  highlightQuery?: string;
   suggestions?: Array<{ type: string; text: string; storeId?: string; itemId?: string }>;
   onSuggestionPress?: (text: string) => void;
   onDidYouMeanPress?: (text: string) => void;
@@ -610,6 +707,71 @@ function SearchResultsList({
     );
   }
 
+  if (classic) {
+    const q = highlightQuery.trim();
+    const rows: React.ReactNode[] = [];
+    if (category) {
+      rows.push(
+        <ClassicSearchRow
+          key={`cat-${category.slug}`}
+          title={category.name}
+          subtitle="View Dishes ›"
+          highlightQuery={q}
+          imageUrl={categoryImageUrl}
+          onPress={() => onCategoryPress(category.slug)}
+        />
+      );
+    }
+    for (const d of dishes.slice(0, 16)) {
+      rows.push(
+        <ClassicSearchRow
+          key={`dish-${d.id}`}
+          title={d.name}
+          subtitle={d.restaurantName?.trim() ? d.restaurantName : "Dish"}
+          highlightQuery={q}
+          imageUrl={searchCategoryImageUrl(d.imageKey)}
+          imageKey={d.imageKey}
+          onPress={() => onDishPress(d)}
+        />
+      );
+    }
+    // Only stores that sell a matched dish (already filtered in useDebouncedSearch).
+    for (const r of restaurants.slice(0, 16)) {
+      const rating =
+        r.avgRating != null && Number(r.avgRating) > 0
+          ? Number(r.avgRating).toFixed(1)
+          : null;
+      const eta = r.deliveryTime?.trim() || null;
+      const area =
+        (r as { area?: string | null }).area?.trim() ||
+        (r as { locality?: string | null }).locality?.trim() ||
+        (Array.isArray(r.cuisines) ? r.cuisines.filter(Boolean).slice(0, 1).join("") : "") ||
+        null;
+      const meta = [rating ? `★ ${rating}` : null, eta, area].filter(Boolean).join("  ·  ");
+      rows.push(
+        <ClassicSearchRow
+          key={`rest-${r.id}`}
+          title={r.name}
+          subtitle={meta || "Restaurant"}
+          highlightQuery={q}
+          imageUrl={
+            r.displayImage ||
+            r.banner_url ||
+            (r as { imageUrl?: string }).imageUrl ||
+            null
+          }
+          onPress={() => onRestaurantPress(r.id)}
+        />
+      );
+    }
+    return (
+      <View style={styles.classicResultsWrap}>
+        {typoBanner}
+        {rows}
+      </View>
+    );
+  }
+
   const dishSection =
     dishes.length > 0 ? (
       <>
@@ -670,6 +832,83 @@ function SearchResultsList({
     </View>
   );
 }
+
+function HighlightedSearchTitle({
+  text,
+  query,
+}: {
+  text: string;
+  query: string;
+}) {
+  const q = query.trim();
+  if (!q) {
+    return (
+      <AppText style={styles.classicRowTitle} numberOfLines={1}>
+        {text}
+      </AppText>
+    );
+  }
+  const lower = text.toLowerCase();
+  const qi = lower.indexOf(q.toLowerCase());
+  if (qi < 0) {
+    return (
+      <AppText style={styles.classicRowTitle} numberOfLines={1}>
+        {text}
+      </AppText>
+    );
+  }
+  const before = text.slice(0, qi);
+  const match = text.slice(qi, qi + q.length);
+  const after = text.slice(qi + q.length);
+  return (
+    <AppText style={styles.classicRowTitle} numberOfLines={1}>
+      {before ? <AppText style={styles.classicRowTitleMuted}>{before}</AppText> : null}
+      <AppText style={styles.classicRowTitleBold}>{match}</AppText>
+      {after ? <AppText style={styles.classicRowTitleMuted}>{after}</AppText> : null}
+    </AppText>
+  );
+}
+
+const ClassicSearchRow = memo(function ClassicSearchRow({
+  title,
+  subtitle,
+  highlightQuery,
+  imageUrl,
+  imageKey,
+  onPress,
+}: {
+  title: string;
+  subtitle: string;
+  highlightQuery: string;
+  imageUrl?: string | null;
+  imageKey?: string;
+  onPress: () => void;
+}) {
+  const fallback = useAppAssetSource(CX.search.default);
+  const keyUrl = imageKey ? searchCategoryImageUrl(imageKey) : null;
+  const uri = (imageUrl?.trim() || keyUrl || "").trim();
+  const source = uri ? { uri } : fallback;
+  return (
+    <TouchableOpacity style={styles.classicResultRow} onPress={onPress} activeOpacity={0.85}>
+      {source ? (
+        <Image
+          source={source}
+          style={styles.classicResultImage}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+        />
+      ) : (
+        <View style={styles.classicResultImage} />
+      )}
+      <View style={styles.classicResultText}>
+        <HighlightedSearchTitle text={title} query={highlightQuery} />
+        <AppText style={styles.classicResultSub} numberOfLines={1}>
+          {subtitle}
+        </AppText>
+      </View>
+    </TouchableOpacity>
+  );
+});
 
 const EASE_OUT_CUBIC = Easing.bezier(0.33, 1, 0.68, 1);
 
@@ -875,7 +1114,15 @@ const SearchRestaurantCard = memo(function SearchRestaurantCard({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  containerTransparent: {
+    backgroundColor: "transparent",
+  },
+  containerOpaque: {
     backgroundColor: GatiMitraColors.background,
+  },
+  containerClassicFull: {
+    backgroundColor: "#FFFFFF",
   },
   header: {
     flexDirection: "row",
@@ -884,6 +1131,106 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraColors.background,
     borderBottomWidth: 1,
     borderBottomColor: GatiMitraColors.border,
+  },
+  classicHeader: {
+    paddingHorizontal: PAD,
+    backgroundColor: "#FFFFFF",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(15,23,42,0.06)",
+    zIndex: 2,
+  },
+  classicHeaderSheet: {
+    borderBottomLeftRadius: 20,
+    borderBottomRightRadius: 20,
+    borderBottomWidth: 0,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0F172A",
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.12,
+        shadowRadius: 16,
+      },
+      android: { elevation: 8 },
+      default: {},
+    }),
+  },
+  classicDimBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
+  },
+  classicIdleFill: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+  },
+  classicTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  classicTitle: {
+    flex: 1,
+    textAlign: "center",
+    fontSize: 15,
+    fontWeight: "600",
+    color: GatiMitraColors.textSecondary,
+  },
+  classicTitleSpacer: {
+    width: 34,
+  },
+  classicSearchPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderWidth: 1.5,
+    borderColor: GatiMitraColors.deepMintStart,
+  },
+  classicSearchInput: {
+    flex: 1,
+    fontSize: 15,
+    color: GatiMitraColors.textPrimaryNew,
+    paddingVertical: 0,
+  },
+  classicResultsWrap: {
+    paddingTop: 8,
+    paddingHorizontal: PAD,
+  },
+  classicResultRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    gap: 14,
+  },
+  classicResultImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "#F3F4F6",
+  },
+  classicResultText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  classicRowTitle: {
+    fontSize: 16,
+    color: GatiMitraColors.textPrimaryNew,
+  },
+  classicRowTitleBold: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#0F172A",
+  },
+  classicRowTitleMuted: {
+    fontSize: 16,
+    fontWeight: "500",
+    color: "#4B5563",
+  },
+  classicResultSub: {
+    marginTop: 3,
+    fontSize: 13,
+    color: GatiMitraColors.textSecondary,
   },
   backBtn: {
     padding: 6,

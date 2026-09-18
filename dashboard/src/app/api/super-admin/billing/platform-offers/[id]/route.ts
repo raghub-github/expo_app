@@ -222,12 +222,14 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     };
     const patchKindErr = validatePlatformOfferKindFieldsForApi({
       offer_kind: merged.offer_kind,
+      service_type: merged.service_type,
       buy_qty: merged.buy_qty,
       get_qty: merged.get_qty,
       conditions: merged.conditions as Record<string, unknown>,
       discount_type: merged.discount_type,
       value_numeric: merged.value_numeric,
       delivery_discount_type: merged.delivery_discount_type,
+      merchant_ids: merged.merchant_ids,
     });
     if (patchKindErr) {
       return NextResponse.json({ error: patchKindErr }, { status: 400 });

@@ -19,6 +19,8 @@ export type OrdersFoodRow = {
   dispatched_at?: string | null;
   delivered_at?: string | null;
   cancelled_at?: string | null;
+  /** True when order entered RTO flow (orders_food / core flag). */
+  is_rto?: boolean | null;
   cancelled_by_type?: string | null;
   cancelled_by?: string | null;
   restaurant_name?: string | null;
@@ -100,7 +102,12 @@ export type OrdersFoodRow = {
   merchant_store_id?: number | null;
   pickup_otp?: string | null;
   rto_otp?: string | null;
+  pickup_token?: string | null;
   delivery_type?: string | null;
+  payment_method?: string | null;
+  kot_number?: string | null;
+  tax_invoice_number?: string | null;
+  billing_snapshot?: Record<string, unknown> | null;
   prep_delay_use_count?: number | null;
   is_bulk_order?: boolean | null;
 };

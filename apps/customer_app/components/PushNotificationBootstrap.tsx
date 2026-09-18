@@ -1,10 +1,12 @@
 /**
  * Registers Expo + native push tokens via the shared push controller,
- * handles foreground/background opens, optional rich in-app modal, and deep links.
+ * handles foreground/background opens, optional rich campaign modal, and deep links.
+ *
+ * In-app floating pills are intentionally disabled. OS push / FCM / channels /
+ * sounds / permission / token registration remain fully active and independent.
  *
  * Expo Go cannot obtain remote FCM/Expo tokens (SDK 53+). We still mount this
- * host so campaign/in-app inbox polls can surface floating banners; the shared
- * controller soft-skips remote registration there.
+ * host so campaign inbox can hydrate state; remote registration soft-skips there.
  */
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
@@ -23,10 +25,9 @@ import { useRouter } from "expo-router";
 import {
   navigateFromPushData,
   usePushPermissionController,
-  enqueueInAppBanner,
-  enqueueInAppBannerFromPush,
-  FloatingInAppBannerHost,
-  isSystemShadeOnlyPush,
+  setInAppBannerUiEnabled,
+  rememberPushPresented,
+  pushPresentationKey,
   loadInbox,
   type PushNotificationOpenPayload,
 } from "@gatimitra/expo-push-kit";
@@ -63,6 +64,8 @@ import {
   type AnnouncementCampaignPayload,
 } from "@/lib/announcementCampaign";
 
+// In-app notification pills OFF. Push / FCM / OS shade / token sync stay ON.
+setInAppBannerUiEnabled(false);
 /**
  * Ride-only CX chime channel (sound is immutable after first Android create).
  * Other customer channels keep the OS default so food/parcel stay quiet.
@@ -254,9 +257,33 @@ function PushNotificationBootstrapInner() {
       }
       if (isCustomerOrderLifecyclePushData(payload.data)) {
         void applyLiveProgressFromPush(payload.data);
+        const nid =
+          typeof payload.data.notification_id === "string"
+            ? payload.data.notification_id
+            : typeof payload.data.notificationId === "string"
+              ? payload.data.notificationId
+              : null;
+        const orderId =
+          typeof payload.data.orderId === "string"
+            ? payload.data.orderId
+            : typeof payload.data.order_id === "string"
+              ? payload.data.order_id
+              : null;
+        rememberPushPresented(
+          pushPresentationKey({
+            notificationId: nid,
+            templateCode:
+              typeof payload.data.template_code === "string"
+                ? payload.data.template_code
+                : typeof payload.data.gmType === "string"
+                  ? payload.data.gmType
+                  : null,
+            orderId,
+          })
+        );
         return;
       }
-      enqueueInAppBannerFromPush(payload);
+      // No in-app pill enqueue — OS shade owns presentation.
       if (!isCustomerAnnouncementData(payload.data)) return;
       const parsed = parseAnnouncementCampaign(
         payload.data,
@@ -446,14 +473,40 @@ function PushNotificationBootstrapInner() {
         error: snap.error,
         expoGo,
       });
+      if (
+        snap.lastBackendSyncOk === false ||
+        snap.syncStatus === "error" ||
+        (snap.error && String(snap.error).trim())
+      ) {
+        console.error("[push:customer] push_token_register_failed", {
+          phase: "post-login-refresh",
+          osStatus: snap.osStatus,
+          syncStatus: snap.syncStatus,
+          lastBackendSyncOk: snap.lastBackendSyncOk,
+          error: snap.error,
+        });
+      }
       if (snap.osStatus === "granted") {
-        if (!expoGo && !snap.nativePushToken) {
+        if (!expoGo && (!snap.nativePushToken || !snap.expoPushToken)) {
           snap = await controller.syncTokens();
           console.log("[push:customer] native-retry sync", {
             syncStatus: snap.syncStatus,
+            hasExpo: !!snap.expoPushToken,
             hasNative: !!snap.nativePushToken,
             error: snap.error,
           });
+          if (
+            snap.lastBackendSyncOk === false ||
+            (!snap.expoPushToken && !snap.nativePushToken)
+          ) {
+            console.error("[push:customer] push_token_register_failed", {
+              phase: "post-login-sync",
+              osStatus: snap.osStatus,
+              syncStatus: snap.syncStatus,
+              lastBackendSyncOk: snap.lastBackendSyncOk,
+              error: snap.error,
+            });
+          }
         }
       }
       await evaluatePushPrompt(snap);
@@ -469,7 +522,23 @@ function PushNotificationBootstrapInner() {
       if (now - (foregroundSyncAtRef.current || 0) < 15_000) return;
       foregroundSyncAtRef.current = now;
       void (async () => {
-        const snap = await controller.refresh({ syncIfGranted: true });
+        let snap = await controller.refresh({ syncIfGranted: true });
+        if (
+          snap.osStatus === "granted" &&
+          !expoGo &&
+          !snap.expoPushToken &&
+          !snap.nativePushToken
+        ) {
+          snap = await controller.syncTokens();
+          if (!snap.expoPushToken && !snap.nativePushToken) {
+            console.error("[push:customer] push_token_register_failed", {
+              phase: "resume-self-heal",
+              osStatus: snap.osStatus,
+              syncStatus: snap.syncStatus,
+              error: snap.error,
+            });
+          }
+        }
         const hasPushToken = Boolean(
           (snap.expoPushToken && snap.expoPushToken.length > 8) ||
             (snap.nativePushToken && snap.nativePushToken.length > 8)
@@ -480,11 +549,9 @@ function PushNotificationBootstrapInner() {
       })();
     });
     return () => sub.remove();
-  }, [hydrated, session?.accessToken, session?.role, controller]);
-  // In-app campaign delivery: when no Expo/FCM token is registered (Expo Go /
-  // permission denied), admin sends still land in notification_dispatch_logs.
-  // Poll the inbox and surface new rows as floating banners so announcements
-  // are visible without a development build.
+  }, [hydrated, session?.accessToken, session?.role, controller, expoGo]);
+  // Campaign inbox poll: hydrate rich announcement cards only.
+  // Never enqueue in-app pills and never schedule a second OS notification.
   useEffect(() => {
     if (!hydrated || !session?.accessToken || session.role !== "customer") return;
 
@@ -514,7 +581,12 @@ function PushNotificationBootstrapInner() {
         const items = page.items ?? [];
         if (!primed) {
           for (const item of items) {
-            if (item.notification_id) seenIds.add(item.notification_id);
+            if (item.notification_id) {
+              seenIds.add(item.notification_id);
+              rememberPushPresented(
+                pushPresentationKey({ notificationId: item.notification_id })
+              );
+            }
           }
           primed = true;
           return;
@@ -523,32 +595,20 @@ function PushNotificationBootstrapInner() {
           const id = item.notification_id?.trim();
           if (!id || seenIds.has(id)) continue;
           seenIds.add(id);
+          rememberPushPresented(pushPresentationKey({ notificationId: id }));
           if (item.clicked_at) continue;
-          // Never convert historical order-status inbox rows into new banners.
           if (isOrderLifecycleNotification(item)) continue;
           const meta = item.metadata ?? {};
-          const title =
-            (typeof meta.liveTitle === "string" && meta.liveTitle.trim()) ||
-            (item.title ?? "").trim();
-          if (!title) continue;
-          const templateCode = item.template_code ?? "";
-          if (isSystemShadeOnlyPush({
-            template_code: templateCode,
-            gmType: templateCode,
-            admin_cx: templateCode.toUpperCase().startsWith("ADMIN_CX_"),
-            ...meta,
-          })) {
+          if (
+            !isCustomerAnnouncementData({
+              ...meta,
+              template_code: item.template_code,
+            })
+          ) {
             continue;
           }
-          enqueueInAppBanner({
-            id,
-            title,
-            body:
-              (typeof meta.liveBody === "string" && meta.liveBody.trim()) ||
-              item.body,
-            deepLink: item.deep_link,
-            templateCode: item.template_code,
-            data: {
+          const parsed = parseAnnouncementCampaign(
+            {
               ...meta,
               notification_id: id,
               gmType: item.template_code ?? "",
@@ -557,7 +617,16 @@ function PushNotificationBootstrapInner() {
               deepLink: item.deep_link ?? "",
               imageUrl: item.image_url ?? "",
             },
-          });
+            item.title ?? "",
+            item.body ?? "",
+          );
+          if (!shouldShowRichCampaignCard(parsed)) continue;
+          campaignCardDataRef.current = {
+            ...meta,
+            notification_id: id,
+            gmType: item.template_code ?? "",
+          };
+          setCampaignCard(parsed);
         }
       } catch {
         // Best-effort — never block the app on inbox poll failures.
@@ -581,12 +650,7 @@ function PushNotificationBootstrapInner() {
 
   return (
     <>
-      <FloatingInAppBannerHost
-        onPressBanner={(item) => {
-          if (!item.data) return;
-          void routeCampaignOnce(item.data, "open");
-        }}
-      />
+      {/* FloatingInAppBannerHost intentionally omitted — pills OFF, push ON. */}
       <Modal
         visible={!!campaignCard}
         transparent

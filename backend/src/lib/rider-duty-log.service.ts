@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "../db/client.js";
-import { dutyLogs, riderVehicles } from "../db/schema.js";
+import { dutyLogs, riders } from "../db/schema.js";
 import { recordRiderDutyLocationBusinessEvent } from "./rider-location-business-event.js";
 
 export type RiderDutyLogStatus = "ON" | "OFF" | "AUTO_OFF";
@@ -40,13 +40,12 @@ export type RecordRiderDutyLogInput = {
 
 async function resolveActiveVehicleId(riderId: number): Promise<number | null> {
   const db = getDb();
-  const [vehicle] = await db
-    .select({ id: riderVehicles.id })
-    .from(riderVehicles)
-    .where(eq(riderVehicles.riderId, riderId))
-    .orderBy(desc(riderVehicles.updatedAt))
+  const [rider] = await db
+    .select({ activeVehicleId: riders.activeVehicleId })
+    .from(riders)
+    .where(eq(riders.id, riderId))
     .limit(1);
-  return vehicle?.id ?? null;
+  return rider?.activeVehicleId ?? null;
 }
 
 export async function getLatestDutyLog(riderId: number) {
@@ -130,4 +129,12 @@ export async function recordRiderDutyOffIfOnline(
       ...(extra?.metadata ?? {}),
     },
   });
+  try {
+    const { clearRiderActiveVehicle } = await import(
+      "../modules/rider-eligibility/riderVehicles.service.js"
+    );
+    await clearRiderActiveVehicle(riderId);
+  } catch {
+    /* never block logout / restriction off */
+  }
 }

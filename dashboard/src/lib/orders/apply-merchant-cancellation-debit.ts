@@ -26,6 +26,8 @@ export type ApplyMerchantCancellationDebitInput = {
   partialAmount?: number | null;
   actorSystemUserId?: number | null;
   source: string;
+  cancelledByType?: string | null;
+  cancelledByLabel?: string | null;
 };
 
 export type ApplyMerchantCancellationDebitResult = {
@@ -460,8 +462,14 @@ async function applyCompensationCredit(args: {
     args.compensationMeta?.admin_override === true
       ? COMPENSATION_CREDIT_REASON
       : "Order Cancelled — Compensation Credit";
+  const formattedOrderId = await resolveFormattedOrderId(args.orderCoreId);
+  const publicOrderId =
+    formattedOrderId && !/^#?\d+$/.test(formattedOrderId)
+      ? formattedOrderId.replace(/^#/, "")
+      : null;
   const metadata = JSON.stringify({
     orders_core_id: args.orderCoreId,
+    ...(publicOrderId ? { formatted_order_id: publicOrderId } : {}),
     entry_type: "order_cancellation",
     balance_impact: "credit",
     merchant_keeps_amount: amount,
@@ -616,10 +624,14 @@ async function recordCancellationInfoLedger(args: {
   const amount = round2(args.amount);
   if (!(amount > 0)) return null;
 
-  const formattedOrderId = (await resolveFormattedOrderId(args.orderCoreId)) ?? `#${args.orderCoreId}`;
+  const formattedOrderId = await resolveFormattedOrderId(args.orderCoreId);
+  const publicOrderId =
+    formattedOrderId && !/^#?\d+$/.test(formattedOrderId)
+      ? formattedOrderId.replace(/^#/, "")
+      : null;
   const idempotencyKey = `merchant_cancel_info:${args.orderCoreId}`;
   const description = buildCancellationInfoLedgerDescription({
-    formattedOrderId,
+    formattedOrderId: publicOrderId ?? "Order",
     balanceImpact: args.balanceImpact,
     compensationMeta: args.compensationMeta,
   });
@@ -679,6 +691,7 @@ async function recordCancellationInfoLedger(args: {
         entry_type: "order_cancellation",
         balance_impact: args.balanceImpact,
         orders_core_id: args.orderCoreId,
+        ...(publicOrderId ? { formatted_order_id: publicOrderId } : {}),
         trigger_source: args.source,
         actor_system_user_id: args.actorSystemUserId ?? null,
         ...(args.compensationMeta ?? {}),
@@ -750,8 +763,15 @@ export type ApplyMerchantOrderCancellationLedgerResult = ApplyMerchantCancellati
 
 async function applyAdminOverrideCancellationLedger(
   input: ApplyMerchantOrderCancellationLedgerInput,
-  mode: MerchantDebitMode
+  mode: MerchantDebitMode,
+  options?: {
+    adminOverride?: boolean;
+    keepPctOverride?: number | null;
+    targetNetOverride?: number | null;
+    engineMeta?: Record<string, unknown>;
+  }
 ): Promise<ApplyMerchantOrderCancellationLedgerResult> {
+  const adminOverride = options?.adminOverride !== false;
   const ctx = await resolveOrderWalletContext(input.orderCoreId);
   if (!ctx) return { applied: false, skipped: "merchant_not_found", status: "FAILED" };
 
@@ -799,6 +819,8 @@ async function applyAdminOverrideCancellationLedger(
     ctmAmount: ctmTotal,
     currentNetHeld: ctmState.netHeld,
     grossCredited: ctmState.grossCredited,
+    keepPctOverride: options?.keepPctOverride,
+    targetNetOverride: options?.targetNetOverride,
   });
 
   const baseMeta = adminCancellationLedgerMetadata({
@@ -816,6 +838,14 @@ async function applyAdminOverrideCancellationLedger(
       already_reversed: ctmState.reversed,
     },
   });
+  const compensationMeta = {
+    ...baseMeta,
+    ...(options?.engineMeta ?? {}),
+    admin_override: adminOverride,
+    compensation_pct: adj.keepPct,
+    merchant_keeps_amount: adj.targetNet,
+    clawback_amount: round2(Math.max(0, ctmTotal - adj.targetNet)),
+  };
 
   if (adj.kind === "none") {
     await syncCancellationSettlementBreakdown(input.orderCoreId);
@@ -842,7 +872,7 @@ async function applyAdminOverrideCancellationLedger(
       orderCoreId: input.orderCoreId,
       source: input.source,
       actorSystemUserId: input.actorSystemUserId,
-      compensationMeta: baseMeta,
+      compensationMeta,
       idempotencyKey: merchantCtmAdjustmentIdempotencyKey(
         input.orderCoreId,
         "credit",
@@ -885,7 +915,7 @@ async function applyAdminOverrideCancellationLedger(
     orderCoreId: input.orderCoreId,
     mode,
     actorSystemUserId: input.actorSystemUserId,
-    compensationMeta: baseMeta,
+    compensationMeta,
   });
   if (debitResult.applied) {
     await syncCancellationSettlementBreakdown(input.orderCoreId);
@@ -965,10 +995,20 @@ export async function applyMerchantOrderCancellationLedger(
     }
 
     // Engine-auto resolved mode → same canonical CTM path as admin.
-    // Do NOT early-exit on hasCancellationLedgerEntry (marker ≠ CTM target met).
+    // Policy keep % drives target net — admin Full/Partial/No stays 0/50/100.
     const engineMode = normalizeMode(effectiveInput.merchantDebit);
     if (engineMode) {
-      return await applyAdminOverrideCancellationLedger(effectiveInput, engineMode);
+      return await applyAdminOverrideCancellationLedger(effectiveInput, engineMode, {
+        adminOverride: false,
+        keepPctOverride: resolved?.compensationPct ?? null,
+        targetNetOverride: resolved?.merchantKeepsAmount ?? null,
+        engineMeta: resolved
+          ? compensationMetaFromResolved(resolved, {
+              cancelledByType: input.cancelledByType ?? null,
+              cancelledByLabel: input.cancelledByLabel ?? null,
+            })
+          : undefined,
+      });
     }
 
     // No debit mode — informational ledger only.

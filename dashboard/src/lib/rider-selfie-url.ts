@@ -64,8 +64,5 @@ export async function getRiderSelfieViewUrl(riderId: number): Promise<string | n
     .orderBy(desc(riderDocumentFiles.sortOrder))
     .limit(1);
 
-  url = toViewUrl(file?.r2Key ?? file?.fileUrl);
-  if (url) return url;
-
-  return toViewUrl(`riders/${riderId}/documents/selfie/latest.jpg`);
+  return toViewUrl(file?.r2Key ?? file?.fileUrl);
 }

@@ -8,6 +8,7 @@ import {
   STICKY_SEARCH_ROW_HEIGHT,
   STICKY_SEARCH_WRAP_PADDING_BOTTOM,
   STICKY_TITLE_ROW_HEIGHT,
+  FILTER_BAR_HEIGHT,
 } from "../constants/layout";
 import { StoreTheme } from "@/constants/storeTheme";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -34,7 +35,7 @@ export type MerchantStickyChromeProps = {
   filterBar?: React.ReactNode;
 };
 
-/** Sticky header — Discovery pins title+search; Classic fades in search only. */
+/** Sticky header — Discovery pins title+search+filters; Classic fades in search+filters. */
 export const MerchantStickyChrome = React.memo(function MerchantStickyChrome({
   topGutter = MERCHANT_HEADER_TOP_GUTTER,
   stickySearchStyle,
@@ -67,6 +68,7 @@ export const MerchantStickyChrome = React.memo(function MerchantStickyChrome({
         style={[
           styles.searchWrap,
           !dark && styles.searchWrapClassic,
+          !dark && !filterBar && styles.searchWrapClassicNoFilter,
           { paddingTop: topGutter },
           stickySearchStyle,
         ]}
@@ -164,7 +166,7 @@ export const MerchantStickyChrome = React.memo(function MerchantStickyChrome({
             </Pressable>
           ) : null}
         </View>
-        {dark ? filterBar : null}
+        {filterBar}
       </Animated.View>
     </View>
   );
@@ -192,6 +194,15 @@ const styles = StyleSheet.create({
     }),
   },
   searchWrapClassic: {
+    minHeight:
+      STICKY_SEARCH_ROW_HEIGHT + STICKY_SEARCH_WRAP_PADDING_BOTTOM + FILTER_BAR_HEIGHT,
+    // Classic: no elevation shadow — Android elevation painted a dark band over the filter row.
+    elevation: 0,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  searchWrapClassicNoFilter: {
     minHeight: STICKY_SEARCH_ROW_HEIGHT + STICKY_SEARCH_WRAP_PADDING_BOTTOM,
   },
   searchBg: {

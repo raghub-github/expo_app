@@ -117,12 +117,8 @@ function resolveStage(args: {
     return "AT_STORE";
   }
 
-  if (s === "ORDER_PLACED" || s === "PLACED" || s === "CREATED") {
-    return "ORDER_PLACED";
-  }
-
-  // Kitchen UI until food is ready — even if a rider was assigned early
-  // (backend may emit RIDER_TO_MERCHANT pre-ready).
+  // Kitchen / accept UI — check BEFORE ORDER_PLACED so stageAware MERCHANT_ACCEPTED
+  // / MERCHANT_PREP can advance the hero while HTTP status is still briefly PLACED.
   const stillPreparing =
     !foodReady &&
     !atStore &&
@@ -137,6 +133,10 @@ function resolveStage(args: {
   if (stillPreparing) {
     if (args.kitchenDelayed) return "PREPARATION_DELAYED";
     return "MERCHANT_PREPARING";
+  }
+
+  if (s === "ORDER_PLACED" || s === "PLACED" || s === "CREATED") {
+    return "ORDER_PLACED";
   }
 
   // Ready, no rider — never show "rider arriving".

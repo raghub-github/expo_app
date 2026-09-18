@@ -228,14 +228,47 @@ export async function getObjectStreamByKey(key: string): Promise<{
  * Extract key from signed URL
  * R2 signed URLs can be in format: https://bucket.endpoint/key?signature
  * or https://endpoint/bucket/key?signature
+ *
+ * Also handles stable proxy URLs:
+ *   /api/attachments/proxy?key=riders/…  or  /v1/attachments/proxy?key=…
+ * (absolute or relative). Never treat the path segment "attachments/proxy" as the object key.
  */
 export function extractKeyFromSignedUrl(signedUrl: string): string | null {
+  const raw = String(signedUrl || "").trim();
+  if (!raw) return null;
+
+  const fromProxyQuery = (href: string): string | null => {
+    try {
+      const url = new URL(
+        href.startsWith("http://") || href.startsWith("https://")
+          ? href
+          : `https://local.invalid${href.startsWith("/") ? "" : "/"}${href}`
+      );
+      if (!url.pathname.includes("/attachments/proxy")) return null;
+      const key = url.searchParams.get("key")?.trim();
+      if (!key) return null;
+      try {
+        return decodeURIComponent(key);
+      } catch {
+        return key;
+      }
+    } catch {
+      return null;
+    }
+  };
+
+  const proxyKey = fromProxyQuery(raw);
+  if (proxyKey) return proxyKey;
+
   try {
-    const url = new URL(signedUrl);
+    const url = new URL(raw);
     // Remove query parameters
     const pathname = url.pathname;
     const pathParts = pathname.split("/").filter(Boolean);
-    
+
+    // Never invent a key from the proxy route path itself.
+    if (pathname.includes("/attachments/proxy")) return null;
+
     // R2 URLs typically have format: /bucket/key or just /key
     // Try to find the key part (usually after bucket name)
     if (pathParts.length >= 2) {
@@ -243,11 +276,14 @@ export function extractKeyFromSignedUrl(signedUrl: string): string | null {
       return pathParts.slice(1).join("/");
     } else if (pathParts.length === 1) {
       // Just /key format
-      return pathParts[0];
+      return pathParts[0] ?? null;
     }
-    
+
     return null;
   } catch {
+    // Relative proxy path without origin (already tried above) or bare key.
+    if (raw.includes("/attachments/proxy")) return fromProxyQuery(raw);
+    if (!raw.includes("://") && !raw.startsWith("/")) return raw;
     return null;
   }
 }

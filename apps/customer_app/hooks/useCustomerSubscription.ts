@@ -24,10 +24,11 @@ export function useCurrentSubscription(enabled = true) {
     queryKey: CURRENT_SUBSCRIPTION_QUERY_KEY,
     queryFn: fetchCurrentSubscription,
     enabled,
-    staleTime: 30 * 1000,
+    staleTime: 60 * 1000,
     gcTime: SUBSCRIPTION_PLANS_GC_MS,
     retry: 1,
     refetchOnReconnect: true,
+    refetchOnMount: false,
   });
 }
 

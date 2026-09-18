@@ -116,6 +116,8 @@ import {
   deleteReplacedR2Keys,
 } from "../../lib/rider-document-r2-keys.js";
 import { getRiderOnboardingProgress } from "../../lib/rider-onboarding-progress.js";
+import { resolveRcSaveVerification, isRcRealPhotoUrl, isRcElectronicStubUrl, resolveRcVerificationState } from "../../lib/rider-rc-verification-state.js";
+import { loadRiderAadhaarIdentity } from "../../lib/rider-aadhaar-cross-check.js";
 import { isDlAlreadyRegistered, normalizeDlNumber } from "../../lib/rider-dl-registration-check.js";
 import { isRcAlreadyRegistered, normalizeRcNumber } from "../../lib/rider-rc-registration-check.js";
 import {
@@ -880,6 +882,8 @@ export async function riderRoutes(app: FastifyInstance) {
           ifsc: z.string().min(11).max(11),
           branch: z.string().max(80).optional(),
           accountNumber: z.string().regex(/^\d{9,18}$/),
+          /** True only after Cashfree bank verify in the same flow. */
+          providerVerified: z.boolean().optional(),
         }),
         response: {
           201: z.object({
@@ -1580,6 +1584,17 @@ export async function riderRoutes(app: FastifyInstance) {
         suggestedIsCommercial: z.boolean().nullable(),
       })
       .nullable(),
+    formMeta: z
+      .object({
+        formMode: z.enum(["full", "cashfree_missing_only"]),
+        prefillSource: z.enum(["cashfree_rc", "manual"]).nullable(),
+        initialStep: z.union([z.literal(1), z.literal(2)]),
+        step1Complete: z.boolean(),
+        step2Complete: z.boolean(),
+        missingFields: z.array(z.string()),
+      })
+      .optional(),
+    rcVerificationState: z.string().nullable().optional(),
   });
 
   app.get(
@@ -1863,6 +1878,7 @@ export async function riderRoutes(app: FastifyInstance) {
           lat: z.number().optional(),
           lon: z.number().optional(),
           deviceId: z.string().optional(),
+          vehicleId: z.number().int().positive().optional(),
         }),
         response: {
           200: z.object({
@@ -1907,6 +1923,10 @@ export async function riderRoutes(app: FastifyInstance) {
               })
               .optional(),
           }),
+          400: z.object({
+            error: z.string(),
+            message: z.string().optional(),
+          }),
         },
       },
     },
@@ -1938,6 +1958,7 @@ export async function riderRoutes(app: FastifyInstance) {
         lat?: number;
         lon?: number;
         deviceId?: string;
+        vehicleId?: number;
       };
       const isOnDuty = body.isOnDuty;
       const now = new Date();
@@ -1954,6 +1975,10 @@ export async function riderRoutes(app: FastifyInstance) {
           lon: body.lon ?? null,
           metadata: { trigger: "duty_toggle" },
         });
+        const { clearRiderActiveVehicle } = await import(
+          "../rider-eligibility/riderVehicles.service.js"
+        );
+        await clearRiderActiveVehicle(riderId);
         if (body.lat != null && body.lon != null) {
           const { buildZoneKey } = await import("../weather/weather.classify.js");
           const { leaveZonePresence } = await import("../weather/weather.zones-active.js");
@@ -1967,6 +1992,14 @@ export async function riderRoutes(app: FastifyInstance) {
         };
       }
 
+      if (rider.status !== "ACTIVE") {
+        return reply.status(403).send({
+          error: "ONBOARDING_VERIFICATION_PENDING",
+          message:
+            "Your account is waiting for review. You can go ON-DUTY after approval.",
+        });
+      }
+
       if (!body.serviceTypes?.length) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return (reply as any).status(400).send({
@@ -1976,6 +2009,50 @@ export async function riderRoutes(app: FastifyInstance) {
       }
 
       const { getRiderVehicleStatusForApp } = await import("../../lib/rider-vehicle-app.js");
+      const { setRiderActiveVehicle, listRiderVehiclesWithEligibility } = await import(
+        "../rider-eligibility/riderVehicles.service.js"
+      );
+      if (body.vehicleId != null) {
+        const picked = await setRiderActiveVehicle(riderId, body.vehicleId, {
+          allowWhileGoingOn: true,
+        });
+        if (!picked.ok) {
+          return reply.status(400).send({
+            error: picked.code,
+            message: picked.reason,
+          });
+        }
+      } else {
+        const fleet = await listRiderVehiclesWithEligibility({ riderId });
+        const verified = fleet.vehicles.filter(
+          (v) => v.verified && String(v.status).toLowerCase() !== "retired",
+        );
+        if (verified.length === 0) {
+          return reply.status(403).send({
+            error: "VEHICLE_NOT_VERIFIED",
+            message:
+              "Your vehicle is pending verification. You can go online after an admin verifies your vehicle.",
+          });
+        }
+        if (verified.length > 1 && fleet.activeVehicleId == null) {
+          return reply.status(400).send({
+            error: "VEHICLE_SELECTION_REQUIRED",
+            message: "Select which vehicle you will work with before going ON-DUTY.",
+          });
+        }
+        if (verified.length === 1 && verified[0]!.id !== fleet.activeVehicleId) {
+          const auto = await setRiderActiveVehicle(riderId, verified[0]!.id, {
+            allowWhileGoingOn: true,
+          });
+          if (!auto.ok) {
+            return reply.status(400).send({
+              error: auto.code,
+              message: auto.reason,
+            });
+          }
+        }
+      }
+
       const vehicleStatus = await getRiderVehicleStatusForApp(riderId);
       if (!vehicleStatus.isComplete) {
         return reply.status(403).send({
@@ -1998,28 +2075,54 @@ export async function riderRoutes(app: FastifyInstance) {
       const { filterDispatchServicesForRiderProfile } = await import(
         "../../lib/rider-dispatch-service-rules.js"
       );
-      const { resolveAssignedDispatchServicesForProfile, filterDispatchServicesByVehicleAssignments } =
-        await import("../../lib/rider-vehicle-type-service-assignments.js");
       const vehicleProfile = await getRiderActiveVehicleProfile(riderId);
-      const assignmentServices = await resolveAssignedDispatchServicesForProfile(vehicleProfile);
-      const hasVehicleProfile =
-        vehicleProfile.vehicleTypes.some((v) => v.trim().length > 0) ||
-        vehicleProfile.vehicleCategories.some((c) => c.trim().length > 0);
-      const vehicleServices = hasVehicleProfile
-        ? assignmentServices
-        : assignmentServices.length > 0
-          ? assignmentServices
-          : (vehicleStatus.vehicle?.serviceTypes ?? []).filter(
-              (s): s is "food" | "parcel" | "person_ride" =>
-                s === "food" || s === "parcel" || s === "person_ride"
-            );
-      const requestedServices = body.serviceTypes.filter((s) => vehicleServices.includes(s));
+
+      const requestedRaw = body.serviceTypes.filter(
+        (s): s is "food" | "parcel" | "person_ride" =>
+          s === "food" || s === "parcel" || s === "person_ride"
+      );
+
+      let dutyLat = body.lat ?? null;
+      let dutyLon = body.lon ?? null;
+      if (
+        dutyLat == null ||
+        dutyLon == null ||
+        !Number.isFinite(dutyLat) ||
+        !Number.isFinite(dutyLon) ||
+        (dutyLat === 0 && dutyLon === 0)
+      ) {
+        const lastKnown = await loadRiderGpsLastKnown(riderId).catch(() => null);
+        if (
+          lastKnown &&
+          Number.isFinite(lastKnown.lat) &&
+          Number.isFinite(lastKnown.lng) &&
+          !(lastKnown.lat === 0 && lastKnown.lng === 0)
+        ) {
+          dutyLat = lastKnown.lat;
+          dutyLon = lastKnown.lng;
+        }
+      }
+
+      const { filterServicesByUnifiedEligibility, eligibilityEnforcementMode } = await import(
+        "../rider-eligibility/riderEligibility.service.js"
+      );
+      const engineFiltered =
+        eligibilityEnforcementMode() === "off"
+          ? requestedRaw
+          : await filterServicesByUnifiedEligibility({
+              riderId,
+              requested: requestedRaw,
+              lat: dutyLat,
+              lng: dutyLon,
+            });
+
+      const requestedServices = engineFiltered;
 
       if (requestedServices.length === 0) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return (reply as any).status(400).send({
           error: "NO_VALID_SERVICE_TYPES",
-          message: "None of the selected services are enabled for your vehicle.",
+          message: "None of the selected services are available for you right now.",
         });
       }
 
@@ -2027,12 +2130,8 @@ export async function riderRoutes(app: FastifyInstance) {
         requestedServices as ("food" | "parcel" | "person_ride")[],
         vehicleProfile
       );
-      const vehicleFiltered = await filterDispatchServicesByVehicleAssignments(dutyServices, {
-        vehicleTypes: vehicleProfile.vehicleTypes,
-        vehicleCategories: vehicleProfile.vehicleCategories,
-      });
 
-      if (vehicleFiltered.length === 0) {
+      if (dutyServices.length === 0) {
         return reply.status(403).send({
           error: "NO_VEHICLE_SERVICES",
           message: "Your vehicle is not enabled for any dispatch services.",
@@ -2046,7 +2145,7 @@ export async function riderRoutes(app: FastifyInstance) {
 
       const allowed: string[] = [];
       const blocked: string[] = [];
-      for (const service of vehicleFiltered) {
+      for (const service of dutyServices) {
         if (isDispatchServiceBlocked(service, restrictionSnapshot)) {
           blocked.push(service);
         } else {
@@ -2081,29 +2180,6 @@ export async function riderRoutes(app: FastifyInstance) {
           error: "WALLET_PENALTY_DUTY_STOPPED",
           message: "Duty stopped due to wallet penalty. Clear dues to go online.",
         });
-      }
-
-      let dutyLat = body.lat ?? null;
-      let dutyLon = body.lon ?? null;
-      if (
-        dutyLat == null ||
-        dutyLon == null ||
-        !Number.isFinite(dutyLat) ||
-        !Number.isFinite(dutyLon) ||
-        (dutyLat === 0 && dutyLon === 0)
-      ) {
-        // GPS timeout on the toggle still has to make an already-located rider
-        // dispatchable — reuse last known point and stamp it fresh at go-ON.
-        const lastKnown = await loadRiderGpsLastKnown(riderId).catch(() => null);
-        if (
-          lastKnown &&
-          Number.isFinite(lastKnown.lat) &&
-          Number.isFinite(lastKnown.lng) &&
-          !(lastKnown.lat === 0 && lastKnown.lng === 0)
-        ) {
-          dutyLat = lastKnown.lat;
-          dutyLon = lastKnown.lng;
-        }
       }
 
       // Saved WORKING location vs current duty GPS (registered address is separate).
@@ -2541,6 +2617,7 @@ export async function riderRoutes(app: FastifyInstance) {
             completedOnboardingSteps: z.array(z.string()),
             rating: z.number().nullable(),
             panNumber: z.string().nullable(),
+            panFrontUrl: z.string().nullable().optional(),
             panVerified: z.boolean(),
             panSkipOverride: z.boolean(),
             panVerifiedData: z.record(z.string(), z.unknown()).nullable(),
@@ -2557,6 +2634,13 @@ export async function riderRoutes(app: FastifyInstance) {
             rcFrontUrl: z.string().nullable(),
             rcVerified: z.boolean(),
             rcVerifiedData: z.record(z.string(), z.unknown()).nullable(),
+            rcVerificationState: z.string(),
+            rcRejectedReason: z.string().nullable(),
+            rcDocumentVersion: z.number().nullable(),
+            rcPaymentEligible: z.boolean(),
+            rentalProofUrl: z.string().nullable().optional(),
+            evProofUrl: z.string().nullable().optional(),
+            maxSpeedDeclaration: z.number().nullable().optional(),
             onboardingProgress: z.record(z.string(), z.string()),
             lastCompletedStep: z.string().nullable(),
             nextRequiredStep: z.string().nullable(),
@@ -2597,6 +2681,17 @@ export async function riderRoutes(app: FastifyInstance) {
       void tryActivateRiderIfEligible(parsedId).catch((err) => {
         req.log.warn({ err, riderId: parsedId }, "background rider activation check failed");
       });
+      // Backfill: paid + pending docs / not ACTIVE → ensure Onboarding Verification Pending ticket.
+      void import("../../lib/onboarding-verification-pending-ticket.js")
+        .then(({ ensureOnboardingVerificationPendingTicket }) =>
+          ensureOnboardingVerificationPendingTicket(parsedId),
+        )
+        .catch((err) => {
+          req.log.warn(
+            { err, riderId: parsedId },
+            "background onboarding verification ticket ensure failed",
+          );
+        });
 
       // Progress heals illegal APPROVAL-without-payment before status mapping.
       const progress = await getRiderOnboardingProgress(parsedId);
@@ -2714,6 +2809,7 @@ export async function riderRoutes(app: FastifyInstance) {
         completedOnboardingSteps: progress.completedSteps,
         rating,
         panNumber: progress.panNumber,
+        panFrontUrl: toAbsoluteClientMediaUrl(progress.panFrontUrl),
         panVerified: progress.panVerified,
         panSkipOverride: Boolean(progress.panSkipOverride),
         panVerifiedData: progress.panVerifiedData,
@@ -2730,6 +2826,13 @@ export async function riderRoutes(app: FastifyInstance) {
         rcFrontUrl: toAbsoluteClientMediaUrl(progress.rcFrontUrl),
         rcVerified: progress.rcVerified,
         rcVerifiedData: progress.rcVerifiedData,
+        rcVerificationState: progress.rcVerificationState,
+        rcRejectedReason: progress.rcRejectedReason,
+        rcDocumentVersion: progress.rcDocumentVersion,
+        rcPaymentEligible: progress.rcPaymentEligible,
+        rentalProofUrl: toAbsoluteClientMediaUrl(progress.rentalProofUrl),
+        evProofUrl: toAbsoluteClientMediaUrl(progress.evProofUrl),
+        maxSpeedDeclaration: progress.maxSpeedDeclaration,
         onboardingProgress: progress.onboardingProgress,
         lastCompletedStep: progress.lastCompletedStep,
         nextRequiredStep: progress.nextRequiredStep,
@@ -2801,8 +2904,8 @@ export async function riderRoutes(app: FastifyInstance) {
         extractedName,
         extractedDob,
         metadata,
-        files,
-        autoVerify,
+        files: rawFiles,
+        autoVerify: _autoVerify,
       } = req.body as {
         riderId: number;
         docType: string;
@@ -2820,6 +2923,18 @@ export async function riderRoutes(app: FastifyInstance) {
         }[];
       };
 
+      // PAN is single-sided — never persist a back image (manual upload = one photo).
+      const files =
+        docType === "pan" && rawFiles?.length
+          ? (() => {
+              const keep =
+                rawFiles.find((f) => f.side === "single") ||
+                rawFiles.find((f) => f.side === "front") ||
+                rawFiles[0]!;
+              return [{ ...keep, side: "single" as const }];
+            })()
+          : rawFiles;
+
       // Always bind to the authenticated rider — never trust a foreign body.riderId (IDOR).
       if (bodyRiderId !== authRiderId) {
         return (reply as any).status(403).send({ error: "Rider mismatch" });
@@ -2833,7 +2948,23 @@ export async function riderRoutes(app: FastifyInstance) {
         return url;
       };
 
-      const primaryKey = r2Key || extractKeyFromSignedUrl(fileUrl);
+      const looksLikeProxyPathKey = (k: string | null | undefined) => {
+        const t = String(k || "")
+          .trim()
+          .replace(/^\/+/, "")
+          .toLowerCase();
+        return (
+          !t ||
+          t === "attachments/proxy" ||
+          t === "api/attachments/proxy" ||
+          t === "v1/attachments/proxy" ||
+          t.endsWith("/attachments/proxy")
+        );
+      };
+
+      const rawPrimary = r2Key || extractKeyFromSignedUrl(fileUrl);
+      const primaryKey =
+        rawPrimary && !looksLikeProxyPathKey(rawPrimary) ? rawPrimary : null;
       const storedFileUrl = resolveStoredFileUrl(fileUrl, primaryKey ?? undefined);
       const rollbackKeys = new Set<string>();
       if (primaryKey) rollbackKeys.add(primaryKey);
@@ -2886,6 +3017,8 @@ export async function riderRoutes(app: FastifyInstance) {
           }
         }
 
+        const addAnotherVehicle = metadata?.addAnotherVehicle === true;
+
         if (docType === "rc") {
           const rawRc = metadata?.rcNumber;
           if (typeof rawRc === "string") {
@@ -2896,20 +3029,134 @@ export async function riderRoutes(app: FastifyInstance) {
                 message: "Already registered with another rider",
               });
             }
+            if (addAnotherVehicle && rc) {
+              const details =
+                metadata?.verifiedDetails &&
+                typeof metadata.verifiedDetails === "object" &&
+                !Array.isArray(metadata.verifiedDetails)
+                  ? (metadata.verifiedDetails as Record<string, unknown>)
+                  : metadata?.cashfreeVerifiedData &&
+                      typeof metadata.cashfreeVerifiedData === "object" &&
+                      !Array.isArray(metadata.cashfreeVerifiedData)
+                    ? (metadata.cashfreeVerifiedData as Record<string, unknown>)
+                    : {};
+              const { assertCanAddRiderVehicle } = await import(
+                "../rider-eligibility/riderVehicles.service.js"
+              );
+              const check = await assertCanAddRiderVehicle({
+                riderId,
+                candidate: { registrationNumber: rc, cashfree: details },
+              });
+              if (!check.ok) {
+                return reply.status(409).send({
+                  error: check.code,
+                  message: check.reason,
+                });
+              }
+            }
           }
         }
 
-        const existing = await db
+        const existingAll = await db
           .select()
           .from(riderDocuments)
-          .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, docType as never)))
-          .limit(1);
+          .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, docType as never)));
+        let existing = existingAll;
+        if (docType === "rc" && addAnotherVehicle) {
+          const rc = typeof metadata?.rcNumber === "string" ? normalizeRcNumber(metadata.rcNumber) : null;
+          existing = existingAll.filter((d) => {
+            const meta =
+              d.metadata && typeof d.metadata === "object" && !Array.isArray(d.metadata)
+                ? (d.metadata as Record<string, unknown>)
+                : {};
+            const fromDoc = normalizeRcNumber(d.docNumber);
+            const fromMeta = typeof meta.rcNumber === "string" ? normalizeRcNumber(meta.rcNumber) : null;
+            return Boolean(rc) && (fromDoc === rc || fromMeta === rc);
+          });
+        } else {
+          existing = existingAll.slice(0, 1);
+        }
+
+        let rcSave: ReturnType<typeof resolveRcSaveVerification> | null = null;
+        if (docType === "rc") {
+          const aadhaar = await loadRiderAadhaarIdentity(riderId);
+          const existingRcDoc = existing[0]
+            ? {
+                fileUrl: existing[0].fileUrl,
+                r2Key: existing[0].r2Key,
+                verified: existing[0].verified,
+                verificationMethod: existing[0].verificationMethod,
+                verificationStatus: existing[0].verificationStatus,
+                requiresManualReview: existing[0].requiresManualReview,
+                metadata: existing[0].metadata,
+                rejectedReason: existing[0].rejectedReason,
+              }
+            : null;
+          const existingRcState = existingRcDoc
+            ? resolveRcVerificationState(existingRcDoc)
+            : "NOT_SUBMITTED";
+          // Stale Cashfree stub must never replace an in-flight / decided manual RC photo.
+          if (
+            (existingRcState === "MANUAL_REVIEW_PENDING" ||
+              existingRcState === "MANUAL_VERIFIED") &&
+            isRcRealPhotoUrl(existingRcDoc?.fileUrl) &&
+            !isRcRealPhotoUrl(storedFileUrl)
+          ) {
+            return (reply as any).status(409).send({
+              error: "RC_MANUAL_REVIEW_LOCKED",
+              message:
+                "This RC photo is under manual review (or already approved). Upload a new RC image to replace it — Cashfree cannot auto-verify over it.",
+            });
+          }
+          rcSave = resolveRcSaveVerification({
+            fileUrl: storedFileUrl,
+            r2Key: primaryKey,
+            metadata,
+            aadhaarName: aadhaar.name,
+            existing: existingRcDoc,
+          });
+          if (rcSave.kind === "photo_required") {
+            return (reply as any).status(409).send({
+              error: "RC_PHOTO_REQUIRED",
+              message:
+                "RC owner name does not match Aadhaar. Upload a clear original RC card photo for manual verification.",
+            });
+          }
+        }
 
         let documentId: number;
-        const previousR2Keys =
+        let previousR2Keys =
           existing.length > 0
             ? await collectDocumentR2Keys(existing[0]!.id, existing[0]!.r2Key)
             : [];
+
+        // Profile selfie may live on riders.selfie_url with a different versioned key
+        // than rider_documents.r2_key — always include it so replace cleans R2.
+        if (docType === "selfie") {
+          const [riderSelfie] = await db
+            .select({ selfieUrl: riders.selfieUrl })
+            .from(riders)
+            .where(eq(riders.id, riderId))
+            .limit(1);
+          const rawSelfie = String(riderSelfie?.selfieUrl || "").trim();
+          let profileKey: string | null = null;
+          if (rawSelfie.startsWith("riders/")) {
+            profileKey = rawSelfie;
+          } else if (rawSelfie.includes("key=")) {
+            try {
+              const u = new URL(rawSelfie, "https://local.invalid");
+              profileKey = u.searchParams.get("key");
+            } catch {
+              const m = rawSelfie.match(/[?&]key=([^&]+)/);
+              profileKey = m?.[1] ? decodeURIComponent(m[1]) : null;
+            }
+          } else {
+            profileKey = extractKeyFromSignedUrl(rawSelfie);
+          }
+          if (profileKey?.trim()) {
+            previousR2Keys = [...new Set([...previousR2Keys, profileKey.trim()])];
+          }
+        }
 
         const nextR2Keys = (): string[] =>
           [primaryKey, ...(files?.map((f) => f.r2Key) ?? [])].filter(
@@ -2929,15 +3176,38 @@ export async function riderRoutes(app: FastifyInstance) {
             updateData.dob = Number.isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
           }
 
-          const rawAadhaar = metadata?.aadhaarNumber;
-          let aadhaarDigits: string | undefined;
-          if (typeof rawAadhaar === "string") {
-            const digits = rawAadhaar.replace(/\D/g, "");
-            if (digits.length === 12) {
-              aadhaarDigits = digits;
-              updateData.aadhaarNumber = digits;
-            }
+          const { maskAadhaarNumber, resolveAadhaarPersistFields } = await import(
+            "../../lib/mask-aadhaar.js"
+          );
+          const verifiedDetailsMeta =
+            metadata?.verifiedDetails &&
+            typeof metadata.verifiedDetails === "object" &&
+            !Array.isArray(metadata.verifiedDetails)
+              ? (metadata.verifiedDetails as Record<string, unknown>)
+              : metadata?.cashfreeVerifiedData &&
+                  typeof metadata.cashfreeVerifiedData === "object" &&
+                  !Array.isArray(metadata.cashfreeVerifiedData)
+                ? (metadata.cashfreeVerifiedData as Record<string, unknown>)
+                : null;
+          const persist = resolveAadhaarPersistFields({
+            verifiedData: verifiedDetailsMeta,
+            enteredAadhaar:
+              typeof metadata?.aadhaarNumber === "string"
+                ? metadata.aadhaarNumber
+                : typeof metadata?.aadhaar_number_full === "string"
+                  ? metadata.aadhaar_number_full
+                  : null,
+          });
+          const aadhaarDigits = persist.full || undefined;
+          if (aadhaarDigits) {
+            updateData.aadhaarNumber = aadhaarDigits;
           }
+          // Prefer masked form on rider_documents.doc_number for KYC UI.
+          const aadhaarDocNumber =
+            persist.displayDocNumber ||
+            (typeof metadata?.aadhaarNumber === "string"
+              ? maskAadhaarNumber(metadata.aadhaarNumber) || null
+              : null);
 
           const digilockerVerified =
             metadata?.digilockerVerified === true ||
@@ -2947,7 +3217,12 @@ export async function riderRoutes(app: FastifyInstance) {
             String(fileUrl || "").includes("digilocker_verified") ||
             String(fileUrl || "").includes("aadhaar_masking_verified");
 
-          const sideVerification = digilockerVerified
+          // Real Aadhaar photo uploads stay pending — Digilocker/masking stubs only auto-verify.
+          const aadhaarRealPhoto =
+            isRcRealPhotoUrl(storedFileUrl) && !isRcElectronicStubUrl(storedFileUrl);
+          const aadhaarElectronic = digilockerVerified && !aadhaarRealPhoto;
+
+          const sideVerification = aadhaarElectronic
             ? {
                 front: {
                   verified: true,
@@ -2965,6 +3240,11 @@ export async function riderRoutes(app: FastifyInstance) {
           const nextMetadata = {
             ...(metadata || {}),
             ...(sideVerification ? { sideVerification } : {}),
+            ...(aadhaarDigits ? { aadhaar_number_full: aadhaarDigits } : {}),
+            ...(aadhaarDocNumber ? { aadhaarMasked: aadhaarDocNumber } : {}),
+            ...(aadhaarElectronic
+              ? { electronicVerifiedAt: new Date().toISOString() }
+              : { manualSubmissionAt: new Date().toISOString() }),
           };
 
           const docUpdate: Record<string, unknown> = {
@@ -2973,18 +3253,27 @@ export async function riderRoutes(app: FastifyInstance) {
             extractedName: extractedName || null,
             extractedDob: extractedDob || null,
             metadata: nextMetadata,
-            verificationMethod: digilockerVerified ? "APP_VERIFIED" : "MANUAL_UPLOAD",
+            verificationMethod: aadhaarElectronic ? "APP_VERIFIED" : "MANUAL_UPLOAD",
             updatedAt: new Date(),
           };
-          if (digilockerVerified) {
+          if (aadhaarElectronic) {
             docUpdate.verified = true;
             docUpdate.verificationStatus = "auto_verified";
             docUpdate.verifiedAt = new Date();
             docUpdate.rejectedReason = null;
             docUpdate.requiresManualReview = false;
+          } else {
+            docUpdate.verified = false;
+            docUpdate.verificationStatus = "pending";
+            docUpdate.verifiedAt = null;
+            docUpdate.rejectedReason = null;
+            docUpdate.requiresManualReview = true;
+            docUpdate.verifierUserId = null;
           }
-          if (aadhaarDigits) {
-            docUpdate.docNumber = aadhaarDigits;
+          if (aadhaarDocNumber) {
+            docUpdate.docNumber = aadhaarDocNumber;
+          } else if (aadhaarDigits) {
+            docUpdate.docNumber = maskAadhaarNumber(aadhaarDigits);
           }
 
           if (existing.length > 0) {
@@ -3003,13 +3292,15 @@ export async function riderRoutes(app: FastifyInstance) {
                 r2Key: primaryKey || null,
                 extractedName: extractedName || null,
                 extractedDob: extractedDob || null,
-                docNumber: aadhaarDigits || null,
+                docNumber:
+                  aadhaarDocNumber ||
+                  (aadhaarDigits ? maskAadhaarNumber(aadhaarDigits) : null),
                 metadata: nextMetadata,
-                verificationMethod: digilockerVerified ? "APP_VERIFIED" : "MANUAL_UPLOAD",
-                verified: digilockerVerified,
-                verificationStatus: digilockerVerified ? "auto_verified" : "pending",
-                verifiedAt: digilockerVerified ? new Date() : null,
-                requiresManualReview: digilockerVerified ? false : undefined,
+                verificationMethod: aadhaarElectronic ? "APP_VERIFIED" : "MANUAL_UPLOAD",
+                verified: aadhaarElectronic,
+                verificationStatus: aadhaarElectronic ? "auto_verified" : "pending",
+                verifiedAt: aadhaarElectronic ? new Date() : null,
+                requiresManualReview: aadhaarElectronic ? false : true,
               })
               .returning({ id: riderDocuments.id });
             documentId = newDoc!.id;
@@ -3042,20 +3333,6 @@ export async function riderRoutes(app: FastifyInstance) {
               .where(eq(riders.id, riderId));
           }
 
-          if (digilockerVerified) {
-            try {
-              const { maybeAutoVerifyRiderSelfie } = await import(
-                "../../lib/rider-selfie-auto-verify.js"
-              );
-              await maybeAutoVerifyRiderSelfie(riderId);
-            } catch (selfieErr) {
-              console.warn(
-                "[save-document aadhaar] selfie auto-verify failed:",
-                (selfieErr as Error).message,
-              );
-            }
-          }
-
           await deleteReplacedR2Keys(previousR2Keys, nextR2Keys());
 
           return {
@@ -3078,33 +3355,62 @@ export async function riderRoutes(app: FastifyInstance) {
               ? (existing[0]!.metadata as Record<string, unknown>)
               : {};
           const prevMethod = String(existing[0]!.verificationMethod || "").toUpperCase();
+          const uploadedRealPhoto = isRcRealPhotoUrl(storedFileUrl);
+          const mismatchPending =
+            metadata?.panNameMismatch === true ||
+            metadata?.rcOwnerAadhaarMismatch === true ||
+            metadata?.requiresManualReview === true ||
+            metadata?.nameMismatch === true ||
+            metadata?.aadhaarCrossCheckOk === false ||
+            String(metadata?.verificationMethod || "")
+              .toLowerCase()
+              .includes("manual");
+          // Real photo uploads / mismatch flags are never auto-verified — Cashfree stubs only.
           const electronicCashfree =
-            (docType === "pan" &&
+            !uploadedRealPhoto &&
+            !mismatchPending &&
+            rcSave?.kind !== "manual_review" &&
+            ((docType === "pan" &&
               (metadata?.panVerified === true ||
                 metadata?.verificationMethod === "cashfree_pan" ||
-                String(fileUrl || "").includes("cashfree_pan_verified"))) ||
+                String(fileUrl || "").includes("cashfree_pan_verified") ||
+                isRcElectronicStubUrl(storedFileUrl))) ||
             (docType === "dl" &&
               (metadata?.verificationMethod === "cashfree_dl" ||
-                String(fileUrl || "").includes("cashfree_dl_verified"))) ||
-            (docType === "rc" &&
-              (metadata?.verificationMethod === "cashfree_rc" ||
-                String(fileUrl || "").includes("cashfree_rc_verified")));
+                String(fileUrl || "").includes("cashfree_dl_verified") ||
+                isRcElectronicStubUrl(storedFileUrl))) ||
+            (docType === "rc" && rcSave?.kind === "auto_verified") ||
+            (docType === "bank_proof" &&
+              (metadata?.verificationMethod === "cashfree_bank" ||
+                isRcElectronicStubUrl(storedFileUrl))));
+          // Never keep a prior electronic verify once a real photo is uploaded for
+          // any doc (aadhaar/pan/dl/rc/bank_proof/rental/etc.).
           const keepElectronic =
-            electronicCashfree ||
-            (existing[0]!.verified === true &&
-              (prevMethod === "APP_VERIFIED" ||
-                prevMethod.startsWith("CASHFREE_") ||
-                prevMethod === "RAZORPAY_BANK" ||
-                String(existing[0]!.verificationStatus || "").toLowerCase() === "auto_verified"));
-          const mergedMeta: Record<string, unknown> = {
-            ...prevMeta,
-            ...(metadata && typeof metadata === "object" ? metadata : {}),
-            ...(keepElectronic
-              ? { photoAttachedAt: new Date().toISOString() }
-              : { manualSubmissionAt: new Date().toISOString() }),
-          };
+            uploadedRealPhoto || mismatchPending || rcSave?.kind === "manual_review"
+              ? false
+              : electronicCashfree ||
+                (existing[0]!.verified === true &&
+                  !uploadedRealPhoto &&
+                  (prevMethod === "APP_VERIFIED" ||
+                    prevMethod.startsWith("CASHFREE_") ||
+                    prevMethod === "RAZORPAY_BANK" ||
+                    String(existing[0]!.verificationStatus || "").toLowerCase() === "auto_verified"));
+          const forceManualPending =
+            uploadedRealPhoto ||
+            mismatchPending ||
+            rcSave?.kind === "manual_review" ||
+            (!electronicCashfree && !keepElectronic);
+          const mergedMeta: Record<string, unknown> = rcSave
+            ? rcSave.metadata
+            : {
+                ...prevMeta,
+                ...(metadata && typeof metadata === "object" ? metadata : {}),
+                ...(keepElectronic
+                  ? { photoAttachedAt: new Date().toISOString() }
+                  : { manualSubmissionAt: new Date().toISOString() }),
+              };
           // Successful electronic verify must clear stale mismatch stubs.
-          if (electronicCashfree || keepElectronic) {
+          if (rcSave?.kind !== "manual_review" && (electronicCashfree || keepElectronic)) {
             delete mergedMeta.crossCheckFailed;
             delete mergedMeta.panNameMismatch;
             delete mergedMeta.aadhaarCrossCheckOk;
@@ -3116,41 +3422,56 @@ export async function riderRoutes(app: FastifyInstance) {
             ) {
               delete mergedMeta.autoVerification;
             }
-          } else if (prevMeta.autoVerification) {
+          } else if (prevMeta.autoVerification && rcSave?.kind !== "manual_review") {
             mergedMeta.autoVerification = prevMeta.autoVerification;
             mergedMeta.crossCheckFailed = true;
           }
           const verifiedDetails =
-            metadata?.verifiedDetails &&
+            rcSave?.cashfreeDetails ||
+            (metadata?.verifiedDetails &&
             typeof metadata.verifiedDetails === "object" &&
             !Array.isArray(metadata.verifiedDetails)
               ? (metadata.verifiedDetails as Record<string, unknown>)
-              : null;
+              : null);
           const prevSummary =
             existing[0]!.extractedDataSummary &&
             typeof existing[0]!.extractedDataSummary === "object"
               ? (existing[0]!.extractedDataSummary as Record<string, unknown>)
               : {};
+          const rcManualReview =
+            rcSave?.kind === "manual_review" ||
+            (docType === "rc" && isRcRealPhotoUrl(storedFileUrl));
           await db
             .update(riderDocuments)
             .set({
               fileUrl: storedFileUrl,
               r2Key: primaryKey || null,
-              extractedName: extractedName || null,
+              extractedName: extractedName || rcSave?.ownerName || null,
               extractedDob: extractedDob || null,
               ...(docNumber ? { docNumber } : {}),
               metadata: mergedMeta,
-              ...(electronicCashfree && verifiedDetails
+              ...((electronicCashfree || rcManualReview) && verifiedDetails
                 ? {
                     extractedDataSummary: {
                       ...prevSummary,
                       provider: "cashfree",
-                      method: "APP_VERIFIED",
+                      method: rcManualReview || forceManualPending ? "MANUAL_UPLOAD" : "APP_VERIFIED",
                       verifiedData: verifiedDetails,
+                      rcOwnerAadhaarMismatch: rcManualReview,
                     },
                   }
                 : {}),
-              ...(electronicCashfree
+              ...(forceManualPending
+                ? {
+                    verificationMethod: "MANUAL_UPLOAD" as const,
+                    requiresManualReview: true,
+                    verified: false,
+                    verificationStatus: "pending" as const,
+                    verifiedAt: null,
+                    rejectedReason: null,
+                    verifierUserId: null,
+                  }
+                : electronicCashfree
                 ? {
                     verificationMethod: "APP_VERIFIED" as const,
                     requiresManualReview: false,
@@ -3186,23 +3507,43 @@ export async function riderRoutes(app: FastifyInstance) {
                 : docType === "pan" && typeof metadata?.panNumber === "string"
                   ? normalizePan(metadata.panNumber)
                   : null;
+          const rcManualReview =
+            rcSave?.kind === "manual_review" ||
+            (docType === "rc" && isRcRealPhotoUrl(storedFileUrl));
+          const uploadedRealPhoto = isRcRealPhotoUrl(storedFileUrl);
+          const mismatchPending =
+            metadata?.panNameMismatch === true ||
+            metadata?.rcOwnerAadhaarMismatch === true ||
+            metadata?.requiresManualReview === true ||
+            metadata?.nameMismatch === true ||
+            metadata?.aadhaarCrossCheckOk === false ||
+            String(metadata?.verificationMethod || "")
+              .toLowerCase()
+              .includes("manual");
           const electronicCashfree =
-            (docType === "pan" &&
+            !uploadedRealPhoto &&
+            !rcManualReview &&
+            !mismatchPending &&
+            ((docType === "pan" &&
               (metadata?.panVerified === true ||
                 metadata?.verificationMethod === "cashfree_pan" ||
-                String(fileUrl || "").includes("cashfree_pan_verified"))) ||
+                String(fileUrl || "").includes("cashfree_pan_verified") ||
+                isRcElectronicStubUrl(storedFileUrl))) ||
             (docType === "dl" &&
               (metadata?.verificationMethod === "cashfree_dl" ||
-                String(fileUrl || "").includes("cashfree_dl_verified"))) ||
-            (docType === "rc" &&
-              (metadata?.verificationMethod === "cashfree_rc" ||
-                String(fileUrl || "").includes("cashfree_rc_verified")));
+                String(fileUrl || "").includes("cashfree_dl_verified") ||
+                isRcElectronicStubUrl(storedFileUrl))) ||
+            (docType === "rc" && rcSave?.kind === "auto_verified") ||
+            (docType === "bank_proof" &&
+              (metadata?.verificationMethod === "cashfree_bank" ||
+                isRcElectronicStubUrl(storedFileUrl))));
           const verifiedDetails =
-            metadata?.verifiedDetails &&
+            rcSave?.cashfreeDetails ||
+            (metadata?.verifiedDetails &&
             typeof metadata.verifiedDetails === "object" &&
             !Array.isArray(metadata.verifiedDetails)
               ? (metadata.verifiedDetails as Record<string, unknown>)
-              : null;
+              : null);
           const [newDoc] = await db
             .insert(riderDocuments)
             .values({
@@ -3210,21 +3551,24 @@ export async function riderRoutes(app: FastifyInstance) {
               docType: docType as never,
               fileUrl: storedFileUrl,
               r2Key: primaryKey || null,
-              extractedName: extractedName || null,
+              extractedName: extractedName || rcSave?.ownerName || null,
               extractedDob: extractedDob || null,
               docNumber: docNumber || null,
-              metadata: {
-                ...(metadata && typeof metadata === "object" ? metadata : {}),
-                ...(electronicCashfree
-                  ? { electronicVerifiedAt: new Date().toISOString() }
-                  : { manualSubmissionAt: new Date().toISOString() }),
-              },
-              ...(electronicCashfree && verifiedDetails
+              metadata: rcSave
+                ? rcSave.metadata
+                : {
+                    ...(metadata && typeof metadata === "object" ? metadata : {}),
+                    ...(electronicCashfree
+                      ? { electronicVerifiedAt: new Date().toISOString() }
+                      : { manualSubmissionAt: new Date().toISOString() }),
+                  },
+              ...((electronicCashfree || rcManualReview) && verifiedDetails
                 ? {
                     extractedDataSummary: {
                       provider: "cashfree",
-                      method: "APP_VERIFIED",
+                      method: rcManualReview || uploadedRealPhoto ? "MANUAL_UPLOAD" : "APP_VERIFIED",
                       verifiedData: verifiedDetails,
+                      rcOwnerAadhaarMismatch: rcManualReview,
                     },
                   }
                 : {}),
@@ -3282,27 +3626,18 @@ export async function riderRoutes(app: FastifyInstance) {
             })
             .where(eq(riders.id, riderId));
 
-          try {
-            const {
-              autoVerifyUploadedRiderSelfie,
-              maybeAutoVerifyRiderSelfie,
-            } = await import("../../lib/rider-selfie-auto-verify.js");
-            if (autoVerify === true) {
-              await autoVerifyUploadedRiderSelfie(riderId);
-            } else {
-              await maybeAutoVerifyRiderSelfie(riderId);
-            }
-          } catch (selfieErr) {
-            console.warn(
-              "[save-document] selfie auto-verify failed:",
-              (selfieErr as Error).message,
-            );
-          }
+          // Selfie photo uploads are always auto-verified (admin or rider).
+          const { autoVerifyUploadedRiderSelfie } = await import(
+            "../../lib/rider-selfie-auto-verify.js"
+          );
+          await autoVerifyUploadedRiderSelfie(riderId).catch(() => false);
         } else if (docType === "rc") {
           // verify-document uses deferProjection — project rider_vehicles on Continue.
+          // Name-mismatch photos stay unverified until an agent approves.
           try {
             const verifiedDetails =
-              metadata?.verifiedDetails &&
+              rcSave?.cashfreeDetails ||
+              (metadata?.verifiedDetails &&
               typeof metadata.verifiedDetails === "object" &&
               !Array.isArray(metadata.verifiedDetails)
                 ? (metadata.verifiedDetails as Record<string, unknown>)
@@ -3310,14 +3645,49 @@ export async function riderRoutes(app: FastifyInstance) {
                     typeof metadata.cashfreeVerifiedData === "object" &&
                     !Array.isArray(metadata.cashfreeVerifiedData)
                   ? (metadata.cashfreeVerifiedData as Record<string, unknown>)
-                  : null;
-            const { ensureRiderVehicleFromStoredRc } = await import(
+                  : null);
+            const { upsertRiderVehicleFromRcVerifiedData } = await import(
               "../../lib/rider-vehicle-from-rc.js"
             );
-            await ensureRiderVehicleFromStoredRc(riderId, {
-              verifiedData: verifiedDetails,
-              rcDocumentUrl: storedFileUrl,
-            });
+            // Only Cashfree name-match auto-verify may mark the vehicle verified.
+            // Manual photo / mismatch review stays unverified until an agent approves —
+            // riders must not switch ON-DUTY onto an unverified second RC.
+            const markVehicleVerified = rcSave?.kind === "auto_verified";
+            const rcNumberForVehicle =
+              typeof metadata?.rcNumber === "string" ? normalizeRcNumber(metadata.rcNumber) : null;
+            const vehiclePayload =
+              verifiedDetails ??
+              (addAnotherVehicle && rcNumberForVehicle
+                ? {
+                    reg_no: rcNumberForVehicle,
+                    registration_number: rcNumberForVehicle,
+                    vehicle_number: rcNumberForVehicle,
+                  }
+                : null);
+            const projected = vehiclePayload
+              ? await upsertRiderVehicleFromRcVerifiedData({
+                  riderId,
+                  verifiedData: vehiclePayload,
+                  rcDocumentUrl: storedFileUrl,
+                  markVerified: markVehicleVerified,
+                  intent: addAnotherVehicle ? "add" : "replace",
+                })
+              : { ok: false as const, error: "missing_verified_data" };
+            if (projected.ok === false && projected.code) {
+              // Document row is already saved — do not 409 (client treats that as a hard
+              // failure / crashy path after a successful upload). Taxonomy was already
+              // checked earlier when Cashfree details were present.
+              console.warn(
+                "[save-document] RC → rider_vehicles blocked after doc save:",
+                projected.code,
+                projected.error,
+              );
+            } else if (projected.ok && projected.vehicleId) {
+              await db
+                .update(riderDocuments)
+                .set({ vehicleId: projected.vehicleId, updatedAt: new Date() })
+                .where(eq(riderDocuments.id, documentId));
+            }
           } catch (vehicleErr) {
             console.warn(
               "[save-document] RC → rider_vehicles project failed:",
@@ -3326,7 +3696,9 @@ export async function riderRoutes(app: FastifyInstance) {
           }
         }
 
-        await deleteReplacedR2Keys(previousR2Keys, nextR2Keys());
+        if (rcSave?.kind !== "manual_review") {
+          await deleteReplacedR2Keys(previousR2Keys, nextR2Keys());
+        }
 
         return {
           documentId,

@@ -8,9 +8,58 @@ import type { VehicleClass } from "./eligibilityEngine.js";
 
 export const MAX_ACTIVE_VEHICLES = 2;
 
+const VEHICLE_CLASS_LABEL: Record<VehicleClass, string> = {
+  "2_wheeler": "2 Wheeler",
+  "3_wheeler": "3 Wheeler",
+  "4_wheeler": "4 Wheeler",
+};
+
+export function vehicleClassDisplayLabel(cls: VehicleClass | null | undefined): string {
+  if (!cls) return "vehicle";
+  return VEHICLE_CLASS_LABEL[cls];
+}
+
 /** Uppercase + strip every non-alphanumeric so "HR-01-AB-1234" == "hr01ab1234". */
 export function normalizeRegistrationNumber(raw: string | null | undefined): string {
   return String(raw ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/**
+ * Canonical 2W/3W/4W from Cashfree/VAHAN `vehicle_class` (and related fields).
+ * Used when adding a second RC — never trust the rider's onboarding bike choice.
+ */
+export function canonicalClassFromCashfreeRc(data: {
+  vehicle_class?: unknown;
+  class?: unknown;
+  vehicle_category?: unknown;
+  body_type?: unknown;
+} | null | undefined): VehicleClass | null {
+  if (!data) return null;
+  const raw = [data.vehicle_class, data.class, data.vehicle_category, data.body_type]
+    .map((v) => String(v ?? "").trim().toUpperCase())
+    .filter(Boolean)
+    .join(" | ");
+  if (!raw) return null;
+  if (
+    /\b(3WN|3WT|3W\b|THREE[\s-]*WHEEL|AUTO\s*RICK|E-?RICK|LMV[\s-]*3|3[\s-]*WHEELER)/.test(raw)
+  ) {
+    return "3_wheeler";
+  }
+  if (
+    /\b(M-?CYCLE|MCWG|MCWOG|SCOOTER|MOPED|TWO[\s-]*WHEEL|2W\b|LMV[\s-]*TW|MOTOR\s*CYCLE|2[\s-]*WHEELER)/.test(
+      raw,
+    )
+  ) {
+    return "2_wheeler";
+  }
+  if (
+    /\b(LMV|MOTOR\s*CAR|MOTOR\s*CAB|MGV|HGV|LPV|LCV|FOUR[\s-]*WHEEL|4W\b|CAR\b|CAB\b|TAXI|JEEP|4[\s-]*WHEELER)/.test(
+      raw,
+    )
+  ) {
+    return "4_wheeler";
+  }
+  return null;
 }
 
 export type VehicleForTaxonomy = {
@@ -26,7 +75,7 @@ export function canonicalVehicleClass(v: VehicleForTaxonomy): VehicleClass | nul
 
 export type AddVehicleCheck =
   | { ok: true }
-  | { ok: false; code: "MAX_VEHICLES" | "INVALID_REGISTRATION" | "DUPLICATE_RC" | "SAME_VEHICLE_CLASS"; reason: string };
+  | { ok: false; code: "MAX_VEHICLES" | "INVALID_REGISTRATION" | "DUPLICATE_RC" | "SAME_VEHICLE_CLASS" | "UNKNOWN_VEHICLE_CLASS"; reason: string };
 
 /**
  * May this rider add `candidate` given their `existing` (non-retired) vehicles?
@@ -51,11 +100,11 @@ export function canAddVehicle(args: {
   }
   const candClass = canonicalVehicleClass(args.candidate);
   if (candClass && args.existing.some((e) => canonicalVehicleClass(e) === candClass)) {
-    const label = candClass.replace("_", "-");
+    const label = vehicleClassDisplayLabel(candClass);
     return {
       ok: false,
       code: "SAME_VEHICLE_CLASS",
-      reason: `You already have a ${label} vehicle. A second vehicle must be a different class.`,
+      reason: `You already have a ${label} registered. Your second vehicle must be a different vehicle type.`,
     };
   }
   return { ok: true };

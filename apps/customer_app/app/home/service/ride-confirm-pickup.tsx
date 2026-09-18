@@ -14,6 +14,7 @@ import { MapboxWebPannableMap } from "@/components/maps/MapboxWebPannableMap";
 import type { CustomerMapRef } from "@/lib/customer-map-handle";
 import { reverseGeocode, resolvePlaceDisplayName } from "@/services/location.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { resolveBottomSafeInset } from "@/constants/layout";
 import {
   buildNearbyPickupSnaps,
   type PickupSnapPoint,
@@ -382,7 +383,7 @@ export default function RideConfirmPickupScreen() {
     router,
   ]);
 
-  const sheetBottom = Math.max(insets.bottom, 16);
+  const sheetBottom = Math.max(resolveBottomSafeInset(insets.bottom), 16) + 8;
   const fabBottom = 16;
 
   return (
@@ -635,8 +636,8 @@ const styles = StyleSheet.create({
   },
   confirmBtn: {
     backgroundColor: GatiMitraColors.primaryMint,
-    paddingVertical: 16,
-    borderRadius: 28,
+    paddingVertical: 14,
+    borderRadius: 12,
     alignItems: "center",
   },
   confirmBtnDisabled: {

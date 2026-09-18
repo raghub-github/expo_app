@@ -3,6 +3,7 @@ import { riderApi } from "@/src/services/api/riderApi";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
+import { useRiderServiceFilterStore } from "@/src/stores/riderServiceFilterStore";
 import type { RiderLogoutReasonCode } from "@/src/lib/rider-logout-reasons";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
@@ -31,6 +32,11 @@ export async function performRiderLogout(opts?: {
   // Clear local auth FIRST so UI can never stay "logged in" if the API hangs.
   try {
     await useDutyStore.getState().setDutyStatus(false);
+  } catch {
+    /* ignore */
+  }
+  try {
+    await useRiderServiceFilterStore.getState().setSelectedServices([]);
   } catch {
     /* ignore */
   }

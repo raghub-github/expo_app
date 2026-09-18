@@ -1,11 +1,14 @@
 /**
- * Map store merchant offers → per-menu-item display (Boost price / BOGO badge).
- * Does not mutate catalog selling prices — display-only estimates.
+ * Map store merchant offers → per-menu-item display (Boost / flash / BOGO badge).
+ *
+ * Menu `selling_price` / strike / flash_sale are authoritative (backend calculation
+ * engine). Never invent a cheaper unit on the client — that causes first-paint
+ * flash (plain price → Get for ₹X) when store-offers arrive after the menu.
  */
 
 import type { MerchantOfferItem } from "@/services/offers.service";
 
-export type ItemOfferKind = "percentage" | "flat" | "bogo";
+export type ItemOfferKind = "percentage" | "flat" | "bogo" | "flash_sale";
 
 export type ItemOfferDisplay = {
   offerId: number;
@@ -31,6 +34,11 @@ export type ItemOfferCatalogItem = {
   price: number;
   /** Backend strike (markup of base CTM) when Boost is already baked into `price`. */
   customerStrikePrice?: number | null;
+  flashSale?: {
+    offerId: number;
+    originalCustomerUnit: number;
+    flashPrice: number;
+  } | null;
 };
 
 function isBogoType(type: string): boolean {
@@ -152,7 +160,45 @@ export function offerPriority(o: MerchantOfferItem): number {
   return 0;
 }
 
-function toDisplay(best: MerchantOfferItem, item: ItemOfferCatalogItem): ItemOfferDisplay {
+export function parseMenuFlashSale(
+  raw: Record<string, unknown> | null | undefined
+): { offerId: number; originalCustomerUnit: number; flashPrice: number } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const blob =
+    (raw.flashSale as Record<string, unknown> | undefined) ??
+    (raw.flash_sale as Record<string, unknown> | undefined) ??
+    ((raw.canonicalPricing as Record<string, unknown> | undefined)?.flash_sale as
+      | Record<string, unknown>
+      | undefined) ??
+    ((raw.canonical_pricing as Record<string, unknown> | undefined)?.flash_sale as
+      | Record<string, unknown>
+      | undefined);
+  if (!blob || typeof blob !== "object") return null;
+  const offerId = Number(blob.offer_id ?? blob.offerId);
+  const original = Number(blob.original_customer_unit ?? blob.originalCustomerUnit ?? blob.customer_strike_unit);
+  const flash = Number(blob.flash_price ?? blob.flashPrice ?? blob.flash_unit);
+  if (!Number.isInteger(offerId) || offerId < 1) return null;
+  if (!Number.isFinite(original) || original <= 0) return null;
+  if (!Number.isFinite(flash) || flash < 0 || flash >= original - 0.0001) return null;
+  return { offerId, originalCustomerUnit: original, flashPrice: flash };
+}
+
+export function flashSaleItemDisplay(flash: {
+  offerId: number;
+  originalCustomerUnit: number;
+  flashPrice: number;
+}): ItemOfferDisplay {
+  return {
+    offerId: flash.offerId,
+    kind: "flash_sale",
+    label: "Flash Sale",
+    offerPrice: Math.round(flash.flashPrice),
+    strikePrice: Math.round(flash.originalCustomerUnit),
+    autoApply: true,
+  };
+}
+
+function toDisplay(best: MerchantOfferItem, item: ItemOfferCatalogItem): ItemOfferDisplay | null {
   const type = best.offer_type.toUpperCase();
   if (isBogoType(type)) {
     const buy = best.buy_quantity != null && best.buy_quantity > 0 ? best.buy_quantity : 1;
@@ -174,28 +220,16 @@ function toDisplay(best: MerchantOfferItem, item: ItemOfferCatalogItem): ItemOff
   const baked =
     strikeFromBackend != null && strikeFromBackend > catalogPrice + 0.001;
 
-  if (baked) {
-    return {
-      offerId: best.id,
-      kind: type === "FLAT" ? "flat" : "percentage",
-      label: best.label,
-      offerPrice: Math.round(catalogPrice),
-      strikePrice: Math.round(strikeFromBackend),
-      discountPercentage: best.discount_percentage ?? null,
-      discountValue: best.discount_value ?? null,
-      maxDiscountAmount: best.max_discount_amount ?? null,
-      autoApply: best.auto_apply,
-    };
-  }
+  // Only surface %/flat when the menu row already carries backend-baked strike.
+  // Do not client-estimate a temporary "Get for" that later jumps when menu refreshes.
+  if (!baked) return null;
 
-  const estimated = estimateOfferUnitPrice(catalogPrice, best);
-  const hasEstimate = estimated != null && estimated < catalogPrice - 0.001;
   return {
     offerId: best.id,
     kind: type === "FLAT" ? "flat" : "percentage",
     label: best.label,
-    offerPrice: hasEstimate ? estimated : Math.round(catalogPrice),
-    strikePrice: hasEstimate ? Math.round(catalogPrice) : null,
+    offerPrice: Math.round(catalogPrice),
+    strikePrice: Math.round(strikeFromBackend),
     discountPercentage: best.discount_percentage ?? null,
     discountValue: best.discount_value ?? null,
     maxDiscountAmount: best.max_discount_amount ?? null,
@@ -216,29 +250,37 @@ export function computeCatalogDiscountPercent(
   return pct > 0 ? pct : null;
 }
 
-/** Menu card payable + strike. Works for baked Boost and client-estimated Boost. */
+/**
+ * Menu card payable + strike from backend-baked menu fields.
+ * `itemOffer` may refine the strike label path but must never undercut `sellingPrice`.
+ */
 export function resolveMenuOfferPriceDisplay(args: {
   sellingPrice: number;
   basePrice: number | null;
   itemOffer: ItemOfferDisplay | null | undefined;
 }): { payable: number; strike: number | null; showStrike: boolean } {
   const selling = Math.round(args.sellingPrice);
-  const offer = args.itemOffer;
-  if (offer && offer.kind !== "bogo") {
-    const strike = offer.strikePrice != null ? Math.round(offer.strikePrice) : null;
-    const pay = offer.offerPrice != null ? Math.round(offer.offerPrice) : null;
-    if (strike != null && pay != null && strike > pay) {
-      const payable = Math.min(pay, selling);
-      return { payable, strike, showStrike: strike > payable };
-    }
-    if (pay != null && pay < selling) {
-      return { payable: pay, strike: strike ?? selling, showStrike: true };
-    }
-  }
   const base = args.basePrice != null ? Math.round(args.basePrice) : null;
+  const offer = args.itemOffer;
+
   if (base != null && base > selling) {
     return { payable: selling, strike: base, showStrike: true };
   }
+
+  if (offer && offer.kind !== "bogo") {
+    const strike = offer.strikePrice != null ? Math.round(offer.strikePrice) : null;
+    const pay = offer.offerPrice != null ? Math.round(offer.offerPrice) : null;
+    // Offer prices are display mirrors of baked units — only accept when pay ≈ selling.
+    if (
+      strike != null &&
+      pay != null &&
+      strike > selling &&
+      Math.abs(pay - selling) <= 0.51
+    ) {
+      return { payable: selling, strike, showStrike: true };
+    }
+  }
+
   return { payable: selling, strike: null, showStrike: false };
 }
 
@@ -290,15 +332,22 @@ export function buildItemOfferDisplayMap(
 
   if (items.length === 0) return result;
 
+  const hasFlash = items.some((i) => i.flashSale);
   const surfaceOffers = offers.filter(isItemSurface);
-  if (surfaceOffers.length === 0) return result;
+  if (surfaceOffers.length === 0 && !hasFlash) return result;
 
   for (const item of items) {
+    if (item.flashSale) {
+      writeAliases(result, item, flashSaleItemDisplay(item.flashSale));
+      continue;
+    }
     const candidates = surfaceOffers.filter((o) => offerTargetsItem(o, item));
     if (candidates.length === 0) continue;
     const best = [...candidates].sort((a, b) => offerPriority(b) - offerPriority(a))[0];
     if (!best) continue;
-    writeAliases(result, item, toDisplay(best, item));
+    const display = toDisplay(best, item);
+    if (!display) continue;
+    writeAliases(result, item, display);
   }
 
   return result;

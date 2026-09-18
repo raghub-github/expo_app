@@ -37,14 +37,45 @@ export function variantRepresentsBaseItem(
     price: number;
   }
 ): boolean {
+  if (!pricesMatch(variant.price, base.price)) return false;
+
+  const nameA = String(variant.name ?? "").trim().toLowerCase();
+  const nameB = String(base.name ?? "").trim().toLowerCase();
+  // Same display name → parent row already exists as a variant.
+  if (nameA && nameB && nameA === nameB) return true;
+
+  // Same configured size alone is NOT enough — Steamed vs Fried can share
+  // "10 piece" at the same price. Only treat as base when the variant label
+  // is a generic size/portion name (Regular, 250g, etc.).
   const sizeA = normalizeSizeKey(variant.sizePreset, variant.sizeValue, variant.sizeUnit);
   const sizeB = normalizeSizeKey(base.sizePreset, base.sizeValue, base.sizeUnit);
-  if (sizeA && sizeB && sizeA === sizeB && pricesMatch(variant.price, base.price)) {
-    return true;
-  }
-  const nameA = variant.name.trim().toLowerCase();
-  const nameB = base.name.trim().toLowerCase();
-  return Boolean(nameA && nameB && nameA === nameB && pricesMatch(variant.price, base.price));
+  if (!(sizeA && sizeB && sizeA === sizeB)) return false;
+  return isGenericPortionLabel(nameA, sizeA);
+}
+
+const GENERIC_PORTION_LABELS = new Set([
+  "regular",
+  "standard",
+  "default",
+  "normal",
+  "base",
+  "original",
+  "small",
+  "medium",
+  "large",
+  "half",
+  "full",
+  "single",
+  "double",
+]);
+
+function isGenericPortionLabel(name: string, sizeKey: string): boolean {
+  if (!name) return true;
+  if (GENERIC_PORTION_LABELS.has(name)) return true;
+  // Exact size-only labels (e.g. "250grams" / "10piece") — never flavor names that embed size.
+  const compact = name.replace(/\s+/g, "").toLowerCase();
+  const sizeCompact = sizeKey.replace(/^preset:/, "").replace(/:/g, "").toLowerCase();
+  return Boolean(sizeCompact && compact === sizeCompact);
 }
 
 export type MenuItemVariantOption = {

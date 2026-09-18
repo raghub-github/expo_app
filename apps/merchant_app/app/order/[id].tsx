@@ -309,6 +309,39 @@ export default function OrderDetailScreen() {
     }
   }, [token, storeId, ordersFoodId, routeId, boardSeed]);
 
+  // Board / realtime status change while viewing — refresh detail instantly.
+  const boardRec = useMemo(() => {
+    if (ordersFoodId == null) return null;
+    return boardOrders.find((o) => o.id === String(ordersFoodId)) ?? null;
+  }, [boardOrders, ordersFoodId]);
+
+  const boardStatusKey = useMemo(() => {
+    if (!boardRec) return "";
+    return [
+      boardRec.status,
+      String(boardRec.cancelledAt ?? ""),
+      String(boardRec.acceptedAt ?? ""),
+      String(boardRec.preparedAt ?? ""),
+      String(boardRec.handedOverToRiderAt ?? ""),
+      String(boardRec.deliveredAt ?? ""),
+    ].join("|");
+  }, [boardRec]);
+
+  const lastBoardStatusKeyRef = useRef<string>("");
+  useEffect(() => {
+    if (!boardSeed || !boardRec || ordersFoodId == null) return;
+    if (!boardStatusKey) return;
+    if (lastBoardStatusKeyRef.current === "") {
+      lastBoardStatusKeyRef.current = boardStatusKey;
+      return;
+    }
+    if (lastBoardStatusKeyRef.current === boardStatusKey) return;
+    lastBoardStatusKeyRef.current = boardStatusKey;
+    setOrder(boardSeed);
+    if (storeId != null) setCachedFoodOrder(storeId, ordersFoodId, boardSeed);
+    void load();
+  }, [boardSeed, boardRec, boardStatusKey, ordersFoodId, storeId, load]);
+
   useEffect(() => {
     void load();
   }, [load]);

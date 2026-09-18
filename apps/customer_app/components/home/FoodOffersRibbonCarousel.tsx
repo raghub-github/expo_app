@@ -20,11 +20,13 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { AppText } from "@/components/AppText";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
+import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 import { useQueryClient } from "@tanstack/react-query";
 import { useIsFocused } from "@react-navigation/native";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { formatCardOfferLine } from "@/lib/merchantOfferBadge";
 import { resolveMerchantBannerUri } from "@/lib/merchantBanner";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -363,6 +365,7 @@ export function FoodOffersRibbonCarousel({
   const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const [, setActiveIndex] = useState(0);
+  const userScrollingRef = useRef(false);
   const isScreenFocused = useIsFocused();
 
   const slides: Slide[] = useMemo(() => {
@@ -395,6 +398,8 @@ export function FoodOffersRibbonCarousel({
     if (!isScreenFocused) return;
     if (slides.length < 2) return;
     const timer = setInterval(() => {
+      // Never fight a user fling with programmatic scrollTo.
+      if (userScrollingRef.current) return;
       setActiveIndex((prev) => {
         const next = (prev + 1) % slides.length;
         scrollRef.current?.scrollTo({
@@ -409,9 +414,11 @@ export function FoodOffersRibbonCarousel({
 
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      // Index only — avoid setState on every scroll frame (no dots on this rail).
       const x = e.nativeEvent.contentOffset.x;
       const idx = Math.round(x / (cardW + SLIDE_GAP));
-      setActiveIndex(Math.max(0, Math.min(idx, slides.length - 1)));
+      const next = Math.max(0, Math.min(idx, slides.length - 1));
+      setActiveIndex((prev) => (prev === next ? prev : next));
     },
     [slides.length, cardW]
   );
@@ -422,7 +429,7 @@ export function FoodOffersRibbonCarousel({
         navigateToMerchant(router, queryClient, slide.storeId);
         return;
       }
-      router.navigate("/(tabs)/food" as never);
+      navigatePrimaryTab("food", "FoodOffersRibbonCarousel", router);
     },
     [router, queryClient]
   );
@@ -434,19 +441,20 @@ export function FoodOffersRibbonCarousel({
   const cards = (
     <ScrollView
       ref={scrollRef}
-      horizontal
-      nestedScrollEnabled
+      {...NATURAL_HORIZONTAL_SCROLL_PROPS}
       scrollEnabled={slides.length > 1}
-      bounces={false}
-      pagingEnabled={false}
-      snapToInterval={cardW + SLIDE_GAP}
-      snapToAlignment="start"
-      decelerationRate="fast"
-      showsHorizontalScrollIndicator={false}
-      delaysContentTouches={false}
-      keyboardShouldPersistTaps="handled"
+      onScrollBeginDrag={() => {
+        userScrollingRef.current = true;
+      }}
+      onMomentumScrollEnd={() => {
+        userScrollingRef.current = false;
+      }}
+      onScrollEndDrag={(e) => {
+        const vx = e.nativeEvent.velocity?.x ?? 0;
+        if (Math.abs(vx) < 0.12) userScrollingRef.current = false;
+      }}
       onScroll={onScroll}
-      scrollEventThrottle={16}
+      scrollEventThrottle={32}
       contentContainerStyle={styles.scrollContent}
     >
       {slides.map((slide) => (

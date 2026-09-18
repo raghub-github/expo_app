@@ -52,6 +52,10 @@ function MerchantTabsShell() {
         lazy: true,
         freezeOnBlur: true,
         animation: "none",
+        statusBarHidden: false,
+        statusBarStyle: "dark",
+        statusBarTranslucent: false,
+        statusBarBackgroundColor: GatiMitraMerchant.surfaceWarm,
         tabBarActiveTintColor: GatiMitraMerchant.tabActive,
         tabBarInactiveTintColor: GatiMitraMerchant.tabInactive,
         tabBarLabelStyle: {
@@ -180,7 +184,7 @@ export default function TabsLayout() {
   const { authState, isAuthenticated } = useAuth();
   const { selectedStore, isStoreReady } = useSelectedStore();
 
-  if (authState.status === "loading" || (isAuthenticated && !isStoreReady)) {
+  if (authState.status === "loading" || authState.status === "logging_out" || (isAuthenticated && !isStoreReady)) {
     return <MerchantBootstrapScreen />;
   }
 

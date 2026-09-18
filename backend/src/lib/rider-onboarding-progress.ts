@@ -19,7 +19,18 @@ import {
   panSelfieOnboardingComplete,
   rentalEvOnboardingComplete,
   vehicleStepCompleteByRequired,
+  isPlaceholderOnboardingFileUrl,
 } from "./rider-onboarding-progress-docs.js";
+import {
+  isRcBlockingOnboardingPayment,
+  isRcCompleteForOnboardingProgress,
+  rcPaymentBlockError,
+  resolveRcVerificationState,
+} from "./rider-rc-verification-state.js";
+import {
+  filterSkippableOnboardingDocs,
+  loadVehicleDocRequirements,
+} from "./rider-onboarding-vehicle-doc-rules.js";
 import {
   computeOnboardingProgressPct,
   resolveLastAndNextProgressSteps,
@@ -457,7 +468,13 @@ function vehicleStepCompleteWithSkips(
       isOnboardingDocUsable(docs.find((d) => d.docType === "dl")) ||
       (isOnboardingDocUsable(docs.find((d) => d.docType === "dl_front")) &&
         isOnboardingDocUsable(docs.find((d) => d.docType === "dl_back")));
-    const rcOk = rcSkipped || isOnboardingDocUsable(docs.find((d) => d.docType === "rc"));
+    const rcOk =
+      rcSkipped ||
+      isRcCompleteForOnboardingProgress(
+        docs.find((d) => d.docType === "rc"),
+        false,
+        isOnboardingDocUsable,
+      );
     // Both skipped, or each is either present or skipped.
     if (dlOk && rcOk) return true;
     // Only one of DL/RC was in the vehicle doc list and was skipped — still OK if the
@@ -488,6 +505,8 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   completedSteps: RiderOnboardingStepKey[];
   /** Normalized PAN from riders.pan_number or pan document (if present). */
   panNumber: string | null;
+  /** Real PAN card photo URL after manual upload (not electronic placeholders). */
+  panFrontUrl: string | null;
   /** True when PAN row is electronically / manually verified in rider_documents. */
   panVerified: boolean;
   /** Admin exception allowing this rider to skip PAN verification. */
@@ -513,6 +532,18 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   rcFrontUrl: string | null;
   rcVerified: boolean;
   rcVerifiedData: Record<string, unknown> | null;
+  /** Canonical RC state machine for mismatch → manual review. */
+  rcVerificationState: string;
+  rcRejectedReason: string | null;
+  rcDocumentVersion: number | null;
+  /** False while RC is pending/rejected on the name-mismatch path. */
+  rcPaymentEligible: boolean;
+  /** Rental agreement photo/PDF URL (rental_ev flow). */
+  rentalProofUrl: string | null;
+  /** EV proof photo/PDF URL (rental_ev flow). */
+  evProofUrl: string | null;
+  /** Declared max speed (km/h) from rental/EV onboarding. */
+  maxSpeedDeclaration: number | null;
   onboardingProgress: OnboardingProgressMap;
   lastCompletedStep: string | null;
   nextRequiredStep: string | null;
@@ -538,6 +569,7 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     approval: "not_started",
   };
   const emptyDocDraft = {
+    panFrontUrl: null as string | null,
     panVerifiedData: null as Record<string, unknown> | null,
     aadhaarNumber: null as string | null,
     aadhaarVerified: false,
@@ -552,6 +584,13 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     rcFrontUrl: null as string | null,
     rcVerified: false,
     rcVerifiedData: null as Record<string, unknown> | null,
+    rcVerificationState: "NOT_SUBMITTED" as string,
+    rcRejectedReason: null as string | null,
+    rcDocumentVersion: null as number | null,
+    rcPaymentEligible: true,
+    rentalProofUrl: null as string | null,
+    evProofUrl: null as string | null,
+    maxSpeedDeclaration: null as number | null,
   };
   const emptyAppSync = {
     vehicleChoice: null as string | null,
@@ -592,6 +631,9 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
       verified: riderDocuments.verified,
       verificationMethod: riderDocuments.verificationMethod,
       verificationStatus: riderDocuments.verificationStatus,
+      requiresManualReview: riderDocuments.requiresManualReview,
+      rejectedReason: riderDocuments.rejectedReason,
+      r2Key: riderDocuments.r2Key,
       docNumber: riderDocuments.docNumber,
       extractedDataSummary: riderDocuments.extractedDataSummary,
     })
@@ -631,7 +673,15 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   const vehicleFlow = readOnboardingVehicleFlow(docs);
   const vehicleChoice = readVehicleChoice(docs);
   const vehicleDocsSubmittedFor = readVehicleDocsSubmittedFor(docs);
-  const skippedOnboardingDocs = readSkippedOnboardingDocs(docs);
+  const skippedOnboardingDocsRaw = readSkippedOnboardingDocs(docs);
+  const vehicleDocRequirements = await loadVehicleDocRequirements(vehicleChoice);
+  // Keep intentional onboarding soft-skips (geo/optional) so payment is not blocked
+  // when Parcel/Ride stay "Later" and Food is unlocked after pay.
+  const skippedOnboardingDocs = filterSkippableOnboardingDocs(
+    vehicleDocRequirements,
+    skippedOnboardingDocsRaw,
+    { allowOnboardingSoftSkips: true },
+  );
   const configuredRequiredDocs = await readRequiredDocsForVehicleChoice(vehicleChoice);
   const vehicleDocsSatisfied = configuredRequiredDocs?.length
     ? vehicleStepCompleteByRequired(docs, configuredRequiredDocs, skippedOnboardingDocs)
@@ -643,25 +693,38 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
         vehicleChoice
       );
   const adminVehicleDone = adminCompletedVehicleOnboarding(docs);
+  // Payment must not wait on soft-skipped DL/RC or manual-review docs.
+  // `vehicleDocsSubmittedFor` was set only after validateRequiredVehicleDocs
+  // (which already honors soft skips), so trust that flag even if skip metadata
+  // was later filtered. Manual uploads count via vehicleDocsSatisfied / isUsable.
   const vehicleReadyForPayment =
-    (vehicleDocsSatisfied &&
-      Boolean(vehicleChoice) &&
-      vehicleDocsSubmittedFor === vehicleChoice) ||
-    adminVehicleDone;
+    adminVehicleDone ||
+    (Boolean(vehicleChoice) && vehicleDocsSubmittedFor === vehicleChoice) ||
+    (Boolean(vehicleChoice) &&
+      vehicleDocsSatisfied &&
+      (skippedOnboardingDocs.length > 0 || skippedOnboardingDocsRaw.length > 0) &&
+      hasDocType(docs, "onboarding_vehicle_selection"));
 
   if (configuredRequiredDocs?.length) {
-    if (vehicleDocsSatisfied) {
+    if (vehicleDocsSatisfied || vehicleReadyForPayment) {
       const dlRcRequired = configuredRequiredDocs.filter((code) => {
         const n = normalizeOnboardingDocCode(code);
         return n === "dl" || n === "rc" || code === "dl" || code === "rc";
       });
-      if (dlRcRequired.length > 0 || skippedOnboardingDocs.length > 0) {
+      if (
+        dlRcRequired.length > 0 ||
+        skippedOnboardingDocs.length > 0 ||
+        skippedOnboardingDocsRaw.length > 0 ||
+        vehicleReadyForPayment
+      ) {
         completed.push("dl_rc");
       }
       const rentalRequired = configuredRequiredDocs.filter(
         (code) => code === "rental_proof" || code === "ev_proof"
       );
-      if (rentalRequired.length > 0) completed.push("rental_ev");
+      if (rentalRequired.length > 0 || vehicleFlow === "rental_ev") {
+        completed.push("rental_ev");
+      }
     } else {
       if (dlRcComplete(docs)) {
         completed.push("dl_rc");
@@ -673,13 +736,14 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   } else {
     if (
       dlRcComplete(docs) ||
+      vehicleReadyForPayment ||
       (vehicleDocsSatisfied &&
         vehicleDocsSubmittedFor === vehicleChoice &&
         (skippedOnboardingDocs.length > 0 || vehicleFlow === "dl_rc"))
     ) {
       completed.push("dl_rc");
     }
-    if (rentalEvComplete(docs)) {
+    if (rentalEvComplete(docs) || (vehicleReadyForPayment && vehicleFlow === "rental_ev")) {
       completed.push("rental_ev");
     }
     if (vehicleFlow === "payment" && hasDocType(docs, "onboarding_vehicle_selection")) {
@@ -693,6 +757,17 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   const panNumber = readPanNumber(docs, rider.panNumber);
   const panVerified = panDocVerified(panDoc);
   const panVerifiedData = readCashfreeVerifiedData(docs, "pan");
+  const panSideUrls = readDocSideUrls(docs, filesByDocId, "pan");
+  const panFrontRaw = String(panSideUrls.frontUrl || "").trim();
+  const panFrontLower = panFrontRaw.toLowerCase();
+  const panFrontUrl =
+    panFrontRaw &&
+    !isPlaceholderOnboardingFileUrl(panFrontRaw) &&
+    !panFrontLower.includes("electronic_verified") &&
+    !panFrontLower.includes("digilocker") &&
+    panFrontLower !== "pan_number_submitted"
+      ? panFrontRaw
+      : null;
   const aadhaarDoc =
     docs.find((d) => d.docType === "aadhaar") ||
     docs.find((d) => d.docType === "aadhaar_front");
@@ -719,9 +794,72 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
   const rcNumber = readRcNumber(docs);
   const rcDoc = docs.find((d) => d.docType === "rc");
   const rcUrls = readDocSideUrls(docs, filesByDocId, "rc");
-  const rcVerified = isDocElectronicallyVerified(rcDoc);
+  const rcVerificationState = resolveRcVerificationState(rcDoc);
+  const rcSkipped = isOnboardingDocSkipped(skippedOnboardingDocs, "rc");
+  const rcVerified =
+    rcVerificationState === "AUTO_VERIFIED" || rcVerificationState === "MANUAL_VERIFIED";
   const rcVerifiedData = readCashfreeVerifiedData(docs, "rc");
+  const rcRejectedReason =
+    rcVerificationState === "MANUAL_REJECTED"
+      ? String(rcDoc?.rejectedReason || "").trim() ||
+        (rcDoc?.metadata && typeof rcDoc.metadata === "object"
+          ? String((rcDoc.metadata as Record<string, unknown>).rcRejectionReason || "").trim()
+          : "") ||
+        null
+      : null;
+  const rcDocumentVersion =
+    rcDoc?.metadata && typeof rcDoc.metadata === "object"
+      ? Number((rcDoc.metadata as Record<string, unknown>).documentVersion) || null
+      : null;
+  const rcPaymentEligible = rcSkipped || !isRcBlockingOnboardingPayment(rcDoc, rcSkipped);
+
+  const rentalSideUrls = readDocSideUrls(docs, filesByDocId, "rental_proof");
+  const evSideUrls = readDocSideUrls(docs, filesByDocId, "ev_proof");
+  const rentalDocRow = docs.find((d) => d.docType === "rental_proof");
+  const evDocRow = docs.find((d) => d.docType === "ev_proof");
+  const rentalMeta =
+    rentalDocRow?.metadata && typeof rentalDocRow.metadata === "object"
+      ? (rentalDocRow.metadata as Record<string, unknown>)
+      : {};
+  const evMeta =
+    evDocRow?.metadata && typeof evDocRow.metadata === "object"
+      ? (evDocRow.metadata as Record<string, unknown>)
+      : {};
+  const pickRealVehicleDocUrl = (...candidates: Array<string | null | undefined>) => {
+    for (const c of candidates) {
+      const raw = String(c || "").trim();
+      if (!raw || isPlaceholderOnboardingFileUrl(raw)) continue;
+      const lower = raw.toLowerCase();
+      if (lower === "pending" || lower === "n/a") continue;
+      return raw;
+    }
+    return null;
+  };
+  const rentalProofUrl = pickRealVehicleDocUrl(
+    rentalSideUrls.frontUrl,
+    typeof rentalMeta.rentalProofSignedUrl === "string" ? rentalMeta.rentalProofSignedUrl : null,
+    typeof evMeta.rentalProofSignedUrl === "string" ? evMeta.rentalProofSignedUrl : null,
+  );
+  const evProofUrl = pickRealVehicleDocUrl(
+    evSideUrls.frontUrl,
+    typeof evMeta.evProofSignedUrl === "string" ? evMeta.evProofSignedUrl : null,
+    typeof rentalMeta.evProofSignedUrl === "string" ? rentalMeta.evProofSignedUrl : null,
+  );
+  const maxSpeedRaw =
+    evMeta.maxSpeedDeclaration ?? rentalMeta.maxSpeedDeclaration ?? null;
+  const maxSpeedNum =
+    typeof maxSpeedRaw === "number"
+      ? maxSpeedRaw
+      : typeof maxSpeedRaw === "string" && maxSpeedRaw.trim()
+        ? Number(maxSpeedRaw)
+        : null;
+  const maxSpeedDeclaration =
+    maxSpeedNum != null && Number.isFinite(maxSpeedNum) && maxSpeedNum > 0
+      ? maxSpeedNum
+      : null;
+
   const docDraftFields = {
+    panFrontUrl,
     panVerifiedData,
     aadhaarNumber,
     aadhaarVerified,
@@ -736,6 +874,14 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     rcFrontUrl: rcUrls.frontUrl,
     rcVerified,
     rcVerifiedData,
+    rcVerificationState,
+    rcRejectedReason,
+    rcDocumentVersion:
+      rcDocumentVersion && Number.isFinite(rcDocumentVersion) ? rcDocumentVersion : null,
+    rcPaymentEligible,
+    rentalProofUrl,
+    evProofUrl,
+    maxSpeedDeclaration,
   };
 
   const [payment] = await db
@@ -801,7 +947,27 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
     onboardingProgressPct,
   }).catch(() => undefined);
 
-  // Heal illegal APPROVAL-without-payment on every progress read.
+  // Heal illegal APPROVAL-without-payment / ACTIVE-with-pending-manual-docs on every progress read.
+  const { docsHaveManualOnboardingVerificationPending } = await import(
+    "./onboarding-verification-pending-ticket.js"
+  );
+  const onboardingManualPending = docsHaveManualOnboardingVerificationPending(
+    docs.map((d) => ({
+      docType: d.docType,
+      fileUrl: d.fileUrl,
+      r2Key: d.r2Key,
+      verified: d.verified,
+      verificationMethod: d.verificationMethod,
+      verificationStatus: d.verificationStatus,
+      requiresManualReview: d.requiresManualReview,
+      metadata: d.metadata,
+    })),
+    skippedOnboardingDocs,
+  );
+  // vehicleVerified = payment-ready AND no first-vehicle/KYC manual review pending.
+  // (Skipped optional docs + second-vehicle RC uploads are ignored by the pending helper.)
+  const vehicleFullyVerified = vehicleReadyForPayment && !onboardingManualPending;
+
   await healRiderOnboardingStageIfNeeded(riderId, {
     identitySubmitted: aadhaarComplete(docs, filesByDocId) && panSelfieComplete(docs, skipPan),
     identityVerified:
@@ -809,7 +975,7 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
       panSelfieComplete(docs, skipPan) &&
       (skipPan || !panDoc || panVerified),
     vehicleReady: vehicleReadyForPayment,
-    vehicleVerified: vehicleDocsSatisfied && vehicleReadyForPayment,
+    vehicleVerified: vehicleFullyVerified,
     paymentCompleted,
   }).catch(() => undefined);
 
@@ -819,8 +985,10 @@ export async function getRiderOnboardingProgress(riderId: number): Promise<{
 
   const establishedNext = resolveNextStepForEstablishedRider(stageRider, completed);
   if (establishedNext) {
+    const nextStep =
+      !rcPaymentEligible && establishedNext === "payment" ? "dl_rc" : establishedNext;
     return {
-      nextStep: establishedNext,
+      nextStep,
       completedSteps: completed,
       panNumber,
       // Actual Cashfree/manual PAN verification only — admin skip is separate.
@@ -1013,24 +1181,47 @@ async function healRiderOnboardingStageIfNeeded(
 /** True when KYC + vehicle steps are saved and the rider may pay the onboarding fee. */
 export async function isOnboardingDocumentsCompleteForPayment(riderId: number): Promise<boolean> {
   const progress = await getRiderOnboardingProgress(riderId);
-  if (progress.nextStep !== "payment") return false;
-  return (
+  if (!progress.rcPaymentEligible) return false;
+  const kycDone =
     progress.completedSteps.includes("aadhaar_name") &&
-    progress.completedSteps.includes("pan_selfie")
+    progress.completedSteps.includes("pan_selfie");
+  if (!kycDone) return false;
+  if (progress.nextStep === "payment") return true;
+  return (
+    Boolean(progress.vehicleChoice?.trim()) &&
+    Boolean(progress.vehicleDocsSubmittedFor?.trim()) &&
+    progress.vehicleDocsSubmittedFor === progress.vehicleChoice
   );
 }
 
 export async function ensureRiderOnboardingStageForPayment(
   riderId: number,
-): Promise<{ ready: boolean; message?: string }> {
+): Promise<{ ready: boolean; message?: string; error?: string }> {
   const db = getDb();
   const [rider] = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
-  if (!rider) return { ready: false, message: "Rider not found" };
+  if (!rider) return { ready: false, error: "rider_not_found", message: "Rider not found" };
 
-  const docsReady = await isOnboardingDocumentsCompleteForPayment(riderId);
+  const progress = await getRiderOnboardingProgress(riderId);
+  if (!progress.rcPaymentEligible) {
+    const block = rcPaymentBlockError(progress.rcVerificationState);
+    return { ready: false, error: block.error, message: block.message };
+  }
+  const kycDone =
+    progress.completedSteps.includes("aadhaar_name") &&
+    progress.completedSteps.includes("pan_selfie");
+  const vehiclePackageSubmitted =
+    Boolean(progress.vehicleChoice?.trim()) &&
+    Boolean(progress.vehicleDocsSubmittedFor?.trim()) &&
+    progress.vehicleDocsSubmittedFor === progress.vehicleChoice;
+  // Soft-skipped / manual-review docs must not block pay once KYC + vehicle
+  // package are saved (nextStep may briefly lag as "dl_rc").
+  const docsReady =
+    kycDone &&
+    (progress.nextStep === "payment" || vehiclePackageSubmitted);
   if (!docsReady) {
     return {
       ready: false,
+      error: "documents_required",
       message: "Please complete document submission first",
     };
   }

@@ -89,16 +89,19 @@ export function decodeMerchantBannerParam(
 
 export function buildMerchantDetailParams(
   merchantId: string,
-  merchant?: MerchantSummary | null
-): { id: string; banner?: string } {
+  merchant?: MerchantSummary | null,
+  options?: { focusItemId?: string | null }
+): { id: string; banner?: string; focusItemId?: string } {
   const banner =
     (merchant ? resolveMerchantCarouselBannerUri(merchant) : null) ??
     getWarmMerchantHeroUri(merchantId);
   if (banner) warmMerchantHeroImage(merchantId, banner);
+  const focusItemId = options?.focusItemId?.trim() || undefined;
   // Encode so `?key=` / `&` on attachment-proxy URLs survive expo-router params.
-  return banner
+  const base = banner
     ? { id: merchantId, banner: encodeMerchantBannerParam(banner) }
     : { id: merchantId };
+  return focusItemId ? { ...base, focusItemId } : base;
 }
 
 export function resolveInstantMerchantHeroUri(

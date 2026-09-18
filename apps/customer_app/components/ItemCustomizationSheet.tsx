@@ -32,12 +32,16 @@ import type { MenuItem, MenuItemFullConfig } from "@/services/merchant.service";
 import { merchantService } from "@/services/merchant.service";
 import { mapAnchorPairsToCompanionItems } from "@/components/store/storeMenuUtils";
 import {
+  buildMenuItemFullConfigFallback,
   clearCachedMenuItemFullConfig,
   getCachedMenuItemFullConfig,
   menuItemConfigQueryKey,
+  menuItemNeedsServerOptions,
   prefetchMenuItemFullConfig,
   resolveFullConfigItemId,
   fullConfigMatchesItemKey,
+  setCachedMenuItemFullConfig,
+  seedMenuItemFullConfigQuery,
 } from "@/lib/menu-item-config-query";
 import { MENU_ITEM_CONFIG_CACHE_TTL_MS } from "@/lib/menu-item-config-cache";
 import {
@@ -75,6 +79,9 @@ const ADD_GREEN = "#137243";
 const QTY_FILL = "#E8F5EE";
 const THUMB = 48;
 const ADDON_IMG = 40;
+/** Stable empty menu — `storeMenu = []` in props recreates every render and loops RQ seed. */
+const EMPTY_STORE_MENU: MenuItem[] = [];
+const EMPTY_CAROUSEL: MenuItem[] = [];
 
 export type ItemCustomizationInitialSelection = {
   variantId?: string | null;
@@ -132,7 +139,11 @@ export type ItemCustomizationSheetProps = {
 
 function isDuplicateHeaderName(primary: string, secondary: string | null | undefined): boolean {
   if (!secondary?.trim()) return true;
-  const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
+  const normalize = (value: string | null | undefined) =>
+    String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
   return normalize(primary) === normalize(secondary);
 }
 
@@ -191,7 +202,7 @@ type CustomizationOptionRowProps = {
 };
 
 function guessAddonDiet(name: string, fallback: "veg" | "egg" | "nonveg"): "veg" | "egg" | "nonveg" {
-  const n = name.toLowerCase();
+  const n = String(name ?? "").toLowerCase();
   if (/\begg\b|\banda\b/.test(n)) return "egg";
   if (/chicken|mutton|fish|prawn|keema|bacon|meat|non.?veg/.test(n)) return "nonveg";
   return fallback === "nonveg" ? "veg" : fallback;
@@ -216,7 +227,26 @@ function CustomizationOptionRow({
   onPress,
 }: CustomizationOptionRowProps) {
   const dark = useMerchantUiDark();
-  const resolvedImage = imageUrl?.trim() ? (toAbsoluteImageUrl(imageUrl) ?? imageUrl) : null;
+  // API sometimes sends name/size as numbers or null — never call .trim() on raw values
+  // (that was the CustomizationOptionRow crash: TypeError on name.trim()).
+  const safeName = String(name ?? "").trim() || "Option";
+  const safeSizeValue =
+    sizeValue == null || sizeValue === "" ? null : String(sizeValue).trim() || null;
+  const safeSizeUnit =
+    sizeUnit == null || sizeUnit === "" ? null : String(sizeUnit).trim() || null;
+  const safeSizePreset =
+    sizePreset == null || sizePreset === "" ? null : String(sizePreset).trim() || null;
+  const safePrice = Number(price);
+  const priceNum = Number.isFinite(safePrice) ? safePrice : 0;
+  const strikeNum =
+    strikePrice == null ? null : Number.isFinite(Number(strikePrice)) ? Number(strikePrice) : null;
+  const offerNum =
+    offerPrice == null ? null : Number.isFinite(Number(offerPrice)) ? Number(offerPrice) : null;
+  const dietType: "veg" | "egg" | "nonveg" =
+    diet === "egg" || diet === "nonveg" ? diet : "veg";
+
+  const rawImage = typeof imageUrl === "string" ? imageUrl.trim() : "";
+  const resolvedImage = rawImage ? (toAbsoluteImageUrl(rawImage) ?? rawImage) : null;
   const absImage =
     resolvedImage && !isMerchantBrandOrPlaceholderImageUrl(resolvedImage) ? resolvedImage : null;
   const [imageFailed, setImageFailed] = useState(false);
@@ -225,11 +255,14 @@ function CustomizationOptionRow({
     setImageFailed(false);
   }, [absImage]);
   const showOfferStrike =
-    offerPrice != null && strikePrice != null && strikePrice > offerPrice + 0.001;
-  const displayPayable = showOfferStrike ? offerPrice! : price;
-  const showPrice = displayPayable > 0 || price > 0;
-  const portionLabel = formatMenuPortionLabel(sizeValue, sizeUnit, sizePreset);
-  const a11yLabel = formatMenuOptionDisplayName(name, sizeValue, sizeUnit, sizePreset);
+    offerNum != null && strikeNum != null && strikeNum > offerNum + 0.001;
+  const displayPayable = showOfferStrike ? offerNum! : priceNum;
+  const showPrice = displayPayable > 0 || priceNum > 0;
+  const portionLabel = formatMenuPortionLabel(safeSizeValue, safeSizeUnit, safeSizePreset);
+  const a11yLabel =
+    formatMenuOptionDisplayName(safeName, safeSizeValue, safeSizeUnit, safeSizePreset) ||
+    safeName;
+  const labelText = portionLabel ? `${safeName} · ${portionLabel}` : safeName;
 
   const control = singleSelect ? (
     <View style={[styles.radioOuter, dark && styles.radioOuterDark, selected && styles.radioOuterSelected]}>
@@ -246,30 +279,6 @@ function CustomizationOptionRow({
     >
       {selected ? <Ionicons name="checkmark" size={14} color="#fff" /> : null}
     </View>
-  );
-
-  const labelLine = portionLabel ? (
-    <AppText
-      style={[styles.optionLineText, disabled && styles.optionNameDisabled]}
-      numberOfLines={1}
-      ellipsizeMode="tail"
-    >
-      <AppText style={[styles.optionNameInline, dark && styles.optionNameInlineDark]}>{name.trim()}</AppText>
-      <AppText style={[styles.optionQtyInline, dark && styles.optionQtyInlineDark]}> · {portionLabel}</AppText>
-    </AppText>
-  ) : (
-    <AppText
-      style={[
-        styles.optionNameInline,
-        styles.optionLineText,
-        dark && styles.optionNameInlineDark,
-        disabled && styles.optionNameDisabled,
-      ]}
-      numberOfLines={1}
-      ellipsizeMode="tail"
-    >
-      {name.trim()}
-    </AppText>
   );
 
   return (
@@ -308,19 +317,32 @@ function CustomizationOptionRow({
                     onError={() => setImageFailed(true)}
                   />
                   <View style={[styles.dietOnThumbSmall, dark && styles.dietOnThumbSmallDark]}>
-                    <DietIndicator type={diet} />
+                    <DietIndicator type={dietType} />
                   </View>
                 </>
               ) : (
                 <View style={styles.optionThumbEmptyInner}>
-                  <DietIndicator type={diet} />
+                  <DietIndicator type={dietType} />
                 </View>
               )}
             </View>
           </View>
         ) : null}
 
-        <View style={styles.optionCenter}>{labelLine}</View>
+        <View style={styles.optionCenter}>
+          <AppText
+            style={[
+              styles.optionNameInline,
+              styles.optionLineText,
+              dark && styles.optionNameInlineDark,
+              disabled && styles.optionNameDisabled,
+            ]}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
+            {labelText}
+          </AppText>
+        </View>
 
         <View style={styles.optionTrailing}>
           {showPrice ? (
@@ -328,13 +350,13 @@ function CustomizationOptionRow({
               {bogoLabel ? (
                 <View style={styles.bogoChip}>
                   <AppText style={styles.bogoChipText} numberOfLines={1}>
-                    {bogoLabel}
+                    {String(bogoLabel)}
                   </AppText>
                 </View>
               ) : null}
               {showOfferStrike ? (
                 <View style={styles.optionPriceStrikeRow}>
-                  <AppText style={styles.optionPriceStrike}>{formatOfferRupee(strikePrice!)}</AppText>
+                  <AppText style={styles.optionPriceStrike}>{formatOfferRupee(strikeNum!)}</AppText>
                   <AppText style={styles.optionPriceOffer}>{formatOfferRupee(displayPayable)}</AppText>
                 </View>
               ) : (
@@ -387,7 +409,7 @@ export function ItemCustomizationSheet({
   merchantName,
   isStoreClosed = false,
   storeType = null,
-  storeMenu = [],
+  storeMenu = EMPTY_STORE_MENU,
   grocerySheetHeightMode: _grocerySheetHeightMode,
   onSelectMenuItem,
   onAddCompanionItem,
@@ -402,7 +424,7 @@ export function ItemCustomizationSheet({
   const isGroceryStore = (storeType ?? "FOOD").trim().toUpperCase() === "GROCERY";
   const { keyboardLift, reset } = useCookingSheetKeyboardDock(visible);
   const carouselItems = useMemo(
-    () => (isGroceryStore ? buildGrocerySheetCarouselItems(storeMenu, item) : []),
+    () => (isGroceryStore ? buildGrocerySheetCarouselItems(storeMenu, item) : EMPTY_CAROUSEL),
     [isGroceryStore, item, storeMenu]
   );
   const carouselInset = groceryCarouselBottomInset(carouselItems.length, insets.bottom);
@@ -429,7 +451,8 @@ export function ItemCustomizationSheet({
 
   const configItemKey = resolveFullConfigItemId(item);
   const isEditMode = initialSelection != null;
-  const hasConfigFlags = item.hasVariants || item.hasAddons || item.hasCustomizations;
+  const hasConfigFlags = menuItemNeedsServerOptions(item);
+  const fallbackConfig = useMemo(() => buildMenuItemFullConfigFallback(item), [item]);
 
   const trackedConfigItemKeyRef = useRef<string | null>(null);
 
@@ -444,7 +467,16 @@ export function ItemCustomizationSheet({
     wasVisibleRef.current = true;
     trackedConfigItemKeyRef.current = configItemKey;
 
+    // Paint from memory cache immediately — avoids a long "Loading options…" flash.
+    // seedMenuItemFullConfigQuery no-ops when RQ already has data (prevents update loops).
+    const seeded = seedMenuItemFullConfigQuery(queryClient, storeId, configItemKey);
     void prefetchMenuItemFullConfig(queryClient, storeId, configItemKey);
+    contentOpacity.setValue(seeded || !hasConfigFlags ? 1 : 0.82);
+    Animated.timing(contentOpacity, {
+      toValue: 1,
+      duration: seeded || !hasConfigFlags ? 80 : 140,
+      useNativeDriver: true,
+    }).start();
     if (isGroceryStore && carouselItems.length > 1) {
       const idx = carouselItems.findIndex(
         (row) => resolveFullConfigItemId(row) === configItemKey
@@ -455,23 +487,24 @@ export function ItemCustomizationSheet({
         void prefetchMenuItemFullConfig(queryClient, storeId, resolveFullConfigItemId(neighbor));
       }
     }
-  }, [visible, storeId, configItemKey, queryClient, isGroceryStore, carouselItems]);
+  }, [
+    visible,
+    storeId,
+    configItemKey,
+    queryClient,
+    isGroceryStore,
+    carouselItems,
+    contentOpacity,
+    hasConfigFlags,
+  ]);
 
   useEffect(() => {
+    // Only clear when the item key actually changes — avoid redundant setStates on mount.
     setSelectedVariantId(null);
     setSelectedAddons({});
     setQuantity(1);
     appliedConfigKeyRef.current = null;
   }, [configItemKey]);
-
-  useEffect(() => {
-    contentOpacity.setValue(0.55);
-    Animated.timing(contentOpacity, {
-      toValue: 1,
-      duration: 180,
-      useNativeDriver: true,
-    }).start();
-  }, [configItemKey, contentOpacity]);
 
   const {
     data: config,
@@ -482,25 +515,39 @@ export function ItemCustomizationSheet({
     queryFn: async () => {
       const data = await merchantService.getMenuItemFullConfig(storeId, configItemKey);
       if (!data) throw new Error("Item config unavailable");
+      setCachedMenuItemFullConfig(storeId, configItemKey, data);
       return data;
     },
     enabled: visible && !!storeId && !!configItemKey,
+    // Real cache only as initialData — fallback must stay placeholder so fetch still runs.
     initialData: () =>
       storeId && configItemKey ? getCachedMenuItemFullConfig(storeId, configItemKey) : undefined,
+    placeholderData: (prev) => {
+      if (prev) return prev;
+      if (!hasConfigFlags) return fallbackConfig;
+      return undefined;
+    },
     staleTime: MENU_ITEM_CONFIG_CACHE_TTL_MS,
     gcTime: 30 * 60 * 1000,
     retry: 0,
   });
 
-  const displayConfig = useMemo(
-    () => (config ? normalizeMenuItemFullConfig(config) : null),
-    [config]
-  );
+  const displayConfig = useMemo(() => {
+    if (!config) return null;
+    try {
+      return normalizeMenuItemFullConfig(config);
+    } catch {
+      return null;
+    }
+  }, [config]);
 
   const configReadyForItem = useMemo(() => {
     if (!displayConfig) return false;
-    return fullConfigMatchesItemKey(displayConfig, configItemKey);
-  }, [displayConfig, configItemKey]);
+    // Prefer strict id match; if the query already returned for this key, trust it
+    // (home/public id vs PK mismatches used to leave the sheet stuck on Loading).
+    if (fullConfigMatchesItemKey(displayConfig, configItemKey)) return true;
+    return Boolean(config);
+  }, [config, displayConfig, configItemKey]);
 
   const itemPhotoUrl = useMemo(() => {
     const raw = displayConfig?.item?.imageUrl ?? item.imageUrl ?? null;
@@ -509,8 +556,11 @@ export function ItemCustomizationSheet({
     return abs;
   }, [displayConfig?.item?.imageUrl, item.imageUrl]);
 
-  const optionsLoading = visible && !configReadyForItem && !isError;
-  const optionsFailed = visible && !configReadyForItem && isError;
+  // Spinner only when the menu row says options exist and we still lack real config.
+  // Home rails omit has_* → fallback placeholder paints immediately (no eternal spinner).
+  const optionsLoading = visible && hasConfigFlags && !configReadyForItem && !isError;
+  const optionsFailed =
+    visible && hasConfigFlags && !configReadyForItem && (isError || (Boolean(config) && !displayConfig));
 
   const { data: anchorCoPurchasePairs = [] } = useQuery({
     queryKey: ["ordered-together", storeId, configItemKey],
@@ -546,7 +596,9 @@ export function ItemCustomizationSheet({
       setQuantity
     );
     setCookingRequest(initialSelection?.specialInstructions ?? "");
-  }, [visible, displayConfig, storeId, configItemKey, initialSelection, reset]);
+    // `reset` is stable; omit from deps so keyboard dock identity never retriggers apply.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
+  }, [visible, displayConfig, storeId, configItemKey, initialSelection]);
 
   const handleClose = useCallback(() => {
     Keyboard.dismiss();
@@ -842,7 +894,6 @@ export function ItemCustomizationSheet({
       animationType="none"
       onRequestClose={handleClose}
       statusBarTranslucent
-      navigationBarTranslucent
       presentationStyle="overFullScreen"
     >
       <View style={styles.root}>
@@ -984,19 +1035,23 @@ export function ItemCustomizationSheet({
                         required
                       />
                       <View style={styles.optionList}>
-                        {displayConfig.variants.map((v) => {
-                          const boostUnit = estimateBoostUnitPrice(v.price, itemOffer);
+                        {displayConfig.variants.map((v, vIdx) => {
+                          if (!v || typeof v !== "object") return null;
+                          const priceNum = Number(v.price);
+                          const safePrice = Number.isFinite(priceNum) ? priceNum : 0;
+                          const boostUnit = estimateBoostUnitPrice(safePrice, itemOffer);
                           const showStrike =
-                            boostUnit != null && boostUnit < v.price - 0.001;
+                            boostUnit != null && boostUnit < safePrice - 0.001;
+                          const rowKey = String(v.id ?? `variant-${vIdx}`);
                           return (
                             <CustomizationOptionRow
-                              key={v.id}
-                              name={v.name}
-                              sizeValue={v.sizeValue}
-                              sizeUnit={v.sizeUnit}
-                              sizePreset={v.sizePreset}
-                              price={v.price}
-                              strikePrice={showStrike ? Math.round(v.price) : null}
+                              key={rowKey}
+                              name={String(v.name ?? "").trim() || "Option"}
+                              sizeValue={v.sizeValue != null ? String(v.sizeValue) : null}
+                              sizeUnit={v.sizeUnit != null ? String(v.sizeUnit) : null}
+                              sizePreset={v.sizePreset != null ? String(v.sizePreset) : null}
+                              price={safePrice}
+                              strikePrice={showStrike ? Math.round(safePrice) : null}
                               offerPrice={showStrike ? boostUnit : null}
                               bogoLabel={
                                 itemOffer?.kind === "bogo" ? itemOffer.label : null
@@ -1069,28 +1124,32 @@ export function ItemCustomizationSheet({
                         required={c.isRequired}
                       />
                       <View style={styles.optionList}>
-                        {c.addons.map((a) => {
-                          const selected = (selectedAddons[c.id] ?? []).includes(a.id);
+                        {c.addons.map((a, aIdx) => {
+                          if (!a || typeof a !== "object") return null;
+                          const addonId = String(a.id ?? "").trim();
+                          if (!addonId) return null;
+                          const groupSelected = selectedAddons[c.id] ?? [];
+                          const selected = groupSelected.includes(addonId);
                           const isSingleSelect = c.maxSelection === 1;
-                          const atMax =
-                            (selectedAddons[c.id] ?? []).length >= c.maxSelection;
+                          const atMax = groupSelected.length >= c.maxSelection;
                           const disabled = !isSingleSelect && !selected && atMax;
+                          const priceNum = Number(a.price);
                           return (
                             <CustomizationOptionRow
-                              key={`${c.id}-${a.id}`}
-                              name={a.name}
-                              sizeValue={a.sizeValue}
-                              sizeUnit={a.sizeUnit}
-                              sizePreset={a.sizePreset}
-                              price={a.price}
+                              key={`${c.id}-${addonId}-${aIdx}`}
+                              name={String(a.name ?? "").trim() || "Option"}
+                              sizeValue={a.sizeValue != null ? String(a.sizeValue) : null}
+                              sizeUnit={a.sizeUnit != null ? String(a.sizeUnit) : null}
+                              sizePreset={a.sizePreset != null ? String(a.sizePreset) : null}
+                              price={Number.isFinite(priceNum) ? priceNum : 0}
                               selected={selected}
                               disabled={disabled}
                               singleSelect={isSingleSelect}
-                              imageUrl={a.imageUrl}
+                              imageUrl={typeof a.imageUrl === "string" ? a.imageUrl : null}
                               showImage
                               highlight={a.isMostOrdered === true}
-                              diet={guessAddonDiet(a.name, getItemDiet(item))}
-                              onPress={() => toggleAddon(c.id, a.id)}
+                              diet={guessAddonDiet(String(a.name ?? ""), getItemDiet(item))}
+                              onPress={() => toggleAddon(c.id, addonId)}
                             />
                           );
                         })}
@@ -1720,6 +1779,8 @@ const styles = StyleSheet.create({
   stepper: {
     width: STEPPER_WIDTH,
     height: CTA_HEIGHT,
+    minHeight: CTA_HEIGHT,
+    maxHeight: CTA_HEIGHT,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -1730,6 +1791,7 @@ const styles = StyleSheet.create({
     backgroundColor: QTY_FILL,
     flexGrow: 0,
     flexShrink: 0,
+    alignSelf: "center",
   },
   stepperDark: {
     borderColor: MerchantDarkPalette.accent,
@@ -1766,13 +1828,17 @@ const styles = StyleSheet.create({
   addBtn: {
     flex: 1,
     height: CTA_HEIGHT,
+    minHeight: CTA_HEIGHT,
+    maxHeight: CTA_HEIGHT,
     backgroundColor: ADD_GREEN,
     borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: ADD_GREEN,
     paddingHorizontal: 14,
     alignItems: "center",
     justifyContent: "center",
     gap: 2,
-    minHeight: CTA_HEIGHT,
+    alignSelf: "center",
     ...Platform.select({
       ios: {
         shadowColor: StoreTheme.cartActionPressed,

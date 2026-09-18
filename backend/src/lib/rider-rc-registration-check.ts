@@ -30,6 +30,18 @@ export async function isRcAlreadyRegistered(
       AND (${exclude}::int IS NULL OR rd.rider_id <> ${exclude})
     LIMIT 1
   `;
+  if (docRows.length > 0) return true;
 
-  return docRows.length > 0;
+  const vehicleRows = await sql`
+    SELECT rv.id
+    FROM rider_vehicles rv
+    INNER JOIN riders r ON r.id = rv.rider_id
+    WHERE r.deleted_at IS NULL
+      AND rv.deleted_at IS NULL
+      AND COALESCE(rv.vehicle_active_status, 'active') <> 'retired'
+      AND upper(regexp_replace(coalesce(rv.registration_number, ''), '[^A-Za-z0-9]', '', 'g')) = ${rc}
+      AND (${exclude}::int IS NULL OR rv.rider_id <> ${exclude})
+    LIMIT 1
+  `;
+  return vehicleRows.length > 0;
 }

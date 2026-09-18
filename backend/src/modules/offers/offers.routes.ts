@@ -28,6 +28,8 @@ import {
 } from "../billing/geoRefFromPincode.js";
 import { resolveGeoLocation } from "../billing/geoLocationResolver.js";
 import { PLATFORM_OFFER_CHECKOUT_SERVICE_TYPES } from "../billing/platformOfferServiceTypes.js";
+import { resolveCustomerPkForRequest } from "../../lib/customer-auth.js";
+import { usedFoodFlashOfferIdsForCustomerStore } from "../billing/flashSaleRedemption.service.js";
 import { getStoreByStoreId, getStoreByIdForOrder } from "../merchants/merchant.service.js";
 import { toAbsoluteClientMediaUrl } from "../../utils/publicAttachmentUrl.js";
 import {
@@ -395,6 +397,7 @@ function buildOfferSublabel(minOrder: number | null, maxDiscount: number | null,
 function buildPlatformLabel(offerKind: string, discountType: string | null, value: number | null, maxDiscount: number | null): string {
   const kind = String(offerKind ?? "DISCOUNT").toUpperCase();
   if (kind === "FREE_DELIVERY") return "Free Delivery";
+  if (kind === "FLASH_SALE") return "Flash Sale";
   if (kind === "BUY_X_GET_Y") return "Buy More Save More";
   if (kind === "CASHBACK" && value != null && value > 0) {
     return discountType === "PERCENTAGE" ? `${Math.round(value)}% Cashback` : `₹${Math.round(value)} Cashback`;
@@ -664,6 +667,7 @@ async function fetchPlatformOffers(
   cityName?: string | null,
   latitude?: number | null,
   longitude?: number | null,
+  storeInternalId?: number | null,
 ): Promise<Array<{
   id: number; name: string | null; offer_kind: string;
   label: string; sub_label: string; is_geo_bound: boolean;
@@ -704,6 +708,7 @@ async function fetchPlatformOffers(
       targetScope:        billingPlatformOffers.targetScope,
       offerAudience:      billingPlatformOffers.offerAudience,
       customerSegment:    billingPlatformOffers.customerSegment,
+      merchantIds:        billingPlatformOffers.merchantIds,
       startsAt:           billingPlatformOffers.startsAt,
       endsAt:             billingPlatformOffers.endsAt,
       priority:           billingPlatformOffers.priority,
@@ -740,8 +745,32 @@ async function fetchPlatformOffers(
     // Unmapped GLOBAL / MERCHANT offers must NOT appear.
     const scope = String(o.targetScope ?? "GLOBAL").toUpperCase();
     if (scope === "MERCHANT") {
-      // Store-page listing has no merchant allow-list context here — skip.
-      // Checkout / bill apply still handles MERCHANT-scoped rows with bindings.
+      const kind = String(o.offerKind ?? "DISCOUNT").toUpperCase();
+      if (kind === "FLASH_SALE" && storeInternalId != null && storeInternalId > 0) {
+        const rawIds = Array.isArray(o.merchantIds) ? o.merchantIds : [];
+        const hit = rawIds
+          .map((x) => (typeof x === "number" ? x : parseInt(String(x), 10)))
+          .some((id) => Number.isFinite(id) && id === storeInternalId);
+        if (hit) {
+          const value = n(o.valueNumeric);
+          const maxDisc = n(o.maxDiscountAmount);
+          const minOrder = n(o.minOrderAmount);
+          const couponCode = String(o.couponCode ?? "").trim() || null;
+          result.push({
+            id: o.id,
+            name: o.name ?? null,
+            offer_kind: kind,
+            label: (o.name && String(o.name).trim()) || "Flash Sale",
+            sub_label: minOrder != null && minOrder > 0 ? `on orders above ₹${Math.round(minOrder)}` : "",
+            is_geo_bound: geoBoundHas(geoBoundIds, o.id),
+            coupon_code: couponCode,
+            discount_type: o.discountType ?? null,
+            value,
+            max_discount_amount: maxDisc,
+            min_order_amount: minOrder,
+          });
+        }
+      }
       continue;
     }
     if (!geoBoundHas(geoBoundIds, o.id)) continue;
@@ -1445,10 +1474,31 @@ export async function offersRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Store not found" });
       }
 
-      const [merchant_offers, platform_offers] = [
+      const [merchant_offers, platform_offers_raw] = [
         await fetchMerchantOffers(storeInternalId),
-        await fetchPlatformOffers(pincode, serviceType, stateName, cityName, latitude, longitude),
+        await fetchPlatformOffers(pincode, serviceType, stateName, cityName, latitude, longitude, storeInternalId),
       ];
+
+      let platform_offers = platform_offers_raw;
+      const customerPk =
+        req.auth?.role === "customer"
+          ? await resolveCustomerPkForRequest(req.auth, req)
+          : null;
+      if (customerPk != null && customerPk > 0) {
+        const flashIds = platform_offers
+          .filter((o) => String(o.offer_kind ?? "").toUpperCase() === "FLASH_SALE")
+          .map((o) => o.id);
+        if (flashIds.length > 0) {
+          const used = await usedFoodFlashOfferIdsForCustomerStore(
+            customerPk,
+            storeInternalId,
+            flashIds
+          );
+          if (used.size > 0) {
+            platform_offers = platform_offers.filter((o) => !used.has(o.id));
+          }
+        }
+      }
 
       return reply.send({ merchant_offers, platform_offers });
     }

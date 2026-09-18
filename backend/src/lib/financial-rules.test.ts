@@ -4,6 +4,7 @@ import {
   mapActorToTriggeredBy,
   refundFieldsFromEngineResult,
   resolvePaymentCancellationMilestone,
+  resolvePostCancelAutoRefundPolicy,
   parseEngineResult,
   buildIdempotencyKey,
 } from "@gatimitra/financial-rules";
@@ -65,6 +66,62 @@ describe("financial-rules", () => {
       amounts: { refund: 6000 },
     });
     assert.equal(f.refundStatus, "pending_approval");
+  });
+
+  it("auto-refunds store cancel when engine is silent", () => {
+    const p = resolvePostCancelAutoRefundPolicy({
+      actorRole: "store",
+      engineRefund: { refundStatus: "no_refund", refundAmount: null },
+      orderGross: 119.35,
+    });
+    assert.equal(p.shouldAutoExecute, true);
+    assert.equal(p.executeAmount, null);
+    assert.equal(p.refundStatus, "pending");
+    assert.equal(p.refundAmountForLedger, 119.35);
+  });
+
+  it("honors admin rule refund amount", () => {
+    const p = resolvePostCancelAutoRefundPolicy({
+      actorRole: "system",
+      engineRefund: { refundStatus: "pending", refundAmount: 50 },
+      orderGross: 119.35,
+      forceCustomerRefundWhenEngineSilent: true,
+    });
+    assert.equal(p.shouldAutoExecute, true);
+    assert.equal(p.executeAmount, 50);
+    assert.equal(p.refundAmountForLedger, 50);
+  });
+
+  it("does not auto-execute when admin rule needs approval", () => {
+    const p = resolvePostCancelAutoRefundPolicy({
+      actorRole: "admin",
+      engineRefund: { refundStatus: "pending_approval", refundAmount: 80 },
+      orderGross: 119.35,
+    });
+    assert.equal(p.shouldAutoExecute, false);
+    assert.equal(p.skipReason, "pending_approval");
+    assert.equal(p.refundStatus, "pending_approval");
+  });
+
+  it("does not invent refund for silent admin cancel", () => {
+    const p = resolvePostCancelAutoRefundPolicy({
+      actorRole: "admin",
+      engineRefund: { refundStatus: "no_refund", refundAmount: null },
+      orderGross: 119.35,
+    });
+    assert.equal(p.shouldAutoExecute, false);
+    assert.equal(p.skipReason, "admin_no_refund");
+  });
+
+  it("system force still refunds when engine silent", () => {
+    const p = resolvePostCancelAutoRefundPolicy({
+      actorRole: "system",
+      engineRefund: { refundStatus: "no_refund", refundAmount: null },
+      orderGross: 200,
+      forceCustomerRefundWhenEngineSilent: true,
+    });
+    assert.equal(p.shouldAutoExecute, true);
+    assert.equal(p.executeAmount, null);
   });
 
   it("parses engine result", () => {

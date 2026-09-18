@@ -59,13 +59,17 @@ export function foodOrderAddonRows(
     });
 }
 
+/**
+ * True only when this line has real selected add-ons / paid customizations.
+ * Do NOT trust menu-capability `has_customizations` alone — that flag often
+ * leaks onto every line and falsely shows "Customization added".
+ * Size variants (Half/Full) and cooking notes are not customizations.
+ */
 export function foodOrderHasCustomizations(item: ApiFoodOrderItem): boolean {
-  return Boolean(
-    item.has_customizations ||
-      (item.customization_lines && item.customization_lines.length > 0) ||
-      (item.customizations && item.customizations.length > 0) ||
-      (item.customizations_total != null && item.customizations_total > 0)
-  );
+  if (item.customizations_total != null && Number(item.customizations_total) > 0.005) {
+    return true;
+  }
+  return foodOrderAddonRows(item).length > 0;
 }
 
 /** Per-line cooking request — matches customer cart "Cooking: …" copy. */

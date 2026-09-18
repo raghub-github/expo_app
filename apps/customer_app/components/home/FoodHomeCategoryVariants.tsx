@@ -1,4 +1,5 @@
 import { ScrollView, StyleSheet, View } from "react-native";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppText } from "@/components/AppText";
@@ -55,11 +56,7 @@ type ChipsProps = {
 export function FoodHomeCategoryChips({ items, onSelect }: ChipsProps) {
   return (
     <ScrollView
-      horizontal
-      nestedScrollEnabled
-      showsHorizontalScrollIndicator={false}
-      delaysContentTouches={false}
-      keyboardShouldPersistTaps="handled"
+      {...NATURAL_HORIZONTAL_SCROLL_PROPS}
       contentContainerStyle={styles.chipsContent}
     >
       {items.map((cat) => (

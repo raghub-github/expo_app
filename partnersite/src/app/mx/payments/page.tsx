@@ -1372,10 +1372,16 @@ function PaymentsContent() {
                                 })()}
                               </td>
                               <td className="py-3 px-4 text-gray-600 font-mono text-xs">
-                                {row.formatted_order_id ??
-                                  (row.reference_type === 'ORDER' && row.reference_id != null
-                                    ? `#${row.reference_id}`
-                                    : '—')}
+                                {(() => {
+                                  const meta = row.metadata as Record<string, unknown> | null
+                                  const fromRow = String(row.formatted_order_id ?? '').trim().replace(/^#/, '')
+                                  const fromMeta = String(meta?.formatted_order_id ?? '').trim().replace(/^#/, '')
+                                  const publicId =
+                                    (fromRow && !/^\d+$/.test(fromRow) ? fromRow : null) ||
+                                    (fromMeta && !/^\d+$/.test(fromMeta) ? fromMeta : null) ||
+                                    null
+                                  return publicId || '—'
+                                })()}
                               </td>
                               <td className="py-3 px-4 text-gray-600 whitespace-nowrap">
                                 {(() => {

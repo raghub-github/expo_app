@@ -123,16 +123,51 @@ function isCustomerLiveOrderProgressRow(row: {
   return meta.gmLiveProgress === true || meta.gmLiveProgress === "true";
 }
 
+function customerLiveOrderKind(row: {
+  metadata?: Record<string, unknown> | null;
+  templateCode?: string | null;
+}): "progress" | "otp" | "final" | null {
+  const meta = row.metadata ?? {};
+  const kind = String(meta.gmLiveKind ?? "").trim().toLowerCase();
+  if (kind === "progress" || kind === "otp" || kind === "final") return kind;
+  if (isCustomerLiveOrderProgressRow(row)) return "progress";
+  const code = String(row.templateCode ?? meta.gmType ?? "").toUpperCase();
+  if (
+    code === "CUSTOMER_DELIVERY_OTP_NEARBY" ||
+    code === "CUSTOMER_PICKUP_OTP_ARRIVED" ||
+    code === "ORDER_RIDER_ARRIVING" ||
+    code === "PARCEL_RIDER_NEARBY"
+  ) {
+    return "otp";
+  }
+  if (
+    code.includes("DELIVERED") ||
+    code.includes("COMPLETED") ||
+    code.includes("CANCELLED") ||
+    code.includes("CANCELED")
+  ) {
+    return "final";
+  }
+  if (meta.gmClearLiveProgress === true || meta.gmClearLiveProgress === "true") {
+    return "final";
+  }
+  return null;
+}
+
 function customerLiveOrderCollapseKey(row: {
   metadata?: Record<string, unknown> | null;
   templateCode?: string | null;
 }): string | null {
   const orderId = String(row.metadata?.orderId ?? "").trim();
   if (!orderId) return null;
-  // One shade row per order: later status updates replace the previous live
-  // card. Distinct events still send exactly once (table lock); this only
-  // prevents uuid vs GMF twins stacking in the tray.
-  return `customer-live-order-${orderId}`.slice(0, 64);
+  const kind = customerLiveOrderKind(row);
+  if (kind === "otp") return `customer-order-otp-${orderId}`.slice(0, 64);
+  if (kind === "final") return `customer-order-final-${orderId}`.slice(0, 64);
+  if (kind === "progress" || isCustomerLiveOrderProgressRow(row)) {
+    // One shade row per order through pickup: later status updates replace.
+    return `customer-live-order-${orderId}`.slice(0, 64);
+  }
+  return null;
 }
 
 /**
@@ -141,21 +176,56 @@ function customerLiveOrderCollapseKey(row: {
  * (JS never wakes). Always send a visible tray notification so Customer /
  * killed-state delivery works; the CX app suppresses the OS alert and updates
  * the sticky when it is already running (`gmLiveProgress` handler).
+ *
+ * Tag strategy:
+ *   progress  → customer-live-order-{id}  (replace through pickup)
+ *   otp       → customer-order-otp-{id}   (new sticky-until-cleared)
+ *   final     → customer-order-final-{id} (new; user clears manually)
  */
 function customerLiveOrderDeliveryOpts(row: CreateLogRow, templateSilent: boolean): {
   silent: boolean;
   collapseKey: string | null;
+  tag: string | null;
   dataOnly: boolean;
 } {
-  if (row.recipient.role !== "customer" || !isCustomerLiveOrderProgressRow(row)) {
-    return { silent: templateSilent, collapseKey: null, dataOnly: false };
+  const kind = customerLiveOrderKind(row);
+  if (row.recipient.role !== "customer" || !kind) {
+    return { silent: templateSilent, collapseKey: null, tag: null, dataOnly: false };
   }
+  const key = customerLiveOrderCollapseKey(row);
   return {
     silent: false,
-    collapseKey: customerLiveOrderCollapseKey(row),
+    collapseKey: key,
+    // Android tray replace requires `tag`; collapseKey alone is insufficient.
+    tag: key,
     // Visible title/body required for force-killed Android/iOS delivery.
     dataOnly: false,
   };
+}
+
+function isCriticalIncomingOrderTemplate(code: string | null | undefined): boolean {
+  const c = String(code ?? "").toUpperCase();
+  return (
+    c === "MERCHANT_NEW_ORDER" ||
+    c === "RIDER_DISPATCH_OFFER" ||
+    c === "RIDER_NEW_ORDER"
+  );
+}
+
+function isRiderDispatchOfferTemplate(row?: {
+  templateCode?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): boolean {
+  const code = String(row?.templateCode ?? "").toUpperCase();
+  const metaType = String(row?.metadata?.type ?? "").toLowerCase();
+  const gmType = String(row?.metadata?.gmType ?? "").toUpperCase();
+  return (
+    code === "RIDER_DISPATCH_OFFER" ||
+    code === "RIDER_NEW_ORDER" ||
+    metaType === "dispatch_offer" ||
+    metaType === "rider_dispatch_offer" ||
+    gmType === "DISPATCH_OFFER"
+  );
 }
 
 /** Critical user-facing templates must never strip the FCM/Expo notification block. */
@@ -167,6 +237,7 @@ function mustShowWhenKilled(row: {
   if (
     code === "MERCHANT_NEW_ORDER" ||
     code === "RIDER_DISPATCH_OFFER" ||
+    code === "RIDER_NEW_ORDER" ||
     code === "RIDER_FOOD_READY" ||
     code === "CUSTOMER_ANNOUNCEMENT" ||
     code === "MERCHANT_ANNOUNCEMENT" ||
@@ -242,6 +313,7 @@ function buildFcmV1InputForRow(
     priority: row.priority as never,
     silent,
     collapseKey: live.collapseKey ?? announcementCollapseKey(row),
+    tag: live.tag,
   };
 }
 
@@ -255,7 +327,7 @@ function channelIdForRecipient(
     const metaType = String(row?.metadata?.type ?? "").toLowerCase();
     // Dedicated MAX + custom sound channel (immutable after Android create).
     if (code === "MERCHANT_NEW_ORDER" || metaType === "merchant_new_order") {
-      return "merchant_new_orders_alert";
+      return "merchant_new_orders_alert_v2";
     }
     // Other critical / high merchant alerts use heads-up without new-order chime.
     if (priority === "critical" || priority === "high") return "merchant_new_orders";
@@ -264,14 +336,8 @@ function channelIdForRecipient(
   if (recipient.role === "rider") {
     const code = String(row?.templateCode ?? "").toUpperCase();
     const metaType = String(row?.metadata?.type ?? "").toLowerCase();
-    const gmType = String(row?.metadata?.gmType ?? "").toUpperCase();
-    if (
-      code === "RIDER_DISPATCH_OFFER" ||
-      metaType === "dispatch_offer" ||
-      metaType === "rider_dispatch_offer" ||
-      gmType === "DISPATCH_OFFER"
-    ) {
-      return "rider_dispatch_offers_alert";
+    if (isRiderDispatchOfferTemplate(row)) {
+      return riderDispatchChannelIdFromMetadata(row?.metadata);
     }
     // Food ready / order lifecycle — high-importance default (not silent).
     if (
@@ -320,19 +386,36 @@ function soundForRecipient(
     }
   }
   if (recipient.role === "rider") {
-    const code = String(row?.templateCode ?? "").toUpperCase();
-    const metaType = String(row?.metadata?.type ?? "").toLowerCase();
-    const gmType = String(row?.metadata?.gmType ?? "").toUpperCase();
-    if (
-      code === "RIDER_DISPATCH_OFFER" ||
-      metaType === "dispatch_offer" ||
-      metaType === "rider_dispatch_offer" ||
-      gmType === "DISPATCH_OFFER"
-    ) {
-      return "notification";
+    if (isRiderDispatchOfferTemplate(row)) {
+      return riderDispatchSoundFromMetadata(row?.metadata);
     }
   }
   return "default";
+}
+
+/** Per-service Android channels (sound immutable after create). */
+function riderDispatchChannelIdFromMetadata(
+  metadata?: Record<string, unknown> | null,
+): string {
+  const service = String(metadata?.serviceType ?? metadata?.category ?? "")
+    .trim()
+    .toLowerCase();
+  if (service === "food") return "rider_dispatch_food_v1";
+  if (service === "parcel") return "rider_dispatch_parcel_v1";
+  if (service === "ride" || service === "person_ride") return "rider_dispatch_ride_v1";
+  return "rider_dispatch_offers_alert";
+}
+
+function riderDispatchSoundFromMetadata(
+  metadata?: Record<string, unknown> | null,
+): string {
+  const service = String(metadata?.serviceType ?? metadata?.category ?? "")
+    .trim()
+    .toLowerCase();
+  if (service === "food") return "food_order";
+  if (service === "parcel") return "parcel_order";
+  if (service === "ride" || service === "person_ride") return "ride_order";
+  return "notification";
 }
 
 function applyOverrides(
@@ -421,9 +504,10 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
   }
   if (
     row.recipient.role === "rider" &&
-    (String(row.templateCode ?? "").toUpperCase() === "RIDER_DISPATCH_OFFER" ||
-      String(metadata.type ?? "").toLowerCase() === "dispatch_offer" ||
-      String(metadata.gmType ?? "").toUpperCase() === "DISPATCH_OFFER")
+    isRiderDispatchOfferTemplate({
+      templateCode: row.templateCode,
+      metadata,
+    })
   ) {
     metadata.skip_in_app_banner = true;
   }
@@ -596,6 +680,7 @@ async function dispatchExpoRow(
     const nativeFirst = await lookupNativeFcmToken(
       row.recipient.userId,
       row.recipient.role,
+      { ignoreStaleness: isCriticalIncomingOrderTemplate(row.templateCode) },
     );
     if (nativeFirst) {
       return dispatchViaNativeFcm(row, nativeFirst, {
@@ -639,6 +724,7 @@ async function dispatchExpoRow(
       const nativeToken = await lookupNativeFcmToken(
         row.recipient.userId,
         row.recipient.role,
+        { ignoreStaleness: isCriticalIncomingOrderTemplate(row.templateCode) },
       );
       if (nativeToken) {
         return dispatchViaNativeFcm(row, nativeToken, {
@@ -686,6 +772,7 @@ async function dispatchExpoRow(
 async function lookupNativeFcmToken(
   userId: string,
   role: string,
+  opts?: { ignoreStaleness?: boolean },
 ): Promise<string | null> {
   if (!userId || userId.startsWith("__")) return null;
   const candidates = expandCampaignUserIdCandidates(userId);
@@ -703,12 +790,15 @@ async function lookupNativeFcmToken(
             OR trim(role) = ''
           )`
         : sql``;
+    const staleClause = opts?.ignoreStaleness
+      ? sql``
+      : sql`AND (last_seen_at IS NULL OR last_seen_at >= now() - interval '90 days')`;
     const rows = (await sql`
       SELECT native_token
       FROM public.native_device_push_tokens
       WHERE user_id = ANY(${candidates}::text[])
         AND token_type = 'fcm'
-        AND (last_seen_at IS NULL OR last_seen_at >= now() - interval '90 days')
+        ${staleClause}
         AND (
           lower(coalesce(platform, 'android')) = 'android'
           OR platform IS NULL
@@ -793,6 +883,24 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
   // 1. Load template
   const template = await loadTemplate(intent.templateCode, intent.locale ?? "en");
   if (!template) {
+    const criticalIntent =
+      intent.priority === "critical" ||
+      isCriticalIncomingOrderTemplate(intent.templateCode) ||
+      mustShowWhenKilled({
+        templateCode: intent.templateCode,
+        metadata: intent.metadata ?? null,
+      });
+    if (criticalIntent) {
+      console.error(
+        `[notifications] push_failure reason=template_missing template=${intent.templateCode}`,
+        { target: intent.target, priority: intent.priority ?? null },
+      );
+    } else {
+      console.warn(
+        `[notifications] template_missing template=${intent.templateCode}`,
+        { target: intent.target },
+      );
+    }
     return {
       campaignId: intent.campaignId,
       queued: 0,
@@ -937,7 +1045,20 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
   }
 
   // 3. Resolve recipients
-  let recipients = await resolveTarget(intent.target);
+  // High/critical transactional alerts: do not drop tokens solely for 90-day dormancy.
+  // Marketing/announcement can still use staleness; invalid tokens purge on DeviceNotRegistered.
+  const effectivePriorityForTokens = intent.priority ?? template.priority;
+  const ignoreTokenStaleness =
+    isCriticalIncomingOrderTemplate(template.code) ||
+    effectivePriorityForTokens === "critical" ||
+    effectivePriorityForTokens === "high" ||
+    mustShowWhenKilled({
+      templateCode: template.code,
+      metadata: intent.metadata ?? null,
+    });
+  let recipients = await resolveTarget(intent.target, {
+    ignoreStaleness: ignoreTokenStaleness,
+  });
   // When targeting a single / many users, keep only tokens matching template role
   // so a merchant id cannot receive a customer-only announcement deep link.
   const templateRole = String(template.role).toLowerCase();
@@ -956,11 +1077,28 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     if (inboxOnly.length > 0) {
       recipients = inboxOnly;
       inboxOnlyFallback = true;
-      console.warn(
-        `[notifications] Push token unavailable. Recording in-app only ` +
-          `(template=${template.code}, users=${inboxOnly.length}).`,
-        { target: intent.target },
-      );
+      const killVisiblePreview = mustShowWhenKilled({
+        templateCode: template.code,
+        metadata: intent.metadata ?? null,
+      });
+      const criticalPreview =
+        (intent.priority ?? template.priority) === "critical" || killVisiblePreview;
+      if (criticalPreview) {
+        console.error(
+          `[notifications] push_failure reason=no_push_tokens template=${template.code}`,
+          {
+            target: intent.target,
+            users: inboxOnly.length,
+            note: "inbox_only_fallback — FCM not sent",
+          },
+        );
+      } else {
+        console.warn(
+          `[notifications] Push token unavailable. Recording in-app only ` +
+            `(template=${template.code}, users=${inboxOnly.length}).`,
+          { target: intent.target },
+        );
+      }
     } else {
       console.warn(
         `[notifications] Push token unavailable. Skipping notification ` +
@@ -1335,8 +1473,33 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         continue;
       }
       if (row.channel === "in_app") {
-        // In-app inbox = the log row IS the inbox entry. No dispatch needed.
-        await updateLogStatus(row.notificationId, "delivered");
+        // In-app inbox = the log row IS the inbox entry.
+        // __in_app_only__ means FCM was never attempted — never call that "delivered".
+        if (isInAppOnlyToken(row.recipient.deviceToken)) {
+          const critical =
+            isCriticalIncomingOrderTemplate(row.templateCode) ||
+            mustShowWhenKilled(row) ||
+            String(row.priority).toLowerCase() === "critical";
+          const code = critical ? "NO_PUSH_TOKEN" : "IN_APP_ONLY";
+          console.warn(
+            `[notifications] push_failure reason=${code} template=${row.templateCode} ` +
+              `user=${row.recipient.userId} nid=${row.notificationId} ` +
+              `(in-app recorded; FCM not sent)`,
+          );
+          await updateLogStatus(row.notificationId, "failed", {
+            errorCode: code,
+            errorMessage: critical
+              ? "In-app inbox recorded, but no Expo/native FCM token — push notification was NOT sent."
+              : "In-app inbox only — no push token; FCM was NOT sent.",
+          });
+          failedSync++;
+          continue;
+        }
+        // Companion inbox row alongside a real push token (channel=all) — inbox OK.
+        await updateLogStatus(row.notificationId, "delivered", {
+          errorCode: "IN_APP_INBOX",
+          errorMessage: "In-app inbox row (push channel delivered separately when present).",
+        });
         queued++;
         accepted++;
         continue;
@@ -1367,12 +1530,18 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     console.warn(`[notifications] send took ${took}ms (template=${template.code}, recipients=${logRows.length})`);
   }
 
+  // Critical / kill-visible alerts must never report push success for inbox-only.
+  const criticalInboxOnly =
+    inboxOnlyFallback &&
+    (effectivePriority === "critical" || killVisible);
+
   return finishOrderEventClaim({
     campaignId: intent.campaignId,
     queued,
     skipped,
     failedSync,
-    accepted,
+    // Do not count inbox-only as push accepted for critical alerts.
+    accepted: criticalInboxOnly ? 0 : accepted,
     failedProvider,
     notificationIds: logRows.map((r) => r.notificationId),
     ...(inboxOnlyFallback

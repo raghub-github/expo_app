@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils";
 type Props = {
   stateId: string;
   enabled: boolean;
+  /** Writes classic_* or grid_first_* columns — never shared. */
+  layoutScope?: "classic" | "grid_first";
   initialEnabled: boolean;
   initialMaxPrice: number;
   initialTitle: string;
@@ -101,6 +103,7 @@ function ImageUploadField({
 export function GridFirstUnder250Panel({
   stateId,
   enabled,
+  layoutScope = "grid_first",
   initialEnabled,
   initialMaxPrice,
   initialTitle,
@@ -119,6 +122,7 @@ export function GridFirstUnder250Panel({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const homeLabel = layoutScope === "classic" ? "Classic" : "grid-first";
 
   useEffect(() => {
     setRowEnabled(initialEnabled);
@@ -154,16 +158,26 @@ export function GridFirstUnder250Panel({
         const form = new FormData();
         form.append("file", file);
         form.append("target", target);
-        const res = await fetch(
-          `/api/super-admin/cxapp-home/food-layout/${stateId}/under-250/upload-image`,
-          { method: "POST", body: form }
-        );
-        const json = (await res.json()) as { url?: string; error?: string };
-        if (!res.ok) throw new Error(json.error ?? "Upload failed");
-        const url = parseGridFirstUnder250ImageUrl(json.url);
-        if (!url) throw new Error("Upload failed");
-        if (target === "tab") setTabImageUrl(url);
-        else setHeroImageUrl(url);
+        const url = `/api/super-admin/cxapp-home/food-layout/${stateId}/under-250/upload-image`;
+        let res: Response | null = null;
+        let json: { url?: string; error?: string } = {};
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) {
+            await new Promise((r) => setTimeout(r, 400 * attempt));
+          }
+          res = await fetch(url, { method: "POST", body: form });
+          json = (await res.json().catch(() => ({}))) as {
+            url?: string;
+            error?: string;
+          };
+          // Cold compile / auth blip — retry instead of failing the pick.
+          if (res.status !== 503 && res.status !== 499) break;
+        }
+        if (!res || !res.ok) throw new Error(json.error ?? "Upload failed");
+        const uploadedUrl = parseGridFirstUnder250ImageUrl(json.url);
+        if (!uploadedUrl) throw new Error("Upload failed");
+        if (target === "tab") setTabImageUrl(uploadedUrl);
+        else setHeroImageUrl(uploadedUrl);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Upload failed");
       } finally {
@@ -181,17 +195,28 @@ export function GridFirstUnder250Panel({
       const nextTitle = title.trim() || DEFAULT_GRID_FIRST_UNDER_250.title;
       const nextFilterLabel = filterLabel.trim() || DEFAULT_GRID_FIRST_UNDER_250.filterLabel;
       const nextMaxPrice = parseGridFirstUnder250MaxPrice(maxPrice);
+      const isClassic = layoutScope === "classic";
+      const body = isClassic
+        ? {
+            classicUnder250Enabled: rowEnabled,
+            classicUnder250MaxPrice: nextMaxPrice,
+            classicUnder250Title: nextTitle,
+            classicUnder250FilterLabel: nextFilterLabel,
+            classicUnder250TabImageUrl: tabImageUrl,
+            classicUnder250HeroImageUrl: heroImageUrl,
+          }
+        : {
+            gridFirstUnder250Enabled: rowEnabled,
+            gridFirstUnder250MaxPrice: nextMaxPrice,
+            gridFirstUnder250Title: nextTitle,
+            gridFirstUnder250FilterLabel: nextFilterLabel,
+            gridFirstUnder250TabImageUrl: tabImageUrl,
+            gridFirstUnder250HeroImageUrl: heroImageUrl,
+          };
       const res = await fetch(`/api/super-admin/cxapp-home/food-layout/${stateId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          gridFirstUnder250Enabled: rowEnabled,
-          gridFirstUnder250MaxPrice: nextMaxPrice,
-          gridFirstUnder250Title: nextTitle,
-          gridFirstUnder250FilterLabel: nextFilterLabel,
-          gridFirstUnder250TabImageUrl: tabImageUrl,
-          gridFirstUnder250HeroImageUrl: heroImageUrl,
-        }),
+        body: JSON.stringify(body),
       });
       const json = (await res.json()) as {
         gridFirstUnder250Enabled?: boolean;
@@ -200,17 +225,50 @@ export function GridFirstUnder250Panel({
         gridFirstUnder250FilterLabel?: string;
         gridFirstUnder250TabImageUrl?: string | null;
         gridFirstUnder250HeroImageUrl?: string | null;
+        classicUnder250Enabled?: boolean;
+        classicUnder250MaxPrice?: number;
+        classicUnder250Title?: string;
+        classicUnder250FilterLabel?: string;
+        classicUnder250TabImageUrl?: string | null;
+        classicUnder250HeroImageUrl?: string | null;
         error?: string;
       };
       if (!res.ok) throw new Error(json.error ?? "Failed to save under-250 section");
-      const next = {
-        enabled: parseGridFirstUnder250Enabled(json.gridFirstUnder250Enabled),
-        maxPrice: parseGridFirstUnder250MaxPrice(json.gridFirstUnder250MaxPrice ?? nextMaxPrice),
-        title: parseGridFirstUnder250Title(json.gridFirstUnder250Title, nextTitle),
-        filterLabel: parseGridFirstUnder250Title(json.gridFirstUnder250FilterLabel, nextFilterLabel),
-        tabImageUrl: parseGridFirstUnder250ImageUrl(json.gridFirstUnder250TabImageUrl ?? tabImageUrl),
-        heroImageUrl: parseGridFirstUnder250ImageUrl(json.gridFirstUnder250HeroImageUrl ?? heroImageUrl),
-      };
+      const next = isClassic
+        ? {
+            enabled: parseGridFirstUnder250Enabled(json.classicUnder250Enabled),
+            maxPrice: parseGridFirstUnder250MaxPrice(
+              json.classicUnder250MaxPrice ?? nextMaxPrice
+            ),
+            title: parseGridFirstUnder250Title(json.classicUnder250Title, nextTitle),
+            filterLabel: parseGridFirstUnder250Title(
+              json.classicUnder250FilterLabel,
+              nextFilterLabel
+            ),
+            tabImageUrl: parseGridFirstUnder250ImageUrl(
+              json.classicUnder250TabImageUrl ?? tabImageUrl
+            ),
+            heroImageUrl: parseGridFirstUnder250ImageUrl(
+              json.classicUnder250HeroImageUrl ?? heroImageUrl
+            ),
+          }
+        : {
+            enabled: parseGridFirstUnder250Enabled(json.gridFirstUnder250Enabled),
+            maxPrice: parseGridFirstUnder250MaxPrice(
+              json.gridFirstUnder250MaxPrice ?? nextMaxPrice
+            ),
+            title: parseGridFirstUnder250Title(json.gridFirstUnder250Title, nextTitle),
+            filterLabel: parseGridFirstUnder250Title(
+              json.gridFirstUnder250FilterLabel,
+              nextFilterLabel
+            ),
+            tabImageUrl: parseGridFirstUnder250ImageUrl(
+              json.gridFirstUnder250TabImageUrl ?? tabImageUrl
+            ),
+            heroImageUrl: parseGridFirstUnder250ImageUrl(
+              json.gridFirstUnder250HeroImageUrl ?? heroImageUrl
+            ),
+          };
       setRowEnabled(next.enabled);
       setMaxPrice(next.maxPrice);
       setTitle(next.title);
@@ -234,6 +292,7 @@ export function GridFirstUnder250Panel({
     stateId,
     tabImageUrl,
     title,
+    layoutScope,
   ]);
 
   if (!enabled) return null;
@@ -255,7 +314,9 @@ export function GridFirstUnder250Panel({
       <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-violet-200/60 bg-white px-3 py-2.5">
         <div>
           <p className="text-xs font-semibold text-slate-800">Show meals filter</p>
-          <p className="text-[11px] text-slate-500">Off hides the chip on grid-first home for this state.</p>
+          <p className="text-[11px] text-slate-500">
+            Off hides the chip on {homeLabel} home for this state.
+          </p>
         </div>
         <button
           type="button"

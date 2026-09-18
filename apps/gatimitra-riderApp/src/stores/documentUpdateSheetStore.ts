@@ -6,16 +6,24 @@ export type DocumentUpdateCode = "dl" | "rc";
 type DocumentUpdateSheetStore = {
   visible: boolean;
   documentCode: DocumentUpdateCode | null;
+  /** Second RC from Profile → Vehicles — never overwrites vehicle 1. */
+  addAnotherVehicle: boolean;
   /** Open a document-scoped update sheet (never the onboarding wizard). */
-  open: (documentCode: DocumentUpdateCode) => void;
+  open: (documentCode: DocumentUpdateCode, opts?: { addAnotherVehicle?: boolean }) => void;
   close: () => void;
 };
 
 export const useDocumentUpdateSheetStore = create<DocumentUpdateSheetStore>((set) => ({
   visible: false,
   documentCode: null,
-  open: (documentCode) => set({ visible: true, documentCode }),
-  close: () => set({ visible: false, documentCode: null }),
+  addAnotherVehicle: false,
+  open: (documentCode, opts) =>
+    set({
+      visible: true,
+      documentCode,
+      addAnotherVehicle: opts?.addAnotherVehicle === true,
+    }),
+  close: () => set({ visible: false, documentCode: null, addAnotherVehicle: false }),
 }));
 
 /** Map eligibility / missing-doc focus → update sheet code. */

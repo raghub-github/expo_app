@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { AppText } from "@/components/AppText";
 
 import { Pressable, View, ScrollView, StyleSheet } from "react-native";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import { Image } from "expo-image";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -122,12 +123,9 @@ export const StoreMenuPairingSection = React.memo(function StoreMenuPairingSecti
     <View style={styles.wrap}>
       <AppText style={styles.title}>{PAIRING_SECTION_TITLE}</AppText>
       <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
+        {...NATURAL_HORIZONTAL_SCROLL_PROPS}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="always"
-        nestedScrollEnabled
-        delaysContentTouches={false}
         canCancelContentTouches={false}
       >
         {companions.map((item) => (
