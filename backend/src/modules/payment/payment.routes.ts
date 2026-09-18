@@ -1,12 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ulid } from "ulid";
-import { getDb, getSql } from "../../db/client.js";
-import { emitEvent } from "../notifications/eventBus.js";
-import { riders, onboardingPayments, paymentWebhookEvents } from "../../db/schema.js";
+import { getDb } from "../../db/client.js";
+import { riders, onboardingPayments, paymentWebhookEvents, pendingOrders } from "../../db/schema.js";
 import { eq, desc, and, or, sql } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 import { ensureRiderOnboardingStageForPayment } from "../../lib/rider-onboarding-progress.js";
+import { notifyCustomerPaymentSettled } from "../../lib/customer-payment-settled-notify.js";
+import { resolveCustomerPkForRequest } from "../../lib/customer-auth.js";
 import {
   createRazorpayOrder,
   verifyRazorpaySignature,
@@ -306,26 +307,10 @@ export async function paymentRoutes(app: FastifyInstance) {
             payload: { event, eventId, finalizedOk: result.ok, finalizeCode: result.code ?? null, durationMs: Date.now() - startedAtMs },
           });
           if (result.ok) {
-            void (async () => {
-              try {
-                const sql = getSql();
-                const rows = (await sql`
-                  SELECT c.order_id, c.customer_id, c.grand_total
-                  FROM public.orders_core c
-                  WHERE c.razorpay_order_id = ${razorpayOrderId}
-                  LIMIT 1
-                `) as unknown as Array<{ order_id: string; customer_id: string; grand_total: number | string }>;
-                const row = rows[0];
-                if (row?.customer_id && row.order_id) {
-                  emitEvent("payment.settled", {
-                    orderId: String(row.order_id),
-                    customerId: String(row.customer_id),
-                    amount: Number(row.grand_total ?? 0),
-                    status: "SUCCESS",
-                  });
-                }
-              } catch { /* tolerated */ }
-            })();
+            notifyCustomerPaymentSettled({
+              razorpayOrderId,
+              status: "SUCCESS",
+            });
           }
           return reply.send({ ok: result.ok });
         }
@@ -365,27 +350,12 @@ export async function paymentRoutes(app: FastifyInstance) {
             failureMessage,
             payload: { event, eventId, durationMs: Date.now() - startedAtMs },
           });
-          void (async () => {
-            try {
-              const sql = getSql();
-              const rows = (await sql`
-                SELECT c.order_id, c.customer_id, c.grand_total
-                FROM public.orders_core c
-                WHERE c.razorpay_order_id = ${razorpayOrderId}
-                LIMIT 1
-              `) as unknown as Array<{ order_id: string; customer_id: string; grand_total: number | string }>;
-              const row = rows[0];
-              if (row?.customer_id && row.order_id) {
-                emitEvent("payment.settled", {
-                  orderId: String(row.order_id),
-                  customerId: String(row.customer_id),
-                  amount: Number(row.grand_total ?? 0),
-                  status: "FAILED",
-                  reason: failureMessage,
-                });
-              }
-            } catch { /* tolerated */ }
-          })();
+          // Instant customer push (pending_orders — order not yet in orders_core).
+          notifyCustomerPaymentSettled({
+            razorpayOrderId,
+            status: "FAILED",
+            reason: failureMessage,
+          });
           return reply.send({ ok: true });
         }
 
@@ -857,6 +827,111 @@ export async function paymentRoutes(app: FastifyInstance) {
         payload: { ts: Date.now() },
       });
 
+      notifyCustomerPaymentSettled({
+        razorpayOrderId,
+        status: "FAILED",
+        reason: reason || "Payment was not completed.",
+      });
+
+      return reply.send({ ok: true });
+    }
+  );
+
+  /**
+   * Client-reported checkout payment failure (Razorpay payment.failed / incomplete).
+   * Marks pending_orders failed and sends instant CUSTOMER_PAYMENT_FAILED push.
+   * Idempotent with the webhook path via the same notification idempotency key.
+   */
+  app.post(
+    "/checkout/fail",
+    {
+      schema: {
+        body: z.object({
+          pendingId: z.string().min(1),
+          razorpayOrderId: z.string().min(1),
+          reason: z.string().max(200).optional(),
+        }),
+        response: {
+          200: z.object({
+            ok: z.boolean(),
+            code: z.string().optional(),
+            message: z.string().optional(),
+          }),
+          403: z.object({ error: z.string(), message: z.string() }),
+          404: z.object({ error: z.string(), message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const customerPk = await resolveCustomerPkForRequest(req.auth!, req);
+      if (customerPk === null) {
+        return reply.status(403).send({
+          error: "CUSTOMER_REQUIRED",
+          message: "Customer account required.",
+        });
+      }
+
+      const { pendingId, razorpayOrderId, reason } = req.body as {
+        pendingId: string;
+        razorpayOrderId: string;
+        reason?: string;
+      };
+
+      const db = getDb();
+      const [pending] = await db
+        .select({
+          pendingId: pendingOrders.pendingId,
+          customerId: pendingOrders.customerId,
+          razorpayOrderId: pendingOrders.razorpayOrderId,
+        })
+        .from(pendingOrders)
+        .where(and(eq(pendingOrders.pendingId, pendingId), eq(pendingOrders.customerId, customerPk)))
+        .limit(1);
+
+      if (!pending) {
+        return reply.status(404).send({
+          error: "PENDING_ORDER_NOT_FOUND",
+          message: "Checkout payment not found.",
+        });
+      }
+
+      if (pending.razorpayOrderId && pending.razorpayOrderId !== razorpayOrderId) {
+        return reply.status(403).send({
+          error: "RAZORPAY_ORDER_MISMATCH",
+          message: "Payment order does not match this checkout.",
+        });
+      }
+
+      const failureMessage = reason || "Payment was not completed.";
+      await markPendingOrderFailedFromWebhook(db, {
+        razorpayOrderId: pending.razorpayOrderId || razorpayOrderId,
+        razorpayPaymentId: null,
+        failureCode: "CLIENT_PAYMENT_INCOMPLETE",
+        failureMessage,
+        gatewayPayload: {
+          verifiedBy: "client_checkout_fail",
+          pendingId,
+          razorpayOrderId,
+          ts: new Date().toISOString(),
+        },
+      });
+
+      await logPaymentEvent(db, {
+        eventType: "CLIENT_PAYMENT_FAILED",
+        source: "client",
+        pendingId,
+        razorpayOrderId: pending.razorpayOrderId || razorpayOrderId,
+        failureCode: "CLIENT_PAYMENT_INCOMPLETE",
+        failureMessage,
+        payload: { ts: Date.now() },
+      });
+
+      notifyCustomerPaymentSettled({
+        razorpayOrderId: pending.razorpayOrderId || razorpayOrderId,
+        status: "FAILED",
+        reason: failureMessage,
+      });
+
       return reply.send({ ok: true });
     }
   );
@@ -905,7 +980,7 @@ export async function paymentRoutes(app: FastifyInstance) {
       const paymentReady = await ensureRiderOnboardingStageForPayment(riderIdInt);
       if (!paymentReady.ready) {
         return rep.code(409).send({
-          error: "documents_required",
+          error: paymentReady.error ?? "documents_required",
           message: paymentReady.message ?? "Please complete document submission first",
         });
       }
@@ -1075,12 +1150,22 @@ export async function paymentRoutes(app: FastifyInstance) {
       };
 
       if (payment.status === "completed") {
+        const { ensureOnboardingVerificationPendingTicket } = await import(
+          "../../lib/onboarding-verification-pending-ticket.js"
+        );
+        const ticketResult = await ensureOnboardingVerificationPendingTicket(riderIdInt);
+        req.log.info(
+          { riderId: riderIdInt, ticketResult },
+          "onboarding verification pending ticket ensure (already completed payment)",
+        );
         const { tryActivateRiderIfEligible } = await import("../../lib/rider-onboarding-activation.js");
         await tryActivateRiderIfEligible(riderIdInt);
+        const activated = await readActivated();
+        await ensureOnboardingVerificationPendingTicket(riderIdInt);
         return {
           success: true,
           paymentId: String(payment.id),
-          activated: await readActivated(),
+          activated,
         };
       }
 
@@ -1121,7 +1206,8 @@ export async function paymentRoutes(app: FastifyInstance) {
         })
         .where(eq(onboardingPayments.id, payment.id));
 
-      // If payment successful, move rider to approval queue and activate when docs are already verified
+      // If payment successful, move rider to approval queue, create verification
+      // ticket instantly, then activate when docs are already verified.
       let activated = false;
       if (paymentStatus === "captured") {
         await db
@@ -1132,8 +1218,20 @@ export async function paymentRoutes(app: FastifyInstance) {
           })
           .where(eq(riders.id, riderIdInt));
 
+        const { ensureOnboardingVerificationPendingTicket } = await import(
+          "../../lib/onboarding-verification-pending-ticket.js"
+        );
+        // Instant ticket as soon as payment completes while docs may still need review.
+        const ticketResult = await ensureOnboardingVerificationPendingTicket(riderIdInt);
+        req.log.info(
+          { riderId: riderIdInt, ticketResult },
+          "onboarding verification pending ticket ensure after payment",
+        );
+
         const { tryActivateRiderIfEligible } = await import("../../lib/rider-onboarding-activation.js");
         activated = await tryActivateRiderIfEligible(riderIdInt);
+        // Activation may demote / leave manual docs pending — ensure again.
+        await ensureOnboardingVerificationPendingTicket(riderIdInt);
       }
 
       await logPaymentEvent(db, {

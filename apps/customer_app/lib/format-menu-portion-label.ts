@@ -2,7 +2,7 @@ import { formatMenuSize } from "./menu-size-preset";
 
 /** e.g. "Regular", "1500-1700 ml", "500 ml", "1 piece". */
 export function formatMenuPortionLabel(
-  sizeValue?: string | null,
+  sizeValue?: string | number | null,
   sizeUnit?: string | null,
   sizePreset?: string | null
 ): string | null {

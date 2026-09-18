@@ -19,6 +19,8 @@ export function prefetchMealsUnder250HeroMedia(
     FoodHomeLayoutResult,
     | "gridFirstUnder250HeroImageUrl"
     | "gridFirstUnder250TabImageUrl"
+    | "classicUnder250HeroImageUrl"
+    | "classicUnder250TabImageUrl"
     | "discoveryDealsAtHeroImageUrl"
     | "discoveryDealsAtImageUrl"
     | "discoveryCrazyDealsImageUrl"
@@ -29,6 +31,8 @@ export function prefetchMealsUnder250HeroMedia(
   if (!layout) return;
   prefetchUri(layout.gridFirstUnder250HeroImageUrl);
   prefetchUri(layout.gridFirstUnder250TabImageUrl);
+  prefetchUri(layout.classicUnder250HeroImageUrl);
+  prefetchUri(layout.classicUnder250TabImageUrl);
   prefetchUri(layout.discoveryDealsAtHeroImageUrl);
   prefetchUri(layout.discoveryDealsAtImageUrl);
   prefetchUri(layout.discoveryCrazyDealsImageUrl);

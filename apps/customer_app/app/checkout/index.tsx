@@ -129,6 +129,8 @@ import {
   friendlyCheckoutDiscountLabel,
   isSubscriptionBenefitDiscount,
   splitCheckoutDiscounts,
+  flashSaleSavingsByOfferId as flashSaleSavingsMapFromDiscounts,
+  extractFlashSaleDiscounts,
 } from "@/lib/checkout-discount-display";
 import {
   computeAppliedCheckoutSavings,
@@ -165,8 +167,10 @@ import {
   buildItemOfferDisplayMap,
   estimateBoostUnitPrice,
   formatOfferRupee,
+  parseMenuFlashSale,
   type ItemOfferDisplay,
 } from "@/lib/itemOfferDisplay";
+import { isFlashSaleCheckoutError, flashSaleCheckoutMessage } from "@/lib/flashSaleCheckoutError";
 import { computeIsDiscountEligible } from "@/lib/cartDiscountEligibility";
 import {
   buildStoreOffersQueryKey,
@@ -518,6 +522,23 @@ function findMenuItemByCartBaseId(
   );
 }
 
+/**
+ * Billing/order APIs require a positive integer menu_item PK.
+ * Classic home historically stored public SKUs (e.g. SS1026_…) — resolve via menu when needed.
+ */
+function resolveBillingMenuItemId(
+  cartBaseId: string,
+  menuItem: import("@/services/merchant.service").MenuItem | undefined
+): string {
+  const raw = String(cartBaseId ?? "").trim();
+  if (/^\d+$/.test(raw) && Number(raw) > 0) return raw;
+  const pk = menuItem?.menuItemId;
+  if (pk != null && Number.isFinite(pk) && pk > 0) return String(pk);
+  const fromPublicId = menuItem?.id != null ? Number(menuItem.id) : NaN;
+  if (Number.isFinite(fromPublicId) && fromPublicId > 0) return String(fromPublicId);
+  return raw;
+}
+
 /** Shared by the live (order-payload) and debounced (billing-preview) snapshots below —
  * keeping one function means the two can never silently diverge in shape. */
 function buildItemsWithSnapshots(
@@ -527,6 +548,7 @@ function buildItemsWithSnapshots(
   return cartItems.map((i) => {
     const bid = cartItemBaseId(i.menuItemId);
     const menuItem = findMenuItemByCartBaseId(merchantMenu, bid);
+    const billingMenuItemId = resolveBillingMenuItemId(bid, menuItem);
     const categoryName =
       (menuItem as { categoryName?: string } | undefined)?.categoryName ??
       (menuItem as { category_name?: string } | undefined)?.category_name;
@@ -546,8 +568,31 @@ function buildItemsWithSnapshots(
       snap.packaging_enabled = true;
       snap.packaging_charges = packNum;
     }
+    // Carry menu flash / canonical pricing so billing can revalidate FLASH_SALE
+    // (server still rewrites prices authoritatively and re-applies the overlay).
+    const menuCanon =
+      menuItem?.canonicalPricing &&
+      typeof menuItem.canonicalPricing === "object" &&
+      !Array.isArray(menuItem.canonicalPricing)
+        ? (menuItem.canonicalPricing as Record<string, unknown>)
+        : null;
+    if (menuCanon) snap.canonical_pricing = menuCanon;
+    const flash = parseMenuFlashSale(
+      (menuItem as unknown as Record<string, unknown> | undefined) ??
+        (menuCanon ? { canonical_pricing: menuCanon } : null)
+    );
+    if (flash) {
+      snap.flash_sale = {
+        offer_id: flash.offerId,
+        original_customer_unit: flash.originalCustomerUnit,
+        flash_price: flash.flashPrice,
+      };
+      if (snap.customer_strike_price == null) {
+        snap.customer_strike_price = flash.originalCustomerUnit;
+      }
+    }
     return {
-      menuItemId: bid,
+      menuItemId: billingMenuItemId,
       itemName: i.name,
       quantity: i.quantity,
       basePrice: cartLineBaseUnitPrice(i),
@@ -982,6 +1027,7 @@ function CheckoutScreen() {
   const updateQuantity = useCartStore((s) => s.updateQuantity);
   const clearCart = useCartStore((s) => s.clearCart);
   const syncPricesFromMap = useCartStore((s) => s.syncPricesFromMap);
+  const resolveMenuItemIdsFromCatalog = useCartStore((s) => s.resolveMenuItemIdsFromCatalog);
   const syncDiscountEligibility = useCartStore((s) => s.syncDiscountEligibility);
 
   const { data: merchantAbout } = useQuery({
@@ -1155,7 +1201,6 @@ function CheckoutScreen() {
   const [razorpayCreating, setRazorpayCreating] = useState(false);
   const [paymentReturnBusy, setPaymentReturnBusy] = useState(false);
   const paymentFailureRetryNonce = useCheckoutPaymentFailureStore((s) => s.retryNonce);
-  const paymentFailureChooseNonce = useCheckoutPaymentFailureStore((s) => s.chooseMethodNonce);
   const [simulatedPaymentOrder, setSimulatedPaymentOrder] = useState<{ orderId: string; amount: number; pendingId?: string } | null>(null);
 
   const paymentInProgress =
@@ -1699,12 +1744,13 @@ function CheckoutScreen() {
 
   const itemOfferById = useMemo(() => {
     const offers = storeOffersData?.merchant_offers ?? [];
-    if (offers.length === 0 || !merchant?.menu?.length) return new Map();
+    if (!merchant?.menu?.length) return new Map();
     const catalog = merchant.menu.map((m) => ({
       id: m.id,
       menuItemId: m.menuItemId ?? null,
       price: m.price,
       customerStrikePrice: m.basePrice != null && m.basePrice > m.price ? m.basePrice : null,
+      flashSale: parseMenuFlashSale(m as unknown as Record<string, unknown>),
     }));
     return buildItemOfferDisplayMap(offers, catalog);
   }, [storeOffersData?.merchant_offers, merchant?.menu]);
@@ -1745,19 +1791,27 @@ function CheckoutScreen() {
   // the stale add-time price even though the bill is server-recalculated.
   useEffect(() => {
     if (!merchant?.menu || merchant.menu.length === 0 || items.length === 0) return;
+    // Heal legacy classic-home lines that stored public SKU instead of menu PK.
+    resolveMenuItemIdsFromCatalog(
+      merchant.menu.map((m) => ({ id: m.id, menuItemId: m.menuItemId ?? null }))
+    );
     const priceById: Record<string, number> = {};
     for (const m of merchant.menu) {
       if (typeof m.price === "number" && Number.isFinite(m.price)) {
         priceById[m.id] = m.price;
+        // Cart lines may store numeric PK (billing) or public SKU (legacy classic add).
+        if (m.menuItemId != null && Number.isFinite(m.menuItemId) && m.menuItemId > 0) {
+          priceById[String(m.menuItemId)] = m.price;
+        }
       }
     }
     if (Object.keys(priceById).length > 0) {
       syncPricesFromMap(priceById);
     }
     // Intentionally omit `items` from deps — we react to menu changes only;
-    // syncPricesFromMap reads the latest items via the store getter.
+    // sync helpers read the latest items via the store getter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [merchant?.menu, syncPricesFromMap]);
+  }, [merchant?.menu, resolveMenuItemIdsFromCatalog, syncPricesFromMap]);
 
   useEffect(() => {
     if (!merchant?.menu || items.length === 0) return;
@@ -2293,6 +2347,15 @@ function CheckoutScreen() {
       selectedAddress != null ||
       (provisionalDropLat != null && provisionalDropLon != null));
 
+  /** Public SKU cart lines need merchant menu to map to numeric PKs before billing. */
+  const billingItemsHaveResolvableIds = useMemo(() => {
+    if (debouncedItemsWithSnapshots.length === 0) return false;
+    return debouncedItemsWithSnapshots.every((row) => {
+      const id = String(row.menuItemId ?? "").trim();
+      return /^\d+$/.test(id) && Number(id) > 0;
+    });
+  }, [debouncedItemsWithSnapshots]);
+
   const billingQuery = useQuery({
     queryKey: buildBillingCalculateQueryKey(billingCalculateKeyParams),
     queryFn: ({ signal }) =>
@@ -2307,7 +2370,7 @@ function CheckoutScreen() {
         }),
         { signal }
       ),
-    enabled: canRequestBilling,
+    enabled: canRequestBilling && billingItemsHaveResolvableIds,
     /** Keeps last bill on screen while cart/tip/donation refetch — avoids skeleton layout jump. */
     placeholderData: keepPreviousData,
     staleTime: 15_000,
@@ -2435,7 +2498,10 @@ function CheckoutScreen() {
         serverBill?.serviceable == null &&
         uiDistanceKm > (serverBill?.serviceRadiusKm ?? SERVICE_RADIUS_KM)));
   const visibleDiscounts = useMemo(
-    () => (serverBill?.discounts ?? []).filter((c) => !c.hidden),
+    () =>
+      (serverBill?.discounts ?? []).filter(
+        (c) => !c.hidden && c.meta?.doesNotReducePayable !== true && c.meta?.flashSale !== true
+      ),
     [serverBill?.discounts]
   );
 
@@ -2527,6 +2593,41 @@ function CheckoutScreen() {
     }
     return map;
   }, [visibleDiscounts, itemSurfaceMerchantOfferIds]);
+
+  /** FLASH_SALE subsidy from billing (hidden lines) — coupon sheet + bill label. */
+  const flashSaleSavingsByOfferId = useMemo(() => {
+    const fromBill = flashSaleSavingsMapFromDiscounts(serverBill?.discounts);
+    if (Object.keys(fromBill).length > 0) return fromBill;
+    const map: Record<number, number> = {};
+    for (const cartItem of items) {
+      const baseId = cartItemBaseId(cartItem.menuItemId);
+      const offer = itemOfferById.get(cartItem.menuItemId) ?? itemOfferById.get(baseId) ?? null;
+      if (!offer || offer.kind !== "flash_sale" || !(offer.offerId > 0)) continue;
+      const { strike, net } = cartLineStrikeNetTotals(cartItem, itemOfferById);
+      if (strike != null && strike > net + 0.005) {
+        map[offer.offerId] = (map[offer.offerId] ?? 0) + (strike - net);
+      }
+    }
+    return map;
+  }, [serverBill?.discounts, items, itemOfferById]);
+
+  const flashSaleSavingsTotal = useMemo(() => {
+    const fromMap = Object.values(flashSaleSavingsByOfferId).reduce((s, n) => s + n, 0);
+    if (fromMap > 0.005) return Math.round(fromMap * 100) / 100;
+    const fromBill = extractFlashSaleDiscounts(serverBill?.discounts).reduce(
+      (s, d) => s + (Number(d.amount) || 0),
+      0
+    );
+    return Math.round(fromBill * 100) / 100;
+  }, [flashSaleSavingsByOfferId, serverBill?.discounts]);
+
+  const flashSaleBillLine = useMemo(() => {
+    if (!(flashSaleSavingsTotal > 0.005)) return null;
+    const rows = extractFlashSaleDiscounts(serverBill?.discounts);
+    const first = rows[0];
+    const label = (first?.label && String(first.label).trim()) || "Flash Sale";
+    return { label: friendlyCheckoutDiscountLabel(label) || "Flash Sale", amount: flashSaleSavingsTotal };
+  }, [flashSaleSavingsTotal, serverBill?.discounts]);
 
   const billVisibleDiscounts = useMemo(() => {
     if (itemSurfaceMerchantOfferIds.size === 0) return visibleDiscounts;
@@ -3111,6 +3212,8 @@ function CheckoutScreen() {
         : subscriptionBenefitSavings;
     /** Past-tense membership savings only when free delivery is actually on the bill. */
     const membershipApplied = membershipFreeDeliveryOnBill;
+    const flashSave = flashSaleSavingsTotal;
+    const flashApplied = flashSave > 0.005;
 
     if (primaryCheckoutDiscount) {
       const promoSave = primaryCheckoutDiscount.amount;
@@ -3122,6 +3225,13 @@ function CheckoutScreen() {
         return `You saved ₹${formatCheckoutSavingsRupees(promoSave)} with ${promoLabel}`;
       }
       return `${promoLabel} applied!`;
+    }
+
+    if (flashApplied && membershipApplied && subSave > 0.005 && subLabel) {
+      return `You saved ₹${formatCheckoutSavingsRupees(flashSave + subSave)} with Flash Sale + ${friendlyCheckoutDiscountLabel(subLabel)}`;
+    }
+    if (flashApplied) {
+      return `You saved ₹${formatCheckoutSavingsRupees(flashSave)} with Flash Sale`;
     }
 
     if (membershipApplied && subSave > 0.005 && subLabel) {
@@ -3155,6 +3265,7 @@ function CheckoutScreen() {
     subscriptionBenefitSavings,
     membershipFreeDeliveryOnBill,
     membershipDeliverySavingsDisplay,
+    flashSaleSavingsTotal,
     appliedCouponCode,
     appliedCouponLabel,
     featuredCoupon,
@@ -3205,7 +3316,8 @@ function CheckoutScreen() {
     if (
       hasAppliedCheckoutPromo ||
       hasMissedOfferUnlocked ||
-      membershipFreeDeliveryOnBill
+      membershipFreeDeliveryOnBill ||
+      flashSaleSavingsTotal > 0.005
     ) {
       return true;
     }
@@ -3216,13 +3328,17 @@ function CheckoutScreen() {
     hasAppliedCheckoutPromo,
     hasMissedOfferUnlocked,
     membershipFreeDeliveryOnBill,
+    flashSaleSavingsTotal,
     checkoutOffersQuery.isLoading,
     checkoutOffersQuery.data,
     hasCheckoutOffersCatalog,
   ]);
 
   const hasCheckoutOfferSavings =
-    hasAppliedCheckoutPromo || subscriptionBenefitSavings > 0.005 || hasMissedOfferUnlocked;
+    hasAppliedCheckoutPromo ||
+    subscriptionBenefitSavings > 0.005 ||
+    hasMissedOfferUnlocked ||
+    flashSaleSavingsTotal > 0.005;
 
   /**
    * Reconcile a USER-PINNED promo (set only by applyCouponCode/applyPlatformOfferById/
@@ -4072,18 +4188,41 @@ function CheckoutScreen() {
 
   const showPaymentFailedSheet = useCallback(
     (amountOverride?: number | null) => {
+      const pendingId =
+        razorpayOrderParams?.pendingId ?? simulatedPaymentOrder?.pendingId ?? null;
+      const razorpayOrderId =
+        razorpayOrderParams?.orderId ?? simulatedPaymentOrder?.orderId ?? null;
+      // Instant push (not SMS) when checkout payment did not complete.
+      if (pendingId && razorpayOrderId) {
+        void paymentService
+          .reportCheckoutPaymentFailed({
+            pendingId,
+            razorpayOrderId,
+            reason: "Payment was not completed.",
+          })
+          .catch((e) => console.warn("[checkout] report payment failed", e));
+      }
       idempotencyKeyRef.current = null;
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
       setSimulatedPaymentOrder(null);
       setPaymentReturnBusy(false);
+      const payable =
+        amountOverride != null && Number.isFinite(amountOverride) && amountOverride > 0.005
+          ? amountOverride
+          : typeof toPayAmount === "number" && toPayAmount > 0.005
+            ? toPayAmount
+            : gatiCashApplyAmount > 0.005
+              ? gatiCashApplyAmount
+              : null;
       presentCheckoutPaymentFailure({
-        amountInr:
-          amountOverride ?? (typeof toPayAmount === "number" ? toPayAmount : null),
-        methodLabel: "UPI / Cards",
+        amountInr: payable,
+        methodLabel: gatiCashApplyAmount > 0.005 && (toPayAmount == null || toPayAmount <= 0.005)
+          ? "GatiCash"
+          : "UPI / Cards",
       });
     },
-    [toPayAmount]
+    [toPayAmount, gatiCashApplyAmount, razorpayOrderParams, simulatedPaymentOrder]
   );
   /** List price strike — only when payable is actually lower (hide when wallet top-up inflates total).
    * Also when GatiCash covers 100% (₹0 to-pay), strike the pre-wallet amount so CTA/Total Bill
@@ -4324,6 +4463,65 @@ function CheckoutScreen() {
     ]
   );
 
+  /**
+   * After a successful place/finalize: navigate first, then hide sheet / clear cart.
+   * Clearing the cart too early swaps checkout to "Cart is empty" and aborts navigation
+   * (hard crash / blank screen right after place order).
+   */
+  const suppressEmptyCartUiRef = useRef(false);
+  const goToOrderPlacedSuccess = useCallback(
+    (orderId: string) => {
+      const id = String(orderId ?? "").trim();
+      if (!id) return;
+      suppressEmptyCartUiRef.current = true;
+      const { label: etaLabel, etaMaxMinutes } = checkoutDeliveryEtaRef.current;
+      seedTrackingOrderCache(id, "ORDER_PLACED");
+      setActiveOrder({
+        orderId: id,
+        status: "ORDER_PLACED",
+        etaMinutes: etaMaxMinutes,
+        storeId: merchantId ?? null,
+        storeName: merchantName ?? null,
+        placedAt: Date.now(),
+        serviceType: "food",
+        isSelfPickup: deliveryType === "self_pickup",
+      });
+      router.replace({
+        pathname: "/orders/payment-success",
+        params: {
+          orderId: id,
+          ...(merchantName ? { merchantName } : {}),
+          ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
+          ...(etaMaxMinutes > 0 ? { etaMinutes: String(etaMaxMinutes) } : {}),
+        },
+      });
+      if (isCheckoutSheet) {
+        void Promise.resolve().then(() => {
+          useCheckoutSheetStore.getState().hide();
+        });
+      }
+      void fulfillPendingMissedOfferWallet();
+      InteractionManager.runAfterInteractions(() => {
+        setTimeout(() => {
+          clearCart();
+          queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+        }, 500);
+      });
+    },
+    [
+      clearCart,
+      deliveryType,
+      fulfillPendingMissedOfferWallet,
+      isCheckoutSheet,
+      merchantId,
+      merchantName,
+      queryClient,
+      router,
+      seedTrackingOrderCache,
+      setActiveOrder,
+    ]
+  );
+
   const placeOrder = useMutation({
     mutationFn: (razorpay?: RazorpayPaymentResult) => {
       const payload = baseOrderPayload;
@@ -4340,41 +4538,18 @@ function CheckoutScreen() {
     onSuccess: (order) => {
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
-      const { label: etaLabel, etaMaxMinutes } = checkoutDeliveryEtaRef.current;
-      seedTrackingOrderCache(order.orderId, "ORDER_PLACED");
-      setActiveOrder({
-        orderId: order.orderId,
-        status: "ORDER_PLACED",
-        etaMinutes: etaMaxMinutes,
-        storeId: merchantId ?? null,
-        storeName: merchantName ?? null,
-        placedAt: Date.now(),
-        serviceType: "food",
-        isSelfPickup: deliveryType === "self_pickup",
-      });
-      // Navigate first — wallet refresh / cart clear must not delay or unmount
-      // the checkout tree before expo-router dispatches payment-success.
-      router.replace({
-        pathname: "/orders/payment-success",
-        params: {
-          orderId: order.orderId,
-          ...(merchantName ? { merchantName } : {}),
-          ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
-          ...(etaMaxMinutes > 0 ? { etaMinutes: String(etaMaxMinutes) } : {}),
-        },
-      });
-      void fulfillPendingMissedOfferWallet();
-      InteractionManager.runAfterInteractions(() => {
-        setTimeout(() => {
-          clearCart();
-          queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-        }, 80);
-      });
+      goToOrderPlacedSuccess(order.orderId);
     },
     onError: (err: Error & { response?: { data?: { message?: string; error?: string; code?: string; title?: string } } }) => {
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
       const data = err?.response?.data;
+      if (isFlashSaleCheckoutError(data)) {
+        Alert.alert("Flash Sale unavailable", flashSaleCheckoutMessage(data), [{ text: "OK" }]);
+        void queryClient.invalidateQueries({ queryKey: ["merchant"] });
+        void billingQuery.refetch();
+        return;
+      }
       const blocked =
         data?.code === "SERVICE_BLOCKED_IN_LOCATION" || data?.error === "SERVICE_BLOCKED_IN_LOCATION";
       const msg = blocked
@@ -4410,6 +4585,8 @@ function CheckoutScreen() {
   const finalizeArgsRef = useRef<{ pendingId: string; result: RazorpayPaymentResult | null } | null>(
     null
   );
+  /** Blocks overlapping Place Order / retry while createPending or finalize is in flight. */
+  const placeOrderInFlightRef = useRef(false);
 
   const finalizeOrder = useMutation({
     // `result: null` means GatiCash covered the whole bill, so no gateway payment exists to
@@ -4434,6 +4611,7 @@ function CheckoutScreen() {
       );
     },
     onSuccess: (order) => {
+      placeOrderInFlightRef.current = false;
       const recoveryPendingId = finalizeArgsRef.current?.pendingId ?? "";
       finalizeArgsRef.current = null;
       setRazorpayModalVisible(false);
@@ -4457,83 +4635,94 @@ function CheckoutScreen() {
         });
         return;
       }
-      const { label: etaLabel, etaMaxMinutes } = checkoutDeliveryEtaRef.current;
-      seedTrackingOrderCache(orderId, "ORDER_PLACED");
-      setActiveOrder({
-        orderId,
-        status: "ORDER_PLACED",
-        etaMinutes: etaMaxMinutes,
-        storeId: merchantId ?? null,
-        storeName: merchantName ?? null,
-        placedAt: Date.now(),
-        serviceType: "food",
-        isSelfPickup: deliveryType === "self_pickup",
-      });
-      if (isCheckoutSheet) {
-        useCheckoutSheetStore.getState().hide();
-      }
-      // CRITICAL: navigate FIRST. Wallet refresh and clearCart must not run in
-      // the same React batch — emptying the cart swaps checkout to CartEmptyView
-      // and tears down the navigator before expo-router can open payment-success.
-      router.replace({
-        pathname: "/orders/payment-success",
-        params: {
-          orderId,
-          ...(merchantName ? { merchantName } : {}),
-          ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
-          ...(etaMaxMinutes > 0 ? { etaMinutes: String(etaMaxMinutes) } : {}),
-        },
-      });
-      void fulfillPendingMissedOfferWallet();
-      InteractionManager.runAfterInteractions(() => {
-        setTimeout(() => {
-          clearCart();
-          queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-        }, 80);
-      });
+      goToOrderPlacedSuccess(String(orderId));
     },
     onError: (err: Error & { response?: { data?: { message?: string } }; code?: string }) => {
+      placeOrderInFlightRef.current = false;
       setRazorpayModalVisible(false);
       setRazorpayOrderParams(null);
       const msg = err?.response?.data?.message ?? err?.message ?? "Order could not be confirmed.";
       const apiCode = (err as unknown as { response?: { data?: { error?: string } } })?.response?.data?.error;
       const networkErr = isNetworkError(err);
+      const finalizeArgs = finalizeArgsRef.current;
 
       // A GatiCash-settled order has no gateway payment and no webhook, so nothing can
       // finalize it in the background — the "confirming payment" screen would poll forever.
       // Money only leaves the wallet once the order is created, so failing here means
-      // nothing was charged and the customer can simply retry.
-      const walletSettled = finalizeArgsRef.current?.result === null;
+      // nothing was charged and the customer can simply retry — unless a concurrent
+      // attempt already finalized (then PENDING_ORDER_NOT_FOUND / expired is a false alarm).
+      const walletSettled = finalizeArgs?.result === null;
+      const pendingId = finalizeArgs?.pendingId ?? null;
 
-      const shouldDeferToRecovery =
-        finalizeArgsRef.current &&
-        !walletSettled &&
-        (networkErr ||
-          err?.response == null ||
-          apiCode === "PAYMENT_PENDING_CONFIRMATION" ||
-          apiCode === "PAYMENT_NOT_CAPTURED" ||
-          String(msg).toLowerCase().includes("contact support") ||
-          String(msg).toLowerCase().includes("could not be created"));
+      const recoverIfAlreadyPlaced = async (): Promise<boolean> => {
+        if (!pendingId) return false;
+        if (
+          apiCode !== "PENDING_ORDER_NOT_FOUND" &&
+          apiCode !== "PENDING_ORDER_EXPIRED" &&
+          !networkErr
+        ) {
+          return false;
+        }
+        try {
+          const status = await orderService.getPendingOrderStatus(pendingId);
+          if (!status.finalized || !status.orderId) return false;
+          const orderId = status.orderId;
+          finalizeArgsRef.current = null;
+          idempotencyKeyRef.current = null;
+          void clearPendingCheckoutPayment();
+          goToOrderPlacedSuccess(orderId);
+          return true;
+        } catch {
+          return false;
+        }
+      };
 
-      if (shouldDeferToRecovery && finalizeArgsRef.current) {
-        const { label: etaLabel } = checkoutDeliveryEtaRef.current;
-        router.replace({
-          pathname: "/orders/payment-confirming",
-          params: {
-            pendingId: finalizeArgsRef.current.pendingId,
-            merchantName: merchantName ?? "",
-            message: "Payment received. We are confirming your order in the background.",
-            ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
-          },
-        });
-      } else {
+      void (async () => {
+        if (await recoverIfAlreadyPlaced()) return;
+
+        const shouldDeferToRecovery =
+          finalizeArgs != null &&
+          !walletSettled &&
+          (networkErr ||
+            err?.response == null ||
+            apiCode === "PAYMENT_PENDING_CONFIRMATION" ||
+            apiCode === "PAYMENT_NOT_CAPTURED" ||
+            String(msg).toLowerCase().includes("contact support") ||
+            String(msg).toLowerCase().includes("could not be created"));
+
+        if (shouldDeferToRecovery && finalizeArgs) {
+          const { label: etaLabel } = checkoutDeliveryEtaRef.current;
+          router.replace({
+            pathname: "/orders/payment-confirming",
+            params: {
+              pendingId: finalizeArgs.pendingId,
+              merchantName: merchantName ?? "",
+              message: "Payment received. We are confirming your order in the background.",
+              ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
+            },
+          });
+          return;
+        }
+
+        // Wallet path: never show "failed" if we can't prove the debit did not happen —
+        // PENDING_ORDER_NOT_FOUND after a race often means the order already landed.
+        // recoverIfAlreadyPlaced already ran; remaining failures are safe to show.
         showPaymentFailedSheet();
-      }
+      })();
     },
   });
 
   const runPlaceOrderFlow = useCallback(async () => {
-    if (!canPlaceOrder || placeOrder.isPending || finalizeOrder.isPending || razorpayCreating || paymentReturnBusy) return;
+    if (
+      placeOrderInFlightRef.current ||
+      !canPlaceOrder ||
+      placeOrder.isPending ||
+      finalizeOrder.isPending ||
+      razorpayCreating ||
+      paymentReturnBusy
+    ) {
+      return;
+    }
     if (!checkoutReceiverName.trim() || !checkoutReceiverMobile.trim()) {
       Alert.alert(
         "Contact details required",
@@ -4549,10 +4738,12 @@ function CheckoutScreen() {
       if (!allowed) return;
     }
     if (hasValidPayment) {
+      placeOrderInFlightRef.current = true;
       setRazorpayCreating(true);
       try {
         const payload = baseOrderPayload;
         if (!payload) {
+          placeOrderInFlightRef.current = false;
           setRazorpayCreating(false);
           return;
         }
@@ -4594,9 +4785,11 @@ function CheckoutScreen() {
               pendingAmount: pending.amount,
               uiPayablePaise,
             });
+            placeOrderInFlightRef.current = false;
             showPaymentFailedSheet(toPayAmount);
             return;
           }
+          // Lock stays until finalizeOrder onSuccess / onError.
           finalizeOrder.mutate({ pendingId: pending.pendingId, result: null });
           return;
         }
@@ -4631,7 +4824,10 @@ function CheckoutScreen() {
           });
           setRazorpayModalVisible(true);
         }
+        // Gateway UI owns the rest of the attempt — allow cancel / retry.
+        placeOrderInFlightRef.current = false;
       } catch (e) {
+        placeOrderInFlightRef.current = false;
         console.warn("Create pending or Razorpay order failed", e);
         const msg = (e as Error)?.message ?? "Could not start payment. Try again.";
         const displayMsg = isNetworkError(e) ? getNetworkErrorMessage(e) : msg;
@@ -4663,7 +4859,14 @@ function CheckoutScreen() {
 
   const handlePlaceOrderPress = useCallback(async () => {
     if (deliveryType === "self_pickup") {
-      if (!canPlaceOrder || placeOrder.isPending || finalizeOrder.isPending || razorpayCreating || paymentReturnBusy) {
+      if (
+        placeOrderInFlightRef.current ||
+        !canPlaceOrder ||
+        placeOrder.isPending ||
+        finalizeOrder.isPending ||
+        razorpayCreating ||
+        paymentReturnBusy
+      ) {
         return;
       }
       setTakeawayConfirmVisible(true);
@@ -4680,15 +4883,18 @@ function CheckoutScreen() {
     runPlaceOrderFlow,
   ]);
 
+  const handlePlaceOrderPressRef = useRef(handlePlaceOrderPress);
+  handlePlaceOrderPressRef.current = handlePlaceOrderPress;
+  const lastPaymentFailureRetryNonceRef = useRef(0);
+
+  // Only react to a NEW retry tap — never re-fire when handlePlaceOrderPress identity changes
+  // (that used to place a second order while the first already succeeded).
   useEffect(() => {
     if (paymentFailureRetryNonce < 1) return;
-    void handlePlaceOrderPress();
-  }, [paymentFailureRetryNonce, handlePlaceOrderPress]);
-
-  useEffect(() => {
-    if (paymentFailureChooseNonce < 1) return;
-    void handlePlaceOrderPress();
-  }, [paymentFailureChooseNonce, handlePlaceOrderPress]);
+    if (paymentFailureRetryNonce === lastPaymentFailureRetryNonceRef.current) return;
+    lastPaymentFailureRetryNonceRef.current = paymentFailureRetryNonce;
+    void handlePlaceOrderPressRef.current();
+  }, [paymentFailureRetryNonce]);
 
   const handleRazorpaySuccess = useCallback(
     (result: RazorpayPaymentResult) => {
@@ -4729,37 +4935,7 @@ function CheckoutScreen() {
         const status = await orderService.getPendingOrderStatus(pendingId);
         if (status.finalized && status.orderId) {
           const orderId = status.orderId;
-          const { label: etaLabel, etaMaxMinutes } = checkoutDeliveryEtaRef.current;
-          seedTrackingOrderCache(orderId, "ORDER_PLACED");
-          setActiveOrder({
-            orderId,
-            status: "ORDER_PLACED",
-            etaMinutes: etaMaxMinutes,
-            storeId: merchantId ?? null,
-            storeName: merchantName ?? null,
-            placedAt: Date.now(),
-            serviceType: "food",
-            isSelfPickup: deliveryType === "self_pickup",
-          });
-          if (isCheckoutSheet) {
-            useCheckoutSheetStore.getState().hide();
-          }
-          router.replace({
-            pathname: "/orders/payment-success",
-            params: {
-              orderId,
-              ...(merchantName ? { merchantName } : {}),
-              ...(etaLabel ? { deliveryEtaLabel: etaLabel } : {}),
-              ...(etaMaxMinutes > 0 ? { etaMinutes: String(etaMaxMinutes) } : {}),
-            },
-          });
-          void fulfillPendingMissedOfferWallet();
-          InteractionManager.runAfterInteractions(() => {
-            setTimeout(() => {
-              clearCart();
-              queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-            }, 80);
-          });
+          goToOrderPlacedSuccess(orderId);
           return;
         }
         if (
@@ -4790,16 +4966,10 @@ function CheckoutScreen() {
       setPaymentReturnBusy(false);
     }
   }, [
-    clearCart,
-    fulfillPendingMissedOfferWallet,
-    isCheckoutSheet,
-    merchantId,
+    goToOrderPlacedSuccess,
     merchantName,
-    queryClient,
     razorpayOrderParams?.pendingId,
     router,
-    seedTrackingOrderCache,
-    setActiveOrder,
     showPaymentFailedSheet,
     toPayAmount,
   ]);
@@ -5190,7 +5360,7 @@ function CheckoutScreen() {
   const dMuted = isDiscoveryDark ? styles.darkMuted : null;
   const dIcon = isDiscoveryDark ? DiscoveryColors.textDim : GatiMitraColors.textSecondary;
 
-  if (cartIsEmpty) {
+  if (cartIsEmpty && !suppressEmptyCartUiRef.current) {
     return (
       <MerchantUiThemeProvider dark={isDiscoveryDark}>
       <View style={[styles.center, { paddingBottom: insets.bottom, backgroundColor: checkoutPageBg }]}>
@@ -5638,7 +5808,8 @@ function CheckoutScreen() {
               {hasEligibleCheckoutOfferBase &&
               (hasAppliedCheckoutPromo ||
                 hasMissedOfferUnlocked ||
-                membershipFreeDeliveryOnBill) ? (
+                membershipFreeDeliveryOnBill ||
+                flashSaleSavingsTotal > 0.005) ? (
                 <View style={styles.offersGreenTick}>
                   <Ionicons name="checkmark" size={14} color="#fff" />
                 </View>
@@ -6025,6 +6196,7 @@ function CheckoutScreen() {
         merchantId={merchantId}
         cartSubtotal={clientEligibleCheckoutSubtotal}
         itemDealSavingsByOfferId={itemDealSavingsByOfferId}
+        flashSaleSavingsByOfferId={flashSaleSavingsByOfferId}
         pendingMissedOfferKey={
           missedOfferWalletPending && displayMissedOfferWalletComp
             ? displayMissedOfferWalletComp.key
@@ -6197,15 +6369,26 @@ function CheckoutScreen() {
                       ? "Place order"
                       : "Place order unavailable"
                 }
-                style={({ pressed }) => [styles.ctaSolidPressable, pressed && styles.ctaTouchPressed]}
+                android_ripple={{
+                  color: "rgba(255,255,255,0.35)",
+                  foreground: true,
+                  borderless: false,
+                }}
+                style={({ pressed }) => [
+                  styles.ctaSolidPressable,
+                  pressed && styles.ctaTouchPressed,
+                ]}
               >
+                {({ pressed }) => (
                 <View
                   style={[
                     styles.ctaSolid,
                     riderBlocksPlaceOrder && styles.ctaSolidFaded,
                     !canPlaceOrder && !riderBlocksPlaceOrder && styles.ctaSolidWaiting,
+                    pressed && styles.ctaSolidPressed,
                   ]}
                   collapsable={false}
+                  pointerEvents="none"
                 >
                   <View style={styles.ctaSolidLeft}>
                     <View style={styles.ctaSolidAmountRow}>
@@ -6300,6 +6483,7 @@ function CheckoutScreen() {
                     )}
                   </View>
                 </View>
+                )}
               </Pressable>
             )}
             </View>
@@ -7002,6 +7186,7 @@ function CheckoutScreen() {
         itemTotalNetOverride={itemTotalNetForSheet}
         itemTotalStrikeAmount={itemTotalStrikeAmount}
         youSavedAmount={checkoutSavingsTotal}
+        flashSaleBillLine={flashSaleBillLine}
         gatiCashApplyAmount={gatiCashApplyAmount}
         missedOfferWalletPendingAmount={missedOfferWalletPendingAmount}
         missedOfferUnlockDiscount={missedOfferUnlockDiscount}
@@ -9747,6 +9932,9 @@ const styles = StyleSheet.create({
     backgroundColor: CHECKOUT_CTA_GREEN_MUTED,
     opacity: 0.55,
   },
+  ctaSolidPressed: {
+    backgroundColor: "#047857",
+  },
   ctaSolidMuted: {
     backgroundColor: CHECKOUT_CTA_GREEN_MUTED,
     justifyContent: "center",
@@ -9882,7 +10070,10 @@ const styles = StyleSheet.create({
   ctaDisabledLabel: { fontSize: 12, fontFamily: "Lora_700Bold", color: "#FFFFFF" },
   ctaDisabledHint: { fontSize: 9, fontFamily: "Lora_700Bold", color: "rgba(255,255,255,0.92)", marginTop: 1, textAlign: "right" },
   ctaTouch: { borderRadius: CARD_RADIUS, overflow: "hidden", ...GatiMitraColors.cardShadowSoft },
-  ctaTouchPressed: { opacity: 0.92 },
+  ctaTouchPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.985 }],
+  },
   ctaGradient: {
     width: "100%",
     flexDirection: "row",

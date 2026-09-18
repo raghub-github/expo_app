@@ -1,6 +1,7 @@
 import { desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../db/client.js";
-import { riderDocumentFiles, riderDocuments } from "../db/schema.js";
+import { riderDocumentFiles, riderDocuments, riders } from "../db/schema.js";
+import { maskAadhaarNumber } from "./mask-aadhaar.js";
 
 export type RiderKycDocStatus = "verified" | "pending" | "rejected" | "not_uploaded";
 
@@ -231,6 +232,12 @@ export async function getRiderKycDocumentsForApp(riderId: number): Promise<{
 }> {
   const db = getDb();
 
+  const [riderRow] = await db
+    .select({ aadhaarNumber: riders.aadhaarNumber })
+    .from(riders)
+    .where(eq(riders.id, riderId))
+    .limit(1);
+
   const docRows = await db
     .select({
       id: riderDocuments.id,
@@ -310,6 +317,26 @@ export async function getRiderKycDocumentsForApp(riderId: number): Promise<{
         sides = split.sides;
         docNumber = split.docNumber;
       }
+    }
+
+    // Aadhaar: always show XXXX-XXXX-1234; prefer full UID from riders table.
+    if (entry.docKey === "aadhaar") {
+      const aadhaarParent =
+        parentRow ?? latestByType.get("aadhaar") ?? latestByType.get("aadhaar_front") ?? null;
+      const fromRider = riderRow?.aadhaarNumber ? maskAadhaarNumber(riderRow.aadhaarNumber) : "";
+      const fromDoc = docNumber ? maskAadhaarNumber(docNumber) : "";
+      const meta =
+        aadhaarParent?.metadata &&
+        typeof aadhaarParent.metadata === "object" &&
+        !Array.isArray(aadhaarParent.metadata)
+          ? (aadhaarParent.metadata as Record<string, unknown>)
+          : null;
+      const fromMeta = meta
+        ? maskAadhaarNumber(
+            String(meta.aadhaarMasked || meta.aadhaar_number_full || meta.aadhaarNumber || ""),
+          )
+        : "";
+      docNumber = fromRider || fromDoc || fromMeta || null;
     }
 
     allBuilt.push({

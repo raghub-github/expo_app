@@ -5,9 +5,10 @@
  * merchant never accepted in time (auto-cancel), merchant denied, or an admin
  * cancelled manually — the customer must get their money back automatically.
  *
- * Exception: admin "Cancel without refund" stamps skipAutoRefund / refund_status
- * `no_refund` and must never auto-refund. Ops can still refund later via a
- * manual refund_without_cancellation action.
+ * Exception: admin "Cancel without refund" stamps skipAutoRefund / reason_code
+ * `cancel_without_refund` and must never auto-refund. Ops can still refund later via a
+ * manual refund_without_cancellation action. Bare refund_status=`no_refund` from the
+ * financial rule engine does NOT skip auto-refund.
  *
  * Existing cancellation code only RECORDS refund intent (order_cancellation
  * refund_status/amount from the rule engine); it never moves money. This helper
@@ -119,19 +120,16 @@ export function shouldAutoRefundForCancellationActor(actorRole?: string | null):
 }
 
 /**
- * Admin "Cancel without refund" stamps refund_status / metadata so auto-refund
- * must not run. Manual refund_without_cancellation later is a separate action.
+ * Admin "Cancel without refund" stamps reason_code / skipAutoRefund /
+ * refundType so auto-refund must not run. Bare refund_status=`no_refund` is
+ * NOT enough — the financial rule engine stamps that for many auto-cancels
+ * (accept timeout, no rider) that still must refund the customer.
  */
 export function isIntentionalNoRefundCancel(input: {
   refundStatus?: string | null;
   reasonCode?: string | null;
   metadata?: Record<string, unknown> | null;
 }): boolean {
-  const status = String(input.refundStatus ?? "").trim().toLowerCase();
-  if (status === "no_refund" || status === "none" || status === "skipped") {
-    return true;
-  }
-
   const code = String(input.reasonCode ?? "").trim().toLowerCase();
   if (
     code === "cancelled_without_refund" ||

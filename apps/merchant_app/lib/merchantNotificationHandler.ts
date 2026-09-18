@@ -2,6 +2,9 @@
  * Foreground presentation for Partner: every remote event goes to the OS
  * shade. Only the legacy `live_orders` id is suppressed (migrated to STORE_STATUS).
  *
+ * In-app floating pills are intentionally disabled for Partner. That must never
+ * suppress shouldShowAlert / FCM — shade presentation is independent of pill UI.
+ *
  * NEW_ORDER sound ownership (production):
  *   • App OPEN (active) — mute OS channel; Incoming Order modal / JS chime only.
  *   • App BACKGROUND (process alive) — OS `merchant_new_orders_alert` plays;
@@ -55,9 +58,19 @@ export async function installMerchantForegroundNotificationHandler(): Promise<vo
             shouldShowList: true,
           };
         }
-        // New order: shade always. Mute OS only while app is open (JS/modal owns sound).
-        // Background → OS channel sound. Killed → handler never runs (FCM owns sound).
-        const suppressOsSound = isOffline || (isNewOrder && appActive);
+        // New order: shade always. Prefer Manage communication cached sound over
+        // the bundled OS channel chime whenever a custom file is on disk.
+        let hasCachedCustom = false;
+        if (isNewOrder) {
+          try {
+            const { hasCachedMerchantAlertSound } = await import("@/lib/merchantAlertSoundCache");
+            hasCachedCustom = await hasCachedMerchantAlertSound();
+          } catch {
+            hasCachedCustom = false;
+          }
+        }
+        const suppressOsSound =
+          isOffline || (isNewOrder && (appActive || hasCachedCustom));
         return {
           shouldShowAlert: true,
           shouldPlaySound: !suppressOsSound,

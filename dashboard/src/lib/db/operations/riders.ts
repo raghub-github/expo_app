@@ -15,6 +15,11 @@ import {
   parseDisplayDocType,
   readSideVerification,
 } from "@/lib/rider-document-side-verification";
+import {
+  applyRcManualReviewDecision,
+  readRcDocumentVersion,
+  resolveRcVerificationState,
+} from "@/lib/rider-rc-verification-state";
 
 /**
  * Get rider by ID
@@ -231,6 +236,7 @@ export async function approveRiderDocument(
   agentId: number,
   options?: {
     displayDocType?: string;
+    expectedDocumentVersion?: number | null;
     electronicVerify?: {
       verifiedData: Record<string, unknown>;
       docNumber?: string | null;
@@ -507,6 +513,38 @@ export async function approveRiderDocument(
   }
 
   // Whole-document approval (single-side docs or legacy flow)
+  const currentMeta =
+    current.metadata && typeof current.metadata === "object"
+      ? (current.metadata as Record<string, unknown>)
+      : {};
+  const rcState = isRcDoc ? resolveRcVerificationState(current) : null;
+  let rcManualMeta: Record<string, unknown> | null = null;
+  if (isRcDoc && !electronicPatch) {
+    if (rcState === "MANUAL_REVIEW_PENDING" || currentMeta.rcOwnerAadhaarMismatch === true) {
+      const decision = applyRcManualReviewDecision({
+        existing: current,
+        action: "approve",
+        agentId,
+        expectedDocumentVersion: options?.expectedDocumentVersion,
+      });
+      if (!decision.ok) {
+        throw new Error(`${decision.error}: ${decision.message}`);
+      }
+      rcManualMeta = decision.metadata;
+    } else {
+      rcManualMeta = {
+        ...currentMeta,
+        rcVerificationState: "MANUAL_VERIFIED",
+        rcReviewedAt: new Date().toISOString(),
+        rcReviewedBy: agentId,
+        rcReviewMethod: "ADMIN_MANUAL",
+        rcRejectionReason: null,
+        documentVersion: readRcDocumentVersion(currentMeta),
+        activeDocumentVersion: readRcDocumentVersion(currentMeta),
+      };
+    }
+  }
+
   const [wholeApproved] = await db
     .update(riderDocuments)
     .set({
@@ -515,7 +553,9 @@ export async function approveRiderDocument(
       verifiedAt: new Date(),
       verifierUserId: agentId,
       rejectedReason: null,
+      requiresManualReview: false,
       ...(electronicPatch ?? {}),
+      ...(rcManualMeta ? { metadata: rcManualMeta } : {}),
       updatedAt: new Date(),
     })
     .where(eq(riderDocuments.id, docId))
@@ -635,6 +675,50 @@ export async function approveRiderDocument(
       console.warn(
         "[approveRiderDocument] RC→rider_vehicles project failed:",
         vehicleErr instanceof Error ? vehicleErr.message : vehicleErr,
+      );
+    }
+  } else if (rcManualMeta && isRcDoc) {
+    try {
+      const { backendFetch } = await import("@/lib/notif-backend");
+      const summary =
+        approved.extractedDataSummary && typeof approved.extractedDataSummary === "object"
+          ? (approved.extractedDataSummary as Record<string, unknown>)
+          : {};
+      const cashfree =
+        (summary.verifiedData && typeof summary.verifiedData === "object"
+          ? (summary.verifiedData as Record<string, unknown>)
+          : null) ||
+        (rcManualMeta.cashfreeVerifiedData && typeof rcManualMeta.cashfreeVerifiedData === "object"
+          ? (rcManualMeta.cashfreeVerifiedData as Record<string, unknown>)
+          : null);
+      if (cashfree) {
+        const fileUrl = String(approved.fileUrl || "").trim();
+        await backendFetch("/v1/verification/project-rider-ev", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            rider_id: approved.riderId,
+            doc_kind: "vehicle_rc",
+            verified_data: cashfree,
+            rc_document_url:
+              fileUrl &&
+              fileUrl !== "electronic_verified" &&
+              fileUrl !== "n/a" &&
+              fileUrl !== "pending"
+                ? fileUrl
+                : null,
+          }),
+        });
+      }
+      await backendFetch("/v1/verification/notify-rider-rc-review", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rider_id: approved.riderId, approved: true }),
+      });
+    } catch (notifyErr) {
+      console.warn(
+        "[approveRiderDocument] RC manual-review follow-up failed:",
+        notifyErr instanceof Error ? notifyErr.message : notifyErr,
       );
     }
   }
@@ -1080,7 +1164,7 @@ export async function rejectRiderDocument(
   docId: number,
   agentId: number,
   reason: string,
-  options?: { displayDocType?: string }
+  options?: { displayDocType?: string; expectedDocumentVersion?: number | null }
 ) {
   const db = getDb();
 
@@ -1127,6 +1211,35 @@ export async function rejectRiderDocument(
 
     rejected = updated!;
   } else {
+    const currentMeta =
+      current.metadata && typeof current.metadata === "object"
+        ? (current.metadata as Record<string, unknown>)
+        : {};
+    let rcRejectMeta: Record<string, unknown> | null = null;
+    if (String(current.docType) === "rc") {
+      const decision = applyRcManualReviewDecision({
+        existing: current,
+        action: "reject",
+        agentId,
+        expectedDocumentVersion: options?.expectedDocumentVersion,
+        rejectionReason: reason,
+      });
+      if (!decision.ok && decision.error === "DOCUMENT_VERSION_STALE") {
+        throw new Error(`${decision.error}: ${decision.message}`);
+      }
+      rcRejectMeta = decision.ok
+        ? decision.metadata
+        : {
+            ...currentMeta,
+            rcVerificationState: "MANUAL_REJECTED",
+            rcReviewedAt: new Date().toISOString(),
+            rcReviewedBy: agentId,
+            rcReviewMethod: "ADMIN_MANUAL",
+            rcRejectionReason: reason,
+            documentVersion: readRcDocumentVersion(currentMeta),
+            activeDocumentVersion: readRcDocumentVersion(currentMeta),
+          };
+    }
     const [wholeRejected] = await db
       .update(riderDocuments)
       .set({
@@ -1135,6 +1248,8 @@ export async function rejectRiderDocument(
         verifierUserId: agentId,
         rejectedReason: reason,
         verifiedAt: null,
+        requiresManualReview: true,
+        ...(rcRejectMeta ? { metadata: rcRejectMeta } : {}),
         updatedAt: new Date(),
       })
       .where(eq(riderDocuments.id, docId))
@@ -1158,6 +1273,21 @@ export async function rejectRiderDocument(
           updatedAt: new Date(),
         })
         .where(eq(riders.id, riderId));
+    }
+    if (docType === "rc") {
+      try {
+        const { backendFetch } = await import("@/lib/notif-backend");
+        await backendFetch("/v1/verification/notify-rider-rc-review", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ rider_id: riderId, approved: false }),
+        });
+      } catch (notifyErr) {
+        console.warn(
+          "[rejectRiderDocument] RC notify failed:",
+          notifyErr instanceof Error ? notifyErr.message : notifyErr,
+        );
+      }
     }
   }
 

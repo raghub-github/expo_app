@@ -37,9 +37,11 @@ export interface SaveOnboardingStepRequest {
     vehicleCategoryCode?: string;
     /** Single selected model name (never the full "A / B / C" catalog label). */
     vehicleModelLabel?: string;
+    clearVehicleChoice?: boolean;
     onboardingFlow?: "dl_rc" | "rental_ev" | "payment";
     submitVehicleDocs?: boolean;
     skippedOnboardingDocs?: string[];
+    rcVehicleMismatchResolution?: "switch" | "resubmit";
     /** Bank step skip — rider will add bank later from Earnings. */
     skipped?: boolean;
     rentalProofSignedUrl?: string;
@@ -256,6 +258,7 @@ export function useRiderStatus(
         completedOnboardingSteps?: string[];
         rating?: number | null;
         panNumber?: string | null;
+        panFrontUrl?: string | null;
         panVerified?: boolean;
         panSkipOverride?: boolean;
         panVerifiedData?: Record<string, unknown> | null;
@@ -272,6 +275,13 @@ export function useRiderStatus(
         rcFrontUrl?: string | null;
         rcVerified?: boolean;
         rcVerifiedData?: Record<string, unknown> | null;
+        rcVerificationState?: string | null;
+        rcRejectedReason?: string | null;
+        rcDocumentVersion?: number | null;
+        rcPaymentEligible?: boolean;
+        rentalProofUrl?: string | null;
+        evProofUrl?: string | null;
+        maxSpeedDeclaration?: number | null;
         onboardingProgress?: Record<string, string>;
         lastCompletedStep?: string | null;
         nextRequiredStep?: string | null;
@@ -304,6 +314,13 @@ export function useRiderStatus(
 
 export type CheckAadhaarResponse = {
   registered: boolean;
+  forceManual?: boolean;
+  rateLimited?: boolean;
+  attemptsUsed?: number;
+  maxAttempts?: number;
+  retryAfterSec?: number;
+  resetsAt?: string | null;
+  message?: string;
 };
 
 /** Live check: is this Aadhaar already linked to another rider? */
@@ -330,6 +347,13 @@ export function useAadhaarRegistrationCheck(aadhaarDigits: string, riderId?: str
 
 export type CheckPanResponse = {
   registered: boolean;
+  forceManual?: boolean;
+  rateLimited?: boolean;
+  attemptsUsed?: number;
+  maxAttempts?: number;
+  retryAfterSec?: number;
+  resetsAt?: string | null;
+  message?: string;
 };
 
 /** Live check: is this PAN already linked to another rider? */
@@ -349,7 +373,10 @@ export function usePanRegistrationCheck(panValue: string, riderId?: string) {
         { headers: { authorization: `Bearer ${session.accessToken}` } }
       );
     },
-    enabled: /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan) && Boolean(session?.accessToken),
+    enabled:
+      /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan) &&
+      Boolean(session?.accessToken) &&
+      Boolean(riderId),
     staleTime: 30_000,
     retry: false,
   });
@@ -357,6 +384,13 @@ export function usePanRegistrationCheck(panValue: string, riderId?: string) {
 
 export type CheckDocNumberResponse = {
   registered: boolean;
+  forceManual?: boolean;
+  rateLimited?: boolean;
+  attemptsUsed?: number;
+  maxAttempts?: number;
+  retryAfterSec?: number;
+  resetsAt?: string | null;
+  message?: string;
 };
 
 /** Live check: is this DL number already linked to another rider? */
@@ -408,6 +442,53 @@ export function useRcRegistrationCheck(rcValue: string, riderId?: string, minLen
 
 // ── Electronic verification (Cashfree via backend policy engine) ────────────
 
+export type ElectronicVerifyLimitsResponse = {
+  success: boolean;
+  limits: Record<
+    string,
+    {
+      forceManual?: boolean;
+      rateLimited?: boolean;
+      attemptsUsed?: number;
+      maxAttempts?: number;
+      retryAfterSec?: number;
+      resetsAt?: string | null;
+      message?: string;
+      error?: string;
+    }
+  >;
+};
+
+/**
+ * One GROUP BY hydrate for Verify Instantly 2/24h caps (all doc kinds).
+ * staleTime 60s — avoid hammering status polling.
+ */
+export function useElectronicVerifyLimits(riderId?: string) {
+  const session = useSessionStore((s) => s.session);
+  return useQuery({
+    queryKey: ["onboarding", "electronic-verify-limits", riderId],
+    queryFn: async (): Promise<ElectronicVerifyLimitsResponse> => {
+      if (!session?.accessToken) {
+        throw new Error("Not authenticated");
+      }
+      const q =
+        riderId && String(riderId).trim()
+          ? `?riderId=${encodeURIComponent(String(riderId).trim())}`
+          : "";
+      return getJson<ElectronicVerifyLimitsResponse>(
+        `${API_BASE()}/v1/onboarding/electronic-verify-limits${q}`,
+        { headers: { authorization: `Bearer ${session.accessToken}` } }
+      );
+    },
+    enabled: Boolean(riderId && session?.accessToken),
+    staleTime: 15_000,
+    gcTime: 24 * 60 * 60 * 1000,
+    refetchOnMount: "always",
+    refetchOnReconnect: true,
+    retry: 1,
+  });
+}
+
 export type VerificationModesResponse = {
   success: boolean;
   /** document_kind → 'manual' | 'auto' | 'hybrid' | 'disabled' */
@@ -450,6 +531,8 @@ export type VerifyDocumentRequest = {
   ifsc?: string;
   /** HTTPS DigiLocker return URL (Cashfree requires https). */
   redirectUrl?: string;
+  /** Profile → add a second RC (backend enforces max 2 + different class). */
+  addAnotherVehicle?: boolean;
 };
 
 export type VerifyDocumentResponse = {
@@ -469,6 +552,18 @@ export type VerifyDocumentResponse = {
   providerReference?: string | null;
   mismatchReasons?: string[];
   mismatchMessages?: string[];
+  /** Soft name mismatch (RC/DL): verified payload but app must collect a photo. */
+  requirePhoto?: boolean;
+  photoHint?: string;
+  allowManualUpload?: boolean;
+  /** Set after 2 Verify Instantly attempts / 24h — app must force manual upload. */
+  forceManual?: boolean;
+  rateLimited?: boolean;
+  attemptsUsed?: number;
+  maxAttempts?: number;
+  retryAfterSec?: number;
+  resetsAt?: string | null;
+  message?: string;
 };
 
 /** Interactive electronic verification for PAN / DL / RC / Aadhaar during onboarding. */

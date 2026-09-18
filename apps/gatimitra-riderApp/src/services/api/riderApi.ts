@@ -153,28 +153,46 @@ export const RiderEligibilityStatusSchema = z.object({
 });
 
 const ServiceDecisionWithMissingSchema = ServiceEligibilityDecisionSchema;
+const emptyServiceDecision = {
+  eligible: false,
+  blocking: [] as { code: string; reason: string; requiredAction?: string }[],
+  missingDocuments: [] as string[],
+};
+
 const RiderVehicleViewSchema = z.object({
   id: z.number(),
-  registrationNumber: z.string(),
-  registrationMasked: z.string(),
+  registrationNumber: z.string().nullish().transform((v) => v ?? ""),
+  registrationMasked: z.string().nullish().transform((v) => v ?? ""),
   vehicleClass: z.string().nullable(),
   vehicleType: z.string().nullable(),
   fuelKind: z.string().nullable(),
-  ownership: z.string(),
-  commercial: z.boolean(),
-  verified: z.boolean(),
-  status: z.string(),
-  isActiveVehicle: z.boolean(),
-  services: z.object({
-    food: ServiceDecisionWithMissingSchema,
-    parcel: ServiceDecisionWithMissingSchema,
-    person_ride: ServiceDecisionWithMissingSchema,
-  }),
+  ownership: z.string().nullish().transform((v) => v ?? "non_commercial"),
+  commercial: z.boolean().nullish().transform((v) => v === true),
+  verified: z.boolean().nullish().transform((v) => v === true),
+  status: z.string().nullish().transform((v) => v ?? "active"),
+  isActiveVehicle: z.boolean().nullish().transform((v) => v === true),
+  services: z
+    .object({
+      food: ServiceDecisionWithMissingSchema,
+      parcel: ServiceDecisionWithMissingSchema,
+      person_ride: ServiceDecisionWithMissingSchema,
+    })
+    .partial()
+    .nullish()
+    .transform((v) => ({
+      food: v?.food ?? emptyServiceDecision,
+      parcel: v?.parcel ?? emptyServiceDecision,
+      person_ride: v?.person_ride ?? emptyServiceDecision,
+    })),
 });
 export const RiderVehiclesResponseSchema = z.object({
   vehicles: z.array(RiderVehicleViewSchema),
-  activeVehicleId: z.number().nullable(),
-  resolvedGeo: z.object({ level: z.string(), refId: z.string() }).nullable(),
+  activeVehicleId: z
+    .number()
+    .nullable()
+    .nullish()
+    .transform((v) => v ?? null),
+  resolvedGeo: z.object({ level: z.string(), refId: z.string() }).nullable().catch(null),
 });
 export type RiderVehicleView = z.infer<typeof RiderVehicleViewSchema>;
 export type RiderVehiclesResponse = z.infer<typeof RiderVehiclesResponseSchema>;
@@ -1247,6 +1265,8 @@ export const riderApi = {
     ifsc: string;
     branch?: string;
     accountNumber: string;
+    /** True only after Cashfree bank verify in the same flow. */
+    providerVerified?: boolean;
   }) {
     const client = createApiClient();
     return client.request<{ paymentMethod: RiderBankPaymentMethod }>(
@@ -1374,7 +1394,7 @@ export const riderApi = {
   async updateDutyStatus(
     isOnDuty: boolean,
     serviceTypes?: string[],
-    opts?: { lat?: number; lon?: number; deviceId?: string }
+    opts?: { lat?: number; lon?: number; deviceId?: string; vehicleId?: number }
   ) {
     const client = createApiClient();
     const body: {
@@ -1383,6 +1403,7 @@ export const riderApi = {
       lat?: number;
       lon?: number;
       deviceId?: string;
+      vehicleId?: number;
     } = { isOnDuty };
     if (serviceTypes?.length) {
       body.serviceTypes = serviceTypes;
@@ -1390,6 +1411,7 @@ export const riderApi = {
     if (opts?.lat != null) body.lat = opts.lat;
     if (opts?.lon != null) body.lon = opts.lon;
     if (opts?.deviceId) body.deviceId = opts.deviceId;
+    if (opts?.vehicleId != null) body.vehicleId = opts.vehicleId;
     return client.request<z.infer<typeof DutyStatusSchema>>(
       "/v1/rider/duty",
       {
@@ -1544,10 +1566,14 @@ export const riderApi = {
   },
 
   /** The rider's vehicles with per-vehicle service eligibility + which one is active (§34/§38). */
-  async getVehicles() {
+  async getVehicles(coords?: { lat?: number; lng?: number } | null) {
     const client = createApiClient();
+    const qs = new URLSearchParams();
+    if (coords?.lat != null && Number.isFinite(coords.lat)) qs.set("lat", String(coords.lat));
+    if (coords?.lng != null && Number.isFinite(coords.lng)) qs.set("lng", String(coords.lng));
+    const q = qs.toString();
     return client.request<z.infer<typeof RiderVehiclesResponseSchema>>(
-      "/v1/rider/eligibility/vehicles",
+      `/v1/rider/eligibility/vehicles${q ? `?${q}` : ""}`,
       { method: "GET", responseSchema: RiderVehiclesResponseSchema }
     );
   },

@@ -149,6 +149,7 @@ export async function forceRetryNow(notificationId: string): Promise<boolean> {
       AND channel IN ('push', 'browser')
       AND device_token IS NOT NULL
       AND coalesce(device_token, '') <> ''
+      AND device_token <> '__in_app_only__'
     RETURNING id
   `) as unknown as Array<{ id: number }>;
   if (rows.length === 0) {

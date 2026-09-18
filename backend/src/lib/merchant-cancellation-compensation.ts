@@ -219,9 +219,13 @@ function resolveFromConfig(
   if (!settings?.isEnabled) return base;
 
   const graceRule = exclusionMap.get("CUSTOMER_CANCEL_WITHIN_GRACE");
+  // Grace only for early customer cancels before prep/pickup.
+  // Once Order Ready (or picked up), compensation tiers apply even within grace.
   if (
     graceRule?.isEnabled &&
     String(ctx.cancelledByType).toLowerCase() === "customer" &&
+    !ctx.preparedAt?.trim() &&
+    !ctx.riderPickedUpAt?.trim() &&
     ctx.orderCreatedAt &&
     ctx.cancelledAt
   ) {

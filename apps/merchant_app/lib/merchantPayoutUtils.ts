@@ -1352,7 +1352,7 @@ export function resolveLedgerFormattedOrderId(
   meta: Record<string, unknown> | null | undefined,
 ): string | null {
   const fromEntry = String(entry.formatted_order_id ?? "").trim().replace(/^#/, "");
-  if (fromEntry) return fromEntry;
+  if (fromEntry && !/^\d+$/.test(fromEntry)) return fromEntry;
 
   const metaCandidates = [
     "formatted_order_id",
@@ -1363,7 +1363,7 @@ export function resolveLedgerFormattedOrderId(
   ];
   for (const key of metaCandidates) {
     const value = metaString(meta, key).replace(/^#/, "");
-    if (value) return value;
+    if (value && !/^\d+$/.test(value)) return value;
   }
 
   const desc = String(entry.description ?? "");

@@ -15,6 +15,8 @@ import type { ComponentProps } from "react";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { useRiderOnboardingSummary } from "@/src/hooks/useRiderOnboardingSummary";
+import { useRiderServiceEligibilityStatus } from "@/src/hooks/useRiderServiceEligibilityStatus";
+import { overlayOnboardingSummaryWithEligibility } from "@/src/lib/rider-service-eligibility-rows";
 import { ServiceEligibilityNotice } from "@/src/components/onboarding/ServiceEligibilityNotice";
 import {
   useRiderDocuments,
@@ -31,6 +33,17 @@ const TEAL = colors.primary[600];
 const TEAL_LIGHT = colors.primary[50];
 
 type IoniconName = ComponentProps<typeof Ionicons>["name"];
+
+/** Display Aadhaar as XXXX-XXXX-1234 (never raw 12 digits / bare last-4). */
+function formatAadhaarMasked(value: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const upper = raw.toUpperCase().replace(/\s+/g, "");
+  if (/^XXXX-XXXX-\d{4}$/.test(upper)) return upper;
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length >= 4) return `XXXX-XXXX-${digits.slice(-4)}`;
+  return raw;
+}
 
 function resolveIcon(name: string): IoniconName {
   const allowed: IoniconName[] = [
@@ -126,7 +139,7 @@ function DocumentRow({
   const iconName = resolveIcon(doc.icon);
   const canUpdate =
     Boolean(onUpdate) &&
-    (doc.status === "not_uploaded" || doc.status === "rejected" || doc.status === "pending");
+    (doc.status === "not_uploaded" || doc.status === "rejected");
 
   return (
     <View style={styles.docCard}>
@@ -143,7 +156,9 @@ function DocumentRow({
           )}
           {doc.docNumber?.trim() ? (
             <Text style={styles.docNumber} numberOfLines={1}>
-              {doc.docNumber.trim()}
+              {doc.docKey === "aadhaar"
+                ? formatAadhaarMasked(doc.docNumber.trim())
+                : doc.docNumber.trim()}
             </Text>
           ) : null}
         </View>
@@ -173,7 +188,9 @@ function DocumentRow({
           onPress={onUpdate}
           style={({ pressed }) => [styles.updateBtn, pressed && { opacity: 0.9 }]}
           accessibilityRole="button"
-          accessibilityLabel={`Upload ${doc.label}`}
+          accessibilityLabel={
+            doc.status === "rejected" ? `Re-upload ${doc.label}` : `Upload ${doc.label}`
+          }
         >
           <Ionicons name="cloud-upload-outline" size={16} color="#FFFFFF" />
           <Text style={styles.updateBtnText}>
@@ -188,9 +205,13 @@ function DocumentRow({
 export function ViewDocumentsScreen() {
   const { t } = useTranslation();
   const { data, isLoading, isError, refetch, isRefetching } = useRiderDocuments();
-  // Backend-authoritative eligibility so the rider sees, on the documents screen, which
-  // services a newly-submitted document will unlock (§20, §42). Refetched with the docs.
+  // Same engine result as Home — live GPS eligibility overlaid on onboarding summary chips.
   const { summary: onboardingSummary, refetch: refetchSummary } = useRiderOnboardingSummary();
+  const { backend: eligibilityBackend, refetch: refetchEligibility } =
+    useRiderServiceEligibilityStatus();
+  const eligibilitySummary = onboardingSummary
+    ? overlayOnboardingSummaryWithEligibility(onboardingSummary, eligibilityBackend)
+    : null;
 
   const verifiedCount = data?.verifiedCount ?? 0;
   const totalCount = data?.totalCount ?? 0;
@@ -245,6 +266,7 @@ export function ViewDocumentsScreen() {
               onRefresh={() => {
                 void refetch();
                 void refetchSummary();
+                void refetchEligibility();
               }}
               tintColor={TEAL}
             />
@@ -278,9 +300,9 @@ export function ViewDocumentsScreen() {
             </View>
           </View>
 
-          {onboardingSummary ? (
+          {eligibilitySummary ? (
             <View style={{ marginBottom: 16 }}>
-              <ServiceEligibilityNotice summary={onboardingSummary} />
+              <ServiceEligibilityNotice summary={eligibilitySummary} />
             </View>
           ) : null}
 
@@ -306,7 +328,7 @@ export function ViewDocumentsScreen() {
           <Text style={styles.footerHint}>
             {t(
               "profile.kycDocuments.updateHint",
-              "Tap Upload on a pending document to update it here. Contact support if a verified status looks incorrect.",
+              "Tap Upload only if a document is missing or rejected. Documents under review cannot be changed until verification finishes.",
             )}
           </Text>
         </ScrollView>

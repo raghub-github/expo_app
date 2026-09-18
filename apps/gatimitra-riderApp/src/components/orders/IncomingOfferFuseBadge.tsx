@@ -73,7 +73,7 @@ export const IncomingOfferFuseBadge = memo(function IncomingOfferFuseBadge({
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
     if (!visible) return;
-    const t = setInterval(() => setNowTick(Date.now()), 250);
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(t);
   }, [visible]);
 

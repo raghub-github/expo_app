@@ -46,6 +46,8 @@ export type WalletTransaction = {
   balance_after: number | null;
   reference_id: string | null;
   reference_type: string | null;
+  /** Formatted order code (e.g. GMF100037) when the txn is linked to an order. */
+  formatted_order_id?: string | null;
   status: string | null;
   created_at: string;
 };

@@ -281,6 +281,23 @@ export async function GET(
     const { todayDate, dayKey } = getTodayContextInIST();
     const sql = getSql();
     const closureNowIso = new Date().toISOString();
+
+    // Start license eval in parallel with schedule/availability queries (was sequential → slow card).
+    const licensePromise = (async () => {
+      try {
+        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+        const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+        if (!supabaseUrl || !supabaseServiceKey) return null;
+        const db = createClient(supabaseUrl, supabaseServiceKey, {
+          auth: { autoRefreshToken: false, persistSession: false },
+        });
+        return await loadMerchantLicenseEvaluation(db, storeId);
+      } catch (licenseErr) {
+        console.error("[GET store-operations] license evaluation", licenseErr);
+        return null;
+      }
+    })();
+
     const [operatingRows, availRows, schedClosureRows, rushRows] = await Promise.all([
       sql`
         SELECT is_24_hours, closed_days, same_for_all_days,
@@ -525,14 +542,7 @@ export async function GET(
 
     let licenseStatus: Awaited<ReturnType<typeof loadMerchantLicenseEvaluation>> | null = null;
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-      const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-      if (supabaseUrl && supabaseServiceKey) {
-        const db = createClient(supabaseUrl, supabaseServiceKey, {
-          auth: { autoRefreshToken: false, persistSession: false },
-        });
-        licenseStatus = await loadMerchantLicenseEvaluation(db, storeId);
-      }
+      licenseStatus = await licensePromise;
     } catch (licenseErr) {
       console.error("[GET store-operations] license evaluation", licenseErr);
     }

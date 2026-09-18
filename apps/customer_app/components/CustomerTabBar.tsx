@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useMemo, useCallback, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useCallback, useState } from "react";
 import {
   View,
   Pressable,
@@ -12,21 +12,14 @@ import { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import Animated, {
   Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
   SlideInRight,
   SlideOutRight,
 } from "react-native-reanimated";
 import {
-  ACTIVE_TAB_RADIUS,
   CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT,
-  CUSTOMER_TAB_BAR_FLOAT_GAP,
-  FLOATING_CART_UI_LIFT,
-  FLOATING_NAV_RADIUS,
+  FLOATING_CART_BAR_HEIGHT,
   resolveCustomerBottomNavHeight,
-  resolveFloatingCartBottomOffset,
-  resolveTabBarBottomInset,
+  resolveCustomerFloatingChromeBottom,
 } from "@/constants/layout";
 import { FLOATING_EDGE_TAB_GAP } from "@/components/FloatingEdgeChrome";
 import { EdgePeekTab } from "@/components/EdgePeekTab";
@@ -36,32 +29,55 @@ import { useCustomerServiceBlocks } from "@/hooks/useCustomerServiceBlocks";
 import { CUSTOMER_HOME_SERVICE_META } from "@/lib/customerHomeServiceMeta";
 import { useCustomerServiceBlockSheetStore } from "@/store/customerServiceBlockSheetStore";
 import { useFloatingDockUiStore } from "@/store/floatingDockUiStore";
+import { useClassicFoodChromeStore } from "@/store/classicFoodChromeStore";
 import { useDiscoveryFloatingChromeStore } from "@/store/discoveryFloatingChromeStore";
 import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
 import { DiscoveryFloatingBar } from "@/features/discovery-home/DiscoveryFloatingBar";
 import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
+import { GatiMitraColors } from "@/constants/gatimitra";
+import {
+  acknowledgeNavigatorPrimaryTab,
+  primaryTabFromRouteName,
+  resolveOptimisticPrimaryTabIndex,
+} from "@/lib/customerPrimaryTabNav";
+import { navigatePrimaryTab, setCustomerTabsNavigation } from "@/lib/navigatePrimaryTab";
+import {
+  CustomerTabBarCurvedSheet,
+  TAB_SHEET_CURVE_RISE,
+  TAB_SHEET_REAR_PEEK,
+  TAB_SHEET_FILL_LIGHT,
+  TAB_SHEET_FILL_DARK,
+  TAB_SHEET_EDGE_LIGHT,
+  TAB_SHEET_EDGE_DARK,
+  TAB_SHEET_LIFT_LIGHT,
+  TAB_SHEET_LIFT_DARK,
+} from "@/components/CustomerTabBarCurvedSheet";
 
-/** Merchant Flow navy — active pill (no red). */
-const TAB_ACTIVE_BG = "#1E3A5F";
-const TAB_ACTIVE_FG = "#FFFFFF";
-const TAB_INACTIVE = "#64748B";
-const TAB_DISABLED = "#94A3B8";
+/**
+ * Bottom dock UI: full-bleed sheet (rounded top corners), connected to screen bottom.
+ * Light theme white bg matches main area; mint active icon/label; clear press feedback.
+ */
+const TAB_ACTIVE = GatiMitraColors.primaryMint;
+const TAB_INACTIVE = GatiMitraColors.textSecondary;
+const TAB_DISABLED = "#9CA3AF";
 const TAB_INACTIVE_DARK = DiscoveryColors.textMuted;
 const TAB_DISABLED_DARK = DiscoveryColors.textDim;
 const ICON_SIZE = 22;
+const TAB_PRESS_BG = "rgba(34, 197, 94, 0.14)";
+const TAB_PRESS_BG_DARK = "rgba(255, 255, 255, 0.12)";
 
-/** Identical geometry for every tab’s active (and inactive shell). */
+/** Identical geometry for every tab hit target. */
 const PILL_H = 52;
 const PILL_SIDE_INSET = 6;
 
-const CAPSULE_H = 64;
+const CAPSULE_H = FLOATING_CART_BAR_HEIGHT;
 const CAPSULE_PAD_H = 8;
 const CAPSULE_PAD_V = 6;
-const H_MARGIN = 16;
-const TAB_COUNT = 4;
-
-/** Match page tab slide (~280ms) so the active pill moves with the screen. */
-const ACTIVE_PILL_MS = 280;
+/** Full-bleed — reference dock is flush to left/right screen edges. */
+const H_MARGIN = 0;
+/** Legacy hill extras (kept at 0 for Magicpin rounded-rect sheet). */
+const SHEET_TOP_EXTRA = TAB_SHEET_CURVE_RISE + TAB_SHEET_REAR_PEEK;
+const DOCK_H = CAPSULE_H + SHEET_TOP_EXTRA;
 
 /** @deprecated Use `CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT` from `@/constants/layout`. */
 export const CUSTOMER_TAB_BAR_CONTENT_HEIGHT = CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT;
@@ -172,6 +188,8 @@ function TabLabelRow({
 /**
  * True floating dock — absolute to the tab navigator root (not page content).
  * When cart/track owns the bottom footing, collapses to a left HOME edge peek.
+ * Classic Food Search pill mounts in app root overlay hosts (not here) so TabBar
+ * absoluteFill/elevation cannot cover it.
  */
 export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const { width: windowWidth } = useWindowDimensions();
@@ -183,6 +201,9 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const footingOwner = useFloatingDockUiStore((s) => s.footingOwner);
   const dockKind = useFloatingDockUiStore((s) => s.dockKind);
   const expandDock = useFloatingDockUiStore((s) => s.expandDock);
+  const classicFoodChromeActive = useClassicFoodChromeStore((s) => s.active);
+  const classicFoodFooting = useClassicFoodChromeStore((s) => s.footingOwner);
+  const expandClassicFoodNav = useClassicFoodChromeStore((s) => s.expandNav);
   const discoveryLayout = useDiscoveryLayout();
   const discoveryChromeActive = useDiscoveryFloatingChromeStore((s) => s.active);
   const discoveryFootingOwner = useDiscoveryFloatingChromeStore((s) => s.footingOwner);
@@ -206,10 +227,13 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const routeActiveIndex = tabIndexForRoute(activeRouteName);
   const [pillIndex, setPillIndex] = useState(routeActiveIndex);
   const activeIndex = pillIndex;
-  const activeTab = TABS[activeIndex] ?? TABS[0]!;
+  /** Prefer optimistic requested tab while inflight — chrome must not flash Home. */
+  const chromeRouteName =
+    TABS[resolveOptimisticPrimaryTabIndex(activeRouteName, tabIndexForRoute)]?.routeName ??
+    activeRouteName;
 
   /** Discovery Food: filters own footing like cart; nav collapses to HOME edge. */
-  const darkChrome = discoveryLayout && activeRouteName === "food";
+  const darkChrome = discoveryLayout && chromeRouteName === "food";
   const discoveryHandlersReady =
     darkChrome && discoveryChromeActive && !dockVisible && !!discoveryOnSort && !!discoveryOnFilters;
   /** HOME edge + Relevance|Filters dock (mirrors HOME + cart). */
@@ -220,42 +244,69 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
     discoveryHandlersReady && discoveryFootingOwner === "nav";
   const inactiveColor = darkChrome ? TAB_INACTIVE_DARK : TAB_INACTIVE;
   const disabledColor = darkChrome ? TAB_DISABLED_DARK : TAB_DISABLED;
-  const bottomAnchor = darkChrome
-    ? resolveFloatingCartBottomOffset(rawBottom, { aboveTabBar: false }) + FLOATING_CART_UI_LIFT
-    : resolveTabBarBottomInset(rawBottom) + CUSTOMER_TAB_BAR_FLOAT_GAP;
-  const dockLeft = showCartEdge || showDiscoveryFilterEdge ? 0 : H_MARGIN;
-  const dockRight = showCartEdge || showDiscoveryFilterEdge ? 0 : H_MARGIN;
+  const activeColor = TAB_ACTIVE;
+  const sheetFill = darkChrome ? TAB_SHEET_FILL_DARK : TAB_SHEET_FILL_LIGHT;
+  const sheetEdge = darkChrome ? TAB_SHEET_EDGE_DARK : TAB_SHEET_EDGE_LIGHT;
+  const sheetLift = darkChrome ? TAB_SHEET_LIFT_DARK : TAB_SHEET_LIFT_LIGHT;
+  const pressBg = darkChrome ? TAB_PRESS_BG_DARK : TAB_PRESS_BG;
+  /** One Y for Home / Food / Track swap — never flip formulas mid-session. */
+  const bottomAnchor = resolveCustomerFloatingChromeBottom(rawBottom);
+  /** Sheet fills into the gesture area; tabs pad above it. */
+  const sheetHeight = DOCK_H + bottomAnchor;
+  /**
+   * Classic Food (Discovery-style): HOME edge only until the edge is tapped.
+   * Full nav capsule appears only after expandNav — never permanently on Food.
+   */
+  const classicFoodEdgeOnly =
+    classicFoodChromeActive &&
+    chromeRouteName === "food" &&
+    classicFoodFooting === "edge" &&
+    !dockVisible &&
+    !discoveryFiltersOwnFooting;
+  const sideMargin =
+    showCartEdge || showDiscoveryFilterEdge || classicFoodEdgeOnly ? 0 : H_MARGIN;
+  const dockLeft = sideMargin;
+  const dockRight =
+    showCartEdge || showDiscoveryFilterEdge || classicFoodEdgeOnly ? 16 : sideMargin;
+  const capsuleTabs = TABS;
+  const capsuleTabCount = capsuleTabs.length;
+
+  useEffect(() => {
+    setCustomerTabsNavigation(
+      navigation as unknown as Parameters<typeof setCustomerTabsNavigation>[0]
+    );
+    return () => setCustomerTabsNavigation(null);
+  }, [navigation]);
+
+  useEffect(() => {
+    acknowledgeNavigatorPrimaryTab(activeRouteName, "CustomerTabBar.state");
+  }, [activeRouteName]);
 
   useLayoutEffect(() => {
-    setPillIndex(routeActiveIndex);
-  }, [routeActiveIndex]);
+    setPillIndex(resolveOptimisticPrimaryTabIndex(activeRouteName, tabIndexForRoute));
+  }, [routeActiveIndex, activeRouteName]);
 
-  const { tabSlotW, pillW, pillInset } = useMemo(() => {
-    const rightPad = showCartEdge || showDiscoveryFilterEdge ? FLOATING_EDGE_TAB_GAP : dockRight;
-    const sidePad = dockLeft + rightPad;
-    // Edge peek hangs off-screen (same reserve as CART/TRACK) so full nav stays wide.
-    const capsuleInner = Math.max(0, windowWidth - sidePad - CAPSULE_PAD_H * 2);
-    const slot = Math.floor(capsuleInner / TAB_COUNT);
+  const { tabSlotW, pillW } = useMemo(() => {
+    const edgeReserve =
+      showCartEdge || showDiscoveryFilterEdge ? FLOATING_EDGE_TAB_GAP : 0;
+    const capsuleInner = Math.max(
+      0,
+      windowWidth - dockLeft - dockRight - CAPSULE_PAD_H * 2 - edgeReserve
+    );
+    const slot = Math.floor(capsuleInner / capsuleTabCount);
     const width = Math.max(56, slot - PILL_SIDE_INSET * 2);
     return {
       tabSlotW: slot,
       pillW: width,
-      pillInset: Math.max(0, (slot - width) / 2),
     };
-  }, [windowWidth, dockLeft, dockRight, showCartEdge, showDiscoveryFilterEdge]);
-
-  const pillX = useSharedValue(activeIndex * tabSlotW + pillInset);
-
-  useLayoutEffect(() => {
-    pillX.value = withTiming(activeIndex * tabSlotW + pillInset, {
-      duration: ACTIVE_PILL_MS,
-      easing: Easing.out(Easing.cubic),
-    });
-  }, [activeIndex, tabSlotW, pillInset, pillX]);
-
-  const activePillStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: pillX.value }],
-  }));
+  }, [
+    windowWidth,
+    dockLeft,
+    dockRight,
+    showCartEdge,
+    showDiscoveryFilterEdge,
+    capsuleTabCount,
+  ]);
 
   const onPressTab = useCallback(
     (route: { key: string; name: string; params?: object }, focused: boolean) => {
@@ -268,21 +319,19 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
         });
         return;
       }
+      const nextTab = primaryTabFromRouteName(route.name);
       const nextIdx = tabIndexForRoute(route.name);
-      // Move active pill immediately with the page slide — don't wait for navigator index.
+      // Optimistic active tab with the page slide — don't wait for navigator index.
       setPillIndex(nextIdx);
-      pillX.value = withTiming(nextIdx * tabSlotW + pillInset, {
-        duration: ACTIVE_PILL_MS,
-        easing: Easing.out(Easing.cubic),
-      });
       const event = navigation.emit({
         type: "tabPress",
         target: route.key,
         canPreventDefault: true,
       });
-      if (!focused && !event.defaultPrevented) {
-        navigation.navigate(route.name, route.params);
-      }
+      if (event.defaultPrevented) return;
+      // Same tab: still allow scroll-to-top via default tabPress; no second navigate.
+      if (focused) return;
+      navigatePrimaryTab(nextTab, `CustomerTabBar.${route.name}`);
     },
     [
       foodEnabled,
@@ -290,28 +339,46 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
       openBlockSheet,
       accountBlocks.food,
       navigation,
-      pillX,
-      tabSlotW,
-      pillInset,
     ]
   );
 
-  const onCapsuleLayout = useCallback(
-    (e: LayoutChangeEvent) => {
-      if (!__DEV__) return;
-      const { x, y, width, height } = e.nativeEvent.layout;
-      // eslint-disable-next-line no-console
-      console.log(
-        `[NAV_GEOMETRY] mode=${hideBottomCapsule ? "home-edge" : "bottom"} activeTab=${activeRouteName} x=${x.toFixed(1)} y=${y.toFixed(1)} w=${width.toFixed(1)} h=${height.toFixed(1)} bottom=${bottomAnchor}`
-      );
-    },
-    [activeRouteName, bottomAnchor, hideBottomCapsule]
+  const [sheetWidth, setSheetWidth] = useState(0);
+
+  const onSheetLayout = useCallback((e: LayoutChangeEvent) => {
+    const w = Math.round(e.nativeEvent.layout.width);
+    if (w > 0) setSheetWidth((prev) => (prev === w ? prev : w));
+  }, []);
+
+  const fallbackSheetWidth = Math.max(
+    0,
+    windowWidth -
+      dockLeft -
+      dockRight -
+      (showCartEdge || showDiscoveryFilterEdge ? FLOATING_EDGE_TAB_GAP : 0),
   );
+  const curvedSheetW = sheetWidth > 0 ? sheetWidth : fallbackSheetWidth;
 
   if (hideBottomCapsule) {
-    // Keep the tab-bar host mounted (empty). Returning null remounts RN tab chrome
-    // mid Home↔Food shift and freezes the scene interpolator around ~50%.
-    return <View pointerEvents="none" style={styles.host} collapsable={false} />;
+    // Keep a fixed host at the shared bottom Y so RN tab chrome never
+    // remounts geometry when Track/cart owns footing (HOME edge lives on the dock).
+    return (
+      <View pointerEvents="none" style={styles.host} collapsable={false}>
+        <View
+          collapsable={false}
+          style={[
+            styles.dockPlaceholder,
+            {
+              left: dockLeft,
+              right: dockRight,
+              bottom: bottomAnchor,
+              opacity: 0,
+            },
+          ]}
+        >
+          <View style={styles.capsulePlaceholder} collapsable={false} />
+        </View>
+      </View>
+    );
   }
 
   /** Discovery default: HOME edge + Relevance|Filters dock (same row as cart footing). */
@@ -344,20 +411,54 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
     );
   }
 
+  /**
+   * Classic Food default: HOME edge only — full nav after edge tap (Discovery parity).
+   * Search pill mounts in root overlay (not here) — never put elevation on this
+   * transparent absoluteFill without a background (breaks sibling compositing).
+   */
+  if (classicFoodEdgeOnly) {
+    return (
+      <View pointerEvents="box-none" style={[styles.host, styles.hostNoElevation]} collapsable={false}>
+        <View
+          pointerEvents="box-none"
+          style={[styles.classicEdgeOnlyRow, { bottom: bottomAnchor }]}
+        >
+          <EdgePeekTab
+            side="left"
+            label="HOME"
+            height={CAPSULE_H}
+            onPress={expandClassicFoodNav}
+          />
+        </View>
+      </View>
+    );
+  }
+
   return (
-    <View pointerEvents="box-none" style={styles.host}>
+    <View pointerEvents="box-none" style={[styles.host, styles.hostNoElevation]}>
       <View
         pointerEvents="box-none"
         style={[
           styles.dock,
+          styles.dockElevated,
           showCartEdge || showDiscoveryFilterEdge ? styles.dockWithCartEdge : null,
           {
             left: dockLeft,
             right: dockRight,
-            bottom: bottomAnchor,
+            bottom: 0,
+            height: sheetHeight,
           },
         ]}
+        onLayout={onSheetLayout}
       >
+        {/* Full-bleed fill into Android gesture / home-indicator area */}
+        <CustomerTabBarCurvedSheet
+          width={curvedSheetW}
+          height={sheetHeight}
+          fill={sheetFill}
+          edgeColor={sheetEdge}
+          liftColor={sheetLift}
+        />
         <View
           style={[
             styles.capsuleWrap,
@@ -365,39 +466,19 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
           ]}
           pointerEvents="box-none"
         >
-          <View
-            style={[styles.capsule, darkChrome && styles.capsuleDarkRow]}
-            pointerEvents="auto"
-            onLayout={onCapsuleLayout}
-          >
+          <View style={styles.capsule} pointerEvents="auto">
             <View style={styles.track}>
-              <Animated.View
-                pointerEvents="none"
-                style={[
-                  styles.activePill,
-                  {
-                    width: pillW,
-                    height: PILL_H,
-                    borderRadius: ACTIVE_TAB_RADIUS,
-                  },
-                  activePillStyle,
-                ]}
-              >
-                <TabLabelRow
-                  tab={activeTab}
-                  color={TAB_ACTIVE_FG}
-                  focused
-                  bold
-                  width={pillW}
-                />
-              </Animated.View>
-
-              {TABS.map((tab) => {
+              {capsuleTabs.map((tab) => {
                 const route = state.routes.find((r) => r.name === tab.routeName);
                 if (!route) return null;
 
-                const focused = activeRouteName === route.name;
+                const focused = activeIndex === tabIndexForRoute(route.name);
                 const foodTabDisabled = route.name === "food" && (foodBlocked || !foodEnabled);
+                const color = foodTabDisabled
+                  ? disabledColor
+                  : focused
+                    ? activeColor
+                    : inactiveColor;
 
                 return (
                   <View key={tab.routeName} style={[styles.tabSlot, { width: tabSlotW }]}>
@@ -410,16 +491,21 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
                         navigation.emit({ type: "tabLongPress", target: route.key })
                       }
                       unstable_pressDelay={0}
+                      // Style-only press bg — never mount/unmount children mid-gesture
+                      // (Android cancels onPress when absolute shadow is inserted).
                       style={({ pressed }) => [
                         styles.tabHit,
                         foodTabDisabled && styles.tabDisabled,
-                        pressed && !foodTabDisabled && styles.tabPressed,
+                        // Native Pressable has no hover; keep pressed-only to avoid
+                        // web-only `hovered` deps and accidental press-stuck styles.
+                        !foodTabDisabled && pressed && { backgroundColor: pressBg },
                       ]}
                     >
                       <TabLabelRow
                         tab={tab}
-                        color={foodTabDisabled ? disabledColor : inactiveColor}
-                        focused={false}
+                        color={color}
+                        focused={focused}
+                        bold={focused}
                         width={pillW}
                       />
                     </Pressable>
@@ -435,6 +521,7 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
             entering={SlideInRight.duration(280).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutRight.duration(220).easing(Easing.in(Easing.cubic))}
             collapsable={false}
+            style={styles.edgeAlignTop}
           >
             <EdgePeekTab
               side="right"
@@ -443,13 +530,13 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
               onPress={expandDiscoveryFilters}
             />
           </Animated.View>
-        ) : null}
-        {showCartEdge ? (
+        ) : showCartEdge ? (
           <Animated.View
             key="cart-edge"
             entering={SlideInRight.duration(280).easing(Easing.out(Easing.cubic))}
             exiting={SlideOutRight.duration(220).easing(Easing.in(Easing.cubic))}
             collapsable={false}
+            style={styles.edgeAlignTop}
           >
             <EdgePeekTab
               side="right"
@@ -470,9 +557,38 @@ const styles = StyleSheet.create({
     zIndex: 50,
     elevation: 50,
   },
+  /** Transparent absoluteFill must not use elevation — blocks sibling taps on Android. */
+  hostNoElevation: {
+    elevation: 0,
+  },
+  /** Full-bleed sheet host — connected to screen bottom; height set inline. */
   dock: {
     position: "absolute",
-    height: CAPSULE_H,
+    overflow: "visible",
+  },
+  /** Elevate only the real dock chrome (not the full-screen host). */
+  dockElevated: {
+    ...Platform.select({
+      ios: {
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        shadowOffset: { width: 0, height: 0 },
+      },
+      android: {
+        elevation: 12,
+      },
+      default: {},
+    }),
+  },
+  /** Invisible geometry reserved when cart/track owns footing. */
+  dockPlaceholder: {
+    position: "absolute",
+    height: DOCK_H,
+    overflow: "visible",
+  },
+  capsulePlaceholder: {
+    width: "100%",
+    height: DOCK_H,
   },
   /** Mirrors GlobalFloatingCart footRow: HOME edge + main dock. */
   filtersFootRow: {
@@ -485,13 +601,23 @@ const styles = StyleSheet.create({
     gap: 6,
     overflow: "visible",
   },
-  capsuleWrap: {
-    width: "100%",
-  },
-  dockWithCartEdge: {
+  classicEdgeOnlyRow: {
+    position: "absolute",
+    left: 0,
     height: CAPSULE_H,
     flexDirection: "row",
     alignItems: "center",
+    overflow: "visible",
+  },
+  capsuleWrap: {
+    width: "100%",
+    height: DOCK_H,
+    overflow: "visible",
+    zIndex: 1,
+  },
+  dockWithCartEdge: {
+    flexDirection: "row",
+    alignItems: "flex-start",
     gap: 6,
     overflow: "visible",
   },
@@ -500,42 +626,17 @@ const styles = StyleSheet.create({
     minWidth: 0,
     width: undefined,
   },
+  edgeAlignTop: {
+    alignSelf: "flex-start",
+  },
   capsule: {
     width: "100%",
-    height: CAPSULE_H,
+    height: DOCK_H,
     paddingHorizontal: CAPSULE_PAD_H,
-    paddingVertical: CAPSULE_PAD_V,
-    backgroundColor: "#FFFFFF",
-    borderRadius: FLOATING_NAV_RADIUS,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(15, 23, 42, 0.08)",
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0F172A",
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.16,
-        shadowRadius: 18,
-      },
-      android: {
-        elevation: 12,
-      },
-      default: {},
-    }),
-  },
-  capsuleDarkRow: {
-    backgroundColor: DiscoveryColors.cardElevated,
-    borderColor: DiscoveryColors.border,
-    borderRadius: FLOATING_NAV_RADIUS,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#0F172A",
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.28,
-        shadowRadius: 16,
-      },
-      android: { elevation: 12 },
-      default: {},
-    }),
+    paddingTop: SHEET_TOP_EXTRA + CAPSULE_PAD_V,
+    paddingBottom: CAPSULE_PAD_V,
+    backgroundColor: "transparent",
+    overflow: "visible",
   },
   track: {
     flex: 1,
@@ -543,16 +644,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     height: PILL_H,
     position: "relative",
-  },
-  activePill: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    backgroundColor: TAB_ACTIVE_BG,
-    zIndex: 2,
-    alignItems: "center",
-    justifyContent: "center",
-    overflow: "hidden",
+    zIndex: 1,
   },
   tabSlot: {
     height: PILL_H,
@@ -565,9 +657,8 @@ const styles = StyleSheet.create({
     height: "100%",
     alignItems: "center",
     justifyContent: "center",
-  },
-  tabPressed: {
-    opacity: 0.88,
+    borderRadius: 25,
+    overflow: "hidden",
   },
   tabPill: {
     alignItems: "center",

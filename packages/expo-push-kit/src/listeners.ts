@@ -10,14 +10,16 @@ export type PushNotificationOpenPayload = {
 };
 
 /**
- * Never load `expo-notifications` inside Expo Go (SDK 53+).
- * Importing the package triggers DevicePushTokenAutoRegistration and a loud
- * console.error about remote push being removed from Expo Go — even for local
- * notification APIs. Remote push does not work in Expo Go anyway.
+ * Never load `expo-notifications` inside Expo Go *for remote push*.
+ * Local notifications + received/response listeners still work in Expo Go —
+ * pass `allowExpoGo: true` for those paths. Importing without that flag stays
+ * blocked so DevicePushTokenAutoRegistration is not triggered accidentally.
  */
-async function loadNotifications(): Promise<typeof import("expo-notifications") | null> {
+async function loadNotifications(opts?: {
+  allowExpoGo?: boolean;
+}): Promise<typeof import("expo-notifications") | null> {
   try {
-    if (Constants.appOwnership === "expo") {
+    if (Constants.appOwnership === "expo" && !opts?.allowExpoGo) {
       return null;
     }
     return await import("expo-notifications");
@@ -32,7 +34,7 @@ export function subscribeToPushNotificationResponse(
 ): { remove: () => void } {
   let sub: { remove: () => void } = { remove: () => {} };
   void (async () => {
-    const Notifications = await loadNotifications();
+    const Notifications = await loadNotifications({ allowExpoGo: true });
     if (!Notifications) return;
     sub = Notifications.addNotificationResponseReceivedListener((response) => {
       const c = response.notification.request.content;
@@ -56,7 +58,7 @@ export function subscribeToForegroundNotifications(
 ): { remove: () => void } {
   let sub: { remove: () => void } = { remove: () => {} };
   void (async () => {
-    const Notifications = await loadNotifications();
+    const Notifications = await loadNotifications({ allowExpoGo: true });
     if (!Notifications) return;
     sub = Notifications.addNotificationReceivedListener((notification) => {
       const c = notification.request.content;
@@ -76,7 +78,7 @@ export function subscribeToForegroundNotifications(
 
 /** Drain the cold-start notification that launched the app (if any). */
 export async function getLastNotificationOpenPayload(): Promise<PushNotificationOpenPayload | null> {
-  const Notifications = await loadNotifications();
+  const Notifications = await loadNotifications({ allowExpoGo: true });
   if (!Notifications) return null;
   try {
     const last = await Notifications.getLastNotificationResponseAsync();

@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  isBogusAttachmentProxyKey,
+  normalizeR2ObjectKey,
   r2LookupKeyVariants,
   r2OnboardingSearchPrefixes,
   r2ObjectFileName,
 } from "./r2-proxy-url";
+import { resolveAttachmentProxyUrl } from "./attachments/resolve-attachment-proxy-url";
 
 test("r2LookupKeyVariants tries documents and legacy fssai folders", () => {
   const key =
@@ -30,5 +33,32 @@ test("r2ObjectFileName unwraps proxy query keys", () => {
   assert.equal(
     r2ObjectFileName("/api/attachments/proxy?key=docs%2Fmerchants%2F91%2Fstores%2FGMMC102%2Fonboarding%2Fdocuments%2Ffssai_123.pdf"),
     "fssai_123.pdf"
+  );
+});
+
+test("normalizeR2ObjectKey never treats attachments/proxy path as an object key", () => {
+  assert.equal(normalizeR2ObjectKey("attachments/proxy"), "");
+  assert.equal(normalizeR2ObjectKey("/api/attachments/proxy"), "");
+  assert.equal(
+    normalizeR2ObjectKey("https://dash.example/api/attachments/proxy?key=riders%2F1%2Fdocuments%2Fpan%2Flatest.jpg"),
+    "riders/1/documents/pan/latest.jpg"
+  );
+  assert.equal(
+    normalizeR2ObjectKey("attachments/proxy?key=riders/1/documents/pan/latest.jpg"),
+    "riders/1/documents/pan/latest.jpg"
+  );
+  assert.ok(isBogusAttachmentProxyKey("attachments/proxy"));
+});
+
+test("resolveAttachmentProxyUrl rejects mangled proxy keys", () => {
+  assert.equal(resolveAttachmentProxyUrl("attachments/proxy"), "");
+  assert.equal(resolveAttachmentProxyUrl("/api/attachments/proxy"), "");
+  assert.equal(
+    resolveAttachmentProxyUrl("/api/attachments/proxy?key=attachments%2Fproxy"),
+    ""
+  );
+  assert.equal(
+    resolveAttachmentProxyUrl("/api/attachments/proxy?key=riders%2F1019%2Fdocuments%2Fpan%2Flatest.jpg"),
+    "/api/attachments/proxy?key=riders%2F1019%2Fdocuments%2Fpan%2Flatest.jpg"
   );
 });

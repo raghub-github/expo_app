@@ -1,7 +1,25 @@
 /**
  * Universal floating in-app notification banner + sequential queue.
  * Standard toast card below the status bar.
+ *
+ * CRITICAL ARCHITECTURE RULE:
+ * This module is UI-only. Enabling/disabling the pill MUST NEVER affect:
+ * FCM send, token registration, setNotificationHandler, or OS shade presentation.
+ * `skip_in_app_banner` / `isSystemShadeOnlyPush` only skip enqueue — they do not
+ * suppress push delivery.
  */
+
+/** When false, enqueue is a no-op (pill hidden). Push/OS path is unaffected. */
+let inAppBannerUiEnabled = true;
+
+/** Host apps (Rider/Merchant) call this to hide pills without touching push. */
+export function setInAppBannerUiEnabled(enabled: boolean): void {
+  inAppBannerUiEnabled = enabled;
+}
+
+export function isInAppBannerUiEnabled(): boolean {
+  return inAppBannerUiEnabled;
+}
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -222,6 +240,7 @@ export function isSystemShadeOnlyPush(data: Record<string, unknown> | undefined 
   const code = template.toUpperCase();
   if (code.startsWith("ADMIN_CX_")) return true;
   if (code.startsWith("MERCHANT_")) return true;
+  if (role === "rider" && (type === "dispatch_offer" || type === "new_order")) return true;
   // Campaign announcements belong in the OS shade only — never the floating pill.
   if (
     code === "CUSTOMER_ANNOUNCEMENT" ||
@@ -229,6 +248,10 @@ export function isSystemShadeOnlyPush(data: Record<string, unknown> | undefined 
     code === "RIDER_ANNOUNCEMENT" ||
     code.endsWith("_ANNOUNCEMENT")
   ) {
+    return true;
+  }
+  // Rider new-order / dispatch — OS shade only (modal + FCM own UX).
+  if (code === "RIDER_NEW_ORDER" || code === "RIDER_DISPATCH_OFFER" || code === "DISPATCH_OFFER") {
     return true;
   }
   return false;
@@ -244,6 +267,7 @@ function progressFromPush(data: Record<string, unknown>): number | null {
 }
 
 export function enqueueInAppBanner(item: Omit<InAppBannerItem, "id"> & { id?: string }): void {
+  if (!inAppBannerUiEnabled) return;
   const title = item.title?.trim();
   if (!title) return;
   if (isSystemShadeOnlyPush(item.data)) return;
@@ -363,6 +387,7 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (!inAppBannerUiEnabled) return;
     return subscribeInAppBanner(() => {
       setItem(current);
     });
@@ -373,6 +398,7 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
   }, []);
 
   useEffect(() => {
+    if (!inAppBannerUiEnabled) return;
     if (hideTimerRef.current) {
       clearTimeout(hideTimerRef.current);
       hideTimerRef.current = null;
@@ -403,7 +429,8 @@ export function FloatingInAppBannerHost({ topOffset = 8, onPressBanner, style }:
     opacity: opacity.value,
   }));
 
-  if (!item) return null;
+  // Pill UI off — push / OS shade / token registration are unaffected.
+  if (!inAppBannerUiEnabled || !item) return null;
 
   const body = item.body?.trim() || "";
   const a11y = body ? `${item.title}. ${body}` : item.title;

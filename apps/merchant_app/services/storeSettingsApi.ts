@@ -102,7 +102,7 @@ export function invalidateActiveOrdersCountCache(storeId?: number): void {
   activeCountInflight.clear();
 }
 
-const ACTIVE_COUNT_CACHE_MS = 4_000;
+const ACTIVE_COUNT_CACHE_MS = 15_000;
 const activeCountInflight = new Map<
   number,
   { at: number; promise: Promise<ActiveOrdersBreakdown> }

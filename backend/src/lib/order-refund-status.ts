@@ -110,6 +110,52 @@ function buildFallbackTimeline(args: {
   return steps;
 }
 
+/** Collapse duplicate processed/completed (and same-key) steps from stored + append. */
+export function uniqueRefundTimelineSteps(
+  steps: CustomerRefundTimelineStep[]
+): CustomerRefundTimelineStep[] {
+  const out: CustomerRefundTimelineStep[] = [];
+  const seen = new Set<string>();
+  for (const step of steps) {
+    const keyRaw = String(step.key ?? "").trim().toLowerCase();
+    const labelRaw = String(step.label ?? "").trim().toLowerCase();
+    let stage = keyRaw;
+    if (stage.startsWith("initiated")) stage = "initiated";
+    else if (stage.startsWith("processed")) stage = "processed";
+    else if (stage.startsWith("completed")) stage = "completed";
+    else if (labelRaw.includes("refund processed") || labelRaw === "refund processed") {
+      stage = "processed";
+    } else if (labelRaw.includes("refund completed") || labelRaw === "refund completed") {
+      stage = "completed";
+    } else if (labelRaw.includes("initiated")) {
+      stage = keyRaw.startsWith("initiated-") ? keyRaw : "initiated";
+    }
+    // Multi-slab initiated-1 / initiated-2 stay distinct; terminal stages once only.
+    const dedupeKey =
+      stage === "processed" || stage === "completed"
+        ? stage
+        : stage === "initiated" && !keyRaw.startsWith("initiated-")
+          ? "initiated"
+          : keyRaw || labelRaw;
+    if (!dedupeKey || seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push(step);
+  }
+  return out;
+}
+
+function timelineHasStage(
+  steps: CustomerRefundTimelineStep[],
+  stage: "processed" | "completed"
+): boolean {
+  const needle = stage.toLowerCase();
+  return steps.some((s) => {
+    const k = String(s.key ?? "").trim().toLowerCase();
+    const label = String(s.label ?? "").trim().toLowerCase();
+    return k === needle || k.startsWith(`${needle}-`) || label.includes(`refund ${needle}`);
+  });
+}
+
 function normalizeRefundStatus(
   exec: string | null | undefined,
   status: string | null | undefined,
@@ -407,12 +453,18 @@ export function aggregateCustomerRefundRows(
       })
     );
   } else if (timeline.length > 0) {
-    timeline.push({
-      key: "processed",
-      label: "Refund processed",
-      at: processedAt ?? initiatedAt,
-    });
-    if (st === "completed" || st === "refunded" || st === "processed") {
+    // Stored timelines already include processed/completed — do not append again.
+    if (!timelineHasStage(timeline, "processed")) {
+      timeline.push({
+        key: "processed",
+        label: "Refund processed",
+        at: processedAt ?? initiatedAt,
+      });
+    }
+    if (
+      (st === "completed" || st === "refunded" || st === "processed") &&
+      !timelineHasStage(timeline, "completed")
+    ) {
       timeline.push({
         key: "completed",
         label: "Refund completed",
@@ -436,7 +488,7 @@ export function aggregateCustomerRefundRows(
     initiatedAt,
     processedAt,
     completedAt,
-    timeline,
+    timeline: uniqueRefundTimelineSteps(timeline),
   };
 }
 

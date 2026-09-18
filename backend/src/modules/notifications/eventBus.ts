@@ -374,8 +374,6 @@ const FOOD_LIVE_BY_TEMPLATE: Record<
   ORDER_RIDER_ASSIGNED: { step: 2, title: "Ready for Pickup", body: "Rider heading to store" },
   ORDER_RIDER_AT_STORE: { step: 2, title: "Ready for Pickup", body: "Rider at the store" },
   ORDER_OUT_FOR_DELIVERY: { step: 3, title: "On The Way", body: "Arriving" },
-  ORDER_RIDER_ARRIVING: { step: 4, title: "Nearby", body: "Rider is almost there" },
-  ORDER_DELIVERED: { step: 5, title: "Delivered", body: "Enjoy your meal!" },
 };
 
 function foodLiveMetadata(
@@ -388,28 +386,62 @@ function foodLiveMetadata(
     deliveryOtp?: string | null;
   }
 ): Record<string, unknown> {
-  const live = FOOD_LIVE_BY_TEMPLATE[templateCode];
   const base: Record<string, unknown> = {
     orderId,
     gmType: templateCode,
   };
-  if (!live) return base;
-  let liveBody = live.body;
-  if (templateCode === "ORDER_RIDER_ARRIVING" && extras?.deliveryOtp) {
-    liveBody = `OTP ${extras.deliveryOtp} · Share with your delivery partner`;
+  const upper = templateCode.toUpperCase();
+  if (
+    upper === "ORDER_DELIVERED" ||
+    upper.includes("CANCELLED") ||
+    upper.includes("CANCELED")
+  ) {
+    return {
+      ...base,
+      status: upper.includes("CANCEL") ? "CANCELLED" : "DELIVERED",
+      gmLiveKind: "final",
+      gmClearLiveProgress: true,
+      skip_in_app_banner: true,
+    };
   }
+  if (
+    upper === "ORDER_RIDER_ARRIVING" ||
+    upper === "CUSTOMER_DELIVERY_OTP_NEARBY"
+  ) {
+    return {
+      ...base,
+      status: "REACHED_CUSTOMER",
+      gmLiveKind: "otp",
+      gmClearLiveProgress: true,
+      skip_in_app_banner: true,
+      ...(extras?.deliveryOtp ? { deliveryOtp: extras.deliveryOtp } : {}),
+      ...(extras?.merchantName ? { storeName: extras.merchantName } : {}),
+    };
+  }
+  const live = FOOD_LIVE_BY_TEMPLATE[templateCode];
+  if (!live) return base;
+  const statusByTemplate: Record<string, string> = {
+    ORDER_CREATED: "ORDER_PLACED",
+    ORDER_ACCEPTED: "ACCEPTED",
+    ORDER_PREPARING: "PREPARING",
+    ORDER_FOOD_READY: "READY_FOR_PICKUP",
+    ORDER_RIDER_ASSIGNED: "RIDER_ASSIGNED",
+    ORDER_RIDER_AT_STORE: "RIDER_AT_PICKUP",
+    ORDER_OUT_FOR_DELIVERY: "OUT_FOR_DELIVERY",
+  };
   return {
     ...base,
     gmLiveProgress: true,
+    gmLiveKind: "progress",
     liveService: "food",
     liveStep: live.step,
     liveSteps: 5,
     liveTitle: live.title,
-    liveBody,
+    liveBody: live.body,
     skip_in_app_banner: true,
+    status: statusByTemplate[templateCode],
     ...(extras?.merchantName ? { storeName: extras.merchantName } : {}),
     ...(extras?.etaMinutes != null ? { etaMinutes: extras.etaMinutes } : {}),
-    ...(extras?.deliveryOtp ? { deliveryOtp: extras.deliveryOtp } : {}),
   };
 }
 
@@ -760,15 +792,23 @@ export function registerDomainEventHandlers(): void {
 
   on("payment.settled", async (e) => {
     const template = e.status === "SUCCESS" ? "CUSTOMER_PAYMENT_SUCCESS" : "CUSTOMER_PAYMENT_FAILED";
+    const isFailed = e.status === "FAILED";
     await sendNotification({
       templateCode: template,
       variables: {
         orderId: e.orderId,
         orderShortId: e.orderShortId ?? e.orderId,
         amount: e.amount,
-        reason: e.reason ?? "",
+        reason:
+          e.reason?.trim() ||
+          (isFailed
+            ? "Any amount if debited from UPI will get refunded within 4-7 days."
+            : ""),
       },
       target: { user_id: e.customerId },
+      priority: isFailed ? "high" : undefined,
+      deliverNow: isFailed ? true : undefined,
+      bypassQuietHours: isFailed ? true : undefined,
       idempotencyKey: `${template}:${e.orderId}`,
       metadata: { orderId: e.orderId },
     });

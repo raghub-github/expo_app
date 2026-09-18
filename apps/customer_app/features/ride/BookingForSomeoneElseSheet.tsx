@@ -116,7 +116,7 @@ const styles = StyleSheet.create({
   iconCircleInner: {
     width: 56,
     height: 56,
-    borderRadius: 28,
+    borderRadius: 20,
     backgroundColor: "#FFFFFF",
     alignItems: "center",
     justifyContent: "center",
@@ -143,7 +143,7 @@ const styles = StyleSheet.create({
   primaryBtn: {
     backgroundColor: GatiMitraColors.primaryMint,
     paddingVertical: 16,
-    borderRadius: 28,
+    borderRadius: 20,
     alignItems: "center",
     marginBottom: 12,
   },
@@ -155,7 +155,7 @@ const styles = StyleSheet.create({
   secondaryBtn: {
     backgroundColor: "#FFFFFF",
     paddingVertical: 16,
-    borderRadius: 28,
+    borderRadius: 20,
     alignItems: "center",
     borderWidth: 1.5,
     borderColor: "#E5E7EB",

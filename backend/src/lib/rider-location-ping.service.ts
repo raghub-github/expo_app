@@ -314,6 +314,8 @@ export async function handleRiderLocationPing(
   }
 
   if (riderId != null) {
+    const gpsCapturedAt =
+      Number.isFinite(input.tsMs) && input.tsMs > 0 ? new Date(input.tsMs) : null;
     await upsertRiderCurrentLocation(db, {
       userId: input.userId,
       riderId,
@@ -323,6 +325,7 @@ export async function handleRiderLocationPing(
       speedMps: input.speedMps ?? null,
       headingDeg: input.headingDeg ?? null,
       accuracyM: input.accuracyM ?? null,
+      gpsCapturedAt,
     });
 
     // Safety-net: close any tracking session whose order has left the rider's

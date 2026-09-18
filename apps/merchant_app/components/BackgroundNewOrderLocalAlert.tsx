@@ -1,143 +1,130 @@
 /**
- * When Partner is backgrounded (process alive) and the live board sees a new
- * CREATED order or kitchen stage change without remote FCM, post a local
- * heads-up so merchants still get shade + sound.
+ * Expo Go new-order fallback (SDK 53+ has no remote FCM in Expo Go).
+ *
+ * Production / dev client: backend FCM owns tray + channel sound — this is idle.
+ * Expo Go: when a CREATED order appears on the board (realtime / poll), schedule a
+ * local heads-up with default sound and start the JS chime (plays in silent mode).
  */
 import { useEffect, useRef } from "react";
-import { AppState, Platform } from "react-native";
+import { Platform } from "react-native";
 import Constants from "expo-constants";
+import { useOrdersContext } from "@/context/OrdersContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
-import { useOrders } from "@/hooks/useOrders";
+import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { readDeviceOrderAlertsAsync } from "@/lib/deviceOrderAlerts";
+import { presentLocalNewOrderAlert } from "@/lib/presentLocalNewOrderAlert";
 import {
-  presentLocalLifecycleAlert,
-  presentLocalNewOrderAlert,
-  rememberRemoteLifecycleAlertPresented,
-  rememberRemoteNewOrderAlertPresented,
-} from "@/lib/presentLocalNewOrderAlert";
-import { isMerchantNewOrderPushData } from "@/lib/merchantNewOrderChannel";
-import { extractNewOrderIdFromPush } from "@/lib/newOrderAlertManager";
-import { registerMerchantForegroundPushHandler } from "@/lib/merchantPushDispatch";
+  continueOrStartNewOrderAlert,
+  extractNewOrderEventId,
+  rememberIncomingOrderAlertConfig,
+} from "@/lib/newOrderAlertManager";
+import { installMerchantForegroundNotificationHandler } from "@/lib/merchantNotificationHandler";
+import { isIncomingOrderDismissed } from "@/lib/incomingOrderDismissed";
 
 function isExpoGo(): boolean {
   return Constants.appOwnership === "expo";
 }
 
-const LIFECYCLE_STATUSES = new Set([
-  "preparing",
-  "ready",
-  "picked_up",
-  "delivered",
-  "rejected",
-  "rto",
-]);
-
-function boardStage(status: string): string | null {
-  const s = String(status ?? "").toLowerCase();
-  if (s === "preparing") return "PREPARING";
-  if (s === "ready") return "READY";
-  if (s === "picked_up") return "OUT_FOR_DELIVERY";
-  if (s === "delivered") return "DELIVERED";
-  if (s === "rejected") return "CANCELLED";
-  if (s === "rto") return "RTO";
-  return null;
-}
-
 export default function BackgroundNewOrderLocalAlert() {
+  const { orders, loading, refetch } = useOrdersContext();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
-  const { orders } = useOrders();
-  const seenCreatedRef = useRef<Set<string>>(new Set());
-  const lastStageRef = useRef<Map<string, string>>(new Map());
-  const bootstrappedRef = useRef(false);
+  const { settings } = useOrderAcceptanceSettings();
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const storeIdRef = useRef(storeId);
+  storeIdRef.current = storeId;
 
-  useEffect(() => {
-    seenCreatedRef.current = new Set();
-    lastStageRef.current = new Map();
-    bootstrappedRef.current = false;
-  }, [storeId]);
+  const seenRef = useRef<Set<string>>(new Set());
+  const seededRef = useRef(false);
 
-  // Remote FCM already landed → do not double-post locally.
+  // Keep OS presentation rules installed in Expo Go (local alerts).
   useEffect(() => {
-    if (Platform.OS !== "android" || isExpoGo()) return;
-    return registerMerchantForegroundPushHandler(({ data }) => {
-      if (isMerchantNewOrderPushData(data)) {
-        const id = extractNewOrderIdFromPush(data);
-        rememberRemoteNewOrderAlertPresented(id);
-        if (id) seenCreatedRef.current.add(id);
-        return;
-      }
-      const t = String(data.type ?? "").toLowerCase();
-      if (t === "merchant_order_lifecycle" || t.includes("merchant_order")) {
-        const id = String(data.foodOrderId ?? data.orderId ?? "").trim();
-        const stage = String(data.stage ?? "").trim().toUpperCase();
-        rememberRemoteLifecycleAlertPresented(id, stage);
-        if (id && stage) lastStageRef.current.set(id, stage);
-      }
-    });
+    if (!isExpoGo()) return;
+    void installMerchantForegroundNotificationHandler();
   }, []);
 
+  // Expo Go: poll even while backgrounded — Android often suspends realtime.
   useEffect(() => {
-    if (Platform.OS !== "android" || isExpoGo() || storeId == null) return;
+    if (!isExpoGo() || !storeId) return;
+    const id = setInterval(() => {
+      void refetch();
+    }, 12_000);
+    return () => clearInterval(id);
+  }, [storeId, refetch]);
+
+  useEffect(() => {
+    if (!isExpoGo() || Platform.OS === "web") return;
 
     const created = orders.filter(
-      (o) => String(o.status ?? "").toLowerCase() === "created" && !String(o.id).startsWith("core-")
-    );
-    const lifecycle = orders.filter(
-      (o) =>
-        !String(o.id).startsWith("core-") &&
-        LIFECYCLE_STATUSES.has(String(o.status ?? "").toLowerCase())
+      (o) => o.status === "created" && !String(o.id).startsWith("core-")
     );
 
-    if (!bootstrappedRef.current) {
-      for (const o of created) seenCreatedRef.current.add(o.id);
-      for (const o of lifecycle) {
-        const stage = boardStage(String(o.status));
-        if (stage) lastStageRef.current.set(o.id, stage);
-      }
-      bootstrappedRef.current = true;
+    if (!seededRef.current) {
+      // Wait until first board load settles so we don't alert for stale CREATED rows.
+      if (loading && orders.length === 0) return;
+      for (const o of created) seenRef.current.add(o.id);
+      seededRef.current = true;
       return;
     }
 
-    // Foreground: in-app UI owns the experience; still track to avoid catch-up spam.
-    if (AppState.currentState === "active") {
-      for (const o of created) seenCreatedRef.current.add(o.id);
-      for (const o of lifecycle) {
-        const stage = boardStage(String(o.status));
-        if (stage) lastStageRef.current.set(o.id, stage);
+    for (const order of created) {
+      if (seenRef.current.has(order.id)) continue;
+      // Merchant already accepted / rejected / X-dismissed — never re-chime or re-tray.
+      if (isIncomingOrderDismissed(order.ordersCoreId)) {
+        seenRef.current.add(order.id);
+        continue;
       }
-      return;
+      seenRef.current.add(order.id);
+
+      const orderId = String(order.id);
+      const displayId = order.formattedOrderId ?? orderId;
+      const sid = storeIdRef.current;
+
+      void (async () => {
+        try {
+          await presentLocalNewOrderAlert({
+            orderId,
+            displayId,
+            storeId: sid,
+          });
+        } catch {
+          /* local schedule best-effort */
+        }
+
+        // JS chime works in phone silent mode; OS default may still be muted.
+        try {
+          const device = sid ? await readDeviceOrderAlertsAsync(sid) : null;
+          if (sid && device) {
+            rememberIncomingOrderAlertConfig(settingsRef.current, device);
+          }
+          await continueOrStartNewOrderAlert({
+            orderId,
+            eventId: extractNewOrderEventId(
+              {
+                template_code: "MERCHANT_NEW_ORDER",
+                foodOrderId: orderId,
+                localFallback: true,
+              },
+              orderId
+            ),
+            // Expo Go has no Partner FCM channel sound — JS owns the chime
+            // (playsInSilentMode) even while backgrounded.
+            source: "FOREGROUND",
+            settings: settingsRef.current,
+            device,
+            notificationDate: Date.now(),
+          });
+        } catch {
+          /* JS alert best-effort */
+        }
+      })();
     }
 
-    void (async () => {
-      const device = await readDeviceOrderAlertsAsync(storeId);
-      if (!device.orderAlertsEnabled) return;
-
-      for (const o of created) {
-        if (seenCreatedRef.current.has(o.id)) continue;
-        seenCreatedRef.current.add(o.id);
-        await presentLocalNewOrderAlert({
-          orderId: o.id,
-          displayId: o.formattedOrderId ?? o.id,
-          storeId,
-        });
-      }
-
-      for (const o of lifecycle) {
-        const stage = boardStage(String(o.status));
-        if (!stage) continue;
-        const prev = lastStageRef.current.get(o.id);
-        if (prev === stage) continue;
-        lastStageRef.current.set(o.id, stage);
-        await presentLocalLifecycleAlert({
-          orderId: o.id,
-          displayId: o.formattedOrderId ?? o.id,
-          stage,
-          storeId,
-        });
-      }
-    })();
-  }, [orders, storeId]);
+    // Keep ids for orders that left CREATED so a laggy refetch still showing
+    // CREATED cannot treat them as brand-new and re-fire sound/modal.
+    // (Re-offers after a true cancel use a new food row id.)
+  }, [orders, loading]);
 
   return null;
 }

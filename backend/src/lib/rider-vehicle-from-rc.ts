@@ -11,6 +11,7 @@ import {
   resolveFuelTypeDbLabel,
   resolveVehicleCategoryDbLabel,
 } from "./rider-vehicle-db-map.js";
+import { canonicalClassFromCashfreeRc } from "../modules/rider-eligibility/vehicleTaxonomy.js";
 
 function deriveRegistrationStateFromPlate(registrationNumber: string): string | null {
   const match = registrationNumber.match(/^([A-Z]{2})/);
@@ -162,9 +163,14 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
   verifiedData: Record<string, unknown>;
   /** Optional RC photo URL from rider_documents when already uploaded. */
   rcDocumentUrl?: string | null;
-}): Promise<{ ok: true; vehicleId: number | null } | { ok: false; error: string }> {
+  /** False while RC photo awaits admin review after a name mismatch. */
+  markVerified?: boolean;
+  /** `add` inserts a second vehicle; `replace` updates the current onboarding RC. */
+  intent?: "replace" | "add";
+}): Promise<{ ok: true; vehicleId: number | null } | { ok: false; error: string; code?: string }> {
   const riderId = args.riderId;
   const data = args.verifiedData;
+  const markVerified = args.markVerified !== false;
 
   const registrationNumber = normalizeReg(
     str(data.reg_no) || str(data.registration_number) || str(data.vehicle_number),
@@ -282,6 +288,9 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
       .select({
         id: riderVehicles.id,
         registrationNumber: riderVehicles.registrationNumber,
+        vehicleCategory: riderVehicles.vehicleCategory,
+        vehicleType: riderVehicles.vehicleType,
+        status: riderVehicles.vehicleActiveStatus,
       })
       .from(riderVehicles)
       .where(
@@ -297,8 +306,37 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
       (r) =>
         normalizeReg(r.registrationNumber) === registrationNumber,
     );
+    const activeNonRetired = existingRows.filter(
+      (r) => String(r.status ?? "active").toLowerCase() !== "retired",
+    );
+    const intent = args.intent === "add" ? "add" : "replace";
+    const cashfreeClass = canonicalClassFromCashfreeRc(data);
+    if (intent === "add" && !matchByReg) {
+      const { canAddVehicle } = await import("../modules/rider-eligibility/vehicleTaxonomy.js");
+      if (!cashfreeClass) {
+        return {
+          ok: false,
+          error:
+            "Could not determine this vehicle's type from the RC. A second vehicle must be a 2, 3, or 4 Wheeler.",
+          code: "UNKNOWN_VEHICLE_CLASS",
+        };
+      }
+      const check = canAddVehicle({
+        existing: activeNonRetired,
+        candidate: {
+          registrationNumber,
+          vehicleCategory: cashfreeClass ?? categoryCode ?? vehicleCategoryDb,
+          vehicleType: cashfreeClass === "4_wheeler" ? "car" : cashfreeClass === "3_wheeler" ? "auto" : vehicleType,
+        },
+      });
+      if (!check.ok) {
+        return { ok: false, error: check.reason, code: check.code };
+      }
+    }
     const activeRow = existingRows[0];
-    const targetId = matchByReg?.id ?? activeRow?.id ?? null;
+    const targetId =
+      matchByReg?.id ??
+      (intent === "add" ? null : activeRow?.id ?? null);
     const previousReg =
       targetId != null
         ? normalizeReg(
@@ -309,6 +347,16 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
     // RC-sourced profile fields instead of COALESCE-keeping stale old-plate data.
     const isRcPlateReplace =
       previousReg != null && previousReg !== registrationNumber;
+
+    let insertTypeDb = vehicleTypeDb;
+    let insertCategoryDb = vehicleCategoryDb;
+    const insertIsActive = intent !== "add";
+    if (intent === "add" && cashfreeClass) {
+      const mappedType =
+        cashfreeClass === "4_wheeler" ? "car" : cashfreeClass === "3_wheeler" ? "auto" : "bike";
+      insertTypeDb = mapVehicleTypeToDb(mappedType);
+      insertCategoryDb = resolveVehicleCategoryDbLabel(cashfreeClass, mappedType, categoryLabels);
+    }
 
     const limitationFlagsJson = JSON.stringify(rcMeta);
     const cashfreePayloadJson = JSON.stringify(data);
@@ -345,10 +393,10 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
             rc_owner_name = ${ownerName},
             cashfree_rc_payload = ${cashfreePayloadJson}::text::jsonb,
             rc_document_url = ${nextRcDocumentUrl},
-            verified = TRUE,
-            verified_at = NOW(),
+            verified = ${markVerified},
+            verified_at = CASE WHEN ${markVerified} THEN NOW() ELSE NULL END,
             vehicle_active_status = 'active',
-            is_active = TRUE,
+            is_active = CASE WHEN ${intent === "add" || activeNonRetired.length > 1} THEN is_active ELSE TRUE END,
             limitation_flags = ${limitationFlagsJson}::text::jsonb,
             updated_at = NOW()
           WHERE id = ${targetId}
@@ -379,10 +427,10 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
             rc_owner_name = COALESCE(${ownerName}, rc_owner_name),
             cashfree_rc_payload = ${cashfreePayloadJson}::text::jsonb,
             rc_document_url = COALESCE(NULLIF(${nextRcDocumentUrl}, ''), rc_document_url),
-            verified = TRUE,
-            verified_at = COALESCE(verified_at, NOW()),
+            verified = ${markVerified},
+            verified_at = CASE WHEN ${markVerified} THEN COALESCE(verified_at, NOW()) ELSE NULL END,
             vehicle_active_status = 'active',
-            is_active = TRUE,
+            is_active = CASE WHEN ${intent === "add" || activeNonRetired.length > 1} THEN is_active ELSE TRUE END,
             limitation_flags = COALESCE(limitation_flags, '{}'::jsonb) || ${limitationFlagsJson}::text::jsonb,
             updated_at = NOW()
           WHERE id = ${targetId}
@@ -427,7 +475,7 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
         updated_at
       ) VALUES (
         ${riderId},
-        ${vehicleTypeDb}::vehicle_type,
+        ${insertTypeDb}::vehicle_type,
         ${registrationNumber},
         ${vehicleNumber},
         ${fuelTypeDb}::fuel_type,
@@ -440,7 +488,7 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
         '[]'::jsonb,
         ${isCommercial},
         ${acType}::ac_type,
-        ${vehicleCategoryDb}::vehicle_category,
+        ${insertCategoryDb}::vehicle_category,
         ${insuranceExpiry}::date,
         ${chassis},
         ${engine},
@@ -449,18 +497,27 @@ export async function upsertRiderVehicleFromRcVerifiedData(args: {
         ${ownerName},
         ${cashfreePayloadJson}::text::jsonb,
         ${rcDocumentUrl},
-        TRUE,
-        NOW(),
+        ${markVerified},
+        CASE WHEN ${markVerified} THEN NOW() ELSE NULL END,
         ${limitationFlagsJson}::text::jsonb,
         'active',
-        TRUE,
+        ${insertIsActive},
         NOW(),
         NOW()
       )
     `;
 
+    const inserted = await sql<{ id: number }[]>`
+      SELECT id FROM public.rider_vehicles
+      WHERE rider_id = ${riderId}
+        AND upper(regexp_replace(registration_number, '[^A-Za-z0-9]', '', 'g')) = ${registrationNumber}
+        AND deleted_at IS NULL
+      ORDER BY id DESC
+      LIMIT 1
+    `;
+
     await backfillRiderStateFromRegistration(riderId, registrationState);
-    return { ok: true, vehicleId: null };
+    return { ok: true, vehicleId: inserted[0]?.id != null ? Number(inserted[0].id) : null };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[upsertRiderVehicleFromRcVerifiedData]", riderId, msg);
@@ -517,7 +574,11 @@ function readRcVerifiedPayloadFromDoc(doc: {
  */
 export async function ensureRiderVehicleFromStoredRc(
   riderId: number,
-  opts?: { verifiedData?: Record<string, unknown> | null; rcDocumentUrl?: string | null },
+  opts?: {
+    verifiedData?: Record<string, unknown> | null;
+    rcDocumentUrl?: string | null;
+    markVerified?: boolean;
+  },
 ): Promise<{ ok: true; projected: boolean } | { ok: false; error: string }> {
   try {
     const db = getDb();
@@ -547,6 +608,8 @@ export async function ensureRiderVehicleFromStoredRc(
 
     let verifiedData = opts?.verifiedData ?? null;
     let rcDocumentUrl = isUsableRcDocumentUrl(opts?.rcDocumentUrl) ?? null;
+    let markVerified = opts?.markVerified;
+    let projectedFromDocNumberOnly = false;
 
     if (!verifiedData) {
       const [rcDoc] = await db
@@ -554,6 +617,8 @@ export async function ensureRiderVehicleFromStoredRc(
           fileUrl: riderDocuments.fileUrl,
           metadata: riderDocuments.metadata,
           extractedDataSummary: riderDocuments.extractedDataSummary,
+          docNumber: riderDocuments.docNumber,
+          verified: riderDocuments.verified,
         })
         .from(riderDocuments)
         .where(
@@ -566,6 +631,19 @@ export async function ensureRiderVehicleFromStoredRc(
       const parsed = readRcVerifiedPayloadFromDoc(rcDoc);
       verifiedData = parsed.verifiedData;
       rcDocumentUrl = rcDocumentUrl ?? parsed.rcDocumentUrl;
+      // Manual / under-review RC may only have doc_number — still project a garage row.
+      if ((!verifiedData || Object.keys(verifiedData).length === 0) && rcDoc.docNumber) {
+        const reg = normalizeReg(rcDoc.docNumber);
+        if (reg) {
+          verifiedData = { reg_no: reg, registration_number: reg };
+          rcDocumentUrl =
+            rcDocumentUrl ?? (isUsableRcDocumentUrl(rcDoc.fileUrl) ?? "pending_manual_review");
+          projectedFromDocNumberOnly = true;
+        }
+      }
+      if (markVerified == null && rcDoc.verified === true) {
+        markVerified = true;
+      }
     }
 
     if (!verifiedData || Object.keys(verifiedData).length === 0) {
@@ -576,6 +654,8 @@ export async function ensureRiderVehicleFromStoredRc(
       riderId,
       verifiedData,
       rcDocumentUrl,
+      // Pending RC (doc number only) must stay unverified until an agent approves.
+      markVerified: markVerified ?? (projectedFromDocNumberOnly ? false : undefined),
     });
     if (!result.ok) return result;
     return { ok: true, projected: true };

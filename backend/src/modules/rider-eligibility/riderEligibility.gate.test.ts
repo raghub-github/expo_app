@@ -4,6 +4,7 @@ import {
   mapOrderTypeToEligibilityService,
   eligibilityEnforcementMode,
   ALL_ELIGIBILITY_SERVICES,
+  applyRestrictionBlocks,
 } from "./riderEligibility.service.ts";
 
 test("order type maps to eligibility service", () => {
@@ -34,4 +35,25 @@ test("enforcement mode defaults to shadow and honors the env override", () => {
     if (prev === undefined) delete process.env.RIDER_ELIGIBILITY_MODE;
     else process.env.RIDER_ELIGIBILITY_MODE = prev;
   }
+});
+
+test("applyRestrictionBlocks marks only the blocked service as ADMIN_BLOCKED", () => {
+  const eligible = {
+    eligible: true,
+    blocking: [] as { code: string; reason: string }[],
+    reasonCode: null,
+    nextAction: "CONTINUE",
+  };
+  const next = applyRestrictionBlocks(
+    {
+      food: { ...eligible, service: "food" },
+      parcel: { ...eligible, service: "parcel" },
+      person_ride: { ...eligible, service: "person_ride" },
+    } as Parameters<typeof applyRestrictionBlocks>[0],
+    { allServicesBlocked: false, blockedServices: ["parcel"] },
+  );
+  assert.equal(next.food.eligible, true);
+  assert.equal(next.parcel.eligible, false);
+  assert.equal(next.parcel.reasonCode, "ADMIN_BLOCKED");
+  assert.equal(next.person_ride.eligible, true);
 });

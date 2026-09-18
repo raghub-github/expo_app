@@ -18,7 +18,7 @@ import { useSharedValue } from "react-native-reanimated";
 import { merchantService, type MenuItem, type MerchantDetail, type MerchantSummary, type OrderedTogetherPair, setMenuItemBookmark } from "@/services/merchant.service";
 import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
 import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
-import { buildItemOfferDisplayMap, offerPriority, offerTargetsItem, isItemSurface } from "@/lib/itemOfferDisplay";
+import { buildItemOfferDisplayMap, offerPriority, offerTargetsItem, isItemSurface, parseMenuFlashSale } from "@/lib/itemOfferDisplay";
 import { computeIsDiscountEligible } from "@/lib/cartDiscountEligibility";
 import { getBasePrice, getSellingPrice } from "@/components/store/storeMenuUtils";
 import {
@@ -49,7 +49,9 @@ import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { useCartStore } from "@/store/cartStore";
 import { useLocationStore } from "@/store/locationStore";
 import { useFoodHomeLayout } from "@/hooks/useFoodHomeLayout";
+import { peekCachedFoodHomeLayoutKey } from "@/lib/foodHomeLayoutCache";
 import { recordRecentlyViewedStore } from "@/lib/recentlyViewedStores";
+
 import { MerchantUiThemeProvider, MerchantDarkPalette } from "@/features/merchant-detail/merchantUiTheme";
 import { useAuthStore } from "@/store/authStore";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
@@ -234,6 +236,10 @@ export default function MerchantDetailScreen() {
     locationAddress,
     coords
   );
+  // Same resolution order as food home — never treat unknown as classic (that mixed
+  // grid_first store menus into classic Worth A Try / 2-col imaged grids).
+  const resolvedFoodHomeLayoutKey =
+    foodHomeLayoutKeyRaw ?? cachedLayoutKey ?? peekCachedFoodHomeLayoutKey() ?? null;
   const groceryStoreHint =
     (
       readSyncMerchantMenu(merchantId)?.storeType ??
@@ -244,10 +250,12 @@ export default function MerchantDetailScreen() {
     )
       .trim()
       .toUpperCase() === "GROCERY";
-  // Grocery inner pages always use grid-first chrome (list + Catalog FAB).
-  // Food discovery layout must not leak onto grocery stores.
+  // Grocery always uses grid-first chrome (list + Catalog FAB). Food layouts must
+  // not leak: classic = imaged rail/grids, discovery = dark masonry, else list.
+  const isClassicLayout =
+    !groceryStoreHint && resolvedFoodHomeLayoutKey === "classic";
   const isDiscoveryLayout =
-    !groceryStoreHint && (foodHomeLayoutKeyRaw ?? cachedLayoutKey) === "discovery";
+    !groceryStoreHint && resolvedFoodHomeLayoutKey === "discovery";
   const isScreenFocused = useIsFocused();
   const chromeHeight = isDiscoveryLayout
     ? merchantStickyFilterTop(topPad) + FILTER_BAR_HEIGHT
@@ -1037,6 +1045,7 @@ export default function MerchantDetailScreen() {
         menuItemId: m.menuItemId ?? null,
         price: selling,
         customerStrikePrice: strike != null && strike > selling ? strike : null,
+        flashSale: parseMenuFlashSale(m as unknown as Record<string, unknown>),
       };
     });
     return buildItemOfferDisplayMap(merchantOffers, catalog);
@@ -1907,7 +1916,10 @@ export default function MerchantDetailScreen() {
     return resolveStoreContinueBarHeight(true, cartDockBottomInset) + fabClearance;
   }, [cartDockBottomInset, isDiscoveryLayout]);
 
-  const listContentContainerStyle = useMemo(() => ({ paddingBottom: 0 }), []);
+  const listContentContainerStyle = useMemo(
+    () => ({ paddingBottom: Math.max(24, footerBottomPadding) }),
+    [footerBottomPadding]
+  );
 
   const handleStoreCartContinue = useCallback(() => {
     if (isStoreClosedForStatus) return;
@@ -1950,6 +1962,7 @@ export default function MerchantDetailScreen() {
         pairingCompanionItems,
         hideInfoCard: isDiscoveryLayout,
         masonry: isDiscoveryLayout,
+        classicImagedLayout: isClassicLayout,
       });
       perfMark("merchant:flashListData:built");
       perfMeasure("merchant:flashListData:build", "merchant:flashListData:built");
@@ -1967,6 +1980,7 @@ export default function MerchantDetailScreen() {
       pairingAnchorKey,
       pairingCompanionItems,
       isDiscoveryLayout,
+      isClassicLayout,
     ]
   );
 
@@ -2020,29 +2034,38 @@ export default function MerchantDetailScreen() {
   }, [sections, filter, menuSearchQuery, advancedFilters, scrollToMenuTarget]);
 
   useEffect(() => {
-    const target = focusItemId?.trim();
+    const raw = focusItemId;
+    const target = (Array.isArray(raw) ? raw[0] : raw)?.trim();
     if (!target || focusItemHandledRef.current === target) return;
+    // Cold menu: keep waiting — do not mark handled or the deep-link is lost.
+    if (menuPending) return;
     if (sections.length === 0) return;
 
-    const flatIndex = flashIndexMap.menuItemByKey.get(target);
+    const flatIndex = flashIndexMap.menuItemByKey.get(target) ?? null;
     if (flatIndex == null) return;
+    // List must be laid out or scrollToIndex falls into a long retry storm (feels like 10s+ lag).
+    if (!listLaidOut) return;
 
     focusItemHandledRef.current = target;
     setHighlightedMenuItemKey(target);
 
-    const scrollToItem = () => {
-      scrollFlashListToFlatIndex(scrollListRef, flatIndex, true, 8);
+    // Instant jump — long animated scrolls from the hero feel delayed and jerky.
+    const jump = () => {
+      scrollFlashListToFlatIndex(scrollListRef, flatIndex, false, 8);
     };
-
-    // One frame — no InteractionManager / scroll-started gate (felt like multi-tap lag).
-    const t1 = requestAnimationFrame(scrollToItem);
+    jump();
+    const t1 = requestAnimationFrame(jump);
+    const t2 = setTimeout(jump, 48);
+    const t3 = setTimeout(jump, 160);
     const clearHighlight = setTimeout(() => setHighlightedMenuItemKey(null), 2600);
 
     return () => {
       cancelAnimationFrame(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
       clearTimeout(clearHighlight);
     };
-  }, [focusItemId, sections, flashIndexMap]);
+  }, [focusItemId, sections, flashIndexMap, menuPending, listLaidOut]);
 
   useEffect(() => {
     if (openCart !== "1" || !merchantId) return;
@@ -2273,8 +2296,15 @@ export default function MerchantDetailScreen() {
   }, []);
 
   const handleMerchantInfoPress = useCallback(() => {
+    if (merchantId) {
+      void queryClient.prefetchQuery({
+        queryKey: ["merchant-about", merchantId],
+        queryFn: () => merchantService.getMerchantAbout(merchantId),
+        staleTime: 5 * 60_000,
+      });
+    }
     router.push(`/home/merchant/about/${merchantId}`);
-  }, [router, merchantId]);
+  }, [router, merchantId, queryClient]);
 
   const handleOpenFiltersSheet = useCallback(() => {
     setFiltersSheetVisible(true);
@@ -2515,7 +2545,7 @@ export default function MerchantDetailScreen() {
               onOpenFilters={handleOpenFiltersSheet}
               showHighlyReordered={showHighlyReorderedChip}
               filtersActive={filtersActive}
-              style={styles.stickyFilterBar}
+              style={[styles.stickyFilterBar, styles.stickyFilterBarDark]}
             />
           ) : null
         }
@@ -2550,6 +2580,7 @@ export default function MerchantDetailScreen() {
         onOffersPress={openOffersSheet}
         onSchedulePress={openScheduleSheet}
         onRatingHintPress={openRatingSheet}
+        onFocusMenuSearch={openMerchantSearch}
         filter={filter}
         onFilterChange={handleFilterChange}
         onOpenFilters={handleOpenFiltersSheet}
@@ -2589,6 +2620,7 @@ export default function MerchantDetailScreen() {
         onVisibleCategoryChange={handleVisibleCategoryChange}
         chromeHeight={chromeHeight}
         showCategoryRail={isDiscoveryLayout}
+        classicLayout={isClassicLayout}
         refreshing={menuRefreshing}
         onRefresh={handleMenuRefresh}
       />
@@ -2934,6 +2966,9 @@ const styles = StyleSheet.create({
     marginHorizontal: -16,
     borderBottomWidth: 0,
     paddingVertical: 8,
+    backgroundColor: "#FFFFFF",
+  },
+  stickyFilterBarDark: {
     backgroundColor: MerchantDarkPalette.bg,
   },
   stickySearchHintText: {
@@ -3665,6 +3700,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     zIndex: 200,
     elevation: 28,
+    overflow: "visible",
   },
   cartBar: {
     position: "absolute",

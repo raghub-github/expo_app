@@ -23,11 +23,33 @@ function proxyUrlFromKey(key: string): string {
 export function buildRiderDocumentKey(
   riderId: string | number,
   docType: string,
-  side: "front" | "back" | "single" = "single"
+  side: "front" | "back" | "single" = "single",
+  ext: string = "jpg"
 ): string {
+  const safeExt = String(ext || "jpg").replace(/^\./, "").toLowerCase() || "jpg";
   const base = `riders/${riderId}/documents/${docType}`;
-  if (side === "single") return `${base}/latest.jpg`;
-  return `${base}/${side}.jpg`;
+  if (side === "single") return `${base}/latest.${safeExt}`;
+  return `${base}/${side}.${safeExt}`;
+}
+
+export function guessUploadMimeFromUri(
+  uri: string,
+  explicitMime?: string | null
+): { mimeType: string; ext: string } {
+  const mime = String(explicitMime || "").trim().toLowerCase();
+  if (mime === "application/pdf" || mime.includes("pdf")) {
+    return { mimeType: "application/pdf", ext: "pdf" };
+  }
+  if (mime === "image/png" || /\.png(\?|#|$)/i.test(uri)) {
+    return { mimeType: "image/png", ext: "png" };
+  }
+  if (mime === "image/webp" || /\.webp(\?|#|$)/i.test(uri)) {
+    return { mimeType: "image/webp", ext: "webp" };
+  }
+  if (/\.pdf(\?|#|$)/i.test(uri)) {
+    return { mimeType: "application/pdf", ext: "pdf" };
+  }
+  return { mimeType: "image/jpeg", ext: "jpg" };
 }
 
 /**
@@ -62,20 +84,24 @@ export async function uploadToR2(
   fileUri: string,
   folder: "selfies" | "documents" | string,
   accessToken: string,
-  fileName?: string
+  fileName?: string,
+  mimeType?: string
 ): Promise<R2UploadResult> {
   const config = getRiderAppConfig();
   const apiBaseUrl = config.apiBaseUrl;
+  const guessed = guessUploadMimeFromUri(fileUri, mimeType);
 
   let key: string;
   if (fileName?.includes("/")) {
     key = fileName;
   } else {
-    const finalFileName = fileName || `${Date.now()}-${Math.random().toString(36).substring(7)}.jpg`;
+    const finalFileName =
+      fileName || `${Date.now()}-${Math.random().toString(36).substring(7)}.${guessed.ext}`;
     key = `${folder}/${finalFileName}`;
   }
 
-  const finalFileName = key.split("/").pop() || `${Date.now()}.jpg`;
+  const finalFileName = key.split("/").pop() || `${Date.now()}.${guessed.ext}`;
+  const contentType = guessed.mimeType;
 
   // Multipart uploads on mobile networks (LTE, moving, weak signal) fail transiently far more
   // often than JSON requests. Retry a few times with backoff before surfacing an error — this is
@@ -88,7 +114,7 @@ export async function uploadToR2(
     const body = new FormData();
     body.append("folder", folder);
     body.append("key", key);
-    body.append("file", { uri: fileUri, type: "image/jpeg", name: finalFileName } as any);
+    body.append("file", { uri: fileUri, type: contentType, name: finalFileName } as any);
     try {
       uploadResponse = await fetchWithTimeout(
         `${apiBaseUrl}/v1/storage/upload`,

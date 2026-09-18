@@ -440,7 +440,17 @@ export default function RideSearchingScreen() {
     rideTypeId
   );
 
-  const nearbyRiders = useMemo(() => availability?.riders ?? [], [availability?.riders]);
+  const nearbyRiders = useMemo(() => {
+    const all = availability?.riders ?? [];
+    // Prefer option-matched supply so the map shows every active vehicle for this ride type.
+    const option = availability?.options?.find((o) => o.id === rideTypeId);
+    if (!option?.vehicleTypes?.length) return all;
+    const allowed = new Set(option.vehicleTypes);
+    return all.filter((rider) => {
+      const types = rider.vehicleTypes?.length ? rider.vehicleTypes : [rider.vehicleType];
+      return types.some((type) => allowed.has(type));
+    });
+  }, [availability?.riders, availability?.options, rideTypeId]);
 
   const riderMarkerImageKey = resolveSelectedRideMapMarkerImageKey(rideTypeId, rideImageKey);
 
@@ -486,7 +496,7 @@ export default function RideSearchingScreen() {
 
   const sheetSubtitle =
     phase === "tip_boost"
-      ? "Add a tip to help nearby riders notice your order"
+      ? "No captain accepted yet — you can keep searching"
       : rideName.toLowerCase().includes("bike")
         ? `Searching nearby ${rideName.toLowerCase()}s for you`
         : "Searching nearby riders for you";
@@ -509,12 +519,10 @@ export default function RideSearchingScreen() {
   }, [params, pickupAddress, dropAddress, pickupLat, pickupLng, dropLat, dropLng, rideTypeId, router]);
 
   const dismissAfterSearchTimeout = useCallback(() => {
-    if (openedFromRideHome) {
-      router.replace("/home/service/ride");
-      return;
-    }
-    returnToRideBook();
-  }, [openedFromRideHome, router, returnToRideBook]);
+    setApologySheetVisible(false);
+    setPhase("cancelled");
+    router.replace("/home/service/ride");
+  }, [router]);
 
   const showMapToast = useCallback((title: string, message?: string, durationMs = 5000) => {
     if (mapToastTimerRef.current) clearTimeout(mapToastTimerRef.current);

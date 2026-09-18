@@ -49,6 +49,8 @@ import {
   serializeCanonicalPricing,
 } from "../pricing/canonicalItemPricing.js";
 import { loadMerchantOffersForPricing } from "../pricing/loadMerchantOffersForPricing.js";
+import { overlayFlashSaleOnMenuRows } from "../billing/flashSaleApply.js";
+import { loadActiveFoodFlashSalesForStore } from "../billing/flashSaleRedemption.service.js";
 import { previewEtaRange } from "../eta/eta.preview.js";
 import {
   fetchAddonsForCustomizationIds,
@@ -80,7 +82,7 @@ async function applyCanonicalCustomerMenuPrices<
     selling_price: string;
     base_price?: string | null;
   },
->(storePk: number, items: T[]): Promise<T[]> {
+>(storePk: number, items: T[], customerId?: number | null): Promise<T[]> {
   if (items.length === 0) return items;
   const commission = await resolveStoreCommission(storePk);
   const offers = await loadMerchantOffersForPricing(storePk);
@@ -106,6 +108,8 @@ async function applyCanonicalCustomerMenuPrices<
       it.base_price = markupRupeesPaise(baseNet, commission.percent).toFixed(2) as T["base_price"] & string;
     }
   }
+  const flashOffers = await loadActiveFoodFlashSalesForStore(storePk, customerId);
+  overlayFlashSaleOnMenuRows(items as T[], flashOffers);
   return items;
 }
 
@@ -1157,7 +1161,8 @@ export async function getStoreLiveStatus(storeId: string): Promise<"OPEN" | "CLO
  */
 export async function getMenuByStoreId(
   storeId: string,
-  searchQ?: string
+  searchQ?: string,
+  customerId?: number | null
 ): Promise<{
   store: MerchantStoreRow | null;
   items: (MerchantMenuItemRow & { category_name: string | null })[];
@@ -1347,7 +1352,7 @@ export async function getMenuByStoreId(
   });
 
   const commission = await resolveStoreCommission(store.id);
-  await applyCanonicalCustomerMenuPrices(store.id, itemsWithCategory);
+  await applyCanonicalCustomerMenuPrices(store.id, itemsWithCategory, customerId);
   void commission;
 
   return { store, items: itemsWithCategory };
@@ -1422,7 +1427,8 @@ export type MenuDeltaResult = {
  */
 export async function getMenuDelta(
   storeId: string,
-  sinceVersionMs: number
+  sinceVersionMs: number,
+  customerId?: number | null
 ): Promise<MenuDeltaResult | null> {
   const versionInfo = await getMenuVersion(storeId);
   if (!versionInfo) return null;
@@ -1515,7 +1521,7 @@ export async function getMenuDelta(
   }
 
   const commission = await resolveStoreCommission(store.id);
-  await applyCanonicalCustomerMenuPrices(store.id, activeRows);
+  await applyCanonicalCustomerMenuPrices(store.id, activeRows, customerId);
   void commission;
 
   return {
@@ -2225,7 +2231,8 @@ function markMostOrderedAddons<T extends { numericId: number }>(
  */
 export async function getMenuItemFullConfig(
   storeId: string,
-  itemId: string
+  itemId: string,
+  customerId?: number | null
 ): Promise<MenuItemFullConfig | null> {
   const supabase = getSupabase();
   const store = await getStoreByStoreId(storeId);
@@ -2389,6 +2396,20 @@ export async function getMenuItemFullConfig(
     });
   const markup = (rupees: number): number => markupRupeesPaise(rupees, commission.percent);
   const itemPriced = priceItem(parseFloat(item.selling_price));
+  const flashRows = [
+    {
+      id: Number(item.id) || 0,
+      item_id: item.item_id,
+      selling_price: itemPriced.customerItemPriceUnit.toFixed(2),
+      in_stock: (item as { in_stock?: boolean | null }).in_stock,
+      is_active: (item as { is_active?: boolean | null }).is_active,
+      is_locked_by_plan: (item as { is_locked_by_plan?: boolean | null }).is_locked_by_plan,
+      effective_in_stock: (item as { effective_in_stock?: boolean | null }).effective_in_stock,
+    },
+  ];
+  const flashOffers = await loadActiveFoodFlashSalesForStore(Number(store.id), customerId);
+  overlayFlashSaleOnMenuRows(flashRows, flashOffers);
+  const customerItemUnit = parseFloat(flashRows[0]!.selling_price);
   const itemSizePreset = parseSizePreset(
     (item as { size_preset?: string | null }).size_preset
   );
@@ -2427,7 +2448,7 @@ export async function getMenuItemFullConfig(
       menuItemId: Number(item.id) || undefined,
       name: item.item_name,
       description: item.item_description ?? null,
-      price: itemPriced.customerItemPriceUnit,
+      price: Number.isFinite(customerItemUnit) ? customerItemUnit : itemPriced.customerItemPriceUnit,
       imageUrl: toAbsoluteClientMediaUrl(visibleImageUrl),
       isVeg: foodTypeIsListedAsVeg(item.food_type),
       hasCustomizations: item.has_customizations === true,
@@ -2441,7 +2462,7 @@ export async function getMenuItemFullConfig(
       {
         name: item.item_name,
         shortName: (item as { short_name?: string | null }).short_name ?? null,
-        price: itemPriced.customerItemPriceUnit,
+        price: Number.isFinite(customerItemUnit) ? customerItemUnit : itemPriced.customerItemPriceUnit,
         sizeValue: itemSizeValue,
         sizeUnit: itemSizeUnit,
         sizePreset: itemSizePreset,

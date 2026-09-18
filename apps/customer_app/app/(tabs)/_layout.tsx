@@ -45,9 +45,12 @@ export default function TabsLayout() {
           // Full-width shift — driven entirely by transitionSpec + sceneStyleInterpolator below (no
           // named `animation` preset: bottom-tabs only uses a preset's own spec/interpolator when
           // ours are absent, so setting one here is a no-op that just adds an unused variable).
+          // Tab switches are press-only (CustomerTabBar / EdgePeek). Scroll/pan on Home or Food
+          // content never calls navigation.navigate / jumpTo — keep that invariant.
           transitionSpec: CUSTOMER_TAB_TRANSITION_SPEC,
           sceneStyleInterpolator: forCustomerTabSlide,
           // Keep Food/Home scenes in the graph so rapid tab presses don't remount mid-slide.
+          // Home↔Food authority: `lib/customerPrimaryTabNav` + `navigatePrimaryTab` (not URL flash).
           lazy: false,
         }}
       >
@@ -69,8 +72,10 @@ export default function TabsLayout() {
           options={{
             title: "Food",
             headerShown: false,
-            // Freeze when blurred so returning Food doesn't cold-remount mid-transition.
-            freezeOnBlur: true,
+            // Same as Home: never freeze during the custom Home↔Food slide.
+            // freezeOnBlur:true raced unfreeze mid-transition and briefly snapped
+            // the navigator back to Main Home before Food settled.
+            freezeOnBlur: false,
           }}
         />
         <Tabs.Screen

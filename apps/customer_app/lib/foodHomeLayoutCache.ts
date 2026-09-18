@@ -110,6 +110,26 @@ function normalizeCachedFoodHomeLayout(entry: CachedFoodHomeLayoutEntry): FoodHo
     ),
     gridFirstUnder250TabImageUrl: parseGridFirstUnder250ImageUrl(entry.gridFirstUnder250TabImageUrl),
     gridFirstUnder250HeroImageUrl: parseGridFirstUnder250ImageUrl(entry.gridFirstUnder250HeroImageUrl),
+    classicUnder250Enabled: parseGridFirstUnder250Enabled(
+      entry.classicUnder250Enabled ?? entry.gridFirstUnder250Enabled
+    ),
+    classicUnder250MaxPrice: parseGridFirstUnder250MaxPrice(
+      entry.classicUnder250MaxPrice ?? entry.gridFirstUnder250MaxPrice
+    ),
+    classicUnder250Title: parseGridFirstUnder250Title(
+      entry.classicUnder250Title ?? entry.gridFirstUnder250Title,
+      DEFAULT_GRID_FIRST_UNDER_250.title
+    ),
+    classicUnder250FilterLabel: parseGridFirstUnder250Title(
+      entry.classicUnder250FilterLabel ?? entry.gridFirstUnder250FilterLabel,
+      DEFAULT_GRID_FIRST_UNDER_250.filterLabel
+    ),
+    classicUnder250TabImageUrl: parseGridFirstUnder250ImageUrl(
+      entry.classicUnder250TabImageUrl ?? entry.gridFirstUnder250TabImageUrl
+    ),
+    classicUnder250HeroImageUrl: parseGridFirstUnder250ImageUrl(
+      entry.classicUnder250HeroImageUrl ?? entry.gridFirstUnder250HeroImageUrl
+    ),
     discoveryDealsAtMaxPrice: parseDiscoveryCtaConfig(entry).dealsAtMaxPrice,
     discoveryDealsAtImageUrl: parseDiscoveryCtaConfig(entry).dealsAtImageUrl,
     discoveryDealsAtHeroImageUrl: parseDiscoveryCtaConfig(entry).dealsAtHeroImageUrl,

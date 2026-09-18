@@ -826,10 +826,10 @@ export function resolveLedgerFormattedOrderId(
   entry: LedgerEntry,
   meta: Record<string, unknown> | null | undefined,
 ): string | null {
-  const fromEntry = String(entry.formatted_order_id ?? "").trim();
-  if (fromEntry) return fromEntry.replace(/^#/, "");
-  const fromMeta = metaString(meta, "formatted_order_id");
-  if (fromMeta) return fromMeta.replace(/^#/, "");
+  const fromEntry = String(entry.formatted_order_id ?? "").trim().replace(/^#/, "");
+  if (fromEntry && !/^\d+$/.test(fromEntry)) return fromEntry;
+  const fromMeta = metaString(meta, "formatted_order_id").replace(/^#/, "");
+  if (fromMeta && !/^\d+$/.test(fromMeta)) return fromMeta;
   return null;
 }
 
@@ -1203,7 +1203,7 @@ export function buildOrderPayoutBreakdown(
         })();
 
   const displayOrderId = formattedOrderId
-    ?? (ordersCoreId != null ? String(ordersCoreId) : String(entry.reference_id ?? entry.id));
+    ?? "—";
 
   const paymentRaw = meta?.payment_method ?? meta?.payment_status ?? "Paid online";
   const paymentLabel = typeof paymentRaw === "string" && paymentRaw.trim()

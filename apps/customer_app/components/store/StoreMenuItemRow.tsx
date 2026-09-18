@@ -50,7 +50,7 @@ export type StoreMenuItemRowProps = {
   itemOffer?: ItemOfferDisplay | null;
 };
 
-const IMAGE_SIZE = 118;
+const IMAGE_SIZE = 128;
 const ROW_GAP = 12;
 const TAP_MOVE_SLOP = 8;
 const DESCRIPTION_FIRST_LINE_LENGTH = 40;
@@ -192,10 +192,10 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   const basePrice = getBasePrice(item);
   const { payable: payableAmount, strike: strikeAmount, showStrike: showDiscount } =
     resolveMenuOfferPriceDisplay({ sellingPrice, basePrice, itemOffer });
+  // "Get for" when backend already baked a strike (menu selling_price is final).
+  // Never require offerPrice < selling — that only happened with client estimates.
   const showOfferPrice =
-    itemOffer?.kind !== "bogo" &&
-    itemOffer?.offerPrice != null &&
-    itemOffer.offerPrice < sellingPrice - 0.001;
+    showDiscount && itemOffer != null && itemOffer.kind !== "bogo";
   const catalogMrpDiscount = basePrice != null && basePrice > sellingPrice;
   const catalogDiscountPct = catalogMrpDiscount
     ? computeCatalogDiscountPercent(basePrice, sellingPrice)

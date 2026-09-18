@@ -62,13 +62,13 @@ export const MerchantFloatingFabWithCartOffset = React.memo(function MerchantFlo
       merchantCartMatchesRoute(s.merchantId, merchantId) &&
       s.items.some((cartItem) => cartItem.quantity > 0)
   );
-  const bottom = useMemo(
-    () =>
-      hasMerchantCartItems
-        ? resolveStoreContinueBarHeight(reserveOfferStrip, cartDockBottomInset) + 14
-        : cartDockBottomInset + 14,
-    [cartDockBottomInset, hasMerchantCartItems, reserveOfferStrip]
-  );
+  const bottom = useMemo(() => {
+    if (hasMerchantCartItems) {
+      return resolveStoreContinueBarHeight(reserveOfferStrip, cartDockBottomInset) + 56;
+    }
+    // No HOME edge on store inner — sit above safe-area only.
+    return cartDockBottomInset + 12;
+  }, [cartDockBottomInset, hasMerchantCartItems, reserveOfferStrip]);
   return <MerchantFloatingFab {...fabProps} bottom={bottom} />;
 });
 

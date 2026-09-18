@@ -34,9 +34,11 @@ import {
   executeRtoFinancials,
   lookupOrderContext,
 } from "../../lib/financial-rule-executor.js";
-import { refundFieldsFromEngineResult } from "../../lib/order-cancellation-refund.js";
+import {
+  refundFieldsFromEngineResult,
+  resolvePostCancelAutoRefundPolicy,
+} from "../../lib/order-cancellation-refund.js";
 import { recordOrderCancellation } from "../../lib/record-order-cancellation.js";
-import { shouldAutoRefundForCancellationActor } from "../../lib/auto-refund-on-cancellation.js";
 import {
   refundStatusFromAutoRefundOutcome,
   triggerOrderAutoRefundAfterCancel,
@@ -775,9 +777,9 @@ async function loadCoreRows(
   }
 
   try {
-    return await sql.begin(async (tx) => {
-      await tx`SET LOCAL statement_timeout = '3500ms'`;
-      return await tx<CoreRow[]>`
+    // Plain SELECT — BEGIN/SET LOCAL added 2–3 remote RTTs per board poll.
+    // Board only needs recent rows; Past Orders covers history.
+    return await sql<CoreRow[]>`
       SELECT
         oc.id,
         oc.order_id,
@@ -810,10 +812,10 @@ async function loadCoreRows(
       FROM orders_core oc
       LEFT JOIN customers cust ON cust.id = oc.customer_id
       WHERE oc.merchant_store_id = ${storeId}
+        AND oc.created_at >= NOW() - INTERVAL '7 days'
       ORDER BY oc.created_at DESC
       LIMIT ${limit}
     `;
-    });
   } catch (err) {
     const code = (err as { code?: string })?.code;
     // 57014 = statement_timeout — fall back to a smaller capped window
@@ -853,6 +855,7 @@ async function loadCoreRows(
           FROM orders_core oc
           LEFT JOIN customers cust ON cust.id = oc.customer_id
           WHERE oc.merchant_store_id = ${storeId}
+            AND oc.created_at >= NOW() - INTERVAL '48 hours'
           ORDER BY oc.created_at DESC
           LIMIT ${Math.min(limit, 25)}
         `,
@@ -896,6 +899,7 @@ async function loadCoreRows(
       FROM orders_core oc
       LEFT JOIN customers cust ON cust.id = oc.customer_id
       WHERE oc.merchant_store_id = ${storeId}
+        AND oc.created_at >= NOW() - INTERVAL '7 days'
       ORDER BY oc.created_at DESC
       LIMIT ${limit}
     `;
@@ -1322,8 +1326,11 @@ async function buildOrderDto(
       ...it,
       price: num(it.net_line_total ?? it.catalog_line_total ?? it.price),
     }));
+  } else if (opts.boardList && snaps.length === 0) {
+    // Board poll: skip per-row commission rescale (was N× resolveStoreCommission).
+    // Card totals still use orders_core.total_ctm below.
   } else {
-    // Board list and detail share the same merchant line math as Partner Site food-orders.
+    // Detail (or board with snapshots): merchant line math as Partner Site food-orders.
     const { items: merchantItems, merchantSubtotal } = await applyMerchantBaseToOrderItems(
       items,
       snaps,
@@ -1935,7 +1942,8 @@ export async function loadMerchantFoodOrderRidersLog(
 async function loadCustomerOrderOrdinalsForCores(
   sql: Sql,
   storeId: number,
-  cores: Array<{ id: number; customer_id: unknown; created_at: unknown }>
+  cores: Array<{ id: number; customer_id: unknown; created_at: unknown }>,
+  opts?: { includePlatform?: boolean }
 ): Promise<{
   storeOrdinalByCoreId: Map<number, number>;
   customerStoreOrdersTotalById: Map<number, number>;
@@ -1945,58 +1953,74 @@ async function loadCustomerOrderOrdinalsForCores(
   const customerStoreOrdersTotalById = new Map<number, number>();
   const customerPlatformOrdersTotalById = new Map<number, number>();
   const coreIds = cores.map((c) => Number(c.id)).filter((n) => Number.isFinite(n) && n > 0);
-  if (coreIds.length === 0) {
+  const customerIds = [
+    ...new Set(
+      cores
+        .map((c) => coerceCustomerId(c.customer_id))
+        .filter((id): id is number => id != null)
+    ),
+  ];
+  if (coreIds.length === 0 || customerIds.length === 0) {
     return { storeOrdinalByCoreId, customerStoreOrdersTotalById, customerPlatformOrdersTotalById };
   }
 
-  const rows = await sql<
-    Array<{
-      order_id: number;
-      customer_id: number;
-      store_ordinal: number;
-      platform_ordinal: number;
-    }>
-  >`
-    SELECT
-      o.id AS order_id,
-      o.customer_id,
-      (
-        SELECT COUNT(*)::int
-        FROM orders_core c2
-        WHERE c2.merchant_store_id = ${storeId}
-          AND c2.customer_id = o.customer_id
-          AND (
-            c2.created_at < o.created_at
-            OR (c2.created_at = o.created_at AND c2.id <= o.id)
-          )
-      ) AS store_ordinal,
-      (
-        SELECT COUNT(*)::int
-        FROM orders_core c3
-        WHERE c3.customer_id = o.customer_id
-          AND (
-            c3.created_at < o.created_at
-            OR (c3.created_at = o.created_at AND c3.id <= o.id)
-          )
-      ) AS platform_ordinal
-    FROM orders_core o
-    WHERE o.id IN ${sql(coreIds)}
-      AND o.customer_id IS NOT NULL
-  `;
+  const includePlatform = opts?.includePlatform !== false;
 
-  for (const r of rows) {
-    const coreId = Number(r.order_id);
-    const cid = Number(r.customer_id);
+  // Window ranks for the store's customers once — correlated COUNT(*) per core
+  // was 2–6s on the merchant board poll (17 rows → 17 subquery scans).
+  const [ordinalRows, storeTotals, platformTotals] = await Promise.all([
+    sql<Array<{ id: number; store_ordinal: number }>>`
+      WITH ranked AS (
+        SELECT
+          id,
+          ROW_NUMBER() OVER (
+            PARTITION BY customer_id
+            ORDER BY created_at ASC, id ASC
+          )::int AS store_ordinal
+        FROM orders_core
+        WHERE merchant_store_id = ${storeId}
+          AND customer_id IN ${sql(customerIds)}
+      )
+      SELECT id, store_ordinal
+      FROM ranked
+      WHERE id IN ${sql(coreIds)}
+    `,
+    sql<Array<{ customer_id: number; cnt: number }>>`
+      SELECT customer_id, COUNT(*)::int AS cnt
+      FROM orders_core
+      WHERE merchant_store_id = ${storeId}
+        AND customer_id IN ${sql(customerIds)}
+      GROUP BY customer_id
+    `,
+    includePlatform
+      ? sql<Array<{ customer_id: number; cnt: number }>>`
+          SELECT customer_id, COUNT(*)::int AS cnt
+          FROM orders_core
+          WHERE customer_id IN ${sql(customerIds)}
+          GROUP BY customer_id
+        `
+      : Promise.resolve([] as Array<{ customer_id: number; cnt: number }>),
+  ]);
+
+  for (const r of ordinalRows) {
+    const coreId = Number(r.id);
     const storeOrd = Number(r.store_ordinal);
-    const platOrd = Number(r.platform_ordinal);
     if (Number.isFinite(coreId) && storeOrd > 0) {
       storeOrdinalByCoreId.set(coreId, storeOrd);
     }
-    if (Number.isFinite(cid) && storeOrd > 0) {
-      customerStoreOrdersTotalById.set(cid, storeOrd);
+  }
+  for (const r of storeTotals) {
+    const cid = Number(r.customer_id);
+    const cnt = Number(r.cnt);
+    if (Number.isFinite(cid) && cnt > 0) {
+      customerStoreOrdersTotalById.set(cid, cnt);
     }
-    if (Number.isFinite(cid) && platOrd > 0) {
-      customerPlatformOrdersTotalById.set(cid, platOrd);
+  }
+  for (const r of platformTotals) {
+    const cid = Number(r.customer_id);
+    const cnt = Number(r.cnt);
+    if (Number.isFinite(cid) && cnt > 0) {
+      customerPlatformOrdersTotalById.set(cid, cnt);
     }
   }
 
@@ -2098,9 +2122,14 @@ export async function loadMerchantFoodOrders(
 
   if (isBoardList) {
     /**
-     * Board must stay under ~2s. Skip Nth-order COUNTs (those stall the pool).
-     * Load CTM line items (merchant_ctm_pricing_snapshot) so inline amounts match Partner Site.
+     * Board must stay under ~few seconds. Nth-order counts run in parallel
+     * (store-scoped correlated COUNTs) so cards get "Nth order by …".
      */
+    const emptyOrdinals = {
+      storeOrdinalByCoreId: new Map<number, number>(),
+      customerStoreOrdersTotalById: new Map<number, number>(),
+      customerPlatformOrdersTotalById: new Map<number, number>(),
+    };
     const [
       settingsRows,
       custs,
@@ -2110,6 +2139,7 @@ export async function loadMerchantFoodOrders(
       tokPack,
       riders,
       ratings,
+      ordinals,
     ] = await Promise.all([
       withTimeout(
         sql`SELECT self_delivery FROM merchant_store_settings WHERE store_id = ${storeId} LIMIT 1`.then(
@@ -2182,7 +2212,7 @@ export async function loadMerchantFoodOrders(
                 }
               }
             })(),
-            3_000,
+            1_200,
             [] as Array<{ order_id: number; token: string | null; kot_number?: string | null }>
           )
         : Promise.resolve(
@@ -2191,7 +2221,15 @@ export async function loadMerchantFoodOrders(
       coreIds.length > 0
         ? withTimeout(loadActiveRidersByCoreIds(sql, coreIds), 1_000, new Map())
         : Promise.resolve(new Map() as Map<number, ActiveRiderSnapshot>),
-      loadStoreRatingsForOrders(sql, storeId, cores, foods),
+      withTimeout(loadStoreRatingsForOrders(sql, storeId, cores, foods), 1_200, new Map()),
+      // Nth-order enrichment in parallel with board (not after) so it is not starved.
+      coreIds.length > 0
+        ? withTimeout(
+            loadCustomerOrderOrdinalsForCores(sql, storeId, cores, { includePlatform: false }),
+            1_500,
+            emptyOrdinals
+          )
+        : Promise.resolve(emptyOrdinals),
     ]);
 
     selfDeliveryEnabled = settingsRows[0]?.self_delivery === true;
@@ -2216,6 +2254,13 @@ export async function loadMerchantFoodOrders(
     ingestTokenRows(tokPack);
     activeRiderByCoreId = riders;
     storeRatingByCoreId = ratings;
+    for (const [k, v] of ordinals.storeOrdinalByCoreId) storeOrdinalByCoreId.set(k, v);
+    for (const [k, v] of ordinals.customerStoreOrdersTotalById) {
+      customerStoreOrdersTotalById.set(k, v);
+    }
+    for (const [k, v] of ordinals.customerPlatformOrdersTotalById) {
+      customerPlatformOrdersTotalById.set(k, v);
+    }
   } else {
     // ── Single-order detail: parallel lite enrich (no ordinal / KOT mint / hung COUNTs) ──
     const [
@@ -2363,11 +2408,11 @@ export async function loadMerchantFoodOrders(
     }
   }
 
-  if (coreIds.length > 0) {
+  if (!isBoardList && coreIds.length > 0) {
     try {
       const ordinals = await withTimeout(
-        loadCustomerOrderOrdinalsForCores(sql, storeId, cores),
-        isBoardList ? 1_500 : 2_500,
+        loadCustomerOrderOrdinalsForCores(sql, storeId, cores, { includePlatform: true }),
+        4_000,
         {
           storeOrdinalByCoreId: new Map<number, number>(),
           customerStoreOrdersTotalById: new Map<number, number>(),
@@ -3143,28 +3188,10 @@ export async function patchMerchantFoodOrderStatus(
     const cancelledByType =
       actionSource === "admin" ? "admin" : actionSource === "system" ? "system" : "store";
     const orderCtx = await lookupOrderContext(corePk, sql);
-    let autoRefundOutcome: Awaited<ReturnType<typeof triggerOrderAutoRefundAfterCancel>> | null =
-      null;
-    if (shouldAutoRefundForCancellationActor(cancelledByType)) {
-      try {
-        autoRefundOutcome = await triggerOrderAutoRefundAfterCancel(
-          {
-            orderCoreId: corePk,
-            reason: displayReason || "Order cancelled by merchant",
-            actorRole: cancelledByType,
-            amount: null,
-            orderGrandTotal: num(coreRow?.grand_total ?? orderCtx.grandTotal),
-          },
-          sql
-        );
-      } catch (refundErr) {
-        console.error(
-          "[merchant-cancel] early auto_refund failed",
-          corePk,
-          (refundErr as Error).message
-        );
-      }
-    }
+    const orderGross = num(
+      coreRow?.grand_total ?? existing.food_items_total_value ?? orderCtx.grandTotal
+    );
+    // Engine first — admin rules decide amount / approval. Then auto-refund immediately.
     const engineResult = await executeOrderCancellationFinancials({
       orderCoreId: corePk,
       ordersFoodId,
@@ -3172,11 +3199,17 @@ export async function patchMerchantFoodOrderStatus(
       merchantStoreId: storeId,
       previousStatus: currentStatus,
       cancelledByType,
-      orderGross: num(coreRow?.grand_total ?? existing.food_items_total_value ?? orderCtx.grandTotal),
+      orderGross,
       serviceType: orderCtx.serviceType,
       cancellationReasonId: null,
     });
     const refund = refundFieldsFromEngineResult(engineResult.raw);
+    const refundPolicy = resolvePostCancelAutoRefundPolicy({
+      actorRole: cancelledByType,
+      engineRefund: refund,
+      orderGross,
+      forceCustomerRefundWhenEngineSilent: cancelledByType === "system",
+    });
     try {
       await recordOrderCancellation(sql, {
         orderCorePk: corePk,
@@ -3190,28 +3223,60 @@ export async function patchMerchantFoodOrderStatus(
         previousStatus: currentStatus,
         acceptedAt: coreRow?.accepted_at ?? null,
         grandTotal: coreRow?.grand_total ?? 0,
-        refundStatus: refund.refundStatus,
-        refundAmount: refund.refundAmount,
+        refundStatus: refundPolicy.refundStatus,
+        refundAmount: refundPolicy.refundAmountForLedger,
         metadata: engineResult.raw ? { financial_rule_engine: engineResult.raw } : undefined,
       });
     } catch {
       /* non-fatal */
     }
-    const engineAmt = Number(refund.refundAmount);
+    let autoRefundOutcome: Awaited<ReturnType<typeof triggerOrderAutoRefundAfterCancel>> | null =
+      null;
+    if (refundPolicy.shouldAutoExecute) {
+      try {
+        autoRefundOutcome = await triggerOrderAutoRefundAfterCancel(
+          {
+            orderCoreId: corePk,
+            reason: displayReason || "Order cancelled by merchant",
+            actorRole: cancelledByType,
+            amount: refundPolicy.executeAmount,
+            orderGrandTotal: orderGross,
+          },
+          sql
+        );
+      } catch (refundErr) {
+        console.error(
+          "[merchant-cancel] auto_refund failed",
+          corePk,
+          (refundErr as Error).message
+        );
+      }
+    } else {
+      console.info(
+        "[merchant-cancel] auto_refund skipped",
+        JSON.stringify({
+          corePk,
+          actor: cancelledByType,
+          skip: refundPolicy.skipReason ?? null,
+          status: refundPolicy.refundStatus,
+        })
+      );
+    }
     cancelNotifyRefund = {
       refundEligible:
-        shouldAutoRefundForCancellationActor(cancelledByType) ||
-        (Number.isFinite(engineAmt) && engineAmt > 0.005 && refund.refundStatus !== "no_refund"),
+        refundPolicy.shouldAutoExecute ||
+        (refundPolicy.refundAmountForLedger != null &&
+          refundPolicy.refundAmountForLedger > 0.005 &&
+          refundPolicy.refundStatus !== "no_refund"),
       refundStatus: autoRefundOutcome
-        ? refundStatusFromAutoRefundOutcome(autoRefundOutcome, refund.refundStatus)
-        : shouldAutoRefundForCancellationActor(cancelledByType)
-          ? "pending"
-          : refund.refundStatus,
+        ? refundStatusFromAutoRefundOutcome(autoRefundOutcome, refundPolicy.refundStatus)
+        : refundPolicy.refundStatus,
       refundAmount:
-        Number.isFinite(engineAmt) && engineAmt > 0.005
-          ? engineAmt
-          : shouldAutoRefundForCancellationActor(cancelledByType)
-            ? num(coreRow?.grand_total ?? orderCtx.grandTotal)
+        refundPolicy.refundAmountForLedger != null &&
+        refundPolicy.refundAmountForLedger > 0.005
+          ? refundPolicy.refundAmountForLedger
+          : refundPolicy.shouldAutoExecute
+            ? orderGross
             : null,
     };
     if (!engineResult.applied) {

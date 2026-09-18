@@ -63,6 +63,67 @@ export function refundFieldsFromEngineResult(result) {
     }
     return { refundStatus: "no_refund", refundAmount: null };
 }
+export function resolvePostCancelAutoRefundPolicy(input) {
+    const role = String(input.actorRole ?? "").trim().toLowerCase();
+    const grossRaw = Number(input.orderGross);
+    const gross = Number.isFinite(grossRaw) && grossRaw > 0.005
+        ? Math.round(grossRaw * 100) / 100
+        : null;
+    const engineStatus = String(input.engineRefund.refundStatus ?? "")
+        .trim()
+        .toLowerCase();
+    const engineAmtRaw = Number(input.engineRefund.refundAmount);
+    const engineAmt = Number.isFinite(engineAmtRaw) && engineAmtRaw > 0.005
+        ? Math.round(engineAmtRaw * 100) / 100
+        : null;
+    if (role === "customer" || role === "cx") {
+        return {
+            shouldAutoExecute: false,
+            executeAmount: null,
+            refundStatus: engineStatus || "no_refund",
+            refundAmountForLedger: engineAmt,
+            skipReason: "customer_actor",
+        };
+    }
+    if (engineStatus === "pending_approval") {
+        return {
+            shouldAutoExecute: false,
+            executeAmount: null,
+            refundStatus: "pending_approval",
+            refundAmountForLedger: engineAmt,
+            skipReason: "pending_approval",
+        };
+    }
+    // Matched admin/financial rule with a concrete refund amount — honor it.
+    if (engineAmt != null) {
+        return {
+            shouldAutoExecute: true,
+            executeAmount: engineAmt,
+            refundStatus: engineStatus === "no_refund" ? "pending" : engineStatus || "pending",
+            refundAmountForLedger: engineAmt,
+        };
+    }
+    const forceSilentRefund = input.forceCustomerRefundWhenEngineSilent === true ||
+        role === "store" ||
+        role === "merchant" ||
+        role === "system" ||
+        role === "rider";
+    if (forceSilentRefund) {
+        return {
+            shouldAutoExecute: true,
+            executeAmount: null,
+            refundStatus: "pending",
+            refundAmountForLedger: gross,
+        };
+    }
+    return {
+        shouldAutoExecute: false,
+        executeAmount: null,
+        refundStatus: engineStatus || "no_refund",
+        refundAmountForLedger: null,
+        skipReason: "admin_no_refund",
+    };
+}
 export function parseEngineResult(raw) {
     if (!raw)
         return { applied: false, error: "empty_result" };

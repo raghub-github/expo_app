@@ -3,14 +3,21 @@ import { Alert } from "react-native";
 import { useRouter } from "expo-router";
 import { useAuth } from "@/context/AuthContext";
 import { onSessionRevoked } from "@/services/sessionEvents";
+import { authTokenFingerprint } from "@/lib/merchantAuthLog";
 
 export function SessionRevokedGate() {
-  const { signOut } = useAuth();
+  const { signOut, token } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
     const unsubscribe = onSessionRevoked(async (payload) => {
-      // Drop the local session immediately so protected screens unmount.
+      // Old revoked callbacks must not destroy a newer login session.
+      if (payload.tokenFingerprint && token) {
+        const live = authTokenFingerprint(token);
+        if (live && live !== payload.tokenFingerprint) {
+          return;
+        }
+      }
       await signOut();
       Alert.alert(
         "Session ended",
@@ -32,7 +39,7 @@ export function SessionRevokedGate() {
     return () => {
       unsubscribe();
     };
-  }, [signOut, router]);
+  }, [signOut, router, token]);
 
   return null;
 }

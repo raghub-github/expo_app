@@ -18,7 +18,9 @@ import {
   resolveIncomingOrderChimeUrl,
   stopOrderAlertSound,
 } from "@/lib/playOrderAlertSound";
+import { claimNewOrderAlertSound } from "@/lib/newOrderAlertSoundDedupe";
 import { volumeStepTo01 } from "@/lib/deviceOrderAlerts";
+import { normalizeAlertSoundSlots } from "@/lib/resolveAlertSoundUrl";
 import { extractMerchantFoodOrderIdFromPush } from "@/lib/merchantNavigation";
 import { isMerchantNewOrderPushData } from "@/lib/merchantNewOrderChannel";
 
@@ -76,6 +78,10 @@ type PersistedAlertConfig = {
   ringInSilent: boolean;
   soundEnabled: boolean;
   alertSoundEnabled: boolean;
+  /** Device-selected slot (0–2) so modal/JS playback matches Settings. */
+  alertSoundSlot: number;
+  /** Full slot map when known — preferred over a single resolved URL. */
+  alertSoundUrlsBySlot: [string | null, string | null, string | null];
 };
 
 type AlertSettings = Pick<
@@ -226,6 +232,10 @@ function configFrom(
   device: DeviceOrderAlerts
 ): PersistedAlertConfig {
   const soundEnabled = device.orderAlertsEnabled && device.soundAlertsEnabled;
+  const slots = normalizeAlertSoundSlots(
+    settings.alert_sound_urls_by_slot ??
+      ([settings.alert_sound_url, null, null] as [string | null, string | null, string | null])
+  );
   const chimeUrl =
     settings.alert_sound_enabled === false
       ? null
@@ -234,9 +244,11 @@ function configFrom(
     soundUrl: chimeUrl,
     configuredRepeats: clampRepeats(settings.alert_sound_repeat_count ?? 1),
     volume01: volumeStepTo01(device.volumeStep),
-    ringInSilent: device.ringInSilent !== false,
+    ringInSilent: true,
     soundEnabled,
     alertSoundEnabled: settings.alert_sound_enabled !== false,
+    alertSoundSlot: Math.max(0, Math.min(2, Math.floor(device.alertSoundSlot ?? 0))),
+    alertSoundUrlsBySlot: slots,
   };
 }
 
@@ -290,21 +302,46 @@ export async function hydrateNewOrderAlertManager(): Promise<void> {
       session = parseSession(sessionRaw);
       if (configRaw) {
         try {
-          persistedConfig = JSON.parse(configRaw) as PersistedAlertConfig;
+          const parsed = JSON.parse(configRaw) as Partial<PersistedAlertConfig>;
+          persistedConfig = {
+            soundUrl: parsed.soundUrl ?? null,
+            configuredRepeats: clampRepeats(parsed.configuredRepeats ?? 1),
+            volume01: typeof parsed.volume01 === "number" ? parsed.volume01 : 1,
+            ringInSilent: parsed.ringInSilent !== false,
+            soundEnabled: parsed.soundEnabled !== false,
+            alertSoundEnabled: parsed.alertSoundEnabled !== false,
+            alertSoundSlot: Math.max(0, Math.min(2, Math.floor(Number(parsed.alertSoundSlot) || 0))),
+            alertSoundUrlsBySlot: Array.isArray(parsed.alertSoundUrlsBySlot)
+              ? [
+                  parsed.alertSoundUrlsBySlot[0]?.trim() || null,
+                  parsed.alertSoundUrlsBySlot[1]?.trim() || null,
+                  parsed.alertSoundUrlsBySlot[2]?.trim() || null,
+                ]
+              : [parsed.soundUrl ?? null, null, null],
+          };
         } catch {
           persistedConfig = null;
         }
       }
       if (session && (session.state === "playing" || session.state === "queued")) {
-        const completed = estimateCompletedRepeats({
-          startedAt: session.startedAt,
-          configuredRepeats: session.configuredRepeats,
-          clipMs: session.clipMs,
-          assumeOsPlayedOnce: !isOrderAlertSoundPlaying(),
-        });
-        session.completedRepeats = Math.max(session.completedRepeats, completed);
-        if (session.completedRepeats >= session.configuredRepeats) {
-          session.state = "completed";
+        // Do not invent a full "completed" from wall-clock alone — that silenced the
+        // Incoming modal after hydrate (especially Expo Go / stale SecureStore).
+        // Only credit elapsed time while background owned the tray; keep ≥1 for modal.
+        if (session.owner === "background") {
+          const completed = estimateCompletedRepeats({
+            startedAt: session.startedAt,
+            configuredRepeats: session.configuredRepeats,
+            clipMs: session.clipMs,
+            assumeOsPlayedOnce: true,
+          });
+          session.completedRepeats = Math.max(session.completedRepeats, completed);
+          // Leave at least one JS/modal pass when the sheet has not opened yet.
+          if (!session.orderOpened && session.completedRepeats >= session.configuredRepeats) {
+            session.completedRepeats = Math.max(0, session.configuredRepeats - 1);
+            session.state = "queued";
+          } else if (session.completedRepeats >= session.configuredRepeats) {
+            session.state = "completed";
+          }
         }
         logAlert({
           orderId: session.orderId,
@@ -398,7 +435,7 @@ function makeSession(
     notificationTapped: args.source === "NOTIFICATION_TAP" || args.source === "COLD_START",
     orderOpened: args.source === "MODAL",
     volume01: cfg?.volume01 ?? 1,
-    ringInSilent: cfg?.ringInSilent !== false,
+    ringInSilent: true,
     soundEnabled: cfg?.soundEnabled !== false,
     androidNotificationId: args.androidNotificationId ?? null,
   };
@@ -435,8 +472,14 @@ async function markRepeatComplete(orderId: string, completedCount: number, gen: 
   await persistSession();
 }
 
-async function startPlayback(source: NewOrderAlertSource): Promise<void> {
+async function startPlayback(
+  source: NewOrderAlertSource,
+  live?: { settings?: AlertSettings | null; device?: DeviceOrderAlerts | null }
+): Promise<void> {
   if (!session) return;
+  if (live?.settings && live?.device) {
+    resolveConfig(live.settings, live.device);
+  }
   if (!session.soundEnabled) {
     session.state = "stopped";
     session.stopReason = "disabled";
@@ -487,20 +530,48 @@ async function startPlayback(source: NewOrderAlertSource): Promise<void> {
     remainingRepeats: remaining,
   });
 
-  const settings: AlertSettings = {
+  const slot = Math.max(0, Math.min(2, Math.floor(cfg?.alertSoundSlot ?? 0)));
+  const slots = cfg?.alertSoundUrlsBySlot ?? [cfg?.soundUrl ?? null, null, null];
+  const settings: AlertSettings = live?.settings ?? {
     alert_sound_enabled: cfg?.alertSoundEnabled !== false,
-    alert_sound_url: cfg?.soundUrl ?? null,
-    alert_sound_urls_by_slot: [cfg?.soundUrl ?? null, null, null],
-    alert_sound_slot_choice: 0,
+    alert_sound_url: cfg?.soundUrl ?? slots[slot] ?? null,
+    alert_sound_urls_by_slot: slots,
+    alert_sound_slot_choice: slot,
     alert_sound_repeat_count: configured,
   };
-  const device: DeviceOrderAlerts = {
+  const device: DeviceOrderAlerts = live?.device ?? {
     orderAlertsEnabled: cfg?.soundEnabled !== false,
     soundAlertsEnabled: cfg?.soundEnabled !== false,
-    alertSoundSlot: 0,
+    alertSoundSlot: slot,
     volumeStep: Math.round((cfg?.volume01 ?? 1) * 10),
-    ringInSilent: cfg?.ringInSilent !== false,
+    ringInSilent: true,
   };
+
+  // Cross-path dedupe for the *first* chime only (FCM FG + modal). Do not block
+  // modal/tap when FCM claimed the key but never produced audible audio (Expo Go).
+  if (already === 0 && !claimNewOrderAlertSound(orderId)) {
+    if (
+      (source === "MODAL" || source === "NOTIFICATION_TAP") &&
+      !isOrderAlertSoundPlaying()
+    ) {
+      logAlert({
+        orderId,
+        sessionId: session.sessionId,
+        event: "FORCE_PLAY",
+        reason: "MODAL_AFTER_SILENT_CLAIM",
+        source,
+      });
+    } else {
+      logAlert({
+        orderId,
+        sessionId: session.sessionId,
+        event: "SKIP_PLAY",
+        reason: "SOUND_DEDUPE",
+        source,
+      });
+      return;
+    }
+  }
 
   await playIncomingOrderAlert(settings, device, {
     alreadyCompleted: already,
@@ -586,6 +657,23 @@ export async function continueOrStartNewOrderAlert(args: ContinueArgs): Promise<
     parkedSessions.delete(orderId);
     session = existing;
     if (session.state === "stopped" || session.state === "completed") {
+      // Modal / tap must still chime — prior "completed" is often a false clock hydrate.
+      if (args.source === "MODAL" || args.source === "NOTIFICATION_TAP") {
+        const liveCfg = resolveConfig(args.settings, args.device) ?? cfg;
+        session.completedRepeats = 0;
+        session.configuredRepeats = Math.max(1, liveCfg?.configuredRepeats ?? session.configuredRepeats);
+        session.soundEnabled = liveCfg?.soundEnabled !== false;
+        session.soundUrl = liveCfg?.soundUrl ?? session.soundUrl;
+        session.state = "queued";
+        session.owner = owner;
+        session.orderOpened = true;
+        session.stopReason = undefined;
+        await persistSession();
+        if (jsShouldPlay(args.source)) {
+          await startPlayback(args.source, { settings: args.settings, device: args.device });
+        }
+        return session;
+      }
       logAlert({
         orderId,
         sessionId: session.sessionId,
@@ -612,7 +700,7 @@ export async function continueOrStartNewOrderAlert(args: ContinueArgs): Promise<
       });
       return session;
     }
-    await startPlayback(args.source);
+    await startPlayback(args.source, { settings: args.settings, device: args.device });
     return session;
   }
 
@@ -632,7 +720,7 @@ export async function continueOrStartNewOrderAlert(args: ContinueArgs): Promise<
     });
     return session;
   }
-  await startPlayback(args.source);
+  await startPlayback(args.source, { settings: args.settings, device: args.device });
   return session;
 }
 
@@ -685,7 +773,19 @@ export async function handleNewOrderNotificationTap(args: {
     });
     await persistSession();
     if (session.state !== "stopped" && session.state !== "completed") {
-      await startPlayback("NOTIFICATION_TAP");
+      await startPlayback("NOTIFICATION_TAP", {
+        settings: args.settings,
+        device: args.device,
+      });
+    } else if (session.state === "completed" || session.state === "stopped") {
+      session.completedRepeats = 0;
+      session.state = "queued";
+      session.stopReason = undefined;
+      await persistSession();
+      await startPlayback("NOTIFICATION_TAP", {
+        settings: args.settings,
+        device: args.device,
+      });
     }
     return;
   }
@@ -713,12 +813,13 @@ export async function handleNewOrderNotificationTap(args: {
   }
 }
 
-/** Incoming Order Modal is showing this order — continue remaining only. */
+/** Incoming Order Modal is showing this order — always ensure the selected chime plays. */
 export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<void> {
   await hydrateNewOrderAlertManager();
   const orderId = String(args.orderId || "").trim();
   if (!orderId) return;
   await dismissNativeNewOrderAlerts(orderId);
+  const liveCfg = resolveConfig(args.settings, args.device);
 
   if (session && session.orderId !== orderId) {
     parkActiveSession();
@@ -734,10 +835,36 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
     // Only credit an OS pass when background owned the tray chime.
     if (session.owner === "background") {
       syncCompletedFromClock(session, true);
+      // Keep ≥1 JS pass for the open sheet when sound is still enabled.
+      if (
+        liveCfg?.soundEnabled !== false &&
+        session.completedRepeats >= session.configuredRepeats &&
+        !isOrderAlertSoundPlaying()
+      ) {
+        session.completedRepeats = Math.max(0, session.configuredRepeats - 1);
+        session.state = "queued";
+      }
     }
-    const remaining = remainingRepeatsOf(session);
     session.owner = "modal";
     session.orderOpened = true;
+    if (liveCfg) {
+      session.soundEnabled = liveCfg.soundEnabled;
+      session.soundUrl = liveCfg.soundUrl;
+      session.configuredRepeats = Math.max(session.configuredRepeats, liveCfg.configuredRepeats);
+      session.volume01 = liveCfg.volume01;
+      session.ringInSilent = liveCfg.ringInSilent;
+    }
+    // Stale completed/stopped sessions must not mute the Incoming sheet.
+    if (
+      (session.state === "stopped" || session.state === "completed" || remainingRepeatsOf(session) <= 0) &&
+      liveCfg?.soundEnabled !== false &&
+      !isOrderAlertSoundPlaying()
+    ) {
+      session.completedRepeats = 0;
+      session.state = "queued";
+      session.stopReason = undefined;
+    }
+    const remaining = remainingRepeatsOf(session);
     logAlert({
       orderId,
       sessionId: session.sessionId,
@@ -746,9 +873,9 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
       state: session.state,
     });
     await persistSession();
-    if (session.state === "stopped" || session.state === "completed") return;
     if (isOrderAlertSoundPlaying() && session.state === "playing") return;
-    await startPlayback("MODAL");
+    if (session.state === "stopped" && liveCfg?.soundEnabled === false) return;
+    await startPlayback("MODAL", { settings: args.settings, device: args.device });
     return;
   }
 

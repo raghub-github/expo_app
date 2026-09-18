@@ -180,7 +180,7 @@ export default function TabsLayout() {
   const { authState, isAuthenticated } = useAuth();
   const { selectedStore, isStoreReady } = useSelectedStore();
 
-  if (authState.status === "loading" || (isAuthenticated && !isStoreReady)) {
+  if (authState.status === "loading" || authState.status === "logging_out" || (isAuthenticated && !isStoreReady)) {
     return <MerchantBootstrapScreen />;
   }
 

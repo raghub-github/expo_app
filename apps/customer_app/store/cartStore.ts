@@ -14,6 +14,7 @@ import {
   cartItemBaseId,
   cartLinesMatch,
   hydrateCartLine,
+  rewriteCartMenuItemBase,
 } from "@/lib/cart-line-identity";
 import { normalizeOrderItemSpecialInstructions } from "@/lib/order-item-special-instructions";
 import { cartQtyDebug } from "@/lib/cartQtyDebug";
@@ -116,6 +117,10 @@ type CartState = {
   /** Partial line update (e.g. instruction-only edit). */
   updateLine: (lineId: string, patch: Partial<CartLineInput>) => void;
   clearCart: () => void;
+  /** Make a stashed merchant the active cart (stashes current if non-empty). */
+  activateStashedCart: (merchantId: string) => boolean;
+  /** Drop one cart slot — active or stashed — without wiping other merchants. */
+  discardCartSlot: (merchantId: string) => void;
   /** Replace cart entirely — used for reorder flow. */
   setCartForReorder: (
     merchantId: string,
@@ -130,6 +135,13 @@ type CartState = {
    * stops showing a stale value the customer saw at add-time.
    */
   syncPricesFromMap: (pricesByMenuItemId: Record<string, number>) => void;
+  /**
+   * Rewrite public SKU bases (e.g. SS1026_…) to numeric menu PKs using the live
+   * merchant menu. Billing/order APIs reject non-numeric menuItemId.
+   */
+  resolveMenuItemIdsFromCatalog: (
+    catalog: Array<{ id: string; menuItemId?: number | null }>
+  ) => void;
   /** Refresh per-line promo eligibility (MRP / Boost) from checkout/menu. */
   syncDiscountEligibility: (eligibleByMenuItemId: Record<string, boolean>) => void;
   getActiveCartContext: () => ActiveCartContext;
@@ -559,15 +571,53 @@ export const useCartStore = create<CartState>((set, get) => ({
     let changed = false;
     const next = items.map((i) => {
       const baseMenuId = cartItemBaseId(i.menuItemId);
-      if (i.variantId || (i.addons?.length ?? 0) > 0 || i.menuItemId.includes("_")) {
+      // Skip customized lines (variant/addons). Do not treat public SKUs with `_`
+      // (e.g. SS1026_…) as composites — those are plain catalog ids.
+      if (i.variantId || (i.addons?.length ?? 0) > 0 || i.menuItemId.includes("::")) {
         return i;
       }
-      const fresh = pricesByMenuItemId[baseMenuId];
+      const fresh = pricesByMenuItemId[baseMenuId] ?? pricesByMenuItemId[i.menuItemId];
       if (fresh != null && Number.isFinite(fresh) && Math.abs(fresh - i.price) > 0.005) {
         changed = true;
         return { ...i, price: fresh, basePrice: fresh };
       }
       return i;
+    });
+    if (!changed) return;
+    set({ ...withCartItems(next), lastUpdatedAt: Date.now() });
+    queueCartPersist(get);
+  },
+
+  resolveMenuItemIdsFromCatalog: (catalog) => {
+    const { items } = get();
+    if (items.length === 0 || !catalog?.length) return;
+
+    const pkByAlias = new Map<string, string>();
+    for (const m of catalog) {
+      const pk =
+        m.menuItemId != null && Number.isFinite(m.menuItemId) && m.menuItemId > 0
+          ? String(m.menuItemId)
+          : null;
+      if (!pk) continue;
+      const publicId = String(m.id ?? "").trim();
+      if (publicId) pkByAlias.set(publicId, pk);
+      pkByAlias.set(pk, pk);
+    }
+    if (pkByAlias.size === 0) return;
+
+    let changed = false;
+    const next = items.map((line) => {
+      const base = cartItemBaseId(line.menuItemId);
+      const pk = pkByAlias.get(base);
+      if (!pk) return line;
+      const rewritten = rewriteCartMenuItemBase(line.menuItemId, pk);
+      if (!rewritten) return line;
+      changed = true;
+      return hydrateCartLine({
+        ...line,
+        menuItemId: rewritten,
+        lineId: "",
+      });
     });
     if (!changed) return;
     set({ ...withCartItems(next), lastUpdatedAt: Date.now() });
@@ -604,6 +654,96 @@ export const useCartStore = create<CartState>((set, get) => ({
       deliveryAnchor: null,
     });
     void flushCartPersistNow(get);
+  },
+
+  activateStashedCart: (targetId) => {
+    const id = String(targetId ?? "").trim();
+    if (!id) return false;
+    const {
+      merchantId: currentId,
+      merchantName: curName,
+      merchantBannerUrl: curBanner,
+      merchantStoreType: curType,
+      items,
+      stashedCarts,
+    } = get();
+    if (currentId === id) return true;
+    const restored = stashedCarts[id];
+    if (!restored || restored.items.length === 0) return false;
+    const now = Date.now();
+    const nextStash: Record<string, StashedMerchantCart> = { ...stashedCarts };
+    delete nextStash[id];
+    if (currentId && items.length > 0) {
+      nextStash[currentId] = {
+        merchantName: curName,
+        merchantBannerUrl: curBanner,
+        merchantStoreType: curType,
+        items: items.map((i) => ({ ...i })),
+        lastUpdatedAt: now,
+      };
+    }
+    set({
+      merchantId: id,
+      merchantName: restored.merchantName,
+      merchantBannerUrl: restored.merchantBannerUrl,
+      merchantStoreType: restored.merchantStoreType ?? null,
+      ...withCartItems(restored.items.map((i) => hydrateCartLine(i))),
+      stashedCarts: nextStash,
+      lastUpdatedAt: now,
+    });
+    queueCartPersist(get);
+    return true;
+  },
+
+  discardCartSlot: (targetId) => {
+    const id = String(targetId ?? "").trim();
+    if (!id) return;
+    const {
+      merchantId: currentId,
+      items,
+      stashedCarts,
+    } = get();
+    const now = Date.now();
+
+    if (currentId === id) {
+      const nextStash = { ...stashedCarts };
+      const remaining = Object.entries(nextStash).filter(([, c]) => c.items.length > 0);
+      if (remaining.length === 0) {
+        useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(false);
+        set({
+          merchantId: null,
+          merchantName: null,
+          merchantBannerUrl: null,
+          merchantStoreType: null,
+          ...withCartItems([]),
+          stashedCarts: {},
+          lastUpdatedAt: 0,
+          deliveryAnchor: null,
+        });
+        void flushCartPersistNow(get);
+        return;
+      }
+      const [nextId, restored] = remaining[0]!;
+      const rest = { ...nextStash };
+      delete rest[nextId];
+      set({
+        merchantId: nextId,
+        merchantName: restored.merchantName,
+        merchantBannerUrl: restored.merchantBannerUrl,
+        merchantStoreType: restored.merchantStoreType ?? null,
+        ...withCartItems(restored.items.map((i) => hydrateCartLine(i))),
+        stashedCarts: rest,
+        lastUpdatedAt: now,
+      });
+      queueCartPersist(get);
+      return;
+    }
+
+    if (!stashedCarts[id]) return;
+    const rest = { ...stashedCarts };
+    delete rest[id];
+    set({ stashedCarts: rest, lastUpdatedAt: now });
+    queueCartPersist(get);
   },
 
   setCartForReorder: (merchantId, merchantName, items, merchantBannerUrl) => {

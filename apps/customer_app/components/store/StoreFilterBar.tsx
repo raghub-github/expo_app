@@ -2,6 +2,7 @@ import React from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import { Ionicons } from "@expo/vector-icons";
 import { StoreTheme } from "@/constants/storeTheme";
 import { DietIndicator } from "./DietIndicator";
@@ -29,7 +30,7 @@ export type StoreFilterBarProps = {
   onOpenFilters?: () => void;
   showHighlyReordered?: boolean;
   filtersActive?: boolean;
-  style?: object;
+  style?: object | (object | null | undefined)[];
 };
 
 export const StoreFilterBar = React.memo(function StoreFilterBar({
@@ -48,12 +49,7 @@ export const StoreFilterBar = React.memo(function StoreFilterBar({
   return (
     <View style={[styles.wrap, style, dark && styles.wrapDark]}>
       <ScrollView
-        horizontal
-        nestedScrollEnabled
-        directionalLockEnabled
-        showsHorizontalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        delaysContentTouches={false}
+        {...NATURAL_HORIZONTAL_SCROLL_PROPS}
         contentContainerStyle={styles.scroll}
         style={styles.scrollView}
       >
@@ -98,7 +94,7 @@ export const StoreFilterBar = React.memo(function StoreFilterBar({
 
 const styles = StyleSheet.create({
   wrap: {
-    backgroundColor: StoreTheme.background,
+    backgroundColor: "#FFFFFF",
     paddingVertical: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: StoreTheme.border,

@@ -28,7 +28,14 @@ export async function GET(req: NextRequest) {
     const storeId = new URL(req.url).searchParams.get('store_id');
     const gate = await assertStoreAccess(storeId);
     if (!gate.ok) {
-      return NextResponse.json({ error: gate.error }, { status: gate.status });
+      // Cookie-miss / compile races → 503 (not 401). Clients must not treat as logout.
+      return NextResponse.json(
+        { error: gate.error, code: gate.status === 503 ? 'SERVICE_UNAVAILABLE' : undefined },
+        {
+          status: gate.status,
+          headers: { 'Cache-Control': 'private, no-store, max-age=0' },
+        }
+      );
     }
 
     const db = getDb();

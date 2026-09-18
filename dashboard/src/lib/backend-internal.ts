@@ -45,11 +45,12 @@ function isUpstreamAuthFailure(status: number, body: unknown): boolean {
 
 /**
  * POST/GET to backend with X-Internal-Secret. On auth rejection, retries with the
- * alternate configured secret (if any).
+ * alternate configured secret (if any). Retries once on network / timeout failures
+ * (dashboard onboarding was getting intermittent 502s at ~10s under load).
  */
 export async function fetchBackendInternal(
   path: string,
-  init: RequestInit & { actorRole?: string } = {}
+  init: RequestInit & { actorRole?: string; timeoutMs?: number } = {}
 ): Promise<{ response: Response; data: unknown }> {
   const base = backendBaseUrl();
   if (!base) {
@@ -80,31 +81,57 @@ export async function fetchBackendInternal(
   }
 
   const url = path.startsWith("http") ? path : `${base}${path.startsWith("/") ? "" : "/"}${path}`;
-  const { actorRole, headers: initHeaders, ...rest } = init;
+  const { actorRole, headers: initHeaders, timeoutMs, signal: userSignal, ...rest } = init;
+  const deadlineMs = typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 45_000;
   let lastResponse: Response | null = null;
   let lastData: unknown = {};
+  let lastNetworkError: unknown = null;
 
-  for (let i = 0; i < secrets.length; i++) {
-    const secret = secrets[i]!;
-    const response = await fetch(url, {
-      ...rest,
-      cache: "no-store",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Internal-Secret": secret,
-        ...(actorRole ? { "X-Actor-Role": actorRole } : {}),
-        ...(initHeaders as Record<string, string> | undefined),
-      },
-    });
-    const data = await response.json().catch(() => ({}));
-    lastResponse = response;
-    lastData = data;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    for (let i = 0; i < secrets.length; i++) {
+      const secret = secrets[i]!;
+      const timeoutCtrl = new AbortController();
+      const timer = setTimeout(() => timeoutCtrl.abort(), deadlineMs);
+      const onUserAbort = () => timeoutCtrl.abort();
+      if (userSignal) {
+        if (userSignal.aborted) timeoutCtrl.abort();
+        else userSignal.addEventListener("abort", onUserAbort, { once: true });
+      }
+      try {
+        const response = await fetch(url, {
+          ...rest,
+          signal: timeoutCtrl.signal,
+          cache: "no-store",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Internal-Secret": secret,
+            ...(actorRole ? { "X-Actor-Role": actorRole } : {}),
+            ...(initHeaders as Record<string, string> | undefined),
+          },
+        });
+        const data = await response.json().catch(() => ({}));
+        lastResponse = response;
+        lastData = data;
+        lastNetworkError = null;
 
-    if (!isUpstreamAuthFailure(response.status, data)) {
-      return { response, data };
+        if (!isUpstreamAuthFailure(response.status, data)) {
+          return { response, data };
+        }
+        // Auth failed — try next secret if available.
+      } catch (e) {
+        lastNetworkError = e;
+        // Network / abort — try next secret, then retry whole round once.
+      } finally {
+        clearTimeout(timer);
+        if (userSignal) userSignal.removeEventListener("abort", onUserAbort);
+      }
     }
-    // Auth failed — try next secret if available.
+    if (!lastNetworkError) break;
   }
 
-  return { response: lastResponse!, data: lastData };
+  if (lastResponse) return { response: lastResponse, data: lastData };
+
+  const message =
+    lastNetworkError instanceof Error ? lastNetworkError.message : "backend_unreachable";
+  throw new Error(message);
 }

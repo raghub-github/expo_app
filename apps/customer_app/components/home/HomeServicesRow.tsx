@@ -5,7 +5,7 @@
  * Explore Nearby is inserted just after the last currently-active card.
  */
 
-import { useLayoutEffect, useEffect, useRef, useState, useCallback } from "react";
+import { useLayoutEffect, useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { View, StyleSheet, Dimensions, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { AppAssetImage } from "@/components/AppAssetImage";
@@ -15,7 +15,7 @@ import { AppText } from "@/components/AppText";
 import type { CustomerAccountBlocksMap } from "@/services/customerServiceBlocks.service";
 import { FrozenServiceIconCircle } from "@/components/FrozenServiceIconCircle";
 import type { CustomerHomeServiceId } from "@/lib/customerHomeServiceMeta";
-import { prefetchCriticalHomeAssetImagesSync } from "@/lib/homeCriticalAssets";
+import { prefetchCriticalHomeAssetImagesSync, HOME_CRITICAL_ASSET_KEYS } from "@/lib/homeCriticalAssets";
 import { navigateToFoodHome } from "@/lib/navigateToFoodHome";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
 import { useServiceCardOfferPills } from "@/hooks/useServiceCardOfferPills";
@@ -27,8 +27,10 @@ const PAD = 16;
 const GAP = 12;
 const COLS = 2;
 const CARD_W = Math.floor((SCREEN_W - PAD * 2 - GAP * (COLS - 1)) / COLS);
-const DEFAULT_CARD_H = 118;
+const DEFAULT_CARD_H = 126;
 const CARD_RADIUS = 14;
+/** Soft gray tile — sits slightly off the page white. */
+const CARD_BG = "#EBEBED";
 const CORNER_PILL_PAD_V = 5;
 const CORNER_PILL_PAD_H = 9;
 const CORNER_PILL_INNER_R = 14;
@@ -210,9 +212,6 @@ export function orderHomeServicesWithNearbyPlacement(
   return next;
 }
 
-/** Stable 2×3 grid — matches Home reference (Food → Ride → Courier → Grocery → Nearby → Ecom). */
-const HOME_SERVICES_STABLE: ServiceItem[] = [FOOD, RIDE, PARCELS, GROCERY, NEAR_ME, ECOM];
-
 type ServiceTileProps = {
   item: ServiceItem;
   cardHeight: number;
@@ -287,6 +286,8 @@ function ServiceTile({
   const overlayIconSize = Math.round(cardHeight * 0.26);
   /** True after pressIn already started Food nav — blocks onPress from a second navigate. */
   const foodNavStartedRef = useRef(false);
+  const [pressed, setPressed] = useState(false);
+  const canPress = enabled || isAccountBlocked;
 
   return (
     <View style={[styles.cardShadow, { height: cardHeight }]}>
@@ -296,10 +297,20 @@ function ServiceTile({
           { height: cardHeight },
           offerPillLabel ? styles.cardWithOffer : null,
         ]}
-        pressedScale={0.97}
-        pressedOpacity={0.92}
-        disabled={!enabled && !isAccountBlocked}
+        pressedScale={0.95}
+        pressedOpacity={0.9}
+        android_ripple={
+          !canPress
+            ? null
+            : {
+                color: "rgba(34, 197, 94, 0.25)",
+                borderless: false,
+                foreground: true,
+              }
+        }
+        disabled={!canPress}
         onPressIn={() => {
+          if (canPress) setPressed(true);
           foodNavStartedRef.current = false;
           if (isAccountBlocked) return;
           if (!enabled) return;
@@ -309,7 +320,9 @@ function ServiceTile({
             navigateToFoodHome(router);
           }
         }}
+        onPressOut={() => setPressed(false)}
         onPress={() => {
+          setPressed(false);
           if (isAccountBlocked && accountBlockReason) {
             onAccountBlockedPress?.(
               item.id,
@@ -380,6 +393,10 @@ function ServiceTile({
           <ServiceCardImage assetKey={item.assetKey} imageScale={item.imageScale ?? 1} />
         </View>
 
+        {pressed && canPress ? (
+          <View style={styles.cardPressedOverlay} pointerEvents="none" />
+        ) : null}
+
         {!enabled && !isAccountBlocked ? <View style={styles.disabledWash} pointerEvents="none" /> : null}
         {isAccountBlocked ? (
           <View style={styles.blockedOverlay} pointerEvents="none">
@@ -400,11 +417,27 @@ export function HomeServicesRow({
 }: Props) {
   const assets = useAppAssetsStore((s) => s.assets);
   const offerPills = useServiceCardOfferPills(true);
+  // Prefetch once per URI set — object identity churn from CMS refresh must not
+  // re-kick loads (AppAssetImage keeps last-good until the new URI paints).
+  const criticalUrisKey = HOME_CRITICAL_ASSET_KEYS.map(
+    (k) => assets[k]?.proxyUrl ?? assets[k]?.url ?? ""
+  ).join("|");
   useLayoutEffect(() => {
     prefetchCriticalHomeAssetImagesSync(assets);
-  }, [assets]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by URI fingerprint
+  }, [criticalUrisKey]);
 
-  const services = HOME_SERVICES_STABLE;
+  const services = useMemo(
+    () =>
+      orderHomeServicesWithNearbyPlacement(
+        {
+          parcelEnabled: isServiceEnabled("parcels", enabledServices),
+          groceryEnabled: isServiceEnabled("grocery", enabledServices),
+        },
+        (id) => isServiceEnabled(id, enabledServices)
+      ),
+    [enabledServices]
+  );
 
   return (
     <View style={styles.grid}>
@@ -437,13 +470,12 @@ const styles = StyleSheet.create({
   cardShadow: {
     width: CARD_W,
     borderRadius: CARD_RADIUS,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: CARD_BG,
     ...Platform.select({
       ios: {
-        shadowColor: "#0F172A",
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.03,
-        shadowRadius: 2,
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        shadowOffset: { width: 0, height: 0 },
       },
       android: {
         elevation: 0,
@@ -453,14 +485,20 @@ const styles = StyleSheet.create({
   },
   card: {
     width: "100%",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: CARD_BG,
     borderRadius: CARD_RADIUS,
-    borderWidth: 1,
-    borderColor: "#F0F0F0",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(15, 23, 42, 0.04)",
     paddingTop: 9,
     paddingBottom: 28,
     paddingHorizontal: 9,
     overflow: "hidden",
+  },
+  cardPressedOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(34, 197, 94, 0.08)",
+    borderRadius: CARD_RADIUS,
+    zIndex: 6,
   },
   cardWithOffer: {
     paddingTop: 22,
@@ -499,7 +537,7 @@ const styles = StyleSheet.create({
   },
   disabledWash: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(255,255,255,0.52)",
+    backgroundColor: "rgba(248, 250, 249, 0.62)",
     borderRadius: CARD_RADIUS,
     zIndex: 4,
   },

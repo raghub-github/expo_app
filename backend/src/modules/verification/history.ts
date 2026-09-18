@@ -131,19 +131,40 @@ export async function resolveVerifiedIdentifierConflict(args: {
   if (!biz) return "ok";
   const sql = getSql();
 
-  const others = (await sql`
-    SELECT id, subject_type, subject_id
-    FROM public.verification_requests
-    WHERE document_kind = ${args.documentKind}
-      AND business_identifier = ${biz}
-      AND status = ${"verified"}
-      AND id <> ${args.requestId}
-    ORDER BY updated_at DESC NULLS LAST, id DESC
-    LIMIT 5
-  `) as unknown as Array<{
+  // Aadhaar masks may differ by separator (XXXX-XXXX-8244 vs XXXXXXXX8244) —
+  // match on digit-normalized last-4 / full mask so re-verify can free the slot.
+  const bizDigits = biz.replace(/\D/g, "");
+  const aadhaarLike = args.documentKind === "aadhaar_digilocker";
+
+  const others = (aadhaarLike && bizDigits.length >= 4
+    ? await sql`
+        SELECT id, subject_type, subject_id, business_identifier
+        FROM public.verification_requests
+        WHERE document_kind = ${args.documentKind}
+          AND status = ${"verified"}
+          AND id <> ${args.requestId}
+          AND (
+            business_identifier = ${biz}
+            OR regexp_replace(COALESCE(business_identifier, ''), '[^0-9]', '', 'g')
+              = ${bizDigits}
+          )
+        ORDER BY updated_at DESC NULLS LAST, id DESC
+        LIMIT 8
+      `
+    : await sql`
+        SELECT id, subject_type, subject_id, business_identifier
+        FROM public.verification_requests
+        WHERE document_kind = ${args.documentKind}
+          AND business_identifier = ${biz}
+          AND status = ${"verified"}
+          AND id <> ${args.requestId}
+        ORDER BY updated_at DESC NULLS LAST, id DESC
+        LIMIT 5
+      `) as unknown as Array<{
     id: number;
     subject_type: string;
     subject_id: number;
+    business_identifier: string | null;
   }>;
 
   if (others.length === 0) return "ok";
@@ -158,19 +179,18 @@ export async function resolveVerifiedIdentifierConflict(args: {
   }
 
   // Same subject only — free the unique slot for this newer attempt.
-  await sql`
-    UPDATE public.verification_requests
-    SET
-      status = ${"overridden"},
-      status_reason = ${"superseded_by_newer_attempt"},
-      updated_at = NOW()
-    WHERE document_kind = ${args.documentKind}
-      AND business_identifier = ${biz}
-      AND status = ${"verified"}
-      AND subject_type = ${args.subjectType}
-      AND subject_id = ${args.subjectId}
-      AND id <> ${args.requestId}
-  `;
+  const sameSubjectIds = others.map((r) => Number(r.id)).filter((id) => Number.isFinite(id));
+  if (sameSubjectIds.length > 0) {
+    await sql`
+      UPDATE public.verification_requests
+      SET
+        status = ${"overridden"},
+        status_reason = ${"superseded_by_newer_attempt"},
+        updated_at = NOW()
+      WHERE id = ANY(${sameSubjectIds}::bigint[])
+        AND status = ${"verified"}
+    `;
+  }
   return "ok";
 }
 
@@ -590,6 +610,23 @@ export async function persistOutcome(
           durationMs: outcome.durationMs,
         });
       }
+    } else if (
+      ((e as { code?: string })?.code === "23505" ||
+        msg.toLowerCase().includes("duplicate key")) &&
+      status === "verified"
+    ) {
+      status = "duplicate";
+      statusReason =
+        "This document number is already verified on another account.";
+      await applyOutcome(requestId, {
+        status,
+        statusReason,
+        providerReference: outcome.providerReference,
+        businessIdentifier: outcome.businessIdentifier,
+        confidence: outcome.confidence,
+        httpStatus: outcome.httpStatus,
+        durationMs: outcome.durationMs,
+      });
     } else {
       throw e;
     }
@@ -699,12 +736,59 @@ export async function persistOutcome(
 /**
  * Apply a DigiLocker (or other async) poll/webhook terminal result without
  * re-running the original provider create call.
+ *
+ * Must use the same verified-identifier conflict handling as persistOutcome —
+ * concurrent DigiLocker polls otherwise race on
+ * verification_requests_business_id_verified_uq and 500-loop the rider app
+ * after Cashfree already succeeded (stuck "Verifying…").
  */
 export async function applyAsyncTerminalOutcome(
   requestId: number,
   fromStatus: VerificationStatus,
   outcome: NormalizedVerification,
 ): Promise<void> {
+  const sql = getSql();
+
+  // Idempotent: another poll may have already landed verified.
+  const existing = (await sql`
+    SELECT status::text AS status
+      FROM public.verification_requests
+     WHERE id = ${requestId}
+     LIMIT 1
+  `) as unknown as Array<{ status: string }>;
+  const already = String(existing[0]?.status || "").toLowerCase();
+  if (
+    already === "verified" ||
+    already === "duplicate" ||
+    already === "rejected" ||
+    already === "failed" ||
+    already === "expired" ||
+    already === "consent_denied"
+  ) {
+    // Still refresh projection/events if this poll has richer verifiedData.
+    if (already === "verified" && outcome.status === "verified") {
+      try {
+        await appendEvent({
+          requestId,
+          eventKind: "poll_result",
+          fromStatus: "verified",
+          toStatus: "verified",
+          actorType: "system",
+          details: { verifiedData: outcome.verifiedData, idempotent: true },
+        });
+      } catch {
+        /* best-effort */
+      }
+      try {
+        await projectOutcomeToDocuments(requestId, outcome);
+      } catch {
+        /* best-effort */
+      }
+    }
+    outcome.status = already as VerificationStatus;
+    return;
+  }
+
   const payloadRef = await storePayload({
     requestId,
     direction: "response",
@@ -713,42 +797,110 @@ export async function applyAsyncTerminalOutcome(
     body: outcome.rawResponse ?? {},
   });
 
-  await applyOutcome(requestId, {
-    status: outcome.status,
-    statusReason: outcome.statusReason,
-    providerReference: outcome.providerReference,
-    businessIdentifier: outcome.businessIdentifier,
-    confidence: outcome.confidence,
-    httpStatus: outcome.httpStatus,
-    durationMs: outcome.durationMs,
-  });
+  let status = outcome.status;
+  let statusReason = outcome.statusReason ?? null;
+
+  if (status === "verified") {
+    const conflict = await resolveVerifiedIdentifierConflict({
+      requestId,
+      documentKind: outcome.documentKind,
+      businessIdentifier: outcome.businessIdentifier,
+      subjectType: outcome.subjectType,
+      subjectId: outcome.subjectId,
+    });
+    if (conflict === "duplicate") {
+      status = "duplicate";
+      statusReason =
+        "This document number is already verified on another account.";
+      outcome.status = status;
+      outcome.statusReason = statusReason;
+    }
+  }
+
+  try {
+    await applyOutcome(requestId, {
+      status,
+      statusReason,
+      providerReference: outcome.providerReference,
+      businessIdentifier: outcome.businessIdentifier,
+      confidence: outcome.confidence,
+      httpStatus: outcome.httpStatus,
+      durationMs: outcome.durationMs,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const isUnique =
+      msg.includes("verification_requests_business_id_verified_uq") ||
+      (e as { code?: string })?.code === "23505";
+    if (isUnique && status === "verified") {
+      // Concurrent poll race: free slot then retry, or land as duplicate.
+      await resolveVerifiedIdentifierConflict({
+        requestId,
+        documentKind: outcome.documentKind,
+        businessIdentifier: outcome.businessIdentifier,
+        subjectType: outcome.subjectType,
+        subjectId: outcome.subjectId,
+      });
+      try {
+        await applyOutcome(requestId, {
+          status,
+          statusReason,
+          providerReference: outcome.providerReference,
+          businessIdentifier: outcome.businessIdentifier,
+          confidence: outcome.confidence,
+          httpStatus: outcome.httpStatus,
+          durationMs: outcome.durationMs,
+        });
+      } catch {
+        status = "duplicate";
+        statusReason =
+          "This document number is already verified on another account.";
+        outcome.status = status;
+        outcome.statusReason = statusReason;
+        await applyOutcome(requestId, {
+          status,
+          statusReason,
+          providerReference: outcome.providerReference,
+          businessIdentifier: outcome.businessIdentifier,
+          confidence: outcome.confidence,
+          httpStatus: outcome.httpStatus,
+          durationMs: outcome.durationMs,
+        });
+      }
+    } else {
+      throw e;
+    }
+  }
 
   await appendEvent({
     requestId,
     eventKind: "poll_result",
     fromStatus,
-    toStatus: outcome.status,
+    toStatus: status,
     actorType: "system",
     payloadRef,
     details: { verifiedData: outcome.verifiedData },
   });
 
   if (
-    outcome.status === "verified" ||
-    outcome.status === "rejected" ||
-    outcome.status === "expired" ||
-    outcome.status === "consent_denied" ||
-    outcome.status === "failed"
+    status === "verified" ||
+    status === "rejected" ||
+    status === "expired" ||
+    status === "consent_denied" ||
+    status === "failed" ||
+    status === "duplicate"
   ) {
-    if (outcome.status === "verified" || outcome.status === "rejected") {
+    if (status === "verified" || status === "rejected") {
       await emitKycDecisionForRequest(
         requestId,
-        outcome.status === "verified" ? "verified" : "rejected",
+        status === "verified" ? "verified" : "rejected",
         outcome.documentKind,
-        outcome.statusReason,
+        statusReason,
       );
     }
-    await projectOutcomeToDocuments(requestId, outcome);
+    if (status === "verified" || status === "rejected" || status === "failed") {
+      await projectOutcomeToDocuments(requestId, { ...outcome, status, statusReason });
+    }
   }
 }
 
@@ -796,14 +948,94 @@ async function projectOutcomeToDocuments(
       };
       const targetTypes = docKindToDocTypes[outcome.documentKind];
       if (!targetTypes) return;
-      const verificationStatus = verified ? "auto_verified" : "rejected";
-      const verificationMethod = verified ? "APP_VERIFIED" : "MANUAL_UPLOAD";
       const verifiedData =
         outcome.verifiedData && typeof outcome.verifiedData === "object"
           ? (outcome.verifiedData as Record<string, unknown>)
           : {};
       const isVehicleRc = outcome.documentKind === "vehicle_rc";
       const isBankAccount = outcome.documentKind === "bank_account";
+
+      // RC manual pipeline is authoritative over stale Cashfree projections.
+      let rcLockManualPipeline = false;
+      let rcForceNameMismatch = false;
+      if (isVehicleRc) {
+        const {
+          resolveRcVerificationState,
+          isRcRealPhotoUrl,
+          rcOwnerAadhaarNamesMatch,
+          pickRcOwnerName,
+        } = await import("../../lib/rider-rc-verification-state.js");
+        const { loadRiderAadhaarIdentity } = await import(
+          "../../lib/rider-aadhaar-cross-check.js"
+        );
+        const existingRc = (await sql`
+          SELECT file_url, r2_key, verified, verification_method::text AS verification_method,
+                 verification_status::text AS verification_status, requires_manual_review,
+                 metadata, rejected_reason
+            FROM public.rider_documents
+           WHERE rider_id = ${r.subject_id}
+             AND doc_type = 'rc'
+           ORDER BY updated_at DESC NULLS LAST
+           LIMIT 1
+        `) as unknown as Array<{
+          file_url: string | null;
+          r2_key: string | null;
+          verified: boolean | null;
+          verification_method: string | null;
+          verification_status: string | null;
+          requires_manual_review: boolean | null;
+          metadata: unknown;
+          rejected_reason: string | null;
+        }>;
+        if (existingRc.length > 0) {
+          const er = existingRc[0]!;
+          const existingState = resolveRcVerificationState({
+            fileUrl: er.file_url,
+            r2Key: er.r2_key,
+            verified: er.verified,
+            verificationMethod: er.verification_method,
+            verificationStatus: er.verification_status,
+            requiresManualReview: er.requires_manual_review,
+            metadata: er.metadata,
+            rejectedReason: er.rejected_reason,
+          });
+          if (
+            existingState === "MANUAL_REVIEW_PENDING" ||
+            existingState === "MANUAL_VERIFIED" ||
+            existingState === "MANUAL_REJECTED" ||
+            (existingState === "NAME_MISMATCH" && isRcRealPhotoUrl(er.file_url))
+          ) {
+            rcLockManualPipeline = true;
+          }
+        }
+        if (verified && !rcLockManualPipeline) {
+          try {
+            const aadhaar = await loadRiderAadhaarIdentity(r.subject_id);
+            const owner =
+              pickRcOwnerName(verifiedData) ||
+              String(
+                verifiedData.owner ||
+                  verifiedData.owner_name ||
+                  verifiedData.name ||
+                  "",
+              ).trim();
+            if (!rcOwnerAadhaarNamesMatch(owner, aadhaar.name)) {
+              rcForceNameMismatch = true;
+            }
+          } catch {
+            /* best-effort — keep Cashfree verified if Aadhaar lookup fails */
+          }
+        }
+      }
+
+      const projectVerified = rcLockManualPipeline
+        ? verified
+        : rcForceNameMismatch
+          ? false
+          : verified;
+      // When locking, leave DB verification columns untouched (CASE below).
+      const verificationStatus = projectVerified ? "auto_verified" : "rejected";
+      const verificationMethod = projectVerified ? "APP_VERIFIED" : "MANUAL_UPLOAD";
       // Identity docs: person name. RC: registered vehicle owner. Bank: name_at_bank.
       const holderName = isVehicleRc
         ? String(
@@ -903,16 +1135,30 @@ async function projectOutcomeToDocuments(
         (outcome.documentKind as string) === "aadhaar" ||
         outcome.documentKind === "aadhaar_digilocker"
       ) {
-        const aadhaar = String(
-          verifiedData.masked_aadhaar ||
-            verifiedData.aadhaar_number ||
-            verifiedData.uid ||
-            businessId ||
-            "",
-        ).replace(/\D/g, "");
-        if (aadhaar.length >= 4) {
-          projectedDocNumber = aadhaar;
-          if (/^\d{12}$/.test(aadhaar)) projectedAadhaar = aadhaar;
+        const { resolveAadhaarPersistFields } = await import("../../lib/mask-aadhaar.js");
+        const rawReq =
+          outcome.rawRequest && typeof outcome.rawRequest === "object" && !Array.isArray(outcome.rawRequest)
+            ? (outcome.rawRequest as Record<string, unknown>)
+            : {};
+        const entered =
+          rawReq.aadhaar_number ||
+          rawReq.aadhaarNumber ||
+          verifiedData.aadhaar_number_full ||
+          null;
+        const persist = resolveAadhaarPersistFields({
+          verifiedData,
+          enteredAadhaar: entered == null ? null : String(entered),
+          businessIdentifier: businessId,
+        });
+        projectedDocNumber = persist.displayDocNumber;
+        projectedAadhaar = persist.full;
+        if (persist.masked) {
+          verifiedData.masked_aadhaar = persist.masked;
+          verifiedData.aadhaar_number = persist.masked;
+          verifiedData.uid = persist.masked;
+        }
+        if (persist.full) {
+          verifiedData.aadhaar_number_full = persist.full;
         }
       } else if (outcome.documentKind === "driving_licence") {
         const dl = String(verifiedData.dl_number || businessId || "")
@@ -993,12 +1239,36 @@ async function projectOutcomeToDocuments(
 
       const updated = await sql`
         UPDATE public.rider_documents
-           SET verified = ${verified},
-               verification_status = ${verificationStatus}::document_verification_status,
-               verification_method = ${verificationMethod}::verification_method,
-               rejected_reason = ${verified ? null : outcome.statusReason},
-               verified_at = ${verified ? new Date().toISOString() : null},
-               requires_manual_review = ${verified ? false : true},
+           SET verified = CASE
+                 WHEN ${rcLockManualPipeline}::boolean THEN verified
+                 WHEN ${rcForceNameMismatch}::boolean THEN FALSE
+                 ELSE ${projectVerified}
+               END,
+               verification_status = CASE
+                 WHEN ${rcLockManualPipeline}::boolean THEN verification_status
+                 WHEN ${rcForceNameMismatch}::boolean THEN 'pending'::document_verification_status
+                 ELSE ${verificationStatus}::document_verification_status
+               END,
+               verification_method = CASE
+                 WHEN ${rcLockManualPipeline}::boolean THEN verification_method
+                 WHEN ${rcForceNameMismatch}::boolean THEN 'MANUAL_UPLOAD'::verification_method
+                 ELSE ${verificationMethod}::verification_method
+               END,
+               rejected_reason = CASE
+                 WHEN ${rcLockManualPipeline}::boolean THEN rejected_reason
+                 WHEN ${rcForceNameMismatch}::boolean THEN NULL
+                 ELSE ${projectVerified ? null : outcome.statusReason}
+               END,
+               verified_at = CASE
+                 WHEN ${rcLockManualPipeline}::boolean THEN verified_at
+                 WHEN ${rcForceNameMismatch}::boolean THEN NULL
+                 ELSE ${projectVerified ? new Date().toISOString() : null}
+               END,
+               requires_manual_review = CASE
+                 WHEN ${rcLockManualPipeline}::boolean THEN requires_manual_review
+                 WHEN ${rcForceNameMismatch}::boolean THEN TRUE
+                 ELSE ${projectVerified ? false : true}
+               END,
                last_verification_id = ${r.verification_id},
                last_provider_reference = ${r.provider_reference},
                extracted_data_summary = ${JSON.stringify(summary)}::text::jsonb,
@@ -1020,7 +1290,7 @@ async function projectOutcomeToDocuments(
                metadata = CASE
                  WHEN ${sideVerification != null}::boolean
                    THEN COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({
-                     digilockerVerified: verified,
+                     digilockerVerified: projectVerified && !rcForceNameMismatch,
                      sideVerification,
                      ...(projectedPan ? { panNumber: projectedPan } : {}),
                      ...(projectedAadhaar ? { aadhaarNumber: projectedAadhaar } : {}),
@@ -1039,6 +1309,16 @@ async function projectOutcomeToDocuments(
                            cashfreeVerifiedData: verifiedData,
                            cashfreeProvider: "cashfree",
                            vehicleVerificationOnly: true,
+                           ...(rcLockManualPipeline
+                             ? {}
+                             : rcForceNameMismatch
+                               ? {
+                                   rcOwnerAadhaarMismatch: true,
+                                   rcVerificationState: "NAME_MISMATCH",
+                                 }
+                               : {
+                                   rcVerificationState: "AUTO_VERIFIED",
+                                 }),
                          }
                        : {}),
                      ...(outcome.documentKind === "bank_account"
@@ -1055,7 +1335,7 @@ async function projectOutcomeToDocuments(
                        : {}),
                    })}::text::jsonb
                  ELSE COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({
-                   digilockerVerified: verified,
+                   digilockerVerified: projectVerified && !rcForceNameMismatch,
                    ...(projectedPan ? { panNumber: projectedPan } : {}),
                    ...(projectedAadhaar ? { aadhaarNumber: projectedAadhaar } : {}),
                    ...(projectedDocNumber && outcome.documentKind === "driving_licence"
@@ -1073,6 +1353,16 @@ async function projectOutcomeToDocuments(
                          cashfreeVerifiedData: verifiedData,
                          cashfreeProvider: "cashfree",
                          vehicleVerificationOnly: true,
+                         ...(rcLockManualPipeline
+                           ? {}
+                           : rcForceNameMismatch
+                             ? {
+                                 rcOwnerAadhaarMismatch: true,
+                                 rcVerificationState: "NAME_MISMATCH",
+                               }
+                             : {
+                                 rcVerificationState: "AUTO_VERIFIED",
+                               }),
                        }
                      : {}),
                    ...(outcome.documentKind === "bank_account"
@@ -1227,11 +1517,11 @@ async function projectOutcomeToDocuments(
               'rc',
               'electronic_verified',
               ${projectedDocNumber},
-              TRUE,
-              'auto_verified'::document_verification_status,
-              'APP_VERIFIED'::verification_method,
-              ${new Date().toISOString()},
-              FALSE,
+              ${rcForceNameMismatch ? false : true},
+              ${rcForceNameMismatch ? "pending" : "auto_verified"}::document_verification_status,
+              ${rcForceNameMismatch ? "MANUAL_UPLOAD" : "APP_VERIFIED"}::verification_method,
+              ${rcForceNameMismatch ? null : new Date().toISOString()},
+              ${rcForceNameMismatch ? true : false},
               ${r.verification_id},
               ${r.provider_reference},
               ${JSON.stringify(summary)}::text::jsonb,
@@ -1243,6 +1533,12 @@ async function projectOutcomeToDocuments(
                 cashfreeVerifiedData: verifiedData,
                 cashfreeProvider: "cashfree",
                 vehicleVerificationOnly: true,
+                ...(rcForceNameMismatch
+                  ? {
+                      rcOwnerAadhaarMismatch: true,
+                      rcVerificationState: "NAME_MISMATCH",
+                    }
+                  : { rcVerificationState: "AUTO_VERIFIED" }),
               })}::text::jsonb
             )
           `;
@@ -1347,20 +1643,6 @@ async function projectOutcomeToDocuments(
         }
       }
 
-      // Aadhaar/PAN electronic → auto-verify selfie when already uploaded.
-      if (verified) {
-        try {
-          const { maybeAutoVerifyRiderSelfie } = await import(
-            "../../lib/rider-selfie-auto-verify.js"
-          );
-          await maybeAutoVerifyRiderSelfie(r.subject_id);
-        } catch (selfieErr) {
-          console.warn(
-            "[verification.projectOutcomeToDocuments] selfie auto-verify failed:",
-            (selfieErr as Error).message,
-          );
-        }
-      }
       return;
     }
 

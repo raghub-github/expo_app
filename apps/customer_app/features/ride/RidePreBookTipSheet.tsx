@@ -391,7 +391,7 @@ const styles = StyleSheet.create({
   bookBtn: {
     backgroundColor: GatiMitraColors.primaryMint,
     paddingVertical: 16,
-    borderRadius: 28,
+    borderRadius: 20,
     alignItems: "center",
   },
   bookBtnText: {

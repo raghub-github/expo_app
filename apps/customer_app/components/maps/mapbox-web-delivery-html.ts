@@ -77,6 +77,16 @@ export type DeliveryMapPayload = {
   riderArrived?: boolean;
   refitCamera?: boolean;
   mapPhase?: "rider_to_pickup" | "rider_to_drop";
+  /**
+   * Self-pickup / customer-navigation camera follow target.
+   * When set with `cameraFollow`, map centers on this point as the user moves.
+   */
+  followLat?: number | null;
+  followLng?: number | null;
+  followHeading?: number | null;
+  followSpeedMps?: number | null;
+  /** Smooth camera follow (self-pickup walking/driving to store). */
+  cameraFollow?: boolean;
   /** When false, hide store pin (post-pickup). Default true. */
   showPickupMarker?: boolean;
   /** When false, hide customer/home pin (rider → store). Default true. */

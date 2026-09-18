@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 import { getQueryClient } from "@/lib/react-query";
 import { STORE_KEY } from "@/hooks/useStore";
 import type { StoreProfile } from "@/hooks/useStore";
@@ -21,21 +21,27 @@ export function StoreQueryHydrator({
   storeId: string;
   store: StoreProfile | null;
 }) {
-  useEffect(() => {
-    const queryClient = getQueryClient();
-    if (storeId && store) {
-      queryClient.setQueryData(STORE_KEY(storeId), store);
+  // Before paint: seed ops from sessionStorage so Store Status isn't stuck on skeleton.
+  useLayoutEffect(() => {
+    if (!storeId) return;
+    try {
+      const queryClient = getQueryClient();
+      if (store) {
+        queryClient.setQueryData(STORE_KEY(storeId), store);
+      }
+      useLocalStoreStatusEngineStore.getState().hydrate(storeId);
+      const cachedOps = readStoreOperationsCache(storeId);
+      if (cachedOps) {
+        queryClient.setQueryData(queryKeys.merchantStore.storeOperations(storeId), cachedOps);
+      }
+    } catch {
+      /* ignore */
     }
   }, [storeId, store]);
 
   useEffect(() => {
     if (!storeId) return;
     const queryClient = getQueryClient();
-    useLocalStoreStatusEngineStore.getState().hydrate(storeId);
-    const cachedOps = readStoreOperationsCache(storeId);
-    if (cachedOps) {
-      queryClient.setQueryData(queryKeys.merchantStore.storeOperations(storeId), cachedOps);
-    }
     void queryClient.prefetchQuery({
       queryKey: queryKeys.merchantStore.storeOperations(storeId),
       queryFn: async () => {

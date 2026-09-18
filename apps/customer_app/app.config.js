@@ -133,16 +133,14 @@ module.exports = {
         {
           backgroundColor: LAUNCHER_SPLASH_BG,
           image: LAUNCHER_SPLASH_ANDROID12,
-          // 400dp was WIDER than most phone screens (~360–412dp), so the Android 12 splash overflowed
-          // and clipped the wordmark's sides. 240dp fits every phone width with margin and shows the
-          // full "GatiMitra" wordmark; the JS bootstrap wordmark takes over immediately after.
-          imageWidth: 240,
+          // Keep under ~200dp so wordmark + tagline never clip on narrow phones.
+          imageWidth: 200,
           resizeMode: "contain",
           enableFullScreenImage_legacy: true,
           android: {
             image: LAUNCHER_SPLASH_ANDROID12,
             backgroundColor: LAUNCHER_SPLASH_BG,
-            imageWidth: 240,
+            imageWidth: 200,
           },
           ios: {
             image: LAUNCHER_SPLASH_IMAGE,

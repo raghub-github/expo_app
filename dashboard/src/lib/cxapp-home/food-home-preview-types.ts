@@ -56,6 +56,12 @@ export type FoodHomePreviewPayload = {
   gridFirstUnder250FilterLabel: string;
   gridFirstUnder250TabImageUrl: string | null;
   gridFirstUnder250HeroImageUrl: string | null;
+  classicUnder250Enabled: boolean;
+  classicUnder250MaxPrice: number;
+  classicUnder250Title: string;
+  classicUnder250FilterLabel: string;
+  classicUnder250TabImageUrl: string | null;
+  classicUnder250HeroImageUrl: string | null;
   discoveryDealsAtMaxPrice: number | null;
   discoveryDealsAtImageUrl: string | null;
   discoveryCrazyDealsImageUrl: string | null;

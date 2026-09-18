@@ -19,10 +19,15 @@ let timer: NodeJS.Timeout | null = null;
 
 async function redispatchRow(row: Awaited<ReturnType<typeof claimDueRetryLogs>>[number]): Promise<void> {
   const token = (row.device_token ?? "").trim();
-  if (!token) {
+  if (!token || token === "__in_app_only__") {
+    console.error(
+      `[notifications] push_failure reason=NO_PUSH_TOKEN nid=${row.notification_id} ` +
+        `template=${row.template_code ?? ""} role=${row.recipient_role ?? ""} ` +
+        `(retry skipped — no real FCM token)`,
+    );
     await updateLogStatus(row.notification_id, "failed", {
       errorCode: "NO_PUSH_TOKEN",
-      errorMessage: "Missing device token on retry.",
+      errorMessage: "Missing or in-app-only device token on retry — FCM not attempted.",
     });
     return;
   }
@@ -57,6 +62,11 @@ async function redispatchRow(row: Awaited<ReturnType<typeof claimDueRetryLogs>>[
       priority: row.priority ?? undefined,
     });
     if (!result.ok) {
+      console.error(
+        `[notifications] push_failure reason=${result.error ?? "EXPO_SEND_FAILED"} ` +
+          `nid=${row.notification_id} template=${row.template_code ?? ""} ` +
+          `token_fp=${token.slice(0, 12)}…`,
+      );
       const scheduled = await markFailedWithRetrySchedule({
         notificationId: row.notification_id,
         errorCode: result.mode === "queued" ? "ENQUEUE_FAILED" : "EXPO_SEND_FAILED",
@@ -96,6 +106,11 @@ async function redispatchRow(row: Awaited<ReturnType<typeof claimDueRetryLogs>>[
     if (row.campaign_id) await syncCampaignCountsFromLogs(row.campaign_id);
     return;
   }
+  console.error(
+    `[notifications] push_failure reason=${res.errorCode ?? "FCM_FAILED"} ` +
+      `nid=${row.notification_id} template=${row.template_code ?? ""} ` +
+      `token_fp=${token.slice(0, 12)}… msg=${res.errorMessage ?? ""}`,
+  );
   const scheduled = await markFailedWithRetrySchedule({
     notificationId: row.notification_id,
     errorCode: res.errorCode,

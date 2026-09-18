@@ -198,12 +198,11 @@ async function sendPickupOtpPush(args: {
         }
       : {}),
     metadata: {
-      gmLiveProgress: true,
+      gmLiveKind: "otp",
+      gmClearLiveProgress: true,
       liveService: args.liveService,
       liveTitle,
       liveBody,
-      liveStep: 3,
-      liveSteps: 6,
       orderId: args.orderIdText,
       pickupOtp: args.pickupOtp ?? "",
       gmType: "CUSTOMER_PICKUP_OTP_ARRIVED",
@@ -231,12 +230,14 @@ async function sendDeliveryOtpPush(args: {
     target: { user_id: args.customerUserId },
     idempotencyKey: `CUSTOMER_DELIVERY_OTP_NEARBY:${args.orderIdText}`,
     metadata: {
-      gmLiveProgress: true,
+      gmLiveKind: "otp",
+      gmClearLiveProgress: true,
       liveService: args.liveService,
       liveTitle: "Delivery Partner Is Near You",
       liveBody: `Delivery OTP ${args.deliveryOtp}`,
       orderId: args.orderIdText,
       deliveryOtp: args.deliveryOtp,
+      status: "REACHED_CUSTOMER",
       gmType: "CUSTOMER_DELIVERY_OTP_NEARBY",
     },
   });

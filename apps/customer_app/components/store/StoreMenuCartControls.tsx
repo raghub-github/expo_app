@@ -7,9 +7,12 @@ import {
   Vibration,
   View,
   Pressable,
+  TouchableOpacity,
   Animated,
   Easing,
   type GestureResponderEvent,
+  type StyleProp,
+  type TextStyle,
 } from "react-native";
 import { perfMark, perfMeasure } from "@/lib/perfTrace";
 import { cartQtyDebug } from "@/lib/cartQtyDebug";
@@ -26,9 +29,6 @@ import { MerchantDarkPalette } from "@/features/merchant-detail/merchantUiTheme"
 const ADD_GREEN = "#137243";
 /** Past-order / reorder rows — GatiMitra mint, "ADD +" caps layout. */
 const ADD_REORDER = StoreTheme.accentMintDark;
-const QTY_FILL_REORDER = StoreTheme.accentMintSoft;
-/** Soft mint fill once qty > 0 — reads “in cart” without fighting the green outline. */
-const QTY_FILL = "#E8F5EE";
 
 /** Shared visual height — ADD outline and qty stepper must match exactly. */
 export const MENU_ADD_CONTROL_HEIGHT = 40;
@@ -36,6 +36,18 @@ export const MENU_ADD_CONTROL_HEIGHT = 40;
 export const MENU_STEPPER_CONTROL_HEIGHT = 48;
 /** Masonry card ADD / stepper — keeps the same gesture model at a smaller size. */
 export const MENU_COMPACT_CONTROL_HEIGHT = 36;
+/** Home on-image circular + diameter (visual). */
+export const MENU_CIRCLE_CONTROL_SIZE = 38;
+/**
+ * Reserved shell width for circle size — always the stepper width so + → stepper
+ * never changes layout size (eliminates jerk / neighbor reflow / card jump).
+ */
+export const MENU_CIRCLE_STEPPER_WIDTH = 100;
+/** On-image / compact stepper corner radius — rounded rect, not a full pill. */
+export const MENU_STEPPER_RADIUS = 10;
+
+/** Corner inset when + / stepper sits directly on the image (no mint curve). */
+export const ON_IMAGE_CONTROL_INSET = 8;
 
 function merchantCartTotal(merchantId: string): number {
   const cart = useCartStore.getState();
@@ -55,12 +67,140 @@ function afterOptimisticPaint(fn: () => void): void {
 }
 
 /**
+ * Qty digit that slides on deliberate taps; snaps on rapid continuous taps
+ * so digits never stack/overlap while the user is mashing + / −.
+ */
+const QTY_SLIDE_RAPID_MS = 240;
+
+function SlidingQtyLabel({
+  value,
+  direction,
+  textStyle,
+  color,
+}: {
+  value: number;
+  /** +1 = increment (slide up), −1 = decrement (slide down). */
+  direction: 1 | -1;
+  textStyle?: StyleProp<TextStyle>;
+  color?: string;
+}) {
+  const prevValueRef = useRef(value);
+  const lastChangeAtRef = useRef(0);
+  const anim = useRef(new Animated.Value(1)).current;
+  const [frame, setFrame] = useState({
+    outgoing: value,
+    incoming: value,
+    dir: 1 as 1 | -1,
+    sliding: false,
+  });
+
+  useEffect(() => {
+    if (value === prevValueRef.current) return;
+    const now = Date.now();
+    const rapid = now - lastChangeAtRef.current < QTY_SLIDE_RAPID_MS;
+    lastChangeAtRef.current = now;
+    const dir = direction;
+    const from = prevValueRef.current;
+    prevValueRef.current = value;
+
+    if (rapid) {
+      // Continuous click — snap to the latest number, cancel any in-flight slide.
+      anim.stopAnimation();
+      anim.setValue(1);
+      setFrame({ outgoing: value, incoming: value, dir, sliding: false });
+      return;
+    }
+
+    // Deliberate tap — slide old out / new in.
+    setFrame({ outgoing: from, incoming: value, dir, sliding: true });
+    anim.setValue(0);
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: 140,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (!finished) return;
+      setFrame((prev) =>
+        prev.incoming === value
+          ? { outgoing: value, incoming: value, dir, sliding: false }
+          : prev
+      );
+    });
+  }, [value, direction, anim]);
+
+  const travel = 12;
+  const outgoingY = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, frame.dir === 1 ? -travel : travel],
+  });
+  const incomingY = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [frame.dir === 1 ? travel : -travel, 0],
+  });
+  const outgoingOp = anim.interpolate({
+    inputRange: [0, 0.85, 1],
+    outputRange: [1, 0.15, 0],
+  });
+  const incomingOp = anim.interpolate({
+    inputRange: [0, 0.2, 1],
+    outputRange: [0, 0.85, 1],
+  });
+
+  if (!frame.sliding) {
+    return (
+      <View style={slidingQtyStyles.slot} pointerEvents="none">
+        <AppText style={[textStyle, color ? { color } : null]}>{frame.incoming}</AppText>
+      </View>
+    );
+  }
+
+  return (
+    <View style={slidingQtyStyles.slot} pointerEvents="none">
+      <Animated.View
+        style={[
+          slidingQtyStyles.layer,
+          { opacity: outgoingOp, transform: [{ translateY: outgoingY }] },
+        ]}
+      >
+        <AppText style={[textStyle, color ? { color } : null]}>{frame.outgoing}</AppText>
+      </Animated.View>
+      <Animated.View
+        style={[
+          slidingQtyStyles.layer,
+          { opacity: incomingOp, transform: [{ translateY: incomingY }] },
+        ]}
+      >
+        <AppText style={[textStyle, color ? { color } : null]}>{frame.incoming}</AppText>
+      </Animated.View>
+    </View>
+  );
+}
+
+const slidingQtyStyles = StyleSheet.create({
+  slot: {
+    minWidth: 28,
+    width: 28,
+    height: 22,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  layer: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+});
+
+/**
  * Extra safety after last-item −. Primary protection is the always-mounted
  * Pressable + pressOut lock; this only covers delayed synthetic presses.
  */
-const REMOVAL_ADD_GUARD_MS = 1200;
-/** Hard gap between committed qty actions — matches checkout stepper lock. */
-const ACTION_COOLDOWN_MS = 90;
+/** After last-item removal, briefly ignore Add so −→Add ghost remounts don't re-add. */
+const REMOVAL_ADD_GUARD_MS = 180;
+/** Hard gap between committed qty actions — keep short so taps feel instant. */
+const ACTION_COOLDOWN_MS = 45;
 
 type InstantCartControlProps = {
   itemKey: string;
@@ -68,8 +208,8 @@ type InstantCartControlProps = {
   merchantId?: string;
   quantity: number;
   disabled?: boolean;
-  /** Compact mint “+” square + slim stepper for masonry cards. */
-  size?: "default" | "compact";
+  /** Compact mint “+” square + slim stepper for masonry cards. Circle = home on-image +. */
+  size?: "default" | "compact" | "circle";
   /** Green (menu default) vs pink (past-order / reorder rows). */
   accent?: "default" | "zomato";
   /** Discovery dark store — charcoal ADD shell instead of white. */
@@ -79,6 +219,11 @@ type InstantCartControlProps = {
    * and does not write cart until confirm. Prevents a stuck stepper on sheet cancel.
    */
   allowOptimisticAdd?: boolean;
+  /**
+   * Circle size: white corner cradle behind the control. Width tracks displayQty
+   * so + stays tight and the stepper pad expands smoothly.
+   */
+  imageCornerCutout?: boolean;
   onAdd: () => void;
   onIncrement: () => void;
   onDecrement: () => void;
@@ -107,23 +252,20 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
   accent = "default",
   darkSurface = false,
   allowOptimisticAdd = true,
+  imageCornerCutout = false,
   onAdd,
   onIncrement,
   onDecrement,
   accessibilityLabel,
 }: InstantCartControlProps) {
-  const compact = size === "compact";
+  const compact = size === "compact" || size === "circle";
+  const circle = size === "circle";
   const zomato = accent === "zomato";
   const accentColor = darkSurface
     ? MerchantDarkPalette.accent
     : zomato
       ? ADD_REORDER
       : ADD_GREEN;
-  const qtyFill = darkSurface
-    ? MerchantDarkPalette.accentSoft
-    : zomato
-      ? QTY_FILL_REORDER
-      : QTY_FILL;
   const [optimisticQty, setOptimisticQty] = useState<number | null>(null);
   const displayQty = optimisticQty ?? quantity;
   const showingAdd = displayQty === 0;
@@ -160,7 +302,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
     });
     Animated.timing(morphProgress, {
       toValue: target,
-      duration: 150,
+      duration: 90,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
@@ -189,6 +331,8 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
   const stepperWidthRef = useRef(0);
   const displayQtyRef = useRef(displayQty);
   displayQtyRef.current = displayQty;
+  /** Last ± direction for SlidingQtyLabel (1 = +, −1 = −). */
+  const qtySlideDirRef = useRef<1 | -1>(1);
 
   useEffect(() => {
     setOptimisticQty(null);
@@ -197,7 +341,6 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
     lockUntilPressOutRef.current = false;
     gestureActionRef.current = null;
     firedGestureIdRef.current = -1;
-    cartQtyDebug("ui_render", { itemKey, reason: "itemKey_reset", quantity });
   }, [itemKey]);
 
   useEffect(() => {
@@ -255,7 +398,6 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
       }
       firedGestureIdRef.current = gestureId;
       lastActionAtRef.current = now;
-      if (Platform.OS === "android") Vibration.vibrate(6);
       return true;
     },
     [disabled, itemKey]
@@ -315,6 +457,8 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
       if (merchantId) {
         useCartChromeStore.getState().flashAdd(merchantId, 1, merchantCartTotal(merchantId));
       }
+      // Paint optimistic stepper first — sync cart write was blocking the whole
+      // merchant VirtualizedList (~300–900ms) before the UI could flip.
       scheduleCartWrite(seq, onAdd, "add");
     } else {
       onAdd();
@@ -337,6 +481,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
     }
     markTap();
     const seq = ++opSeqRef.current;
+    qtySlideDirRef.current = 1;
     cartQtyDebug("increment_pressed", {
       itemKey,
       seq,
@@ -362,6 +507,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
   const handleDec = useCallback(() => {
     markTap();
     const seq = ++opSeqRef.current;
+    qtySlideDirRef.current = -1;
     const nextQty = Math.max(0, (optimisticQty ?? quantity) - 1);
     cartQtyDebug("decrement_pressed", {
       itemKey,
@@ -412,6 +558,26 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
     [handleAdd, handleDec, handleInc]
   );
 
+  /** Instant − / + halves — cooldown only, no pressOut lock (that ate rapid taps). */
+  const runStepperHalf = useCallback(
+    (action: "increment" | "decrement") => {
+      if (disabled) return;
+      if (displayQtyRef.current <= 0) return;
+      const now = Date.now();
+      if (now - lastActionAtRef.current < ACTION_COOLDOWN_MS) {
+        cartQtyDebug("duplicate_blocked", {
+          itemKey,
+          reason: "action_cooldown",
+          phase: "stepper_half",
+        });
+        return;
+      }
+      lastActionAtRef.current = now;
+      runAction(action);
+    },
+    [disabled, itemKey, runAction]
+  );
+
   const resolveActionForPressIn = useCallback(
     (event: GestureResponderEvent): GestureAction | null => {
       const qty = displayQtyRef.current;
@@ -420,11 +586,22 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
           cartQtyDebug("guard_blocked", { itemKey, action: "add", phase: "press_in" });
           return null;
         }
+        /**
+         * Legacy non-cutout circle reserved a full stepper-wide shell and only the
+         * right glyph was tappable. Cutout dock is already + sized — any press is Add.
+         */
+        if (circle && !imageCornerCutout) {
+          const width = stepperWidthRef.current;
+          const x = event.nativeEvent.locationX;
+          if (width > MENU_CIRCLE_CONTROL_SIZE + 4 && x < width - MENU_CIRCLE_CONTROL_SIZE - 2) {
+            return null;
+          }
+        }
         return "add";
       }
       return resolveStepperAction(event);
     },
-    [itemKey, resolveStepperAction]
+    [circle, imageCornerCutout, itemKey, resolveStepperAction]
   );
 
   const firePressIn = useCallback(
@@ -510,6 +687,13 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
             cartQtyDebug("guard_blocked", { itemKey, action: "add", phase: "press_fallback" });
             return;
           }
+          if (circle && !imageCornerCutout) {
+            const width = stepperWidthRef.current;
+            const x = event.nativeEvent.locationX;
+            if (width > MENU_CIRCLE_CONTROL_SIZE + 4 && x < width - MENU_CIRCLE_CONTROL_SIZE - 2) {
+              return;
+            }
+          }
           action = "add";
         } else {
           // Fallback-only while stepper is visible: never treat as first Add.
@@ -523,7 +707,16 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
       lockUntilPressOutRef.current = true;
       runAction(action);
     },
-    [beginGesture, disabled, itemKey, resolveStepperAction, runAction, tryConsumeGesture]
+    [
+      beginGesture,
+      circle,
+      disabled,
+      imageCornerCutout,
+      itemKey,
+      resolveStepperAction,
+      runAction,
+      tryConsumeGesture,
+    ]
   );
 
   const firePressOut = useCallback(() => {
@@ -553,66 +746,148 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
 
   const addSuppressed = showingAdd && Date.now() < ignoreAddUntilRef.current;
 
-  // Cross-fade + subtle scale between the two visuals. Both layers stay mounted;
-  // exactly one is fully opaque at rest, so there is never a blank frame.
+  // Cross-fade between the two visuals. Both layers stay mounted; shell size is
+  // constant for circle/compact so the product card never reflows. Circle skips
+  // scale — scaling a right-anchored + inside a wider reserved shell looks like a jerk.
   const addOpacity = morphProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [1, 0],
   });
-  const addScale = morphProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 0.9],
-  });
+  const addScale = circle
+    ? 1
+    : morphProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [1, 0.9],
+      });
   const stepperOpacity = morphProgress;
-  const stepperScale = morphProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.9, 1],
-  });
+  const stepperScale = circle
+    ? 1
+    : morphProgress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0.9, 1],
+      });
   // Never render "0" while the stepper fades out on last-item removal.
   const stepperQtyLabel = displayQty > 0 ? displayQty : 1;
+  const qtySlideDir = qtySlideDirRef.current;
 
-  return (
-    <Pressable
-      accessible
-      accessibilityRole={showingAdd ? "button" : "adjustable"}
-      accessibilityLabel={
-        showingAdd ? accessibilityLabel ?? "Add to cart" : accessibilityLabel
-      }
-      accessibilityHint={
-        showingAdd
-          ? undefined
-          : "Left half decreases quantity. Right half increases quantity."
-      }
-      accessibilityState={{ disabled: disabled || addSuppressed }}
-      disabled={disabled}
-      delayPressIn={0}
-      unstable_pressDelay={0}
-      onLayout={(event) => {
-        stepperWidthRef.current = event.nativeEvent.layout.width;
-      }}
-      onPressIn={firePressIn}
-      onPress={firePressFallback}
-      onPressOut={firePressOut}
-      hitSlop={
-        showingAdd
-          ? { top: 12, bottom: 12, left: 12, right: 12 }
-          : { top: 6, bottom: 6, left: 4, right: 4 }
-      }
-      pressRetentionOffset={
-        showingAdd
-          ? { top: 24, bottom: 24, left: 24, right: 24 }
-          : { top: 20, bottom: 20, left: 20, right: 20 }
-      }
-      android_ripple={
-        showingAdd ? { color: "rgba(19, 114, 67, 0.14)", borderless: false } : undefined
-      }
-      style={({ pressed }) => [
-        styles.controlShell,
-        compact && styles.controlShellCompact,
-        showingAdd && pressed && !disabled && !addSuppressed && styles.addPressablePressed,
-      ]}
-      collapsable={false}
-    >
+  const useCutoutCradle = circle && imageCornerCutout;
+
+  const fireCutoutAdd = useCallback(() => {
+    if (disabled || addSuppressed) return;
+    if (Date.now() < ignoreAddUntilRef.current) {
+      cartQtyDebug("guard_blocked", { itemKey, action: "add", phase: "cutout_touch" });
+      return;
+    }
+    const now = Date.now();
+    if (now - lastActionAtRef.current < ACTION_COOLDOWN_MS) {
+      cartQtyDebug("duplicate_blocked", {
+        itemKey,
+        reason: "action_cooldown",
+        phase: "cutout_touch",
+      });
+      return;
+    }
+    lastActionAtRef.current = now;
+    runAction("add");
+  }, [addSuppressed, disabled, itemKey, runAction]);
+
+  /**
+   * Cutout cards: + / stepper sit directly on the image (no mint curve).
+   * Compact host so empty dock space cannot steal taps from the control.
+   */
+  if (useCutoutCradle) {
+    return (
+      <View
+        style={[styles.onImageHost, !showingAdd && styles.onImageHostStepperFlush]}
+        collapsable={false}
+        pointerEvents="box-none"
+      >
+        {showingAdd ? (
+          <Pressable
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={accessibilityLabel ?? "Add to cart"}
+            accessibilityState={{ disabled: disabled || addSuppressed }}
+            disabled={disabled || addSuppressed}
+            delayPressIn={0}
+            unstable_pressDelay={0}
+            hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+            onPressIn={(event) => {
+              event.stopPropagation?.();
+              fireCutoutAdd();
+            }}
+            style={styles.cutoutPlusHit}
+            collapsable={false}
+          >
+            {({ pressed }) => (
+              <View
+                style={[styles.cutoutPlusBtn, pressed && styles.cutoutPlusBtnPressed]}
+                pointerEvents="none"
+                collapsable={false}
+              >
+                <AppText style={styles.addPlusGlyphOnCurve}>+</AppText>
+              </View>
+            )}
+          </Pressable>
+        ) : (
+          <View
+            style={[styles.cutoutStepperFrame, { borderColor: accentColor }]}
+            collapsable={false}
+          >
+            <View style={styles.stepperVisualRow} pointerEvents="none" collapsable={false}>
+              <AppText style={styles.qtyGlyphBordered}>−</AppText>
+              <SlidingQtyLabel
+                value={stepperQtyLabel}
+                direction={qtySlideDir}
+                textStyle={styles.qtyTextBordered}
+              />
+              <AppText style={styles.qtyGlyphBordered}>+</AppText>
+            </View>
+            <Pressable
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel="Decrease quantity"
+              disabled={disabled}
+              delayPressIn={0}
+              unstable_pressDelay={0}
+              hitSlop={{ top: 14, bottom: 14, left: 14, right: 4 }}
+              onPressIn={(event) => {
+                event.stopPropagation?.();
+                runStepperHalf("decrement");
+              }}
+              style={styles.stepperHitLeft}
+              collapsable={false}
+            />
+            <Pressable
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel="Increase quantity"
+              disabled={disabled}
+              delayPressIn={0}
+              unstable_pressDelay={0}
+              hitSlop={{ top: 14, bottom: 14, left: 4, right: 14 }}
+              onPressIn={(event) => {
+                event.stopPropagation?.();
+                runStepperHalf("increment");
+              }}
+              style={styles.stepperHitRight}
+              collapsable={false}
+            />
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  const shellStyle = [
+    styles.controlShell,
+    compact && !circle && styles.controlShellCompact,
+    circle && styles.controlShellCircle,
+    circle && displayQty > 0 && styles.controlShellCircleStepper,
+  ];
+
+  const morphContent = (
+    <>
       {/* Stepper layer — under Add so a fresh row paints Add first, no flash. */}
       <Animated.View
         style={[styles.morphLayer, { opacity: stepperOpacity, transform: [{ scale: stepperScale }] }]}
@@ -622,7 +897,11 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
           style={[
             styles.qtyWrap,
             compact && styles.qtyWrapCompact,
-            { backgroundColor: qtyFill, borderColor: accentColor },
+            circle && styles.qtyWrapCircle,
+            {
+              backgroundColor: "#FFFFFF",
+              borderColor: accentColor,
+            },
             disabled && styles.qtyWrapDisabled,
           ]}
           collapsable={false}
@@ -642,16 +921,16 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
             >
               −
             </AppText>
-            <AppText
-              style={[
+            <SlidingQtyLabel
+              value={stepperQtyLabel}
+              direction={qtySlideDir}
+              textStyle={[
                 styles.qtyText,
                 compact && styles.qtyTextCompact,
-                { color: accentColor },
                 disabled && styles.qtyTextDisabled,
               ]}
-            >
-              {stepperQtyLabel}
-            </AppText>
+              color={disabled ? undefined : accentColor}
+            />
             <AppText
               style={[
                 styles.qtyGlyph,
@@ -671,6 +950,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
         style={[
           styles.morphLayer,
           compact && styles.morphLayerCompactAdd,
+          circle && styles.morphLayerCircleAdd,
           { opacity: addOpacity, transform: [{ scale: addScale }] },
         ]}
         pointerEvents="none"
@@ -679,12 +959,14 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
           style={[
             styles.addBtn,
             compact && styles.addBtnCompact,
+            circle && styles.addBtnCircle,
             zomato && styles.addBtnZomato,
             zomato && { borderColor: accentColor },
             darkSurface && styles.addBtnDark,
             darkSurface && { borderColor: accentColor },
             disabled ? styles.addBtnDisabled : null,
             compact && disabled && styles.addBtnCompactDisabled,
+            !zomato && !darkSurface && compact ? { borderColor: accentColor } : null,
           ]}
           pointerEvents="none"
         >
@@ -696,9 +978,9 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
                 compact && styles.addBtnTextCompactDisabled,
               ]}
             >
-              {compact ? "—" : "Closed"}
+              {compact || circle ? "—" : "Closed"}
             </AppText>
-          ) : compact ? (
+          ) : compact || circle ? (
             <AppText style={[styles.addPlusGlyphCompact, { color: accentColor }]}>+</AppText>
           ) : zomato ? (
             <View style={styles.addLabelRow}>
@@ -715,7 +997,158 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
           )}
         </View>
       </Animated.View>
-    </Pressable>
+    </>
+  );
+
+  return (
+    <View
+      style={[
+        circle ? styles.circleHost : undefined,
+        circle && (displayQty > 0 ? styles.circleHostStepper : styles.circleHostPlus),
+      ]}
+      collapsable={false}
+      pointerEvents="box-none"
+    >
+      {/* Compact / circle stepper: full-bleed left/right hit layers cover the border edges. */}
+      {compact && !showingAdd ? (
+        <View
+          style={[
+            styles.qtyWrap,
+            compact && styles.qtyWrapCompact,
+            circle && styles.qtyWrapCircle,
+            {
+              backgroundColor: "#FFFFFF",
+              borderColor: accentColor,
+            },
+            disabled && styles.qtyWrapDisabled,
+          ]}
+          collapsable={false}
+        >
+          <View style={styles.stepperVisualRow} pointerEvents="none" collapsable={false}>
+            <AppText
+              style={[
+                styles.qtyGlyph,
+                compact && styles.qtyGlyphCompact,
+                { color: accentColor },
+                disabled && styles.qtyGlyphDisabled,
+              ]}
+            >
+              −
+            </AppText>
+            <SlidingQtyLabel
+              value={stepperQtyLabel}
+              direction={qtySlideDir}
+              textStyle={[
+                styles.qtyText,
+                compact && styles.qtyTextCompact,
+                disabled && styles.qtyTextDisabled,
+              ]}
+              color={disabled ? undefined : accentColor}
+            />
+            <AppText
+              style={[
+                styles.qtyGlyph,
+                compact && styles.qtyGlyphCompact,
+                { color: accentColor },
+                disabled && styles.qtyGlyphDisabled,
+              ]}
+            >
+              +
+            </AppText>
+          </View>
+          <Pressable
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel="Decrease quantity"
+            disabled={disabled}
+            delayPressIn={0}
+            unstable_pressDelay={0}
+            hitSlop={{ top: 14, bottom: 14, left: 14, right: 4 }}
+            onPressIn={(event) => {
+              event.stopPropagation?.();
+              runStepperHalf("decrement");
+            }}
+            style={styles.stepperHitLeft}
+            collapsable={false}
+          />
+          <Pressable
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel="Increase quantity"
+            disabled={disabled}
+            delayPressIn={0}
+            unstable_pressDelay={0}
+            hitSlop={{ top: 14, bottom: 14, left: 4, right: 14 }}
+            onPressIn={(event) => {
+              event.stopPropagation?.();
+              runStepperHalf("increment");
+            }}
+            style={styles.stepperHitRight}
+            collapsable={false}
+          />
+        </View>
+      ) : (
+      <Pressable
+        accessible
+        accessibilityRole={showingAdd ? "button" : "adjustable"}
+        accessibilityLabel={
+          showingAdd ? accessibilityLabel ?? "Add to cart" : accessibilityLabel
+        }
+        accessibilityHint={
+          showingAdd
+            ? undefined
+            : "Left half decreases quantity. Right half increases quantity."
+        }
+        accessibilityState={{ disabled: disabled || addSuppressed }}
+        disabled={disabled}
+        delayPressIn={0}
+        unstable_pressDelay={0}
+        onLayout={(event) => {
+          stepperWidthRef.current = event.nativeEvent.layout.width;
+        }}
+        onPressIn={(event) => {
+          event.stopPropagation?.();
+          firePressIn(event);
+        }}
+        onPress={(event) => {
+          event.stopPropagation?.();
+          firePressFallback(event);
+        }}
+        onPressOut={firePressOut}
+        hitSlop={
+          circle
+            ? { top: 4, bottom: 4, left: 4, right: 4 }
+            : showingAdd
+              ? { top: 12, bottom: 12, left: 12, right: 12 }
+              : { top: 6, bottom: 6, left: 4, right: 4 }
+        }
+        pressRetentionOffset={
+          circle
+            ? { top: 12, bottom: 12, left: 12, right: 12 }
+            : showingAdd
+              ? { top: 24, bottom: 24, left: 24, right: 24 }
+              : { top: 20, bottom: 20, left: 20, right: 20 }
+        }
+        android_ripple={
+          showingAdd && !circle
+            ? { color: "rgba(19, 114, 67, 0.14)", borderless: false }
+            : undefined
+        }
+        style={({ pressed }) => [
+          ...shellStyle,
+          pressed &&
+            !disabled &&
+            !addSuppressed &&
+            showingAdd &&
+            !circle &&
+            styles.addPressablePressed,
+        ]}
+        collapsable={false}
+      >
+        {morphContent}
+      </Pressable>
+      )}
+    </View>
   );
 });
 
@@ -836,23 +1269,195 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "stretch",
   },
+  circleHost: {
+    /**
+     * Host width tracks the visual (tight + vs full stepper) so we never reserve a
+     * white stepper-width slab under a lone +. Absolute dock — no card reflow.
+     */
+    alignSelf: "flex-end",
+    overflow: "visible",
+    justifyContent: "flex-end",
+    alignItems: "flex-end",
+  },
+  circleHostPlus: {
+    width: MENU_CIRCLE_CONTROL_SIZE,
+    height: MENU_CIRCLE_CONTROL_SIZE,
+  },
+  circleHostStepper: {
+    width: MENU_CIRCLE_STEPPER_WIDTH,
+    height: MENU_CIRCLE_CONTROL_SIZE,
+  },
+  /**
+   * + / stepper sit directly on the dish image (no mint curve dock).
+   */
+  onImageHost: {
+    alignSelf: "flex-end",
+    justifyContent: "flex-end",
+    alignItems: "flex-end",
+    paddingRight: 0,
+    paddingBottom: 0,
+    overflow: "visible",
+    backgroundColor: "transparent",
+  },
+  /** Stepper: flush to the image’s right edge (no inset). */
+  onImageHostStepperFlush: {
+    paddingRight: 0,
+  },
+  /** Hit target — paint lives on the inner View (Pressable bg can fail to draw). */
+  cutoutPlusHit: {
+    width: MENU_CIRCLE_CONTROL_SIZE,
+    height: MENU_CIRCLE_CONTROL_SIZE,
+  },
+  /** Green + — solid View so the circle always paints on Android/home rails. */
+  cutoutPlusBtn: {
+    width: MENU_CIRCLE_CONTROL_SIZE,
+    height: MENU_CIRCLE_CONTROL_SIZE,
+    borderRadius: MENU_CIRCLE_CONTROL_SIZE / 2,
+    backgroundColor: ADD_GREEN,
+    borderWidth: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 2,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#0F172A",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 3,
+      },
+      android: {
+        elevation: 8,
+      },
+      default: {},
+    }),
+  },
+  cutoutPlusBtnPressed: {
+    opacity: 0.82,
+  },
+  /** Outer frame draws the green border so Pressable presses never wash it out. */
+  cutoutStepperFrame: {
+    width: MENU_CIRCLE_STEPPER_WIDTH,
+    height: MENU_CIRCLE_CONTROL_SIZE,
+    borderRadius: MENU_STEPPER_RADIUS,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 3,
+    borderColor: ADD_GREEN,
+    zIndex: 2,
+    overflow: "visible",
+  },
+  /** Full half overlays — include the border stroke so edge taps still register. */
+  stepperHitLeft: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: "50%",
+    zIndex: 4,
+  },
+  stepperHitRight: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: "50%",
+    zIndex: 4,
+  },
+  stepperVisualRow: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 10,
+    zIndex: 1,
+  },
+  cutoutHalfBtn: {
+    minWidth: 34,
+    height: MENU_CIRCLE_CONTROL_SIZE - 6,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  compactHalfBtn: {
+    flex: 1,
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  /** @deprecated kept for morph default-size stepper shell */
+  cutoutStepper: {
+    width: MENU_CIRCLE_STEPPER_WIDTH,
+    height: MENU_CIRCLE_CONTROL_SIZE,
+    borderRadius: MENU_STEPPER_RADIUS,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 3,
+    borderColor: ADD_GREEN,
+    zIndex: 2,
+    overflow: "visible",
+  },
+  cutoutStepperInner: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 10,
+    height: MENU_CIRCLE_CONTROL_SIZE,
+  },
   controlShellCompact: {
     height: MENU_COMPACT_CONTROL_HEIGHT,
+    minWidth: 96,
+    width: "100%",
     borderRadius: 10,
+    alignItems: "stretch",
+    overflow: "visible",
+    zIndex: 6,
+  },
+  /**
+   * Circle shell — size matches the green + / stepper; host padding supplies the cradle gap.
+   */
+  controlShellCircle: {
+    width: MENU_CIRCLE_CONTROL_SIZE,
+    height: MENU_CIRCLE_CONTROL_SIZE,
+    minWidth: MENU_CIRCLE_CONTROL_SIZE,
+    borderRadius: MENU_CIRCLE_CONTROL_SIZE / 2,
+    alignItems: "stretch",
+    alignSelf: "flex-end",
+    overflow: "visible",
+  },
+  controlShellCircleStepper: {
+    width: MENU_CIRCLE_STEPPER_WIDTH,
+    minWidth: MENU_CIRCLE_STEPPER_WIDTH,
+  },
+  /** Sit above the SVG curve. No elevation — Android + overflow:hidden breaks hit-testing. */
+  controlShellOnCurve: {
+    zIndex: 2,
+  },
+  /** Expand + hit box to the full padded dock so curve taps register as Add. */
+  controlShellCutoutAddHit: {
+    width: "100%",
+    minWidth: MENU_CIRCLE_CONTROL_SIZE,
+    height: "100%",
+    minHeight: MENU_CIRCLE_CONTROL_SIZE,
+    alignSelf: "stretch",
     alignItems: "flex-end",
+    justifyContent: "flex-end",
+    backgroundColor: "transparent",
   },
   /** Absolutely-stacked visual layer; opacity is driven by morphProgress. */
   morphLayer: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "center",
     alignItems: "stretch",
+    overflow: "visible",
   },
   morphLayerCompactAdd: {
     alignItems: "flex-end",
   },
+  morphLayerCircleAdd: {
+    alignItems: "flex-end",
+    justifyContent: "flex-end",
+  },
   addPressablePressed: {
-    opacity: 0.9,
-    transform: [{ scale: 0.97 }],
+    opacity: 0.88,
+    transform: [{ scale: 0.94 }],
   },
   addBtn: {
     width: "100%",
@@ -903,21 +1508,98 @@ const styles = StyleSheet.create({
   addBtnCompact: {
     width: MENU_COMPACT_CONTROL_HEIGHT,
     height: MENU_COMPACT_CONTROL_HEIGHT,
-    borderRadius: 10,
-    borderWidth: 0,
+    borderRadius: MENU_STEPPER_RADIUS,
+    borderWidth: 2.5,
+    borderColor: ADD_GREEN,
     paddingHorizontal: 0,
-    backgroundColor: "#D1FAE5",
+    backgroundColor: "#FFFFFF",
     shadowOpacity: 0,
     elevation: 0,
   },
+  addBtnCircle: {
+    width: MENU_CIRCLE_CONTROL_SIZE,
+    height: MENU_CIRCLE_CONTROL_SIZE,
+    borderRadius: MENU_CIRCLE_CONTROL_SIZE / 2,
+    borderWidth: 2.5,
+    borderColor: ADD_GREEN,
+    paddingHorizontal: 0,
+    backgroundColor: "#FFFFFF",
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  /** Solid green circle + 2px dark ring; white bold +. No elevation (touch-safe). */
+  addBtnCircleOnCurve: {
+    backgroundColor: ADD_GREEN,
+    borderWidth: 0,
+  },
+  addPlusGlyphOnCurve: {
+    color: "#FFFFFF",
+    fontSize: 26,
+    fontWeight: "900",
+    lineHeight: 28,
+    includeFontPadding: false,
+    marginTop: Platform.OS === "android" ? -2 : 0,
+  },
+  qtyWrapOnCurve: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 0,
+    borderRadius: MENU_CIRCLE_CONTROL_SIZE / 2,
+  },
+  qtyVisualRowOnCurve: {
+    paddingHorizontal: 4,
+  },
+  qtyCircleBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: ADD_GREEN,
+    borderWidth: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  qtyGlyphOnCurve: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "900",
+    lineHeight: 18,
+    minWidth: 0,
+    includeFontPadding: false,
+  },
+  /** Reference stepper: accent − / + on white pill (no filled circles). */
+  qtyGlyphBordered: {
+    color: ADD_GREEN,
+    fontSize: 24,
+    fontWeight: "900",
+    lineHeight: 26,
+    minWidth: 22,
+    textAlign: "center",
+    includeFontPadding: false,
+  },
+  /** Same accent as border / glyphs — matches reference pill. */
+  qtyTextBordered: {
+    color: ADD_GREEN,
+    fontSize: 16,
+    fontWeight: "900",
+    minWidth: 22,
+    textAlign: "center",
+    includeFontPadding: false,
+  },
+  qtyTextOnCurve: {
+    color: "#0F172A",
+    fontSize: 15,
+    fontWeight: "800",
+    minWidth: 22,
+    textAlign: "center",
+  },
   addBtnCompactDisabled: {
     backgroundColor: "#F3F4F6",
+    borderColor: "#D1D5DB",
   },
   addPlusGlyphCompact: {
-    fontSize: 22,
-    fontWeight: "700",
+    fontSize: 24,
+    fontWeight: "900",
     color: ADD_GREEN,
-    lineHeight: 24,
+    lineHeight: 26,
     marginTop: Platform.OS === "android" ? -1 : 0,
   },
   addBtnTextCompactDisabled: {
@@ -952,23 +1634,25 @@ const styles = StyleSheet.create({
     position: "relative",
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: QTY_FILL,
-    borderWidth: 1.5,
+    justifyContent: "space-between",
+    backgroundColor: "#FFFFFF",
+    borderWidth: 2.5,
     borderColor: ADD_GREEN,
     borderRadius: CONTROL_RADIUS,
     height: MENU_STEPPER_CONTROL_HEIGHT,
     width: "100%",
-    overflow: "hidden",
+    // Visible so edge hitSlop around the border still receives taps.
+    overflow: "visible",
+    paddingHorizontal: 0,
     ...Platform.select({
       ios: {
         shadowColor: "#000",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 3,
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.06,
+        shadowRadius: 2,
       },
       android: {
-        elevation: 3,
+        elevation: 0,
       },
       default: {},
     }),
@@ -981,19 +1665,37 @@ const styles = StyleSheet.create({
   },
   qtyWrapCompact: {
     height: MENU_COMPACT_CONTROL_HEIGHT,
-    borderRadius: 10,
+    borderRadius: MENU_STEPPER_RADIUS,
+    minWidth: 96,
+    width: "100%",
+    borderWidth: 2.5,
+    backgroundColor: "#FFFFFF",
+    zIndex: 6,
+    overflow: "visible",
+  },
+  qtyWrapCircle: {
+    height: MENU_CIRCLE_CONTROL_SIZE,
+    borderRadius: MENU_STEPPER_RADIUS,
+    minWidth: 0,
+    width: "100%",
+    alignSelf: "stretch",
+    borderWidth: 3,
+    backgroundColor: "#FFFFFF",
+    overflow: "visible",
   },
   qtyVisualRowCompact: {
     paddingHorizontal: 8,
   },
   qtyGlyphCompact: {
-    fontSize: 16,
-    lineHeight: 18,
-    minWidth: 12,
+    fontSize: 20,
+    lineHeight: 22,
+    minWidth: 14,
+    fontWeight: "900",
   },
   qtyTextCompact: {
-    fontSize: 13,
+    fontSize: 14,
     minWidth: 18,
+    fontWeight: "900",
   },
   /** Always horizontal: −  qty  + */
   qtyVisualRow: {
@@ -1005,8 +1707,8 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   qtyGlyph: {
-    fontSize: 18,
-    fontWeight: "700",
+    fontSize: 20,
+    fontWeight: "900",
     color: ADD_GREEN,
     textAlign: "center",
     includeFontPadding: false,
@@ -1019,7 +1721,7 @@ const styles = StyleSheet.create({
   qtyText: {
     textAlign: "center",
     fontSize: 15,
-    fontWeight: "800",
+    fontWeight: "900",
     color: ADD_GREEN,
     letterSpacing: 0.2,
     includeFontPadding: false,

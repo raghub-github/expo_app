@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Image, Platform, View, StyleSheet } from "react-native";
+import { Platform, View, StyleSheet } from "react-native";
+import { Image as ExpoImage } from "expo-image";
 import {
   getAppAssetUrl,
   isAppAssetsLoaded,
@@ -7,7 +8,8 @@ import {
   ensureMerchantAppAssetsLoaded,
   useAppAssetUrl,
 } from "@/store/appAssetsStore";
-import { MX } from "@/lib/appAssetKeys";
+import { MX, MX_WELCOME_SLIDE_KEYS } from "@/lib/appAssetKeys";
+import { prefetchWelcomeUris } from "@/lib/welcomeCriticalAssets";
 
 const RETRY_MS = 12_000;
 
@@ -28,10 +30,20 @@ export const OFFERS_ASSET_KEYS = [
   MX.offers.emptyRunning,
 ] as const;
 
-const PREFETCH_ASSET_KEYS = [...EMPTY_ORDER_ASSET_KEYS, ...OFFERS_ASSET_KEYS] as const;
+const PREFETCH_ASSET_KEYS = [
+  ...MX_WELCOME_SLIDE_KEYS,
+  ...EMPTY_ORDER_ASSET_KEYS,
+  ...OFFERS_ASSET_KEYS,
+] as const;
 
 function prefetchKnownImages(): void {
-  for (const key of PREFETCH_ASSET_KEYS) {
+  const welcomeUris: string[] = [];
+  for (const key of MX_WELCOME_SLIDE_KEYS) {
+    const url = getAppAssetUrl(key);
+    if (url && !welcomeUris.includes(url)) welcomeUris.push(url);
+  }
+  prefetchWelcomeUris(welcomeUris);
+  for (const key of [...EMPTY_ORDER_ASSET_KEYS, ...OFFERS_ASSET_KEYS]) {
     const url = getAppAssetUrl(key);
     if (!url) continue;
     if (Platform.OS === "web") {
@@ -45,7 +57,7 @@ function prefetchKnownImages(): void {
         /* ignore */
       }
     } else {
-      void Image.prefetch(url).catch(() => undefined);
+      void ExpoImage.prefetch(url, { cachePolicy: "memory-disk" }).catch(() => undefined);
     }
   }
 }
@@ -53,10 +65,17 @@ function prefetchKnownImages(): void {
 function HiddenPrefetchImage({ assetKey }: { assetKey: string }) {
   const url = useAppAssetUrl(assetKey);
   if (!url) return null;
-  return <Image source={{ uri: url }} style={styles.hidden} />;
+  return (
+    <ExpoImage
+      source={{ uri: url }}
+      style={styles.hidden}
+      cachePolicy="memory-disk"
+      recyclingKey={assetKey}
+    />
+  );
 }
 
-/** Load merchant CMS images once; prefetch all order-stage empty illustrations. */
+/** Load merchant CMS images once; prefetch welcome + order-stage empty illustrations. */
 export function AppAssetsPrefetch() {
   const [, tick] = useState(0);
 
@@ -68,7 +87,7 @@ export function AppAssetsPrefetch() {
       if (isAppAssetsLoaded()) {
         prefetchKnownImages();
         tick((t) => t + 1);
-        return;
+        if (!needsAppAssetsFetch()) return;
       }
       try {
         const ok = await ensureMerchantAppAssetsLoaded();

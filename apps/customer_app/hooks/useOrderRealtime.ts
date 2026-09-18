@@ -57,9 +57,9 @@ import { thermalAudit } from "@/lib/thermalAudit";
  * `eta.updated.v1`) and halve the frequency. That takes an active food order
  * from 24 req/min to 6 req/min without changing status latency materially.
  */
-const STATUS_POLL_INTERVAL_MS = 25_000;
-/** With a healthy WS, status can poll less often — realtime events drive invalidations. */
-const STATUS_POLL_INTERVAL_WS_HEALTHY_MS = 90_000;
+const STATUS_POLL_INTERVAL_MS = 12_000;
+/** With a healthy WS, still poll often enough for accept/prep (status WS is not always emitted). */
+const STATUS_POLL_INTERVAL_WS_HEALTHY_MS = 15_000;
 const LOCATION_FALLBACK_POLL_MS = 20_000;
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 60_000;
@@ -646,9 +646,29 @@ export function useOrderRealtime() {
 
       void queryClient.invalidateQueries({ queryKey: ["orderEtaTimeline"] });
 
-      // Ready / stage jumps must refresh order detail immediately (don't wait for poll).
+      // Ready / prep / stage jumps must refresh order detail immediately (don't wait for poll).
       const stage = String(payload.stageAware?.currentStage ?? "").toUpperCase();
+      const stageStatus =
+        stage === "MERCHANT_ACCEPTED" || stage === "MERCHANT_PREP"
+          ? stage === "MERCHANT_ACCEPTED"
+            ? "ACCEPTED"
+            : "PREPARING"
+          : stage === "READY_AWAITING_RIDER"
+            ? "READY_FOR_PICKUP"
+            : stage === "RIDER_TO_MERCHANT"
+              ? "RIDER_ASSIGNED"
+              : stage === "AT_STORE"
+                ? "RIDER_AT_PICKUP"
+                : stage === "CUSTOMER_DELIVERY"
+                  ? "OUT_FOR_DELIVERY"
+                  : stage === "ARRIVING"
+                    ? "REACHED_CUSTOMER"
+                    : stage === "DELIVERED" || stage === "COMPLETED"
+                      ? "DELIVERED"
+                      : null;
       if (
+        stage === "MERCHANT_ACCEPTED" ||
+        stage === "MERCHANT_PREP" ||
         stage === "READY_AWAITING_RIDER" ||
         stage === "RIDER_TO_MERCHANT" ||
         stage === "AT_STORE" ||
@@ -657,11 +677,11 @@ export function useOrderRealtime() {
         stage === "DELIVERED" ||
         stage === "COMPLETED"
       ) {
-        if (stage === "DELIVERED" || stage === "COMPLETED") {
+        if (stageStatus) {
           applyServerCustomerOrderStatus({
             queryClient,
             orderIds: [orderKey, ...orderIds, ...pollOrderIds],
-            status: "DELIVERED",
+            status: stageStatus,
           });
         }
         void queryClient.invalidateQueries({ queryKey: ["order", orderKey] });

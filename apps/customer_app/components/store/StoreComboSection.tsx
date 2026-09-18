@@ -2,6 +2,7 @@ import React, { useCallback, useState } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, Image, TouchableOpacity, ScrollView, StyleSheet } from "react-native";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import { Ionicons } from "@expo/vector-icons";
 import type { MenuItem } from "@/services/merchant.service";
 import { StoreTheme } from "@/constants/storeTheme";
@@ -46,12 +47,9 @@ export function StoreComboSection({
 
       {expanded ? (
         <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
+          {...NATURAL_HORIZONTAL_SCROLL_PROPS}
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="always"
-          nestedScrollEnabled
-          delaysContentTouches={false}
           canCancelContentTouches={false}
         >
           {combos.map((combo) => (

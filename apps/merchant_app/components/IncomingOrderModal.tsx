@@ -76,9 +76,18 @@ import {
   resolveStoreDefaultPrepMinutes,
 } from "@/lib/order-prep-time";
 import { TypographyVariantProvider } from "@/lib/typographyVariant";
+import { MerchantFonts } from "@/constants/typography";
+import { getTextHost } from "@/lib/textHost";
 import { fetchStoreProfile } from "@/services/menuApi";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import * as SecureStore from "expo-secure-store";
+import {
+  hydrateIncomingOrderDismissedLocal,
+  isIncomingOrderDismissed,
+  markIncomingOrderDismissedLocal,
+} from "@/lib/incomingOrderDismissed";
+
+const NativeText = getTextHost();
 
 // v3: clear prior dismiss poison (v1 auto-dismissed on list flicker; v2 still
  // blocked re-open after a failed board hydrate). Fresh devices always show the
@@ -122,18 +131,15 @@ async function getDismissed(): Promise<Set<number>> {
   }
 }
 
-/** In-memory dismiss set — X can land before SecureStore round-trip. */
-const dismissedCoreIdsMem = new Set<number>();
-
+/** In-memory dismiss helpers — X / accept poison before SecureStore round-trip. */
 function isDismissedCore(orderCoreId: number): boolean {
-  const id = Number(orderCoreId);
-  return Number.isFinite(id) && dismissedCoreIdsMem.has(id);
+  return isIncomingOrderDismissed(orderCoreId);
 }
 
 async function addDismissed(orderCoreId: number) {
   const id = Number(orderCoreId);
   if (!Number.isFinite(id)) return;
-  dismissedCoreIdsMem.add(id);
+  markIncomingOrderDismissedLocal(id);
   const prev = await getDismissed();
   prev.add(id);
   const arr = Array.from(prev).map((oid) => ({ order_id: oid, t: Date.now() }));
@@ -145,7 +151,7 @@ const BADGE_H = 42;
 const BADGE_STROKE = 4;
 /** 20% of pill sits on sheet; 80% floats above (Porter-style). */
 const BADGE_OVERLAP = BADGE_H * 0.2;
-const URGENT_SECONDS = 60;
+const URGENT_SECONDS = 120;
 
 /** Pill outline starting at top-center, clockwise — fuse depletes with accept timer. */
 function buildPillOutlinePath(w: number, h: number, inset: number): string {
@@ -244,33 +250,42 @@ function NewOrderFusePill({
   );
 }
 
-const ACCEPT_HANDLE_W = 44;
-const ACCEPT_HANDLE_INSET = 6;
-/** Half a swipe accepts — merchants shouldn't have to drag the full width. */
-const ACCEPT_SWIPE_RATIO = 0.45;
+/** Match rider `slideAction` track / thumb (visual only — merchant fuse timing unchanged). */
+const SLIDE_TRACK_H = 66;
+const SLIDE_THUMB_W = 64;
+const SLIDE_THUMB_H = 52;
+const SLIDE_PAD = 7;
+const SLIDE_ACTION_GREEN = "#7CFF2E";
+const SLIDE_ACTION_GREEN_BORDER = "#111111";
+const SLIDE_ACTION_LABEL = "#0B1A0F";
+const SLIDE_ACTION_THUMB_BG = "#0B1220";
+const SLIDE_ACTION_THUMB_ICON = "#FFFFFF";
+const SLIDE_ACTION_URGENT = "#EF4444";
+const SLIDE_ACTION_URGENT_BORDER = "#7F1D1D";
+/** Confirm only on finger-up past ~85% — sliding back cancels. */
+const ACCEPT_SWIPE_RATIO = 0.85;
 
-function SwipeHintArrows({ color }: { color: string }) {
-  const shift = useSharedValue(0);
+function SwipeHintArrow({ color }: { color: string }) {
+  const pulse = useSharedValue(1);
 
   useEffect(() => {
-    shift.value = withRepeat(
+    pulse.value = withRepeat(
       withSequence(
-        withTiming(8, { duration: 520, easing: Easing.inOut(Easing.ease) }),
-        withTiming(0, { duration: 520, easing: Easing.inOut(Easing.ease) })
+        withTiming(1.08, { duration: 520, easing: Easing.inOut(Easing.ease) }),
+        withTiming(1, { duration: 520, easing: Easing.inOut(Easing.ease) })
       ),
       -1,
-      false
+      true
     );
-  }, [shift]);
+  }, [pulse]);
 
   const arrowStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: shift.value }],
+    transform: [{ scale: pulse.value }],
   }));
 
   return (
-    <Animated.View style={[styles.swipeHintArrows, arrowStyle]}>
-      <Ionicons name="chevron-forward" size={15} color={color} />
-      <Ionicons name="chevron-forward" size={15} color={color} style={styles.acceptChevronSecond} />
+    <Animated.View style={arrowStyle}>
+      <Ionicons name="arrow-forward" size={22} color={color} />
     </Animated.View>
   );
 }
@@ -360,11 +375,11 @@ function AcceptOrderSwipeButton({
   }, [dragX]);
 
   const maxTravel = useCallback(
-    () => Math.max(0, trackWidth.current - ACCEPT_HANDLE_W - ACCEPT_HANDLE_INSET * 2),
+    () => Math.max(0, trackWidth.current - SLIDE_THUMB_W - SLIDE_PAD * 2),
     []
   );
 
-  /** Fire the accept the instant the swipe passes the line — no release, no settle wait. */
+  /** Confirm only when the finger lifts past the threshold — sliding back resets. */
   const confirmSwipe = useCallback(() => {
     const { loading: isLoading, disabled: isDisabled, onPress: press } = liveRef.current;
     if (confirmedRef.current || isDisabled || isLoading) return;
@@ -393,17 +408,17 @@ function AcceptOrderSwipeButton({
         const max = liveRef.current.max();
         const next = Math.min(max, Math.max(0, gesture.dx));
         dragX.setValue(next);
-        if (max > 0 && next >= max * ACCEPT_SWIPE_RATIO) liveRef.current.confirm();
+        // Never accept mid-drag — only on release.
       },
       onPanResponderRelease: (_, gesture) => {
         if (confirmedRef.current) return;
         const max = liveRef.current.max();
-        if (
+        const atEnd =
           !liveRef.current.disabled &&
           !liveRef.current.loading &&
           max > 0 &&
-          gesture.dx >= max * ACCEPT_SWIPE_RATIO
-        ) {
+          gesture.dx >= max * ACCEPT_SWIPE_RATIO;
+        if (atEnd) {
           liveRef.current.confirm();
           return;
         }
@@ -423,14 +438,20 @@ function AcceptOrderSwipeButton({
     width: Math.max(0, (progressWidth.value / 100) * trackWidthSv.value),
   }));
 
-  const accent = urgent ? "#DC2626" : "#16A34A";
-  const btnBg = urgent ? "#DC2626" : "#22C55E";
+  const trackBg = urgent ? SLIDE_ACTION_URGENT : SLIDE_ACTION_GREEN;
+  const trackBorder = urgent ? SLIDE_ACTION_URGENT_BORDER : SLIDE_ACTION_GREEN_BORDER;
+  const labelColor = urgent ? "#FFFFFF" : SLIDE_ACTION_LABEL;
+  const thumbIcon = SLIDE_ACTION_THUMB_ICON;
 
   return (
     <Animated.View style={[styles.acceptBtnWrap, wrapStyle]}>
       {/* Drag starts anywhere on the track — grabbing the small handle wasted seconds. */}
       <View
-        style={[styles.acceptBtn, { backgroundColor: btnBg }, disabled && styles.btnDisabled]}
+        style={[
+          styles.acceptBtn,
+          { backgroundColor: trackBg, borderColor: trackBorder },
+          disabled && styles.btnDisabled,
+        ]}
         onLayout={(e) => {
           const w = e.nativeEvent.layout.width;
           trackWidth.current = w;
@@ -438,18 +459,36 @@ function AcceptOrderSwipeButton({
         }}
         {...panResponder.panHandlers}
       >
-        <Animated.View style={[styles.acceptProgressFill, progressStyle]} />
-        <Text style={styles.acceptText} pointerEvents="none">
-          Accept order ({countdown})
-        </Text>
+        <Animated.View
+          style={[
+            styles.acceptProgressFill,
+            { backgroundColor: urgent ? "rgba(255,255,255,0.16)" : "rgba(11,26,15,0.10)" },
+            progressStyle,
+          ]}
+        />
+        <NativeText
+          style={[
+            styles.acceptText,
+            {
+              color: labelColor,
+              fontFamily: MerchantFonts.poppinsBold,
+              fontWeight: "900",
+            },
+          ]}
+          pointerEvents="none"
+          numberOfLines={1}
+          allowFontScaling={false}
+        >
+          {loading ? "Accepting..." : `Accept order (${countdown})`}
+        </NativeText>
         <RNAnimated.View
           style={[styles.acceptHandle, { transform: [{ translateX: dragX }] }]}
           pointerEvents="none"
         >
           {loading ? (
-            <ActivityIndicator color={accent} size="small" />
+            <ActivityIndicator color={thumbIcon} size="small" />
           ) : (
-            <SwipeHintArrows color={accent} />
+            <SwipeHintArrow color={thumbIcon} />
           )}
         </RNAnimated.View>
       </View>
@@ -516,7 +555,7 @@ export default function IncomingOrderModal() {
 
   useEffect(() => {
     void getDismissed().then((set) => {
-      for (const id of set) dismissedCoreIdsMem.add(id);
+      hydrateIncomingOrderDismissedLocal(set);
     });
   }, []);
 
@@ -533,7 +572,7 @@ export default function IncomingOrderModal() {
       if (shownCoreIdsRef.current.has(dedupeKey)) return;
       const dismissed = await getDismissed();
       if (dismissed.has(order.ordersCoreId)) {
-        dismissedCoreIdsMem.add(order.ordersCoreId);
+        markIncomingOrderDismissedLocal(order.ordersCoreId);
         return;
       }
 
@@ -577,6 +616,7 @@ export default function IncomingOrderModal() {
   const openSheetManually = useCallback(
     (order: OrderRecord) => {
       if (order.status !== "created" || order.id.startsWith("core-")) return;
+      if (isDismissedCore(order.ordersCoreId)) return;
       setParked(false);
       const dedupeKey = `c:${order.ordersCoreId}`;
       shownCoreIdsRef.current.add(dedupeKey);
@@ -597,11 +637,15 @@ export default function IncomingOrderModal() {
         (o) => o.id === order.id || o.ordersCoreId === order.ordersCoreId
       );
       const queue = hasIncoming
-        ? fifo
-        : [...fifo, order].sort(
-            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-          );
-      setSheetOrder(queue[0] ?? order);
+        ? fifo.filter((o) => !isDismissedCore(o.ordersCoreId))
+        : [...fifo, order]
+            .filter((o) => !isDismissedCore(o.ordersCoreId))
+            .sort(
+              (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+            );
+      const target = queue[0] ?? order;
+      if (isDismissedCore(target.ordersCoreId)) return;
+      setSheetOrder(target);
     },
     [setParked, orders]
   );
@@ -611,7 +655,7 @@ export default function IncomingOrderModal() {
     setParked(false);
     const created = pendingCreatedFifo(orders);
     const dismissed = await getDismissed();
-    for (const id of dismissed) dismissedCoreIdsMem.add(id);
+    hydrateIncomingOrderDismissedLocal(dismissed);
     const target = created.find((o) => !isDismissedCore(o.ordersCoreId));
     if (!target) return;
     shownCoreIdsRef.current.delete(`c:${target.ordersCoreId}`);
@@ -663,10 +707,13 @@ export default function IncomingOrderModal() {
 
   useEffect(() => {
     if (!sheetOrder || !storeId) return;
+    // Never restart chime for an order the merchant already resolved/dismissed.
+    if (isDismissedCore(sheetOrder.ordersCoreId)) return;
     let cancelled = false;
     void (async () => {
       const dev = await readDeviceOrderAlertsAsync(storeId);
       if (cancelled) return;
+      if (isDismissedCore(sheetOrder.ordersCoreId)) return;
       await takeoverNewOrderAlertByModal({
         orderId: sheetOrder.id,
         source: "MODAL",
@@ -759,12 +806,35 @@ export default function IncomingOrderModal() {
 
   const displayOrder = useMemo(() => {
     if (!sheetOrder) return null;
-    return (
+    const live =
       orders.find((o) => o.id === sheetOrder.id) ??
       orders.find((o) => o.ordersCoreId === sheetOrder.ordersCoreId) ??
-      sheetOrder
-    );
+      null;
+    if (!live) return sheetOrder;
+    // Prefer the richer of sheet + board so ordinal/name never flicker downward.
+    const ordA = sheetOrder.customerStoreOrderOrdinal;
+    const ordB = live.customerStoreOrderOrdinal;
+    const totA = sheetOrder.customerStoreOrdersTotal;
+    const totB = live.customerStoreOrdersTotal;
+    const bestOrd =
+      ordA != null && ordB != null
+        ? Math.max(ordA, ordB)
+        : ordA ?? ordB ?? null;
+    const bestTot =
+      totA != null && totB != null
+        ? Math.max(totA, totB)
+        : totA ?? totB ?? null;
+    return {
+      ...live,
+      customerName: (live.customerName ?? "").trim() || sheetOrder.customerName,
+      customerStoreOrderOrdinal: bestOrd,
+      customerStoreOrdersTotal: bestTot,
+      lineItems: live.lineItems?.length ? live.lineItems : sheetOrder.lineItems,
+    };
   }, [sheetOrder, orders]);
+
+  /** Lock the highest known store ordinal for this open sheet so polls cannot flash "1st". */
+  const stickyCustomerOrdinalRef = useRef<{ orderId: string; ordinal: number } | null>(null);
 
   const actionStoreId = useMemo(() => {
     const fromOrder = displayOrder?.merchantStoreId ?? sheetOrder?.merchantStoreId;
@@ -1045,10 +1115,14 @@ export default function IncomingOrderModal() {
       const actedFoodId = current.id;
       if (!Number.isFinite(foodId)) return;
       const stopReason = status === "ACCEPTED" ? "accepted" : "rejected";
+      // Poison reopen + chime immediately (before API / board lag can re-open the sheet).
+      void addDismissed(actedCoreId);
+      shownCoreIdsRef.current.add(`c:${actedCoreId}`);
       void stopNewOrderAlert(current.id, stopReason);
       setActionLoading(true);
       try {
-        upsertOrder(current);
+        // Do not upsert the still-CREATED row first — that re-stamps pendingOptimistic
+        // and a concurrent refetch can revive the card on New after reject/accept.
         const applied = await transitionOrder(
           current.id,
           status === "ACCEPTED" ? "preparing" : "rejected",
@@ -1060,7 +1134,17 @@ export default function IncomingOrderModal() {
             cancelMode: status === "CANCELLED" ? mode : undefined,
           }
         );
-        if (!applied) return;
+        if (!applied) {
+          // Still keep dismissed — merchant already committed the gesture; avoid reopen loop.
+          await advanceOrCloseSheet({
+            markDismissed: true,
+            parkIfLast: false,
+            stopReason,
+            forCoreId: actedCoreId,
+            forFoodId: actedFoodId,
+          });
+          return;
+        }
         if (status === "CANCELLED" && mode === "auto") {
           showToast("Order cancelled");
         }
@@ -1093,6 +1177,14 @@ export default function IncomingOrderModal() {
           const msg = err instanceof Error && err.message.trim() ? err.message : "Could not accept order";
           showToast(msg);
         }
+        // Keep sheet closed for this order — do not let lag reopen + chime.
+        await advanceOrCloseSheet({
+          markDismissed: true,
+          parkIfLast: false,
+          stopReason,
+          forCoreId: actedCoreId,
+          forFoodId: actedFoodId,
+        });
       } finally {
         setActionLoading(false);
       }
@@ -1278,18 +1370,39 @@ export default function IncomingOrderModal() {
   const moreCount = Math.max(0, lineItems.length - MAX_PREVIEW_ITEMS);
   const itemCount = lineItems.reduce((s, it) => s + Math.max(1, it.qty || 1), 0);
 
-  const customerLabel = order
-    ? formatPartnerIncomingCustomerLabel(
-        order.customerName,
-        order.customerStoreOrderOrdinal,
-        order.customerStoreOrdersTotal
-      )
-    : "";
+  const customerLabel = (() => {
+    if (!order) return "";
+    const candidates = [
+      order.customerStoreOrderOrdinal,
+      order.customerStoreOrdersTotal,
+      stickyCustomerOrdinalRef.current?.orderId === order.id
+        ? stickyCustomerOrdinalRef.current.ordinal
+        : null,
+    ].filter((n): n is number => n != null && Number.isFinite(n) && n > 0);
+    const best = candidates.length > 0 ? Math.max(...candidates.map((n) => Math.floor(n))) : 0;
+    if (best > 0) {
+      const prev = stickyCustomerOrdinalRef.current;
+      if (!prev || prev.orderId !== order.id || best > prev.ordinal) {
+        stickyCustomerOrdinalRef.current = { orderId: order.id, ordinal: best };
+      }
+    } else if (stickyCustomerOrdinalRef.current?.orderId !== order.id) {
+      stickyCustomerOrdinalRef.current = null;
+    }
+    const locked =
+      stickyCustomerOrdinalRef.current?.orderId === order.id
+        ? stickyCustomerOrdinalRef.current.ordinal
+        : order.customerStoreOrderOrdinal;
+    return formatPartnerIncomingCustomerLabel(
+      order.customerName,
+      locked,
+      order.customerStoreOrdersTotal
+    );
+  })();
 
   /** Checkout notes are rotated into the GatiMitra delivery banner slideshow. */
   const orderIsPaid = order ? isPrepaidOrder(order) : false;
 
-  const sheetMaxHeight = Dimensions.get("window").height * 0.92;
+  const sheetMaxHeight = Dimensions.get("window").height * 0.98;
 
   return (
     <AppErrorBoundary source="incoming-order-modal">
@@ -1441,9 +1554,9 @@ export default function IncomingOrderModal() {
                     ) : (
                       <>
                         <View style={styles.itemColumnsHeader}>
-                          <Text style={styles.itemNameHeader}>Items to be packed</Text>
-                          <Text style={styles.qtyHeader}>QTY</Text>
-                          <Text style={styles.amountHeader}>Amount</Text>
+                          <Text style={styles.itemNameHeader}>Item name</Text>
+                          <Text style={styles.qtyHeader}>Qty</Text>
+                          <Text style={styles.amountHeader}>Price</Text>
                         </View>
                         {previewItems.map((item, idx) => (
                           <View
@@ -1452,6 +1565,7 @@ export default function IncomingOrderModal() {
                           >
                             <OrderCardItemRow
                               item={item}
+                              index={idx + 1}
                               orderVeg={order.vegNonVeg}
                               showPrice
                               showQuantityColumn
@@ -1493,8 +1607,8 @@ export default function IncomingOrderModal() {
                       styles.footerBlock,
                       {
                         paddingBottom: Math.max(
-                          insets.bottom,
-                          Platform.OS === "ios" ? 10 : 12
+                          insets.bottom + 8,
+                          Platform.OS === "ios" ? 18 : 16
                         ),
                       },
                     ]}
@@ -1732,6 +1846,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
+    marginTop: -10,
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
@@ -1758,13 +1873,13 @@ const styles = StyleSheet.create({
   sheet: {
     width: "100%",
     alignSelf: "stretch",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "#F7F8FA",
     borderTopLeftRadius: CARD_RADIUS + 6,
     borderTopRightRadius: CARD_RADIUS + 6,
     borderBottomLeftRadius: 0,
     borderBottomRightRadius: 0,
     overflow: "hidden",
-    paddingTop: BADGE_OVERLAP + 6,
+    paddingTop: BADGE_OVERLAP + 10,
     ...Platform.select({
       ios: {
         shadowColor: "#000",
@@ -1776,23 +1891,24 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
-  /** Solid white under pill overlap — removes grey shadow band at sheet top */
+  /** Solid fill under pill overlap — removes grey shadow band at sheet top */
   sheetTopCap: {
     position: "absolute",
     top: 0,
     left: 0,
     right: 0,
     height: BADGE_OVERLAP + 6,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "#F7F8FA",
     borderTopLeftRadius: CARD_RADIUS + 6,
     borderTopRightRadius: CARD_RADIUS + 6,
     zIndex: 1,
   },
-  body: { flexShrink: 1, maxHeight: 560 },
+  body: { flexShrink: 1, maxHeight: 720 },
   bodyContent: {
     paddingHorizontal: H_PADDING,
-    paddingTop: 6,
-    paddingBottom: 10,
+    paddingTop: 12,
+    paddingBottom: 20,
+    gap: 10,
   },
   pagerRow: {
     flexDirection: "row",
@@ -1849,7 +1965,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: 8,
+    gap: 10,
+    marginTop: 4,
+    marginBottom: 6,
   },
   orderIdWithCount: {
     flex: 1,
@@ -1868,86 +1986,104 @@ const styles = StyleSheet.create({
   orderTime: {
     fontSize: 12,
     fontWeight: "600",
+    fontFamily: MerchantFonts.poppinsSemiBold,
     color: GatiMitraMerchant.textSecondary,
+    marginTop: 2,
   },
   customerName: {
     marginTop: 4,
-    fontSize: 14,
+    marginBottom: 2,
+    fontSize: 17,
     fontWeight: "700",
+    fontFamily: MerchantFonts.loraBold,
     color: GatiMitraMerchant.textPrimary,
-    lineHeight: 19,
+    lineHeight: 24,
+    letterSpacing: -0.25,
   },
   bulkBanner: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
-    marginTop: 8,
-    padding: 10,
+    marginTop: 4,
+    padding: 12,
     borderRadius: CARD_RADIUS,
     backgroundColor: "#FFFBEB",
     borderWidth: 1,
     borderColor: "#FDE68A",
   },
   bulkTextWrap: { flex: 1 },
-  bulkTitle: { fontSize: 14, fontWeight: "800", color: "#92400E" },
+  bulkTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    fontFamily: MerchantFonts.poppinsBold,
+    color: "#92400E",
+  },
   bulkSub: { fontSize: 12, color: "#B45309", marginTop: 2, lineHeight: 16 },
   addressCard: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 8,
-    marginTop: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    gap: 10,
+    marginTop: 4,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     borderRadius: CARD_RADIUS,
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
+    borderColor: "#E8ECF2",
+    elevation: 0,
+    shadowOpacity: 0,
   },
   addressText: {
     flex: 1,
-    fontSize: 13,
-    color: GatiMitraMerchant.textSecondary,
+    fontSize: 13.5,
+    fontWeight: "600",
+    fontFamily: MerchantFonts.poppinsSemiBold,
+    color: "#475569",
     lineHeight: 19,
   },
   itemsHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 12,
-    marginBottom: 6,
+    marginTop: 4,
+    marginBottom: 2,
   },
   itemsHeading: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "800",
-    color: GatiMitraMerchant.textSecondary,
-    letterSpacing: 0.5,
+    fontFamily: MerchantFonts.poppinsBold,
+    color: "#64748B",
+    letterSpacing: 0.7,
     textTransform: "uppercase",
   },
   viewAllLink: {
     fontSize: 13,
     fontWeight: "700",
-    color: "#1B2B4B",
+    fontFamily: MerchantFonts.poppinsBold,
+    color: "#0F766E",
   },
   itemsCard: {
     borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
+    borderColor: "#E8ECF2",
     borderRadius: CARD_RADIUS,
     overflow: "hidden",
     backgroundColor: "#FFFFFF",
+    elevation: 0,
+    shadowOpacity: 0,
   },
-  itemRowWrap: { paddingHorizontal: 10, paddingVertical: 6 },
+  itemRowWrap: { paddingHorizontal: 12, paddingVertical: 8 },
   itemRowBorder: {
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: GatiMitraMerchant.divider,
+    borderBottomColor: "#EEF2F7",
   },
   itemColumnsHeader: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: GatiMitraMerchant.divider,
-    backgroundColor: "#F8FAFC",
+    borderBottomColor: "#EEF2F7",
+    backgroundColor: "#F1F5F9",
   },
   itemNameHeader: {
     flex: 1,
@@ -1989,15 +2125,16 @@ const styles = StyleSheet.create({
   moreRowLink: { fontSize: 12, fontWeight: "800", color: "#2563EB" },
   footerBlock: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: GatiMitraMerchant.border,
+    borderTopColor: "#E8ECF2",
     backgroundColor: "#FFFFFF",
-    paddingTop: 8,
-    gap: 8,
+    paddingTop: 14,
+    paddingBottom: 4,
+    gap: 12,
   },
   prepFooterRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 12,
     paddingHorizontal: H_PADDING,
   },
   prepLabelHalf: {
@@ -2009,62 +2146,82 @@ const styles = StyleSheet.create({
     minWidth: 0,
     alignItems: "stretch",
   },
-  prepTitle: { fontSize: 12, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
-  prepHint: { fontSize: 10, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
+  prepTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    fontFamily: MerchantFonts.poppinsBold,
+    color: GatiMitraMerchant.textPrimary,
+  },
+  prepHint: {
+    fontSize: 11,
+    fontFamily: MerchantFonts.poppinsSemiBold,
+    color: GatiMitraMerchant.textSecondary,
+    marginTop: 3,
+  },
   prepStepper: {
     flexDirection: "row",
     alignItems: "stretch",
     overflow: "hidden",
-    borderRadius: 10,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: GatiMitraMerchant.border,
     backgroundColor: "#FFFFFF",
     width: "100%",
   },
   prepBtn: {
-    width: 40,
+    width: 44,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 8,
+    paddingVertical: 10,
     backgroundColor: "#FFFFFF",
   },
   prepBtnDisabled: { opacity: 0.4 },
-  prepBtnText: { fontSize: 18, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
+  prepBtnText: {
+    fontSize: 20,
+    fontWeight: "700",
+    fontFamily: MerchantFonts.poppinsBold,
+    color: GatiMitraMerchant.textPrimary,
+  },
   prepValue: {
     flex: 1,
     textAlign: "center",
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: "800",
+    fontFamily: MerchantFonts.poppinsBold,
     color: GatiMitraMerchant.textPrimary,
     borderLeftWidth: 1,
     borderRightWidth: 1,
     borderColor: GatiMitraMerchant.border,
-    paddingVertical: 8,
+    paddingVertical: 10,
     fontVariant: ["tabular-nums"],
   },
   footer: {
-    paddingHorizontal: H_PADDING,
-    paddingTop: 0,
-    paddingBottom: 0,
+    paddingHorizontal: H_PADDING + 10,
+    paddingTop: 2,
+    paddingBottom: 2,
     backgroundColor: "#FFFFFF",
     width: "100%",
     marginBottom: 0,
+    alignItems: "center",
   },
   acceptBtnWrap: {
-    width: "100%",
+    width: "92%",
+    alignSelf: "center",
   },
   acceptBtn: {
     width: "100%",
-    height: 56,
-    borderRadius: 28,
+    height: SLIDE_TRACK_H,
+    borderRadius: SLIDE_TRACK_H / 2,
+    borderWidth: 1.5,
     justifyContent: "center",
     alignItems: "center",
     position: "relative",
     overflow: "hidden",
     ...Platform.select({
       ios: {
+        shadowColor: "#000",
         shadowOffset: { width: 0, height: 3 },
-        shadowOpacity: 0.22,
+        shadowOpacity: 0.18,
         shadowRadius: 6,
       },
       android: { elevation: 4 },
@@ -2076,49 +2233,30 @@ const styles = StyleSheet.create({
     left: 0,
     top: 0,
     bottom: 0,
-    backgroundColor: "rgba(255, 255, 255, 0.18)",
-    borderTopLeftRadius: 28,
-    borderBottomLeftRadius: 28,
-  },
-  acceptBtnPressed: {
-    backgroundColor: "#16A34A",
+    borderTopLeftRadius: SLIDE_TRACK_H / 2,
+    borderBottomLeftRadius: SLIDE_TRACK_H / 2,
   },
   acceptHandle: {
     position: "absolute",
-    left: 6,
-    top: 6,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "#FFFFFF",
+    left: SLIDE_PAD,
+    top: (SLIDE_TRACK_H - SLIDE_THUMB_H) / 2,
+    width: SLIDE_THUMB_W,
+    height: SLIDE_THUMB_H,
+    borderRadius: SLIDE_THUMB_H / 2,
+    backgroundColor: SLIDE_ACTION_THUMB_BG,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     zIndex: 2,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.12,
-        shadowRadius: 3,
-      },
-      android: { elevation: 2 },
-      default: {},
-    }),
-  },
-  acceptChevronSecond: {
-    marginLeft: -10,
-  },
-  swipeHintArrows: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
   },
   acceptText: {
-    color: "#FFFFFF",
+    width: "100%",
+    textAlign: "center",
     fontSize: 17,
-    fontWeight: "700",
-    letterSpacing: 0.2,
+    fontWeight: "900",
+    letterSpacing: 0.15,
+    paddingLeft: SLIDE_THUMB_W + 14,
+    paddingRight: 14,
     zIndex: 1,
   },
   btnDisabled: { opacity: 0.55 },

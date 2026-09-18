@@ -8,6 +8,7 @@
  */
 import React, { useEffect, useState } from "react";
 import { ModalPortal } from "@/components/ui/ModalPortal";
+import { formatDashboardEligibilityStatus } from "@/lib/riders/dashboard-eligibility-status";
 
 type Decision = {
   eligible: boolean;
@@ -121,12 +122,14 @@ export function RiderEligibilitySummaryCard({ riderId }: { riderId: number }) {
                   </span>
                   <span>
                     <b>{SERVICE_LABEL[s] ?? s}</b>
-                    {!d?.eligible && blocked ? (
+                    {!d?.eligible ? (
                       <span className="text-slate-500">
                         {" — "}
-                        {blocked.missingDocuments.length
-                          ? `needs ${blocked.missingDocuments.map(human).join(", ")}`
-                          : blocked.reasons[0] ?? "not eligible"}
+                        {formatDashboardEligibilityStatus({
+                          blocking: d?.blocking,
+                          missingDocuments: blocked?.missingDocuments ?? d?.missingDocuments,
+                          reasons: blocked?.reasons,
+                        })}
                       </span>
                     ) : null}
                   </span>

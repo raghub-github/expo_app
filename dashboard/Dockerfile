@@ -33,6 +33,9 @@ COPY packages/financial-rules/package.json   ./packages/financial-rules/package.
 COPY packages/rider-availability/package.json ./packages/rider-availability/package.json
 COPY packages/slab-pricing/package.json      ./packages/slab-pricing/package.json
 COPY packages/shared-config/package.json ./packages/shared-config/package.json
+COPY packages/bill-print/package.json    ./packages/bill-print/package.json
+COPY packages/print-utils/package.json   ./packages/print-utils/package.json
+COPY packages/kot-print/package.json     ./packages/kot-print/package.json
 
 # --ignore-scripts: avoid running lifecycle hooks during install (some
 # native postinstalls fail on Alpine without dev toolchain). Lifecycle for
@@ -60,6 +63,9 @@ COPY packages/financial-rules   ./packages/financial-rules
 COPY packages/rider-availability ./packages/rider-availability
 COPY packages/slab-pricing      ./packages/slab-pricing
 COPY packages/shared-config ./packages/shared-config
+COPY packages/bill-print    ./packages/bill-print
+COPY packages/print-utils   ./packages/print-utils
+COPY packages/kot-print     ./packages/kot-print
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
@@ -106,6 +112,9 @@ RUN npm run build \
       --workspace=@gatimitra/financial-rules \
       --workspace=@gatimitra/rider-availability \
       --workspace=@gatimitra/slab-pricing \
+      --workspace=@gatimitra/bill-print \
+      --workspace=@gatimitra/print-utils \
+      --workspace=@gatimitra/kot-print \
       --workspace=dashboard
 
 # ────────────────────────────────────────────────────────────────────────

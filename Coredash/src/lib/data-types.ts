@@ -150,7 +150,46 @@ export type TaxData = {
 
 export type OrdersData = {
   period: string;
+  kpis: {
+    orders: number;
+    delivered: number;
+    cancelled: number;
+    live: number;
+    gmv: number;
+    tips: number;
+    gst: number;
+    donations: number;
+    completionRate: number;
+    aov: number;
+    ordersDelta: number | null;
+    gmvDelta: number | null;
+    deliveredDelta: number | null;
+    aovDelta: number | null;
+    newCustomers: number;
+    newCustomersDelta: number | null;
+  };
+  customers: {
+    total: number;
+    newInPeriod: number;
+    newDelta: number | null;
+    ordered: number;
+    repeatRate: number;
+    retentionRate: number;
+  };
+  delivery: {
+    riders: number;
+    ridersOnline: number;
+    avgMinutes: number;
+    onTimeRate: number;
+    partnerEarnings: number;
+  };
   summary: Array<{ type: string; status: string; orders: number }>;
+  byStatus: Array<{ status: string; orders: number }>;
+  byType: Array<{ type: string; orders: number; delivered: number; gmv: number }>;
+  trend: Array<{ day: string; orders: number; delivered: number; cancelled: number; gmv: number }>;
+  hourly: Array<{ hour: number; orders: number }>;
+  paymentMix: Array<{ method: string; orders: number; amount: number }>;
+  topStores: Array<{ name: string; orders: number; gmv: number }>;
   recent: Array<{
     id: number;
     orderId: string;
@@ -163,6 +202,7 @@ export type OrdersData = {
     donation: number;
     gst: number;
     customer: string;
+    customerPhone: string;
     store: string;
     rider: string;
     createdAt: string;
@@ -171,19 +211,111 @@ export type OrdersData = {
 
 export type CustomersData = {
   period: string;
-  stats: { total: number; active: number; newInPeriod: number; wallet: number };
+  stats: {
+    total: number;
+    active: number;
+    newInPeriod: number;
+    wallet: number;
+    plus: number;
+    ordered: number;
+  };
   states: Array<{ state: string; count: number }>;
   cities: Array<{ city: string; count: number }>;
   recent: Array<{
     id: string;
+    dbId: number;
     name: string;
     email: string;
     mobile: string;
     status: string;
     city: string;
+    state: string;
+    pincode: string;
+    risk: string;
+    trustScore: number | null;
+    plus: boolean;
+    avatarUrl: string | null;
     wallet: number;
     orders: number;
     gmv: number;
+    foodOrders: number;
+    parcelOrders: number;
+    rideOrders: number;
+    lastOrderAt: string | null;
+    createdAt: string;
+    cityGroup: string;
+  }>;
+};
+
+export type CustomerDetailData = {
+  period: string;
+  customer: {
+    id: string;
+    dbId: number;
+    name: string;
+    email: string;
+    mobile: string;
+    status: string;
+    city: string;
+    state: string;
+    pincode: string;
+    address: string;
+    risk: string;
+    trustScore: number | null;
+    plus: boolean;
+    avatarUrl: string | null;
+    referralCode: string | null;
+    language: string;
+    wallet: number;
+    walletLocked: number;
+    orders: number;
+    gmv: number;
+    cancelled: number;
+    delivered: number;
+    createdVia: string;
+    lastOrderAt: string | null;
+    lastLoginAt: string | null;
+    createdAt: string;
+  };
+  activeOrder: {
+    id: number;
+    code: string;
+    status: string;
+    type: string;
+    pickup: string;
+    dropoff: string;
+    payable: number;
+    createdAt: string;
+  } | null;
+  orderHistory: Array<{
+    id: number;
+    code: string;
+    status: string;
+    type: string;
+    pickup: string;
+    dropoff: string;
+    payable: number;
+    createdAt: string;
+    deliveredAt: string | null;
+  }>;
+  orderMix: Array<{ type: string; orders: number; gmv: number }>;
+  spendSeries: Array<{ day: string; gmv: number; orders: number }>;
+  savedAddresses: Array<{
+    id: number;
+    addressId: string;
+    label: string;
+    customLabel: string | null;
+    line1: string;
+    line2: string | null;
+    landmark: string | null;
+    city: string;
+    state: string;
+    postalCode: string;
+    contactName: string | null;
+    contactMobile: string | null;
+    isDefault: boolean;
+    isLastUsed: boolean;
+    lastUsedAt: string | null;
     createdAt: string;
   }>;
 };
@@ -200,7 +332,18 @@ export type RidersData = {
     availability: string;
     kyc: string;
     city: string;
+    workingArea: string;
     vehicle: string;
+    vehicleType: string;
+    vehicleCategory: string;
+    vehicleGroup: string;
+    plate: string;
+    fuelType: string;
+    color: string;
+    year: number | null;
+    seats: number | null;
+    vehicleVerified: boolean;
+    selfieUrl: string | null;
     wallet: number;
     deliveries: number;
     earnings: number;
@@ -208,24 +351,206 @@ export type RidersData = {
   }>;
 };
 
+export type RiderDetailData = {
+  period: string;
+  rider: {
+    id: number;
+    name: string;
+    mobile: string;
+    status: string;
+    availability: string;
+    dutyLabel: string;
+    kyc: string;
+    city: string;
+    workingArea: string;
+    vehicle: string;
+    vehicleType: string;
+    vehicleCategory: string;
+    plate: string;
+    fuelType: string;
+    color: string;
+    year: number | null;
+    seats: number | null;
+    vehicleVerified: boolean;
+    hasDocuments: boolean;
+    selfieUrl: string | null;
+    wallet: number;
+    deliveries: number;
+    earnings: number;
+    createdAt: string;
+  };
+  activeRoute: {
+    id: number;
+    code: string;
+    status: string;
+    type: string;
+    pickup: string;
+    dropoff: string;
+    distanceKm: number | null;
+    etaSeconds: number | null;
+    earning: number;
+    createdAt: string;
+    etaAt: string | null;
+  } | null;
+  routeHistory: Array<{
+    id: number;
+    code: string;
+    status: string;
+    type: string;
+    pickup: string;
+    dropoff: string;
+    distanceKm: number | null;
+    createdAt: string;
+    deliveredAt: string | null;
+  }>;
+  timeCategories: Array<{ key: string; label: string; seconds: number; pct: number }>;
+  workingTime: {
+    days: Array<{ day: string; hours: number; average: number }>;
+    averageHours: number;
+  };
+};
+
 export type MerchantsData = {
   period: string;
   stats: { total: number; live: number; accepting: number; newInPeriod: number };
   types: Array<{ type: string; count: number }>;
+  cities: Array<{ city: string; count: number }>;
   recent: Array<{
+    id: number;
     storeId: string;
     name: string;
+    ownerName: string;
+    phone: string;
+    email: string;
     city: string;
+    state: string;
+    pincode: string;
+    cityGroup: string;
     type: string;
     status: string;
+    approval: string;
     live: boolean;
+    accepting: boolean;
+    pureVeg: boolean;
+    bannerUrl: string | null;
     orders: number;
+    delivered: number;
+    cancelled: number;
     gmv: number;
     packaging: number;
     commission: number;
+    wallet: number;
+    ratingAvg: number | null;
+    ratingCount: number;
     createdAt: string;
   }>;
   byCtm: Array<{ name: string; orders: number; ctm: number; packaging: number }>;
+};
+
+export type MerchantDetailData = {
+  period: string;
+  store: {
+    id: number;
+    storeId: string;
+    name: string;
+    displayName: string;
+    description: string;
+    ownerName: string;
+    email: string;
+    phone: string;
+    phones: string[];
+    address: string;
+    landmark: string;
+    city: string;
+    state: string;
+    pincode: string;
+    type: string;
+    status: string;
+    approval: string;
+    live: boolean;
+    accepting: boolean;
+    available: boolean;
+    bannerUrl: string | null;
+    cuisines: string[];
+    prepMinutes: number | null;
+    packagingCharge: number | null;
+    minOrder: number | null;
+    deliveryRadiusKm: number | null;
+    pureVeg: boolean;
+    acceptsOnline: boolean;
+    acceptsCash: boolean;
+    onboardingDone: boolean;
+    onboardingStep: number | null;
+    parentName: string | null;
+    parentId: string | null;
+    wallet: number;
+    walletPending: number;
+    walletHold: number;
+    lifetimeCredit: number;
+    lifetimeDebit: number;
+    totalEarned: number;
+    totalWithdrawn: number;
+    ratingAvg: number | null;
+    ratingCount: number;
+    lifetimeOrders: number;
+    lifetimeDelivered: number;
+    lifetimeCancelled: number;
+    lifetimeCtm: number;
+    lifetimeCommission: number;
+    periodOrders: number;
+    periodDelivered: number;
+    periodCancelled: number;
+    periodCtm: number;
+    periodCommission: number;
+    createdAt: string;
+    lastActivityAt: string | null;
+  };
+  activeOrder: {
+    id: number;
+    code: string;
+    status: string;
+    type: string;
+    pickup: string;
+    dropoff: string;
+    payable: number;
+    createdAt: string;
+  } | null;
+  orderHistory: Array<{
+    id: number;
+    code: string;
+    status: string;
+    type: string;
+    pickup: string;
+    dropoff: string;
+    payable: number;
+    ctm: number;
+    grossCtm: number;
+    netCtm: number;
+    commission: number;
+    compensation: number;
+    penalty: number;
+    createdAt: string;
+    deliveredAt: string | null;
+  }>;
+  statusMix: Array<{ status: string; orders: number }>;
+  spendSeries: Array<{ day: string; ctm: number; orders: number; commission: number }>;
+  ratings: Array<{
+    id: number;
+    rating: number;
+    food: number | null;
+    service: number | null;
+    packaging: number | null;
+    title: string | null;
+    text: string | null;
+    createdAt: string;
+  }>;
+  payouts: Array<{
+    id: number;
+    amount: number;
+    net: number;
+    status: string;
+    createdAt: string;
+  }>;
 };
 
 export type FinanceData = {

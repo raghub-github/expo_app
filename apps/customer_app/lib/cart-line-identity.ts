@@ -12,10 +12,32 @@ export type CartLineIdentityInput = {
   specialInstructions?: string | null;
 };
 
+/**
+ * Catalog id only — strip variant/addon composite suffixes.
+ *
+ * Store SKUs often contain `_` (e.g. `SS1026_bab625…`). Never split on the first
+ * `_` or every item on that store collapses to the same cart qty / line id.
+ *
+ * Supported composites:
+ * - `base::variant::addons` (preferred)
+ * - legacy `base_variant_addons` only when `addons` contains a comma (multi-addon)
+ *   or when the middle+tail clearly came from buildCompositeMenuItemId with empty addons
+ *   — for ambiguous single `_`, keep the full string.
+ */
 export function cartItemBaseId(menuItemId: string): string {
-  if (menuItemId.includes("::")) return menuItemId.split("::")[0]!;
-  if (menuItemId.includes("_")) return menuItemId.split("_")[0]!;
-  return menuItemId;
+  const id = String(menuItemId ?? "").trim();
+  if (!id) return id;
+  if (id.includes("::")) return id.split("::")[0]!;
+
+  // Preferred legacy composite: base_variant_addon1,addon2 (comma ⇒ definitely composite)
+  const comma = id.lastIndexOf(",");
+  if (comma > 0) {
+    const beforeAddons = id.slice(0, id.lastIndexOf("_"));
+    const variantSep = beforeAddons.lastIndexOf("_");
+    if (variantSep > 0) return beforeAddons.slice(0, variantSep);
+  }
+
+  return id;
 }
 
 export function buildCompositeMenuItemId(args: {
@@ -23,11 +45,12 @@ export function buildCompositeMenuItemId(args: {
   variantId?: string | null;
   addonIds: string[];
 }): string {
-  const base = cartItemBaseId(args.baseMenuItemId);
+  // Keep full SKU (may contain `_`); do not truncate via cartItemBaseId.
+  const base = String(args.baseMenuItemId ?? "").trim();
   const variant = (args.variantId ?? "").trim();
   const addons = [...args.addonIds].map((id) => id.trim()).filter(Boolean).sort();
   if (!variant && addons.length === 0) return base;
-  return `${base}_${variant}_${addons.join(",")}`;
+  return `${base}::${variant}::${addons.join(",")}`;
 }
 
 function identityFromCartItem(item: CartLineIdentityInput): {
@@ -51,6 +74,32 @@ function identityFromCartItem(item: CartLineIdentityInput): {
 export function buildCartLineId(item: CartLineIdentityInput): string {
   const { base, variant, addons, note } = identityFromCartItem(item);
   return [base, variant, addons, note].join("::");
+}
+
+/** True when catalog id is already a positive integer menu PK string. */
+export function isNumericMenuItemPk(id: string): boolean {
+  const s = String(id ?? "").trim();
+  return /^\d+$/.test(s) && Number(s) > 0;
+}
+
+/**
+ * Swap the catalog base of a cart line id (plain or `base::variant::addons`)
+ * when migrating public SKU → numeric PK. Returns null when unchanged / invalid.
+ */
+export function rewriteCartMenuItemBase(
+  menuItemId: string,
+  nextBase: string
+): string | null {
+  const current = String(menuItemId ?? "").trim();
+  const next = String(nextBase ?? "").trim();
+  if (!current || !next || !isNumericMenuItemPk(next)) return null;
+  const oldBase = cartItemBaseId(current);
+  if (!oldBase || oldBase === next) return null;
+  if (isNumericMenuItemPk(oldBase)) return null;
+  if (current === oldBase) return next;
+  if (current.startsWith(`${oldBase}::`)) return `${next}${current.slice(oldBase.length)}`;
+  if (current.startsWith(`${oldBase}_`)) return `${next}${current.slice(oldBase.length)}`;
+  return null;
 }
 
 export function cartLinesMatch(a: CartLineIdentityInput, b: CartLineIdentityInput): boolean {

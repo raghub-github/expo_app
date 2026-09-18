@@ -96,12 +96,15 @@ export default function CustomerAppCategoriesClient() {
   } = useQuery({
     queryKey: queryKeys.admin.userAppCategories(storeType),
     queryFn: () => fetchUserAppCategoriesBootstrap(storeType),
-    enabled: permLoading || isSuperAdmin,
+    // Wait for auth — fetching while permLoading often 401s and leaves a stuck skeleton.
+    enabled: !permLoading && isSuperAdmin,
     staleTime: 10 * 60 * 1000,
     gcTime: 30 * 60 * 1000,
-    refetchOnMount: false,
+    // Prefer cached bootstrap — always refetch was forcing multi-refresh skeletons.
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
     placeholderData: (previousData) => previousData,
-    retry: 1,
+    retry: 2,
   });
 
   const loading = bootstrapLoading && !bootstrapData;
@@ -156,7 +159,7 @@ export default function CustomerAppCategoriesClient() {
   useEffect(() => {
     setModalOpen(false);
     setInfo(null);
-    setItems([]);
+    // Keep previous rows visible until the new storeType bootstrap paints (no empty flash).
   }, [storeType]);
 
   useEffect(() => {

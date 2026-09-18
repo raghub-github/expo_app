@@ -1,45 +1,53 @@
+/**
+ * Full-width horizontal slide for main tabs.
+ *
+ * Bottom-tabs `current.progress` is **0 when focused** and ±1 when neighboring
+ * (same convention as RN `forShift`). Inactive scenes must leave the viewport
+ * by a full screen width AND must not paint (opacity 0) — otherwise Home stays
+ * visible while Food “activates” and the user reads Food → Main Home → Food.
+ *
+ * Opacity is a hard cut (not a theatrical fade / delay). No setTimeout.
+ */
+
 import { Dimensions } from "react-native";
 import type { BottomTabNavigationOptions } from "@react-navigation/bottom-tabs";
 
-// @react-navigation/bottom-tabs v7.18 no longer re-exports BottomTabSceneInterpolationProps /
-// BottomTabSceneStyleInterpolator from the package root, so derive the interpolator's argument
-// type from the (exported) options type instead of importing the removed name.
 type BottomTabSceneInterpolationProps = Parameters<
   NonNullable<BottomTabNavigationOptions["sceneStyleInterpolator"]>
 >[0];
 
-const SCREEN_W = Dimensions.get("window").width;
+const FALLBACK_W = Dimensions.get("window").width;
 
-/**
- * Full-width horizontal slide for main tabs.
- *
- * IMPORTANT: Do NOT use a short parallax (e.g. 0.28×width) without opacity —
- * inactive scenes stay on-screen and look “stuck at 50/50”. Off-screen tabs
- * must translate by a full screen width so only the focused page remains visible.
- *
- * Transform-only (no layout margin/width) — floating chrome stays fixed.
- */
 export function forCustomerTabSlide({
   current,
 }: BottomTabSceneInterpolationProps) {
-  const translateX = current.progress.interpolate({
+  const width = FALLBACK_W;
+  const progress = current.progress;
+  const translateX = progress.interpolate({
     inputRange: [-1, 0, 1],
-    outputRange: [-SCREEN_W, 0, SCREEN_W],
+    outputRange: [-width, 0, width],
+    extrapolate: "clamp",
+  });
+  // Hard exclusive visibility — neighbor never composites under the active tab.
+  const opacity = progress.interpolate({
+    inputRange: [-1, -0.001, 0, 0.001, 1],
+    outputRange: [0, 0, 1, 0, 0],
     extrapolate: "clamp",
   });
 
   return {
     sceneStyle: {
+      opacity,
       transform: [{ translateX }],
     },
   };
 }
 
-/** ~280ms — long enough to read as a slide; short enough to feel snappy. */
+/** Snappy press-driven slide — animation duration, not a navigation delay. */
 export const CUSTOMER_TAB_TRANSITION_SPEC = {
   animation: "timing" as const,
   config: {
-    duration: 280,
+    duration: 220,
     useNativeDriver: true,
   },
 };

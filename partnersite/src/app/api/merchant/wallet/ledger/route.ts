@@ -168,14 +168,28 @@ export async function GET(req: NextRequest) {
     }));
 
     const orderRefs = list.filter((e) => e.reference_type === 'ORDER' && e.reference_id != null);
-    if (orderRefs.length > 0) {
-      const foodIds = [...new Set(orderRefs.map((e) => Number(e.reference_id!)))];
-      const { data: foodRows } = await db
-        .from('orders_food')
-        .select('id, order_id')
-        .in('id', foodIds);
+    const metaCoreIds = [
+      ...new Set(
+        list
+          .map((e) => Number((e.metadata as Record<string, unknown> | null)?.orders_core_id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      ),
+    ];
+    if (orderRefs.length > 0 || metaCoreIds.length > 0) {
+      const foodIds = [...new Set(orderRefs.map((e) => Number(e.reference_id!)).filter((id) => Number.isFinite(id) && id > 0))];
+      const { data: foodRows } = foodIds.length
+        ? await db.from('orders_food').select('id, order_id').in('id', foodIds)
+        : { data: [] as { id: number; order_id: number }[] };
       const foodMap = new Map((foodRows || []).map((f: { id: number; order_id: number }) => [f.id, f.order_id]));
-      const orderIds = [...new Set((foodRows || []).map((f: { order_id: number }) => f.order_id))];
+      const orderIds = [
+        ...new Set([
+          ...(foodRows || []).map((f: { order_id: number }) => f.order_id),
+          ...metaCoreIds,
+          ...list
+            .map((e) => Number(e.order_id))
+            .filter((id) => Number.isFinite(id) && id > 0),
+        ]),
+      ];
       let orderMeta: { id: number; order_id: string | null; formatted_order_id: string | null }[] = [];
       if (orderIds.length > 0) {
         const { data: coreRows } = await db
@@ -206,19 +220,38 @@ export async function GET(req: NextRequest) {
           o.formatted_order_id?.trim() || o.order_id?.trim() || null,
         ])
       );
-      orderRefs.forEach((e) => {
-        const oid = foodMap.get(Number(e.reference_id!));
-        if (oid != null) {
-          e.order_id = oid;
-          e.formatted_order_id = orderMetaMap.get(oid) ?? null;
-          if (e.formatted_order_id && e.description) {
-            e.description = e.description.replace(
-              /Order #\d+/i,
-              `Order ${e.formatted_order_id}`
-            );
+      const resolvePublicOrderId = (entry: (typeof list)[number]): string | null => {
+        const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
+        const fromMeta = String(meta?.formatted_order_id ?? '').trim().replace(/^#/, '');
+        if (fromMeta && !/^\d+$/.test(fromMeta)) return fromMeta;
+
+        const foodCore = entry.reference_id != null ? foodMap.get(Number(entry.reference_id)) : undefined;
+        const coreId =
+          foodCore ??
+          (Number.isFinite(Number(meta?.orders_core_id)) && Number(meta?.orders_core_id) > 0
+            ? Number(meta?.orders_core_id)
+            : Number.isFinite(Number(entry.order_id)) && Number(entry.order_id) > 0
+              ? Number(entry.order_id)
+              : null);
+        if (coreId != null) {
+          entry.order_id = coreId;
+          const mapped = orderMetaMap.get(coreId);
+          if (mapped && !/^\d+$/.test(mapped.replace(/^#/, ''))) return mapped.replace(/^#/, '');
+          if (mapped) return mapped.replace(/^#/, '');
+        }
+        return null;
+      };
+
+      for (const e of list) {
+        if (String(e.reference_type ?? '').toUpperCase() !== 'ORDER' && !e.metadata) continue;
+        const publicId = resolvePublicOrderId(e);
+        if (publicId) {
+          e.formatted_order_id = publicId;
+          if (e.description) {
+            e.description = e.description.replace(/Order #\d+/i, `Order ${publicId}`);
           }
         }
-      });
+      }
     }
 
     const { data: bucketRows } = await db

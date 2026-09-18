@@ -281,18 +281,20 @@ const EnvSchema = z.object({
   SERVICE_RADIUS_KM_DEFAULT: z.preprocess(emptyToUndefined, z.coerce.number().positive().max(200)).default(15),
 
   /**
-   * GPS age (seconds) treated as FRESH for scoring / map. Duty ON is never flipped when
-   * location is older than this. NEW-offer eligibility uses the stale window below.
+   * GPS age (seconds) treated as FRESH for scoring / map preference.
+   * Duty ON is never flipped when location is older than this.
+   * Age is measured from COALESCE(gps_captured_at, updated_at) vs server time.
    */
   RIDER_DISPATCH_LOCATION_MAX_AGE_SECONDS: z
     .preprocess(emptyToUndefined, z.coerce.number().int().min(30).max(3600))
     .default(120),
 
   /**
-   * Max GPS age (seconds) while Duty remains ON for NEW dispatch offers.
-   * App kill / Doze can delay pings; 15 minutes is the explicit location-safety
-   * window. Older than this → location UNKNOWN (still ON DUTY, not offered NEW
-   * work until a ping arrives). Pending offers remain recoverable separately.
+   * Max GPS age (seconds) usable for NEW dispatch offers while Duty remains ON.
+   * App kill / Doze can delay pings; default 900s (15 min) is the location-safety
+   * window. Older than this → LOCATION_STALE (still ON DUTY, not offered NEW work
+   * until a ping arrives). Pending offers remain recoverable separately.
+   * onDutyCandidates must NOT require this window — only offer eligibility does.
    */
   RIDER_DISPATCH_LOCATION_STALE_MAX_AGE_SECONDS: z
     .preprocess(emptyToUndefined, z.coerce.number().int().min(30).max(3600))
@@ -302,13 +304,14 @@ const EnvSchema = z.object({
    * GAP 2 — final location revalidation when a rider ACCEPTS an offer. The offer was validated at
    * dispatch time; between offer and accept a rider can go stale or move out of the pickup radius.
    * `enforce` rejects such an accept (order returns to the pool); `shadow` only logs what it would
-   * reject; `off` disables it. Default `shadow` so real rejection rates can be observed before
-   * enforcing. Freshness uses the STALE window (not the tighter fresh window) so a normal recent
-   * fix never blocks a legitimate accept.
+   * reject; `off` disables it. Default `enforce` — GAP-2 exists for this failure mode (rider leaves
+   * location then accepts). Set `shadow` or `off` explicitly only for controlled rollbacks.
+   * Accept freshness uses the FRESH window (RIDER_DISPATCH_LOCATION_MAX_AGE_SECONDS), not the wider
+   * STALE offer window — otherwise a killed app that moved away can still claim on last-known GPS.
    */
   RIDER_ACCEPT_REVALIDATE_MODE: z
     .preprocess(emptyToUndefined, z.enum(["off", "shadow", "enforce"]))
-    .default("shadow"),
+    .default("enforce"),
 
   /**
    * GAP 3b — one bounded re-alert of an un-accepted dispatch offer before the wave radius expands.

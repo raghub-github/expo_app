@@ -255,7 +255,12 @@ export function StoreBannerCarousel({
   holdMsRef.current = resolvedHoldMs;
   slideMsRef.current = resolvedSlideMs;
   widthRef.current = width;
-  widthSV.value = Math.max(1, width);
+
+  // Never write shared values during render — list cards remount/re-render often
+  // and Reanimated strict mode floods the console (and can destabilize UI thread).
+  useEffect(() => {
+    widthSV.value = Math.max(1, width);
+  }, [width, widthSV]);
 
   const bannerAbs = useMemo(
     () => toAbsoluteImageUrl(bannerUri) ?? (typeof bannerUri === "string" ? bannerUri.trim() : ""),
@@ -352,9 +357,19 @@ export function StoreBannerCarousel({
   const stripSlides = useInfiniteLoop ? loopSlides : slides;
   loopSlidesRef.current = stripSlides;
   showCarouselRef.current = showCarousel;
-  slideCountSV.value = Math.max(1, slides.length);
-  loopLenSV.value = Math.max(1, stripSlides.length);
-  useLoopSV.value = useInfiniteLoop ? 1 : 0;
+
+  useEffect(() => {
+    slideCountSV.value = Math.max(1, slides.length);
+    loopLenSV.value = Math.max(1, stripSlides.length);
+    useLoopSV.value = useInfiniteLoop ? 1 : 0;
+  }, [
+    slides.length,
+    stripSlides.length,
+    useInfiniteLoop,
+    slideCountSV,
+    loopLenSV,
+    useLoopSV,
+  ]);
 
   const syncTranslateToPhysical = useCallback(
     (physicalIndex: number, animated: boolean) => {

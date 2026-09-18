@@ -85,6 +85,36 @@ export declare function refundFieldsFromEngineResult(result: Record<string, unkn
     refundStatus: string;
     refundAmount: number | null;
 };
+/**
+ * Decide whether cancel-time auto-refund should move money now, and how much.
+ *
+ * Policy:
+ *  - Customer cancel → never here (customer paths use their own refund promise).
+ *  - Admin rule engine amount > 0 → auto-refund that amount.
+ *  - Admin rule requires approval → stamp pending_approval, do not auto-execute.
+ *  - Store / merchant / system / rider cancel when engine is silent → full paid refund.
+ *  - System auto-cancel (accept timeout / no rider) with force flag → same full refund.
+ *  - Admin cancel with engine silent / no_refund → do not invent a refund.
+ */
+export type PostCancelAutoRefundPolicy = {
+    shouldAutoExecute: boolean;
+    /** Pass to auto-refund; null means full customer paid amount. */
+    executeAmount: number | null;
+    refundStatus: string;
+    /** Intent amount for order_cancellation_reasons / OCR. */
+    refundAmountForLedger: number | null;
+    skipReason?: "customer_actor" | "pending_approval" | "admin_no_refund" | "nothing_to_refund";
+};
+export declare function resolvePostCancelAutoRefundPolicy(input: {
+    actorRole?: string | null;
+    engineRefund: {
+        refundStatus: string;
+        refundAmount: number | null;
+    };
+    orderGross?: number | null;
+    /** Accept-timeout / no-rider: always refund customer even if engine stamped no_refund. */
+    forceCustomerRefundWhenEngineSilent?: boolean;
+}): PostCancelAutoRefundPolicy;
 export declare function parseEngineResult(raw: Record<string, unknown> | undefined): FinancialRuleExecutionResult;
 export type EnginePreviewDisplay = {
     ok: boolean;

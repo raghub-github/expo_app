@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ImageSourcePropType, ImageStyle, StyleProp } from "react-native";
+import { View, StyleSheet, type ImageSourcePropType, type ImageStyle, type StyleProp } from "react-native";
 import { Image } from "expo-image";
 import { getAppAssetUrl, getAppAssetProxyUrl, useAppAssetsStore } from "@/store/appAssetsStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { pickAppAssetDisplayUri } from "@/lib/appAssetDisplayUri";
 
 type Props = {
   assetKey: string;
@@ -39,6 +40,7 @@ export function AppAssetImage({
   const [useBundled, setUseBundled] = useState(false);
   /** Keep last good URI so asset refresh / signed-URL rotate never blanks the tile. */
   const lastGoodUriRef = useRef<string | null>(null);
+  const [, bump] = useState(0);
 
   const signedUri = useMemo(() => {
     if (!rawUrl?.trim()) return null;
@@ -67,20 +69,39 @@ export function AppAssetImage({
   }, [cacheUri]);
 
   const preferredUri = primaryFailed && altUri ? altUri : cacheUri;
+  const pick = pickAppAssetDisplayUri({
+    preferredUri,
+    lastGoodUri: lastGoodUriRef.current,
+    fresh,
+  });
 
-  // Prefer live URI; fall back to last-good so image area never collapses.
-  // Do not overwrite lastGood until onLoad — failed refresh must keep the old bitmap.
-  const uri = preferredUri ?? (!fresh ? lastGoodUriRef.current : null);
+  const commitGood = (uri: string | null | undefined) => {
+    if (!uri) return;
+    if (lastGoodUriRef.current === uri) {
+      onLoad?.();
+      return;
+    }
+    lastGoodUriRef.current = uri;
+    bump((n) => n + 1);
+    onLoad?.();
+  };
 
-  const source: ImageSourcePropType | null = useBundled
-    ? fallbackSource
-    : uri
-      ? { uri }
-      : fallbackSource;
+  if (useBundled && fallbackSource) {
+    return (
+      <Image
+        recyclingKey={`${assetKey}:bundled`}
+        source={fallbackSource}
+        style={style}
+        contentFit={contentFit}
+        accessibilityLabel={accessibilityLabel}
+        onLoad={() => onLoad?.()}
+      />
+    );
+  }
 
   // Always reserve layout: when no source yet, render a transparent placeholder Image
   // so the card image area never disappears / collapses.
-  if (!source) {
+  if (!pick.displayUri && !pick.pendingUri && !fallbackSource) {
     return (
       <Image
         recyclingKey={assetKey}
@@ -92,60 +113,86 @@ export function AppAssetImage({
     );
   }
 
+  if (!pick.displayUri && !pick.pendingUri && fallbackSource) {
+    return (
+      <Image
+        recyclingKey={`${assetKey}:fallback`}
+        source={fallbackSource}
+        style={style}
+        contentFit={contentFit}
+        accessibilityLabel={accessibilityLabel}
+        onLoad={() => onLoad?.()}
+      />
+    );
+  }
+
+  const showBase = Boolean(pick.displayUri);
+  const showPending =
+    Boolean(pick.pendingUri) &&
+    (pick.isRevalidating || pick.pendingUri !== pick.displayUri || !pick.displayUri);
+
   return (
-    <Image
-      // Stable key — remounting on every signed-URL change blanked all home tiles.
-      // When fresh=true (admin preview), include updatedAt so Change/Remove is visible.
-      recyclingKey={
-        fresh ? `${assetKey}:${updatedAt ?? ""}:${proxyUrl ?? ""}` : assetKey
-      }
-      source={source}
-      placeholder={
-        !useBundled && uri
-          ? { uri }
-          : !useBundled && lastGoodUriRef.current && lastGoodUriRef.current !== uri
-          ? { uri: lastGoodUriRef.current }
-          : !useBundled && uri && fallbackSource
-            ? fallbackSource
-            : undefined
-      }
-      placeholderContentFit={contentFit}
-      style={style}
-      contentFit={contentFit}
-      cachePolicy={fresh ? "none" : "memory-disk"}
-      priority="high"
-      transition={transitionMs ?? 0}
-      accessibilityLabel={accessibilityLabel}
-      onLoad={() => {
-        if (uri) lastGoodUriRef.current = uri;
-        onLoad?.();
-      }}
-      onDisplay={() => {
-        if (uri) lastGoodUriRef.current = uri;
-        onLoad?.();
-      }}
-      onError={() => {
-        if (!useBundled && !primaryFailed && altUri) {
-          setPrimaryFailed(true);
-          return;
-        }
-        if (fallbackSource) {
-          setUseBundled(true);
-          onLoad?.();
-          return;
-        }
-        // Keep last-good URI visible — do not blank on failed refresh.
-        if (!fresh && lastGoodUriRef.current && preferredUri && lastGoodUriRef.current !== preferredUri) {
-          // Force render path back to last-good by marking primary failed with no alt.
-          setPrimaryFailed(true);
-          return;
-        }
-        // eslint-disable-next-line no-console
-        console.warn(`[AppAssetImage] failed to load ${assetKey}`, uri ?? "(bundled fallback)");
-      }}
-    />
+    <View style={[styles.host, style]}>
+      {showBase ? (
+        <Image
+          recyclingKey={fresh ? `${assetKey}:${updatedAt ?? ""}:base` : `${assetKey}:base`}
+          source={{ uri: pick.displayUri! }}
+          style={styles.fill}
+          contentFit={contentFit}
+          cachePolicy={fresh ? "none" : "memory-disk"}
+          priority="high"
+          transition={0}
+          accessibilityLabel={accessibilityLabel}
+          onLoad={() => commitGood(pick.displayUri)}
+          onDisplay={() => commitGood(pick.displayUri)}
+        />
+      ) : null}
+      {showPending && pick.pendingUri ? (
+        <Image
+          recyclingKey={
+            fresh
+              ? `${assetKey}:${updatedAt ?? ""}:${pick.pendingUri}`
+              : `${assetKey}:pending`
+          }
+          source={{ uri: pick.pendingUri }}
+          style={[styles.fill, pick.isRevalidating ? styles.pendingHidden : null]}
+          contentFit={contentFit}
+          cachePolicy={fresh ? "none" : "memory-disk"}
+          priority="high"
+          transition={transitionMs ?? 0}
+          onLoad={() => commitGood(pick.pendingUri)}
+          onDisplay={() => commitGood(pick.pendingUri)}
+          onError={() => {
+            if (!primaryFailed && altUri && pick.pendingUri === cacheUri) {
+              setPrimaryFailed(true);
+              return;
+            }
+            if (fallbackSource && !lastGoodUriRef.current) {
+              setUseBundled(true);
+              onLoad?.();
+              return;
+            }
+            // Keep last-good visible — do not blank on failed refresh.
+            // eslint-disable-next-line no-console
+            console.warn(`[AppAssetImage] failed to load ${assetKey}`, pick.pendingUri);
+          }}
+        />
+      ) : null}
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  host: {
+    overflow: "hidden",
+  },
+  fill: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  pendingHidden: {
+    opacity: 0,
+  },
+});
 
 export function useAppAssetUrl(assetKey: string): string | null {
   const url = useAppAssetsStore((s) => s.assets[assetKey]?.url ?? null);

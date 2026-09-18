@@ -131,6 +131,35 @@ export function discountFundingTagFromLine(
   return "mixed";
 }
 
+/** Marker / ledger-only discount rows — never customer bill or savings. */
+function isDiscountMarkerRow(row: Record<string, unknown>): boolean {
+  const meta = metaOf(row);
+  const source = String(meta?.source ?? "").toLowerCase();
+  if (source === "customer_subscription_delivery_waived_marker") return true;
+  const label = String(row.label ?? "").trim();
+  return label === "__delivery_fee_waived_inr__";
+}
+
+/**
+ * Discount already baked into item_total / delivery_fee — must not be subtracted
+ * again on the CTC bill (or reconciliation invents a fake "Additional charge").
+ */
+export function isNonPayableDiscountRow(row: Record<string, unknown>): boolean {
+  if (isDiscountMarkerRow(row)) return true;
+  const meta = metaOf(row);
+  if (row.hidden === true) return true;
+  if (meta?.doesNotReducePayable === true || meta?.flashSale === true) return true;
+  const source = String(meta?.source ?? "").toLowerCase();
+  // Subscription free delivery already reduced delivery_fee to the membership net.
+  if (source === "customer_subscription_free_delivery") return true;
+  const offerKind = String(meta?.offerKind ?? meta?.offer_kind ?? "")
+    .toUpperCase()
+    .trim();
+  // Platform FREE_DELIVERY also cuts delivery_fee in the pipeline before snapshot.
+  if (offerKind === "FREE_DELIVERY") return true;
+  return false;
+}
+
 export function customerDiscountLinesFromBilling(
   billing: Record<string, unknown> | null | undefined,
 ): Array<{ label: string; amount: number; tag: DiscountFundingTag }> {
@@ -140,6 +169,7 @@ export function customerDiscountLinesFromBilling(
   for (const d of discounts) {
     if (!d || typeof d !== "object") continue;
     const row = d as Record<string, unknown>;
+    if (isDiscountMarkerRow(row)) continue;
     const amt = Math.abs(num(row.amount));
     if (amt <= 0) continue;
     const label =
@@ -147,6 +177,47 @@ export function customerDiscountLinesFromBilling(
     out.push({ label, amount: round2(amt), tag: discountFundingTagFromLine(row) });
   }
   return out;
+}
+
+/**
+ * Payable CTC bill discount lines only (excludes Flash Sale + free-delivery
+ * already netted into item_total / delivery_fee).
+ */
+export function payableCustomerDiscountLinesFromBilling(
+  billing: Record<string, unknown> | null | undefined,
+): Array<{ label: string; amount: number; tag: DiscountFundingTag }> {
+  const out: Array<{ label: string; amount: number; tag: DiscountFundingTag }> = [];
+  if (!billing || typeof billing !== "object") return out;
+  const discounts = Array.isArray(billing.discounts) ? billing.discounts : [];
+  for (const d of discounts) {
+    if (!d || typeof d !== "object") continue;
+    const row = d as Record<string, unknown>;
+    if (isNonPayableDiscountRow(row)) continue;
+    const amt = Math.abs(num(row.amount));
+    if (amt <= 0) continue;
+    const label =
+      String(row.label ?? row.step ?? "Discount").trim() || "Discount";
+    out.push({ label, amount: round2(amt), tag: discountFundingTagFromLine(row) });
+  }
+  return out;
+}
+
+/** Flash Sale / doesNotReducePayable subsidy already stamped on discounts[]. */
+export function flashSaleSubsidyFromBilling(
+  billing: Record<string, unknown> | null | undefined,
+): number {
+  if (!billing || typeof billing !== "object") return 0;
+  const discounts = Array.isArray(billing.discounts) ? billing.discounts : [];
+  let sum = 0;
+  for (const d of discounts) {
+    if (!d || typeof d !== "object") continue;
+    const row = d as Record<string, unknown>;
+    const meta = metaOf(row);
+    if (meta?.flashSale === true || meta?.doesNotReducePayable === true) {
+      sum = round2(sum + Math.abs(num(row.amount)));
+    }
+  }
+  return sum;
 }
 
 export function merchantFundedDiscountLinesFromBilling(
@@ -235,10 +306,13 @@ export function orderDiscountGrantedSummaryFromBilling(
     return { amount: null, merchantStoreOffer: null, offerSource: null };
   }
 
+  // Include Flash Sale + free-delivery (customer savings) even when they are
+  // non-payable on the CTC line list (already baked into item/delivery totals).
   const lines = customerDiscountLinesFromBilling(billing).filter(
     (l) => !l.label.toLowerCase().includes("cashback"),
   );
   const baked = bakedInItemOfferAmountsFromBilling(billing);
+  const flashFromLines = flashSaleSubsidyFromBilling(billing);
 
   const listedAmount =
     lines.length > 0
@@ -247,14 +321,20 @@ export function orderDiscountGrantedSummaryFromBilling(
   const listedStore = round2(
     lines.filter((l) => l.tag === "store").reduce((s, l) => s + l.amount, 0)
   );
-  const customerAmount = round2(Math.max(0, listedAmount) + Math.max(0, baked.customerAmount));
+  // Flash Sale is stamped on discounts[] (often hidden) AND appears as strike−paid
+  // in order_line_pricing — count it once.
+  const bakedCustomerExtra = round2(
+    Math.max(0, Math.max(0, baked.customerAmount) - Math.max(0, flashFromLines)),
+  );
+  const customerAmount = round2(Math.max(0, listedAmount) + bakedCustomerExtra);
   const merchantStoreOffer = round2(Math.max(0, listedStore) + Math.max(0, baked.merchantAmount));
   if (customerAmount <= 0.005 && merchantStoreOffer <= 0.005) {
     return { amount: null, merchantStoreOffer: null, offerSource: null };
   }
 
   const tags = new Set(lines.map((l) => l.tag));
-  if (baked.customerAmount > 0.005 || baked.merchantAmount > 0.005) tags.add("store");
+  if (flashFromLines > 0.005) tags.add("platform");
+  if (bakedCustomerExtra > 0.005 || baked.merchantAmount > 0.005) tags.add("store");
 
   let offerSource: OrderDiscountOfferSource | null = null;
   if (tags.size === 1) {
@@ -263,7 +343,7 @@ export function orderDiscountGrantedSummaryFromBilling(
       only === "platform" ? "Platform" : only === "store" ? "Store" : "Mixed";
   } else if (tags.size > 1) {
     offerSource = "Mixed";
-  } else if (baked.merchantAmount > 0.005 || baked.customerAmount > 0.005) {
+  } else if (baked.merchantAmount > 0.005 || bakedCustomerExtra > 0.005) {
     offerSource = "Store";
   }
 

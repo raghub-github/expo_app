@@ -3,6 +3,7 @@ import { UserAppCategoryImage } from "@/components/category/UserAppCategoryImage
 import { AppText } from "@/components/AppText";
 import type { FoodHomeCategoryItem } from "@/components/home/FoodHomeCategoryVariants";
 import { DiscoveryColors, DISCOVERY_PAGE_PAD } from "./discoveryTheme";
+import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 
 const COLS = 5;
 const GAP = 8;
@@ -31,10 +32,7 @@ export function DiscoveryCategoryGrid({ items, onSelect }: Props) {
 
   return (
     <ScrollView
-      horizontal
-      nestedScrollEnabled
-      showsHorizontalScrollIndicator={false}
-      decelerationRate="fast"
+      {...NATURAL_HORIZONTAL_SCROLL_PROPS}
       contentContainerStyle={styles.row}
     >
       <View style={styles.edgePad} />

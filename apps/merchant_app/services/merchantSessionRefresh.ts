@@ -5,6 +5,7 @@ import {
   readMerchantTokenExpiresAt,
   writeMerchantSessionToken,
 } from "@/lib/merchantSessionStorage";
+import { authTokenFingerprint, logMerchantAuth } from "@/lib/merchantAuthLog";
 
 const AUTH_PREFIX = "/v1/auth";
 const REFRESH_LEAD_SEC = 60 * 60 * 24; // refresh when < 24h left
@@ -38,13 +39,13 @@ export async function refreshMerchantSessionIfNeeded(opts?: {
   if (refreshInFlight) return refreshInFlight;
 
   refreshInFlight = (async () => {
-    const token = await readMerchantAccessToken();
-    if (!token) return null;
+    const tokenAtStart = await readMerchantAccessToken();
+    if (!tokenAtStart) return null;
 
     const expiresAt = await readMerchantTokenExpiresAt();
     const nowSec = Math.floor(Date.now() / 1000);
     if (!opts?.force && expiresAt != null && expiresAt - nowSec > REFRESH_LEAD_SEC) {
-      return token;
+      return tokenAtStart;
     }
 
     const deviceId = await getOrCreateMerchantDeviceId();
@@ -53,12 +54,17 @@ export async function refreshMerchantSessionIfNeeded(opts?: {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${tokenAtStart}`,
       },
       body: JSON.stringify({ deviceId }),
     });
 
     if (res.status === 401) {
+      logMerchantAuth("AUTH_REFRESH_FAILED", {
+        status: 401,
+        tokenFp: authTokenFingerprint(tokenAtStart),
+      });
+      // Do not clear storage here — caller decides with token fingerprint/epoch guards.
       return null;
     }
 
@@ -67,11 +73,28 @@ export async function refreshMerchantSessionIfNeeded(opts?: {
     try {
       data = raw ? (JSON.parse(raw) as typeof data) : {};
     } catch {
-      return opts?.force ? null : token;
+      return opts?.force ? null : tokenAtStart;
     }
 
     if (!res.ok || !data.accessToken || !data.expiresAt) {
-      return opts?.force ? null : token;
+      if (!res.ok) {
+        logMerchantAuth("AUTH_REFRESH_FAILED", {
+          status: res.status,
+          tokenFp: authTokenFingerprint(tokenAtStart),
+        });
+      }
+      return opts?.force ? null : tokenAtStart;
+    }
+
+    // A newer login may have replaced the token while this refresh was in flight.
+    const live = await readMerchantAccessToken();
+    if (live?.trim() && live.trim() !== tokenAtStart.trim()) {
+      logMerchantAuth("AUTH_REFRESH_FAILED", {
+        reason: "token_replaced_during_refresh",
+        attemptedFp: authTokenFingerprint(tokenAtStart),
+        liveFp: authTokenFingerprint(live),
+      });
+      return live.trim();
     }
 
     await writeMerchantSessionToken(data.accessToken, data.expiresAt);

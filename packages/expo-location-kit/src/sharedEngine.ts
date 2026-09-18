@@ -22,10 +22,10 @@ export type LocationEngineProfile = {
 };
 
 const DEFAULT_PROFILE: LocationEngineProfile = {
-  timeIntervalMs: 2000,
-  distanceIntervalM: 5,
+  timeIntervalMs: 5000,
+  distanceIntervalM: 10,
   minAccuracyM: 150,
-  accuracy: Location.Accuracy.Highest,
+  accuracy: Location.Accuracy.High,
 };
 
 const NAV_PROFILE: LocationEngineProfile = {

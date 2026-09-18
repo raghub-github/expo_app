@@ -30,12 +30,16 @@ import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 import { merchantOtpVerifyTheme } from "@/lib/otpVerifyTheme";
 import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheetShell";
 import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
+import { logMerchantAuth } from "@/lib/merchantAuthLog";
+import { hasValidMerchantIdentity, parsePartnerData } from "@/lib/merchantPartnerIdentity";
 
 const OTP_LEN = 6;
 const legalUrls = getPartnerLegalUrls();
 const LORA_BOLD = "Lora_700Bold";
 const POPPINS_BOLD = "Poppins_700Bold";
 const NOT_REGISTERED_SHEET_MESSAGE = "No Partner Account registered with this no";
+const NO_MERCHANT_MESSAGE =
+  "Merchant account not found. Please use a registered merchant number or contact support.";
 
 function isNotRegisteredPartnerError(e: unknown): boolean {
   if (isMerchantAuthError(e) && e.code === "not_registered") return true;
@@ -45,17 +49,13 @@ function isNotRegisteredPartnerError(e: unknown): boolean {
 
 /** Narrow exchange API partner payload to PartnerData after minimal structural checks. */
 function partnerDataFromExchange(partner: { parent: unknown; childStores: unknown[] }): PartnerData {
-  if (typeof partner.parent !== "object" || partner.parent === null) {
-    throw new Error("Invalid partner data from server.");
+  const parsed = parsePartnerData(partner);
+  if (!parsed || !hasValidMerchantIdentity(parsed)) {
+    throw new Error(NO_MERCHANT_MESSAGE);
   }
-  const pr = partner.parent as Record<string, unknown>;
-  if (typeof pr.parent_merchant_id !== "string" || typeof pr.id !== "number") {
-    throw new Error("Invalid partner data from server.");
-  }
-  if (!Array.isArray(partner.childStores)) {
-    throw new Error("Invalid partner data from server.");
-  }
-  return partner as PartnerData;
+  // parsePartnerData validates the identity shape; childStores is typed unknown[] in the
+  // pure identity module (no AuthContext import) but is structurally a PartnerData here.
+  return parsed as unknown as PartnerData;
 }
 
 type LastExchange = null | "otp";
@@ -222,6 +222,7 @@ export default function LoginScreen() {
         otp: code,
         deviceId,
       });
+      logMerchantAuth("AUTH_OTP_VERIFIED", {});
       verifySucceededRef.current = true;
       const partner = partnerDataFromExchange(session.partner);
       await setTokenAndPartner(session.accessToken, partner, session.userId, session.expiresAt);
@@ -236,8 +237,11 @@ export default function LoginScreen() {
         setDeviceSessionMode(false);
         setLastExchange(null);
         const raw = e instanceof Error ? e.message : "Invalid code or partner not found.";
-        const msg = normalizeOtpErrorMessage(raw);
-        setError(msg);
+        if (/merchant account not found|could not be found or is no longer active/i.test(raw)) {
+          setError(NO_MERCHANT_MESSAGE);
+        } else {
+          setError(normalizeOtpErrorMessage(raw));
+        }
       }
     } finally {
       verifyInFlightRef.current = false;
@@ -321,7 +325,7 @@ export default function LoginScreen() {
   const otpSheetError =
     step === "otp" && !deviceSessionMode && error.trim() ? error : null;
 
-  if (authState.status === "loading") {
+  if (authState.status === "loading" || authState.status === "logging_out") {
     return <MerchantBootstrapScreen />;
   }
   if (authState.status === "authenticated") {

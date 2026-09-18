@@ -18,6 +18,10 @@ import {
 
 const TERMINAL_STATUSES = new Set(["refunded", "revoked", "cancelled_refunded"]);
 
+/** Avoid running heavy reconcile on every /subscription/current hit. */
+const RECONCILE_MIN_INTERVAL_MS = 5 * 60_000;
+const reconcileLastAtByCustomer = new Map<number, number>();
+
 export type RevokeCustomerSubscriptionResult = {
   ok: boolean;
   revoked: boolean;
@@ -260,6 +264,17 @@ export async function reconcileActiveSubscriptionsForRefundedOrders(
   customerId: number,
   sql: Sql = getSql()
 ): Promise<void> {
+  // Hot path: GET /subscription/current. Rate-limit so pool blips don't stampede.
+  const now = Date.now();
+  const last = reconcileLastAtByCustomer.get(customerId) ?? 0;
+  if (now - last < RECONCILE_MIN_INTERVAL_MS) return;
+  reconcileLastAtByCustomer.set(customerId, now);
+  if (reconcileLastAtByCustomer.size > 5_000) {
+    for (const [id, at] of reconcileLastAtByCustomer) {
+      if (now - at > RECONCILE_MIN_INTERVAL_MS * 2) reconcileLastAtByCustomer.delete(id);
+    }
+  }
+
   const rows = await sql`
     SELECT DISTINCT ON (cs.id)
       cs.id AS subscription_id,

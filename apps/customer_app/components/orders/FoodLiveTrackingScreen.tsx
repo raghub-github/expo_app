@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { AppText } from "@/components/AppText";
 
 import { View, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Linking, Alert, Dimensions, BackHandler, Platform } from "react-native";
+import * as Location from "expo-location";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
 import { useRouter, useFocusEffect } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
@@ -235,6 +236,25 @@ export function FoodLiveTrackingScreen({
       return () => resetStatusBarBackground();
     }, [setStatusBarBackground, resetStatusBarBackground])
   );
+
+  // While this screen is focused, refresh order status often so accept/prep
+  // headlines update instantly even if a WS status event was missed.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      const tick = () => {
+        if (cancelled) return;
+        void queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
+      };
+      tick();
+      const id = setInterval(tick, 8_000);
+      return () => {
+        cancelled = true;
+        clearInterval(id);
+      };
+    }, [queryClient, order.orderId])
+  );
+
   const [mapFullscreen, setMapFullscreen] = useState(false);
   const [mapRefitNonce, setMapRefitNonce] = useState(0);
   const [itemsExpanded, setItemsExpanded] = useState(false);
@@ -250,6 +270,12 @@ export function FoodLiveTrackingScreen({
   const [safetySheetVisible, setSafetySheetVisible] = useState(false);
   const [billSheetVisible, setBillSheetVisible] = useState(false);
   const [shareSheetVisible, setShareSheetVisible] = useState(false);
+  const [selfPickupNavFix, setSelfPickupNavFix] = useState<{
+    latitude: number;
+    longitude: number;
+    heading: number | null;
+    speedMps: number | null;
+  } | null>(null);
   const { deliveryInstructionsList, merchantInstructionsList } =
     useStableOrderInstructionLists(order);
   const [deliveryEditLocked, setDeliveryEditLocked] = useState({
@@ -309,18 +335,66 @@ export function FoodLiveTrackingScreen({
 
   const restaurantName = order.merchantPublicName ?? order.merchantName ?? "Restaurant";
   const sessionCoords = useLocationStore((s) => s.coords);
+
+  // High-rate GPS while walking/driving to the store for self-pickup navigation.
+  useEffect(() => {
+    if (!isSelfPickup || !trackingLive || trackingPaused) {
+      setSelfPickupNavFix(null);
+      return;
+    }
+    let cancelled = false;
+    let sub: Location.LocationSubscription | null = null;
+    void (async () => {
+      try {
+        const perm = await Location.getForegroundPermissionsAsync();
+        if (!perm.granted) {
+          const req = await Location.requestForegroundPermissionsAsync();
+          if (!req.granted) return;
+        }
+        sub = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Highest,
+            timeInterval: 1000,
+            distanceInterval: 4,
+          },
+          (pos) => {
+            if (cancelled) return;
+            const { latitude, longitude, heading, speed } = pos.coords;
+            if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+            setSelfPickupNavFix({
+              latitude,
+              longitude,
+              heading: heading != null && Number.isFinite(heading) && heading >= 0 ? heading : null,
+              speedMps: speed != null && Number.isFinite(speed) && speed >= 0 ? speed : null,
+            });
+          }
+        );
+      } catch {
+        /* location optional — map still shows store */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      sub?.remove();
+    };
+  }, [isSelfPickup, trackingLive, trackingPaused]);
+
   const customerLat =
-    sessionCoords?.latitude != null && Number.isFinite(sessionCoords.latitude)
+    selfPickupNavFix?.latitude ??
+    (sessionCoords?.latitude != null && Number.isFinite(sessionCoords.latitude)
       ? sessionCoords.latitude
-      : null;
+      : null);
   const customerLng =
-    sessionCoords?.longitude != null && Number.isFinite(sessionCoords.longitude)
+    selfPickupNavFix?.longitude ??
+    (sessionCoords?.longitude != null && Number.isFinite(sessionCoords.longitude)
       ? sessionCoords.longitude
-      : null;
+      : null);
   const hasCustomerFix =
     customerLat != null &&
     customerLng != null &&
     !(Math.abs(customerLat) < 1e-6 && Math.abs(customerLng) < 1e-6);
+  const customerHeading = selfPickupNavFix?.heading ?? null;
+  const customerSpeedMps = selfPickupNavFix?.speedMps ?? null;
   const merchantArea = getCompactAddressLine(order.merchantAddress);
   const displayOrderId = order.formattedOrderId ?? order.orderId;
   const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
@@ -481,8 +555,8 @@ export function FoodLiveTrackingScreen({
     queryKey: [
       "self-pickup-route",
       order.orderId,
-      customerLat?.toFixed(5),
-      customerLng?.toFixed(5),
+      customerLat?.toFixed(3),
+      customerLng?.toFixed(3),
       pickupLat.toFixed(5),
       pickupLng.toFixed(5),
     ],
@@ -724,7 +798,7 @@ export function FoodLiveTrackingScreen({
 
   const selfPickupMapPayload = useMemo<DeliveryMapPayload>(
     () => ({
-      // Store = green restaurant pin; customer = drop/home pin.
+      // Store = green restaurant pin; customer = drop/home pin + camera follow.
       pickupLat,
       pickupLng,
       dropLat: hasCustomerFix ? customerLat : pickupLat,
@@ -743,6 +817,11 @@ export function FoodLiveTrackingScreen({
       mapPhase: "rider_to_pickup",
       showPickupMarker: true,
       showDropMarker: hasCustomerFix,
+      cameraFollow: hasCustomerFix && !isTerminalOrderStatus(orderStatus),
+      followLat: hasCustomerFix ? customerLat : null,
+      followLng: hasCustomerFix ? customerLng : null,
+      followHeading: customerHeading,
+      followSpeedMps: customerSpeedMps,
       mapPadding: { top: 64, bottom: 64, left: 40, right: 40 },
     }),
     [
@@ -751,6 +830,8 @@ export function FoodLiveTrackingScreen({
       hasCustomerFix,
       customerLat,
       customerLng,
+      customerHeading,
+      customerSpeedMps,
       selfPickupRouteCoords,
       orderStatus,
     ]
@@ -1066,6 +1147,11 @@ export function FoodLiveTrackingScreen({
   const headerTopPadding =
     (insets.top > 0 ? insets.top : DEFAULT_STATUS_BAR_HEIGHT) + STATUS_BAR_TO_HEADER_GAP;
 
+  const showOtpStrip = showPickupOtp || showDeliveryOtp;
+  const mapInScroll = !mapFullscreen;
+  /** OTP sticks under the mint header once the map scrolls away. */
+  const otpStickyIndex = showOtpStrip ? (mapInScroll ? 1 : 0) : null;
+
   return (
     <View style={styles.screen}>
       <StatusBar
@@ -1192,32 +1278,39 @@ export function FoodLiveTrackingScreen({
         </View>
       </LinearGradient>
 
-      <View
-        style={mapFullscreen ? styles.mapOverlayHost : styles.mapWrap}
-        collapsable={false}
-      >
-        {renderTrackingMap()}
-      </View>
+      {mapFullscreen ? (
+        <View style={styles.mapOverlayHost} collapsable={false}>
+          {renderTrackingMap()}
+        </View>
+      ) : null}
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 0) }}
+        contentContainerStyle={{
+          // Extra room so Cancel / last card can scroll fully above the home indicator.
+          paddingBottom: Math.max(insets.bottom, 12) + 56,
+        }}
         showsVerticalScrollIndicator={false}
         nestedScrollEnabled
         scrollEnabled={!mapFullscreen}
+        stickyHeaderIndices={otpStickyIndex != null ? [otpStickyIndex] : undefined}
       >
-        {showPickupOtp ? (
-          <>
-            <DeliveryOtpBanner
-              otp={displaySelfPickupOtp}
-              label="Pickup OTP"
-            />
-            <SelfPickupOtpShareMarquee />
-          </>
+        {mapInScroll ? (
+          <View style={styles.mapWrap} collapsable={false}>
+            {renderTrackingMap()}
+          </View>
         ) : null}
 
-        {showDeliveryOtp ? (
-          <DeliveryOtpBanner otp={deliveryOtpCode} />
+        {showOtpStrip ? (
+          <View style={styles.otpStickyHost} collapsable={false}>
+            {showPickupOtp ? (
+              <>
+                <DeliveryOtpBanner otp={displaySelfPickupOtp} label="Pickup OTP" />
+                <SelfPickupOtpShareMarquee />
+              </>
+            ) : null}
+            {showDeliveryOtp ? <DeliveryOtpBanner otp={deliveryOtpCode} /> : null}
+          </View>
         ) : null}
 
         <View style={styles.cardsSection}>
@@ -1642,6 +1735,13 @@ const styles = StyleSheet.create({
     backgroundColor: "#EEF2F0",
   },
   scroll: { flex: 1 },
+  /** Sticky OTP strip — solid fill so cards scroll underneath cleanly. */
+  otpStickyHost: {
+    backgroundColor: GatiMitraColors.mintSoft,
+    zIndex: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(16, 120, 80, 0.16)",
+  },
   cardsSection: {
     paddingHorizontal: 14,
     paddingTop: 8,
@@ -1681,8 +1781,6 @@ const styles = StyleSheet.create({
   billCompactValue: { fontSize: 14, fontWeight: "700", color: TEXT },
   otpBanner: {
     backgroundColor: GatiMitraColors.mintSoft,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(16, 120, 80, 0.12)",
     paddingHorizontal: 14,
     paddingVertical: 10,
   },

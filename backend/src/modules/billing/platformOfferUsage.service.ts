@@ -133,6 +133,7 @@ export function platformOfferBudgetAvailable(o: PlatformOfferRow, extraDiscount 
   const budgetTotal = o.budgetTotal;
   if (budgetTotal == null || !(budgetTotal > 0)) return true;
   const used = Math.max(0, o.budgetUsed ?? 0);
+  if (budgetTotal - used <= 1e-6) return false;
   return used + Math.max(0, extraDiscount) <= budgetTotal + 1e-6;
 }
 
@@ -475,6 +476,8 @@ export async function releasePlatformOfferUsagesOnCancel(
   orderId: string | number
 ): Promise<void> {
   await releaseUsages(db, orderId, "cancelled", "restoreOnCancel");
+  const { releaseFlashSaleRedemptionsOnCancelOrRefund } = await import("./flashSaleRedemption.service.js");
+  await releaseFlashSaleRedemptionsOnCancelOrRefund(db, orderId, "cancelled");
 }
 
 export async function releasePlatformOfferUsagesOnRefund(
@@ -482,4 +485,6 @@ export async function releasePlatformOfferUsagesOnRefund(
   orderId: string | number
 ): Promise<void> {
   await releaseUsages(db, orderId, "refunded", "restoreOnRefund");
+  const { releaseFlashSaleRedemptionsOnCancelOrRefund } = await import("./flashSaleRedemption.service.js");
+  await releaseFlashSaleRedemptionsOnCancelOrRefund(db, orderId, "refunded");
 }

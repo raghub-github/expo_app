@@ -805,6 +805,7 @@ export function adaptAadhaarMasking(
 
   // Inline mask to avoid circular imports at module top.
   const digits = String(extras?.aadhaarNumber || "").replace(/\D/g, "");
+  const full = /^\d{12}$/.test(digits) ? digits : null;
   const masked =
     digits.length >= 4 ? `XXXX-XXXX-${digits.slice(-4)}` : String(extras?.aadhaarNumber || "").trim();
   const name = String(extras?.name || "").trim();
@@ -823,6 +824,8 @@ export function adaptAadhaarMasking(
       status: statusRaw || null,
       masked_aadhaar: masked || null,
       aadhaar_number: masked || null,
+      // Full UID for riders.aadhaar_number (unique 12-digit index). Never show in UI.
+      ...(full ? { aadhaar_number_full: full } : {}),
       uid: masked || null,
       name: name || null,
       holder_name: name || null,

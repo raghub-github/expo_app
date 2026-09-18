@@ -504,18 +504,19 @@ async function persistOmsLedgerArtifacts(
     `);
   }
 
-  // Persist immutable offer snapshots and per-user usage records
-  await persistOfferSnapshots(tx, orderId, pending);
+  // Offer snapshots / flash ledger are NOT part of OMS ledger shadow — always persist.
 }
 
 /**
  * For every discount line in billingSnapshot, write an offer_order_applications row
  * and (for merchant offers) a merchant_offer_usages row + increment current_uses.
+ * FLASH_SALE also writes flash_sale_redemptions (must run on every finalize, not only ledger shadow).
  */
 async function persistOfferSnapshots(
   tx: PostgresJsDatabase<Record<string, unknown>>,
   orderId: string,
-  pending: typeof pendingOrders.$inferSelect
+  pending: typeof pendingOrders.$inferSelect,
+  orderCorePk?: number | null
 ): Promise<void> {
   const snap = (pending.billingSnapshot as Record<string, unknown> | null) ?? {};
   const discounts: Record<string, unknown>[] = Array.isArray(snap.discounts)
@@ -523,6 +524,10 @@ async function persistOfferSnapshots(
     : [];
 
   const customerId = asNumber(pending.customerId ?? 0);
+  const orderPk =
+    orderCorePk != null && Number.isFinite(orderCorePk) && orderCorePk > 0
+      ? Math.floor(orderCorePk)
+      : null;
 
   for (const d of discounts) {
     const meta = (d.meta ?? {}) as Record<string, unknown>;
@@ -539,10 +544,11 @@ async function persistOfferSnapshots(
     const offerTitle = String(d.label ?? d.step ?? "Discount").trim() || "Discount";
     const offerType  = String(meta.offerType ?? (merchantOfferId ? "PERCENTAGE" : "DISCOUNT"));
     const couponCode = meta.couponCode != null ? String(meta.couponCode) : null;
+    const orderIdForApps = orderPk != null ? BigInt(orderPk) : BigInt(orderId.replace(/\D/g, "") || 0);
 
     try {
       await tx.insert(offerOrderApplications).values({
-        orderId:         BigInt(orderId.replace(/\D/g, "") || 0),
+        orderId:         orderIdForApps,
         offerSource,
         merchantOfferId: merchantOfferId != null ? BigInt(merchantOfferId) : null,
         platformOfferId: platformOfferId != null ? BigInt(platformOfferId) : null,
@@ -566,7 +572,7 @@ async function persistOfferSnapshots(
         await tx.insert(merchantOfferUsages).values({
           offerId:        BigInt(merchantOfferId),
           userId:         BigInt(customerId),
-          orderId:        BigInt(orderId.replace(/\D/g, "") || 0),
+          orderId:        orderIdForApps,
           discountAmount: String(amount),
         } as never).onConflictDoNothing();
 
@@ -582,6 +588,38 @@ async function persistOfferSnapshots(
 
     if (platformOfferId != null && customerId > 0 && offerSource === "PLATFORM") {
       try {
+        const offerKind = String(meta.offerKind ?? meta.offer_kind ?? "").toUpperCase();
+        if (offerKind === "FLASH_SALE" || meta.flashSale === true) {
+          const { recordFlashSaleRedemptionAtPlacement } = await import(
+            "../billing/flashSaleRedemption.service.js"
+          );
+          const itemIds = Array.isArray(meta.itemIds)
+            ? (meta.itemIds as unknown[]).map((x) => String(x))
+            : [];
+          const originalItemPrice = asNumber(meta.originalItemPrice ?? meta.original_item_price ?? 0);
+          const flashSalePrice = asNumber(meta.flashSalePrice ?? meta.flash_sale_price ?? 0);
+          await recordFlashSaleRedemptionAtPlacement(tx, {
+            platformOfferId,
+            customerId,
+            orderId,
+            orderPk,
+            serviceType: "FOOD",
+            storeId: Number(pending.merchantStoreId ?? 0) || null,
+            itemIds,
+            originalItemPrice: originalItemPrice > 0 ? originalItemPrice : null,
+            flashSalePrice: flashSalePrice >= 0 && originalItemPrice > 0 ? flashSalePrice : null,
+            subsidyAmount: amount,
+            consumeMode:
+              meta.consumeMode != null
+                ? String(meta.consumeMode)
+                : meta.consume_mode != null
+                  ? String(meta.consume_mode)
+                  : undefined,
+            orderSaleAmount: asNumber(pending.grandTotal ?? 0),
+            snapshot: d,
+          });
+          continue;
+        }
         const { recordPlatformOfferUsageAtPlacement } = await import(
           "../billing/platformOfferUsage.service.js"
         );
@@ -600,7 +638,16 @@ async function persistOfferSnapshots(
           orderSaleAmount: asNumber(pending.grandTotal ?? 0),
           ...(snapConsume ? { consumeMode: snapConsume } : {}),
         });
-      } catch {
+      } catch (err) {
+        if (
+          (err && typeof err === "object" &&
+            ((err as { code?: string }).code === "FLASH_SALE_UNAVAILABLE" ||
+              (err as { code?: string }).code === "FLASH_SALE_PRICE_STALE" ||
+              (err as { code?: string }).code === "FLASH_SALE_ALREADY_USED")) ||
+          (err instanceof Error && err.name === "FlashSaleRedemptionError")
+        ) {
+          throw err;
+        }
         // Non-critical — snapshot already saved; eligibility re-checks on next order
       }
     }
@@ -1783,6 +1830,14 @@ export async function finalizeOrder(
         })
         .where(eq(pendingOrders.pendingId, pendingId));
 
+      // Flash / platform / merchant offer ledger — always, not behind OMS_LEDGER_SHADOW_WRITE.
+      await persistOfferSnapshots(
+        tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
+        orderIdText,
+        pending,
+        orderCorePk
+      );
+
       if (getEnv().OMS_LEDGER_SHADOW_WRITE) {
         await runInSavepoint(
           tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
@@ -1826,6 +1881,15 @@ export async function finalizeOrder(
     // `payment_events` + `orders_core` itself for current observability.
     orderIdText = result.orderIdText;
     orderCorePk = result.orderCorePk;
+
+    // Merchant critical alert must not wait on Mapbox ETA freeze.
+    void notifyMerchantStoreNewOrder(getSql(), {
+      merchantStoreId: pending.merchantStoreId,
+      orderIdText,
+      grandTotal: Number(pending.grandTotal),
+    }).catch((e) => {
+      console.error("[merchant-new-order-notify] finalizeOrder failed:", e);
+    });
 
     // Freeze ETA + first_eta_at outside the payment txn so Mapbox failures never
     // roll back a paid order. Await so new orders always have First ETA before
@@ -1898,13 +1962,7 @@ export async function finalizeOrder(
     };
   }
 
-  void notifyMerchantStoreNewOrder(getSql(), {
-    merchantStoreId: pending.merchantStoreId,
-    orderIdText,
-    grandTotal: Number(pending.grandTotal),
-  }).catch((e) => {
-    console.error("[merchant-new-order-notify] finalizeOrder failed:", e);
-  });
+  // Merchant notify already fired (fire-and-forget) before ETA freeze above.
 
   if (orderCorePk != null && Number.isFinite(orderCorePk)) {
     void import("../../lib/merchant-acceptance-deadline.js")
@@ -2498,6 +2556,18 @@ export async function finalizePendingOrderFromWebhook(
         })
         .where(eq(pendingOrders.pendingId, pending.pending_id));
 
+      await persistOfferSnapshots(
+        tx as unknown as PostgresJsDatabase<Record<string, unknown>>,
+        orderIdText,
+        {
+          billingSnapshot: pending.billing_snapshot,
+          customerId: Number(pending.customer_id),
+          merchantStoreId: Number(pending.merchant_store_id),
+          grandTotal: pending.grand_total,
+        } as typeof pendingOrders.$inferSelect,
+        orderCorePk
+      );
+
       return {
         ok: true as const,
         alreadyFinalized: false,
@@ -2613,9 +2683,10 @@ export async function finalizePendingOrderFromWebhook(
       return { ok: true };
     }
 
-    // Freeze First ETA BEFORE notifying the merchant so accept/SLA never race
-    // a null first_eta_at. Still outside the payment txn; failures are non-fatal.
+    // Critical merchant push must not wait on Mapbox ETA freeze. ETA / dispatch
+    // still run fire-and-forget outside the payment txn; failures are non-fatal.
     if (result.orderId) {
+      const placedOrderId = result.orderId;
       void (async () => {
         try {
           const [oc] = await db.execute(
@@ -2624,33 +2695,48 @@ export async function finalizePendingOrderFromWebhook(
                      pickup_lon::text AS pickup_lon, drop_lat::text AS drop_lat,
                      drop_lon::text AS drop_lon, distance_km::text AS distance_km
               FROM orders_core
-              WHERE order_id = ${result.orderId}
+              WHERE order_id = ${placedOrderId}
               LIMIT 1
             `
           ) as unknown as Array<Record<string, unknown>>;
           if (!oc) return;
           const coreOrderPk = Number(oc.id);
-          await freezeEtaForPlacedOrder({
-            orderIdText: result.orderId,
-            merchantStoreId: Number(oc.merchant_store_id),
+          const merchantStoreId = Number(oc.merchant_store_id);
+          const grandTotal = Number(oc.grand_total ?? 0);
+
+          void notifyMerchantStoreNewOrder(getSql(), {
+            merchantStoreId,
+            orderIdText: placedOrderId,
+            grandTotal,
+          }).catch((e) => {
+            console.warn("[merchant-new-order-notify] webhook-path failed (non-fatal)", {
+              orderId: placedOrderId,
+              err: (e as Error).message,
+            });
+          });
+
+          void freezeEtaForPlacedOrder({
+            orderIdText: placedOrderId,
+            merchantStoreId,
             pickupLat: Number(oc.pickup_lat ?? 0),
             pickupLon: Number(oc.pickup_lon ?? 0),
             dropLat: Number(oc.drop_lat ?? 0),
             dropLon: Number(oc.drop_lon ?? 0),
             precomputedDistanceKm:
               oc.distance_km != null ? Number(oc.distance_km) : null,
+          }).catch((e) => {
+            console.warn("[eta] webhook-path freezeEta failed (non-fatal)", {
+              orderId: placedOrderId,
+              err: (e as Error).message,
+            });
           });
+
           if (Number.isFinite(coreOrderPk) && coreOrderPk > 0) {
             void maybeStartOrderDispatch(coreOrderPk);
           }
-          await notifyMerchantStoreNewOrder(getSql(), {
-            merchantStoreId: Number(oc.merchant_store_id),
-            orderIdText: result.orderId,
-            grandTotal: Number(oc.grand_total ?? 0),
-          });
         } catch (e) {
           console.warn("[eta] webhook-path post-place hooks failed (non-fatal)", {
-            orderId: result.orderId,
+            orderId: placedOrderId,
             err: (e as Error).message,
           });
         }

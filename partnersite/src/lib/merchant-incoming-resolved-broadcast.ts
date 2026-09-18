@@ -41,8 +41,13 @@ export async function broadcastMerchantIncomingResolved(
     },
     body: JSON.stringify({
       messages: [
-        { topic, event: DASH_MX_INCOMING_RESOLVED_EVENT, payload: body },
-        { topic: `realtime:${topic}`, event: DASH_MX_INCOMING_RESOLVED_EVENT, payload: body },
+        { topic, event: DASH_MX_INCOMING_RESOLVED_EVENT, payload: body, private: false },
+        {
+          topic: `realtime:${topic}`,
+          event: DASH_MX_INCOMING_RESOLVED_EVENT,
+          payload: body,
+          private: false,
+        },
       ],
     }),
   });

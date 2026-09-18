@@ -29,11 +29,22 @@ const FOOD_LIVE: Record<string, { step: number; title: string; body: string }> =
   ORDER_RIDER_AT_STORE: { step: 2, title: "Ready for Pickup", body: "Rider at the store" },
   ORDER_RIDER_ASSIGNED: { step: 2, title: "Ready for Pickup", body: "Rider heading to store" },
   ORDER_OUT_FOR_DELIVERY: { step: 3, title: "On The Way", body: "Arriving" },
-  ORDER_RIDER_ARRIVING: { step: 4, title: "Nearby", body: "Rider is almost there" },
-  ORDER_DELIVERED: { step: 5, title: "Delivered", body: "Enjoy your meal!" },
+  // Reach-customer OTP + delivered/cancelled are separate tray rows (not progress replace).
 };
 
-/** Ride: Accepted → Nearby → Arrived → Trip → Near drop → Completed */
+const FOOD_FINAL_TEMPLATES = new Set([
+  "ORDER_DELIVERED",
+  "ORDER_CANCELLED",
+  "ORDER_CANCELLED_REFUND_ELIGIBLE",
+  "ORDER_CANCELLED_NO_REFUND",
+]);
+
+const FOOD_OTP_TEMPLATES = new Set([
+  "ORDER_RIDER_ARRIVING",
+  "CUSTOMER_DELIVERY_OTP_NEARBY",
+]);
+
+/** Ride: Accepted → Nearby → Arrived → Trip → Near drop (completed is final tray row). */
 const RIDE_LIVE: Record<string, { step: number; title: string; body: string }> = {
   /** Same template as food assignment — used when a captain accepts a person-ride. */
   ORDER_RIDER_ASSIGNED: { step: 1, title: "Ride Accepted", body: "Captain on the way" },
@@ -42,17 +53,14 @@ const RIDE_LIVE: Record<string, { step: number; title: string; body: string }> =
   RIDE_RIDER_ARRIVED: { step: 3, title: "Captain Has Arrived", body: "Meet your captain" },
   RIDE_TRIP_STARTED: { step: 4, title: "Trip Started", body: "Have a safe ride" },
   RIDE_NEAR_DESTINATION: { step: 5, title: "Approaching Destination", body: "Almost there" },
-  RIDE_COMPLETED: { step: 6, title: "Ride Completed", body: "Please rate your ride" },
 };
 
-/** Parcel: Accepted → On way → At pickup → Picked up → Nearby → Delivered */
+/** Parcel: Accepted → On way → At pickup → Picked up (nearby OTP + delivered are separate). */
 const PARCEL_LIVE: Record<string, { step: number; title: string; body: string }> = {
   PARCEL_ACCEPTED: { step: 1, title: "Parcel Accepted", body: "Looking for a captain" },
   PARCEL_RIDER_ON_THE_WAY: { step: 2, title: "Rider On The Way", body: "Collecting your parcel" },
   PARCEL_RIDER_AT_PICKUP: { step: 3, title: "Rider at Pickup", body: "Share pickup PIN" },
   PARCEL_PICKED_UP: { step: 4, title: "Parcel Picked Up", body: "On the way" },
-  PARCEL_RIDER_NEARBY: { step: 5, title: "Rider Nearby", body: "Share delivery OTP" },
-  PARCEL_DELIVERED: { step: 6, title: "Parcel Delivered", body: "Delivered successfully" },
 };
 
 const FOOD_LIVE_STEPS = 5;
@@ -129,6 +137,30 @@ function foodLiveMeta(
     deliveryOtp?: string | null;
   }
 ): LiveProgressMeta | Record<string, unknown> {
+  if (FOOD_FINAL_TEMPLATES.has(templateCode)) {
+    const cancelled = templateCode.includes("CANCEL");
+    return {
+      gmType: templateCode,
+      orderId,
+      status: cancelled ? "CANCELLED" : "DELIVERED",
+      gmLiveKind: "final",
+      gmClearLiveProgress: true,
+      skip_in_app_banner: true,
+    };
+  }
+  if (FOOD_OTP_TEMPLATES.has(templateCode)) {
+    const otp = opts?.deliveryOtp?.trim() || null;
+    return {
+      gmType: templateCode,
+      orderId,
+      status: "REACHED_CUSTOMER",
+      gmLiveKind: "otp",
+      gmClearLiveProgress: true,
+      skip_in_app_banner: true,
+      ...(otp ? { deliveryOtp: otp } : {}),
+      ...(opts?.storeName ? { storeName: opts.storeName } : {}),
+    };
+  }
   const live = FOOD_LIVE[templateCode];
   if (!live) return { gmType: templateCode, orderId };
   const eta =
@@ -138,11 +170,18 @@ function foodLiveMeta(
   let liveBody = live.body;
   if (templateCode === "ORDER_PREPARING" && eta != null) liveBody = `Preparing • ${eta} mins`;
   if (templateCode === "ORDER_OUT_FOR_DELIVERY" && eta != null) liveBody = `Arriving in ${eta} mins`;
-  if (templateCode === "ORDER_RIDER_ARRIVING" && opts?.deliveryOtp) {
-    liveBody = `OTP ${opts.deliveryOtp} · Share with your delivery partner`;
-  }
+  const statusByTemplate: Record<string, string> = {
+    ORDER_CREATED: "ORDER_PLACED",
+    ORDER_ACCEPTED: "ACCEPTED",
+    ORDER_PREPARING: "PREPARING",
+    ORDER_FOOD_READY: "READY_FOR_PICKUP",
+    ORDER_RIDER_ASSIGNED: "RIDER_ASSIGNED",
+    ORDER_RIDER_AT_STORE: "RIDER_AT_PICKUP",
+    ORDER_OUT_FOR_DELIVERY: "OUT_FOR_DELIVERY",
+  };
   return {
     gmLiveProgress: true,
+    gmLiveKind: "progress",
     liveService: "food",
     liveStep: live.step,
     liveSteps: FOOD_LIVE_STEPS,
@@ -150,9 +189,9 @@ function foodLiveMeta(
     liveBody,
     skip_in_app_banner: true,
     orderId,
+    status: statusByTemplate[templateCode] ?? undefined,
     ...(opts?.storeName ? { storeName: opts.storeName } : {}),
     ...(eta != null ? { etaMinutes: eta } : {}),
-    ...(opts?.deliveryOtp ? { deliveryOtp: opts.deliveryOtp } : {}),
     gmType: templateCode,
   };
 }
@@ -163,6 +202,28 @@ function rideLiveMeta(
   captainName: string,
   pickupOtp?: string | null
 ): LiveProgressMeta | Record<string, unknown> {
+  if (templateCode === "RIDE_COMPLETED" || templateCode.includes("CANCEL")) {
+    return {
+      gmType: templateCode,
+      orderId,
+      status: templateCode.includes("CANCEL") ? "CANCELLED" : "DELIVERED",
+      gmLiveKind: "final",
+      gmClearLiveProgress: true,
+    };
+  }
+  if (
+    templateCode === "CUSTOMER_PICKUP_OTP_ARRIVED" ||
+    templateCode === "RIDE_RIDER_ARRIVED"
+  ) {
+    const otp = pickupOtp?.trim() || null;
+    return {
+      gmType: templateCode,
+      orderId,
+      gmLiveKind: "otp",
+      gmClearLiveProgress: true,
+      ...(otp ? { pickupOtp: otp } : {}),
+    };
+  }
   const live = RIDE_LIVE[templateCode];
   const otp = pickupOtp?.trim() || null;
   if (!live) {
@@ -170,6 +231,7 @@ function rideLiveMeta(
       gmType: templateCode,
       orderId,
       gmLiveProgress: true,
+      gmLiveKind: "progress",
       liveService: "ride",
       liveTitle: "Ride update",
       liveBody: captainName,
@@ -179,11 +241,12 @@ function rideLiveMeta(
     };
   }
   const bodyWithOtp =
-    otp && (templateCode === "RIDE_RIDER_NEARBY" || templateCode === "RIDE_RIDER_ARRIVED")
+    otp && templateCode === "RIDE_RIDER_NEARBY"
       ? `${live.body} · PIN ${otp}`
       : live.body;
   return {
     gmLiveProgress: true,
+    gmLiveKind: "progress",
     liveService: "ride",
     liveStep: live.step,
     liveSteps: RIDE_LIVE_STEPS,
@@ -203,14 +266,36 @@ function parcelLiveMeta(
   riderName: string,
   opts?: { deliveryOtp?: string | null; pickupOtp?: string | null }
 ): LiveProgressMeta | Record<string, unknown> {
-  const live = PARCEL_LIVE[templateCode];
   const deliveryOtp = opts?.deliveryOtp?.trim() || null;
   const pickupOtp = opts?.pickupOtp?.trim() || null;
+  if (templateCode === "PARCEL_DELIVERED" || templateCode.includes("CANCEL")) {
+    return {
+      gmType: templateCode,
+      orderId,
+      status: templateCode.includes("CANCEL") ? "CANCELLED" : "DELIVERED",
+      gmLiveKind: "final",
+      gmClearLiveProgress: true,
+    };
+  }
+  if (
+    templateCode === "PARCEL_RIDER_NEARBY" ||
+    templateCode === "CUSTOMER_DELIVERY_OTP_NEARBY"
+  ) {
+    return {
+      gmType: templateCode,
+      orderId,
+      gmLiveKind: "otp",
+      gmClearLiveProgress: true,
+      ...(deliveryOtp ? { deliveryOtp } : {}),
+    };
+  }
+  const live = PARCEL_LIVE[templateCode];
   if (!live) {
     return {
       gmType: templateCode,
       orderId,
       gmLiveProgress: true,
+      gmLiveKind: "progress",
       liveService: "parcel",
       liveTitle: "Parcel update",
       liveBody: riderName,
@@ -223,11 +308,10 @@ function parcelLiveMeta(
   let bodyWithOtp = live.body;
   if (pickupOtp && templateCode === "PARCEL_RIDER_AT_PICKUP") {
     bodyWithOtp = `${live.body} · PIN ${pickupOtp}`;
-  } else if (deliveryOtp && templateCode === "PARCEL_RIDER_NEARBY") {
-    bodyWithOtp = `${live.body} · OTP ${deliveryOtp}`;
   }
   return {
     gmLiveProgress: true,
+    gmLiveKind: "progress",
     liveService: "parcel",
     liveStep: live.step,
     liveSteps: PARCEL_LIVE_STEPS,

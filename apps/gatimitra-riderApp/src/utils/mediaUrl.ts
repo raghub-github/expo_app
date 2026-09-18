@@ -104,6 +104,10 @@ export function resolveRiderSelfieDisplayUrl(opts: {
   for (const c of candidates) {
     if (c == null || typeof c !== "string" || !c.trim()) continue;
     const t = c.trim();
+    const lower = t.toLowerCase();
+    if (lower === "pending" || lower === "n/a" || lower === "na" || lower.endsWith("/pending")) {
+      continue;
+    }
     if (!allowLocal && (t.startsWith("file://") || t.startsWith("content://"))) {
       continue;
     }
@@ -123,4 +127,65 @@ export function withImageCacheBust(
   if (token == null || token === "") return abs;
   const sep = abs.includes("?") ? "&" : "?";
   return `${abs}${sep}t=${encodeURIComponent(String(token))}`;
+}
+
+/** Camera/gallery / content URIs (and bare Android paths) — die after remount. */
+export function isLocalMediaUri(uri: string | null | undefined): boolean {
+  const u = String(uri || "").trim();
+  if (!u) return false;
+  if (
+    u.startsWith("file:") ||
+    u.startsWith("content:") ||
+    u.startsWith("ph:") ||
+    u.startsWith("assets-library:") ||
+    u.startsWith("blob:")
+  ) {
+    return true;
+  }
+  if (u.startsWith("/") && !u.startsWith("//") && !u.includes("://")) {
+    return true;
+  }
+  return false;
+}
+
+/** RN Image needs a scheme for bare filesystem paths. */
+export function ensureLocalFileUri(uri: string): string {
+  const u = String(uri || "").trim();
+  if (!u) return u;
+  if (u.startsWith("/") && !u.startsWith("//") && !u.includes("://")) {
+    return `file://${u}`;
+  }
+  return u;
+}
+
+/**
+ * Prefer stable remote/proxy URLs for onboarding doc previews.
+ * Local file:// is only used when no remote exists (fresh pick before upload).
+ */
+export function resolveOnboardingPhotoDisplayUrl(opts: {
+  remotes?: Array<string | null | undefined>;
+  localUri?: string | null;
+}): string | null {
+  for (const r of opts.remotes ?? []) {
+    if (r == null || typeof r !== "string") continue;
+    const t = r.trim();
+    if (!t || isLocalMediaUri(t)) continue;
+    const lower = t.toLowerCase();
+    if (
+      lower === "pending" ||
+      lower === "n/a" ||
+      lower === "na" ||
+      lower === "pan_number_submitted" ||
+      lower.includes("electronic_verified") ||
+      lower.includes("digilocker")
+    ) {
+      continue;
+    }
+    const abs = toAbsoluteImageUrl(t);
+    if (abs) return abs;
+  }
+  const local = opts.localUri?.trim();
+  if (local && isLocalMediaUri(local)) return ensureLocalFileUri(local);
+  if (local) return toAbsoluteImageUrl(local) ?? local;
+  return null;
 }

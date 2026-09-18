@@ -17,10 +17,24 @@ import {
   canGoBackFromOnboardingRoute,
   previousOnboardingRoute,
 } from "@/src/lib/onboarding-routes";
+import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
 
 /** Must match onboarding page / Stack contentStyle background. */
 export const ONBOARDING_PAGE_BG = "#f4fbf6";
+
+/** Keep in sync with `styles.bar` below (floating chrome height below safe area). */
+export const ONBOARDING_TOP_BAR_PADDING_TOP = 20;
+export const ONBOARDING_TOP_BAR_CHIP_HEIGHT = 38;
+export const ONBOARDING_TOP_BAR_PADDING_BOTTOM = 15;
+
+export function onboardingTopBarHeightBelowSafeArea(): number {
+  return (
+    ONBOARDING_TOP_BAR_PADDING_TOP +
+    ONBOARDING_TOP_BAR_CHIP_HEIGHT +
+    ONBOARDING_TOP_BAR_PADDING_BOTTOM
+  );
+}
 
 type StackHeaderRoute = { name?: string } | undefined;
 
@@ -39,6 +53,7 @@ export function OnboardingTopBar({
   const [languageOpen, setLanguageOpen] = useState(false);
 
   const routeName = routeNameProp ?? route?.name ?? "";
+  const vehicleOnboardingFlow = useOnboardingStore((s) => s.data.vehicleOnboardingFlow);
   const showBack = canGoBackFromOnboardingRoute(routeName);
   const pageBg = routeName === "language" ? RIDER_AUTH_BG : ONBOARDING_PAGE_BG;
   const headerTitle = title?.trim() || "";
@@ -52,7 +67,7 @@ export function OnboardingTopBar({
 
   const goBack = () => {
     if (runOnboardingBackOverride()) return;
-    const prev = previousOnboardingRoute(routeName);
+    const prev = previousOnboardingRoute(routeName, { vehicleOnboardingFlow });
     if (prev) router.replace(prev);
     else if (router.canGoBack()) router.back();
   };
@@ -135,12 +150,15 @@ const styles = StyleSheet.create({
   barHost: {
     width: "100%",
     alignSelf: "flex-start",
+    // Do not stretch — only the chrome height should capture layout/hit testing.
+    flexGrow: 0,
   },
   bar: {
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "stretch",
     width: "100%",
+    flexGrow: 0,
     paddingHorizontal: 10,
     paddingBottom: 10,
     // Default; overridden per-route so status-bar strip matches page bg.

@@ -11,7 +11,8 @@ const MAX_PARALLEL = 3;
 /** A queued request is never held longer than this, even if releases are lost. */
 const MAX_WAIT_MS = 15_000;
 
-const GATE_BYPASS_URL_PARTS = ["/v1/me/wallet"];
+/** Wallet + item customization must never sit behind the cold-start queue. */
+const GATE_BYPASS_URL_PARTS = ["/v1/me/wallet", "/full-config"];
 
 export function shouldBypassStartupGate(url: string | undefined): boolean {
   if (!url) return false;

@@ -2,12 +2,12 @@ import { useEffect, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/store/authStore";
-import { refreshCustomerServiceBlocks } from "@/lib/refreshCustomerServiceBlocks";
+import { CUSTOMER_SERVICE_BLOCKS_QUERY_KEY } from "@/hooks/useCustomerServiceBlocks";
 
 /**
  * Keep admin service blocks fresh while the app is open:
- * - initial fetch after login
- * - refresh whenever the app returns to foreground
+ * - rely on useCustomerServiceBlocks for the initial fetch (shared RQ cache)
+ * - invalidate on foreground so active observers refetch once (no parallel force-fetch)
  *
  * Polling interval lives on useCustomerServiceBlocks (refetchInterval).
  */
@@ -20,17 +20,19 @@ export function CustomerServiceBlocksSync() {
   useEffect(() => {
     if (!hydrated || !session) return;
 
-    const refreshNow = () => {
+    const refreshOnForeground = () => {
       const now = Date.now();
-      if (now - lastRefreshAtRef.current < 1_500) return;
+      // Avoid resume storms + overlap with mount/focus observers.
+      if (now - lastRefreshAtRef.current < 8_000) return;
       lastRefreshAtRef.current = now;
-      void refreshCustomerServiceBlocks(queryClient);
+      void queryClient.invalidateQueries({
+        queryKey: CUSTOMER_SERVICE_BLOCKS_QUERY_KEY,
+        refetchType: "active",
+      });
     };
 
-    refreshNow();
-
     const onAppState = (next: AppStateStatus) => {
-      if (next === "active") refreshNow();
+      if (next === "active") refreshOnForeground();
     };
     const sub = AppState.addEventListener("change", onAppState);
     return () => sub.remove();

@@ -24,9 +24,16 @@ import {
 } from "./riderEligibilityInputs.js";
 import { resolveEffectiveEligibilityPolicy } from "./riderEligibility.repository.js";
 import { defaultPolicyForService } from "./serviceEligibilityDefaults.js";
-import { ALL_ELIGIBILITY_SERVICES, docVerified } from "./riderEligibility.service.js";
+import { ALL_ELIGIBILITY_SERVICES, applyRestrictionBlocks, docVerified } from "./riderEligibility.service.js";
 import { loadActiveOverridesForRider } from "./riderEligibilityOverrides.repository.js";
-import { normalizeRegistrationNumber } from "./vehicleTaxonomy.js";
+import {
+  canAddVehicle,
+  canonicalClassFromCashfreeRc,
+  MAX_ACTIVE_VEHICLES,
+  normalizeRegistrationNumber,
+  type AddVehicleCheck,
+  type VehicleForTaxonomy,
+} from "./vehicleTaxonomy.js";
 
 export type RiderVehicleView = {
   id: number;
@@ -70,6 +77,18 @@ export async function listRiderVehiclesWithEligibility(args: {
     .limit(1);
   if (!rider) return { vehicles: [], activeVehicleId: null, resolvedGeo: null };
 
+  // Self-heal: onboarding may store RC on rider_documents before projecting rider_vehicles.
+  // Without this, Profile → Vehicles shows 0 vehicles while KYC already lists the RC.
+  try {
+    const { ensureRiderVehicleFromStoredRc } = await import("../../lib/rider-vehicle-from-rc.js");
+    await ensureRiderVehicleFromStoredRc(args.riderId);
+  } catch (e) {
+    console.warn(
+      "[listRiderVehiclesWithEligibility] ensureRiderVehicleFromStoredRc failed:",
+      e instanceof Error ? e.message : e,
+    );
+  }
+
   // Non-retired vehicles.
   const vehicles = await db
     .select()
@@ -108,17 +127,43 @@ export async function listRiderVehiclesWithEligibility(args: {
   const evOwnershipProof = riderDocState("ev_ownership_proof");
   const commercialProof = riderDocState("commercial_proof");
 
-  // Resolve geo once (rider registered location unless coords passed).
+  // Geo must match /eligibility/status (Home dropdown): when the app sends live
+  // coords, reverse-geocode those — do NOT force riders.pincode as livePincode
+  // (that hid GPS and made Vehicles disagree with Home, e.g. WB profile vs Haryana GPS).
+  // Cap wait so Profile → Vehicles never hangs on a slow geocoder.
   let resolvedGeo: { level: string; refId: string } | null = null;
   try {
-    const geo = await resolveGeoLocation({
-      latitude: args.lat ?? rider.lat ?? undefined,
-      longitude: args.lng ?? rider.lon ?? undefined,
-      livePincode: args.pincode ?? rider.pincode ?? undefined,
-      liveState: args.state ?? rider.state ?? undefined,
-    });
-    const anchor = pickMostSpecificGeoAnchor(geo.refs);
-    if (anchor) resolvedGeo = { level: anchor.level, refId: anchor.refId };
+    const lat = args.lat ?? null;
+    const lng = args.lng ?? null;
+    const hasLiveCoords =
+      lat != null &&
+      lng != null &&
+      Number.isFinite(Number(lat)) &&
+      Number.isFinite(Number(lng)) &&
+      !(Number(lat) === 0 && Number(lng) === 0);
+    const geoInput = hasLiveCoords
+      ? {
+          latitude: lat,
+          longitude: lng,
+          livePincode: args.pincode ?? undefined,
+          liveState: args.state ?? undefined,
+        }
+      : {
+          latitude: rider.lat ?? undefined,
+          longitude: rider.lon ?? undefined,
+          livePincode: args.pincode ?? undefined,
+          liveState: args.state ?? undefined,
+          savedPincode: rider.pincode ?? undefined,
+          savedState: rider.state ?? undefined,
+        };
+    const geo = await Promise.race([
+      resolveGeoLocation(geoInput),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+    ]);
+    if (geo) {
+      const anchor = pickMostSpecificGeoAnchor(geo.refs);
+      if (anchor) resolvedGeo = { level: anchor.level, refId: anchor.refId };
+    }
   } catch {
     /* default policy per service */
   }
@@ -134,6 +179,9 @@ export async function listRiderVehiclesWithEligibility(args: {
     policyCache.set(service, p);
     return p;
   };
+
+  const { getRiderDispatchBlockSnapshot } = await import("../../lib/rider-account-restrictions.js");
+  const snapshot = await getRiderDispatchBlockSnapshot(args.riderId);
 
   const out: RiderVehicleView[] = [];
   for (const v of vehicles) {
@@ -164,6 +212,7 @@ export async function listRiderVehiclesWithEligibility(args: {
       const decision = resolveRiderServiceEligibility(input, await policyFor(service));
       services[service] = applyEligibilityOverride(decision, overrides[service]);
     }
+    const restricted = applyRestrictionBlocks(services, snapshot);
     out.push({
       id: v.id,
       registrationNumber: v.registrationNumber,
@@ -176,23 +225,83 @@ export async function listRiderVehiclesWithEligibility(args: {
       verified: v.verified === true,
       status: v.vehicleActiveStatus ?? "active",
       isActiveVehicle: rider.activeVehicleId === v.id,
-      services,
+      services: restricted,
     });
   }
 
   return { vehicles: out, activeVehicleId: rider.activeVehicleId ?? null, resolvedGeo };
 }
 
+export async function loadRiderVehiclesForAddCheck(riderId: number): Promise<VehicleForTaxonomy[]> {
+  const db = getDb();
+  const rows = await db
+    .select({
+      registrationNumber: riderVehicles.registrationNumber,
+      vehicleCategory: riderVehicles.vehicleCategory,
+      vehicleType: riderVehicles.vehicleType,
+      status: riderVehicles.vehicleActiveStatus,
+    })
+    .from(riderVehicles)
+    .where(and(eq(riderVehicles.riderId, riderId), isNull(riderVehicles.deletedAt)));
+  return rows.filter((r) => String(r.status ?? "active").toLowerCase() !== "retired");
+}
+
+export async function assertCanAddRiderVehicle(args: {
+  riderId: number;
+  candidate: VehicleForTaxonomy & { cashfree?: Parameters<typeof canonicalClassFromCashfreeRc>[0] };
+}): Promise<AddVehicleCheck> {
+  const existing = await loadRiderVehiclesForAddCheck(args.riderId);
+  const candReg = normalizeRegistrationNumber(args.candidate.registrationNumber);
+  // Re-verify / re-upload of a plate already on this rider is an update, not an add.
+  if (
+    candReg &&
+    existing.some((e) => normalizeRegistrationNumber(e.registrationNumber) === candReg)
+  ) {
+    return { ok: true };
+  }
+  const cashfreeClass = canonicalClassFromCashfreeRc(args.candidate.cashfree);
+  if (args.candidate.cashfree && !cashfreeClass) {
+    return {
+      ok: false,
+      code: "UNKNOWN_VEHICLE_CLASS",
+      reason:
+        "Could not determine this vehicle's type from the RC. A second vehicle must be a 2, 3, or 4 Wheeler.",
+    };
+  }
+  const candidate: VehicleForTaxonomy = {
+    registrationNumber: args.candidate.registrationNumber,
+    vehicleCategory: cashfreeClass ?? args.candidate.vehicleCategory ?? null,
+    vehicleType: args.candidate.vehicleType ?? null,
+  };
+  if (cashfreeClass && !candidate.vehicleCategory) {
+    candidate.vehicleCategory = cashfreeClass;
+  }
+  return canAddVehicle({ existing, candidate, max: MAX_ACTIVE_VEHICLES });
+}
+
+export async function clearRiderActiveVehicle(riderId: number): Promise<void> {
+  const db = getDb();
+  await db
+    .update(riders)
+    .set({ activeVehicleId: null, updatedAt: new Date() })
+    .where(eq(riders.id, riderId));
+}
+
 export type SetActiveVehicleResult =
   | { ok: true; activeVehicleId: number }
-  | { ok: false; code: "NOT_FOUND" | "NOT_VERIFIED" | "RETIRED" | "LIVE_ORDER"; reason: string };
+  | {
+      ok: false;
+      code: "NOT_FOUND" | "NOT_VERIFIED" | "RETIRED" | "LIVE_ORDER" | "ON_DUTY";
+      reason: string;
+    };
 
 /** Set the rider's active vehicle. Validates ownership + verified + not-retired, and — per
  * §10 — refuses to SWITCH to a different vehicle while the rider has a live/active order
  * (setting it for the first time, or re-selecting the same vehicle, is always allowed). */
 export async function setRiderActiveVehicle(
   riderId: number,
-  vehicleId: number
+  vehicleId: number,
+  opts?: { allowWhileGoingOn?: boolean },
 ): Promise<SetActiveVehicleResult> {
   const db = getDb();
   const [v] = await db
@@ -215,6 +324,22 @@ export async function setRiderActiveVehicle(
     .where(eq(riders.id, riderId))
     .limit(1);
   const current = riderRow?.activeVehicleId ?? null;
+
+  if (current != null && current !== vehicleId && opts?.allowWhileGoingOn !== true) {
+    try {
+      const { getLatestDutyLog } = await import("../../lib/rider-duty-log.service.js");
+      const latest = await getLatestDutyLog(riderId);
+      if (latest?.status === "ON") {
+        return {
+          ok: false,
+          code: "ON_DUTY",
+          reason: "Go OFF-DUTY before switching vehicles, then select a vehicle when going back ON-DUTY.",
+        };
+      }
+    } catch {
+      /* if duty lookup fails, still apply live-order guard below */
+    }
+  }
 
   // Switching to a DIFFERENT vehicle while a live order is assigned would invalidate that
   // order's vehicle — block it (§10). First-time selection / re-selecting the same is fine.

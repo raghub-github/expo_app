@@ -33,15 +33,20 @@ export function useCustomerGeoServiceAvailability() {
   );
 
   const hints = useMemo(() => {
-    const base = extractCustomerGeoHints(address, servicePin);
-    // Prefer precise coords for Prevent merge — never decide by pincode alone
-    // when we have a service pin.
+    // Prefer live store coords immediately so geo/services does not wait on
+    // addresses/active-location (often 1–3s) or fire with state=Current+location.
+    const pin =
+      servicePin ??
+      (coords && Number.isFinite(coords.latitude) && Number.isFinite(coords.longitude)
+        ? coords
+        : null);
+    const base = extractCustomerGeoHints(address, pin);
     return {
       ...base,
-      lat: servicePin?.latitude ?? base.lat,
-      lng: servicePin?.longitude ?? base.lng,
+      lat: pin?.latitude ?? base.lat,
+      lng: pin?.longitude ?? base.lng,
     };
-  }, [address, servicePin]);
+  }, [address, servicePin, coords]);
 
   return useGeoServiceAvailability(hints);
 }

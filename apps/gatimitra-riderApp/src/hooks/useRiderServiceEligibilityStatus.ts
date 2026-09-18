@@ -1,40 +1,52 @@
 /**
- * Backend-authoritative per-service eligibility for the logged-in rider (Step 5b).
- * Feeds the dropdown's "preference != eligibility" surface with the engine's decision +
- * reasons. Location is best-effort (rider's live coords); when absent the backend falls
- * back to the default policy, so the hook still returns a document/vehicle-based decision.
+ * Backend-authoritative per-service eligibility for the logged-in rider.
+ * Home, KYC, Vehicles, and duty toggle all consume this hook so they cannot
+ * diverge. Evaluated at the rider's registered working location (same as Admin
+ * onboarding eligibility) — live GPS is used for duty/dispatch, not for which
+ * services appear selectable in the Home dropdown.
+ *
+ * Polls while the app is foregrounded so Super Admin Geo & coverage FOOD/PARCEL/
+ * RIDE toggles lock/unlock within a few seconds without a restart.
  */
+import { useEffect } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { useRiderLocationStore } from "@/src/stores/riderLocationStore";
 import { riderApi } from "@/src/services/api/riderApi";
 import type { BackendEligibilityByService } from "@/src/lib/rider-service-eligibility-rows";
 
-/** Round coords so tiny GPS jitter doesn't thrash the query key / refetch. */
-function roundCoord(v: number | null | undefined): number | null {
-  if (v == null || !Number.isFinite(v)) return null;
-  return Math.round(v * 100) / 100; // ~1.1km bucket — policy is geo-node scoped
-}
+/** How often Home re-checks geo coverage toggles while the app is open.
+ * Keep moderate — sub-10s polling drains battery even OFF-DUTY. */
+const GEO_COVERAGE_POLL_MS = 30_000;
 
 export function useRiderServiceEligibilityStatus() {
   const session = useSessionStore((s) => s.session);
   const authed = Boolean(session?.accessToken);
-  const lat = useRiderLocationStore((s) => roundCoord(s.coords?.latitude));
-  const lng = useRiderLocationStore((s) => roundCoord(s.coords?.longitude));
 
   const query = useQuery({
-    queryKey: ["rider", "eligibility", "status", lat, lng] as const,
+    queryKey: ["rider", "eligibility", "status", "registered"] as const,
     queryFn: async () => {
-      return riderApi.getServiceEligibilityStatus(
-        lat != null && lng != null ? { lat, lng } : null
-      );
+      // No live coords — backend falls back to registered lat/pincode/state so
+      // Home matches Admin + Vehicles (profile location), not a traveling GPS fix.
+      return riderApi.getServiceEligibilityStatus(null);
     },
     enabled: authed,
-    staleTime: 120_000,
+    staleTime: 0,
     gcTime: 10 * 60_000,
     retry: 1,
-    refetchOnWindowFocus: false,
+    refetchOnWindowFocus: true,
+    refetchOnMount: "always",
+    refetchInterval: authed ? GEO_COVERAGE_POLL_MS : false,
+    refetchIntervalInBackground: false,
   });
+
+  useEffect(() => {
+    const onChange = (state: AppStateStatus) => {
+      if (state === "active") void query.refetch();
+    };
+    const sub = AppState.addEventListener("change", onChange);
+    return () => sub.remove();
+  }, [query.refetch]);
 
   const backend: BackendEligibilityByService | null = query.data
     ? {

@@ -1,13 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, Pressable, ImageBackground, Dimensions, Animated, Linking } from "react-native";
+import { View, StyleSheet, Pressable, Dimensions, Animated, Linking } from "react-native";
+import { Image } from "expo-image";
 import { useRouter, Redirect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { GatiMitraMerchant, BUTTON_RADIUS, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
-import { useAppAssetUrl } from "@/store/appAssetsStore";
+import { useAppAssetUrl, getAppAssetDownloadUrl } from "@/store/appAssetsStore";
 import { MX_WELCOME_SLIDE_KEYS } from "@/lib/appAssetKeys";
+import { prefetchWelcomeUris } from "@/lib/welcomeCriticalAssets";
+import {
+  ensureWelcomeSlideLocal,
+  peekWelcomeSlideLocalUri,
+  warmWelcomeSlidesLocal,
+} from "@/lib/welcomeImageDiskCache";
 import { useAuth } from "@/context/AuthContext";
 import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
 
@@ -25,15 +32,58 @@ export default function WelcomeScreen() {
   const slide3 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[3]);
   const slide4 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[4]);
   const slide5 = useAppAssetUrl(MX_WELCOME_SLIDE_KEYS[5]);
-  const slideSources = useMemo(
-    () => [slide0, slide1, slide2, slide3, slide4, slide5].filter((u): u is string => Boolean(u)),
+  const remoteByKey = useMemo(
+    () =>
+      [
+        [MX_WELCOME_SLIDE_KEYS[0], slide0],
+        [MX_WELCOME_SLIDE_KEYS[1], slide1],
+        [MX_WELCOME_SLIDE_KEYS[2], slide2],
+        [MX_WELCOME_SLIDE_KEYS[3], slide3],
+        [MX_WELCOME_SLIDE_KEYS[4], slide4],
+        [MX_WELCOME_SLIDE_KEYS[5], slide5],
+      ] as const,
     [slide0, slide1, slide2, slide3, slide4, slide5]
   );
+  const slides = useMemo(
+    () =>
+      remoteByKey.flatMap(([assetKey, remoteUrl]) =>
+        remoteUrl ? [{ assetKey, remoteUrl }] : []
+      ),
+    [remoteByKey]
+  );
+  const [localByKey, setLocalByKey] = useState<Record<string, string>>({});
   const [currentIndex, setCurrentIndex] = useState(0);
   const loginScale = useRef(new Animated.Value(1)).current;
   const signupScale = useRef(new Animated.Value(1)).current;
 
-  const slideCount = slideSources.length;
+  const slideCount = slides.length;
+
+  useEffect(() => {
+    if (slides.length === 0) return;
+    prefetchWelcomeUris(slides.map((s) => s.remoteUrl));
+    warmWelcomeSlidesLocal(
+      slides.map((s) => ({
+        assetKey: s.assetKey,
+        url: getAppAssetDownloadUrl(s.assetKey) ?? s.remoteUrl,
+      }))
+    );
+    let cancelled = false;
+    void (async () => {
+      for (const slide of slides) {
+        const local = await ensureWelcomeSlideLocal(
+          slide.assetKey,
+          getAppAssetDownloadUrl(slide.assetKey) ?? slide.remoteUrl
+        );
+        if (cancelled || !local) continue;
+        setLocalByKey((prev) =>
+          prev[slide.assetKey] === local ? prev : { ...prev, [slide.assetKey]: local }
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [slides]);
 
   useEffect(() => {
     if (slideCount <= 1) return;
@@ -47,7 +97,12 @@ export default function WelcomeScreen() {
     if (currentIndex >= slideCount && slideCount > 0) setCurrentIndex(0);
   }, [currentIndex, slideCount]);
 
-  const backgroundUri = slideCount > 0 ? slideSources[currentIndex] ?? slideSources[0] : null;
+  const active = slideCount > 0 ? slides[currentIndex] ?? slides[0] : null;
+  const backgroundUri = active
+    ? localByKey[active.assetKey] ??
+      peekWelcomeSlideLocalUri(active.assetKey) ??
+      active.remoteUrl
+    : null;
 
   const animatePressIn = (anim: Animated.Value) => {
     Animated.spring(anim, {
@@ -78,11 +133,37 @@ export default function WelcomeScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: Math.max(insets.top, SAFE_AREA_TOP_MIN) }]}>
-      <ImageBackground
-        source={backgroundUri ? { uri: backgroundUri } : undefined}
-        style={[styles.background, !backgroundUri && styles.backgroundFallback]}
-        resizeMode="cover"
-      >
+      <View style={[styles.background, !backgroundUri && styles.backgroundFallback]}>
+        {backgroundUri ? (
+          <Image
+            source={{ uri: backgroundUri }}
+            style={StyleSheet.absoluteFillObject}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            recyclingKey={active?.assetKey ?? `welcome-${currentIndex}`}
+            transition={0}
+            priority="high"
+          />
+        ) : null}
+        {/* Keep next slides warm in disk/memory cache while current slide shows. */}
+        {slides.map((slide, i) =>
+          i === currentIndex ? null : (
+            <Image
+              key={slide.assetKey}
+              source={{
+                uri:
+                  localByKey[slide.assetKey] ??
+                  peekWelcomeSlideLocalUri(slide.assetKey) ??
+                  slide.remoteUrl,
+              }}
+              style={styles.offscreenPrefetch}
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              recyclingKey={slide.assetKey}
+              transition={0}
+            />
+          )
+        )}
         <LinearGradient
           colors={["transparent", "rgba(0,0,0,0.35)", "rgba(0,0,0,0.8)"]}
           style={styles.gradient}
@@ -95,16 +176,16 @@ export default function WelcomeScreen() {
           </Text>
           {slideCount > 1 ? (
             <View style={styles.dots}>
-              {slideSources.map((_, i) => (
+              {slides.map((slide, i) => (
                 <View
-                  key={i}
+                  key={slide.assetKey}
                   style={[styles.dot, i === currentIndex && styles.dotActive]}
                 />
               ))}
             </View>
           ) : null}
         </View>
-      </ImageBackground>
+      </View>
 
       <View style={styles.buttons}>
         <Animated.View style={{ transform: [{ scale: loginScale }] }}>
@@ -173,9 +254,16 @@ const styles = StyleSheet.create({
     flex: 1,
     width,
     height: height - BOTTOM_SECTION_HEIGHT,
+    overflow: "hidden",
   },
   backgroundFallback: {
     backgroundColor: "#1a3d34",
+  },
+  offscreenPrefetch: {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    opacity: 0,
   },
   gradient: {
     ...StyleSheet.absoluteFillObject,

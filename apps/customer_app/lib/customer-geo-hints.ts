@@ -4,6 +4,26 @@ function isPincode(value?: string | null): boolean {
   return !!value && /^\d{6}$/.test(value.trim());
 }
 
+/** Placeholder / UI labels that must never be sent as geo `state`. */
+const INVALID_STATE_LABELS = new Set([
+  "current location",
+  "current location.",
+  "enable location to set",
+  "location not available",
+  "unknown",
+  "n/a",
+  "na",
+]);
+
+function isValidGeoState(value?: string | null): value is string {
+  const t = value?.trim() ?? "";
+  if (t.length < 2) return false;
+  if (INVALID_STATE_LABELS.has(t.toLowerCase())) return false;
+  // Raw coords leaked into address text.
+  if (/^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/.test(t)) return false;
+  return true;
+}
+
 export function extractCustomerGeoHints(
   address: ReverseGeocodeResult | null | undefined,
   coords?: { latitude: number; longitude: number } | null
@@ -22,10 +42,11 @@ export function extractCustomerGeoHints(
     .map((p) => p.trim())
     .filter(Boolean);
 
-  const state =
+  const rawState =
     address?.state ??
     [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india") ??
     null;
+  const state = isValidGeoState(rawState) ? rawState.trim() : null;
 
   const pincode =
     (address?.pincode && isPincode(address.pincode) ? address.pincode : null) ??

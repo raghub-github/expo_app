@@ -179,13 +179,13 @@ export function MerchantIncomingAcceptPanel({
   );
 
   return (
-    <div className="relative flex max-h-[min(88dvh,calc(100dvh-5rem))] w-full min-h-0 flex-col overflow-hidden rounded-t-[1.25rem] bg-[#fafaf9] shadow-[0_24px_64px_rgba(28,25,23,0.28)] ring-1 ring-stone-900/10 sm:max-h-[min(85dvh,calc(100dvh-6rem))] sm:rounded-[1.25rem]">
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-stone-200/80 bg-white px-4 py-2.5 sm:px-5">
+    <div className="relative flex max-h-[min(88dvh,calc(100dvh-5rem))] w-full min-h-0 flex-col overflow-hidden rounded-t-[1.25rem] bg-[#F7F8FA] shadow-none ring-1 ring-stone-200 sm:max-h-[min(85dvh,calc(100dvh-6rem))] sm:rounded-[1.25rem]">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-stone-200/80 bg-white px-4 py-3 sm:px-5">
         <div className="min-w-0">
-          <h2 id="merchant-incoming-title" className="text-[15px] font-semibold tracking-tight text-stone-900">
+          <h2 id="merchant-incoming-title" className="text-[16px] font-bold tracking-tight text-stone-900">
             1 new order
           </h2>
-          <p className="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-700">
+          <p className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-700">
             GatiMitra delivery
             {order.order_type ? ` · ${String(order.order_type).replace(/_/g, ' ')}` : ''}
           </p>
@@ -220,7 +220,7 @@ export function MerchantIncomingAcceptPanel({
         </div>
       </div>
 
-      <div className="min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain px-4 pt-2.5 sm:px-5">
+      <div className="min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain px-4 pt-3 sm:px-5">
         <div className="flex items-center justify-between gap-2">
           <FormattedOrderId
             formattedOrderId={order.formatted_order_id}
@@ -236,13 +236,13 @@ export function MerchantIncomingAcceptPanel({
           ) : null}
         </div>
 
-        <p className="mt-1 text-[13px] leading-snug text-stone-700">
+        <p className="mt-2 text-[14px] leading-snug text-stone-700">
           {order.customer_name ? (
-            <span className="font-medium text-stone-900">
+            <span className="font-semibold text-stone-900">
               {ordinal ? `${ordinal} order by ${order.customer_name}` : `Order by ${order.customer_name}`}
             </span>
           ) : (
-            <span className="font-medium text-stone-900">New customer order</span>
+            <span className="font-semibold text-stone-900">New customer order</span>
           )}
         </p>
 

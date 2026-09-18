@@ -36,7 +36,7 @@ function detectImageExt(file: File): string | null {
 }
 
 export async function POST(request: NextRequest, ctx: RouteCtx) {
-  const gate = await requireSuperAdminApi();
+  const gate = await requireSuperAdminApi(request);
   if (!gate.ok) return gate.response;
 
   const { stateId } = await ctx.params;

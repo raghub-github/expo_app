@@ -52,12 +52,12 @@ export function useLocationMonitor(enabled: boolean = true) {
     // Check immediately
     checkLocation();
 
-    // Check every 3 seconds when app is active
+    // Check every 20s when app is active (was 3s — significant idle battery drain)
     const interval = setInterval(() => {
       if (AppState.currentState === "active") {
         checkLocation();
       }
-    }, 3000);
+    }, 20_000);
 
     // Also check when app becomes active
     const subscription = AppState.addEventListener("change", (nextAppState) => {

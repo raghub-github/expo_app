@@ -1,5 +1,8 @@
 /**
  * Push + in-app notification when a new CREATED food order lands for a merchant store.
+ *
+ * Latency: after foodId/displayId are known, fire the critical tray push first
+ * (amount may be 0). Inbox / sticky / v2 in_app and pricing must not block that push.
  */
 import type { Sql } from "postgres";
 import { insertMerchantStoreNotification } from "./merchant-push-notify.js";
@@ -73,42 +76,49 @@ export async function notifyMerchantStoreNewOrder(
   const food = foodRows[0] as { formatted_order_id?: string } | undefined;
   const displayId = (food?.formatted_order_id as string | undefined) ?? orderIdText;
 
-  let total: number | null = null;
-  let itemCount = 1;
-  let customerName = "Customer";
-  try {
-    const merchantNotify = await resolveMerchantVisibleOrderNotify(sql, {
-      merchantStoreId,
-      orderIdText,
-    });
-    if (merchantNotify != null && merchantNotify.amount > 0) {
-      total = Math.round(merchantNotify.amount * 100) / 100;
-      itemCount = Math.max(1, merchantNotify.itemCount);
-      customerName = merchantNotify.customerName || "Customer";
-    }
-  } catch {
-    /* omit amount rather than show customer grand_total */
-  }
-
   const title = "🔔 New Order Received";
   const body = `Order #${displayId} is waiting for your acceptance.`;
 
-  // Legacy in-app inbox row (kept for backward compat with the merchant app's
-  // existing notifications tab reading merchant_store_notifications).
-  await insertMerchantStoreNotification(sql, {
-    storeId: merchantStoreId,
-    type: "order",
-    title,
-    body,
-    orderId: foodId ? Number(foodId) : null,
-    actionUrl: href,
-  });
+  // Pricing in parallel with push — never block the critical tray on CTM/pricing.
+  const pricingPromise = resolveMerchantVisibleOrderNotify(sql, {
+    merchantStoreId,
+    orderIdText,
+  })
+    .then((merchantNotify) => {
+      if (merchantNotify != null && merchantNotify.amount > 0) {
+        return {
+          total: Math.round(merchantNotify.amount * 100) / 100,
+          itemCount: Math.max(1, merchantNotify.itemCount),
+          customerName: merchantNotify.customerName || "Customer",
+        };
+      }
+      return null;
+    })
+    .catch(() => null);
 
-  // Primary tray delivery: same direct Expo + native FCM path as store-status /
-  // rider-assigned (survives background/killed). notificationService alone can
-  // miss devices when Expo credentials fail and native lookup is incomplete.
-  const { notifyMerchantStoreNewOrderPush } = await import("./merchant-push-notify.js");
-  await notifyMerchantStoreNewOrderPush(sql, {
+  // Fire tray push immediately (amount 0). Pricing enriches inbox / v2 only.
+  let total: number | null = null;
+  let itemCount = 1;
+  let customerName = "Customer";
+
+  const push_dispatch_started_at = Date.now();
+  console.info(
+    "[merchant-new-order] push_dispatch_started_at",
+    JSON.stringify({
+      push_dispatch_started_at,
+      orderId: orderIdText,
+      storeId: merchantStoreId,
+      foodId,
+      displayId,
+    })
+  );
+
+  const { notifyMerchantStoreNewOrderPush, notifyMerchantStoreStatus } = await import(
+    "./merchant-push-notify.js"
+  );
+
+  // Primary tray delivery FIRST — same direct Expo + native FCM path as store-status.
+  const pushPromise = notifyMerchantStoreNewOrderPush(sql, {
     storeId: merchantStoreId,
     title,
     body,
@@ -117,53 +127,84 @@ export async function notifyMerchantStoreNewOrder(
     displayId,
     href,
     itemCount,
-    amount: total ?? 0,
+    amount: 0,
     customerName,
-  }).catch((e) =>
-    console.warn("[merchant-new-order] direct FCM failed (tolerated)", (e as Error).message)
-  );
+  })
+    .then(() => {
+      console.info(
+        "[merchant-new-order] push_done_at",
+        JSON.stringify({
+          push_done_at: Date.now(),
+          push_dispatch_started_at,
+          orderId: orderIdText,
+          storeId: merchantStoreId,
+        })
+      );
+    })
+    .catch((e) =>
+      console.warn("[merchant-new-order] direct FCM failed (tolerated)", (e as Error).message)
+    );
 
-  // Keep the ONLINE sticky in sync for killed devices (🔔 N new) — separate tag
-  // from the heads-up new-order alert so both can show in the shade.
-  const { notifyMerchantStoreStatus } = await import("./merchant-push-notify.js");
-  await notifyMerchantStoreStatus(sql, merchantStoreId, "ONLINE", {
-    eventId: `STORE_STATUS:NEW_ORDER:${merchantStoreId}:${foodId ?? orderIdText}`,
-    kitchenSubtitle: `New order · #${displayId}`,
-  }).catch(() => undefined);
+  // Secondary work after push has started — await pricing for richer inbox/v2.
+  const secondaryPromise = (async () => {
+    const priced = await pricingPromise;
+    if (priced) {
+      total = priced.total;
+      itemCount = priced.itemCount;
+      customerName = priced.customerName;
+    }
 
-  // v2 inbox / audit — push channel omitted so we do not twin the direct FCM above.
-  // Idempotency still blocks eventBus MERCHANT_NEW_ORDER retries for this order.
-  await sendNotification({
-    templateCode: "MERCHANT_NEW_ORDER",
-    variables: {
-      orderId: foodId ?? orderIdText,
-      foodOrderId: foodId ?? "",
-      orderShortId: displayId,
-      itemCount,
-      amount: total ?? 0,
-      customerName,
-    },
-    target: { store_id: merchantStoreId },
-    priority: "critical",
-    channel: "in_app",
-    idempotencyKey: `MERCHANT_NEW_ORDER:${orderIdText}:${merchantStoreId}`,
-    overrides: {
-      title,
-      body,
-    },
-    metadata: {
-      type: "merchant_new_order",
-      event: "NEW_ORDER",
-      orderId: orderIdText,
-      foodOrderId: foodId,
-      storeId: merchantStoreId,
-      merchantId: merchantStoreId,
-      url: href,
-      skip_in_app_banner: true,
-      alertStartedAt: String(Date.now()),
-      alertSessionId: `MERCHANT_NEW_ORDER:${foodId ?? orderIdText}:${merchantStoreId}`,
-    },
-  }).catch((e) =>
-    console.warn("[merchant-new-order] v2 send failed (tolerated)", (e as Error).message)
-  );
+    await Promise.allSettled([
+      // Legacy in-app inbox row (kept for backward compat).
+      insertMerchantStoreNotification(sql, {
+        storeId: merchantStoreId,
+        type: "order",
+        title,
+        body,
+        orderId: foodId ? Number(foodId) : null,
+        actionUrl: href,
+      }),
+      // Keep the ONLINE sticky in sync for killed devices (🔔 N new).
+      notifyMerchantStoreStatus(sql, merchantStoreId, "ONLINE", {
+        eventId: `STORE_STATUS:NEW_ORDER:${merchantStoreId}:${foodId ?? orderIdText}`,
+        kitchenSubtitle: `New order · #${displayId}`,
+      }).catch(() => undefined),
+      // v2 inbox / audit — push channel omitted so we do not twin the direct FCM above.
+      sendNotification({
+        templateCode: "MERCHANT_NEW_ORDER",
+        variables: {
+          orderId: foodId ?? orderIdText,
+          foodOrderId: foodId ?? "",
+          orderShortId: displayId,
+          itemCount,
+          amount: total ?? 0,
+          customerName,
+        },
+        target: { store_id: merchantStoreId },
+        priority: "critical",
+        channel: "in_app",
+        idempotencyKey: `MERCHANT_NEW_ORDER:${orderIdText}:${merchantStoreId}`,
+        overrides: {
+          title,
+          body,
+        },
+        metadata: {
+          type: "merchant_new_order",
+          event: "NEW_ORDER",
+          orderId: orderIdText,
+          foodOrderId: foodId,
+          storeId: merchantStoreId,
+          merchantId: merchantStoreId,
+          url: href,
+          skip_in_app_banner: true,
+          alertStartedAt: String(push_dispatch_started_at),
+          alertSessionId: `MERCHANT_NEW_ORDER:${foodId ?? orderIdText}:${merchantStoreId}`,
+        },
+      }).catch((e) =>
+        console.warn("[merchant-new-order] v2 send failed (tolerated)", (e as Error).message)
+      ),
+    ]);
+  })();
+
+  await Promise.allSettled([pushPromise, secondaryPromise]);
 }

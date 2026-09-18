@@ -19,6 +19,7 @@ import {
 } from "./rideParcelPromoApply.js";
 import { platformOfferCouponCodesMatch } from "./platformOfferCouponCode.js";
 import { platformOfferServiceMatches } from "./platformOfferServiceTypes.js";
+import { isFoodFlashSale } from "./flashSale.js";
 
 export { platformOfferServiceMatches } from "./platformOfferServiceTypes.js";
 
@@ -163,6 +164,13 @@ export function isPlatformOfferHardVisibilityRejection(reason: string): boolean 
 /** Location + merchant allow-list only (no min-cart). Used to decide if an offer may exist in customer UI. */
 export function platformOfferLocationVisible(ctx: BillContext, o: PlatformOfferRow): boolean {
   if (!platformOfferMerchantScopeMatches(ctx, o)) return false;
+  // FOOD FLASH_SALE is store-targeted via merchant_ids (menu overlay + store-offers listing).
+  // Do not require geo_platform_offer_bindings for MERCHANT/GLOBAL flash — otherwise menu shows
+  // the flash price but checkout silently charges full catalogue price.
+  if (isFoodFlashSale(o)) {
+    const scope = (o.targetScope ?? "MERCHANT").toUpperCase();
+    if (scope === "MERCHANT" || scope === "GLOBAL") return true;
+  }
   return platformOfferGeoMatches(ctx, o);
 }
 
@@ -208,9 +216,10 @@ export function platformOfferEligible(
 ): boolean {
   if (!platformOfferServiceMatches(ctx.serviceType, o.serviceType)) return false;
   if (!nowInWindow(new Date(), o.startsAt, o.endsAt)) return false;
-  if (!platformOfferMerchantScopeMatches(ctx, o)) return false;
-  if (!platformOfferGeoMatches(ctx, o)) return false;
-  if (!platformOfferMinCartMeetsThreshold(o, platformOfferMinOrderBase(o, ctx, itemPlusAddon))) return false;
+  if (!platformOfferLocationVisible(ctx, o)) return false;
+  if (!isFoodFlashSale(o)) {
+    if (!platformOfferMinCartMeetsThreshold(o, platformOfferMinOrderBase(o, ctx, itemPlusAddon))) return false;
+  }
   const cond = (o.conditions ?? {}) as Record<string, unknown>;
   if (!platformOfferConditionsPass(cond, ctx)) return false;
   // First Ride Only — independent of per-user usage limits; server-side only.
@@ -337,7 +346,6 @@ const CART_LIKE_KINDS = new Set([
   "CASHBACK",
   "BUNDLE_DISCOUNT",
   "LOYALTY_REWARD",
-  "FLASH_SALE",
 ]);
 
 const FEE_KIND_TO_REM_KEY: Record<string, keyof FeeRem> = {
@@ -438,6 +446,7 @@ export function estimateOfferDiscountValue(o: PlatformOfferRow, ctx: BillContext
   }
 
   // Cart discounts (DISCOUNT, COUPON, FLAT_DISCOUNT, CASHBACK, etc.)
+  if (isFoodFlashSale(o)) return 0;
   if (CART_LIKE_KINDS.has(k) || k === "DISCOUNT") {
     const base = Math.max(0, cartPromoQualifyingSubtotal(ctx, Math.max(0, rem.items)));
     if (base <= 0 || value <= 0) return 0;
@@ -649,6 +658,8 @@ export function applyPlatformCartOffers(
       const units = filterUnitsByMenu(unitPieces(ctx), allow);
       return units.length >= getQ;
     }
+
+    if (isFoodFlashSale(o)) return false;
 
     if (CART_LIKE_KINDS.has(k)) return hasStandardCartDiscount(o);
 

@@ -95,7 +95,9 @@ export type EligibilityBlockCode =
   | "EV_PROOF_REQUIRED_NOT_VERIFIED"
   | "OWNERSHIP_PROOF_REQUIRED_NOT_VERIFIED"
   | "COMMERCIAL_PROOF_REQUIRED_NOT_VERIFIED"
-  | "NO_VEHICLE";
+  | "NO_VEHICLE"
+  | "ADMIN_BLOCKED"
+  | "ACCOUNT_RESTRICTED";
 
 export type EligibilityBlock = {
   code: EligibilityBlockCode;
@@ -348,11 +350,11 @@ export function resolveRiderServiceEligibility(
   const blocking: EligibilityBlock[] = [];
   const fuelKind = (input.fuelKind ?? "").trim().toLowerCase() || null;
 
-  // 1. Service enablement (geo).
+    // 1. Service enablement (geo).
   if (!policy.serviceEnabled) {
     blocking.push({
       code: "SERVICE_DISABLED",
-      reason: "This service is not available at this location.",
+      reason: "Oops! This service isn’t available in your area yet.",
     });
   }
 
@@ -389,16 +391,14 @@ export function resolveRiderServiceEligibility(
   // empty allowlist = "all fuels/ownership" semantics for step 5, but commercial
   // gate still applies as a location hard requirement).
   const allowlistPermitsNonCommercial = policy.allowedOwnership.includes("non_commercial");
-  if (
+  const commercialRequiredBlocked =
     policy.commercialRequired &&
     input.ownership !== "commercial" &&
-    !allowlistPermitsNonCommercial
-  ) {
+    !allowlistPermitsNonCommercial;
+  if (commercialRequiredBlocked) {
     blocking.push({
       code: "COMMERCIAL_VEHICLE_REQUIRED",
-      reason: `A commercial vehicle is required for ${labelService(
-        policy.service
-      )} at this location.`,
+      reason: `${labelService(policy.service)} isn’t available — commercial vehicles are required.`,
       requiredAction: "Register a commercial vehicle for this service.",
     });
   }
@@ -412,7 +412,12 @@ export function resolveRiderServiceEligibility(
       )} at this location.`,
     });
   }
-  if (policy.allowedOwnership.length > 0 && !policy.allowedOwnership.includes(input.ownership)) {
+  // Skip ownership duplicate when commercialRequired already explained the same block.
+  if (
+    !commercialRequiredBlocked &&
+    policy.allowedOwnership.length > 0 &&
+    !policy.allowedOwnership.includes(input.ownership)
+  ) {
     blocking.push({
       code: "OWNERSHIP_NOT_ALLOWED",
       reason: `${input.ownership === "commercial" ? "Commercial" : "Non-commercial"} vehicles are not allowed for ${labelService(

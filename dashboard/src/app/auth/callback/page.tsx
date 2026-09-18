@@ -78,16 +78,6 @@ function LogoSigningSpinner() {
           />
         </div>
       </div>
-      <style>{`
-        @keyframes authCallbackSpinnerStroke {
-          to {
-            stroke-dashoffset: -550;
-          }
-        }
-        .auth-callback-spinner-stroke {
-          animation: authCallbackSpinnerStroke 2.8s linear infinite;
-        }
-      `}</style>
     </>
   );
 }

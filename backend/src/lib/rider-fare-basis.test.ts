@@ -187,3 +187,17 @@ test("complete order value: composes bill lines when totals missing", () => {
     250
   );
 });
+
+test("ride: FLASH_SALE Pay Fixed ₹1 does not reduce rider gross payout", () => {
+  const basis = resolveRideGrossFareForPayout({
+    estimatedFare: 95,
+    finalFare: 1,
+    fareAmount: 95,
+    billingSnapshot: {
+      discount_total: 94,
+      ride_fare: 95,
+      item_total: 95,
+    },
+  });
+  assert.equal(basis, 95);
+});

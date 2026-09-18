@@ -406,7 +406,8 @@ export function createPushPermissionController(
   };
 
   const attachNotificationListeners = async () => {
-    const Notifications = await loadNotificationsModule();
+    // Local notification received/tap listeners work in Expo Go; remote token sync does not.
+    const Notifications = await loadNotificationsModule({ allowExpoGo: true });
     if (!Notifications) return;
 
     if (!responseSub) {

@@ -2515,6 +2515,73 @@ export const platformOfferUsages = pgTable(
   })
 );
 
+/** FLASH_SALE immutable redemption snapshots.
+ * FOOD: one active use per (customer, store, offer).
+ * Ride/Parcel: one active use per (customer, offer) when store_id IS NULL.
+ */
+export const flashSaleRedemptions = pgTable(
+  "flash_sale_redemptions",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    platformOfferId: bigint("platform_offer_id", { mode: "number" })
+      .notNull()
+      .references(() => billingPlatformOffers.id, { onDelete: "cascade" }),
+    offerKind: text("offer_kind").notNull().default("FLASH_SALE"),
+    serviceType: text("service_type").notNull().default("FOOD"),
+    storeId: bigint("store_id", { mode: "number" }),
+    itemIds: jsonb("item_ids").notNull().default([]),
+    customerId: bigint("customer_id", { mode: "number" }).notNull(),
+    orderId: bigint("order_id", { mode: "number" }),
+    orderIdText: text("order_id_text"),
+    originalItemPrice: numeric("original_item_price", { precision: 14, scale: 4 }),
+    flashSalePrice: numeric("flash_sale_price", { precision: 14, scale: 4 }),
+    subsidyAmount: numeric("subsidy_amount", { precision: 14, scale: 4 }).notNull().default("0"),
+    campaignBudgetTotal: numeric("campaign_budget_total", { precision: 14, scale: 4 }),
+    consumedBudget: numeric("consumed_budget", { precision: 14, scale: 4 }).notNull().default("0"),
+    status: text("status").notNull().default("reserved"),
+    idempotencyKey: text("idempotency_key"),
+    snapshotJson: jsonb("snapshot_json").notNull().default({}),
+    appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    refundedAt: timestamp("refunded_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    customerStoreOfferActiveUidx: uniqueIndex("flash_sale_redemptions_customer_store_offer_active_uidx")
+      .on(table.customerId, table.storeId, table.platformOfferId)
+      .where(sql`status IN ('reserved', 'consumed') AND store_id IS NOT NULL`),
+    customerOfferNostoreActiveUidx: uniqueIndex(
+      "flash_sale_redemptions_customer_offer_nostore_active_uidx"
+    )
+      .on(table.customerId, table.platformOfferId)
+      .where(sql`status IN ('reserved', 'consumed') AND store_id IS NULL`),
+    offerOrderUidx: uniqueIndex("flash_sale_redemptions_offer_order_uidx")
+      .on(table.platformOfferId, table.orderId)
+      .where(sql`order_id IS NOT NULL`),
+    offerOrderTextUidx: uniqueIndex("flash_sale_redemptions_offer_order_text_uidx")
+      .on(table.platformOfferId, table.orderIdText)
+      .where(sql`order_id_text IS NOT NULL AND length(trim(order_id_text)) > 0`),
+    idempotencyUidx: uniqueIndex("flash_sale_redemptions_idempotency_uidx")
+      .on(table.idempotencyKey)
+      .where(sql`idempotency_key IS NOT NULL AND length(trim(idempotency_key)) > 0`),
+    offerAppliedIdx: index("flash_sale_redemptions_offer_applied_idx").on(
+      table.platformOfferId,
+      table.appliedAt
+    ),
+    customerStatusIdx: index("flash_sale_redemptions_customer_status_idx").on(
+      table.customerId,
+      table.status
+    ),
+    customerStoreStatusIdx: index("flash_sale_redemptions_customer_store_status_idx").on(
+      table.customerId,
+      table.storeId,
+      table.status
+    ),
+  })
+);
+
 export const merchantBillingOverrides = pgTable(
   "merchant_billing_overrides",
   {
@@ -2951,6 +3018,8 @@ export const riderCurrentLocations = pgTable(
     headingDeg: doublePrecision("heading_deg"),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Device GPS fix time; age uses COALESCE(gps_captured_at, updated_at). */
+    gpsCapturedAt: timestamp("gps_captured_at", { withTimezone: true }),
   },
   (table) => ({
     riderIdIdx: index("rider_current_locations_rider_id_idx").on(table.riderId),

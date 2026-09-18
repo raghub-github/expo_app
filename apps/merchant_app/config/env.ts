@@ -2,6 +2,9 @@
  * Merchant app config — backend API URL from env.
  * Uses same backend as rest of monorepo (backend/.env API_BASE_URL).
  * Set EXPO_PUBLIC_API_BASE_URL in apps/merchant_app/.env (e.g. http://localhost:3000).
+ *
+ * In __DEV__, stale private LAN IPs (Wi‑Fi DHCP changes) are rewritten to Metro's
+ * current host so a physical phone keeps reaching this machine.
  */
 
 import Constants from "expo-constants";
@@ -13,35 +16,135 @@ function asNonEmptyString(v: unknown): string | null {
   return s.length ? s : null;
 }
 
-/** Android emulator: localhost -> 10.0.2.2; legacy :30000/:4000 -> :3000. */
-function resolveApiBaseUrl(raw: string): string {
-  let trimmed = raw.replace(/\/+$/, "");
+function isLocalhostApiUrl(url: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(\b|:)/.test(url.replace(/\/+$/, ""));
+}
+
+function isPlausibleIpv4(host: string): boolean {
+  const parts = host.split(".");
+  if (parts.length !== 4) return false;
+  return parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) >= 0 && Number(p) <= 255);
+}
+
+function isPrivateLanIpv4(host: string): boolean {
+  if (!isPlausibleIpv4(host)) return false;
+  const [a, b] = host.split(".").map(Number);
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
+
+function hostFromApiUrl(url: string): string | null {
   try {
-    const parsed = new URL(trimmed);
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function apiDevPort(): string {
+  const raw = asNonEmptyString(process.env.EXPO_PUBLIC_API_PORT) ?? "3000";
+  return raw === "30000" || raw === "4000" ? "3000" : raw;
+}
+
+/** Metro / Expo Go LAN IP — physical phones cannot reach localhost or 10.0.2.2. */
+export function inferLanHostFromExpoBundler(): string | null {
+  const hostUri =
+    Constants.expoConfig?.hostUri ??
+    (Constants.expoGoConfig as { hostUri?: string } | undefined)?.hostUri;
+  if (typeof hostUri === "string" && hostUri.length > 0) {
+    const host = hostUri.split(":")[0]?.trim();
+    if (host && host !== "localhost" && host !== "127.0.0.1") return host;
+  }
+  const debuggerHost = (Constants.manifest as { debuggerHost?: string } | null)?.debuggerHost;
+  if (typeof debuggerHost === "string" && debuggerHost.length > 0) {
+    const host = debuggerHost.split(":")[0]?.trim();
+    if (host && host !== "localhost" && host !== "127.0.0.1") return host;
+  }
+  return null;
+}
+
+const loggedLanHeals = new Set<string>();
+
+/** Rewrite stale private LAN IPs to Metro's current host (Wi‑Fi DHCP churn). */
+function healStaleLanApiUrl(url: string): string {
+  if (!__DEV__) return url;
+  const lan = inferLanHostFromExpoBundler();
+  if (!lan || !isPrivateLanIpv4(lan)) return url;
+  const host = hostFromApiUrl(url);
+  if (!host || host === lan || !isPrivateLanIpv4(host)) return url;
+  let port = apiDevPort();
+  try {
+    const parsed = new URL(url);
+    if (parsed.port) port = parsed.port;
+  } catch {
+    /* keep apiDevPort() */
+  }
+  const healed = `http://${lan}:${port}`;
+  const healKey = `${url}→${healed}`;
+  if (!loggedLanHeals.has(healKey)) {
+    loggedLanHeals.add(healKey);
+    if (__DEV__) {
+      console.info(`[merchant-config] healed stale API URL ${url} → ${healed}`);
+    }
+  }
+  return healed;
+}
+
+function normalizeLegacyBackendPort(url: string): string {
+  try {
+    const parsed = new URL(url);
     if (parsed.port === "30000" || parsed.port === "4000") {
       parsed.port = "3000";
-      trimmed = parsed.toString().replace(/\/$/, "");
+      return parsed.toString().replace(/\/$/, "");
     }
   } catch {
     /* ignore */
   }
-  if (
-    Platform.OS === "android" &&
-    (/^https?:\/\/localhost(\b|:)/.test(trimmed) || /^https?:\/\/127\.0\.0\.1(\b|:)/.test(trimmed))
-  ) {
+  return url;
+}
+
+/** Android emulator: localhost → 10.0.2.2; physical device: Metro LAN host. */
+function resolveApiBaseUrl(raw: string): string {
+  const trimmed = normalizeLegacyBackendPort(raw.replace(/\/+$/, ""));
+  if (!isLocalhostApiUrl(trimmed)) return healStaleLanApiUrl(trimmed);
+
+  const portMatch = trimmed.match(/:(\d+)(?:\/|$)/);
+  const port = portMatch?.[1] ?? apiDevPort();
+
+  if (Platform.OS === "android") {
+    if (Constants.isDevice) {
+      const lan = inferLanHostFromExpoBundler();
+      if (lan) return `http://${lan}:${port}`;
+    }
     return trimmed.replace(/localhost|127\.0\.0\.1/, "10.0.2.2");
   }
+
+  if (Constants.isDevice) {
+    const lan = inferLanHostFromExpoBundler();
+    if (lan) return `http://${lan}:${port}`;
+  }
+
   return trimmed;
 }
 
-/** Normalize any URL for the current device (e.g. localhost -> 10.0.2.2 on Android). Use for image URIs. */
+/** Normalize any URL for the current device (images, partner links). */
 export function resolveUrlForDevice(url: string): string {
   if (typeof url !== "string" || !url.trim()) return url;
   const u = url.trim();
-  if (
-    Platform.OS === "android" &&
-    (/https?:\/\/localhost(\b|:)/.test(u) || /https?:\/\/127\.0\.0\.1(\b|:)/.test(u))
-  ) {
+  if (!/https?:\/\/(localhost|127\.0\.0\.1|10\.0\.2\.2)(\b|:)/.test(u)) {
+    return healStaleLanApiUrl(u);
+  }
+  const portMatch = u.match(/:(\d+)(?:\/|$)/);
+  const port = portMatch?.[1] ?? apiDevPort();
+  if (Constants.isDevice) {
+    const lan = inferLanHostFromExpoBundler();
+    if (lan) {
+      return u.replace(/https?:\/\/(localhost|127\.0\.0\.1|10\.0\.2\.2)(:\d+)?/g, `http://${lan}:${port}`);
+    }
+  }
+  if (Platform.OS === "android") {
     return u.replace(/localhost|127\.0\.0\.1/g, "10.0.2.2");
   }
   return u;
@@ -86,7 +189,7 @@ export function getConfig(): {
   // the bundle, fall back to the public domain. localhost is unreachable from
   // a real phone, so a missing prod env was a guaranteed crash before.
   const PROD_FALLBACK = "https://api.gatimitra.com";
-  const DEV_FALLBACK = "http://localhost:3000";
+  const DEV_FALLBACK = `http://localhost:${apiDevPort()}`;
   const fallback = __DEV__ ? DEV_FALLBACK : PROD_FALLBACK;
 
   const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL;
@@ -99,6 +202,7 @@ export function getConfig(): {
     asNonEmptyString(fromExtra) ??
     fallback
   ).trim();
+  const apiBaseUrl = resolveApiBaseUrl(raw);
   const storeIdEnv =
     process.env.EXPO_PUBLIC_STORE_ID ??
     (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.STORE_ID ??
@@ -117,9 +221,10 @@ export function getConfig(): {
     asNonEmptyString(
       (Constants.expoConfig?.extra as Record<string, unknown> | undefined)?.PARTNER_SITE_URL as string,
     );
-  const partnerSiteBaseUrl =
+  const partnerSiteBaseUrl = resolveUrlForDevice(
     asNonEmptyString(partnerSiteFromEnv) ??
-    (__DEV__ ? DEV_PARTNER_SITE_FALLBACK : DEFAULT_PARTNER_SITE_BASE);
+      (__DEV__ ? DEV_PARTNER_SITE_FALLBACK : DEFAULT_PARTNER_SITE_BASE)
+  );
   const mapboxToken =
     asNonEmptyString(process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN) ??
     asNonEmptyString(process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN) ??
@@ -154,7 +259,7 @@ export function getConfig(): {
     phoneOtpBackendRaw?.toLowerCase() === "on";
 
   return {
-    apiBaseUrl: resolveApiBaseUrl(raw),
+    apiBaseUrl,
     storeId: parseStoreId(storeIdEnv),
     googleWebClientId,
     storeWebBaseUrl: storeWebBaseUrl.replace(/\/+$/, ""),
@@ -163,7 +268,7 @@ export function getConfig(): {
     supabaseUrl,
     supabaseAnonKey,
     phoneOtpUseBackendOnly,
-    wsBaseUrl: resolveWsBaseUrl(resolveApiBaseUrl(raw)),
+    wsBaseUrl: resolveWsBaseUrl(apiBaseUrl),
     wsEnabled: isMerchantWsEnabled(),
   };
 }

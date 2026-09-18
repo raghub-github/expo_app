@@ -1,4 +1,4 @@
-import { type QueryClient, useQuery } from "@tanstack/react-query";
+import { type QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
 import { weatherService, type CustomerWeatherContext } from "@/services/weather.service";
 import {
   getBootstrapWeather,
@@ -45,9 +45,9 @@ export function locationWeatherQueryOptions(params: LocationWeatherParams) {
   const enabled =
     lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng);
 
-  return {
+  return queryOptions({
     queryKey: locationWeatherQueryKey(params),
-    queryFn: async () => {
+    queryFn: async ({ client, queryKey }) => {
       const data = await weatherService.getForLocationSafe({
         lat: lat!,
         lng: lng!,
@@ -57,8 +57,20 @@ export function locationWeatherQueryOptions(params: LocationWeatherParams) {
       if (data.temperatureC != null && Number.isFinite(data.temperatureC)) {
         setBootstrapWeather(lat!, lng!, data);
         void persistWeatherSnapshot(lat!, lng!, data);
+        return data;
       }
-      return data;
+      // Never cache null-temp CLEAR over a good snapshot — that hides the Home weather pill.
+      const existing = client.getQueryData<CustomerWeatherContext>(queryKey);
+      if (existing?.temperatureC != null && Number.isFinite(existing.temperatureC)) {
+        return existing;
+      }
+      const boot = getBootstrapWeather(lat!, lng!);
+      if (boot?.temperatureC != null && Number.isFinite(boot.temperatureC)) {
+        return boot;
+      }
+      // Fail the fetch (do not cache null-temp CLEAR). useQuery has throwOnError:false
+      // so this never hits an ErrorBoundary; callers of prefetchQuery must catch.
+      throw new Error("weather_missing_temperature");
     },
     enabled,
     staleTime: CLEAR_STALE_MS,
@@ -67,7 +79,7 @@ export function locationWeatherQueryOptions(params: LocationWeatherParams) {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     retry: 1,
-  } as const;
+  });
 }
 
 export function patchLocationWeatherCache(
@@ -103,10 +115,14 @@ export async function restoreAndPrefetchLocationWeather(
 
   const options = locationWeatherQueryOptions(params);
   if (!options.enabled) return;
-  await queryClient.prefetchQuery({
-    ...options,
-    staleTime: restored ? staleTimeForWeather(restored) : CLEAR_STALE_MS,
-  });
+  try {
+    await queryClient.prefetchQuery({
+      ...options,
+      staleTime: restored ? staleTimeForWeather(restored) : CLEAR_STALE_MS,
+    });
+  } catch {
+    // weather_missing_temperature / network — leave cache empty; Home pill stays hidden.
+  }
 }
 
 export function prefetchLocationWeather(
@@ -115,7 +131,7 @@ export function prefetchLocationWeather(
 ) {
   const options = locationWeatherQueryOptions(params);
   if (!options.enabled) return Promise.resolve();
-  return queryClient.prefetchQuery(options);
+  return queryClient.prefetchQuery(options).catch(() => undefined);
 }
 
 export function useLocationWeather(
@@ -142,7 +158,27 @@ export function useLocationWeather(
     initialDataUpdatedAt: bootstrap?.updatedAt
       ? new Date(bootstrap.updatedAt).getTime()
       : undefined,
-    placeholderData: (prev) => prev ?? bootstrap,
+    placeholderData: (prev) => {
+      const candidate = prev ?? bootstrap;
+      if (
+        candidate?.temperatureC != null &&
+        Number.isFinite(candidate.temperatureC)
+      ) {
+        return candidate;
+      }
+      return undefined;
+    },
     staleTime: (query) => staleTimeForWeather(query.state.data ?? bootstrap),
+    // If a prior failure cached null-temp CLEAR, refetch so the Home pill can recover.
+    refetchOnMount: (query) => {
+      const data = query.state.data;
+      if (data == null) return true;
+      if (data.temperatureC == null || !Number.isFinite(data.temperatureC)) return "always";
+      return false;
+    },
+    select: (data) => {
+      if (data?.temperatureC != null && Number.isFinite(data.temperatureC)) return data;
+      return bootstrap ?? data;
+    },
   });
 }

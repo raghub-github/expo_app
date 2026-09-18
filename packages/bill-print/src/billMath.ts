@@ -134,7 +134,7 @@ export function merchantItemCatalogAndNet(item: BillLineItem): {
       ? badge ?? (kind === "boost" ? formatBoostOfferBadge() : item.offerLabel ?? null)
       : kind === "boost"
         ? badge ?? formatBoostOfferBadge()
-        : null,
+        : badge,
     offerKind: kind,
   };
 }

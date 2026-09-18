@@ -6,7 +6,10 @@ import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-ses
 import { NextRequest, NextResponse } from "next/server";
 import { canRefundOrder } from "@/lib/permissions/actions";
 import { getSql } from "@/lib/db/client";
-import { listOrderRiderAssignmentsForOrder } from "@/lib/db/operations/order-rider-assignments";
+import {
+  listDistinctOrderRidersForRecon,
+  listOrderRiderAssignmentsForOrder,
+} from "@/lib/db/operations/order-rider-assignments";
 import { previewThreePlRiderCancellationPenalty } from "@/lib/orders/apply-rider-cancellation-penalty";
 
 export const runtime = "nodejs";
@@ -75,40 +78,104 @@ export async function POST(
         : Number(body?.riderId);
 
     const sql = getSql();
-    const coreRows = await sql.unsafe<{ rider_id: number | null }[]>(
-      `SELECT rider_id FROM orders_core WHERE id = $1 LIMIT 1`,
+    const coreRows = await sql.unsafe<
+      { rider_id: number | null; rider_name: string | null; rider_mobile: string | null }[]
+    >(
+      `SELECT oc.rider_id,
+              NULLIF(TRIM(r.name), '') AS rider_name,
+              NULLIF(TRIM(r.mobile), '') AS rider_mobile
+       FROM orders_core oc
+       LEFT JOIN riders r ON r.id = oc.rider_id
+       WHERE oc.id = $1
+       LIMIT 1`,
       [orderId]
     );
     const currentRiderId = Number(coreRows[0]?.rider_id);
 
-    const assignments = await listOrderRiderAssignmentsForOrder(orderId);
     const byRider = new Map<number, RiderOption>();
 
-    for (const a of assignments) {
-      if (a.riderId == null) continue;
-      const existing = byRider.get(a.riderId);
-      const pickedUpAt = a.pickedUpAt?.toISOString() ?? null;
-      const acceptedAt = a.acceptedAt?.toISOString() ?? null;
-      const isCurrent = Number.isFinite(currentRiderId) && a.riderId === currentRiderId;
+    const upsertRider = ( partial: Omit<RiderOption, "label"> ) => {
+      if (!Number.isFinite(partial.riderId) || partial.riderId <= 0) return;
+      const existing = byRider.get(partial.riderId);
       const next: RiderOption = {
-        riderId: a.riderId,
-        riderName: a.riderName,
-        riderMobile: a.riderMobile,
-        assignmentStatus: a.assignmentStatus,
-        acceptedAt,
-        pickedUpAt,
-        isCurrentOnOrder: isCurrent,
+        ...partial,
+        isCurrentOnOrder:
+          Number.isFinite(currentRiderId) && partial.riderId === currentRiderId,
         label: "",
       };
       next.label = riderOptionLabel(next);
-
       if (!existing) {
-        byRider.set(a.riderId, next);
-        continue;
+        byRider.set(partial.riderId, next);
+        return;
       }
-      if (pickedUpAt && !existing.pickedUpAt) {
-        byRider.set(a.riderId, next);
+      // Prefer richer milestone / identity data when merging sources.
+      const merged: RiderOption = {
+        riderId: partial.riderId,
+        riderName: existing.riderName || next.riderName,
+        riderMobile: existing.riderMobile || next.riderMobile,
+        assignmentStatus: existing.assignmentStatus || next.assignmentStatus,
+        acceptedAt: existing.acceptedAt || next.acceptedAt,
+        pickedUpAt: existing.pickedUpAt || next.pickedUpAt,
+        isCurrentOnOrder: existing.isCurrentOnOrder || next.isCurrentOnOrder,
+        label: "",
+      };
+      if (next.pickedUpAt && !existing.pickedUpAt) {
+        merged.pickedUpAt = next.pickedUpAt;
+        merged.acceptedAt = next.acceptedAt || merged.acceptedAt;
+        merged.assignmentStatus = next.assignmentStatus || merged.assignmentStatus;
       }
+      merged.label = riderOptionLabel(merged);
+      byRider.set(partial.riderId, merged);
+    };
+
+    try {
+      const assignments = await listOrderRiderAssignmentsForOrder(orderId);
+      for (const a of assignments) {
+        if (a.riderId == null) continue;
+        upsertRider({
+          riderId: a.riderId,
+          riderName: a.riderName,
+          riderMobile: a.riderMobile,
+          assignmentStatus: a.assignmentStatus,
+          acceptedAt: a.acceptedAt?.toISOString() ?? null,
+          pickedUpAt: a.pickedUpAt?.toISOString() ?? null,
+          isCurrentOnOrder: false,
+        });
+      }
+    } catch (assignmentErr) {
+      console.warn("[POST rider-penalty-preview] assignments:", assignmentErr);
+    }
+
+    try {
+      const reconRiders = await listDistinctOrderRidersForRecon(orderId);
+      for (const r of reconRiders) {
+        if (r.riderId == null || !Number.isFinite(r.riderId)) continue;
+        upsertRider({
+          riderId: r.riderId,
+          riderName: r.riderName,
+          riderMobile: r.riderMobile,
+          assignmentStatus: null,
+          acceptedAt: null,
+          pickedUpAt: null,
+          isCurrentOnOrder: false,
+        });
+      }
+    } catch (reconErr) {
+      console.warn("[POST rider-penalty-preview] recon riders:", reconErr);
+    }
+
+    // Always surface the current rider on the order, even if assignment rows are missing.
+    if (Number.isFinite(currentRiderId) && currentRiderId > 0) {
+      const coreRider = coreRows[0];
+      upsertRider({
+        riderId: currentRiderId,
+        riderName: coreRider?.rider_name ?? null,
+        riderMobile: coreRider?.rider_mobile ?? null,
+        assignmentStatus: null,
+        acceptedAt: null,
+        pickedUpAt: null,
+        isCurrentOnOrder: true,
+      });
     }
 
     const riders = [...byRider.values()].sort((a, b) => {
@@ -133,10 +200,27 @@ export async function POST(
       {};
     await Promise.all(
       riders.map(async (r) => {
-        previewsByRiderId[r.riderId] = await previewThreePlRiderCancellationPenalty({
-          orderCoreId: orderId,
-          riderId: r.riderId,
-        });
+        try {
+          previewsByRiderId[r.riderId] = await previewThreePlRiderCancellationPenalty({
+            orderCoreId: orderId,
+            riderId: r.riderId,
+          });
+        } catch (previewErr) {
+          console.warn(
+            `[POST rider-penalty-preview] preview rider=${r.riderId}:`,
+            previewErr
+          );
+          previewsByRiderId[r.riderId] = {
+            appliesPenalty: false,
+            penaltyAmount: 0,
+            scenarioCode: null,
+            scenarioLabel: null,
+            ledgerTitle: "",
+            ledgerDescription: "",
+            skipped: "preview_failed",
+            skippedLabel: "Could not calculate penalty for this rider.",
+          } as Awaited<ReturnType<typeof previewThreePlRiderCancellationPenalty>>;
+        }
       })
     );
 
@@ -151,6 +235,60 @@ export async function POST(
     });
   } catch (error) {
     console.error("[POST rider-penalty-preview]", error);
+    // Last resort: still try to return the current rider so the UI can render a picker.
+    try {
+      const { orderId: orderIdParam } = await context.params;
+      const orderId = parseOrderId(orderIdParam);
+      if (orderId) {
+        const sql = getSql();
+        const coreRows = await sql.unsafe<
+          { rider_id: number | null; rider_name: string | null; rider_mobile: string | null }[]
+        >(
+          `SELECT oc.rider_id,
+                  NULLIF(TRIM(r.name), '') AS rider_name,
+                  NULLIF(TRIM(r.mobile), '') AS rider_mobile
+           FROM orders_core oc
+           LEFT JOIN riders r ON r.id = oc.rider_id
+           WHERE oc.id = $1
+           LIMIT 1`,
+          [orderId]
+        );
+        const currentRiderId = Number(coreRows[0]?.rider_id);
+        if (Number.isFinite(currentRiderId) && currentRiderId > 0) {
+          const coreRider = coreRows[0];
+          const rider: RiderOption = {
+            riderId: currentRiderId,
+            riderName: coreRider?.rider_name ?? null,
+            riderMobile: coreRider?.rider_mobile ?? null,
+            assignmentStatus: null,
+            acceptedAt: null,
+            pickedUpAt: null,
+            isCurrentOnOrder: true,
+            label: "",
+          };
+          rider.label = riderOptionLabel(rider);
+          return NextResponse.json({
+            success: true,
+            riders: [rider],
+            selectedRiderId: currentRiderId,
+            preview: {
+              appliesPenalty: false,
+              penaltyAmount: 0,
+              scenarioCode: null,
+              scenarioLabel: null,
+              ledgerTitle: "",
+              ledgerDescription: "",
+              skipped: "preview_failed",
+              skippedLabel:
+                error instanceof Error ? error.message : "Could not load rider penalty preview.",
+            },
+            previewsByRiderId: {},
+          });
+        }
+      }
+    } catch {
+      /* fall through to 500 */
+    }
     return NextResponse.json(
       {
         success: false,

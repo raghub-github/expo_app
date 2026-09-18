@@ -170,7 +170,7 @@ const styles = StyleSheet.create({
   emptyIcon: {
     width: 56,
     height: 56,
-    borderRadius: 28,
+    borderRadius: 20,
     backgroundColor: "#F3F4F6",
     alignItems: "center",
     justifyContent: "center",

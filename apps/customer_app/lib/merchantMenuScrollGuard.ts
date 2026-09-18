@@ -10,7 +10,8 @@ let menuScrolling = false;
 let scrollGeneration = 0;
 let stuckScrollTimer: ReturnType<typeof setTimeout> | null = null;
 
-const STUCK_SCROLL_MS = 1600;
+/** Longer than a natural menu fling — short timers resumed work mid-momentum. */
+const STUCK_SCROLL_MS = 8000;
 
 function clearStuckTimer(): void {
   if (stuckScrollTimer) {

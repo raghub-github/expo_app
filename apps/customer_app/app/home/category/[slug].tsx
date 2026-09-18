@@ -31,6 +31,11 @@ import {
   markFoodHomeListScrollEnded,
   resetFoodHomeListScrollGuard,
 } from "@/lib/foodHomeScrollGuard";
+import {
+  NATURAL_DECELERATION_RATE,
+  NATURAL_HORIZONTAL_SCROLL_PROPS,
+  SCROLL_FLING_VELOCITY_EPS,
+} from "@/lib/naturalScrollProps";
 import { LovedMerchantsGridSkeleton, RestaurantListSkeleton } from "@/components/ShimmerSkeleton";
 import { EmptyRestaurantsNearby } from "@/components/EmptyRestaurantsNearby";
 import { FlashList, type ListRenderItem } from "@shopify/flash-list";
@@ -865,19 +870,23 @@ export default function CategoryBrowseScreen() {
         keyboardDismissMode="on-drag"
         delaysContentTouches={false}
         nestedScrollEnabled
+        decelerationRate={NATURAL_DECELERATION_RATE}
+        overScrollMode="never"
         drawDistance={480}
         onScrollBeginDrag={markFoodHomeListScrollActive}
-        onScrollEndDrag={markFoodHomeListScrollEnded}
+        onMomentumScrollBegin={markFoodHomeListScrollActive}
+        onScrollEndDrag={(e) => {
+          const vy = e.nativeEvent.velocity?.y ?? 0;
+          if (Math.abs(vy) < SCROLL_FLING_VELOCITY_EPS) {
+            markFoodHomeListScrollEnded();
+          }
+        }}
         onMomentumScrollEnd={markFoodHomeListScrollEnded}
         ListHeaderComponent={
           <>
         {/* Category chips – horizontal */}
         <ScrollView
-          horizontal
-          nestedScrollEnabled
-          showsHorizontalScrollIndicator={false}
-          delaysContentTouches={false}
-          keyboardShouldPersistTaps="handled"
+          {...NATURAL_HORIZONTAL_SCROLL_PROPS}
           contentContainerStyle={[
             styles.categoryChipsWrap,
             { gap: railMetrics.gap, paddingRight: PAD + railMetrics.gap },

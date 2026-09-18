@@ -95,6 +95,9 @@ export function resolveMerchantOfferBadge(opts: {
 }): { kind: "bogo" | "boost" | "other" | null; badge: string | null } {
   const { offerType, offerLabel } = opts;
   const t = normalizeMerchantOfferType(offerType);
+  if (t === "FLASH_SALE") {
+    return { kind: "other", badge: "Flash Sale" };
+  }
   if (t === "BOOST" || t === "PERCENTAGE" || t === "FLAT") {
     return { kind: "boost", badge: formatBoostOfferBadge(offerLabel) };
   }

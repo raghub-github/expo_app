@@ -844,12 +844,25 @@ async function enrichLedgerWithOrderContext(
   };
 
   return entries.map((entry) => {
+    const existingMeta = (entry.metadata ?? null) as Record<string, unknown> | null;
+    const metaFmt = String(existingMeta?.formatted_order_id ?? "")
+      .trim()
+      .replace(/^#/, "");
     const row = resolveRow(entry);
-    if (!row) return entry;
-    const formatted = row.formatted_order_id?.trim() || null;
+    if (!row) {
+      if (metaFmt && !/^\d+$/.test(metaFmt)) {
+        return { ...entry, formatted_order_id: metaFmt };
+      }
+      return entry;
+    }
+    const joinedFmt = row.formatted_order_id?.trim().replace(/^#/, "") || null;
+    const formatted =
+      (joinedFmt && !/^\d+$/.test(joinedFmt) ? joinedFmt : null) ||
+      (metaFmt && !/^\d+$/.test(metaFmt) ? metaFmt : null) ||
+      joinedFmt ||
+      null;
     const { itemSubtotal, packaging } = resolveBillParts(row);
     const merchantCtm = resolveCtm(row);
-    const existingMeta = (entry.metadata ?? null) as Record<string, unknown> | null;
     const metadata: Record<string, unknown> = {
       ...(existingMeta ?? {}),
       ...(formatted ? { formatted_order_id: formatted } : {}),

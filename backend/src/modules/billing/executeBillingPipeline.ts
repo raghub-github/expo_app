@@ -12,6 +12,7 @@ import {
 } from "./platformOffersApply.js";
 import { applyExclusiveCheckoutOffer } from "./checkoutExclusiveOffer.js";
 import { cartPromoQualifyingSubtotal, eligibleSubtotal } from "./discountEligibility.js";
+import { markFlashSaleOrderLines, stampFlashSaleSubsidyLines } from "./flashSaleApply.js";
 import {
   evaluateCheckoutCouponEligibility,
   estimateCheckoutCouponDiscountInr,
@@ -508,6 +509,8 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
   syncStateFeesFromRem(state, rem);
 
   const isCustomerCheckout = String(ctx.checkoutAudience ?? "CUSTOMER").toUpperCase() === "CUSTOMER";
+  markFlashSaleOrderLines(ctx);
+  stampFlashSaleSubsidyLines(ctx, state);
   if (isCustomerCheckout) {
     applyExclusiveCheckoutOffer(ctx, dataset, state, itemPlusAddon, rem, applyCouponDiscount);
   } else {

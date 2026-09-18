@@ -1,5 +1,7 @@
 import { notifySessionRevoked } from "@/services/sessionEvents";
 import { refreshMerchantSessionIfNeeded } from "@/services/merchantSessionRefresh";
+import { authTokenFingerprint } from "@/lib/merchantAuthLog";
+import { logMerchantAuth } from "@/lib/merchantAuthLog";
 
 export type AuthFetchOptions = RequestInit & {
   /** Soft client timeout — aborts the request so UI can't spin forever. */
@@ -124,7 +126,14 @@ export async function authFetch(
             msg.includes("Signed out from all devices") ||
             msg.includes("Signed out from this device");
           if (isForcedDeviceLogout) {
-            notifySessionRevoked({ reason: "revoked" });
+            logMerchantAuth("AUTH_401", {
+              code: "session_revoked",
+              tokenFp: authTokenFingerprint(activeToken),
+            });
+            notifySessionRevoked({
+              reason: "revoked",
+              tokenFingerprint: authTokenFingerprint(activeToken),
+            });
           }
         }
       } catch {

@@ -5,6 +5,7 @@ import {
   normalizePlatformOfferCouponCode,
   validatePlatformOfferCouponCode,
 } from "@/lib/billing/platformOfferCouponCode";
+import { applyFlashSaleSaveDefaults } from "@/lib/billing/flashSale";
 import {
   emptyRideParcelPromoConfig,
   parseRideParcelPromoConfig,
@@ -104,6 +105,10 @@ function normalizePlatformOfferInput(input: InsertPlatformOfferInput): InsertPla
     buy_qty: input.buy_qty == null ? null : Number(input.buy_qty),
     get_qty: input.get_qty == null ? null : Number(input.get_qty),
   };
+}
+
+function withFlashSaleDefaults(input: InsertPlatformOfferInput): InsertPlatformOfferInput {
+  return applyFlashSaleSaveDefaults(input as Record<string, unknown>) as InsertPlatformOfferInput;
 }
 
 async function assertPlatformCouponCodeAvailable(
@@ -326,6 +331,7 @@ export type PlatformOfferAdminRow = {
   ends_at: string | null;
   budget_total: string | null;
   budget_used: string | null;
+  flash_redemptions_active?: number | null;
   max_uses_total: number | null;
   max_uses_per_user: number | null;
   max_uses_per_day: number | null;
@@ -345,8 +351,29 @@ export type PlatformOfferAdminRow = {
   metadata: unknown;
 };
 
+async function flashSaleRedemptionsTableExists(): Promise<boolean> {
+  const sql = getSql();
+  const [row] = await sql<Array<{ exists: boolean }>>`
+    SELECT to_regclass('public.flash_sale_redemptions') IS NOT NULL AS exists
+  `;
+  return row?.exists === true;
+}
+
+/** Per-offer active Flash Sale redemption count; 0 when ledger table is not migrated yet. */
+function flashRedemptionsActiveSelect(hasFlashTable: boolean) {
+  const sql = getSql();
+  if (!hasFlashTable) return sql`0::int AS flash_redemptions_active`;
+  return sql`(
+    SELECT COUNT(*)::int
+    FROM flash_sale_redemptions r
+    WHERE r.platform_offer_id = billing_platform_offers.id
+      AND r.status IN ('reserved', 'consumed')
+  ) AS flash_redemptions_active`;
+}
+
 export async function listPlatformOffers(): Promise<PlatformOfferAdminRow[]> {
   const sql = getSql();
+  const hasFlashTable = await flashSaleRedemptionsTableExists();
   return sql<PlatformOfferAdminRow[]>`
     SELECT id::int AS id, name, coupon_code, service_type,
       offer_kind, offer_audience, funding_mode,
@@ -360,6 +387,7 @@ export async function listPlatformOffers(): Promise<PlatformOfferAdminRow[]> {
       buy_qty, get_qty, is_stackable, exclusion_group,
       starts_at::text AS starts_at, ends_at::text AS ends_at,
       budget_total::text AS budget_total, budget_used::text AS budget_used,
+      ${flashRedemptionsActiveSelect(hasFlashTable)},
       max_uses_total, max_uses_per_user, max_uses_per_day, max_uses_per_month,
       consume_mode, restore_on_cancel, restore_on_refund,
       discount_type,
@@ -374,6 +402,7 @@ export async function listPlatformOffers(): Promise<PlatformOfferAdminRow[]> {
 
 export async function getPlatformOfferById(id: number): Promise<PlatformOfferAdminRow | null> {
   const sql = getSql();
+  const hasFlashTable = await flashSaleRedemptionsTableExists();
   const [row] = await sql<PlatformOfferAdminRow[]>`
     SELECT id::int AS id, name, coupon_code, service_type,
       offer_kind, offer_audience, funding_mode,
@@ -387,6 +416,7 @@ export async function getPlatformOfferById(id: number): Promise<PlatformOfferAdm
       buy_qty, get_qty, is_stackable, exclusion_group,
       starts_at::text AS starts_at, ends_at::text AS ends_at,
       budget_total::text AS budget_total, budget_used::text AS budget_used,
+      ${flashRedemptionsActiveSelect(hasFlashTable)},
       max_uses_total, max_uses_per_user, max_uses_per_day, max_uses_per_month,
       consume_mode, restore_on_cancel, restore_on_refund,
       discount_type,
@@ -448,7 +478,7 @@ export type InsertPlatformOfferInput = {
 
 export async function insertPlatformOffer(input: InsertPlatformOfferInput): Promise<PlatformOfferAdminRow> {
   const sql = getSql();
-  const normalized = normalizePlatformOfferInput(input);
+  const normalized = withFlashSaleDefaults(normalizePlatformOfferInput(input));
   const st = (normalized.service_type ?? "FOOD").trim().toUpperCase();
   const promoConfig = sanitizePromoConfig(normalized.promo_config, st);
   await assertPlatformCouponCodeAvailable(normalized.coupon_code!);
@@ -539,7 +569,7 @@ export async function updatePlatformOffer(
   input: InsertPlatformOfferInput
 ): Promise<PlatformOfferAdminRow | null> {
   const sql = getSql();
-  const normalized = normalizePlatformOfferInput(input);
+  const normalized = withFlashSaleDefaults(normalizePlatformOfferInput(input));
   const st = (normalized.service_type ?? "FOOD").trim().toUpperCase();
   const promoConfig = sanitizePromoConfig(normalized.promo_config, st);
   await assertPlatformCouponCodeAvailable(normalized.coupon_code!, id);

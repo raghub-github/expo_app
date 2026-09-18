@@ -2,12 +2,41 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildServiceEligibilityRows,
+  dedupeCommercialVehicleReasons,
   hasBlockedService,
+  overlayOnboardingSummaryWithEligibility,
   resolveSelectableServices,
   resolveEligibilitySloganMode,
   GENERIC_SERVICE_BLOCK,
   RIDER_SERVICE_DISPLAY_ORDER,
 } from "./rider-service-eligibility-rows";
+
+test("overlayOnboardingSummaryWithEligibility uses the live engine result", () => {
+  const summary = {
+    onboarding: {
+      eligibleServices: ["food"],
+      blockedServices: [
+        { service: "parcel", missingDocuments: ["DRIVING_LICENSE"], reasons: ["stale"] },
+      ],
+      allEligible: false,
+    },
+  };
+  const overlaid = overlayOnboardingSummaryWithEligibility(summary, {
+    food: { eligible: true, blocking: [] },
+    parcel: { eligible: true, blocking: [] },
+    person_ride: {
+      eligible: false,
+      blocking: [{ code: "COMMERCIAL_VEHICLE_REQUIRED", reason: "A commercial vehicle is required." }],
+    },
+  });
+  assert.deepEqual(overlaid.onboarding.eligibleServices, ["food", "parcel"]);
+  assert.equal(overlaid.onboarding.blockedServices.length, 1);
+  assert.equal(overlaid.onboarding.blockedServices[0]!.service, "person_ride");
+  assert.equal(
+    overlaid.onboarding.blockedServices[0]!.reasons[0],
+    "A commercial vehicle is required.",
+  );
+});
 
 test("selectable services render as selectable with no reasons", () => {
   const rows = buildServiceEligibilityRows({
@@ -46,24 +75,30 @@ test("a service missing from the pool is blocked and shows the backend reasons",
   assert.equal(hasBlockedService(rows), true);
 });
 
-test("blocked service with no backend reason falls back to a single generic reason", () => {
+test("backend-eligible services are selectable even if missing from the client pool", () => {
   const rows = buildServiceEligibilityRows({
     selectableServices: ["food"],
     backend: { parcel: { eligible: true, blocking: [] } },
   });
   const parcel = rows.find((r) => r.service === "parcel")!;
+  assert.equal(parcel.state, "selectable");
+});
+
+test("blocked service with no backend reason falls back to a single generic reason", () => {
+  const rows = buildServiceEligibilityRows({
+    selectableServices: ["food"],
+    backend: { parcel: { eligible: false, blocking: [] } },
+  });
+  const parcel = rows.find((r) => r.service === "parcel")!;
   assert.equal(parcel.state, "blocked");
   assert.deepEqual(parcel.reasons, [GENERIC_SERVICE_BLOCK]);
 
-  // Also when there is no backend data at all.
   const person = rows.find((r) => r.service === "person_ride")!;
   assert.equal(person.state, "blocked");
   assert.deepEqual(person.reasons, [GENERIC_SERVICE_BLOCK]);
 });
 
-test("selectability wins over a shadow backend block (no UI regression before enforcement)", () => {
-  // Backend says food is ineligible, but the client pool still lets the rider select it
-  // (enforcement is shadow) — the row must stay selectable, not scare the rider.
+test("engine ineligible wins over a client-pool selectable row", () => {
   const rows = buildServiceEligibilityRows({
     selectableServices: ["food"],
     backend: {
@@ -74,24 +109,13 @@ test("selectability wins over a shadow backend block (no UI regression before en
     },
   });
   const food = rows.find((r) => r.service === "food")!;
-  assert.equal(food.state, "selectable");
-  assert.equal(food.reasons.length, 0);
+  assert.equal(food.state, "blocked");
+  assert.equal(food.reasons[0]!.code, "DL_REQUIRED_NOT_VERIFIED");
 });
 
-test("resolveSelectableServices: enforcement OFF never restricts the client pool", () => {
-  const pool = ["food", "parcel", "person_ride"] as const;
-  const backend = {
-    person_ride: { eligible: false, blocking: [{ code: "DL_REQUIRED_NOT_VERIFIED", reason: "x" }] },
-  };
-  assert.deepEqual(
-    resolveSelectableServices({ clientPool: [...pool], backend, enforced: false }),
-    [...pool]
-  );
-});
-
-test("resolveSelectableServices: enforced removes only explicitly-ineligible services", () => {
+test("resolveSelectableServices: complete backend is the selectable source of truth", () => {
   const selectable = resolveSelectableServices({
-    clientPool: ["food", "parcel", "person_ride"],
+    clientPool: ["food"],
     backend: {
       food: { eligible: true, blocking: [] },
       parcel: { eligible: true, blocking: [] },
@@ -100,37 +124,46 @@ test("resolveSelectableServices: enforced removes only explicitly-ineligible ser
         blocking: [{ code: "COMMERCIAL_VEHICLE_REQUIRED", reason: "x" }],
       },
     },
-    enforced: true,
+    enforced: false,
   });
   assert.deepEqual(selectable, ["food", "parcel"]);
 });
 
-test("resolveSelectableServices: enforced but missing backend data is fail-open (no lockout)", () => {
-  // Backend unreachable → null → keep the whole pool.
+test("resolveSelectableServices: missing backend data is fail-open (no lockout)", () => {
   assert.deepEqual(
     resolveSelectableServices({ clientPool: ["food"], backend: null, enforced: true }),
     ["food"]
   );
-  // Enforced, backend present but no entry for a pooled service → keep it (fail-open).
+});
+
+test("resolveSelectableServices: partial backend still respects known ineligible services", () => {
   assert.deepEqual(
     resolveSelectableServices({
-      clientPool: ["food", "parcel"],
-      backend: { food: { eligible: true, blocking: [] } },
+      clientPool: ["food", "parcel", "person_ride"],
+      backend: {
+        person_ride: {
+          eligible: false,
+          blocking: [{ code: "COMMERCIAL_VEHICLE_REQUIRED", reason: "x" }],
+        },
+      },
       enforced: true,
     }),
-    ["food", "parcel"]
+    ["food", "parcel"],
   );
 });
 
-test("resolveSelectableServices: a service outside the pool is never added back", () => {
-  // Backend eligible for person_ride, but it's not in the client pool → stays out.
+test("resolveSelectableServices: engine-eligible services are added even if outside the client pool", () => {
   assert.deepEqual(
     resolveSelectableServices({
       clientPool: ["food"],
-      backend: { person_ride: { eligible: true, blocking: [] } },
+      backend: {
+        food: { eligible: true, blocking: [] },
+        parcel: { eligible: false, blocking: [] },
+        person_ride: { eligible: true, blocking: [] },
+      },
       enforced: true,
     }),
-    ["food"]
+    ["food", "person_ride"],
   );
 });
 
@@ -146,7 +179,7 @@ test("a custom order is honoured", () => {
   );
 });
 
-test("eligibility slogan: docs missing → docs mode; area/disabled → area mode", () => {
+test("eligibility slogan: docs → docs; vehicle/commercial → vehicle; geo OFF → area", () => {
   assert.equal(
     resolveEligibilitySloganMode([
       { code: "DL_REQUIRED_NOT_VERIFIED", reason: "DL required" },
@@ -155,9 +188,41 @@ test("eligibility slogan: docs missing → docs mode; area/disabled → area mod
   );
   assert.equal(
     resolveEligibilitySloganMode([
+      { code: "COMMERCIAL_VEHICLE_REQUIRED", reason: "Commercial required" },
+    ]),
+    "vehicle"
+  );
+  assert.equal(
+    resolveEligibilitySloganMode([
       { code: "SERVICE_DISABLED", reason: "Not at this location" },
     ]),
     "area"
   );
+  assert.equal(
+    resolveEligibilitySloganMode([
+      { code: "COMMERCIAL_VEHICLE_REQUIRED", reason: "Commercial" },
+      { code: "SERVICE_DISABLED", reason: "Geo off" },
+    ]),
+    "vehicle"
+  );
   assert.equal(resolveEligibilitySloganMode([GENERIC_SERVICE_BLOCK]), "area");
+});
+
+test("dedupeCommercialVehicleReasons keeps a single commercial line", () => {
+  const out = dedupeCommercialVehicleReasons([
+    {
+      code: "COMMERCIAL_VEHICLE_REQUIRED",
+      reason: "A commercial vehicle is required for Person Ride at this location.",
+    },
+    {
+      code: "OWNERSHIP_NOT_ALLOWED",
+      reason: "Non-commercial vehicles are not allowed for Person Ride at this location.",
+    },
+  ]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0]!.code, "COMMERCIAL_VEHICLE_REQUIRED");
+  assert.equal(
+    out[0]!.reason,
+    "Person Ride isn’t available — commercial vehicles are required.",
+  );
 });

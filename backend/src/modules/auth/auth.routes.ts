@@ -2238,7 +2238,10 @@ export async function authRoutes(app: FastifyInstance) {
           exp: expiresAt,
         });
 
-        // Record device session for this merchant user (Supabase exchange).
+        // Same upsert + cache reactivation as phone OTP login. A raw INSERT left
+        // inactive rows inactive and never called markDeviceSessionActive — so after
+        // logout the in-memory "signed out" cache (45s) made every /me call 401 and
+        // the app logged the merchant out a few seconds after a successful OTP.
         try {
           const ip =
             (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
@@ -2251,34 +2254,21 @@ export async function authRoutes(app: FastifyInstance) {
           const firstStore = (storeRows as any[])[0];
           const parentStoreId = firstStore ? Number(firstStore.parent_id ?? parentId) : parentId;
           const childStoreId = firstStore ? Number(firstStore.id) : null;
-          await sql`
-            INSERT INTO user_device_sessions (
-              user_id,
-              parent_store_id,
-              child_store_id,
-              device_type,
-              device_name,
-              os,
-              ip_address,
-              location,
-              login_method,
-              device_id
-            )
-            VALUES (
-              ${parentMerchantId},
-              ${parentStoreId},
-              ${childStoreId},
-              'mobile',
-              ${deviceId},
-              'android',
-              ${ip},
-              ${location},
-              'supabase',
-              ${deviceId}
-            )
-          `;
-        } catch {
-          // ignore
+          await persistMerchantDeviceSessionForMerchant(sql, {
+            userId: parentMerchantId,
+            parentStoreId,
+            childStoreId,
+            deviceId,
+            loginMethod: "phone",
+            ip,
+            location,
+          });
+        } catch (sessErr: any) {
+          req.log?.error?.({ err: sessErr }, "Merchant Supabase exchange: device session persist failed");
+          return reply.code(503).send({
+            error: "device_session_unavailable",
+            message: "Could not start your session on this device. Please try again.",
+          });
         }
 
         const parent = {

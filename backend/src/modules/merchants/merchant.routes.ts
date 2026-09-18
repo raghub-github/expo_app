@@ -144,6 +144,7 @@ function mapCustomerMenuItem(
     order_count?: number | null;
     customer_strike_price?: string;
     canonical_pricing?: Record<string, unknown>;
+    flash_sale?: Record<string, unknown>;
   }
 ) {
   const menuItemId = toFiniteInt(m.id);
@@ -186,6 +187,7 @@ function mapCustomerMenuItem(
     hasAddons: m.has_addons === true,
     hasVariants: m.has_variants === true,
     inStock: m.in_stock !== false,
+    flashSale: m.flash_sale ?? (m.canonical_pricing as { flash_sale?: unknown } | undefined)?.flash_sale ?? undefined,
     sizeValue:
       m.item_size_value != null && String(m.item_size_value).trim() !== ""
         ? String(m.item_size_value).trim()
@@ -874,7 +876,11 @@ export async function merchantRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { id: storeId, itemId } = request.params;
-      const config = await getMenuItemFullConfig(storeId, itemId);
+      const customerPk =
+        request.auth?.role === "customer"
+          ? await resolveCustomerPkForRequest(request.auth, request)
+          : null;
+      const config = await getMenuItemFullConfig(storeId, itemId, customerPk);
       if (!config) return reply.status(404).send({ error: "Item not found" });
       return reply.send(config);
     }
@@ -1134,6 +1140,8 @@ export async function merchantRoutes(app: FastifyInstance) {
                   sizeValue: z.string().nullable().optional(),
                   sizeUnit: z.string().nullable().optional(),
                   sizePreset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).nullable().optional(),
+                  canonicalPricing: z.record(z.string(), z.unknown()).optional(),
+                  flashSale: z.record(z.string(), z.unknown()).optional(),
                 })
               )
               .optional(),
@@ -1145,7 +1153,11 @@ export async function merchantRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params;
       const sinceVersion = Number((request.query as { sinceVersion?: number }).sinceVersion ?? 0);
-      const delta = await getMenuDelta(id, sinceVersion);
+      const customerPk =
+        request.auth?.role === "customer"
+          ? await resolveCustomerPkForRequest(request.auth, request)
+          : null;
+      const delta = await getMenuDelta(id, sinceVersion, customerPk);
       if (!delta) return reply.status(404).send({ error: "Store not found" });
 
       const changedItems =
@@ -1217,6 +1229,8 @@ export async function merchantRoutes(app: FastifyInstance) {
                 sizeValue: z.string().nullable().optional(),
                 sizeUnit: z.string().nullable().optional(),
                 sizePreset: z.enum(["REGULAR", "STANDARD", "PREMIUM"]).nullable().optional(),
+                canonicalPricing: z.record(z.string(), z.unknown()).optional(),
+                flashSale: z.record(z.string(), z.unknown()).optional(),
               })
             ),
             cuisines: z.array(z.string()).optional(),
@@ -1252,7 +1266,11 @@ export async function merchantRoutes(app: FastifyInstance) {
         }
       }
 
-      const { store, items } = await getMenuByStoreId(id, q);
+      const customerPk =
+        request.auth?.role === "customer"
+          ? await resolveCustomerPkForRequest(request.auth, request)
+          : null;
+      const { store, items } = await getMenuByStoreId(id, q, customerPk);
       if (!store) {
         return reply.status(404).send({ error: "Store not found" });
       }
@@ -1268,13 +1286,10 @@ export async function merchantRoutes(app: FastifyInstance) {
       const rating = ratingSummaries.get(storeInternalId);
       let forYouRating: number | null = null;
       let userHasRatedStore = false;
-      if (request.auth?.role === "customer") {
-        const customerPk = await resolveCustomerPkForRequest(request.auth, request);
-        if (customerPk != null && Number.isFinite(storeInternalId) && storeInternalId > 0) {
-          const personalized = await getStorePersonalizedRating(storeInternalId, customerPk);
-          forYouRating = personalized.forYouRating;
-          userHasRatedStore = personalized.userHasRatedStore;
-        }
+      if (customerPk != null && Number.isFinite(storeInternalId) && storeInternalId > 0) {
+        const personalized = await getStorePersonalizedRating(storeInternalId, customerPk);
+        forYouRating = personalized.forYouRating;
+        userHasRatedStore = personalized.userHasRatedStore;
       }
       const bannerImages: string[] = [];
       const gallery = store.gallery_images ?? [];
@@ -1540,7 +1555,7 @@ export async function merchantRoutes(app: FastifyInstance) {
     lat: z.coerce.number().min(-90).max(90),
     lng: z.coerce.number().min(-180).max(180),
     max_price: z.coerce.number().min(1).max(5000).optional(),
-    limit: z.coerce.number().min(1).max(24).optional(),
+    limit: z.coerce.number().min(1).max(60).optional(),
     veg: z.coerce.boolean().optional(),
   });
 
@@ -1565,6 +1580,14 @@ export async function merchantRoutes(app: FastifyInstance) {
                 isVeg: z.boolean(),
                 isPopular: z.boolean(),
                 itemTags: z.array(z.string()),
+                flashSale: z
+                  .object({
+                    offerId: z.number(),
+                    originalCustomerUnit: z.number(),
+                    flashPrice: z.number(),
+                  })
+                  .nullable()
+                  .optional(),
               })
             ),
           }),
@@ -1573,19 +1596,24 @@ export async function merchantRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const q = request.query as z.infer<typeof itemsUnderPriceQuerySchema>;
+      const customerPk =
+        request.auth?.role === "customer"
+          ? await resolveCustomerPkForRequest(request.auth, request)
+          : null;
       const items = await listFoodItemsUnderPrice({
         lat: q.lat,
         lng: q.lng,
         maxPrice: q.max_price ?? 250,
         limit: q.limit,
         vegOnly: q.veg === true,
+        customerId: customerPk,
       });
       return reply.send({ items });
     }
   );
 
   const itemsUnderPriceGroupedQuerySchema = itemsUnderPriceQuerySchema.extend({
-    max_stores: z.coerce.number().min(1).max(20).optional(),
+    max_stores: z.coerce.number().min(1).max(50).optional(),
     items_per_store: z.coerce.number().min(1).max(10).optional(),
   });
 
@@ -1618,6 +1646,14 @@ export async function merchantRoutes(app: FastifyInstance) {
                     isVeg: z.boolean(),
                     isPopular: z.boolean(),
                     itemTags: z.array(z.string()),
+                    flashSale: z
+                      .object({
+                        offerId: z.number(),
+                        originalCustomerUnit: z.number(),
+                        flashPrice: z.number(),
+                      })
+                      .nullable()
+                      .optional(),
                   })
                 ),
               })
@@ -1628,6 +1664,10 @@ export async function merchantRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const q = request.query as z.infer<typeof itemsUnderPriceGroupedQuerySchema>;
+      const customerPk =
+        request.auth?.role === "customer"
+          ? await resolveCustomerPkForRequest(request.auth, request)
+          : null;
       const stores = await listFoodItemsUnderPriceGrouped({
         lat: q.lat,
         lng: q.lng,
@@ -1635,6 +1675,7 @@ export async function merchantRoutes(app: FastifyInstance) {
         vegOnly: q.veg === true,
         maxStores: q.max_stores,
         itemsPerStore: q.items_per_store,
+        customerId: customerPk,
       });
       return reply.send({ stores });
     }

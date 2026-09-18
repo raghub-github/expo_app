@@ -229,7 +229,7 @@ export function merchantItemCatalogAndNet(item: NormalizedOrderLineItem): {
       ? badge ?? (kind === "boost" ? formatBoostOfferBadge() : item.offerLabel ?? null)
       : kind === "boost"
         ? badge ?? formatBoostOfferBadge()
-        : null,
+        : badge,
     offerKind: kind,
   };
 }

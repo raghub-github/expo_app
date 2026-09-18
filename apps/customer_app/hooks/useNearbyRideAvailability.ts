@@ -49,7 +49,7 @@ export function useNearbyRideAvailability(
         signal,
       }),
     enabled,
-    refetchInterval: 15_000,
+    refetchInterval: 8_000,
     refetchIntervalInBackground: false,
     staleTime: 10_000,
     retry: 1,

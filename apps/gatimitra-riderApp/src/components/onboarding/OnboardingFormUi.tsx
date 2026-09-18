@@ -8,21 +8,75 @@ import {
   Platform,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors } from "@/src/theme";
+import {
+  onboardingTopBarHeightBelowSafeArea,
+} from "@/src/components/onboarding/OnboardingTopBar";
 
 const ACCENT = "#39d353";
 const ACCENT_DARK = "#22a745";
+
+/** Visible gap between floating top bar and the step pill on every onboarding screen. */
+export const ONBOARDING_STEP_PILL_GAP_BELOW_TOP_BAR = 2;
+
+/** Space below safe area until step pill (bar height + gap). */
+export const ONBOARDING_HEADER_BAR_CLEARANCE =
+  onboardingTopBarHeightBelowSafeArea() + ONBOARDING_STEP_PILL_GAP_BELOW_TOP_BAR;
+
+export function onboardingHeaderPaddingTop(safeAreaTop: number): number {
+  return Math.max(safeAreaTop, 0) + ONBOARDING_HEADER_BAR_CLEARANCE;
+}
+
+/** Bottom inset so sticky Continue never sits under the system nav gesture bar. */
+export function onboardingStickyFooterBottomPad(safeAreaBottom: number): number {
+  return Math.max(safeAreaBottom, 12) + 10;
+}
+
+/** Extra ScrollView padding so last content clears the sticky Continue bar. */
+export function onboardingStickyScrollPadding(safeAreaBottom: number): number {
+  // button (~54) + footer paddingTop (12) + bottom pad + breathing room
+  return onboardingStickyFooterBottomPad(safeAreaBottom) + 54 + 12 + 16;
+}
+
+/**
+ * Pins primary Continue/Next actions to the bottom of the viewport.
+ * Parent SafeAreaView should use edges that omit "bottom" so padding is not doubled.
+ */
+export function OnboardingStickyFooter({
+  children,
+  style,
+}: {
+  children: React.ReactNode;
+  style?: object;
+}) {
+  const insets = useSafeAreaInsets();
+  return (
+    <View
+      style={[
+        stickyStyles.footer,
+        { paddingBottom: onboardingStickyFooterBottomPad(insets.bottom) },
+        style,
+      ]}
+      collapsable={false}
+    >
+      {children}
+    </View>
+  );
+}
 
 export function ContinueButton({
   label,
   onPress,
   disabled,
   loading,
+  icon = "arrow-forward",
 }: {
   label: string;
   onPress: () => void;
   disabled?: boolean;
   loading?: boolean;
+  icon?: keyof typeof Ionicons.glyphMap;
 }) {
   const inactive = Boolean(disabled || loading);
 
@@ -43,11 +97,7 @@ export function ContinueButton({
           <Text style={[styles.continueBtnText, inactive && styles.continueBtnTextDisabled]}>
             {label}
           </Text>
-          <Ionicons
-            name="arrow-forward"
-            size={18}
-            color="#ffffff"
-          />
+          <Ionicons name={icon} size={18} color="#ffffff" />
         </>
       )}
     </TouchableOpacity>
@@ -81,23 +131,26 @@ export function SkipDocumentButton({
   );
 }
 
-/** Top-right red Skip control — same pattern as PAN onboarding. */
+/** Top-right red Skip / green Skipped control — same pattern as PAN onboarding. */
 export function HeaderSkipLink({
   label,
   onPress,
   disabled,
   hidden,
+  skipped,
 }: {
   label: string;
   onPress: () => void;
   disabled?: boolean;
   /** Keep mounted (Fabric-safe) but invisible — avoids viewState crashes on skip show/hide. */
   hidden?: boolean;
+  /** Already skipped — show green badge, not a faded Skip link. */
+  skipped?: boolean;
 }) {
-  const inactive = Boolean(disabled) || Boolean(hidden);
+  const inactive = Boolean(disabled) || Boolean(hidden) || Boolean(skipped);
   return (
     <TouchableOpacity
-      activeOpacity={inactive ? 1 : 0.7}
+      activeOpacity={skipped || inactive ? 1 : 0.7}
       onPress={() => {
         if (!inactive) onPress();
       }}
@@ -109,11 +162,19 @@ export function HeaderSkipLink({
       hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
       style={[
         onboardingFormStyles.headerSkipBtn,
-        inactive && onboardingFormStyles.headerSkipBtnDisabled,
+        skipped && onboardingFormStyles.headerSkippedBadge,
+        !skipped && inactive && onboardingFormStyles.headerSkipBtnDisabled,
         hidden && onboardingFormStyles.headerSkipHidden,
       ]}
     >
-      <Text style={onboardingFormStyles.headerSkipText}>{label}</Text>
+      <Text
+        style={[
+          onboardingFormStyles.headerSkipText,
+          skipped && onboardingFormStyles.headerSkippedText,
+        ]}
+      >
+        {label}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -137,7 +198,15 @@ export function ChecklistItem({ done, label }: { done: boolean; label: string })
           <View style={styles.checkDot} />
         )}
       </View>
-      <Text style={[styles.checkLabel, done && styles.checkLabelDone]}>{label}</Text>
+      <Text
+        style={[styles.checkLabel, done && styles.checkLabelDone]}
+        numberOfLines={1}
+        ellipsizeMode="clip"
+        adjustsFontSizeToFit
+        minimumFontScale={0.72}
+      >
+        {label}
+      </Text>
     </View>
   );
 }
@@ -238,11 +307,10 @@ export const onboardingFormStyles = StyleSheet.create({
   header: {
     alignSelf: "stretch",
     paddingHorizontal: 20,
-    /** Clear floating OnboardingTopBar (back / Help / language) — prevents SKIP overlap. */
-    paddingTop: 80,
-    paddingBottom: 28,
+    /** `paddingTop` set per screen via onboardingHeaderPaddingTop(insets.top). */
+    paddingTop: 0,
+    paddingBottom: 14,
     alignItems: "center",
-    minHeight: 200,
   },
   headerTopRow: {
     alignSelf: "stretch",
@@ -250,8 +318,8 @@ export const onboardingFormStyles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "flex-end",
-    marginBottom: 8,
-    minHeight: 36,
+    marginBottom: 4,
+    minHeight: 32,
   },
   backBtn: {
     alignSelf: "flex-start",
@@ -277,13 +345,21 @@ export const onboardingFormStyles = StyleSheet.create({
     borderColor: "rgba(0,0,0,0.06)",
   },
   headerSkipBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
     minWidth: 48,
-    alignItems: "flex-end",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 999,
   },
   headerSkipBtnDisabled: {
     opacity: 0.4,
+  },
+  headerSkippedBadge: {
+    backgroundColor: "#fef2f2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    opacity: 1,
   },
   headerSkipHidden: {
     opacity: 0,
@@ -292,6 +368,16 @@ export const onboardingFormStyles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: "#dc2626",
+  },
+  headerSkippedText: {
+    color: "#dc2626",
+    fontSize: 13,
+  },
+  /** Skip/Skipped overlays the header — does not push the step pill down. */
+  headerSkipOverlay: {
+    position: "absolute",
+    right: 16,
+    zIndex: 4,
   },
   headerSkipSpacer: {
     width: 48,
@@ -307,7 +393,8 @@ export const onboardingFormStyles = StyleSheet.create({
     borderRadius: 20,
     borderWidth: 1,
     borderColor: "rgba(57, 211, 83, 0.25)",
-    marginBottom: 12,
+    marginTop: 0,
+    marginBottom: 0,
   },
   stepPillText: {
     fontSize: 12,
@@ -337,6 +424,7 @@ export const onboardingFormStyles = StyleSheet.create({
   formCard: {
     alignSelf: "stretch",
     marginHorizontal: 16,
+    marginTop: 12,
     backgroundColor: "#ffffff",
     borderRadius: 20,
     padding: 20,
@@ -412,7 +500,7 @@ const styles = StyleSheet.create({
     backgroundColor: ACCENT,
     borderRadius: 14,
     paddingVertical: 16,
-    marginTop: 4,
+    marginTop: 0,
   },
   continueBtnDisabled: {
     backgroundColor: "#16a34a",
@@ -432,7 +520,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    marginTop: 10,
+    marginTop: 0,
     paddingVertical: 14,
     borderRadius: 14,
     borderWidth: 1.5,
@@ -459,17 +547,19 @@ const styles = StyleSheet.create({
   checkItem: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 6,
+    minWidth: 0,
   },
   checkCircle: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     borderWidth: 1.5,
     borderColor: colors.gray[300],
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.gray[50],
+    flexShrink: 0,
   },
   checkCircleDone: {
     backgroundColor: ACCENT,
@@ -482,7 +572,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.gray[300],
   },
   checkLabel: {
-    fontSize: 13,
+    flexShrink: 1,
+    minWidth: 0,
+    fontSize: 12,
     color: colors.gray[500],
     fontWeight: "500",
   },
@@ -568,5 +660,17 @@ const styles = StyleSheet.create({
   },
   stepLineActive: {
     backgroundColor: ACCENT,
+  },
+});
+
+const stickyStyles = StyleSheet.create({
+  footer: {
+    alignSelf: "stretch",
+    backgroundColor: "#f4fbf6",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#d1e7d8",
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    gap: 10,
   },
 });

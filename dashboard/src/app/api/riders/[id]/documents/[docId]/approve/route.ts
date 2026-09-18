@@ -101,6 +101,7 @@ export async function POST(
 
     const body = (await request.json().catch(() => ({}))) as {
       displayDocType?: string;
+      expectedDocumentVersion?: number | null;
       electronicVerify?: {
         verifiedData?: Record<string, unknown>;
         docNumber?: string | null;
@@ -159,6 +160,8 @@ export async function POST(
     // Approve document (handles KYC, onboarding stage, and rider status in one place)
     const result = await approveRiderDocument(documentId, agent.id, {
       displayDocType,
+      expectedDocumentVersion:
+        typeof body.expectedDocumentVersion === "number" ? body.expectedDocumentVersion : null,
       electronicVerify,
     });
 
@@ -198,6 +201,14 @@ export async function POST(
           docType: currentDoc.docType,
           allDocumentsVerified: allVerified,
           kycStatusUpdated: allVerified,
+          documentVersion:
+            currentDoc.metadata && typeof currentDoc.metadata === "object"
+              ? (currentDoc.metadata as Record<string, unknown>).documentVersion ?? null
+              : null,
+          previousStatus: currentDoc.verificationStatus,
+          newStatus: approvedDoc.verificationStatus,
+          action:
+            String(currentDoc.docType) === "rc" ? "RC_MANUAL_REVIEW_APPROVED" : "DOCUMENT_APPROVED",
         },
         ipAddress: request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || undefined,
         userAgent: request.headers.get("user-agent") || undefined,

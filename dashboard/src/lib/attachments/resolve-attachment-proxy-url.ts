@@ -1,4 +1,4 @@
-import { normalizeR2ObjectKey } from "@/lib/r2-proxy-url";
+import { isBogusAttachmentProxyKey, normalizeR2ObjectKey } from "@/lib/r2-proxy-url";
 
 const R2_PUBLIC_BASE = process.env.NEXT_PUBLIC_MERCHANT_R2_BASE_URL?.replace(/\/$/, "") ?? "";
 
@@ -17,22 +17,34 @@ export function resolveAttachmentProxyUrl(value: unknown): string {
     resolved = resolved.replace("/v1/attachments/proxy", "/api/attachments/proxy");
   }
 
+  // Bare / mangled proxy path without a real object key — never invent ?key=attachments/proxy.
+  if (
+    /^(?:\/?(?:api|v1)\/)?attachments\/proxy\/?$/i.test(resolved) ||
+    isBogusAttachmentProxyKey(resolved)
+  ) {
+    return "";
+  }
+
   if (resolved.startsWith("http://") || resolved.startsWith("https://")) {
     try {
       const u = new URL(resolved);
       if (
         u.pathname.startsWith("/api/attachments/proxy") ||
-        u.pathname.startsWith("/v1/attachments/proxy")
+        u.pathname.startsWith("/v1/attachments/proxy") ||
+        u.pathname.includes("/attachments/proxy")
       ) {
         const key = u.searchParams.get("key");
-        if (key?.trim()) {
-          return `/api/attachments/proxy?key=${encodeURIComponent(key.trim())}`;
+        const normalized = key?.trim()
+          ? normalizeR2ObjectKey(key.trim())
+          : "";
+        if (normalized && !isBogusAttachmentProxyKey(normalized)) {
+          return `/api/attachments/proxy?key=${encodeURIComponent(normalized)}`;
         }
-        return `/api/attachments/proxy${u.search}`;
+        return "";
       }
       if (R2_PUBLIC_BASE && resolved.startsWith(R2_PUBLIC_BASE + "/")) {
         const objectKey = normalizeR2ObjectKey(resolved.slice(R2_PUBLIC_BASE.length + 1));
-        if (objectKey) {
+        if (objectKey && !isBogusAttachmentProxyKey(objectKey)) {
           return `/api/attachments/proxy?key=${encodeURIComponent(objectKey)}`;
         }
       }
@@ -42,27 +54,35 @@ export function resolveAttachmentProxyUrl(value: unknown): string {
     return resolved;
   }
 
-  if (resolved.startsWith("/api/attachments/proxy")) {
+  if (
+    resolved.startsWith("/api/attachments/proxy") ||
+    /^(?:\/)?(?:api\/|v1\/)?attachments\/proxy\?/i.test(resolved)
+  ) {
     try {
-      const u = new URL(resolved, "https://local.invalid");
+      const withSlash = resolved.startsWith("/") ? resolved : `/${resolved}`;
+      const asApi = withSlash
+        .replace(/^\/v1\/attachments\/proxy/i, "/api/attachments/proxy")
+        .replace(/^\/attachments\/proxy/i, "/api/attachments/proxy");
+      const u = new URL(asApi.startsWith("/api/") ? asApi : `/api/${asApi.replace(/^\/+/, "")}`, "https://local.invalid");
       const key = u.searchParams.get("key");
       if (key) {
         const normalized = normalizeR2ObjectKey(decodeURIComponent(key));
-        if (normalized) {
+        if (normalized && !isBogusAttachmentProxyKey(normalized)) {
           return `/api/attachments/proxy?key=${encodeURIComponent(normalized)}`;
         }
       }
     } catch {
-      // keep as-is
+      // fall through
     }
-    return resolved;
+    return "";
   }
 
   if (!resolved.includes("://") && !resolved.startsWith("/")) {
     const objectKey = normalizeR2ObjectKey(resolved);
-    if (objectKey) {
+    if (objectKey && !isBogusAttachmentProxyKey(objectKey)) {
       return `/api/attachments/proxy?key=${encodeURIComponent(objectKey)}`;
     }
+    return "";
   }
 
   return resolved;

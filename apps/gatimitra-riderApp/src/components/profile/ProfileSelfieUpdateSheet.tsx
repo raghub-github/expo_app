@@ -120,6 +120,10 @@ export function ProfileSelfieUpdateSheet({ visible, onClose, onSaved }: Props) {
         riderId: riderIdNum,
         localUri: selfieUri,
         accessToken: session.accessToken,
+        previousSelfieUrl:
+          useOnboardingStore.getState().data.selfieSignedUrl ||
+          useOnboardingStore.getState().data.selfieUri ||
+          null,
       });
 
       await setOnboardingData({

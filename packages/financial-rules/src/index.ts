@@ -164,6 +164,109 @@ export function refundFieldsFromEngineResult(
   return { refundStatus: "no_refund", refundAmount: null };
 }
 
+/**
+ * Decide whether cancel-time auto-refund should move money now, and how much.
+ *
+ * Policy:
+ *  - Customer cancel → never here (customer paths use their own refund promise).
+ *  - Admin rule engine amount > 0 → auto-refund that amount.
+ *  - Admin rule requires approval → stamp pending_approval, do not auto-execute.
+ *  - Store / merchant / system / rider cancel when engine is silent → full paid refund.
+ *  - System auto-cancel (accept timeout / no rider) with force flag → same full refund.
+ *  - Admin cancel with engine silent / no_refund → do not invent a refund.
+ */
+export type PostCancelAutoRefundPolicy = {
+  shouldAutoExecute: boolean;
+  /** Pass to auto-refund; null means full customer paid amount. */
+  executeAmount: number | null;
+  refundStatus: string;
+  /** Intent amount for order_cancellation_reasons / OCR. */
+  refundAmountForLedger: number | null;
+  skipReason?:
+    | "customer_actor"
+    | "pending_approval"
+    | "admin_no_refund"
+    | "nothing_to_refund";
+};
+
+export function resolvePostCancelAutoRefundPolicy(input: {
+  actorRole?: string | null;
+  engineRefund: { refundStatus: string; refundAmount: number | null };
+  orderGross?: number | null;
+  /** Accept-timeout / no-rider: always refund customer even if engine stamped no_refund. */
+  forceCustomerRefundWhenEngineSilent?: boolean;
+}): PostCancelAutoRefundPolicy {
+  const role = String(input.actorRole ?? "").trim().toLowerCase();
+  const grossRaw = Number(input.orderGross);
+  const gross =
+    Number.isFinite(grossRaw) && grossRaw > 0.005
+      ? Math.round(grossRaw * 100) / 100
+      : null;
+  const engineStatus = String(input.engineRefund.refundStatus ?? "")
+    .trim()
+    .toLowerCase();
+  const engineAmtRaw = Number(input.engineRefund.refundAmount);
+  const engineAmt =
+    Number.isFinite(engineAmtRaw) && engineAmtRaw > 0.005
+      ? Math.round(engineAmtRaw * 100) / 100
+      : null;
+
+  if (role === "customer" || role === "cx") {
+    return {
+      shouldAutoExecute: false,
+      executeAmount: null,
+      refundStatus: engineStatus || "no_refund",
+      refundAmountForLedger: engineAmt,
+      skipReason: "customer_actor",
+    };
+  }
+
+  if (engineStatus === "pending_approval") {
+    return {
+      shouldAutoExecute: false,
+      executeAmount: null,
+      refundStatus: "pending_approval",
+      refundAmountForLedger: engineAmt,
+      skipReason: "pending_approval",
+    };
+  }
+
+  // Matched admin/financial rule with a concrete refund amount — honor it.
+  if (engineAmt != null) {
+    return {
+      shouldAutoExecute: true,
+      executeAmount: engineAmt,
+      refundStatus:
+        engineStatus === "no_refund" ? "pending" : engineStatus || "pending",
+      refundAmountForLedger: engineAmt,
+    };
+  }
+
+  const forceSilentRefund =
+    input.forceCustomerRefundWhenEngineSilent === true ||
+    role === "store" ||
+    role === "merchant" ||
+    role === "system" ||
+    role === "rider";
+
+  if (forceSilentRefund) {
+    return {
+      shouldAutoExecute: true,
+      executeAmount: null,
+      refundStatus: "pending",
+      refundAmountForLedger: gross,
+    };
+  }
+
+  return {
+    shouldAutoExecute: false,
+    executeAmount: null,
+    refundStatus: engineStatus || "no_refund",
+    refundAmountForLedger: null,
+    skipReason: "admin_no_refund",
+  };
+}
+
 export function parseEngineResult(raw: Record<string, unknown> | undefined): FinancialRuleExecutionResult {
   if (!raw) return { applied: false, error: "empty_result" };
   const amountsRaw = raw.amounts as FinancialRuleAmounts | undefined;

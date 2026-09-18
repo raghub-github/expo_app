@@ -182,7 +182,8 @@ export function useActiveOrders() {
     refetchInterval: (query) => {
       const n = Array.isArray(query.state.data) ? query.state.data.length : 0;
       // Navigation already polls order detail; /active is only a safety net.
-      return n > 0 ? 20_000 : 30_000;
+      // Idle (no active order) — slower poll to cut OFF-DUTY battery use.
+      return n > 0 ? 20_000 : 60_000;
     },
     refetchIntervalInBackground: false,
     refetchOnMount: false,

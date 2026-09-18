@@ -40,18 +40,19 @@ export function WalletBalancePrefetch() {
       staleTime: 15_000,
     });
 
-    const refreshNow = () => {
+    const refreshOnForeground = () => {
       const now = Date.now();
-      // Dedupe rapid resume + focus double-fires.
-      if (now - lastRefreshAtRef.current < 1_500) return;
+      // Dedupe rapid resume + focus double-fires; skip overlapping prefetch.
+      if (now - lastRefreshAtRef.current < 8_000) return;
       lastRefreshAtRef.current = now;
       void refreshCustomerWallet(queryClient);
     };
 
-    refreshNow();
+    // Mark mount time so an immediate AppState "active" does not double-fetch.
+    lastRefreshAtRef.current = Date.now();
 
     const onAppState = (next: AppStateStatus) => {
-      if (next === "active") refreshNow();
+      if (next === "active") refreshOnForeground();
     };
     const sub = AppState.addEventListener("change", onAppState);
     return () => sub.remove();

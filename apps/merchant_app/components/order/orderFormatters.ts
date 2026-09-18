@@ -198,7 +198,7 @@ export function formatOrderCardCustomerLabel(
   return name;
 }
 
-/** Incoming modal: ordinal from API; optional total only when ordinal not yet computed. */
+/** Incoming modal: prefer per-order store ordinal; never flash a lower count when total is known. */
 export function formatPartnerIncomingCustomerLabel(
   customerName: string | null | undefined,
   ordinal?: number | null,
@@ -207,8 +207,10 @@ export function formatPartnerIncomingCustomerLabel(
   const name = (customerName ?? "").trim();
   if (!name) return "New customer order";
   let resolved = resolveCustomerOrderOrdinalForDisplay(ordinal);
-  if (resolved == null && storeOrdersTotal != null && storeOrdersTotal > 0) {
-    resolved = Math.floor(storeOrdersTotal);
+  if (storeOrdersTotal != null && Number.isFinite(storeOrdersTotal) && storeOrdersTotal > 0) {
+    const total = Math.floor(storeOrdersTotal);
+    // List payloads sometimes send ordinal=1 while total is already N — keep the higher.
+    resolved = resolved == null ? total : Math.max(resolved, total);
   }
   const ord = formatCustomerOrderOrdinal(resolved);
   if (ord) return `${ord} by ${name}`;

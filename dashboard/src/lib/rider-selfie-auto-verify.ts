@@ -62,9 +62,64 @@ function resolveSelfieMethod(docs: DocRow[]): "APP_VERIFIED" | "CASHFREE_AUTO" {
 }
 
 /**
+ * Mark stored selfie verified after upload.
+ * - Rider app upload → Auto verified (APP_VERIFIED)
+ * - Admin dashboard upload → Manual verified (MANUAL_UPLOAD / approved)
+ */
+export async function autoVerifyUploadedRiderSelfie(
+  riderId: number,
+  opts?: { source?: "rider" | "admin" },
+): Promise<boolean> {
+  const source = opts?.source === "admin" ? "admin" : "rider";
+  const db = getDb();
+  const [selfie] = (await db
+    .select({
+      id: riderDocuments.id,
+      docType: riderDocuments.docType,
+      verified: riderDocuments.verified,
+      verificationMethod: riderDocuments.verificationMethod,
+      verificationStatus: riderDocuments.verificationStatus,
+      metadata: riderDocuments.metadata,
+      fileUrl: riderDocuments.fileUrl,
+    })
+    .from(riderDocuments)
+    .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, "selfie")))) as DocRow[];
+
+  if (!selfie?.fileUrl || selfie.fileUrl === "pending") return false;
+
+  const isAdmin = source === "admin";
+  await db
+    .update(riderDocuments)
+    .set({
+      verified: true,
+      verificationStatus: isAdmin ? "approved" : "auto_verified",
+      verificationMethod: isAdmin ? "MANUAL_UPLOAD" : "APP_VERIFIED",
+      verifiedAt: new Date(),
+      requiresManualReview: false,
+      rejectedReason: null,
+      metadata: {
+        ...(selfie.metadata && typeof selfie.metadata === "object"
+          ? (selfie.metadata as Record<string, unknown>)
+          : {}),
+        ...(isAdmin
+          ? { adminUploadedSelfie: true, autoVerifiedFromUpload: true }
+          : {
+              autoVerifiedFromRiderUpload: true,
+              replacedAdminSelfie: true,
+            }),
+        autoVerifiedAt: new Date().toISOString(),
+      },
+      updatedAt: new Date(),
+    })
+    .where(and(eq(riderDocuments.id, selfie.id), eq(riderDocuments.riderId, riderId)));
+
+  return true;
+}
+
+/**
  * When Aadhaar (and PAN, if present) were electronically auto-verified,
  * mark an uploaded selfie as auto-verified — same shape as rider-app electronic KYC.
- * Manual identity docs leave selfie pending for admin Approve.
+ * Prefer {@link autoVerifyUploadedRiderSelfie} for any real selfie photo upload.
  */
 export async function maybeAutoVerifyRiderSelfie(riderId: number): Promise<boolean> {
   const db = getDb();

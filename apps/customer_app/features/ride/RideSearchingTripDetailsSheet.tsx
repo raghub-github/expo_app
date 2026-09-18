@@ -336,7 +336,7 @@ const styles = StyleSheet.create({
   backBtn: {
     marginTop: 8,
     backgroundColor: GatiMitraColors.primaryMint,
-    borderRadius: 28,
+    borderRadius: 20,
     paddingVertical: 16,
     alignItems: "center",
   },
@@ -348,7 +348,7 @@ const styles = StyleSheet.create({
   },
   cancelBtn: {
     marginTop: 10,
-    borderRadius: 28,
+    borderRadius: 20,
     paddingVertical: 16,
     alignItems: "center",
     borderWidth: 1.5,

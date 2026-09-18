@@ -19,10 +19,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useRiderVehicles } from "@/src/hooks/useRiderVehicles";
 import { useRiderOnboardingSummary } from "@/src/hooks/useRiderOnboardingSummary";
+import { useRiderServiceEligibilityStatus } from "@/src/hooks/useRiderServiceEligibilityStatus";
 import type { RiderVehicleView } from "@/src/services/api/riderApi";
 import { colors } from "@/src/theme";
 import { RiderFonts } from "@/src/theme/fonts";
 import { useDocumentUpdateSheetStore } from "@/src/stores/documentUpdateSheetStore";
+import { useDutyStore } from "@/src/stores/dutyStore";
 
 const TEAL = "#0F766E";
 const TEAL_DARK = "#115E59";
@@ -136,7 +138,9 @@ function ServiceRow({
       <View style={styles.serviceCopy}>
         <Text style={styles.serviceLabel}>{label}</Text>
         {!eligible && reason ? <Text style={styles.serviceReason}>{reason}</Text> : null}
-        {eligible ? <Text style={styles.serviceOkHint}>Eligible on this vehicle</Text> : null}
+        {eligible ? (
+          <Text style={styles.serviceOkHint}>This vehicle is eligible for this service</Text>
+        ) : null}
       </View>
     </View>
   );
@@ -155,11 +159,15 @@ function DetailCell({ label, value }: { label: string; value: string }) {
 
 function VehicleCard({
   v,
+  index,
   onUse,
+  onUploadRc,
   busy,
 }: {
   v: RiderVehicleView;
+  index: number;
   onUse: (v: RiderVehicleView) => void;
+  onUploadRc?: () => void;
   busy: boolean;
 }) {
   const plate = displayRegistration(v);
@@ -172,7 +180,9 @@ function VehicleCard({
           <Ionicons name={classIcon(v.vehicleClass)} size={26} color={TEAL_DARK} />
         </View>
         <View style={styles.cardTopCopy}>
-          <Text style={styles.vehClass}>{classLabel(v.vehicleClass)}</Text>
+          <Text style={styles.vehClass}>
+            Vehicle {index} · {classLabel(v.vehicleClass)}
+          </Text>
           {v.vehicleType ? <Text style={styles.vehType}>{typeLabel}</Text> : null}
         </View>
         {v.isActiveVehicle ? (
@@ -208,19 +218,19 @@ function VehicleCard({
             color={v.verified ? "#047857" : "#B45309"}
           />
           <Text style={[styles.metaPillText, v.verified ? styles.metaPillOkText : styles.metaPillPendingText]}>
-            {v.verified ? "Verified" : "Pending"}
+            {v.verified ? "Verified" : "Under verification"}
           </Text>
         </View>
       </View>
 
       <View style={styles.detailsGrid}>
         <DetailCell label="Ownership" value={formatOwnership(v.ownership)} />
-        <DetailCell label="Status" value={human(v.status)} />
+        <DetailCell label="Status" value={v.verified ? human(v.status) : "Under verification"} />
         {v.vehicleType ? <DetailCell label="Vehicle type" value={typeLabel} /> : null}
         <DetailCell label="Class" value={classLabel(v.vehicleClass)} />
       </View>
 
-      <Text style={styles.sectionLabel}>Services with this vehicle</Text>
+      <Text style={styles.sectionLabel}>Vehicle eligibility</Text>
       <View style={styles.services}>
         {SERVICE_ORDER.map((s) => {
           const d = v.services[s];
@@ -248,12 +258,32 @@ function VehicleCard({
             <Text style={styles.useBtnText}>Use this vehicle</Text>
           </Pressable>
         ) : (
-          <Text style={styles.pendingNote}>Complete verification to use this vehicle.</Text>
+          <View style={{ gap: 8 }}>
+            <View style={styles.pendingBanner}>
+              <Ionicons name="hourglass-outline" size={16} color="#B45309" />
+              <Text style={styles.pendingNote}>
+                {onUploadRc
+                  ? "Under verification — upload a clear RC photo if you have not already. You cannot switch to this vehicle until an agent approves it."
+                  : "Under verification — you cannot switch to this vehicle until an agent approves the RC."}
+              </Text>
+            </View>
+            {onUploadRc ? (
+              <Pressable
+                style={({ pressed }) => [styles.useBtn, pressed && { opacity: 0.9 }]}
+                onPress={onUploadRc}
+              >
+                <Text style={styles.useBtnText}>Upload RC photo</Text>
+              </Pressable>
+            ) : null}
+          </View>
         )
       ) : (
         <View style={styles.activeNote}>
           <Ionicons name="information-circle-outline" size={16} color={TEAL_DARK} />
-          <Text style={styles.activeNoteText}>Orders are assigned on this vehicle.</Text>
+          <Text style={styles.activeNoteText}>
+            This is your active vehicle. Eligible services receive orders only when you turn them
+            on from Home while ON-DUTY.
+          </Text>
         </View>
       )}
     </View>
@@ -261,19 +291,30 @@ function VehicleCard({
 }
 
 export function VehiclesAndDocumentsScreen() {
-  const { vehicles, isLoading, error, refetch, setActiveVehicle, isSettingActive } = useRiderVehicles();
-  const { summary } = useRiderOnboardingSummary();
+  const {
+    vehicles,
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+    setActiveVehicle,
+    isSettingActive,
+  } = useRiderVehicles();
+  const { summary, refetch: refetchSummary } = useRiderOnboardingSummary();
+  const { refetch: refetchEligibility } = useRiderServiceEligibilityStatus();
+  const isOnDuty = useDutyStore((s) => s.isOnDuty);
   const [confirm, setConfirm] = useState<RiderVehicleView | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const dl = summary?.documents?.find((d) => d.code === "DRIVING_LICENSE");
   const maxVehicles = 2;
+  const canAddVehicle = vehicles.length < maxVehicles;
 
   async function onRefresh() {
     setRefreshing(true);
     try {
-      await refetch();
+      await Promise.all([refetch(), refetchSummary(), refetchEligibility()]);
     } finally {
       setRefreshing(false);
     }
@@ -281,18 +322,36 @@ export function VehiclesAndDocumentsScreen() {
 
   async function confirmUse() {
     if (!confirm) return;
+    if (isOnDuty) {
+      setBanner("Go OFF-DUTY on Home first, then select a vehicle when going back ON-DUTY.");
+      setConfirm(null);
+      return;
+    }
     const target = confirm;
     setConfirm(null);
     setBanner(null);
     try {
       const res = await setActiveVehicle(target.id);
-      if (!res.ok) setBanner(res.reason ?? "Could not switch vehicle.");
+      if (!res.ok) {
+        const reason = res.reason ?? "Could not switch vehicle.";
+        setBanner(
+          res.code === "ON_DUTY"
+            ? "Go OFF-DUTY on Home first, then select a vehicle when going back ON-DUTY."
+            : res.code === "NOT_VERIFIED"
+              ? "This vehicle is under verification. You can switch to it only after an agent approves the RC."
+              : reason,
+        );
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Could not switch vehicle.";
       setBanner(
-        msg.includes("active order")
-          ? "Vehicle cannot be switched while active orders are assigned."
-          : "Could not switch vehicle.",
+        /ON_DUTY|OFF-DUTY|go off-duty/i.test(msg)
+          ? "Go OFF-DUTY on Home first, then select a vehicle when going back ON-DUTY."
+          : /NOT_VERIFIED|not verified|under verification/i.test(msg)
+            ? "This vehicle is under verification. You can switch to it only after an agent approves the RC."
+            : msg.includes("active order")
+              ? "Vehicle cannot be switched while active orders are assigned."
+              : "Could not switch vehicle.",
       );
     }
   }
@@ -307,15 +366,16 @@ export function VehiclesAndDocumentsScreen() {
           <Text style={styles.headerTitle}>Vehicles & Documents</Text>
           <Text style={styles.headerSub}>
             {vehicles.length}/{maxVehicles} vehicles on file
+            {isFetching && vehicles.length > 0 ? " · updating…" : ""}
           </Text>
         </View>
       </View>
 
-      {isLoading && vehicles.length === 0 ? (
+      {isLoading ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={TEAL} />
         </View>
-      ) : error ? (
+      ) : error && vehicles.length === 0 ? (
         <View style={styles.center}>
           <Ionicons name="cloud-offline-outline" size={40} color="#94A3B8" />
           <Text style={styles.centerText}>Could not load your vehicles.</Text>
@@ -357,20 +417,62 @@ export function VehiclesAndDocumentsScreen() {
               <Ionicons name="bicycle-outline" size={36} color="#94A3B8" />
               <Text style={styles.emptyTitle}>No vehicles on file</Text>
               <Text style={styles.emptyText}>
-                Contact support to add a vehicle. Self-service add will be available soon.
+                Add your first vehicle with Cashfree RC verification.
               </Text>
             </View>
           ) : (
-            vehicles.map((v) => (
-              <VehicleCard key={v.id} v={v} busy={isSettingActive} onUse={setConfirm} />
+            vehicles.map((v, i) => (
+              <VehicleCard
+                key={v.id}
+                v={v}
+                index={i + 1}
+                busy={isSettingActive}
+                onUse={(veh) => {
+                  if (!veh.verified) {
+                    setBanner(
+                      "This vehicle is under verification. You can switch to it only after an agent approves the RC.",
+                    );
+                    return;
+                  }
+                  setConfirm(veh);
+                }}
+                onUploadRc={
+                  // Already have a plate / RC on file → under review, no re-upload CTA.
+                  v.verified || Boolean(displayRegistration(v))
+                    ? undefined
+                    : () =>
+                        useDocumentUpdateSheetStore.getState().open("rc", {
+                          addAnotherVehicle: false,
+                        })
+                }
+              />
             ))
           )}
 
+          {canAddVehicle ? (
+            <Pressable
+              style={({ pressed }) => [styles.addBtn, pressed && { opacity: 0.92 }]}
+              onPress={() =>
+                useDocumentUpdateSheetStore.getState().open("rc", { addAnotherVehicle: true })
+              }
+            >
+              <Ionicons name="add-circle-outline" size={20} color="#FFFFFF" />
+              <Text style={styles.addBtnText}>Add another vehicle</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.footerCard}>
+              <Ionicons name="lock-closed-outline" size={16} color="#64748B" />
+              <Text style={styles.footerNote}>
+                2/2 vehicles on file. A third vehicle cannot be added.
+              </Text>
+            </View>
+          )}
+
           <View style={styles.footerCard}>
-            <Ionicons name="lock-closed-outline" size={16} color="#64748B" />
+            <Ionicons name="shield-checkmark-outline" size={16} color="#64748B" />
             <Text style={styles.footerNote}>
-              Vehicle data is verified via Cashfree and cannot be edited manually. To add or replace
-              a vehicle, contact support.
+              Vehicle type comes from Cashfree RC verification. Your second vehicle must be a
+              different type, and only one vehicle can be ON-DUTY at a time.
             </Text>
           </View>
         </ScrollView>
@@ -391,7 +493,7 @@ export function VehiclesAndDocumentsScreen() {
                     <ServiceRow
                       key={s}
                       label={SERVICE_LABEL[s] ?? s}
-                      eligible={confirm.services[s].eligible}
+                      eligible={confirm.services?.[s]?.eligible === true}
                     />
                   ))}
                 </View>
@@ -706,9 +808,22 @@ const styles = StyleSheet.create({
     fontSize: 14.5,
   },
   pendingNote: {
+    flex: 1,
     fontFamily: RiderFonts.poppinsSemiBold,
     fontSize: 12.5,
     color: "#B45309",
+    lineHeight: 18,
+  },
+  pendingBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    backgroundColor: "#FFFBEB",
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   activeNote: {
     flexDirection: "row",
@@ -744,7 +859,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#64748B",
     textAlign: "center",
-    lineHeight: 19,
+  },
+  addBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: TEAL,
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  addBtnText: {
+    fontFamily: RiderFonts.poppinsBold,
+    color: "#FFFFFF",
+    fontSize: 15,
   },
   footerCard: {
     flexDirection: "row",

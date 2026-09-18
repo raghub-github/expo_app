@@ -14,6 +14,7 @@ import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { ONBOARDING_STAGE_LABELS } from '@/types/rider-dashboard';
 import { DocAutoVerificationDetailsView } from '@/components/verification/DocAutoVerificationDetails';
 import { getRiderDocAutoVerificationDisplay } from '@/lib/rider-doc-auto-verification';
+import { rcDashboardStatusLabel, resolveRcVerificationState } from '@/lib/rider-rc-verification-state';
 
 interface Rider {
   id: number;
@@ -467,8 +468,8 @@ export default function RiderDetailsPage() {
 
   const verificationStatusLabel: Record<string, string> = {
     pending: "Pending",
-    approved: "Approved",
-    auto_verified: "Verified",
+    approved: "Manual verified",
+    auto_verified: "Auto verified",
     rejected: "Rejected",
   };
 
@@ -818,17 +819,32 @@ export default function RiderDetailsPage() {
                 doc.verificationMethod === "APP_VERIFIED"
                   ? "Aadhaar Card"
                   : documentLabels[doc.docType] || doc.docType;
+              const rcState =
+                doc.docType === "rc" ? resolveRcVerificationState(doc) : null;
+              const rcLabel = rcState ? rcDashboardStatusLabel(rcState) : null;
+              const statusText =
+                rcLabel?.statusLabel ||
+                verificationStatusLabel[verStatus] ||
+                (doc.verified ? "Verified" : "Pending");
+              const statusClass = rcLabel
+                ? rcLabel.status === "verified"
+                  ? "bg-emerald-100 text-emerald-800"
+                  : rcLabel.status === "rejected"
+                    ? "bg-red-100 text-red-800"
+                    : "bg-amber-100 text-amber-800"
+                : verStatus === "approved" || verStatus === "auto_verified" || doc.verified
+                  ? "bg-emerald-100 text-emerald-800"
+                  : verStatus === "rejected"
+                    ? "bg-red-100 text-red-800"
+                    : "bg-amber-100 text-amber-800";
               return (
                 <div key={docKey} className="rounded-xl border border-gray-200 bg-gray-50/50 p-4 hover:border-gray-300 hover:shadow-sm transition-all">
                   <div className="flex items-start justify-between gap-2 mb-3">
                     <h3 className="font-semibold text-gray-900 text-sm leading-tight">
                       {title}
                     </h3>
-                    <span className={`shrink-0 px-2 py-1 text-xs font-medium rounded-full ${
-                      verStatus === "approved" || verStatus === "auto_verified" || doc.verified ? "bg-emerald-100 text-emerald-800" :
-                      verStatus === "rejected" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"
-                    }`}>
-                      {verificationStatusLabel[verStatus] || (doc.verified ? "Verified" : "Pending")}
+                    <span className={`shrink-0 px-2 py-1 text-xs font-medium rounded-full ${statusClass}`}>
+                      {statusText}
                     </span>
                   </div>
                   <div className="space-y-1.5 text-xs text-gray-600">

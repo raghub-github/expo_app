@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import {
   RIDE_PARCEL_PROMO_TYPES,
   RIDE_VEHICLE_OPTIONS,
@@ -109,6 +110,9 @@ type Props = {
   couponCode: string;
   startsAt: string;
   endsAt: string;
+  flashSaleMode?: boolean;
+  sampleFare?: string;
+  onSampleFareChange?: (v: string) => void;
 };
 
 export function RideParcelPromoBuilder({
@@ -124,10 +128,19 @@ export function RideParcelPromoBuilder({
   couponCode,
   startsAt,
   endsAt,
+  flashSaleMode = false,
+  sampleFare = "",
+  onSampleFareChange,
 }: Props) {
-  const types = service === "PARCEL" ? PARCEL_TYPES : RIDE_TYPES;
+  const types = flashSaleMode ? (["PAY_FIXED"] as RideParcelPromoType[]) : service === "PARCEL" ? PARCEL_TYPES : RIDE_TYPES;
   const unit = service === "RIDE" ? "ride" : "parcel";
   const patch = (partial: Partial<RideParcelPromoConfig>) => onChange({ ...promo, ...partial });
+
+  useEffect(() => {
+    if (flashSaleMode && promo.promo_type !== "PAY_FIXED") {
+      onChange({ ...promo, promo_type: "PAY_FIXED" });
+    }
+  }, [flashSaleMode, promo.promo_type]);
 
   const t = promo.promo_type;
   const showFlatPct = t === "FLAT_OFF" || t === "PERCENT_OFF" || t === "COUPON" || t === "PEAK_HOUR" ||
@@ -170,6 +183,38 @@ export function RideParcelPromoBuilder({
           {service === "RIDE" ? "🚕 " : "📦 "}
           {preview}
         </p>
+        {flashSaleMode && t === "PAY_FIXED" ? (
+          <div className="mt-3 space-y-2 text-sm text-slate-700">
+            <label className="block text-xs font-medium text-slate-600">Sample normal fare (₹) for preview</label>
+            <input
+              className={controlCls}
+              inputMode="decimal"
+              value={sampleFare}
+              onChange={(e) => onSampleFareChange?.(e.target.value)}
+              placeholder="e.g. 95"
+            />
+            {(() => {
+              const fare = Number(sampleFare);
+              const pay = promo.pay_fixed ?? 0;
+              if (!Number.isFinite(fare) || fare <= 0 || pay < 0) {
+                return (
+                  <p className="text-xs text-slate-600">
+                    Customer pays only ₹{pay}. Rider earnings stay the Fare Engine amount for the actual trip. Platform subsidy = normal fare − ₹{pay}.
+                  </p>
+                );
+              }
+              const subsidy = Math.max(0, Math.round((fare - pay) * 100) / 100);
+              return (
+                <ul className="space-y-1 text-xs">
+                  <li>Normal fare ₹{fare.toFixed(0)}</li>
+                  <li>Customer pays ₹{pay}</li>
+                  <li>Rider earnings = Fare Engine amount for this trip (not reduced)</li>
+                  <li>Platform subsidy ₹{subsidy.toFixed(2)}</li>
+                </ul>
+              );
+            })()}
+          </div>
+        ) : null}
         <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-600">
           {couponCode ? (
             <span className="rounded-md bg-white px-2 py-1 font-mono ring-1 ring-slate-200">

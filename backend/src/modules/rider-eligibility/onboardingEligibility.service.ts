@@ -16,7 +16,7 @@ import { getRiderKycDocumentsForApp } from "../../lib/rider-documents-kyc-catalo
 import { hasCompletedOnboardingPayment } from "../../lib/rider-onboarding-status.js";
 import {
   loadRiderEligibilityAttributes,
-  resolveRiderAllServiceEligibilityAtLocation,
+  resolveRiderUnifiedServiceEligibility,
   eligibilityEnforcementMode,
 } from "./riderEligibility.service.js";
 import {
@@ -55,7 +55,7 @@ export type RiderOnboardingSummary = {
     vehicleType: string | null;
   } | null;
   documents: OnboardingDocView[];
-  services: Awaited<ReturnType<typeof resolveRiderAllServiceEligibilityAtLocation>>["services"];
+  services: Awaited<ReturnType<typeof resolveRiderUnifiedServiceEligibility>>["services"];
   resolvedGeo: { level: string; refId: string } | null;
   onboarding: OnboardingDecision;
   /** True only when eligibility is actually enforced (enforce mode). */
@@ -97,7 +97,7 @@ export async function resolveRiderOnboardingSummary(riderId: number): Promise<Ri
   const hasVehicle = attributes.vehicleClass != null;
 
   // Per-service eligibility at the rider's registered location.
-  const { services, resolvedGeo } = await resolveRiderAllServiceEligibilityAtLocation({
+  const { services, resolvedGeo } = await resolveRiderUnifiedServiceEligibility({
     riderId,
     lat: rider.lat ?? null,
     lng: rider.lon ?? null,

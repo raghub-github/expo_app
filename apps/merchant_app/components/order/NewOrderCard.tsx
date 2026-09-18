@@ -19,7 +19,7 @@ import {
   formatAcceptCountdown,
 } from "@/lib/orderAcceptanceWindow";
 
-const URGENT_SECONDS = 60;
+const URGENT_SECONDS = 120;
 const STATUS_RED = "#EF4444";
 
 function formatTimeSince(createdAt: string, nowMs: number): string {
@@ -93,8 +93,8 @@ export function NewOrderCard({
     countdown != null
       ? expired
         ? "Time expired"
-        : `Swipe to accept · ${countdown}`
-      : "Swipe to accept";
+        : `Accept order (${countdown})`
+      : "Accept order";
 
   return (
     <>
@@ -141,13 +141,7 @@ export function NewOrderCard({
           </View>
         }
         footer={
-          <>
-            <SlideToConfirm
-              label={acceptLabel}
-              onConfirmed={onAccept}
-              disabled={expired || actionLoading}
-              stage="created"
-            />
+          <View style={styles.actionsRow}>
             <Pressable
               onPress={onReject}
               disabled={actionLoading}
@@ -157,10 +151,22 @@ export function NewOrderCard({
                 actionLoading && styles.rejectBtnDisabled,
               ]}
             >
-              <Ionicons name="close-circle-outline" size={16} color={STATUS_RED} />
-              <Text style={styles.rejectBtnText}>Reject order</Text>
+              <Ionicons name="close-circle" size={16} color="#B91C1C" />
+              <Text style={styles.rejectBtnText} numberOfLines={1}>
+                Reject
+              </Text>
             </Pressable>
-          </>
+            <View style={styles.acceptWrap}>
+              <SlideToConfirm
+                label={acceptLabel}
+                onConfirmed={onAccept}
+                disabled={expired || actionLoading}
+                stage="created"
+                compact
+                urgent={urgent || expired}
+              />
+            </View>
+          </View>
         }
       />
 
@@ -255,24 +261,41 @@ const styles = StyleSheet.create({
   acceptCountdownUrgent: {
     color: STATUS_RED,
   },
+  actionsRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 8,
+    width: "100%",
+    height: 58,
+  },
   rejectBtn: {
+    flex: 0.22,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    paddingVertical: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: "#FECACA",
-    backgroundColor: "#FEF2F2",
+    gap: 4,
+    paddingVertical: 0,
+    paddingHorizontal: 4,
+    height: 58,
+    borderRadius: 29,
+    borderWidth: 1.5,
+    borderColor: "#DC2626",
+    backgroundColor: "#FECACA",
+  },
+  acceptWrap: {
+    flex: 0.78,
+    minWidth: 0,
+    height: 58,
+    justifyContent: "center",
   },
   rejectBtnDisabled: {
     opacity: 0.6,
   },
   rejectBtnText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: STATUS_RED,
+    fontSize: 13,
+    fontWeight: "900",
+    color: "#991B1B",
+    letterSpacing: 0.2,
   },
   pressed: { opacity: 0.85 },
 });

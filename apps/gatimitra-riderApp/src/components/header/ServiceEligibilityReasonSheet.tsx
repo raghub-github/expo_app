@@ -14,6 +14,8 @@ import { DismissibleBottomSheetShell } from "@/src/components/language/Dismissib
 import { RiderFonts } from "@/src/theme/fonts";
 import {
   areaEligibilityDisplayReason,
+  isAreaEligibilityCode,
+  prioritizeEligibilityReasons,
   resolveEligibilitySloganMode,
   type EligibilityReason,
 } from "@/src/lib/rider-service-eligibility-rows";
@@ -121,10 +123,24 @@ export function ServiceEligibilityReasonSheet({
   const sloganMode = useMemo(() => resolveEligibilitySloganMode(reasons), [reasons]);
   const isAreaSlogan = sloganMode === "area" && !allPending;
   const displayReasons = useMemo(() => {
-    if (!isAreaSlogan) return reasons;
-    // Docs complete — never show "vehicle or area"; show clear area message.
-    return [areaEligibilityDisplayReason()];
+    if (isAreaSlogan) {
+      // Docs + vehicle already passed — only Geo & coverage OFF remains.
+      return [areaEligibilityDisplayReason()];
+    }
+    // Docs / vehicle first; hide trailing geo OFF so the sheet doesn't look like an area lock.
+    return prioritizeEligibilityReasons(reasons).filter((r) => !isAreaEligibilityCode(r.code));
   }, [isAreaSlogan, reasons]);
+
+  const title = allPending
+    ? `${serviceLabel} — verification pending`
+    : isAreaSlogan
+      ? "Oops! This service isn’t available in your area yet."
+      : `${serviceLabel} not available yet`;
+  const subtitle = allPending
+    ? "Your document is under review. Once verified, this service will become Active."
+    : isAreaSlogan
+      ? null
+      : "You can turn this on once it's eligible. Here's what's needed:";
 
   return (
     <DismissibleBottomSheetShell
@@ -156,21 +172,10 @@ export function ServiceEligibilityReasonSheet({
           />
         </View>
 
-        <Text style={styles.title}>
-          {allPending
-            ? `${serviceLabel} — verification pending`
-            : isAreaSlogan
-              ? `${serviceLabel} not available in your area`
-              : `${serviceLabel} not available yet`}
-        </Text>
-        <Text style={styles.subtitle}>
-          {allPending
-            ? "Your document is under review. Once verified, this service will become Active."
-            : isAreaSlogan
-              ? "This service isn't offered at your current work location."
-              : "You can turn this on once it's eligible. Here's what's needed:"}
-        </Text>
+        <Text style={styles.title}>{title}</Text>
+        {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
 
+        {!isAreaSlogan ? (
         <ScrollView
           style={styles.list}
           contentContainerStyle={styles.listContent}
@@ -178,40 +183,35 @@ export function ServiceEligibilityReasonSheet({
           bounces={false}
         >
           {displayReasons.map((r, i) => {
-            const tone = isAreaSlogan ? "default" : reasonTone(r.code);
+            const tone = reasonTone(r.code);
             return (
               <View
                 key={`${r.code}-${i}`}
                 style={[
                   styles.reasonRow,
-                  isAreaSlogan && styles.reasonRowArea,
                   tone === "pending" && styles.reasonRowPending,
                   tone === "rejected" && styles.reasonRowRejected,
                 ]}
               >
                 <Ionicons
                   name={
-                    isAreaSlogan
-                      ? "alert-circle"
-                      : tone === "pending"
-                        ? "time-outline"
-                        : tone === "rejected"
-                          ? "close-circle"
-                          : "alert-circle"
+                    tone === "pending"
+                      ? "time-outline"
+                      : tone === "rejected"
+                        ? "close-circle"
+                        : "alert-circle"
                   }
                   size={20}
                   color={
-                    isAreaSlogan
-                      ? "#0F766E"
-                      : tone === "pending"
-                        ? "#B45309"
-                        : tone === "rejected"
-                          ? "#DC2626"
-                          : "#DC2626"
+                    tone === "pending"
+                      ? "#B45309"
+                      : tone === "rejected"
+                        ? "#DC2626"
+                        : "#DC2626"
                   }
                 />
                 <View style={styles.reasonBody}>
-                  {!isAreaSlogan && (tone === "pending" || tone === "rejected") ? (
+                  {tone === "pending" || tone === "rejected" ? (
                     <Text
                       style={[
                         styles.statusBadge,
@@ -227,6 +227,9 @@ export function ServiceEligibilityReasonSheet({
             );
           })}
         </ScrollView>
+        ) : (
+          <View style={styles.areaSpacer} />
+        )}
 
         <View style={styles.actions}>
           {canUpload && uploadTarget ? (
@@ -320,11 +323,12 @@ const styles = StyleSheet.create({
   },
   title: {
     fontFamily: RiderFonts.poppinsExtraBold,
-    fontSize: 22,
-    lineHeight: 28,
+    fontSize: 20,
+    lineHeight: 26,
     color: "#0F172A",
     textAlign: "center",
     marginBottom: 8,
+    paddingHorizontal: 8,
   },
   subtitle: {
     fontFamily: RiderFonts.poppinsSemiBold,
@@ -342,6 +346,9 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingBottom: 4,
+  },
+  areaSpacer: {
+    height: 8,
   },
   reasonRow: {
     flexDirection: "row",

@@ -307,10 +307,42 @@ export function mergeOrderRecordPreferringMerchantLinePricing(
   if (!existing) return incoming;
   const incomingScore = merchantLineItemPricingScore(incoming.lineItems);
   const existingScore = merchantLineItemPricingScore(existing.lineItems);
-  if (existingScore > incomingScore + 0.25) {
-    return { ...incoming, lineItems: existing.lineItems };
-  }
-  return incoming;
+  const base =
+    existingScore > incomingScore + 0.25
+      ? { ...incoming, lineItems: existing.lineItems }
+      : incoming;
+
+  // Board list can briefly return a low/missing store ordinal after a rich detail hydrate.
+  const existingOrd = resolvePositiveInt(existing.customerStoreOrderOrdinal);
+  const incomingOrd = resolvePositiveInt(incoming.customerStoreOrderOrdinal);
+  const existingTotal = resolvePositiveInt(existing.customerStoreOrdersTotal);
+  const incomingTotal = resolvePositiveInt(incoming.customerStoreOrdersTotal);
+  const bestOrd =
+    existingOrd != null && incomingOrd != null
+      ? Math.max(existingOrd, incomingOrd)
+      : existingOrd ?? incomingOrd;
+  const bestTotal =
+    existingTotal != null && incomingTotal != null
+      ? Math.max(existingTotal, incomingTotal)
+      : existingTotal ?? incomingTotal;
+
+  const name =
+    (incoming.customerName ?? "").trim() ||
+    (existing.customerName ?? "").trim() ||
+    incoming.customerName ||
+    existing.customerName;
+
+  return {
+    ...base,
+    customerName: name ?? base.customerName,
+    customerStoreOrderOrdinal: bestOrd ?? base.customerStoreOrderOrdinal ?? null,
+    customerStoreOrdersTotal: bestTotal ?? base.customerStoreOrdersTotal ?? null,
+  };
+}
+
+function resolvePositiveInt(n: number | null | undefined): number | null {
+  if (n == null || !Number.isFinite(n) || n < 1) return null;
+  return Math.floor(n);
 }
 
 export function mapApiOrder(

@@ -75,6 +75,8 @@ import { ParcelLiveTrackingScreen } from "@/components/orders/ParcelLiveTracking
 import { FoodOrderDeliveredScreen } from "@/components/orders/FoodOrderDeliveredScreen";
 import { InvoiceDownloadingToast } from "@/components/orders/InvoiceDownloadingToast";
 import { isSelfPickupOrder } from "@/lib/self-pickup-order";
+import { applyServerCustomerOrderStatus } from "@/lib/apply-customer-order-status";
+import { dismissLiveOrderProgressForOrder } from "@/components/LiveOrderProgressNotification";
 import {
   orderItemHasCustomizations,
   type OrderDetailLineItem,
@@ -848,6 +850,14 @@ export default function OrderDetailsScreen() {
             }}
             onCancelFlowChange={handleFoodCancelFlowChange}
             onOrderCancelled={() => {
+              applyServerCustomerOrderStatus({
+                queryClient,
+                orderIds: [orderId, foodLiveOrder.orderId, foodLiveOrder.formattedOrderId],
+                status: "CANCELLED",
+              });
+              void dismissLiveOrderProgressForOrder(foodLiveOrder.orderId);
+              setHoldFoodLiveTracking(false);
+              frozenFoodLiveOrderRef.current = null;
               void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
               void queryClient.invalidateQueries({ queryKey: ["your-orders"] });
               void import("@/lib/refreshCustomerWallet").then(({ refreshCustomerWallet }) =>
@@ -931,7 +941,7 @@ export default function OrderDetailsScreen() {
 
         <ScrollView
           style={styles.scroll}
-          contentContainerStyle={{ paddingBottom: insets.bottom + 88, paddingHorizontal: 16, paddingTop: 4 }}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 120, paddingHorizontal: 16, paddingTop: 4 }}
           showsVerticalScrollIndicator={false}
         >
           {showOrderPrepDelayMarquee ? (
@@ -1446,7 +1456,7 @@ export default function OrderDetailsScreen() {
           />
         </ScrollView>
 
-        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom + 8, 20) }]}>
           <TouchableOpacity style={styles.invoiceBtn} onPress={handleInvoice} activeOpacity={0.9}>
             <Ionicons name="download-outline" size={18} color={GREEN} />
             <AppText style={styles.invoiceText}>Invoice</AppText>

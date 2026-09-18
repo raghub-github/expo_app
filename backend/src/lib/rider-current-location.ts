@@ -14,6 +14,8 @@ export type UpsertRiderCurrentLocationInput = {
   headingDeg?: number | null;
   accuracyM?: number | null;
   seenAt?: Date;
+  /** Device GPS capture time; omit/null when the write is not from a device fix. */
+  gpsCapturedAt?: Date | null;
 };
 
 /**
@@ -39,6 +41,7 @@ export async function upsertRiderCurrentLocation(
     accuracyM: args.accuracyM ?? null,
     lastSeenAt: now,
     updatedAt: now,
+    gpsCapturedAt: args.gpsCapturedAt ?? null,
   };
 
   await db.transaction(async (tx) => {

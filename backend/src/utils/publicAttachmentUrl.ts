@@ -9,6 +9,15 @@ export function toAbsoluteClientMediaUrl(stored: string | null | undefined): str
   if (stored == null || typeof stored !== "string") return null;
   const u = stored.trim();
   if (!u) return null;
+  const lower = u.toLowerCase();
+  if (
+    lower === "pending" ||
+    lower === "n/a" ||
+    lower === "na" ||
+    lower.endsWith("/pending")
+  ) {
+    return null;
+  }
   if (u.startsWith("http://") || u.startsWith("https://")) return u;
 
   const base = getEnv().API_BASE_URL?.replace(/\/+$/, "");

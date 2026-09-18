@@ -7,7 +7,7 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import type { MenuListRow } from "../types";
 import type { MenuItem } from "@/services/merchant.service";
 import type { ItemOfferDisplay } from "@/lib/itemOfferDisplay";
-import { CATEGORY_RAIL_WIDTH, MENU_MASONRY_GUTTER } from "../constants/layout";
+import { CATEGORY_RAIL_WIDTH, MENU_MASONRY_EDGE_PAD, MENU_MASONRY_GUTTER } from "../constants/layout";
 import { MerchantDarkPalette, useMerchantUiDark } from "../merchantUiTheme";
 
 export type MerchantMenuMasonrySectionProps = {
@@ -49,10 +49,14 @@ export const MerchantMenuMasonrySection = React.memo(function MerchantMenuMasonr
 }: MerchantMenuMasonrySectionProps) {
   const dark = useMerchantUiDark();
   const gutter = MENU_MASONRY_GUTTER;
+  const edgePad = dark ? 0 : MENU_MASONRY_EDGE_PAD;
   const columns = 2;
   const { width: windowWidth } = useWindowDimensions();
   const [gridW, setGridW] = useState(0);
-  const fallbackGridW = Math.max(0, windowWidth - CATEGORY_RAIL_WIDTH - railInset);
+  const fallbackGridW = Math.max(
+    0,
+    windowWidth - (dark ? CATEGORY_RAIL_WIDTH : 0) - railInset - edgePad * 2
+  );
   const measuredGridW = gridW > 0 ? gridW : fallbackGridW;
   const colW = Math.max(1, Math.floor(measuredGridW / columns));
   const imageSize = Math.max(1, colW - gutter);
@@ -120,14 +124,21 @@ export const MerchantMenuMasonrySection = React.memo(function MerchantMenuMasonr
 
   return (
     <View
-      style={[styles.wrap, dark && styles.wrapDark]}
+      style={[
+        styles.wrap,
+        dark && styles.wrapDark,
+        !dark ? { paddingHorizontal: edgePad } : null,
+      ]}
       onLayout={(e) => {
         const w = e.nativeEvent.layout.width;
-        if (w > 0 && Math.round(w) !== Math.round(gridW)) setGridW(w);
+        const inner = dark ? w : Math.max(0, w - edgePad * 2);
+        if (inner > 0 && Math.round(inner) !== Math.round(gridW)) setGridW(inner);
       }}
     >
       {title ? (
-        <AppText style={[styles.title, dark && styles.titleDark]}>{title}</AppText>
+        <AppText style={[styles.title, dark && styles.titleDark, !dark && styles.titleClassic]}>
+          {title}
+        </AppText>
       ) : null}
       <View style={styles.grid}>{cards}</View>
     </View>
@@ -138,7 +149,7 @@ const styles = StyleSheet.create({
   wrap: {
     alignSelf: "stretch",
     maxWidth: "100%",
-    overflow: "hidden",
+    overflow: "visible",
     backgroundColor: GatiMitraColors.softBackground,
     paddingTop: 10,
     paddingBottom: 6,
@@ -153,6 +164,13 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
     paddingBottom: 6,
     paddingHorizontal: 8,
+  },
+  titleClassic: {
+    paddingHorizontal: 0,
+    fontSize: 14,
+    color: StoreTheme.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
   },
   titleDark: {
     color: MerchantDarkPalette.text,

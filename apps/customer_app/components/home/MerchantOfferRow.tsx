@@ -34,16 +34,11 @@ function parseOfferLines(offerText?: string | null, texts?: string[]): string[] 
   if (fromTexts.length > 0) {
     const lines: string[] = [];
     for (const part of fromTexts) {
-      // Already-compact list/inner lines (incl. "GatiMitra · …") — keep as-is.
-      if (
-        (/GatiMitra\s*·/i.test(part) || /\d+\s*%|₹|buy\s+\d+/i.test(part)) &&
-        part.length <= 48
-      ) {
-        if (!lines.includes(part)) lines.push(part);
+      // Caller-curated ticker lines (classic free-delivery ↔ items-at, etc.).
+      if (part.length > 0 && part.length <= 64 && !lines.includes(part)) {
+        lines.push(part);
         continue;
       }
-      const formatted = formatCardOfferLine(part) ?? (/\d+\s*%|₹|buy\s+\d+/i.test(part) ? part : null);
-      if (formatted && !lines.includes(formatted)) lines.push(formatted);
     }
     return lines;
   }

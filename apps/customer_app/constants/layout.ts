@@ -75,17 +75,17 @@ export function resolveBottomSafeInset(insetsBottom: number): number {
   return Math.max(0, insetsBottom);
 }
 
-/** Outer paddingTop + capsule — keep in sync with CustomerTabBar (8 + 64). */
-export const CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT = 8 + 64;
+/** Capsule / sheet content height — keep in sync with CustomerTabBar CAPSULE_H (64). */
+export const CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT = 64;
 
 /** Shared outer capsule radius — identical on Home / Food / Orders / Profile. */
-export const FLOATING_NAV_RADIUS = 20;
+export const FLOATING_NAV_RADIUS = 32;
 
 /** Active tab indicator radius — one token for all four tabs (Android needs this on the same style as bg). */
 export const ACTIVE_TAB_RADIUS = 16;
 
-/** Small air under the floating capsule above the system gesture / nav buttons. */
-export const CUSTOMER_TAB_BAR_FLOAT_GAP = 8;
+/** Connected bottom sheet — no float gap above the system gesture / home indicator. */
+export const CUSTOMER_TAB_BAR_FLOAT_GAP = 0;
 
 /** Bottom inset for tab / ride nav — never collapse under Android system chrome. */
 export function resolveTabBarBottomInset(insetsBottom: number): number {
@@ -118,12 +118,6 @@ export function screenManagesBottomNav(segments: readonly string[]): boolean {
 /** Extra lift for floating cart on food browse / merchant menu (above system nav). */
 export const FLOATING_CART_UI_LIFT = 20;
 
-/**
- * On Courier home, float the track pill above the prohibited-items + T&Cs footer row
- * (2× ~18px lines + gaps + footer padding).
- */
-export const PARCEL_TRACK_ABOVE_LEGAL_LIFT = 56;
-
 /** Full floating cart bar height (padding + thumb row). Keep in sync with GlobalFloatingCart `gmBar`. */
 export const FLOATING_CART_BAR_HEIGHT = 64;
 
@@ -135,6 +129,22 @@ export const FLOATING_CART_ABOVE_CTA_GAP = 16;
 
 /** @deprecated Use `FLOATING_CART_UI_LIFT` — kept for merchant menu FAB call sites. */
 export const MERCHANT_FLOATING_UI_LIFT = FLOATING_CART_UI_LIFT;
+
+/**
+ * On Courier home, float the track pill above the prohibited-items + T&Cs footer row
+ * (2× ~18px lines + gaps + footer padding).
+ */
+export const PARCEL_TRACK_ABOVE_LEGAL_LIFT = 56;
+
+/**
+ * Shared bottom Y for the floating tab capsule and cart/track dock when they
+ * replace each other. One formula everywhere — Home↔Food / Track on/off must
+ * not hop the chrome vertically.
+ * Keep in sync with `resolveCustomerFloatingChromeBottomPure` (node tests).
+ */
+export function resolveCustomerFloatingChromeBottom(rawBottom: number): number {
+  return resolveTabBarBottomInset(rawBottom);
+}
 
 /** Floating cart / dock — no artificial 48dp gap on Android. */
 export function resolveFloatingCartBottomOffset(
@@ -213,7 +223,7 @@ export const HEADER_PADDING_TOP = 0;
 export const STATUS_BAR_TO_HEADER_GAP = 8;
 
 /** Tabs Home only — breathing room under status icons (must stay ≥0; never overlap). */
-export const HOME_HEADER_BELOW_STATUS_GAP = 0;
+export const HOME_HEADER_BELOW_STATUS_GAP = 5;
 
 /** Reserved weather-chip block on tabs Home — must match HomeWeatherBanner shell. */
 export const HOME_WEATHER_BANNER_H = 56;
