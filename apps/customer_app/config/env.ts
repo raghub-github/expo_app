@@ -40,6 +40,25 @@ function isLocalhostApiUrl(url: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1)(\b|:)/.test(url.replace(/\/+$/, ""));
 }
 
+/**
+ * True for any host a real user's phone can NEVER reach over the internet:
+ * localhost + all RFC-1918 private ranges + link-local. A release build that
+ * somehow resolved to one of these (stale baked env, or an old "Configure API
+ * URL" override persisted in AsyncStorage) must be redirected to the public API,
+ * or every user is stranded on the "couldn't reach our servers" screen.
+ */
+function isPrivateOrLocalApiUrl(url: string): boolean {
+  const host = (url.replace(/\/+$/, "").match(/^https?:\/\/([^:/]+)/i)?.[1] ?? "").toLowerCase();
+  if (!host) return false;
+  if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0") return true;
+  return (
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(host) ||
+    /^169\.254\./.test(host)
+  );
+}
+
 function isPlausibleIpv4(host: string): boolean {
   const parts = host.split(".");
   if (parts.length !== 4) return false;
@@ -235,9 +254,15 @@ export function getConfig(): {
 
   // Runtime override (from AsyncStorage, set via the in-app "Configure API URL"
   // sheet) wins over env — then heal stale private LAN IPs to Metro's host.
-  const apiBaseUrl = healStaleLanApiUrl(
+  let apiBaseUrl = healStaleLanApiUrl(
     runtimeApiBaseUrlOverride ?? resolveApiBaseUrl(rawUrl)
   );
+  // Release builds must talk to the public API. Never let a stale localhost / LAN
+  // value (baked env or a persisted override from a dev build) strand real users
+  // on "couldn't reach our servers". __DEV__ builds keep their local host.
+  if (!__DEV__ && isPrivateOrLocalApiUrl(apiBaseUrl)) {
+    apiBaseUrl = "https://api.gatimitra.com";
+  }
 
   const googleMapsApiKey =
     asNonEmptyString(process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY) ??
