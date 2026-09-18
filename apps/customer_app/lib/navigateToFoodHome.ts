@@ -94,23 +94,35 @@ function warmNearbyMerchantImagery(): void {
  * `navigatePrimaryTab("food")` is a same-tab no-op — so we must dismiss the
  * overlay stack first or HOME edge / Food taps appear broken.
  */
-export function navigateToFoodHome(router: Router): void {
+export function navigateToFoodHome(
+  router: Router,
+  opts?: { fromOverlay?: boolean }
+): void {
   resetFoodHomeListScrollGuard();
 
+  // Collapse ONLY an overlay stack that sits ABOVE the tabs (e.g. /home/merchant,
+  // /checkout) so a Food tap from there lands on the Food TAB. Strictly gate every
+  // dismiss on canDismiss():
+  //   - On a bare primary tab (Home) canDismiss() is false → we do NOT dismiss.
+  //     Dismissing there re-anchored Expo Router to the root "index" screen, whose
+  //     redirect to "/(tabs)/" then bounced the user off Food back to Home ~1s
+  //     later (the "tap Food → shows restaurants → kicked to Home → tap again" bug).
+  //   - NEVER call router.back() — it walks arbitrary history below the tabs and
+  //     was the other way this bounced.
   try {
-    const dismissAll = (router as { dismissAll?: () => void }).dismissAll;
-    if (typeof dismissAll === "function") {
-      dismissAll.call(router);
-    } else {
-      const canDismiss = (router as { canDismiss?: () => boolean }).canDismiss;
+    const canDismiss = (router as { canDismiss?: () => boolean }).canDismiss;
+    // Two independent guards: the caller must say it is on an overlay above the
+    // tabs, AND the router must agree it can dismiss. Either being false = no-op.
+    if (opts?.fromOverlay === true && typeof canDismiss === "function" && canDismiss.call(router)) {
+      const dismissAll = (router as { dismissAll?: () => void }).dismissAll;
       const dismiss = (router as { dismiss?: () => void }).dismiss;
-      if (typeof canDismiss === "function" && typeof dismiss === "function") {
+      if (typeof dismissAll === "function") {
+        dismissAll.call(router);
+      } else if (typeof dismiss === "function") {
         let guard = 0;
         while (canDismiss.call(router) && guard++ < 12) {
           dismiss.call(router);
         }
-      } else if (typeof router.canGoBack === "function" && router.canGoBack()) {
-        router.back();
       }
     }
   } catch {
