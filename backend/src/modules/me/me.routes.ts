@@ -3,7 +3,7 @@ import multipart from "@fastify/multipart";
 import { z } from "zod";
 import { getDb, withSqlRetry } from "../../db/client.js";
 import { userProfiles, customers, accountDeletionRequests } from "../../db/schema.js";
-import { eq, and, ne } from "drizzle-orm";
+import { eq, and, ne, isNull } from "drizzle-orm";
 import { auth } from "../../plugins/auth.js";
 import {
   sendCustomerEmailVerificationOtp,
@@ -15,6 +15,7 @@ import {
   markCustomerEmailVerified,
 } from "../../lib/customer-email-verified.js";
 import { getCustomerLifetimeSavingsInr } from "./customer-lifetime-savings.js";
+import { customerNeedsReferralCode } from "./customer-referral-eligibility.js";
 import { getReferralSettings } from "../referral/referral.config.service.js";
 import { referralTrackingEnabled } from "../referral/referral.participants.js";
 import { getActiveCustomerSubscription } from "../subscription/customer-subscription.service.js";
@@ -72,6 +73,46 @@ async function generateUniqueReferralCode(
     if (existing.length === 0) return code;
   }
   return (name + uid + "Ref" + Date.now().toString(36).slice(-6)).toUpperCase();
+}
+
+/**
+ * Self-healing backfill: every eligible customer must own a referral code.
+ * The PATCH-time generation can be missed (referral toggle was OFF at completion,
+ * a transient DB error while minting was swallowed, or the flow completed the
+ * profile without ever hitting the mint branch). This ensures the code the next
+ * time the profile is read, so a new user never ends up permanently without one.
+ * Returns the (possibly updated) row; a no-op + best-effort when not eligible.
+ */
+async function ensureCustomerReferralCode(
+  db: ReturnType<typeof getDb>,
+  row: typeof customers.$inferSelect,
+  log?: { warn?: (obj: unknown, msg?: string) => void }
+): Promise<typeof customers.$inferSelect> {
+  if (!customerNeedsReferralCode(row)) return row;
+  const fullName = (row.fullName ?? "").trim();
+  const settings = await getReferralSettings().catch(() => null);
+  const on = settings ? referralTrackingEnabled(settings, "customer") : true;
+  if (!on) return row;
+  try {
+    const code = (await generateUniqueReferralCode(db, fullName, row.customerId)).toUpperCase();
+    // Guard on isNull so two concurrent reads can't both write — the loser's WHERE
+    // matches nothing and we read back the winner's code.
+    const [updated] = await db
+      .update(customers)
+      .set({ referralCode: code, updatedAt: new Date() })
+      .where(and(eq(customers.customerId, row.customerId), isNull(customers.referralCode)))
+      .returning();
+    if (updated) return updated;
+    const [fresh] = await db
+      .select()
+      .from(customers)
+      .where(eq(customers.customerId, row.customerId))
+      .limit(1);
+    return fresh ?? { ...row, referralCode: code };
+  } catch (err) {
+    log?.warn?.({ err }, "referral code backfill skipped");
+    return row;
+  }
 }
 
 const genderSchema = z.enum(["male", "female", "prefer_not_to_say"]);
@@ -297,7 +338,10 @@ export async function meRoutes(app: FastifyInstance) {
               message: "Your account is no longer available. Please sign in again.",
             });
           }
-          return customerProfileResponse(db, rows[0]!);
+          // Backfill a missing referral code for eligible users (self-heals anyone
+          // the PATCH-time mint missed) so it shows in the app + lands in the DB.
+          const ensured = await ensureCustomerReferralCode(db, rows[0]!, req.log);
+          return customerProfileResponse(db, ensured);
         }
 
         if (sub.startsWith("usr_")) {
