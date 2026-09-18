@@ -4,8 +4,8 @@ import {
   CLASSIC_SEARCH_PILL_ABOVE_CHROME_GAP,
   CLASSIC_SEARCH_PILL_NAV_CLEARANCE,
   resolveClassicSearchPillBottom,
-} from "./classicSearchPillLayout.ts";
-import { useClassicFoodChromeStore } from "../store/classicFoodChromeStore.ts";
+} from "./classicSearchPillLayout";
+import { useClassicFoodChromeStore } from "../store/classicFoodChromeStore";
 
 describe("resolveClassicSearchPillBottom", () => {
   it("clears the HOME edge capsule above chrome bottom", () => {

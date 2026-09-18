@@ -4,11 +4,11 @@ import {
   parseElectronicVerifyRateLimitFromLimitsMap,
   parseElectronicVerifyRateLimitFromResponse,
   readElectronicVerifyRateLimitPayload,
-} from "./electronic-verify-rate-limit-parse.ts";
+} from "./electronic-verify-rate-limit-parse";
 import {
   isElectronicVerifyRateLimitMessage,
   normalizeAppliedElectronicVerifyRateLimit,
-} from "./electronic-verify-rate-limit-normalize.ts";
+} from "./electronic-verify-rate-limit-normalize";
 
 describe("electronic verify rate limit — permanently disabled", () => {
   it("parsers always return null (never create a timed lock)", () => {

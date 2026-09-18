@@ -52,10 +52,6 @@ function MerchantTabsShell() {
         lazy: true,
         freezeOnBlur: true,
         animation: "none",
-        statusBarHidden: false,
-        statusBarStyle: "dark",
-        statusBarTranslucent: false,
-        statusBarBackgroundColor: GatiMitraMerchant.surfaceWarm,
         tabBarActiveTintColor: GatiMitraMerchant.tabActive,
         tabBarInactiveTintColor: GatiMitraMerchant.tabInactive,
         tabBarLabelStyle: {

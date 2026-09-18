@@ -371,6 +371,7 @@ export default function FoodMerchantsScreen() {
     classicUnder250Enabled,
     classicUnder250Title,
     classicUnder250HeroImageUrl,
+    classicUnder250TabImageUrl,
     classicUnder250MaxPrice,
     discoveryDealsAtMaxPrice,
     discoveryDealsAtImageUrl,
@@ -588,6 +589,8 @@ export default function FoodMerchantsScreen() {
     prefetchMealsUnder250HeroMedia({
       gridFirstUnder250TabImageUrl,
       gridFirstUnder250HeroImageUrl,
+      classicUnder250HeroImageUrl,
+      classicUnder250TabImageUrl,
       discoveryDealsAtHeroImageUrl,
       discoveryDealsAtImageUrl,
       discoveryCrazyDealsImageUrl,
@@ -1172,7 +1175,7 @@ export default function FoodMerchantsScreen() {
       basePrice: item.basePrice ?? undefined,
       discountPercentage: item.discountPercentage ?? undefined,
       isVeg: item.isVeg,
-      imageUrl: item.imageUrl,
+      imageUrl: item.imageUrl ?? undefined,
       flashSale: item.flashSale
         ? {
             offer_id: item.flashSale.offerId,

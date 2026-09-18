@@ -53,7 +53,9 @@ function partnerDataFromExchange(partner: { parent: unknown; childStores: unknow
   if (!parsed || !hasValidMerchantIdentity(parsed)) {
     throw new Error(NO_MERCHANT_MESSAGE);
   }
-  return parsed;
+  // parsePartnerData validates the identity shape; childStores is typed unknown[] in the
+  // pure identity module (no AuthContext import) but is structurally a PartnerData here.
+  return parsed as unknown as PartnerData;
 }
 
 type LastExchange = null | "otp";

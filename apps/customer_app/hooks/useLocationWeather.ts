@@ -1,4 +1,4 @@
-import { type QueryClient, useQuery } from "@tanstack/react-query";
+import { type QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
 import { weatherService, type CustomerWeatherContext } from "@/services/weather.service";
 import {
   getBootstrapWeather,
@@ -45,7 +45,7 @@ export function locationWeatherQueryOptions(params: LocationWeatherParams) {
   const enabled =
     lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng);
 
-  return {
+  return queryOptions({
     queryKey: locationWeatherQueryKey(params),
     queryFn: async ({ client, queryKey }) => {
       const data = await weatherService.getForLocationSafe({
@@ -79,7 +79,7 @@ export function locationWeatherQueryOptions(params: LocationWeatherParams) {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     retry: 1,
-  } as const;
+  });
 }
 
 export function patchLocationWeatherCache(

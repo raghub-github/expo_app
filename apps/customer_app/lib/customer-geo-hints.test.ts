@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { extractCustomerGeoHints } from "./customer-geo-hints.ts";
+import { extractCustomerGeoHints } from "./customer-geo-hints";
 
 describe("extractCustomerGeoHints", () => {
   it("does not treat Current location placeholder as state", () => {

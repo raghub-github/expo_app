@@ -3,7 +3,7 @@
  * real position (not a last-known point from a killed/terminated session).
  * Never blocks accept longer than ACCEPT_LOCATION_REFRESH_MS — backend remains authoritative.
  */
-import { getDeviceId } from "@/src/utils/deviceId";
+import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { acquireAndCommitRiderLocation } from "@/src/services/location/riderLocationController";
 import { pingLocation } from "@/src/services/location/locationPinger";
@@ -27,7 +27,7 @@ export async function refreshRiderLocationBeforeAccept(): Promise<"ok" | "skippe
           riderDispatchWarn("accept location refresh failed", { reason: acquired.reason });
           return "failed";
         }
-        const deviceId = await getDeviceId();
+        const deviceId = await getOrCreateDeviceId();
         await pingLocation({
           session,
           deviceId,
@@ -35,10 +35,10 @@ export async function refreshRiderLocationBeforeAccept(): Promise<"ok" | "skippe
             tsMs: Date.now(),
             lat: acquired.coords.latitude,
             lng: acquired.coords.longitude,
-            accuracyM: acquired.coords.accuracy ?? null,
-            altitudeM: null,
-            speedMps: null,
-            headingDeg: null,
+            accuracyM: acquired.coords.accuracy ?? undefined,
+            altitudeM: undefined,
+            speedMps: undefined,
+            headingDeg: undefined,
             mocked: false,
             provider: "fused",
           },

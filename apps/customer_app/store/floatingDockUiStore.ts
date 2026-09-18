@@ -9,7 +9,7 @@ export type FloatingFootingOwner = "nav" | "dock";
  * - Cart/track live → nav auto-collapses to left HOME edge; dock owns footing.
  * - User expands nav → dock collapses to right CART/TRACK edge.
  */
-type FloatingDockUiState = {
+export type FloatingDockUiState = {
   dockVisible: boolean;
   dockKind: FloatingDockKind;
   footingOwner: FloatingFootingOwner;

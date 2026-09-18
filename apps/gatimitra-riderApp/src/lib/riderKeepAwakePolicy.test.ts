@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { shouldRiderKeepScreenAwake } from "./riderKeepAwakePolicy.ts";
+import { shouldRiderKeepScreenAwake } from "./riderKeepAwakePolicy";
 
 describe("shouldRiderKeepScreenAwake", () => {
   const base = {

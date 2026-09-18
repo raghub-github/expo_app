@@ -4,7 +4,7 @@ import {
   BASE_MENU_ITEM_VARIANT_ID,
   prependBaseMenuItemVariant,
   variantRepresentsBaseItem,
-} from "./menu-item-base-variant.ts";
+} from "./menu-item-base-variant";
 
 test("prepend keeps steamed base when fried variant shares size/price", () => {
   const fried = {

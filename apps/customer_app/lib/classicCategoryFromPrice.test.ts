@@ -73,7 +73,7 @@ describe("classicCategoryFromPrice", () => {
           storePublicId: "s",
           storeName: "A",
           isVeg: true,
-        },
+        } as unknown as FoodItemUnderPrice,
         "Tea"
       ),
       false

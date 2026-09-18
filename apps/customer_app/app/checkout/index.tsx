@@ -4496,7 +4496,7 @@ function CheckoutScreen() {
         },
       });
       if (isCheckoutSheet) {
-        queue.queueMicrotask(() => {
+        void Promise.resolve().then(() => {
           useCheckoutSheetStore.getState().hide();
         });
       }

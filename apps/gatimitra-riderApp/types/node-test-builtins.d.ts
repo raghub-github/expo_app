@@ -33,5 +33,5 @@ declare module "node:test" {
   export function after(fn: TestFn): void;
   export function beforeEach(fn: TestFn): void;
   export function afterEach(fn: TestFn): void;
-  export function mock: unknown;
+  export const mock: unknown;
 }

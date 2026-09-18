@@ -272,7 +272,9 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const capsuleTabCount = capsuleTabs.length;
 
   useEffect(() => {
-    setCustomerTabsNavigation(navigation);
+    setCustomerTabsNavigation(
+      navigation as unknown as Parameters<typeof setCustomerTabsNavigation>[0]
+    );
     return () => setCustomerTabsNavigation(null);
   }, [navigation]);
 

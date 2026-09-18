@@ -272,7 +272,7 @@ describe("waiting for review → home (not full pending page)", () => {
       "/(tabs)/orders",
     );
     assert.equal(
-      resolveOnboardingHref("pending_approval", "payment", "payment", {
+      resolveOnboardingHref("pending_approval", undefined, "payment", {
         paymentCompleted: true,
         workLocationConfirmed: true,
         referralPromptHandled: true,

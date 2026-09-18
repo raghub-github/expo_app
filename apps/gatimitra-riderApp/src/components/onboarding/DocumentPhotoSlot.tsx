@@ -185,7 +185,6 @@ export function DocumentPhotoSlot({
               resizeMode="cover"
               onError={() => setImgFailed(true)}
               onLoad={() => setImgFailed(false)}
-              pointerEvents="none"
             />
           </Pressable>
         ) : showPdfChip ? (

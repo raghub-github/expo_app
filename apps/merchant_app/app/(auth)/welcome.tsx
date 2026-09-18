@@ -46,9 +46,9 @@ export default function WelcomeScreen() {
   );
   const slides = useMemo(
     () =>
-      remoteByKey
-        .filter((entry): entry is readonly [string, string] => Boolean(entry[1]))
-        .map(([assetKey, remoteUrl]) => ({ assetKey, remoteUrl })),
+      remoteByKey.flatMap(([assetKey, remoteUrl]) =>
+        remoteUrl ? [{ assetKey, remoteUrl }] : []
+      ),
     [remoteByKey]
   );
   const [localByKey, setLocalByKey] = useState<Record<string, string>>({});

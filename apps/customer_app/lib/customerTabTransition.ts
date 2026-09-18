@@ -20,9 +20,8 @@ const FALLBACK_W = Dimensions.get("window").width;
 
 export function forCustomerTabSlide({
   current,
-  layouts,
 }: BottomTabSceneInterpolationProps) {
-  const width = layouts?.screen?.width || FALLBACK_W;
+  const width = FALLBACK_W;
   const progress = current.progress;
   const translateX = progress.interpolate({
     inputRange: [-1, 0, 1],
