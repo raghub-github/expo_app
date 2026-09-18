@@ -143,6 +143,26 @@ export const profileService = {
           });
           last = data;
         }
+        // Persist the authoritative server response to the local profile cache so
+        // the cold-start entry gate (app/index → readCachedProfile) sees the latest
+        // profile_completed immediately. Without this the cache stayed stale until a
+        // background fetchProfileWithCache happened to finish, so killing the app
+        // right after completing the profile re-showed the onboarding form.
+        if (last) {
+          try {
+            const { writeCachedProfile, readSyncCachedProfile } = await import(
+              "@/lib/profileCache"
+            );
+            // PATCH omits the heavy lifetime-savings aggregate (GET keeps it), so
+            // MERGE over the existing cache rather than replacing — never drop a
+            // field, but take every field the update returned (incl.
+            // profile_completed, the flag the cold-start gate reads).
+            const prev = readSyncCachedProfile();
+            await writeCachedProfile(prev ? { ...prev, ...last } : last);
+          } catch {
+            /* non-blocking — disk cache stays best-effort */
+          }
+        }
         return last!;
       } finally {
         profileUpdateInFlight = null;

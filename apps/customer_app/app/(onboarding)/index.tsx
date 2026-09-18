@@ -9,7 +9,8 @@ import { AppText } from "@/components/AppText";
 import { View, TextInput, TouchableOpacity, ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, ScrollView, Pressable, Image, Keyboard, Switch } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { PROFILE_QUERY_KEY } from "@/lib/profileCache";
 import { Ionicons } from "@expo/vector-icons";
 import { STORAGE_KEYS } from "@/constants";
 import { profileService, GENDERS, AGE_GROUPS, type Gender } from "@/services/profile.service";
@@ -40,6 +41,7 @@ const ERROR = "#DC2626";
 export default function OnboardingProfileScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [ageGroup, setAgeGroup] = useState("");
@@ -120,7 +122,7 @@ export default function OnboardingProfileScreen() {
         }
         referredBy = code;
       }
-      await profileService.updateProfile({
+      const updated = await profileService.updateProfile({
         full_name: fullName.trim(),
         email: email.trim() ? email.trim().toLowerCase() : undefined,
         age_group: ageGroup || undefined,
@@ -128,6 +130,14 @@ export default function OnboardingProfileScreen() {
         profile_completed: true,
         referred_by: referredBy,
       });
+      // Reflect profile_completed everywhere immediately: updateProfile already
+      // wrote the on-disk cache the cold-start gate reads; keep the live React
+      // Query cache in lockstep so no in-session gate re-shows this form.
+      if (updated) {
+        queryClient.setQueryData(PROFILE_QUERY_KEY, (prev: typeof updated | undefined) =>
+          prev ? { ...prev, ...updated } : updated
+        );
+      }
       // No delivery-address step at registration — go straight to permissions
       // (which asks for the OS location permission) and let the home use the
       // device's current GPS location. The user adds an address later, only when
