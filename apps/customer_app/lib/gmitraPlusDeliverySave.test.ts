@@ -4,7 +4,7 @@ import {
   isMembershipDeliveryUpsellEligible,
   resolveGmitraPlusDeliverySave,
   resolveMembershipDeliverySavingsDisplay,
-} from "./gmitraPlusDeliverySave.ts";
+} from "./gmitraPlusDeliverySave";
 
 describe("isMembershipDeliveryUpsellEligible", () => {
   it("is true only within free-delivery radius", () => {

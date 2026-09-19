@@ -49,11 +49,13 @@ function isIncompleteProfileAllowedRoute(segments: readonly string[]): boolean {
 async function resolveProfileCompleted(): Promise<boolean> {
   const sync = readSyncCachedProfile();
   if (sync?.profile_completed === true) return true;
-  if (sync != null && sync.profile_completed !== true) return false;
+  // A present-but-not-completed cache is authoritative (don't fall through to the
+  // network). profile_completed is narrowed to false here, so the null check suffices.
+  if (sync != null) return false;
 
   const cached = await readCachedProfile();
   if (cached?.profile_completed === true) return true;
-  if (cached != null && cached.profile_completed !== true) return false;
+  if (cached != null) return false;
 
   try {
     const profile = await fetchProfileWithCache();

@@ -4,7 +4,7 @@ import {
   formatMinOrderLockReason,
   parseMinOrderFromText,
   resolveOfferMinOrderGap,
-} from "./checkoutOfferMinOrder.ts";
+} from "./checkoutOfferMinOrder";
 
 describe("parseMinOrderFromText", () => {
   it("reads Min order ₹199 from summary", () => {
