@@ -68,6 +68,13 @@ services:
       context: ../..
       dockerfile: backend/Dockerfile
     restart: unless-stopped
+    # Auto-restart if the process HANGS (Docker healthcheck goes unhealthy).
+    # `restart: unless-stopped` alone only covers a CRASH (process exit) — a hung
+    # but alive process (e.g. DB pool exhausted → rider OTP verify queues forever)
+    # is never restarted by Docker on its own, so it stayed down until a manual
+    # restart. The `autoheal` service (below) watches this label + healthcheck.
+    labels:
+      autoheal: "true"
     env_file:
       - ../../backend/.env
     environment:
@@ -308,6 +315,25 @@ services:
     expose:
       - "3001"
     networks: [app]
+
+  # Watchdog: restarts any container whose Docker HEALTHCHECK reports "unhealthy"
+  # (opt-in via label `autoheal: "true"`). This is what makes a HUNG-but-alive
+  # process (which `restart: unless-stopped` never restarts) recover on its own —
+  # e.g. a backend whose DB pool is exhausted and rider OTP verify is timing out.
+  # Talks only to the Docker socket; no app network, no DB, tiny footprint.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    restart: unless-stopped
+    environment:
+      # Only watch containers labelled autoheal=true (the backend, for now).
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      # Poll health every 10s; give a container 30s after (re)start before acting
+      # (longer than the backend healthcheck's own 15s start-period).
+      AUTOHEAL_INTERVAL: "10"
+      AUTOHEAL_START_PERIOD: "30"
+      AUTOHEAL_DEFAULT_STOP_TIMEOUT: "20"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
 networks:
   app:
