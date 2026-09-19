@@ -93,24 +93,30 @@ function warmNearbyMerchantImagery(): void {
  * Merchant /home stack sits above tabs. If Food is already the active tab,
  * `navigatePrimaryTab("food")` is a same-tab no-op — so we must dismiss the
  * overlay stack first or HOME edge / Food taps appear broken.
+ *
+ * Never call `dismissAll` unless `canDismiss()` — otherwise React Navigation
+ * logs "The action 'POP_TO_TOP' was not handled by any navigator".
  */
 export function navigateToFoodHome(router: Router): void {
   resetFoodHomeListScrollGuard();
 
   try {
-    const dismissAll = (router as { dismissAll?: () => void }).dismissAll;
-    if (typeof dismissAll === "function") {
-      dismissAll.call(router);
-    } else {
-      const canDismiss = (router as { canDismiss?: () => boolean }).canDismiss;
-      const dismiss = (router as { dismiss?: () => void }).dismiss;
-      if (typeof canDismiss === "function" && typeof dismiss === "function") {
-        let guard = 0;
-        while (canDismiss.call(router) && guard++ < 12) {
-          dismiss.call(router);
+    const canDismiss = (router as { canDismiss?: () => boolean }).canDismiss;
+    const hasStackToDismiss =
+      typeof canDismiss === "function" ? Boolean(canDismiss.call(router)) : false;
+
+    if (hasStackToDismiss) {
+      const dismissAll = (router as { dismissAll?: () => void }).dismissAll;
+      if (typeof dismissAll === "function") {
+        dismissAll.call(router);
+      } else {
+        const dismiss = (router as { dismiss?: () => void }).dismiss;
+        if (typeof dismiss === "function") {
+          let guard = 0;
+          while (canDismiss!.call(router) && guard++ < 12) {
+            dismiss.call(router);
+          }
         }
-      } else if (typeof router.canGoBack === "function" && router.canGoBack()) {
-        router.back();
       }
     }
   } catch {

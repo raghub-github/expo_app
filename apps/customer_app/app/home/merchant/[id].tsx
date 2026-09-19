@@ -20,7 +20,7 @@ import { previewEtaRange, formatEtaRange } from "@/lib/etaPreview";
 import { offersService, type MerchantOfferItem, type PlatformOfferItem } from "@/services/offers.service";
 import { buildItemOfferDisplayMap, offerPriority, offerTargetsItem, isItemSurface, parseMenuFlashSale } from "@/lib/itemOfferDisplay";
 import { computeIsDiscountEligible } from "@/lib/cartDiscountEligibility";
-import { getBasePrice, getSellingPrice } from "@/components/store/storeMenuUtils";
+import { getBasePrice, getItemDiet, getSellingPrice } from "@/components/store/storeMenuUtils";
 import {
   STORE_OFFERS_STALE_MS,
   buildStoreOffersQueryKey,
@@ -108,6 +108,7 @@ import {
   filterMenuItems,
   hasActiveAdvancedFilters,
   resolvePairingCompanionsForAnchor,
+  menuItemHasFlashDeal,
 } from "@/components/store/storeMenuUtils";
 import {
   MerchantDetailFlashList,
@@ -165,6 +166,8 @@ import {
 import { StoreOffersSheet } from "@/components/store/StoreOffersSheet";
 import { StoreScheduleSheet } from "@/components/store/StoreScheduleSheet";
 import { LongDistanceBottomSheet } from "@/components/store/LongDistanceBottomSheet";
+import { useFlashSaleQtyLimitSheetStore } from "@/store/flashSaleQtyLimitSheetStore";
+import { useFlashSaleQtyLimitAckStore } from "@/store/flashSaleQtyLimitAckStore";
 import { MerchantRatingExplainerSheet } from "@/components/store/MerchantRatingExplainerSheet";
 import type { PastOrderItem } from "@/components/store/StorePastOrderRow";
 import { orderService, type OrderSummary } from "@/services/order.service";
@@ -329,6 +332,15 @@ export default function MerchantDetailScreen() {
   const [offersSheetVisible, setOffersSheetVisible] = useState(false);
   const [scheduleSheetVisible, setScheduleSheetVisible] = useState(false);
   const [ratingSheetVisible, setRatingSheetVisible] = useState(false);
+  /** Root-hosted Flash Sale limit sheet — hide elevated dock / FAB while open. */
+  const flashQtyLimitSheetOpen = useFlashSaleQtyLimitSheetStore((s) => s.payload != null);
+  /** After "Want more" on the Flash Sale limit sheet, further + on that line skips the sheet. */
+  const flashQtyLimitAckedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    return () => {
+      useFlashSaleQtyLimitSheetStore.getState().close();
+    };
+  }, []);
   const [headerSearchExpanded, setHeaderSearchExpanded] = useState(false);
   const headerSearchExpandedSv = useSharedValue(false);
   const headerSearchInputRef = useRef<TextInput>(null);
@@ -1255,6 +1267,13 @@ export default function MerchantDetailScreen() {
   );
 
   const showHighlyReorderedChip = highlyReorderedIds.size > 0;
+  const showFlashDealChip = useMemo(() => {
+    if ((merchant?.menu ?? []).some((m) => menuItemHasFlashDeal(m))) return true;
+    for (const offer of itemOfferById.values()) {
+      if (offer.kind === "flash_sale") return true;
+    }
+    return false;
+  }, [merchant?.menu, itemOfferById]);
 
   const offerPriceTiers = useMemo(
     () => buildOfferPriceTiers(merchant?.menu ?? []),
@@ -1404,6 +1423,7 @@ export default function MerchantDetailScreen() {
           menuItemId: String(item.menuItemId != null ? item.menuItemId : item.id),
           name: item.name,
           price: item.price,
+          basePrice: getBasePrice(item) ?? undefined,
           isVeg: item.isVeg,
           imageUrl: item.imageUrl ?? null,
           specialInstructions: specialInstructions ?? null,
@@ -1643,10 +1663,73 @@ export default function MerchantDetailScreen() {
         }
         return;
       }
+      const menuRow = findMenuItemForCart(itemId, menuItemId);
+      const flash = menuRow
+        ? parseMenuFlashSale(menuRow as unknown as Record<string, unknown>)
+        : null;
+      if (flash) {
+        const line = useCartStore.getState().items.find((i) => i.lineId === lineId);
+        const maxQty = flash.maxFlashQuantity;
+        if (maxQty != null && line && line.quantity >= maxQty) {
+          if (!flashQtyLimitAckedRef.current.has(lineId) && !useFlashSaleQtyLimitAckStore.getState().hasAcked(lineId)) {
+            const row = menuRow;
+            useFlashSaleQtyLimitSheetStore.getState().open(
+              {
+                lineId,
+                maxFlashQuantity: maxQty,
+                itemName: row?.name?.trim() || "This item",
+                itemSubtitle: row?.description?.trim() || null,
+                imageUri: row?.imageUrl?.trim() || null,
+                diet: row ? getItemDiet(row) : "veg",
+                quantity: line.quantity,
+                unitPrice: line.price,
+                regularUnit:
+                  flash.originalCustomerUnit > line.price
+                    ? flash.originalCustomerUnit
+                    : getBasePrice(row as MenuItem) ?? line.price,
+              },
+              {
+                onGotIt: () => {
+                  flashQtyLimitAckedRef.current.add(lineId);
+                  useFlashSaleQtyLimitAckStore.getState().markAcked(lineId);
+                },
+                onWantMore: () => {
+                  flashQtyLimitAckedRef.current.add(lineId);
+                  useFlashSaleQtyLimitAckStore.getState().markAcked(lineId);
+                  updateQuantity(lineId, 1);
+                },
+                onIncrement: () => {
+                  flashQtyLimitAckedRef.current.add(lineId);
+                  useFlashSaleQtyLimitAckStore.getState().markAcked(lineId);
+                  updateQuantity(lineId, 1);
+                },
+                onDecrement: () => {
+                  const current = useCartStore.getState().items.find((i) => i.lineId === lineId);
+                  if (!current) {
+                    useFlashSaleQtyLimitSheetStore.getState().close();
+                    return;
+                  }
+                  if (current.quantity <= 1) {
+                    updateQuantity(lineId, -1);
+                    flashQtyLimitAckedRef.current.delete(lineId);
+                    useFlashSaleQtyLimitAckStore.getState().clearAcked(lineId);
+                    useFlashSaleQtyLimitSheetStore.getState().close();
+                    return;
+                  }
+                  updateQuantity(lineId, -1);
+                },
+              }
+            );
+            return;
+          }
+          // Acked — allow over-limit qty; billing applies regular price past the cap.
+        }
+      }
       updateQuantity(lineId, 1);
     },
-    [getCartLineIdForItem, updateQuantity]
+    [getCartLineIdForItem, findMenuItemForCart, updateQuantity]
   );
+
   const handleDecrement = useCallback(
     (itemId: string, menuItemId?: number) => {
       const lineId = getCartLineIdForItem(itemId, menuItemId);
@@ -1658,6 +1741,11 @@ export default function MerchantDetailScreen() {
         return;
       }
       updateQuantity(lineId, -1);
+      // cartStore clears ack when the line is removed; keep local ref in sync.
+      const still = useCartStore.getState().items.find((i) => i.lineId === lineId);
+      if (!still) {
+        flashQtyLimitAckedRef.current.delete(lineId);
+      }
     },
     [getCartLineIdForItem, updateQuantity]
   );
@@ -1809,7 +1897,7 @@ export default function MerchantDetailScreen() {
       quickFilter: filter,
       advanced: advancedFilters,
       highlyReorderedIds,
-    });
+    }).filter((m) => m.inStock !== false);
     if (advancedFilters.sortBy !== "default") {
       const title =
         advancedFilters.sortBy === "price_asc" ? "Price: low to high" : "Price: high to low";
@@ -1828,11 +1916,33 @@ export default function MerchantDetailScreen() {
     isDiscoveryLayout,
   ]);
 
+  const oosMenuItems = useMemo(() => {
+    const menu = merchant?.menu;
+    if (!menu || !Array.isArray(menu) || menu.length === 0) return [];
+    const list = filterMenuItems(menu, {
+      searchQuery: debouncedMenuSearchQuery,
+      quickFilter: filter,
+      advanced: advancedFilters,
+      highlyReorderedIds,
+    }).filter((m) => m.inStock === false);
+    if (list.length === 0) return [];
+    return attachListRowKeys([
+      { title: "Currently unavailable", data: list as never, isSmart: true },
+    ])[0]?.data ?? [];
+  }, [
+    merchant?.menu,
+    filter,
+    debouncedMenuSearchQuery,
+    advancedFilters,
+    highlyReorderedIds,
+  ]);
+
   const catalogSections = useMemo((): MenuSection[] => {
     const menu = merchant?.menu;
     if (!menu || !Array.isArray(menu) || menu.length === 0) return [];
+    const inStockOnly = menu.filter((m) => m.inStock !== false);
     const grouped = attachListRowKeys(
-      sortMenuSectionsForInnerPage(buildMenuSections(menu))
+      sortMenuSectionsForInnerPage(buildMenuSections(inStockOnly))
     );
     return isDiscoveryLayout ? sortMenuSectionsMultiItemFirst(grouped) : grouped;
   }, [merchant?.menu, isDiscoveryLayout]);
@@ -1916,10 +2026,8 @@ export default function MerchantDetailScreen() {
     return resolveStoreContinueBarHeight(true, cartDockBottomInset) + fabClearance;
   }, [cartDockBottomInset, isDiscoveryLayout]);
 
-  const listContentContainerStyle = useMemo(
-    () => ({ paddingBottom: Math.max(24, footerBottomPadding) }),
-    [footerBottomPadding]
-  );
+  /** Cart / FAB clearance lives on the gray StoreFooterSection — do not add white list padding. */
+  const listContentContainerStyle = useMemo(() => ({ paddingBottom: 0 }), []);
 
   const handleStoreCartContinue = useCallback(() => {
     if (isStoreClosedForStatus) return;
@@ -1963,6 +2071,7 @@ export default function MerchantDetailScreen() {
         hideInfoCard: isDiscoveryLayout,
         masonry: isDiscoveryLayout,
         classicImagedLayout: isClassicLayout,
+        oosItems: oosMenuItems,
       });
       perfMark("merchant:flashListData:built");
       perfMeasure("merchant:flashListData:build", "merchant:flashListData:built");
@@ -1981,6 +2090,7 @@ export default function MerchantDetailScreen() {
       pairingCompanionItems,
       isDiscoveryLayout,
       isClassicLayout,
+      oosMenuItems,
     ]
   );
 
@@ -2544,6 +2654,7 @@ export default function MerchantDetailScreen() {
               onChange={handleFilterChange}
               onOpenFilters={handleOpenFiltersSheet}
               showHighlyReordered={showHighlyReorderedChip}
+              showFlashDeal={showFlashDealChip}
               filtersActive={filtersActive}
               style={[styles.stickyFilterBar, styles.stickyFilterBarDark]}
             />
@@ -2585,6 +2696,7 @@ export default function MerchantDetailScreen() {
         onFilterChange={handleFilterChange}
         onOpenFilters={handleOpenFiltersSheet}
         showHighlyReordered={showHighlyReorderedChip}
+        showFlashDeal={showFlashDealChip}
         filtersActive={filtersActive}
         getQty={getQty}
         onAdd={handleAddItem}
@@ -2842,22 +2954,24 @@ export default function MerchantDetailScreen() {
         onDismiss={() => setHideAckVisible(false)}
       />
 
-      <View style={styles.cartDock} pointerEvents="box-none">
-        <MerchantCartDock
-          merchantId={merchantId}
-          merchantMenu={merchant?.menu}
-          resolvedDeliveryAddress={resolvedDeliveryAddress}
-          pincode={pincode}
-          state={state}
-          city={city}
-          isStoreClosedForStatus={isStoreClosedForStatus}
-          onContinue={handleStoreCartContinue}
-          bottomInset={cartDockBottomInset}
-          reserveOfferStrip
-        />
-      </View>
+      {flashQtyLimitSheetOpen ? null : (
+        <View style={styles.cartDock} pointerEvents="box-none">
+          <MerchantCartDock
+            merchantId={merchantId}
+            merchantMenu={merchant?.menu}
+            resolvedDeliveryAddress={resolvedDeliveryAddress}
+            pincode={pincode}
+            state={state}
+            city={city}
+            isStoreClosedForStatus={isStoreClosedForStatus}
+            onContinue={handleStoreCartContinue}
+            bottomInset={cartDockBottomInset}
+            reserveOfferStrip
+          />
+        </View>
+      )}
 
-      {!isDiscoveryLayout && !menuSheetVisible ? (
+      {!isDiscoveryLayout && !menuSheetVisible && !flashQtyLimitSheetOpen ? (
         <MerchantFloatingFabWithCartOffset
           merchantId={merchantId}
           cartDockBottomInset={cartDockBottomInset}

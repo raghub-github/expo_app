@@ -7,6 +7,8 @@ import { getObjectByKey, headObjectByKey } from "@/lib/services/r2";
 import { extractR2KeyFromProxyUrl, isBogusAttachmentProxyKey } from "@/lib/r2-proxy-url";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 function proxyObjectKey(request: NextRequest): string | null {
   const keyParam = request.nextUrl.searchParams.get("key");
@@ -34,7 +36,7 @@ export async function HEAD(request: NextRequest) {
     const contentType = contentTypeFromR2Key(key, meta.contentType || null);
     const headers: Record<string, string> = {
       "Content-Type": contentType,
-      "Cache-Control": "private, max-age=3600",
+      "Cache-Control": "private, no-cache, must-revalidate",
     };
     if (typeof meta.contentLength === "number") {
       headers["Content-Length"] = String(meta.contentLength);
@@ -70,7 +72,7 @@ export async function GET(request: NextRequest) {
       status: 200,
       headers: {
         "Content-Type": contentType,
-        "Cache-Control": "private, max-age=3600",
+        "Cache-Control": "private, no-cache, must-revalidate",
         "Content-Disposition": "inline",
       },
     });

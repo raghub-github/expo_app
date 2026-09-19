@@ -1,9 +1,13 @@
 /**
  * Resolve GMitra Plus delivery savings for checkout upsell UI.
  * Prefers server benefit / estimate; falls back to quoted delivery fee math.
+ *
+ * Upsell only when the drop is within the membership free-delivery radius —
+ * never advertise partial/covered-fraction savings beyond that limit.
  */
 
 import { roundSavingsMoney } from "@/lib/checkoutAppliedSavings";
+import { isStoreWithinMembershipFreeDeliveryRadius } from "@/lib/membershipFreeDelivery";
 
 export type GmitraPlusDeliveryBenefit = {
   waivedInr: number;
@@ -27,16 +31,38 @@ export type MembershipDeliverySavingsInput = ResolveGmitraPlusDeliverySaveInput 
   membershipOnBill: boolean;
 };
 
+/** True when GMitra Plus free-delivery upsell is valid for this drop. */
+export function isMembershipDeliveryUpsellEligible(input: {
+  deliveryType: "delivery" | "self_pickup";
+  freeDeliveryEnabled: boolean;
+  distanceKm: number | null;
+  maxFreeDeliveryRadiusKm: number | null | undefined;
+}): boolean {
+  if (input.deliveryType !== "delivery" || !input.freeDeliveryEnabled) return false;
+  return isStoreWithinMembershipFreeDeliveryRadius({
+    storeDistanceKm: input.distanceKm,
+    maxFreeDeliveryRadiusKm: input.maxFreeDeliveryRadiusKm,
+  });
+}
+
 export function resolveGmitraPlusDeliverySave(
   input: ResolveGmitraPlusDeliverySaveInput
 ): number | null {
-  const benefit = input.serverBenefit;
-  if (benefit && benefit.waivedInr > 0.005) {
-    return roundSavingsMoney(benefit.waivedInr);
+  if (
+    !isMembershipDeliveryUpsellEligible({
+      deliveryType: input.deliveryType,
+      freeDeliveryEnabled: input.freeDeliveryEnabled,
+      distanceKm: input.distanceKm,
+      maxFreeDeliveryRadiusKm: input.maxFreeDeliveryRadiusKm,
+    })
+  ) {
+    return null;
   }
 
-  if (input.deliveryType !== "delivery" || !input.freeDeliveryEnabled) {
-    return null;
+  const benefit = input.serverBenefit;
+  // Prefer exact server waived amount (full waiver within radius — never invent fractions).
+  if (benefit && benefit.waivedInr > 0.005 && benefit.isPartial !== true) {
+    return roundSavingsMoney(benefit.waivedInr);
   }
 
   const quoted =
@@ -45,22 +71,7 @@ export function resolveGmitraPlusDeliverySave(
     (input.currentDeliveryFee > 0.005 ? input.currentDeliveryFee : 0);
   if (quoted <= 0.005) return null;
 
-  const radius =
-    input.maxFreeDeliveryRadiusKm > 0 ? input.maxFreeDeliveryRadiusKm : 7;
-  const dist = input.distanceKm;
-
-  if (dist == null || dist <= radius) {
-    return roundSavingsMoney(quoted);
-  }
-
-  const current = Math.max(0, input.currentDeliveryFee);
-  if (quoted > current + 0.005) {
-    return roundSavingsMoney(quoted - current);
-  }
-
-  const coveredFraction = Math.min(1, radius / dist);
-  const estimated = quoted * coveredFraction;
-  return estimated > 0.005 ? roundSavingsMoney(estimated) : null;
+  return roundSavingsMoney(quoted);
 }
 
 /** One amount for upsell + applied membership copy — bill applied savings win when settled. */

@@ -18,7 +18,11 @@ export function isAuthRejectionMessage(message: string | null | undefined): bool
   if (/timeout|network request failed|failed to fetch|aborted|econn|socket|dns|offline/.test(m)) {
     return false;
   }
-  return /\b401\b|invalid|expired|revoked|unauthor|not\s*found|no longer/.test(m);
+  return (
+    /\b401\b|invalid|expired|revoked|unauthor|not\s*found|no longer/.test(m) ||
+    /signed out from (this|all) device/.test(m) ||
+    /\bsession_revoked\b/.test(m)
+  );
 }
 
 /**
@@ -32,12 +36,9 @@ export function isDefiniteRiderSessionRevocation(
 ): boolean {
   if (status !== 401) return false;
   const c = String(code ?? "").trim();
-  if (c === "invalid_token") return true;
-  if (c === "session_revoked") {
-    const msg = String(message ?? "");
-    return (
-      msg.includes("Signed out from all devices") || msg.includes("Signed out from this device")
-    );
-  }
-  return false;
+  if (c === "invalid_token" || c === "session_revoked") return true;
+  const msg = String(message ?? "");
+  return (
+    msg.includes("Signed out from all devices") || msg.includes("Signed out from this device")
+  );
 }

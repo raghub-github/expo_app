@@ -530,11 +530,9 @@ async function resolveTotalCtm(
     asNum(billing?.final_amount) ??
     asNum(billing?.final_payable);
 
-  // Prefer frozen CTM written at accept (same as merchant wallet credit).
-  const frozenCtm = asNum(core.total_ctm);
-  if (frozenCtm != null && frozenCtm > 0) return round2(frozenCtm);
-
-  // Canonical partnersite/merchant path via CTM nets + precision.
+  // Prefer live CTM reconstruction from snapshot nets + packaging when available
+  // (matches Partner Site computeMerchantCtmForPartnerOrder). Frozen total_ctm can
+  // lag behind the v2 packaging fix (commission reverse-scale on packaging only).
   if (
     supabaseAdmin &&
     orderCoreId != null &&
@@ -550,9 +548,12 @@ async function resolveTotalCtm(
       );
       if (ctm != null && ctm > 0) return round2(ctm);
     } catch {
-      /* fall through to legacy */
+      /* fall through */
     }
   }
+
+  const frozenCtm = asNum(core.total_ctm);
+  if (frozenCtm != null && frozenCtm > 0) return round2(frozenCtm);
 
   let merchantItemSubtotal =
     orderCoreId != null && orderCoreId > 0
@@ -1045,6 +1046,12 @@ export async function fetchOrderPaymentDetail(input: {
 
   return {
     totalAmount: ctc > 0 ? ctc : null,
+    totalAmountBeforeDiscount:
+      ctc > 0.005 &&
+      discountSummary.amount != null &&
+      discountSummary.amount > 0.005
+        ? round2(ctc + discountSummary.amount)
+        : null,
     totalCtm,
     totalCashbackEarned: cashbackEarned,
     gatiCashUsed: gati,

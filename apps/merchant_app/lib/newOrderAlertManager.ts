@@ -4,9 +4,12 @@
  * but playback never restarts from zero.
  *
  * Sound ownership:
- *   OPEN / MODAL / TAP — JS Incoming chime (OS muted while active)
- *   BACKGROUND         — OS channel only; JS tracks remaining repeats
- *   KILLED             — FCM channel sound (this module never runs)
+ *   Native OrderAlertForegroundService owns the looping buzzer on Android
+ *   production / dev-client builds (foreground, background, killed).
+ *   JS Incoming chime is Expo Go / iOS fallback only.
+ *   OPEN / MODAL / TAP — attach to alertSessionId; never start a second player.
+ *   BACKGROUND         — native FGS if the process is alive; else OS channel once.
+ *   KILLED             — FCM → native FGS (this module never starts audio).
  */
 import * as SecureStore from "expo-secure-store";
 import { AppState } from "react-native";
@@ -23,6 +26,14 @@ import { volumeStepTo01 } from "@/lib/deviceOrderAlerts";
 import { normalizeAlertSoundSlots } from "@/lib/resolveAlertSoundUrl";
 import { extractMerchantFoodOrderIdFromPush } from "@/lib/merchantNavigation";
 import { isMerchantNewOrderPushData } from "@/lib/merchantNewOrderChannel";
+import {
+  claimNativeOrderAlert,
+  extractAlertSessionId,
+  isNativeOrderAlertAvailable,
+  merchantAlertSessionId,
+  startNativeOrderAlert,
+  stopNativeOrderAlert,
+} from "@gatimitra/expo-push-kit";
 
 const SESSION_KEY = "merchant_new_order_alert_session_v1";
 const CONFIG_KEY = "merchant_new_order_alert_config_v1";
@@ -69,6 +80,8 @@ export type NewOrderAlertSession = {
   ringInSilent: boolean;
   soundEnabled: boolean;
   androidNotificationId?: string | null;
+  /** Backend/FCM/native session — never mint a new id on reopen. */
+  alertSessionId?: string | null;
 };
 
 type PersistedAlertConfig = {
@@ -101,6 +114,7 @@ type ContinueArgs = {
   device?: DeviceOrderAlerts | null;
   notificationDate?: number | null;
   androidNotificationId?: string | null;
+  alertSessionId?: string | null;
 };
 
 let session: NewOrderAlertSession | null = null;
@@ -225,6 +239,30 @@ export function extractNewOrderEventId(data: Record<string, unknown>, orderId: s
   const nid = String(data.notification_id ?? data.notificationId ?? "").trim();
   if (nid) return nid;
   return `MERCHANT_NEW_ORDER:${orderId}`;
+}
+
+export function resolveMerchantAlertSessionId(
+  data: Record<string, unknown> | null | undefined,
+  orderId: string,
+  storeId?: string | number | null
+): string {
+  return extractAlertSessionId(data) || merchantAlertSessionId(orderId, storeId);
+}
+
+async function ensureNativeBuzzer(orderId: string, alertSessionId?: string | null): Promise<boolean> {
+  if (!isNativeOrderAlertAvailable()) return false;
+  const sid = String(alertSessionId || merchantAlertSessionId(orderId)).trim();
+  if (!sid) return false;
+  const started = await startNativeOrderAlert({
+    sessionId: sid,
+    orderId,
+    soundType: "notification",
+  });
+  if (!started?.sessionId) return false;
+  if (AppState.currentState === "active") {
+    await claimNativeOrderAlert(started.sessionId);
+  }
+  return true;
 }
 
 function configFrom(
@@ -438,6 +476,7 @@ function makeSession(
     ringInSilent: true,
     soundEnabled: cfg?.soundEnabled !== false,
     androidNotificationId: args.androidNotificationId ?? null,
+    alertSessionId: args.alertSessionId ?? merchantAlertSessionId(orderId),
   };
 }
 
@@ -486,6 +525,20 @@ async function startPlayback(
     await persistSession();
     return;
   }
+
+  if (await ensureNativeBuzzer(session.orderId, session.alertSessionId)) {
+    session.state = "playing";
+    await persistSession();
+    logAlert({
+      orderId: session.orderId,
+      sessionId: session.sessionId,
+      alertSessionId: session.alertSessionId ?? "",
+      event: "NATIVE_OWNED",
+      source,
+    });
+    return;
+  }
+
   const remaining = remainingRepeatsOf(session);
   if (remaining <= 0) {
     session.state = "completed";
@@ -686,11 +739,13 @@ export async function continueOrStartNewOrderAlert(args: ContinueArgs): Promise<
       return session;
     }
     session.owner = owner;
+    if (args.alertSessionId) session.alertSessionId = args.alertSessionId;
     if (args.source === "MODAL" || args.source === "NOTIFICATION_TAP") {
       session.orderOpened = true;
     }
     await persistSession();
     if (!jsShouldPlay(args.source)) {
+      await ensureNativeBuzzer(session.orderId, session.alertSessionId);
       logAlert({
         orderId,
         sessionId: session.sessionId,
@@ -706,6 +761,17 @@ export async function continueOrStartNewOrderAlert(args: ContinueArgs): Promise<
 
   session = makeSession(orderId, eventId, owner, cfg, args);
   await persistSession();
+  if (await ensureNativeBuzzer(session.orderId, session.alertSessionId ?? args.alertSessionId)) {
+    logAlert({
+      orderId,
+      sessionId: session.sessionId,
+      alertSessionId: session.alertSessionId ?? "",
+      state: "STARTED",
+      source: args.source,
+      event: "NATIVE_OWNED",
+    });
+    return session;
+  }
   if (!jsShouldPlay(args.source)) {
     logAlert({
       orderId,
@@ -753,6 +819,9 @@ export async function handleNewOrderNotificationTap(args: {
     session.notificationTapped = true;
     session.owner = "modal";
     session.orderOpened = true;
+    const alertSessionId = extractAlertSessionId(args.data) || session.alertSessionId;
+    if (alertSessionId) session.alertSessionId = alertSessionId;
+    await ensureNativeBuzzer(orderId, session.alertSessionId);
     if (session.state === "playing" && isOrderAlertSoundPlaying()) {
       logAlert({
         orderId,
@@ -798,6 +867,7 @@ export async function handleNewOrderNotificationTap(args: {
     device: args.device,
     notificationDate: startedAt,
     androidNotificationId: args.androidNotificationId,
+    alertSessionId: extractAlertSessionId(args.data),
   });
   if (session && session.orderId === orderId) {
     session.notificationTapped = true;
@@ -893,6 +963,7 @@ export async function stopNewOrderAlert(
     parked.state = "stopped";
     parked.stopReason = reason;
     parkedSessions.set(id, parked);
+    void stopNativeOrderAlert(parked.alertSessionId || parked.orderId);
     logAlert({
       orderId: id,
       sessionId: parked.sessionId,
@@ -905,10 +976,12 @@ export async function stopNewOrderAlert(
   }
   if (!session) {
     stopOrderAlertSound();
+    void stopNativeOrderAlert(id || undefined);
     return;
   }
   playGeneration += 1;
   stopOrderAlertSound();
+  void stopNativeOrderAlert(session.alertSessionId || session.orderId);
   void dismissNativeNewOrderAlerts(session.orderId);
   session.state = "stopped";
   session.stopReason = reason;

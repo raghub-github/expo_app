@@ -199,6 +199,8 @@ export async function notifyMerchantStoreNewOrder(
           skip_in_app_banner: true,
           alertStartedAt: String(push_dispatch_started_at),
           alertSessionId: `MERCHANT_NEW_ORDER:${foodId ?? orderIdText}:${merchantStoreId}`,
+          gmAlertAction: "start",
+          soundType: "notification",
         },
       }).catch((e) =>
         console.warn("[merchant-new-order] v2 send failed (tolerated)", (e as Error).message)

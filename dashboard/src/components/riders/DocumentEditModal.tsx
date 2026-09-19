@@ -88,7 +88,10 @@ export function DocumentEditModal({
     (file: File | undefined | null) => {
       if (!file) return;
 
-      if (!ALLOWED_TYPES.includes(file.type)) {
+      const type = (file.type || "").toLowerCase();
+      const allowedByType = ALLOWED_TYPES.includes(type);
+      const allowedByName = !type && /\.(jpe?g|png|webp|pdf)$/i.test(file.name || "");
+      if (!allowedByType && !allowedByName) {
         setErrors((prev) => ({
           ...prev,
           file: "Invalid file type. Allowed types: JPEG, PNG, WebP, PDF",
@@ -104,15 +107,19 @@ export function DocumentEditModal({
       setSelectedFile(file);
       setErrors((prev) => ({ ...prev, file: undefined }));
 
-      if (file.type.startsWith("image/")) {
+      if (file.type.startsWith("image/") || /\.(jpe?g|png|webp)$/i.test(file.name || "")) {
         const reader = new FileReader();
         reader.onloadend = () => setPreviewUrl(reader.result as string);
         reader.readAsDataURL(file);
       } else {
         setPreviewUrl(null);
       }
+
+      if (hideDocNumber) {
+        void onSave({ file });
+      }
     },
-    [],
+    [hideDocNumber, onSave],
   );
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {

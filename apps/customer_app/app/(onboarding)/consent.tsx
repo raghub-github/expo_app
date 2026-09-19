@@ -54,6 +54,8 @@ export default function ConsentScreen() {
 
       try {
         const profile = await profileService.getProfile();
+        const { writeCachedProfile } = await import("@/lib/profileCache");
+        await writeCachedProfile(profile);
         if (profile?.profile_completed === true) {
           router.replace("/(tabs)/" as never);
           return;

@@ -54,6 +54,11 @@ export function readSyncCachedProfile(): UserProfile | undefined {
   return memoryEntry?.profile;
 }
 
+/** Fail-closed: home/tabs only when we positively know profile_completed === true. */
+export function hasCompletedProfileSync(): boolean {
+  return readSyncCachedProfile()?.profile_completed === true;
+}
+
 export function getCachedProfileUpdatedAt(): number | undefined {
   hydrateMemorySync();
   return memoryEntry?.cachedAt;
@@ -106,6 +111,17 @@ export async function clearCachedProfile(): Promise<void> {
 let profileInFlight: Promise<UserProfile> | null = null;
 
 export async function fetchProfileWithCache(): Promise<UserProfile> {
+  // Never hit /me/profile without a token — backend logs ERROR for missing Authorization.
+  const { getItem } = await import("@/utils/storage");
+  const { STORAGE_KEYS } = await import("@/constants");
+  const token = await getItem(STORAGE_KEYS.AUTH_TOKEN);
+  if (!token) {
+    throw Object.assign(new Error("Authentication required"), {
+      response: { status: 401, data: { error: "missing_authorization", message: "Authentication required" } },
+      status: 401,
+    });
+  }
+
   if (profileInFlight) return profileInFlight;
   profileInFlight = (async () => {
     const { profileService } = await import("@/services/profile.service");

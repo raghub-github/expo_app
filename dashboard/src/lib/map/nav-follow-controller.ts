@@ -54,23 +54,28 @@ export type NavigationFollowOptions = {
   staleAfterMs?: number;
   /** Camera ease duration for smooth heading-up follow (ms). */
   cameraSmoothMs?: number;
+  /** Follow camera zoom floor (keeps context when far). */
+  minZoom?: number;
+  /** Follow camera zoom ceiling — keep geofence/route readable, not pin-zoomed. */
+  maxZoom?: number;
 };
 
 const DEFAULTS: Required<NavigationFollowOptions> = {
   pitch: 0,
-  lookAheadM: 70,
+  lookAheadM: 28,
   maxSnapM: 80,
-  maxImpliedSpeedMps: 45, // ~162 km/h — reject teleport outliers
+  maxImpliedSpeedMps: 18, // ~65 km/h — reject GPS teleports, keep city-delivery motion
   staleAfterMs: 12_000,
-  cameraSmoothMs: 420,
+  cameraSmoothMs: 820,
+  minZoom: 13.4,
+  maxZoom: 14.35,
 };
 
-/** Near-linear cruise with soft settle — closer to Google Maps nav feel. */
+/** Soft ease-out — marker eases into the next GPS fix instead of rushing. */
 function easeNav(t: number): number {
-  // 70% linear + 30% ease-out so speed doesn't die mid-leg between GPS pings.
   const linear = t;
   const easeOut = 1 - (1 - t) * (1 - t);
-  return linear * 0.7 + easeOut * 0.3;
+  return linear * 0.35 + easeOut * 0.65;
 }
 
 function setBikeHeading(marker: MarkerLike, headingDeg: number) {
@@ -230,21 +235,19 @@ export class NavigationFollowController {
     const from = this.rendered ?? readMarkerLngLat(this.marker!) ?? visual;
     const fromHeading = this.renderedHeading;
 
-    // Span nearly the full GPS interval so motion stays continuous (Google-nav style).
     const intervalMs =
       this.lastAppliedGpsMs > 0
-        ? Math.max(400, sample.timestampMs - this.lastAppliedGpsMs)
-        : 1400;
+        ? Math.max(800, sample.timestampMs - this.lastAppliedGpsMs)
+        : 1800;
     this.lastAppliedGpsMs = sample.timestampMs;
     const dist = haversineMeters(from, visual);
+    /** Visual cap ~40 km/h so large GPS jumps glide instead of teleport. */
+    const MAX_VISUAL_MPS = 11;
     const bySpeed =
-      sample.speedMps != null && sample.speedMps > 0.5
-        ? Math.min(5000, Math.max(500, (dist / sample.speedMps) * 1000))
-        : null;
-    const duration = Math.min(
-      5200,
-      Math.max(450, bySpeed ?? Math.min(intervalMs * 1.12, 900 + dist * 40))
-    );
+      sample.speedMps != null && sample.speedMps > 0.4
+        ? (dist / Math.min(sample.speedMps, MAX_VISUAL_MPS)) * 1000
+        : (dist / MAX_VISUAL_MPS) * 1000;
+    const duration = Math.min(9000, Math.max(1100, bySpeed, intervalMs * 0.95));
 
     this.startAnim(from, fromHeading, visual, heading, duration);
   }
@@ -364,8 +367,8 @@ export class NavigationFollowController {
   private applyCamera(rider: LngLat, heading: number, now = performance.now()) {
     if (!this.map) return;
     const center = offsetLngLatMeters(rider, heading, this.opts.lookAheadM);
-    const zoom = this.map.getZoom?.() ?? 16;
-    const clampedZoom = Math.min(17.2, Math.max(15, zoom));
+    const zoom = this.map.getZoom?.() ?? this.opts.maxZoom;
+    const clampedZoom = Math.min(this.opts.maxZoom, Math.max(this.opts.minZoom, zoom));
 
     // Throttle camera updates slightly so easeTo can blend (smooth auto-rotate).
     const bearingDelta = Math.abs(shortestBearingDelta(this.lastCameraBearing, heading));
@@ -421,11 +424,12 @@ export class NavigationFollowController {
       // Instant seed — then smooth follow takes over on next GPS.
       try {
         const center = offsetLngLatMeters(visual, heading, this.opts.lookAheadM);
+        const zoom = this.map.getZoom?.() ?? this.opts.maxZoom;
         this.map.jumpTo?.({
           center,
           bearing: heading,
           pitch: this.opts.pitch,
-          zoom: Math.min(17.2, Math.max(15, this.map.getZoom?.() ?? 16)),
+          zoom: Math.min(this.opts.maxZoom, Math.max(this.opts.minZoom, zoom)),
         });
         this.lastCameraBearing = heading;
         this.lastCameraAt = performance.now();

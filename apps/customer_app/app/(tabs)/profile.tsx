@@ -5,7 +5,7 @@
 import { useCallback, useMemo, useState, useEffect, useLayoutEffect } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable, ActivityIndicator } from "react-native";
+import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable, ActivityIndicator, Platform, StatusBar as NativeStatusBar } from "react-native";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
@@ -19,7 +19,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BrandingFooter } from "@/components/BrandingFooter";
 import { shareReferralCode } from "@/lib/referralShare";
 import { presentReferralCopy } from "@/lib/referralCopy";
-import { isCustomProfileUploadUrl, resolveStoredProfileAvatarUri } from "@/lib/emailAvatar";
+import { isCustomProfileUploadUrl, markAvatarUriPrefetched, resolveStoredProfileAvatarUri } from "@/lib/emailAvatar";
 import { getNameInitials } from "@/lib/nameInitials";
 import { useProfile } from "@/hooks/useProfile";
 import { useCurrentSubscription, useCheckoutSubscriptionPlan } from "@/hooks/useCustomerSubscription";
@@ -27,6 +27,7 @@ import { formatPlanPriceLine } from "@/services/subscription.service";
 import { GmitraPlusMembershipSheet } from "@/components/profile/GmitraPlusMembershipSheet";
 import { ProfilePhotoSourceSheet } from "@/components/profile/ProfilePhotoSourceSheet";
 import { ProfilePhotoViewerSheet } from "@/components/profile/ProfilePhotoViewerSheet";
+import { ProfileSocialIconsRow } from "@/components/profile/ProfileSocialIconsRow";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { STATUS_BAR_TO_HEADER_GAP, resolveCustomerBottomNavHeight } from "@/constants/layout";
 import { profileService, type UserProfile } from "@/services/profile.service";
@@ -64,8 +65,9 @@ export default function ProfileScreen() {
   const insets = useAppSafeAreaInsets();
   /** Pushed from food home (`/profile`) — root layout omits the status-bar spacer. */
   const inProfileStack = segments[0] === "profile";
-  /** Always self-pad under tabs (and profile stack) — root spacer stays off for all tabs. */
-  const profileTopPad = insets.top + STATUS_BAR_TO_HEADER_GAP + 6;
+  /** Solid status-bar pad — content scrolls below icons, never under them. */
+  const statusBarPad = insets.top;
+  const profileContentTopPad = STATUS_BAR_TO_HEADER_GAP + 6;
   const { data: profile } = useProfile();
   const { data: subscriptionStatus, isFetched: subscriptionFetched } = useCurrentSubscription(true);
   const { defaultPrice } = useCheckoutSubscriptionPlan();
@@ -75,31 +77,43 @@ export default function ProfileScreen() {
   const plusCtaSubtitle = defaultPrice ? formatPlanPriceLine(defaultPrice) : null;
 
   useLayoutEffect(() => {
-    if (!inProfileStack) return;
-    // Food grid-first leaves immersive chrome; reset before first paint on /profile stack.
     useScreenChromeStore.getState().setImmersiveStatusBarChrome(false);
     useScreenChromeStore.setState({
       statusBarBackground: PAGE_BG,
       statusBarStyle: "dark",
       hideStatusBarSpacer: true,
     });
+    if (Platform.OS === "android") {
+      NativeStatusBar.setTranslucent(false);
+      NativeStatusBar.setBackgroundColor(PAGE_BG, true);
+      NativeStatusBar.setBarStyle("dark-content", true);
+    }
   }, [inProfileStack]);
 
   useFocusEffect(
     useCallback(() => {
-      if (inProfileStack) {
-        useScreenChromeStore.getState().setImmersiveStatusBarChrome(false);
-      }
+      useScreenChromeStore.getState().setImmersiveStatusBarChrome(false);
       useScreenChromeStore.setState({
         statusBarBackground: PAGE_BG,
         statusBarStyle: "dark",
-        // Match Home/Food immersive top — avoids root spacer appearing mid tab-slide.
+        // Self-pad below solid bar — avoid root spacer flash on tab slide.
         hideStatusBarSpacer: true,
       });
+      if (Platform.OS === "android") {
+        NativeStatusBar.setTranslucent(false);
+        NativeStatusBar.setBackgroundColor(PAGE_BG, true);
+        NativeStatusBar.setBarStyle("dark-content", true);
+      }
       void queryClient.invalidateQueries({ queryKey: ["referral", "config", "customer"] });
-      void queryClient.invalidateQueries({ queryKey: CURRENT_SUBSCRIPTION_QUERY_KEY });
+      // Respect staleTime — invalidate-on-every-focus forced a /subscription/current
+      // round trip even when the profile tab was revisited within a minute.
+      void queryClient.refetchQueries({
+        queryKey: CURRENT_SUBSCRIPTION_QUERY_KEY,
+        type: "active",
+        stale: true,
+      });
       void queryClient.invalidateQueries({ queryKey: PROFILE_QUERY_KEY });
-    }, [queryClient, inProfileStack])
+    }, [queryClient])
   );
 
   const displayName = profile?.full_name?.trim() || t("common.customer");
@@ -320,18 +334,21 @@ export default function ProfileScreen() {
   ];
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { paddingTop: statusBarPad }]}>
       <StatusBar style="dark" backgroundColor={PAGE_BG} />
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingBottom: resolveCustomerBottomNavHeight(insets.bottom) + 16 },
+          {
+            paddingTop: profileContentTopPad,
+            paddingBottom: resolveCustomerBottomNavHeight(insets.bottom) + 16,
+          },
         ]}
         showsVerticalScrollIndicator={false}
       >
         {/* Profile card — GatiMitra-style with subscription strip */}
-        <View style={[styles.profileCard, { marginTop: profileTopPad }]}>
+        <View style={styles.profileCard}>
           <View style={styles.profileCardBody}>
             <View style={styles.identityRow}>
               <View style={styles.avatarWrap}>
@@ -347,8 +364,10 @@ export default function ProfileScreen() {
                       source={{ uri: avatarUri }}
                       style={styles.avatarImage}
                       contentFit="cover"
-                      transition={200}
+                      transition={0}
+                      priority="high"
                       cachePolicy="memory-disk"
+                      onLoad={() => markAvatarUriPrefetched(avatarUri)}
                       onError={handleAvatarError}
                     />
                   ) : (
@@ -417,6 +436,8 @@ export default function ProfileScreen() {
             <Ionicons name="chevron-forward" size={18} color={MUTED} />
           </TouchableOpacity>
         </View>
+
+        <ProfileSocialIconsRow />
 
         {/* Lifetime savings */}
         <View style={styles.savingsCard}>

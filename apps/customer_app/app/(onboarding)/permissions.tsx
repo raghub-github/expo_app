@@ -23,6 +23,7 @@ import { getNetworkErrorMessage } from "@/utils/networkError";
 import { useAuthStore } from "@/store/authStore";
 import { getConfig } from "@/config/env";
 import { useSmsPermissionStore } from "@/store/smsPermissionStore";
+import { hasCompletedProfileSync, writeCachedProfile } from "@/lib/profileCache";
 
 function openAppSettings() {
   Linking.openSettings();
@@ -520,7 +521,24 @@ export default function OnboardingPermissionsScreen() {
                 <TouchableOpacity
                   style={[styles.allowBtn, (!allDoneSaved || finalizing) && styles.allowBtnDisabled]}
                   disabled={!allDoneSaved || finalizing}
-                  onPress={() => router.replace("/(tabs)/")}
+                  onPress={() => {
+                    void (async () => {
+                      if (!hasCompletedProfileSync()) {
+                        try {
+                          const profile = await profileService.getProfile();
+                          await writeCachedProfile(profile);
+                          if (profile?.profile_completed !== true) {
+                            router.replace("/(onboarding)");
+                            return;
+                          }
+                        } catch {
+                          router.replace("/(onboarding)");
+                          return;
+                        }
+                      }
+                      router.replace("/(tabs)/");
+                    })();
+                  }}
                 >
                   {finalizing ? (
                     <ActivityIndicator size="small" color="#fff" />

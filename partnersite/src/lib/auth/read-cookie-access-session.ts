@@ -81,6 +81,7 @@ function parseSessionJson(raw: string): {
 } | null {
   try {
     let text = raw.trim();
+    if (!text) return null;
     // URL-encoded JSON cookies
     if (text.startsWith("%")) {
       try {
@@ -112,6 +113,7 @@ function parseSessionJson(raw: string): {
         /* keep */
       }
     }
+    if (!text.trim() || (!text.startsWith("{") && !text.startsWith("["))) return null;
     const parsed = JSON.parse(text) as
       | { access_token?: string; refresh_token?: string; expires_at?: number; user?: User }
       | Array<{ access_token?: string; refresh_token?: string; expires_at?: number; user?: User }>;

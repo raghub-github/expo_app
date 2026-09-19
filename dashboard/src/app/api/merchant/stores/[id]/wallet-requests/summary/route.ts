@@ -2,14 +2,14 @@
  * GET /api/merchant/stores/[id]/wallet-requests/summary
  * Returns status counts for wallet requests for a specific store.
  */
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { assertStoreAccess } from "@/app/api/merchant/stores/[id]/menu/assert-store-access";
 import { getSql } from "@/lib/db/client";
 
 export const runtime = "nodejs";
 
 export async function GET(
-  _request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -19,7 +19,7 @@ export async function GET(
       return NextResponse.json({ success: false, error: "Invalid store id" }, { status: 400 });
     }
 
-    const access = await assertStoreAccess(storeId);
+    const access = await assertStoreAccess(storeId, request);
     if (!access.ok) {
       return NextResponse.json({ success: false, error: access.error }, { status: access.status });
     }

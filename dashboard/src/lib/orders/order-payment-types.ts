@@ -36,6 +36,11 @@ export type OrderPaymentRecord = {
 
 export type OrderPaymentDetail = {
   totalAmount: number | null;
+  /**
+   * Pre-offer CTC (list) — what the customer would have paid without item/platform
+   * discounts. UI strikes this when greater than `totalAmount`.
+   */
+  totalAmountBeforeDiscount?: number | null;
   /** Merchant-visible bill total (items at merchant prices + packaging − restaurant discount). */
   totalCtm: number | null;
   totalCashbackEarned: number | null;

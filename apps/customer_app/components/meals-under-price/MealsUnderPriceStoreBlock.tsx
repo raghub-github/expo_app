@@ -38,6 +38,7 @@ function toMenuItem(item: FoodItemUnderPrice): MenuItem {
           offer_id: item.flashSale.offerId,
           original_customer_unit: item.flashSale.originalCustomerUnit,
           flash_price: item.flashSale.flashPrice,
+          max_flash_quantity: item.flashSale.maxFlashQuantity,
         }
       : undefined,
   };

@@ -19,6 +19,7 @@ import {
 import { normalizeOrderItemSpecialInstructions } from "@/lib/order-item-special-instructions";
 import { cartQtyDebug } from "@/lib/cartQtyDebug";
 import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
+import { useFlashSaleQtyLimitAckStore } from "@/store/flashSaleQtyLimitAckStore";
 
 export type { CartDeliveryAnchor } from "@/lib/cartDeliveryAnchor";
 
@@ -444,6 +445,8 @@ export const useCartStore = create<CartState>((set, get) => ({
     });
     if (removed) {
       cartQtyDebug("store_removeItem", { lineId, prevQty, delta });
+      // Flash Sale sheet may show again when this item is re-added past the cap.
+      useFlashSaleQtyLimitAckStore.getState().clearAcked(lineId);
     }
     const merchantId = next.length ? get().merchantId : null;
     const merchantName = next.length ? get().merchantName : null;

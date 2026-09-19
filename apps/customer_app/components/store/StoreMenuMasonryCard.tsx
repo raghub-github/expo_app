@@ -373,28 +373,25 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
                 {formatOfferRupee(sellingPrice)}
               </AppText>
             )}
-            {outOfStock ? <AppText style={styles.oosText}>Out of stock</AppText> : null}
+            {outOfStock && dark ? (
+              <AppText style={styles.oosText}>Out of stock</AppText>
+            ) : null}
           </View>
-          {!outOfStock ? (
-            <View style={[styles.addSlot, !dark && styles.addSlotClassic]}>
-              <StoreMenuInstantCartControl
-                itemKey={`${merchantId}:${item.listRowKey ?? item.id}`}
-                merchantId={merchantId}
-                quantity={cartQty}
-                disabled={isStoreClosed}
-                size="compact"
-                allowOptimisticAdd={!isCustomisable}
-                onAdd={handleAdd}
-                onIncrement={handleIncrementPress}
-                onDecrement={handleDecrementPress}
-                accessibilityLabel={`${item.name} quantity`}
-              />
-            </View>
-          ) : dark ? (
-            <View style={styles.oosChip}>
-              <AppText style={styles.oosChipText}>Sold</AppText>
-            </View>
-          ) : null}
+          <View style={[styles.addSlot, !dark && styles.addSlotClassic]}>
+            <StoreMenuInstantCartControl
+              itemKey={`${merchantId}:${item.listRowKey ?? item.id}`}
+              merchantId={merchantId}
+              quantity={cartQty}
+              disabled={controlsDisabled}
+              soldOut={outOfStock && !isStoreClosed}
+              size="compact"
+              allowOptimisticAdd={!isCustomisable}
+              onAdd={handleAdd}
+              onIncrement={handleIncrementPress}
+              onDecrement={handleDecrementPress}
+              accessibilityLabel={`${item.name} quantity`}
+            />
+          </View>
         </View>
       </View>
     </View>

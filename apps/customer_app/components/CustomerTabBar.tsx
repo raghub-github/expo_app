@@ -54,7 +54,7 @@ import {
 } from "@/components/CustomerTabBarCurvedSheet";
 
 /**
- * Bottom dock UI: full-bleed sheet (rounded top corners), connected to screen bottom.
+ * Bottom dock UI: floating full-bleed sheet (rounded top corners), 5px above system nav.
  * Light theme white bg matches main area; mint active icon/label; clear press feedback.
  */
 const TAB_ACTIVE = GatiMitraColors.primaryMint;
@@ -216,12 +216,9 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const foodEnabled = enabledServices.food;
   const foodBlocked = Boolean(accountBlocks.food);
 
-  /** Cart/track footing open → hide bottom nav immediately (keep host mounted). */
-  const navOnEdge = dockVisible && footingOwner === "dock";
-  const hideBottomCapsule = navOnEdge;
-
-  /** When CART/TRACK edge is on the right, hang peek off the screen edge (Dining-style). */
-  const showCartEdge = dockVisible && footingOwner === "nav";
+  /** Cart/track float above the full tab bar — never hide nav or swap to edge peeks. */
+  const hideBottomCapsule = false;
+  const showCartEdge = false;
 
   const activeRouteName = state.routes[state.index]?.name ?? "index";
   const routeActiveIndex = tabIndexForRoute(activeRouteName);
@@ -250,19 +247,15 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const sheetLift = darkChrome ? TAB_SHEET_LIFT_DARK : TAB_SHEET_LIFT_LIGHT;
   const pressBg = darkChrome ? TAB_PRESS_BG_DARK : TAB_PRESS_BG;
   /** One Y for Home / Food / Track swap — never flip formulas mid-session. */
-  const bottomAnchor = resolveCustomerFloatingChromeBottom(rawBottom);
-  /** Sheet fills into the gesture area; tabs pad above it. */
-  const sheetHeight = DOCK_H + bottomAnchor;
+  const bottomInset = resolveCustomerFloatingChromeBottom(rawBottom);
+  /** Sheet fills to screen bottom; capsule row sits above the system-nav inset. */
+  const sheetHeight = DOCK_H + bottomInset;
+  const bottomAnchor = bottomInset;
   /**
-   * Classic Food (Discovery-style): HOME edge only until the edge is tapped.
-   * Full nav capsule appears only after expandNav — never permanently on Food.
+   * Classic Food: keep the full tab capsule (no HOME-only edge peek).
+   * Cart/track float above this row instead of replacing it.
    */
-  const classicFoodEdgeOnly =
-    classicFoodChromeActive &&
-    chromeRouteName === "food" &&
-    classicFoodFooting === "edge" &&
-    !dockVisible &&
-    !discoveryFiltersOwnFooting;
+  const classicFoodEdgeOnly = false;
   const sideMargin =
     showCartEdge || showDiscoveryFilterEdge || classicFoodEdgeOnly ? 0 : H_MARGIN;
   const dockLeft = sideMargin;
@@ -359,26 +352,8 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const curvedSheetW = sheetWidth > 0 ? sheetWidth : fallbackSheetWidth;
 
   if (hideBottomCapsule) {
-    // Keep a fixed host at the shared bottom Y so RN tab chrome never
-    // remounts geometry when Track/cart owns footing (HOME edge lives on the dock).
-    return (
-      <View pointerEvents="none" style={styles.host} collapsable={false}>
-        <View
-          collapsable={false}
-          style={[
-            styles.dockPlaceholder,
-            {
-              left: dockLeft,
-              right: dockRight,
-              bottom: bottomAnchor,
-              opacity: 0,
-            },
-          ]}
-        >
-          <View style={styles.capsulePlaceholder} collapsable={false} />
-        </View>
-      </View>
-    );
+    // Cart/Track owns footing — leave system nav clear (no residual sheet edge).
+    return null;
   }
 
   /** Discovery default: HOME edge + Relevance|Filters dock (same row as cart footing). */
@@ -451,7 +426,7 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
         ]}
         onLayout={onSheetLayout}
       >
-        {/* Full-bleed fill into Android gesture / home-indicator area */}
+        {/* Full-bleed sheet into system-nav inset; tab icons pad above via capsule. */}
         <CustomerTabBarCurvedSheet
           width={curvedSheetW}
           height={sheetHeight}
@@ -561,12 +536,12 @@ const styles = StyleSheet.create({
   hostNoElevation: {
     elevation: 0,
   },
-  /** Full-bleed sheet host — connected to screen bottom; height set inline. */
+  /** Full-bleed sheet host — connected to screen bottom; height includes safe-area inset. */
   dock: {
     position: "absolute",
     overflow: "visible",
   },
-  /** Elevate only the real dock chrome (not the full-screen host). */
+  /** Elevate only the real dock chrome (not the full-screen host). No drop shadow. */
   dockElevated: {
     ...Platform.select({
       ios: {
@@ -575,7 +550,7 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 0 },
       },
       android: {
-        elevation: 12,
+        elevation: 8,
       },
       default: {},
     }),

@@ -1,19 +1,22 @@
-import { NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { NextRequest, NextResponse } from "next/server";
+import { authFailureResponse, getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getCancellationCatalogPayload } from "@/lib/db/operations/order-cancellation-reason-catalog";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) return authFailureResponse(auth);
 
-    if (userError || !user) {
+    let email = (auth.user.email ?? "").trim();
+    if (!email) {
+      const mapped = await resolveSystemUserForSupabaseAuth(auth.user.id, undefined);
+      email = (mapped?.email ?? "").trim();
+    }
+    if (!email) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
@@ -21,8 +24,8 @@ export async function GET() {
     }
 
     const canView =
-      (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await isSuperAdmin(auth.user.id, email)) ||
+      (await hasDashboardAccessByAuth(auth.user.id, email, "ORDER_FOOD"));
     if (!canView) {
       return NextResponse.json(
         { success: false, error: "Insufficient permissions" },

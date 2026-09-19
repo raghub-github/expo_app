@@ -113,6 +113,20 @@ export const profileService = {
     return data;
   },
 
+  /** True when email is free for this customer (or empty / invalid skipped as available). */
+  async checkEmailAvailability(email: string): Promise<{ available: boolean; message?: string }> {
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed) return { available: true };
+    const { data } = await api.get<{ available: boolean; message?: string }>(
+      `${ME_PREFIX}/email-availability`,
+      { params: { email: trimmed } }
+    );
+    return {
+      available: data?.available !== false,
+      message: data?.message,
+    };
+  },
+
   async updateProfile(payload: UpdateProfilePayload): Promise<UserProfile> {
     const token =
       (await getItem(STORAGE_KEYS.AUTH_TOKEN)) ||

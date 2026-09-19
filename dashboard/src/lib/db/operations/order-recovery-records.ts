@@ -219,14 +219,90 @@ async function listMerchantCancellationLedger(
   }
 }
 
+async function listManualWalletAdjustments(
+  orderCoreId: number
+): Promise<OrderRecoveryRecord[]> {
+  const sql = getSql();
+  try {
+    const rows = await sql.unsafe<
+      {
+        id: number;
+        amount: string | null;
+        direction: string | null;
+        description: string | null;
+        status: string | null;
+        created_at: string | Date | null;
+        category: string | null;
+      }[]
+    >(
+      `
+        SELECT
+          l.id,
+          l.amount::text AS amount,
+          l.direction::text AS direction,
+          l.description,
+          l.status::text AS status,
+          l.created_at,
+          l.category::text AS category
+        FROM merchant_wallet_ledger l
+        WHERE (
+            l.order_id = $1
+            OR NULLIF(l.metadata->>'orders_core_id', '')::bigint = $1
+            OR NULLIF(l.metadata->>'order_id', '')::bigint = $1
+          )
+          AND (
+            l.category::text IN (
+              'MANUAL_CREDIT',
+              'MANUAL_DEBIT',
+              'ADJUSTMENT',
+              'ADJUSTMENT_CREDIT',
+              'ADJUSTMENT_DEBIT'
+            )
+            OR l.reference_type::text = 'ADMIN'
+          )
+          AND COALESCE(l.metadata->>'entry_type', '') IS DISTINCT FROM 'order_cancellation'
+        ORDER BY l.created_at DESC
+      `,
+      [orderCoreId]
+    );
+
+    return rows.map((row) => {
+      const dir = (row.direction ?? "").trim().toUpperCase();
+      const cat = (row.category ?? "").trim().toUpperCase();
+      const impact: RecoveryImpact =
+        dir === "CREDIT" || cat.includes("CREDIT") ? "credit" : "debit";
+      const kind =
+        impact === "credit" ? "Manual adjustment credit" : "Manual adjustment debit";
+      const amount = toNum(row.amount);
+      return {
+        id: `merchant-manual-${row.id}`,
+        party: "merchant" as const,
+        partyLabel: "Merchant",
+        kind,
+        reason: row.description?.trim() || null,
+        amount,
+        impact,
+        debitScope: impact === "debit" ? ("full" as const) : null,
+        status: row.status?.trim() || null,
+        createdAt: toIso(row.created_at),
+      };
+    });
+  } catch (e) {
+    if (isRelationMissingError(e)) return [];
+    console.error("[listManualWalletAdjustments]", orderCoreId, e);
+    return [];
+  }
+}
+
 /** Returns all penalty / debit / credit records tied to an order, newest first. */
 export async function listOrderRecoveryRecords(
   orderCoreId: number
 ): Promise<OrderRecoveryRecord[]> {
   if (!Number.isFinite(orderCoreId) || orderCoreId <= 0) return [];
-  const [riderRows, merchantRows, cancelCtx] = await Promise.all([
+  const [riderRows, merchantRows, manualRows, cancelCtx] = await Promise.all([
     listRiderPenalties(orderCoreId),
     listMerchantCancellationLedger(orderCoreId),
+    listManualWalletAdjustments(orderCoreId),
     loadOrderCancellationContext(orderCoreId),
   ]);
   const opsReason = cancelCtx ? dashboardOpsCancelReason(cancelCtx) : null;
@@ -236,7 +312,7 @@ export async function listOrderRecoveryRecords(
         reason: opsReason,
       }))
     : merchantRows;
-  return [...riderRows, ...merchant].sort((a, b) => {
+  return [...riderRows, ...merchant, ...manualRows].sort((a, b) => {
     const ta = a.createdAt ? Date.parse(a.createdAt) : 0;
     const tb = b.createdAt ? Date.parse(b.createdAt) : 0;
     return tb - ta;

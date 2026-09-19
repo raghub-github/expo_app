@@ -28,6 +28,11 @@ import {
   startedAtFromPush,
 } from "@/lib/newOrderAlertManager";
 import { rememberRemoteNewOrderAlertPresented } from "@/lib/presentLocalNewOrderAlert";
+import {
+  claimNativeOrderAlert,
+  extractAlertSessionId,
+  getActiveNativeOrderAlert,
+} from "@gatimitra/expo-push-kit";
 
 export default function OrderAlertPushHandler() {
   const { selectedStore } = useSelectedStore();
@@ -83,6 +88,7 @@ export default function OrderAlertPushHandler() {
         settings: settingsRef.current,
         device: dev,
         notificationDate: startedAtFromPush(data, date),
+        alertSessionId: extractAlertSessionId(data),
       });
     }
 
@@ -113,6 +119,17 @@ export default function OrderAlertPushHandler() {
     }
 
     void (async () => {
+      try {
+        const active = await getActiveNativeOrderAlert();
+        if (active?.sessionId) {
+          await claimNativeOrderAlert(active.sessionId);
+          if (active.orderId) {
+            rememberRemoteNewOrderAlertPresented(active.orderId);
+          }
+        }
+      } catch {
+        /* native optional */
+      }
       try {
         const { getLastNotificationOpenPayload } = await import("@gatimitra/expo-push-kit");
         const last = await getLastNotificationOpenPayload();

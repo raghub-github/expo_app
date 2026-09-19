@@ -1,4 +1,5 @@
-import { Tabs } from "expo-router";
+import { Tabs, useRouter } from "expo-router";
+import { useEffect } from "react";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { CustomerTabBar, customerTabBarOffset } from "@/components/CustomerTabBar";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -7,6 +8,8 @@ import {
   CUSTOMER_TAB_TRANSITION_SPEC,
   forCustomerTabSlide,
 } from "@/lib/customerTabTransition";
+import { hasCompletedProfileSync } from "@/lib/profileCache";
+import { useAuthStore } from "@/store/authStore";
 
 /**
  * Tab navigator owns ONE floating CustomerTabBar.
@@ -15,8 +18,27 @@ import {
  */
 export default function TabsLayout() {
   const insets = useAppSafeAreaInsets();
+  const router = useRouter();
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const accessToken = useAuthStore((s) => s.session?.accessToken ?? null);
   // Stable reserved height for RN tab bar chrome (transparent). Must match dock math.
   const tabBarHeight = customerTabBarOffset(insets.bottom);
+
+  // Hard block: never paint Home/tabs until profile (ID) is created.
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!accessToken) {
+      router.replace("/(auth)/login");
+      return;
+    }
+    if (!hasCompletedProfileSync()) {
+      router.replace("/(onboarding)");
+    }
+  }, [hydrated, accessToken, router]);
+
+  if (!hydrated || !accessToken || !hasCompletedProfileSync()) {
+    return null;
+  }
 
   return (
     <>

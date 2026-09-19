@@ -1,7 +1,6 @@
 /**
- * GatiMitra OTP Login – premium delivery-app style.
- * Centered card, soft white→mint gradient, logo top-left, hero illustration,
- * rounded input with focus glow, green gradient CTA, safe-area aware.
+ * GatiMitra OTP Login – splash-teal reference layout.
+ * Compact top-left wave, 10px controls, idle Dawao nudge after valid number.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -11,7 +10,6 @@ import {
   TextInput,
   TouchableOpacity,
   ActivityIndicator,
-  KeyboardAvoidingView,
   Keyboard,
   Platform,
   StyleSheet,
@@ -19,178 +17,151 @@ import {
   Modal,
   FlatList,
   Pressable,
-  Image,
   Dimensions,
-  type ImageSourcePropType,
   type KeyboardEvent,
 } from "react-native";
+import Svg, { Path } from "react-native-svg";
+import Animated, {
+  Easing,
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from "react-native-reanimated";
 import { AppText } from "@/components/AppText";
-import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { authService } from "@/services/auth.service";
-import { useAppAssetSource } from "@/components/AppAssetImage";
-import { CX } from "@/lib/appAssetKeys";
 import { COUNTRIES, DEFAULT_COUNTRY, type CountryOption } from "@/constants/countries";
+import { GatiMitraColors } from "@/constants/gatimitra";
+import { StoreFonts } from "@/constants/storeTypography";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { setRuntimeApiBaseUrl, getConfig } from "@/config/env";
 
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
-/** Bundled fallback so the header never swaps placeholder ↔ remote (layout flicker). */
-const BUNDLED_AUTH_LOGO: ImageSourcePropType = require("../../assets/images/splash-logo.png");
 
-/** Indian mobile display: 98765-43210 (5 digits, hyphen, 5 digits). */
-function formatIndianPhoneDisplay(digits: string): string {
-  if (digits.length <= 5) return digits;
-  return `${digits.slice(0, 5)}-${digits.slice(5)}`;
-}
-
-function formatPhoneDisplay(digits: string, countryCode: string): string {
-  if (countryCode === "IN") return formatIndianPhoneDisplay(digits);
-  return digits;
-}
-
-function phoneDisplayMaxLength(countryCode: string, maxDigits: number): number {
-  if (countryCode === "IN" && maxDigits === 10) return 11;
-  return maxDigits;
-}
-
-// Premium palette – white → mint, soft shadows
-const BG_SCREEN = "#F0F4F3";
-const CARD_GRADIENT_TOP = "#FFFFFF";
-const CARD_GRADIENT_BOTTOM = "#E8F5F3";
-const MINT_SOFT = "#B2DFDB";
-const MINT_MED = "#80CBC4";
-const GREEN_PRIMARY = "#2E7D32";
-const GREEN_LIGHT = "#4CAF50";
-const TITLE_DARK = "#1A1A1A";
-const TEXT_GRAY = "#6B7280";
-const BORDER_INPUT = "#E5E7EB";
-const BORDER_FOCUS = "#4ADE80";
+const BG_SPLASH = GatiMitraColors.splashMint;
+const DARK_SURFACE = "#1A1C1E";
+const TITLE_DARK = "#111827";
+const TEXT_ON_TEAL = "#FFFFFF";
+const TEXT_MUTED_ON_DARK = "#9CA3AF";
+const DIVIDER_ON_DARK = "rgba(255,255,255,0.28)";
+const BRAND_YELLOW = "#F5C518";
+const APPLE_ORANGE = "#FF9500";
 const PLACEHOLDER_GRAY = "#9CA3AF";
-const FOOTER_GRAY = "#6B7280";
-const LINK_GREEN = "#059669";
-const SHADOW_COLOR = "rgba(0,0,0,0.06)";
+const BORDER_INPUT = "#E5E7EB";
+const TEXT_GRAY = "#6B7280";
+const CONTROL_RADIUS = 10;
 
-function HeroIllustration() {
+const BTN_DEFAULT = "Aao Ji, Login Karo 🤏";
+const BTN_NUDGE = "Dawaooo jiiii 🤏";
+const IDLE_NUDGE_MS = 4000;
+
+const { width: SCREEN_W } = Dimensions.get("window");
+/** Top-left wave — tall left edge so brand + slogan stay inside. */
+const WAVE_W = Math.round(SCREEN_W * 0.64);
+const WAVE_H = 112;
+const SUBTEXT_DARK_BLUE = "#1E3A8A";
+const BTN_INACTIVE_BG = "#9CA3AF";
+const BTN_ACTIVE_TEXT = "#111827";
+const FOOTER_DARK = "#0F172A";
+
+/** Rapido-style wave: tall flush left (-3px left height), sharper right tip. */
+function ReferenceWaveHeader({ width, height }: { width: number; height: number }) {
+  const w = width;
+  const h = height;
+  const leftEdgeY = h * 0.9 - 3;
+  const d = [
+    `M0 0`,
+    `H${w}`,
+    `V${h * 0.02}`,
+    // Sharper pointed tip near top-right (status bar edge)
+    `C${w * 0.985} ${h * 0.03} ${w * 0.95} ${h * 0.05} ${w * 0.88} ${h * 0.12}`,
+    `C${w * 0.78} ${h * 0.24} ${w * 0.66} ${h * 0.42} ${w * 0.5} ${h * 0.62}`,
+    `C${w * 0.36} ${h * 0.78} ${w * 0.2} ${h * 0.92} ${w * 0.08} ${h * 0.96}`,
+    `C${w * 0.03} ${h * 0.98} ${w * 0.01} ${h * 0.96} 0 ${leftEdgeY}`,
+    `L0 0`,
+    `Z`,
+  ].join(" ");
   return (
-    <View style={heroStyles.wrap}>
-      <View style={heroStyles.blob1} />
-      <View style={heroStyles.blob2} />
-      <View style={heroStyles.phoneOuter}>
-        <View style={heroStyles.phoneScreen} />
-        {/* Lock icon centered on the phone screen, no bubble bg */}
-        <View style={heroStyles.lockCenter}>
-          <Ionicons name="lock-closed" size={14} color={GREEN_PRIMARY} />
-        </View>
-      </View>
-    </View>
+    <Svg
+      width={w}
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      style={StyleSheet.absoluteFill}
+      pointerEvents="none"
+    >
+      <Path d={d} fill={DARK_SURFACE} />
+    </Svg>
   );
 }
 
-const heroStyles = StyleSheet.create({
-  wrap: {
-    width: 120,
-    height: 120,
-    alignItems: "center",
-    justifyContent: "flex-end",
-    marginBottom: 24,
-  },
-  blob1: {
-    position: "absolute",
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: MINT_SOFT,
-    opacity: 0.5,
-    top: 0,
-    left: 0,
-  },
-  blob2: {
-    position: "absolute",
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: MINT_MED,
-    opacity: 0.35,
-    top: 16,
-    right: 0,
-  },
-  phoneOuter: {
-    width: 36,
-    height: 56,
-    borderRadius: 10,
-    borderWidth: 2.5,
-    borderColor: MINT_MED,
-    backgroundColor: "#FFF",
-    overflow: "hidden",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  phoneScreen: {
-    width: 24,
-    height: 36,
-    borderRadius: 4,
-    backgroundColor: MINT_SOFT,
-    opacity: 0.9,
-  },
-  lockCenter: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    top: 0,
-    bottom: 0,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-});
+function formatPhoneDisplay(digits: string): string {
+  return digits;
+}
+
+function phoneDisplayMaxLength(_countryCode: string, maxDigits: number): number {
+  return maxDigits;
+}
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const scrollRef = useRef<ScrollView>(null);
+  const inputRef = useRef<TextInput>(null);
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
   const sendOtpLockRef = useRef(false);
   const [error, setError] = useState("");
   const [inputFocused, setInputFocused] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
-  const [keyboardCovered, setKeyboardCovered] = useState(0);
   const [selectedCountry, setSelectedCountry] = useState<CountryOption>(DEFAULT_COUNTRY);
   const [countryPickerVisible, setCountryPickerVisible] = useState(false);
-  const [logoError, setLogoError] = useState(false);
-  const remoteLogo = useAppAssetSource(CX.auth.logoWithName);
-  const logoSource = !logoError && remoteLogo ? remoteLogo : BUNDLED_AUTH_LOGO;
   const [apiUrlModalVisible, setApiUrlModalVisible] = useState(false);
-  /** Dev-only "Configure API URL" affordance — never shown in release builds. */
   const [showApiConfig, setShowApiConfig] = useState(false);
   const [apiUrlInput, setApiUrlInput] = useState("");
   const [apiUrlSaving, setApiUrlSaving] = useState(false);
   const [currentApiUrl, setCurrentApiUrl] = useState<string>(() => getConfig().apiBaseUrl);
+  const [showIdleNudge, setShowIdleNudge] = useState(false);
+  const pressedBeforeNudgeRef = useRef(false);
+  const nudgeScale = useSharedValue(1);
+  const formShiftY = useSharedValue(0);
+
+  const waveH = WAVE_H + Math.max(insets.top, 0);
+  const logoBlockHeight = waveH + 4;
 
   useEffect(() => {
     const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const ease = Easing.bezier(0.22, 1, 0.36, 1);
     const subShow = Keyboard.addListener(showEvt, (event: KeyboardEvent) => {
       setKeyboardVisible(true);
-      if (Platform.OS === "ios") {
-        setKeyboardCovered(0);
-        return;
-      }
-      const kbTop = event.endCoordinates.screenY;
-      const winH = Dimensions.get("window").height;
-      setKeyboardCovered(Math.max(0, Math.round(winH - kbTop)));
+      const kbH = event.endCoordinates?.height ?? 0;
+      // Match OS keyboard timing; small lift only — no padding jumps (those feel sticky).
+      const duration =
+        Platform.OS === "ios" && typeof event.duration === "number" && event.duration > 0
+          ? event.duration
+          : 220;
+      const lift = Math.min(48, Math.max(24, Math.round(kbH * 0.08)));
+      formShiftY.value = withTiming(-lift, { duration, easing: ease });
     });
-    const subHide = Keyboard.addListener(hideEvt, () => {
+    const subHide = Keyboard.addListener(hideEvt, (event: KeyboardEvent) => {
+      const duration =
+        Platform.OS === "ios" && typeof event.duration === "number" && event.duration > 0
+          ? event.duration
+          : 200;
+      formShiftY.value = withTiming(0, { duration, easing: ease });
       setKeyboardVisible(false);
-      setKeyboardCovered(0);
     });
     return () => {
       subShow.remove();
       subHide.remove();
     };
-  }, []);
+  }, [formShiftY]);
 
   const openApiUrlModal = () => {
     setApiUrlInput(currentApiUrl);
@@ -235,13 +206,58 @@ export default function LoginScreen() {
   const phoneDigits = phone.replace(/\D/g, "");
   const requiredPhoneLen = selectedCountry.code === "IN" ? 10 : 7;
   const maxPhoneLen = selectedCountry.code === "IN" ? 10 : 15;
-  const phoneDisplay = formatPhoneDisplay(phoneDigits, selectedCountry.code);
+  const phoneDisplay = formatPhoneDisplay(phoneDigits);
   const phoneInputMaxLen = phoneDisplayMaxLength(selectedCountry.code, maxPhoneLen);
   const isPhoneValid =
     selectedCountry.code === "IN"
       ? phoneDigits.length === 10
       : phoneDigits.length >= requiredPhoneLen;
   const canSendOtp = isPhoneValid && !loading;
+
+  // Dawao only after number is filled and 5s pass without tapping Aao Ji CTA.
+  useEffect(() => {
+    if (!isPhoneValid || loading || pressedBeforeNudgeRef.current) {
+      setShowIdleNudge(false);
+      cancelAnimation(nudgeScale);
+      nudgeScale.value = 1;
+      return;
+    }
+    setShowIdleNudge(false);
+    const t = setTimeout(() => {
+      if (pressedBeforeNudgeRef.current) return;
+      setShowIdleNudge(true);
+    }, IDLE_NUDGE_MS);
+    return () => clearTimeout(t);
+  }, [isPhoneValid, loading, phoneDigits, nudgeScale]);
+
+  useEffect(() => {
+    if (!showIdleNudge) {
+      cancelAnimation(nudgeScale);
+      nudgeScale.value = 1;
+      return;
+    }
+    nudgeScale.value = withRepeat(
+      withSequence(
+        withTiming(1.05, { duration: 380 }),
+        withTiming(0.97, { duration: 380 }),
+        withTiming(1.03, { duration: 280 }),
+        withTiming(1, { duration: 280 })
+      ),
+      -1,
+      false
+    );
+    return () => {
+      cancelAnimation(nudgeScale);
+    };
+  }, [showIdleNudge, nudgeScale]);
+
+  const nudgeBtnStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: nudgeScale.value }],
+  }));
+
+  const formLiftStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: formShiftY.value }],
+  }));
 
   const handlePhoneChange = (raw: string) => {
     const digits = raw.replace(/\D/g, "").slice(0, maxPhoneLen);
@@ -254,6 +270,13 @@ export default function LoginScreen() {
     if (!isPhoneValid) {
       setError(`Enter a valid ${requiredPhoneLen}-digit mobile number`);
       return;
+    }
+    // Tapped while still on "Aao Ji…" — no click/pulse animation.
+    if (!showIdleNudge) {
+      pressedBeforeNudgeRef.current = true;
+      setShowIdleNudge(false);
+      cancelAnimation(nudgeScale);
+      nudgeScale.value = 1;
     }
     const digits = phoneDigits;
     sendOtpLockRef.current = true;
@@ -268,27 +291,26 @@ export default function LoginScreen() {
         params: { phoneE164 },
       });
     } catch (e: unknown) {
-      const ax = e as { response?: { data?: { message?: string }; status?: number }; message?: string; code?: string };
+      const ax = e as {
+        response?: { data?: { message?: string }; status?: number };
+        message?: string;
+        code?: string;
+      };
       const rawMessage = typeof ax?.message === "string" ? ax.message.trim() : "";
       const isNetworkError =
         !ax?.response &&
         (ax?.code === "ECONNABORTED" ||
           rawMessage === "Network Error" ||
           rawMessage.toLowerCase().includes("network"));
-      // Only surface the backend's own user-facing message (e.g. "Too many
-      // attempts"); never raw JS/network/technical text — users don't understand
-      // it and it looks alarming. Everything else becomes a short, calm message.
       const backendMsg =
         typeof ax?.response?.data?.message === "string" && ax.response.data.message.trim()
           ? ax.response.data.message.trim()
           : null;
       if (__DEV__ && isNetworkError) {
-        // Keep the detailed hint for developers, in the console only.
         console.warn(
           "[Login] Cannot reach server. Start backend (port 3000) or set EXPO_PUBLIC_DEV_HOST to your PC's LAN IP (EXPO_PUBLIC_API_PORT / EXPO_PUBLIC_API_BASE_URL)."
         );
       }
-      // Dev-only quick fix affordance — never shown to real users.
       setShowApiConfig(__DEV__ && isNetworkError);
       setError(
         backendMsg ||
@@ -303,77 +325,66 @@ export default function LoginScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={Platform.OS === "ios" ? Math.max(insets.top, 8) : 0}
-      style={[styles.container, { paddingBottom: keyboardVisible ? 0 : insets.bottom }]}
-    >
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={[
-          styles.scrollContent,
-          keyboardVisible && styles.scrollContentKeyboard,
-          {
-            paddingTop: keyboardVisible ? 8 : 24,
-            paddingBottom: keyboardVisible
-              ? keyboardCovered + 8
-              : 24 + insets.bottom,
-          },
-        ]}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={[styles.card, keyboardVisible && styles.cardKeyboard]}>
-          <LinearGradient
-            colors={[CARD_GRADIENT_TOP, CARD_GRADIENT_BOTTOM]}
-            style={StyleSheet.absoluteFill}
-          />
-          <View style={styles.waveWrap}>
-            <View style={[styles.wave1, { backgroundColor: MINT_SOFT }]} />
-            <View style={[styles.wave2, { backgroundColor: MINT_MED, opacity: 0.4 }]} />
-          </View>
+    <View style={styles.screen}>
+      <StatusBar style="light" translucent backgroundColor="transparent" />
 
-          <View style={[styles.cardInner, keyboardVisible && styles.cardInnerKeyboard]}>
-            <View style={[styles.header, keyboardVisible && styles.headerKeyboard]}>
-              <Image
-                source={logoSource}
-                style={[styles.logoImage, keyboardVisible && styles.logoImageKeyboard]}
-                resizeMode="contain"
-                accessibilityLabel="GatiMitra logo"
-                onError={() => setLogoError(true)}
-              />
+      <View style={[styles.logoHeader, { width: WAVE_W + 2, height: waveH + 2, left: -1, top: -1 }]} pointerEvents="none">
+        <ReferenceWaveHeader width={WAVE_W + 2} height={waveH + 2} />
+        <View style={[styles.logoRow, { paddingTop: Math.max(insets.top, 8) + 10 }]}>
+          <View style={styles.logoTextCol}>
+            <View style={styles.brandNameRow}>
+              <AppText style={styles.brandGati} bold>
+                Gati
+              </AppText>
+              <AppText style={styles.brandMitra} bold>
+                Mitra
+              </AppText>
             </View>
+            <AppText style={styles.brandTagline} bold>
+              MOVING PEOPLE CLOSER
+            </AppText>
+          </View>
+        </View>
+      </View>
 
-            {!keyboardVisible ? <HeroIllustration /> : null}
+      <View style={styles.flex}>
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={[
+            styles.scrollContent,
+            {
+              paddingTop: logoBlockHeight + 28,
+              paddingBottom: Math.max(insets.bottom, 16) + 20,
+            },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+          bounces={false}
+        >
+          <Animated.View style={[styles.mainBlock, formLiftStyle]}>
+            <AppText style={styles.title} bold>
+              {"Let's Get You\nOn The Move !"}
+            </AppText>
 
-            <AppText style={[styles.title, keyboardVisible && styles.titleKeyboard]}>Login</AppText>
-            {!keyboardVisible ? (
-              <AppText style={styles.subtitle}>Enter your mobile number to get OTP</AppText>
-            ) : (
-              <AppText style={styles.subtitleKeyboard}>Enter your mobile number to get OTP</AppText>
-            )}
+            <AppText style={styles.subtitle} bold>
+              {
+                "Your wallet balance will be linked to this number. Don't worry, we will never make it public."
+              }
+            </AppText>
 
-            <View style={[styles.fieldWrap, keyboardVisible && styles.fieldWrapKeyboard]}>
-              <View style={styles.labelRow}>
-                <AppText style={styles.label}>Mobile number</AppText>
-                {phoneDigits.length > 0 ? (
-                  <AppText
-                    style={[
-                      styles.digitCounter,
-                      isPhoneValid ? styles.digitCounterValid : undefined,
-                    ]}
-                  >
-                    {phoneDigits.length}/{requiredPhoneLen}
-                  </AppText>
-                ) : null}
-              </View>
-              <View
+            <View style={styles.fieldWrap}>
+              <Pressable
                 style={[
                   styles.inputRow,
                   inputFocused && styles.inputRowFocused,
                   isPhoneValid && styles.inputRowValid,
                 ]}
+                onPress={() => {
+                  if (!loading) inputRef.current?.focus();
+                }}
+                disabled={loading}
+                accessibilityRole="none"
               >
                 <TouchableOpacity
                   style={styles.countryTrigger}
@@ -381,31 +392,32 @@ export default function LoginScreen() {
                   activeOpacity={0.8}
                   disabled={loading}
                 >
-                  <AppText style={styles.flagEmoji}>{selectedCountry.flag}</AppText>
-                  <AppText style={styles.countryCode}>{selectedCountry.dialCode}</AppText>
-                  <Ionicons name="chevron-down" size={16} color={TEXT_GRAY} />
+                  <Text style={styles.flagEmoji} allowFontScaling={false}>
+                    {selectedCountry.flag}
+                  </Text>
+                  <Text style={styles.countryCode} allowFontScaling={false}>
+                    {selectedCountry.dialCode}
+                  </Text>
+                  <Ionicons name="chevron-down" size={14} color={TEXT_MUTED_ON_DARK} />
                 </TouchableOpacity>
-                <View style={styles.inputDivider} />
+                <View style={styles.inputDivider} pointerEvents="none" />
                 <TextInput
-                  style={[
-                    styles.input,
-                    styles.inputNoOutline,
-                    phoneDigits.length > 0 && styles.inputFilled,
-                  ]}
-                  placeholder="Enter mobile number"
+                  ref={inputRef}
+                  style={[styles.input, styles.inputNoOutline]}
+                  placeholder="Enter mobile no."
                   placeholderTextColor={PLACEHOLDER_GRAY}
                   keyboardType="phone-pad"
                   maxLength={phoneInputMaxLen}
                   value={phoneDisplay}
                   onChangeText={handlePhoneChange}
-                  onFocus={() => {
-                    setInputFocused(true);
-                  }}
+                  onFocus={() => setInputFocused(true)}
                   onBlur={() => setInputFocused(false)}
                   editable={!loading}
                   underlineColorAndroid="transparent"
+                  selectionColor={BG_SPLASH}
+                  allowFontScaling={false}
                 />
-              </View>
+              </Pressable>
               {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
               {__DEV__ && showApiConfig ? (
                 <TouchableOpacity
@@ -413,174 +425,170 @@ export default function LoginScreen() {
                   style={apiUrlStyles.configureBtn}
                   activeOpacity={0.85}
                 >
-                  <Ionicons name="settings-outline" size={16} color={GREEN_PRIMARY} />
+                  <Ionicons name="settings-outline" size={16} color={TITLE_DARK} />
                   <AppText style={apiUrlStyles.configureBtnText}>Configure API URL</AppText>
                 </TouchableOpacity>
               ) : null}
             </View>
 
-            <TouchableOpacity
-              onPress={handleSendOtp}
-              disabled={!canSendOtp}
-              activeOpacity={canSendOtp ? 0.9 : 1}
-              style={[styles.buttonWrap, !canSendOtp && styles.buttonWrapDisabled]}
+            <Animated.View
+              style={[styles.buttonAnimWrap, showIdleNudge ? nudgeBtnStyle : undefined]}
             >
-              <LinearGradient
-                colors={canSendOtp ? [GREEN_PRIMARY, GREEN_LIGHT] : ["#B0BEC5", "#CFD8DC"]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.button}
+              <TouchableOpacity
+                onPress={handleSendOtp}
+                disabled={!canSendOtp}
+                activeOpacity={canSendOtp ? 0.88 : 1}
+                style={[styles.button, canSendOtp ? styles.buttonActive : styles.buttonDisabled]}
               >
                 {loading ? (
-                  <ActivityIndicator color="#fff" />
+                  <ActivityIndicator color={BTN_ACTIVE_TEXT} />
                 ) : (
-                  <AppText style={[styles.buttonText, !canSendOtp && styles.buttonTextDisabled]}>
-                    Send OTP
-                  </AppText>
+                  <Text
+                    style={[
+                      styles.buttonText,
+                      canSendOtp ? styles.buttonTextActive : styles.buttonTextDisabled,
+                    ]}
+                    allowFontScaling={false}
+                  >
+                    {showIdleNudge && canSendOtp ? BTN_NUDGE : BTN_DEFAULT}
+                  </Text>
                 )}
-              </LinearGradient>
+              </TouchableOpacity>
+            </Animated.View>
+          </Animated.View>
+
+          <View style={[styles.footer, keyboardVisible && styles.footerKeyboard]}>
+            <View style={styles.footerRuleRow}>
+              <View style={styles.footerRule} />
+              <AppText style={styles.footerLine} bold>
+                {"By clicking 'Login', you accept our"}
+              </AppText>
+              <View style={styles.footerRule} />
+            </View>
+            <Pressable
+              onPress={() => router.push("/legal/privacy-policy" as never)}
+              hitSlop={8}
+              accessibilityRole="link"
+            >
+              <AppText style={styles.footerLink} bold>
+                Privacy policy
+              </AppText>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </View>
+
+      <Modal
+        visible={countryPickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCountryPickerVisible(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setCountryPickerVisible(false)}>
+          <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.modalHeader}>
+              <AppText style={styles.modalTitle}>Select country</AppText>
+              <TouchableOpacity onPress={() => setCountryPickerVisible(false)} hitSlop={12}>
+                <Ionicons name="close" size={24} color={TITLE_DARK} />
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={COUNTRIES}
+              keyExtractor={(item) => item.code}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[
+                    styles.countryRow,
+                    item.code === selectedCountry.code && styles.countryRowSelected,
+                  ]}
+                  onPress={() => {
+                    setSelectedCountry(item);
+                    setCountryPickerVisible(false);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.countryRowFlag}>{item.flag}</Text>
+                  <AppText style={styles.countryRowName}>{item.name}</AppText>
+                  <Text style={styles.countryRowDial}>{item.dialCode}</Text>
+                </TouchableOpacity>
+              )}
+            />
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={apiUrlModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setApiUrlModalVisible(false)}
+      >
+        <Pressable
+          style={apiUrlStyles.backdrop}
+          onPress={() => (apiUrlSaving ? undefined : setApiUrlModalVisible(false))}
+        >
+          <Pressable onPress={() => {}} style={apiUrlStyles.sheet}>
+            <AppText style={apiUrlStyles.sheetTitle}>Configure API URL</AppText>
+            <AppText style={apiUrlStyles.sheetSubtitle}>
+              {
+                "Point this installed app at a different backend without rebuilding. Use your PC's LAN IP (e.g. http://10.15.120.181:3000) or an ngrok URL."
+              }
+            </AppText>
+            <AppText style={apiUrlStyles.sheetLabel}>Current</AppText>
+            <Text style={apiUrlStyles.sheetCurrent} numberOfLines={1}>
+              {currentApiUrl}
+            </Text>
+
+            <AppText style={apiUrlStyles.sheetLabel}>New API base URL</AppText>
+            <TextInput
+              value={apiUrlInput}
+              onChangeText={setApiUrlInput}
+              placeholder="http://10.15.120.181:3000"
+              placeholderTextColor={PLACEHOLDER_GRAY}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              style={apiUrlStyles.sheetInput}
+              editable={!apiUrlSaving}
+            />
+
+            <TouchableOpacity
+              onPress={saveApiUrl}
+              disabled={apiUrlSaving || apiUrlInput.trim().length === 0}
+              style={[
+                apiUrlStyles.sheetPrimary,
+                (apiUrlSaving || apiUrlInput.trim().length === 0) && apiUrlStyles.sheetBtnDisabled,
+              ]}
+              activeOpacity={0.85}
+            >
+              {apiUrlSaving ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <AppText style={apiUrlStyles.sheetPrimaryText}>Save & use this URL</AppText>
+              )}
             </TouchableOpacity>
 
-            {!keyboardVisible ? (
-              <>
-                <AppText style={styles.footerLine1}>By continuing, you agree to our</AppText>
-                <View style={styles.footerLinksRow}>
-                  <Pressable
-                    onPress={() => router.push("/legal/terms-of-service" as never)}
-                    hitSlop={8}
-                    accessibilityRole="link"
-                  >
-                    <AppText style={styles.footerLink}>Terms of Service</AppText>
-                  </Pressable>
-                  <AppText style={styles.footerLine2}> & </AppText>
-                  <Pressable
-                    onPress={() => router.push("/legal/privacy-policy" as never)}
-                    hitSlop={8}
-                    accessibilityRole="link"
-                  >
-                    <AppText style={styles.footerLink}>Privacy Policy</AppText>
-                  </Pressable>
-                </View>
-              </>
-            ) : null}
-          </View>
-        </View>
+            <TouchableOpacity
+              onPress={resetApiUrl}
+              disabled={apiUrlSaving}
+              style={apiUrlStyles.sheetSecondary}
+              activeOpacity={0.85}
+            >
+              <AppText style={apiUrlStyles.sheetSecondaryText}>Reset to build default</AppText>
+            </TouchableOpacity>
 
-        <Modal
-          visible={countryPickerVisible}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setCountryPickerVisible(false)}
-        >
-          <Pressable
-            style={styles.modalOverlay}
-            onPress={() => setCountryPickerVisible(false)}
-          >
-            <Pressable style={styles.modalContent} onPress={(e) => e.stopPropagation()}>
-              <View style={styles.modalHeader}>
-                <AppText style={styles.modalTitle}>Select country</AppText>
-                <TouchableOpacity onPress={() => setCountryPickerVisible(false)} hitSlop={12}>
-                  <Ionicons name="close" size={24} color={TITLE_DARK} />
-                </TouchableOpacity>
-              </View>
-              <FlatList
-                data={COUNTRIES}
-                keyExtractor={(item) => item.code}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={[
-                      styles.countryRow,
-                      item.code === selectedCountry.code && styles.countryRowSelected,
-                    ]}
-                    onPress={() => {
-                      setSelectedCountry(item);
-                      setCountryPickerVisible(false);
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <AppText style={styles.countryRowFlag}>{item.flag}</AppText>
-                    <AppText style={styles.countryRowName}>{item.name}</AppText>
-                    <AppText style={styles.countryRowDial}>{item.dialCode}</AppText>
-                  </TouchableOpacity>
-                )}
-              />
-            </Pressable>
+            <TouchableOpacity
+              onPress={() => setApiUrlModalVisible(false)}
+              disabled={apiUrlSaving}
+              style={apiUrlStyles.sheetCancel}
+              activeOpacity={0.85}
+            >
+              <AppText style={apiUrlStyles.sheetCancelText}>Cancel</AppText>
+            </TouchableOpacity>
           </Pressable>
-        </Modal>
-
-        {/* Configure API URL — runtime override for the backend base URL.
-            Persisted in AsyncStorage, hydrated at app startup. Lets you point
-            an installed APK at a new LAN IP / ngrok URL without rebuilding. */}
-        <Modal
-          visible={apiUrlModalVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setApiUrlModalVisible(false)}
-        >
-          <Pressable
-            style={apiUrlStyles.backdrop}
-            onPress={() => (apiUrlSaving ? undefined : setApiUrlModalVisible(false))}
-          >
-            <Pressable onPress={() => {}} style={apiUrlStyles.sheet}>
-              <AppText style={apiUrlStyles.sheetTitle}>Configure API URL</AppText>
-              <AppText style={apiUrlStyles.sheetSubtitle}>
-                Point this installed app at a different backend without rebuilding.
-                Use your PC's LAN IP (e.g. http://10.196.37.181:3000) or an ngrok URL.
-              </AppText>
-              <AppText style={apiUrlStyles.sheetLabel}>Current</AppText>
-              <Text style={apiUrlStyles.sheetCurrent} numberOfLines={1}>{currentApiUrl}</Text>
-
-              <AppText style={apiUrlStyles.sheetLabel}>New API base URL</AppText>
-              <TextInput
-                value={apiUrlInput}
-                onChangeText={setApiUrlInput}
-                placeholder="http://10.196.37.181:3000"
-                placeholderTextColor={PLACEHOLDER_GRAY}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="url"
-                style={apiUrlStyles.sheetInput}
-                editable={!apiUrlSaving}
-              />
-
-              <TouchableOpacity
-                onPress={saveApiUrl}
-                disabled={apiUrlSaving || apiUrlInput.trim().length === 0}
-                style={[
-                  apiUrlStyles.sheetPrimary,
-                  (apiUrlSaving || apiUrlInput.trim().length === 0) && apiUrlStyles.sheetBtnDisabled,
-                ]}
-                activeOpacity={0.85}
-              >
-                {apiUrlSaving ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <AppText style={apiUrlStyles.sheetPrimaryText}>Save & use this URL</AppText>
-                )}
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={resetApiUrl}
-                disabled={apiUrlSaving}
-                style={apiUrlStyles.sheetSecondary}
-                activeOpacity={0.85}
-              >
-                <AppText style={apiUrlStyles.sheetSecondaryText}>Reset to build default</AppText>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => setApiUrlModalVisible(false)}
-                disabled={apiUrlSaving}
-                style={apiUrlStyles.sheetCancel}
-                activeOpacity={0.85}
-              >
-                <AppText style={apiUrlStyles.sheetCancelText}>Cancel</AppText>
-              </TouchableOpacity>
-            </Pressable>
-          </Pressable>
-        </Modal>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        </Pressable>
+      </Modal>
+    </View>
   );
 }
 
@@ -589,16 +597,16 @@ const apiUrlStyles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "flex-start",
-    marginTop: 8,
+    marginTop: 10,
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 8,
-    backgroundColor: "#ECFDF5",
+    backgroundColor: "rgba(255,255,255,0.85)",
     borderWidth: 1,
-    borderColor: GREEN_PRIMARY,
+    borderColor: TITLE_DARK,
     gap: 6,
   },
-  configureBtnText: { fontSize: 13, color: GREEN_PRIMARY, fontWeight: "600" },
+  configureBtnText: { fontSize: 13, color: TITLE_DARK, fontWeight: "600" },
   backdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -612,7 +620,13 @@ const apiUrlStyles = StyleSheet.create({
   },
   sheetTitle: { fontSize: 18, fontWeight: "700", color: TITLE_DARK, marginBottom: 6 },
   sheetSubtitle: { fontSize: 13, color: TEXT_GRAY, lineHeight: 19, marginBottom: 16 },
-  sheetLabel: { fontSize: 12, fontWeight: "600", color: TEXT_GRAY, textTransform: "uppercase", marginBottom: 4 },
+  sheetLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: TEXT_GRAY,
+    textTransform: "uppercase",
+    marginBottom: 4,
+  },
   sheetCurrent: {
     fontSize: 13,
     color: TITLE_DARK,
@@ -634,7 +648,7 @@ const apiUrlStyles = StyleSheet.create({
     marginBottom: 16,
   },
   sheetPrimary: {
-    backgroundColor: GREEN_PRIMARY,
+    backgroundColor: DARK_SURFACE,
     paddingVertical: 13,
     borderRadius: 12,
     alignItems: "center",
@@ -656,305 +670,229 @@ const apiUrlStyles = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
-  container: {
+  screen: {
     flex: 1,
-    backgroundColor: BG_SCREEN,
+    backgroundColor: BG_SPLASH,
+  },
+  flex: { flex: 1 },
+  logoHeader: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    zIndex: 20,
+    overflow: "hidden",
+  },
+  logoRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    paddingLeft: 16,
+    paddingRight: 28,
+    zIndex: 1,
+  },
+  logoTextCol: {
+    justifyContent: "center",
+    maxWidth: WAVE_W * 0.72,
+  },
+  brandNameRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+  },
+  brandGati: {
+    fontSize: 22,
+    fontFamily: StoreFonts.loraBold,
+    color: TEXT_ON_TEAL,
+    letterSpacing: 0.2,
+  },
+  brandMitra: {
+    fontSize: 22,
+    fontFamily: StoreFonts.loraBold,
+    color: BRAND_YELLOW,
+    letterSpacing: 0.2,
+  },
+  brandTagline: {
+    marginTop: 3,
+    fontSize: 8,
+    fontFamily: StoreFonts.loraBold,
+    color: TEXT_ON_TEAL,
+    letterSpacing: 1.2,
   },
   scrollContent: {
     flexGrow: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingTop: 24,
-    paddingBottom: 24,
-    paddingHorizontal: 20,
-  },
-  scrollContentKeyboard: {
-    justifyContent: "flex-end",
-  },
-  card: {
-    width: "100%",
-    maxWidth: 380,
-    borderRadius: 28,
-    overflow: "hidden",
-    minHeight: 560,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.06,
-    shadowRadius: 24,
-    elevation: 8,
-  },
-  cardKeyboard: {
-    minHeight: 0,
-  },
-  waveWrap: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: "38%",
-    overflow: "hidden",
-  },
-  wave1: {
-    position: "absolute",
-    left: "-15%",
-    right: "-15%",
-    bottom: 0,
-    height: "100%",
-    borderTopLeftRadius: 160,
-    borderTopRightRadius: 160,
-  },
-  wave2: {
-    position: "absolute",
-    left: "-8%",
-    right: "-8%",
-    bottom: -12,
-    height: "88%",
-    borderTopLeftRadius: 140,
-    borderTopRightRadius: 140,
-  },
-  cardInner: {
+    justifyContent: "space-between",
     paddingHorizontal: 28,
-    paddingTop: 20,
-    paddingBottom: 32,
+  },
+  mainBlock: {
+    width: "100%",
+    maxWidth: 400,
+    alignSelf: "center",
     alignItems: "center",
-  },
-  cardInnerKeyboard: {
-    paddingTop: 14,
-    paddingBottom: 20,
-  },
-  header: {
-    alignSelf: "stretch",
-    alignItems: "flex-start",
-    marginBottom: 8,
-  },
-  headerKeyboard: {
-    marginBottom: 4,
-  },
-  logoImage: {
-    width: 120,
-    height: 36,
-  },
-  logoImageKeyboard: {
-    width: 100,
-    height: 30,
+    flexGrow: 1,
+    justifyContent: "flex-start",
+    paddingTop: 52,
   },
   title: {
-    fontSize: 26,
-    fontWeight: "700",
+    fontSize: 32,
+    fontFamily: StoreFonts.loraBold,
     color: TITLE_DARK,
-    marginBottom: 8,
     textAlign: "center",
-    letterSpacing: 0.3,
-  },
-  titleKeyboard: {
-    fontSize: 22,
-    marginBottom: 4,
+    lineHeight: 40,
+    letterSpacing: 0.2,
+    marginBottom: 14,
   },
   subtitle: {
-    fontSize: 15,
-    color: TEXT_GRAY,
-    marginBottom: 28,
+    fontSize: 14,
+    fontFamily: StoreFonts.loraBold,
+    color: SUBTEXT_DARK_BLUE,
     textAlign: "center",
-    lineHeight: 22,
-  },
-  subtitleKeyboard: {
-    fontSize: 13,
-    color: TEXT_GRAY,
-    marginBottom: 14,
-    textAlign: "center",
-    lineHeight: 18,
+    lineHeight: 21,
+    marginBottom: 48,
+    paddingHorizontal: 8,
   },
   fieldWrap: {
     width: "100%",
-    marginBottom: 22,
-  },
-  fieldWrapKeyboard: {
-    marginBottom: 14,
-  },
-  labelRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 10,
-  },
-  label: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: TITLE_DARK,
-  },
-  digitCounter: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: TEXT_GRAY,
-    fontVariant: ["tabular-nums"],
-  },
-  digitCounterValid: {
-    color: GREEN_PRIMARY,
+    marginBottom: 16,
   },
   inputRow: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F8FAFC",
+    backgroundColor: DARK_SURFACE,
+    borderRadius: CONTROL_RADIUS,
     borderWidth: 1.5,
-    borderColor: "#E2E8F0",
-    borderRadius: 16,
+    borderColor: "transparent",
     paddingHorizontal: 6,
     paddingVertical: 4,
-    minHeight: 58,
-    overflow: "hidden",
-    shadowColor: SHADOW_COLOR,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
+    minHeight: 56,
   },
   inputRowFocused: {
-    borderColor: "#4ADE80",
-    backgroundColor: "#FFFFFF",
-    shadowColor: "rgba(74, 222, 128, 0.25)",
-    shadowRadius: 12,
-    elevation: 3,
+    borderColor: "rgba(255,255,255,0.35)",
   },
   inputRowValid: {
-    borderColor: "#86EFAC",
-    backgroundColor: "#FFFFFF",
+    borderColor: "rgba(255,255,255,0.22)",
   },
   countryTrigger: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 5,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E8ECF0",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
   },
   flagEmoji: {
     fontSize: 20,
+    lineHeight: 24,
+    color: TEXT_ON_TEAL,
+    ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
   },
   countryCode: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: TITLE_DARK,
+    fontSize: 18,
+    // Custom bold face only — pairing fontWeight causes Android bold↔regular flicker.
+    fontFamily: StoreFonts.poppinsBold,
+    color: TEXT_ON_TEAL,
     fontVariant: ["tabular-nums"],
+    ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
   },
   inputDivider: {
-    width: 1,
-    height: 32,
-    backgroundColor: "#E2E8F0",
-    marginHorizontal: 8,
+    width: StyleSheet.hairlineWidth,
+    height: 28,
+    backgroundColor: DIVIDER_ON_DARK,
+    marginRight: 4,
   },
   input: {
     flex: 1,
-    paddingVertical: 14,
-    paddingLeft: 4,
-    paddingRight: 16,
-    fontSize: 16,
-    fontWeight: "400",
-    color: TITLE_DARK,
+    paddingVertical: Platform.OS === "ios" ? 14 : 10,
+    paddingLeft: 8,
+    paddingRight: 18,
+    fontSize: 18,
+    fontFamily: StoreFonts.poppinsBold,
+    letterSpacing: 1.1,
+    color: TEXT_ON_TEAL,
+    fontVariant: ["tabular-nums"],
     minWidth: 0,
     borderWidth: 0,
     backgroundColor: "transparent",
+    ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
   },
   inputFilled: {
-    fontSize: 18,
-    fontWeight: "700",
-    letterSpacing: 1.2,
-    color: "#0F172A",
-    fontVariant: ["tabular-nums"],
+    // Keep identical metrics so typing never swaps weight/family.
   },
   inputNoOutline: {
-    ...(Platform.OS === "web" && {
-      outlineStyle: "none",
-      outlineWidth: 0,
-    } as Record<string, unknown>),
+    ...(Platform.OS === "web" &&
+      ({
+        outlineStyle: "none",
+        outlineWidth: 0,
+      } as Record<string, unknown>)),
   },
   errorText: {
     fontSize: 14,
-    color: "#dc2626",
+    color: "#7F1D1D",
     marginTop: 10,
+    textAlign: "center",
+    fontWeight: "700",
   },
-  rememberRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 20,
-    gap: 10,
-  },
-  checkbox: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: BORDER_INPUT,
-    backgroundColor: "#FFF",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  checkboxChecked: {
-    backgroundColor: GREEN_PRIMARY,
-    borderColor: GREEN_PRIMARY,
-  },
-  rememberText: {
-    fontSize: 15,
-    color: TITLE_DARK,
-    fontWeight: "500",
-  },
-  buttonWrap: {
+  buttonAnimWrap: {
     width: "100%",
-    borderRadius: 14,
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  buttonWrapDisabled: {
-    shadowOpacity: 0,
-    elevation: 0,
   },
   button: {
     width: "100%",
-    paddingVertical: 16,
-    borderRadius: 14,
+    minHeight: 56,
+    borderRadius: CONTROL_RADIUS,
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 52,
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+  },
+  buttonActive: {
+    backgroundColor: APPLE_ORANGE,
+  },
+  buttonDisabled: {
+    backgroundColor: BTN_INACTIVE_BG,
+    opacity: 0.72,
   },
   buttonText: {
-    color: "#FFF",
     fontSize: 17,
-    fontWeight: "700",
-    letterSpacing: 0.3,
-  },
-  buttonTextDisabled: {
-    color: "#F1F5F9",
-  },
-  footerLine1: {
-    marginTop: 28,
-    fontSize: 12,
-    color: FOOTER_GRAY,
+    fontWeight: "800",
+    // System face stays bold with emoji — never swap fontFamily mid-nudge.
+    letterSpacing: 0.2,
     textAlign: "center",
   },
-  footerLinksRow: {
-    marginTop: 4,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    justifyContent: "center",
+  buttonTextActive: {
+    color: BTN_ACTIVE_TEXT,
   },
-  footerLine2: {
+  buttonTextDisabled: {
+    color: "rgba(17,24,39,0.45)",
+  },
+  footer: {
+    marginTop: 28,
+    alignItems: "center",
+    paddingHorizontal: 8,
+  },
+  footerKeyboard: {
+    marginTop: 16,
+    opacity: 0.7,
+  },
+  footerRuleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    width: "100%",
+    gap: 10,
+    marginBottom: 6,
+  },
+  footerRule: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "rgba(2,6,23,0.45)",
+  },
+  footerLine: {
     fontSize: 12,
-    color: FOOTER_GRAY,
+    fontWeight: "700",
+    color: "#020617",
     textAlign: "center",
   },
   footerLink: {
-    color: LINK_GREEN,
-    fontWeight: "600",
-    fontSize: 12,
-    textDecorationLine: "underline",
-    textDecorationColor: LINK_GREEN,
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#020617",
+    textAlign: "center",
   },
   modalOverlay: {
     flex: 1,
@@ -990,8 +928,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   countryRowSelected: {
-    backgroundColor: MINT_SOFT,
-    opacity: 0.6,
+    backgroundColor: "#CCFBF1",
   },
   countryRowFlag: {
     fontSize: 24,

@@ -1,15 +1,22 @@
-/** Ops dashboard order detail — same public IDs as control.gatimitra /order/[id].
- * Local dashboard (`npm run dev` in /dashboard) listens on :3001; :3000 is the API. */
+/** Ops / control portal order detail — same public IDs as control.gatimitra.com/order/[id]. */
+const PRODUCTION_CONTROL_DASHBOARD = "https://control.gatimitra.com";
+
 export function orderDetailHref(code: string | null | undefined): string {
   const id = String(code ?? "")
     .trim()
     .replace(/^#/, "")
     .replace(/[-\s]/g, "");
   if (!id) return "#";
-  const base = (
+  const fromEnv = (
     process.env.NEXT_PUBLIC_DASHBOARD_URL ||
     process.env.NEXT_PUBLIC_OPS_DASHBOARD_URL ||
-    "http://localhost:3001"
+    ""
+  ).trim();
+  // Never ship treasury → localhost when env is missing or still points at local dashboard.
+  const base = (
+    !fromEnv || /localhost|127\.0\.0\.1/i.test(fromEnv)
+      ? PRODUCTION_CONTROL_DASHBOARD
+      : fromEnv
   ).replace(/\/$/, "");
   return `${base}/order/${encodeURIComponent(id)}`;
 }

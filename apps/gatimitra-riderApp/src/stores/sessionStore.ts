@@ -3,8 +3,11 @@ import type { Session } from "@gatimitra/contracts";
 import { getItem, setItem, removeItem } from "@/src/utils/storage";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { riderIdFromSession } from "@/src/utils/normalizeRiderId";
-import { riderAuthService } from "@/src/services/auth/auth.service";
-import { isAuthRejectionMessage } from "@/src/services/rider-auth-failure";
+import { isRiderAuthError, riderAuthService } from "@/src/services/auth/auth.service";
+import {
+  isAuthRejectionMessage,
+  isDefiniteRiderSessionRevocation,
+} from "@/src/services/rider-auth-failure";
 
 const LEGACY_SESSION_KEY = "gm_session_v1";
 const TOKEN_KEY = "gm_rider_access_token_v1";
@@ -194,13 +197,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const code = isRiderAuthError(error) ? error.code : "";
       // Network / server hiccup (not an auth rejection) → treat as STILL valid so we never sign the
       // rider out on a transient failure. Only a definitive auth rejection confirms it is truly gone.
-      if (!isAuthRejectionMessage(message)) {
-        console.warn("[SessionStore] confirmStillValid: transient refresh failure, keeping session:", message);
-        return true;
+      if (
+        isDefiniteRiderSessionRevocation(401, code, message) ||
+        isAuthRejectionMessage(message)
+      ) {
+        return false;
       }
-      return false;
+      console.warn("[SessionStore] confirmStillValid: transient refresh failure, keeping session:", message);
+      return true;
     }
   },
 }));

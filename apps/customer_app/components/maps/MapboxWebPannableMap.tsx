@@ -102,8 +102,14 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
     [onRegionChange, onRegionChangeComplete]
   );
 
-  const readMapCenter = (e: { properties?: { center?: number[] }; geometry?: { coordinates?: number[] } } | null) => {
-    const c = e?.properties?.center;
+  const readMapCenter = (e: {
+    properties?: { center?: number[]; centerCoordinate?: number[] };
+    geometry?: { coordinates?: number[] };
+  } | null) => {
+    const c =
+      e?.properties?.center ??
+      e?.properties?.centerCoordinate ??
+      null;
     if (Array.isArray(c) && c.length >= 2 && Number.isFinite(c[0]) && Number.isFinite(c[1])) {
       return { lng: Number(c[0]), lat: Number(c[1]) };
     }
@@ -188,8 +194,25 @@ export const MapboxWebPannableMap = forwardRef<CustomerMapRef, Props>(function M
         }}
         onMapIdle={(e) => {
           const center = readMapCenter(e);
-          if (!center) return;
-          postRegion("complete", center.lat, center.lng);
+          if (center) {
+            postRegion("complete", center.lat, center.lng);
+            return;
+          }
+          // Fallback: some Mapbox builds omit center on idle — read from camera.
+          void (async () => {
+            try {
+              const cam = await mapRef.current?.getCenter?.();
+              if (Array.isArray(cam) && cam.length >= 2) {
+                postRegion("complete", Number(cam[1]), Number(cam[0]));
+                return;
+              }
+            } catch {
+              /* ignore */
+            }
+            // Last resort: use last posted camera center so address still refreshes.
+            const last = lastPostedRef.current;
+            if (last) postRegion("complete", last.lat, last.lng);
+          })();
         }}
       >
         <Mapbox.Camera

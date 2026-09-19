@@ -54,6 +54,9 @@ import {
   resolveLedgerDisplayDescription,
   resolveLedgerDisplayAmount,
   isMerchantVisibleLedgerEntry,
+  resolveWalletDisplayBalance,
+  isWalletBalanceNegative,
+  walletBalanceCardClasses,
 } from "@/lib/merchant-ledger-visibility";
 import { mergeCancellationLedgerEntries } from "@/lib/merge-cancellation-ledger-entries";
 import {
@@ -304,6 +307,8 @@ export function StorePaymentsClient({
   }, [bankAccountsQueryData]);
 
   const walletLoading = walletQueryLoading;
+  const displayWalletBalance = resolveWalletDisplayBalance(wallet);
+  const walletCardTone = walletBalanceCardClasses(displayWalletBalance);
 
   const ledger: LedgerEntry[] = useMemo(() => {
     const raw = (ledgerQueryData?.entries ?? []) as LedgerEntry[];
@@ -767,22 +772,27 @@ export function StorePaymentsClient({
 
       <div className="px-4 sm:px-6 lg:px-8 py-4 max-w-7xl mx-auto w-full space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
-          <div className="lg:col-span-1 bg-emerald-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+          <div className={`lg:col-span-1 ${walletCardTone.card}`}>
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Withdrawable</p>
+                <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">
+                  {walletCardTone.label}
+                </p>
                 {walletLoading ? (
                   <div className="h-7 w-20 mt-1.5 bg-gray-200 rounded animate-pulse" />
                 ) : (
                   <>
-                    <p className="text-xl font-bold text-gray-900 mt-1">
-                      {formatInr(wallet?.withdrawable_balance ?? wallet?.available_balance ?? 0)}
+                    <p className={walletCardTone.amount}>
+                      {formatInr(displayWalletBalance)}
                     </p>
+                    {isWalletBalanceNegative(displayWalletBalance) ? (
+                      <p className="text-[10px] font-medium text-red-600 mt-1">Outstanding dues</p>
+                    ) : null}
                   </>
                 )}
               </div>
-              <div className="p-2 rounded-lg bg-emerald-100 flex-shrink-0">
-                <Wallet size={16} className="text-emerald-700" />
+              <div className={walletCardTone.iconWrap}>
+                <Wallet size={16} className={walletCardTone.icon} />
               </div>
             </div>
           </div>

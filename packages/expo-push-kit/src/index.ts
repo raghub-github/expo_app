@@ -86,3 +86,18 @@ export {
   claimPushPresented,
   pushPresentationKey,
 } from "./pushPresentationDedupe";
+
+export {
+  isNativeOrderAlertAvailable,
+  startNativeOrderAlert,
+  stopNativeOrderAlert,
+  getActiveNativeOrderAlert,
+  claimNativeOrderAlert,
+  releaseNativeOrderAlert,
+  extractAlertSessionId,
+  merchantAlertSessionId,
+  riderAlertSessionId,
+  riderSoundTypeForService,
+  type NativeOrderAlert,
+  type NativeOrderAlertSoundType,
+} from "./orderAlert";

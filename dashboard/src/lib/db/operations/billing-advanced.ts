@@ -5,7 +5,7 @@ import {
   normalizePlatformOfferCouponCode,
   validatePlatformOfferCouponCode,
 } from "@/lib/billing/platformOfferCouponCode";
-import { applyFlashSaleSaveDefaults } from "@/lib/billing/flashSale";
+import { applyFlashSaleSaveDefaults, parseMaxFlashQuantity, validateMaxFlashQuantity } from "@/lib/billing/flashSale";
 import {
   emptyRideParcelPromoConfig,
   parseRideParcelPromoConfig,
@@ -108,7 +108,30 @@ function normalizePlatformOfferInput(input: InsertPlatformOfferInput): InsertPla
 }
 
 function withFlashSaleDefaults(input: InsertPlatformOfferInput): InsertPlatformOfferInput {
-  return applyFlashSaleSaveDefaults(input as Record<string, unknown>) as InsertPlatformOfferInput;
+  const next = applyFlashSaleSaveDefaults(input as Record<string, unknown>) as InsertPlatformOfferInput;
+  if (String(next.offer_kind ?? "").toUpperCase() !== "FLASH_SALE") return next;
+  const st = String(next.service_type ?? "FOOD").toUpperCase();
+  if (st !== "FOOD" && st !== "ALL") return next;
+  const cond =
+    next.conditions != null && typeof next.conditions === "object" && !Array.isArray(next.conditions)
+      ? { ...(next.conditions as Record<string, unknown>) }
+      : {};
+  const raw = cond.max_flash_quantity ?? cond.maxFlashQuantity;
+  if (raw == null || raw === "") {
+    // Persist 1 only when the row has no value yet (legacy create/edit).
+    cond.max_flash_quantity = 1;
+  } else {
+    const qtyErr = validateMaxFlashQuantity(raw);
+    if (qtyErr) throw new Error(qtyErr);
+    const qty = parseMaxFlashQuantity(raw);
+    if (!Number.isInteger(qty) || qty < 1) {
+      throw new Error("Max Flash Quantity must be a whole number of at least 1.");
+    }
+    cond.max_flash_quantity = qty;
+  }
+  delete cond.maxFlashQuantity;
+  next.conditions = cond;
+  return next;
 }
 
 async function assertPlatformCouponCodeAvailable(

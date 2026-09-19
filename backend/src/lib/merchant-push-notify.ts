@@ -469,6 +469,32 @@ async function notifyMerchantStore(
   // background/killed new-order alerts are not black-holed.
   if (nativeTokens.length > 0) {
     const nativeResult = await sendMerchantNativeFcm(nativeTokens, pushPayload);
+    const isCriticalNewOrder =
+      args.channelId === "merchant_new_orders_alert" ||
+      args.channelId === "merchant_new_orders_alert_v2" ||
+      String(args.pushData?.type ?? "").toLowerCase() === "merchant_new_order" ||
+      String(args.pushData?.template_code ?? "").toUpperCase() === "MERCHANT_NEW_ORDER";
+    if (nativeResult.ok && isCriticalNewOrder) {
+      const sessionId = String(args.pushData?.alertSessionId ?? "").trim();
+      if (sessionId) {
+        try {
+          const { sendCriticalAlertControlFcm } = await import("./critical-alert-control.js");
+          await sendCriticalAlertControlFcm({
+            tokens: nativeTokens,
+            action: "start",
+            alertSessionId: sessionId,
+            appRole: "merchant",
+            data: {
+              ...(args.pushData ?? {}),
+              gmAlertAction: "start",
+              soundType: "notification",
+            },
+          });
+        } catch {
+          /* companion FCM is best-effort */
+        }
+      }
+    }
     if (!nativeResult.ok) {
       const expoFallback = [
         ...new Set(expoCandidateTokens.filter((t) => isExpoPushTokenString(t))),
@@ -895,6 +921,8 @@ export async function notifyMerchantStoreNewOrderPush(
       stickySubtitle: `New order · #${args.displayId}`,
       alertStartedAt: String(Date.now()),
       alertSessionId: `MERCHANT_NEW_ORDER:${args.foodOrderId ?? args.orderIdText}:${args.storeId}`,
+      gmAlertAction: "start",
+      soundType: "notification",
     },
   });
 }

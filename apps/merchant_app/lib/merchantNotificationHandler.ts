@@ -42,6 +42,15 @@ export async function installMerchantForegroundNotificationHandler(): Promise<vo
         const isOffline = t === "offline_network";
         const isNewOrder = isMerchantNewOrderPushData(data);
         const appActive = AppState.currentState === "active";
+        let nativeOwns = false;
+        if (isNewOrder) {
+          try {
+            const { isNativeOrderAlertAvailable } = await import("@gatimitra/expo-push-kit");
+            nativeOwns = isNativeOrderAlertAvailable();
+          } catch {
+            nativeOwns = false;
+          }
+        }
         if (isStoreStatus) {
           const state = String(data.state ?? data.storeState ?? "").toUpperCase();
           const headsUp =
@@ -70,7 +79,7 @@ export async function installMerchantForegroundNotificationHandler(): Promise<vo
           }
         }
         const suppressOsSound =
-          isOffline || (isNewOrder && (appActive || hasCachedCustom));
+          isOffline || nativeOwns || (isNewOrder && (appActive || hasCachedCustom));
         return {
           shouldShowAlert: true,
           shouldPlaySound: !suppressOsSound,

@@ -189,6 +189,7 @@ function PricingBreakdownPanel({
   lines,
   totalLabel,
   totalAmount,
+  totalStrikeThrough,
   cashinAmount,
   gatiCashUsed,
   accent = 'emerald',
@@ -198,6 +199,8 @@ function PricingBreakdownPanel({
   lines: OrderPricingLine[];
   totalLabel: string;
   totalAmount: number;
+  /** Pre-offer list CTC — shown struck when greater than paid `totalAmount`. */
+  totalStrikeThrough?: number | null;
   cashinAmount?: number;
   gatiCashUsed?: number;
   accent?: 'emerald' | 'blue';
@@ -217,6 +220,10 @@ function PricingBreakdownPanel({
     accent === 'blue' &&
     gstBreakdown != null &&
     gstBreakdown.totalGst > 0.005;
+  const showTotalStrike =
+    totalStrikeThrough != null &&
+    Number.isFinite(totalStrikeThrough) &&
+    totalStrikeThrough > totalAmount + 0.005;
 
   useEffect(() => {
     if (!gstModalOpen) return;
@@ -258,10 +265,17 @@ function PricingBreakdownPanel({
                   </button>
                 ) : (
                   <span
-                    className={`font-medium tabular-nums shrink-0 ${
+                    className={`font-medium tabular-nums shrink-0 inline-flex items-center gap-1.5 ${
                       line.kind === 'discount' ? 'text-red-600' : 'text-slate-800'
                     }`}
                   >
+                    {line.kind !== 'discount' &&
+                    line.strikeThroughAmount != null &&
+                    line.strikeThroughAmount > line.amount + 0.005 ? (
+                      <span className="text-slate-400 line-through decoration-slate-400 text-[10px] font-normal">
+                        {line.strikeThroughAmount.toFixed(2)}
+                      </span>
+                    ) : null}
                     {amountText}
                   </span>
                 )}
@@ -271,6 +285,11 @@ function PricingBreakdownPanel({
           <div className="flex justify-between items-start gap-2 pt-1.5 mt-1 border-t border-slate-200 font-semibold text-slate-800 text-xs">
             <span>{totalLabel}</span>
             <span className={`tabular-nums text-right ${totalClass}`}>
+              {showTotalStrike ? (
+                <span className="mr-1.5 text-slate-400 line-through decoration-slate-400 text-[11px] font-medium">
+                  ₹{Number(totalStrikeThrough).toFixed(2)}
+                </span>
+              ) : null}
               ₹{totalAmount.toFixed(2)}
               {showSplit ? (
                 <span className="block mt-1 font-medium">
@@ -467,6 +486,25 @@ function BillBreakdownSwitcher({
   const customerBill = pricing.customer ?? pricing;
   const merchantBill = pricing;
 
+  const customerDiscount =
+    customerBill.lines?.reduce(
+      (s, l) => (l.kind === 'discount' ? s + l.amount : s),
+      0
+    ) ?? 0;
+  const itemsStrike =
+    customerBill.lines?.find((l) => l.key === 'items')?.strikeThroughAmount ?? null;
+  // List CTC = paid CTC + item-offer savings baked into items + payable discount lines.
+  const itemOfferDelta =
+    itemsStrike != null && customerBill.itemsAmountTotal > 0
+      ? Math.max(0, itemsStrike - customerBill.itemsAmountTotal)
+      : 0;
+  const customerListTotal =
+    billView === 'customer' &&
+    customerBill.totalOrderAmount > 0.005 &&
+    (customerDiscount > 0.005 || itemOfferDelta > 0.005)
+      ? Math.round((customerBill.totalOrderAmount + customerDiscount + itemOfferDelta) * 100) / 100
+      : null;
+
   const active =
     billView === 'merchant' && hasMerchantBill
       ? {
@@ -474,6 +512,7 @@ function BillBreakdownSwitcher({
           lines: merchantBill.lines,
           totalLabel: 'Merchant amount (CTM)',
           totalAmount: merchantBill.totalOrderAmount,
+          totalStrikeThrough: null as number | null,
           accent: 'emerald' as const,
           gstBreakdown: null as OrderGstBreakdown | null | undefined,
         }
@@ -482,6 +521,11 @@ function BillBreakdownSwitcher({
           lines: customerBill.lines,
           totalLabel: 'Total amount (CTC)',
           totalAmount: customerBill.totalOrderAmount,
+          totalStrikeThrough:
+            customerListTotal != null &&
+            customerListTotal > customerBill.totalOrderAmount + 0.005
+              ? customerListTotal
+              : null,
           cashinAmount: customerBill.cashinAmount,
           gatiCashUsed: customerBill.gatiCashUsed,
           accent: 'blue' as const,
@@ -510,6 +554,7 @@ function BillBreakdownSwitcher({
         lines={active.lines?.length ? active.lines : []}
         totalLabel={active.totalLabel}
         totalAmount={active.totalAmount}
+        totalStrikeThrough={active.totalStrikeThrough}
         cashinAmount={'cashinAmount' in active ? active.cashinAmount : undefined}
         gatiCashUsed={'gatiCashUsed' in active ? active.gatiCashUsed : undefined}
         accent={active.accent}

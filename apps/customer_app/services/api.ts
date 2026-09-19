@@ -59,8 +59,21 @@ function shouldRetry(err: AxiosError): boolean {
 }
 
 let onSessionRevoked: (() => void) | null = null;
+let sessionRevokeInFlight = false;
 export function setOnSessionRevoked(cb: () => void) {
   onSessionRevoked = cb;
+}
+
+function triggerSessionRevoked() {
+  if (sessionRevokeInFlight) return;
+  sessionRevokeInFlight = true;
+  try {
+    onSessionRevoked?.();
+  } finally {
+    setTimeout(() => {
+      sessionRevokeInFlight = false;
+    }, 1500);
+  }
 }
 
 export const api = axios.create({
@@ -76,6 +89,20 @@ api.interceptors.request.use(
     const token = await getItem(STORAGE_KEYS.AUTH_TOKEN);
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
+    } else if (
+      typeof config.url === "string" &&
+      (config.url.includes("/v1/me/") ||
+        config.url.includes("/v1/orders") ||
+        config.url.includes("/v1/veg-mode"))
+    ) {
+      // Skip the round-trip — backend would log ERROR "Authentication required".
+      const cancelErr = new Error("No auth token for authenticated route") as Error & {
+        code: string;
+        name: string;
+      };
+      cancelErr.code = "ERR_CANCELED";
+      cancelErr.name = "CanceledError";
+      return Promise.reject(cancelErr);
     }
     if (!shouldBypassStartupGate(config.url)) {
       cfg.__startupGate = await enterStartupApiGate(config.url);
@@ -133,8 +160,22 @@ api.interceptors.response.use(
     }
     if (status === 401) {
       const errorCode = err.response?.data?.error;
-      if (errorCode === "session_revoked" || errorCode === "user_deleted") {
-        onSessionRevoked?.();
+      const authHeader = config?.headers?.Authorization;
+      const hadBearer =
+        typeof authHeader === "string"
+          ? authHeader.startsWith("Bearer ") && authHeader.length > 10
+          : false;
+      // Only force logout when a token was sent and rejected.
+      // missing_authorization (no token) must NOT bounce a just-logged-in user
+      // back to login — racey calls like /v1/veg-mode used to do that.
+      if (
+        hadBearer &&
+        (errorCode === "session_revoked" ||
+          errorCode === "user_deleted" ||
+          errorCode === "invalid_token" ||
+          errorCode === "invalid_authorization")
+      ) {
+        triggerSessionRevoked();
       }
     }
     const apiError = new Error(message) as Error & {

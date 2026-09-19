@@ -243,3 +243,65 @@ describe("in-app-only delivery semantics", () => {
     assert.equal(normal.errorCode, "IN_APP_ONLY");
   });
 });
+
+describe("channel=all companion inbox rows", () => {
+  /** Mirrors notificationService log-row channel selection for one recipient. */
+  function channelsForRecipient(args: {
+    inboxOnlyFallback: boolean;
+    deviceToken: string;
+    channelSource: "push" | "in_app" | "all";
+    mask: { push: boolean; in_app: boolean };
+  }): Array<"push" | "in_app"> {
+    const tokenlessInbox =
+      args.inboxOnlyFallback || args.deviceToken === "__in_app_only__";
+    const allOptions: Array<"push" | "in_app"> =
+      args.channelSource === "all" ? ["push", "in_app"] : [args.channelSource];
+    const allowed = tokenlessInbox
+      ? (["in_app"] as const).filter(() => args.mask.in_app !== false)
+      : allOptions.filter((ch) => (ch === "push" ? args.mask.push : args.mask.in_app));
+    const out: Array<"push" | "in_app"> = [];
+    for (const channel of allowed) {
+      if (channel === "in_app") {
+        if (!tokenlessInbox && allowed.includes("push")) continue;
+      }
+      out.push(channel);
+    }
+    return out;
+  }
+
+  it("skips IN_APP_INBOX companion when a real push channel is present", () => {
+    assert.deepEqual(
+      channelsForRecipient({
+        inboxOnlyFallback: false,
+        deviceToken: "ExponentPushToken[abc]",
+        channelSource: "all",
+        mask: { push: true, in_app: true },
+      }),
+      ["push"],
+    );
+  });
+
+  it("keeps in_app only for tokenless inbox fallback", () => {
+    assert.deepEqual(
+      channelsForRecipient({
+        inboxOnlyFallback: true,
+        deviceToken: "__in_app_only__",
+        channelSource: "all",
+        mask: { push: true, in_app: true },
+      }),
+      ["in_app"],
+    );
+  });
+
+  it("keeps in_app when push is disabled in preferences", () => {
+    assert.deepEqual(
+      channelsForRecipient({
+        inboxOnlyFallback: false,
+        deviceToken: "ExponentPushToken[abc]",
+        channelSource: "all",
+        mask: { push: false, in_app: true },
+      }),
+      ["in_app"],
+    );
+  });
+});

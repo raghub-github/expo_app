@@ -22,6 +22,7 @@ type RequestItem = {
   reviewed_at: string | null;
   review_note: string | null;
   order_id: number | null;
+  formatted_order_id?: string | null;
 };
 
 function n(v: unknown): number {
@@ -225,7 +226,13 @@ export function WalletRequestsPageClient({ storeId }: { storeId: string | null }
                           >
                             {r.direction === "CREDIT" ? "+" : "−"}₹{Number(r.amount).toLocaleString("en-IN")}
                           </span>
-                          {r.order_id ? <span className="text-[10px] text-[#121212]/45">Order #{r.order_id}</span> : null}
+                          {r.formatted_order_id || r.order_id ? (
+                            <span className="text-[10px] text-[#121212]/45 font-mono">
+                              {r.formatted_order_id
+                                ? `#${String(r.formatted_order_id).replace(/^#/, "")}`
+                                : `#${r.order_id}`}
+                            </span>
+                          ) : null}
                         </div>
                         <p className="text-xs text-[#121212]/80 mt-1 break-words">{r.reason}</p>
                         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[#121212]/45">

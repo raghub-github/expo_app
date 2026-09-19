@@ -10,6 +10,9 @@ import {
 import { MXSidebarWhite } from './MXSidebarWhite'
 import { MXPartnerTopBar } from './MXPartnerTopBar'
 import { ParentBlockedBanner } from './ParentBlockedBanner'
+import { OutstandingDuesMarquee } from './OutstandingDuesChrome'
+import { LicenseVerificationWaitingMarquee } from './LicenseVerificationWaitingMarquee'
+import { ServiceRestrictedNotice } from './ServiceRestrictedNotice'
 interface MXLayoutWhiteProps {
   children: React.ReactNode
   restaurantName?: string
@@ -146,6 +149,9 @@ const MXLayoutWhiteStandalone: React.FC<MXLayoutWhiteProps> = ({
           />
           <main className={`flex-1 flex flex-col overflow-hidden h-full relative z-0 transition-[margin] duration-200 ${collapsed ? (isRight ? 'mr-0 md:mr-14' : 'ml-0 md:ml-14') : (isRight ? 'mr-0 md:mr-52' : 'ml-0 md:ml-52')}`}>
             <ParentBlockedBanner />
+            <OutstandingDuesMarquee storeId={restaurantId} />
+            <LicenseVerificationWaitingMarquee storeId={restaurantId} />
+            <ServiceRestrictedNotice storeId={restaurantId} />
             <div className="bg-white flex-1 flex flex-col min-h-0 scroll-smooth mx-main-scroll">
               {children}
             </div>

@@ -355,13 +355,17 @@ export async function syncCampaignCountsFromLogs(campaignId: number): Promise<vo
       failed_count = COALESCE(stats.failed_count, 0)
     FROM (
       SELECT
-        -- Provider accepted / enqueued (includes later delivered+clicked)
+        -- Provider accepted / enqueued (includes later delivered+clicked).
+        -- Exclude companion in_app twins (error_code IN_APP_INBOX) so channel=all
+        -- does not double-count the same recipient.
         COUNT(*) FILTER (
           WHERE status IN ('sent', 'delivered', 'clicked')
+            AND coalesce(error_code, '') <> 'IN_APP_INBOX'
         )::int AS sent_count,
         -- Confirmed delivery (OS/inbox) or clicked after delivery
         COUNT(*) FILTER (
           WHERE status IN ('delivered', 'clicked')
+            AND coalesce(error_code, '') <> 'IN_APP_INBOX'
         )::int AS delivered_count,
         COUNT(*) FILTER (WHERE status = 'clicked')::int AS clicked_count,
         COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_count

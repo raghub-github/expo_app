@@ -152,6 +152,37 @@ export async function recordDispatchAssignmentAudit(
   await syncRiderDispatchOfferStats(input.riderId, input.eventType, now).catch((err) => {
     console.warn("[recordDispatchAssignmentAudit] offer stats sync failed:", err);
   });
+
+  if (
+    isTerminalDispatchOfferEvent(input.eventType) ||
+    input.eventType === "removed"
+  ) {
+    try {
+      const { sendRiderAlertControl, riderDispatchAlertSessionId } = await import(
+        "./critical-alert-control.js"
+      );
+      const wave =
+        input.waveNumber != null
+          ? input.waveNumber
+          : (input.metadata?.waveNumber as number | undefined);
+      await sendRiderAlertControl({
+        riderId: input.riderId,
+        action: "stop",
+        alertSessionId: riderDispatchAlertSessionId({
+          orderId: orderId,
+          riderId: input.riderId,
+          waveNumber: wave ?? null,
+        }),
+        orderId,
+        serviceType:
+          typeof input.metadata?.serviceType === "string"
+            ? input.metadata.serviceType
+            : null,
+      });
+    } catch {
+      /* native stop-alert is best-effort */
+    }
+  }
 }
 
 async function syncRiderDispatchOfferStats(

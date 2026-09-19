@@ -28,6 +28,13 @@ test("duty ON with stale location is STALE — the exact bug this closes — not
   );
 });
 
+test("duty ON is case-insensitive so it matches Core UPPER(duty_status)", () => {
+  assert.equal(
+    deriveOnlineStatus({ dutyStatus: "on", locationFresh: true, hasActiveOrder: false }),
+    "ONLINE"
+  );
+});
+
 test("duty ON, fresh location, no active order is ONLINE", () => {
   assert.equal(
     deriveOnlineStatus({ dutyStatus: "ON", locationFresh: true, hasActiveOrder: false }),

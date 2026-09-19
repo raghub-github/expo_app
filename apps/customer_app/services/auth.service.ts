@@ -313,7 +313,11 @@ export const authService = {
     try {
       await api.get("/v1/me/profile", {
         timeout: 12_000,
-        headers: { Authorization: `Bearer ${session.accessToken}` },
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`,
+          // Expected when token is stale — don't spam Metro / backend noise as a crash.
+          "X-Silent-Error": "1",
+        },
       });
       return session;
     } catch (e: unknown) {

@@ -14,6 +14,7 @@ import {
   overlayFlashCustomerUnit,
   readClientFlashSaleOfferId,
   readClientFlashSalePrice,
+  resolveMaxFlashQuantity,
   type FlashSaleOverlaySummary,
 } from "./flashSale.js";
 import { platformOfferEligible } from "./platformOffersApply.js";
@@ -26,6 +27,58 @@ function round2(n: number): number {
 function aliasesForItem(item: NormalizedOrderItem, ctx: BillContext): string[] {
   const pk = String(item.menuItemId);
   return ctx.menuIdAliasesByLineId?.get(pk) ?? [];
+}
+
+/**
+ * Catalogue menu overlay already bakes flash into `customer_item_price_unit`.
+ * Prefer strike / flash_sale.original_customer_unit so checkout split math uses the
+ * real regular price — never treat the flash unit as the "original".
+ */
+function resolveOriginalCustomerUnit(
+  canonicalRaw: Record<string, unknown>,
+  snap: Record<string, unknown>,
+  itemBasePrice: number
+): number {
+  const flashBlobRaw =
+    (snap.flash_sale && typeof snap.flash_sale === "object"
+      ? snap.flash_sale
+      : null) ??
+    (canonicalRaw.flash_sale && typeof canonicalRaw.flash_sale === "object"
+      ? canonicalRaw.flash_sale
+      : null);
+  const flashBlob =
+    flashBlobRaw && typeof flashBlobRaw === "object"
+      ? (flashBlobRaw as Record<string, unknown>)
+      : null;
+  const fromFlash = Number(
+    flashBlob?.original_customer_unit ?? flashBlob?.originalCustomerUnit
+  );
+  if (Number.isFinite(fromFlash) && fromFlash > 0) return round2(fromFlash);
+
+  const fromStrike = Number(
+    canonicalRaw.customer_strike_unit ??
+      snap.customer_strike_price ??
+      snap.customerStrikePrice
+  );
+  const fromUnit = Number(canonicalRaw.customer_item_price_unit);
+  if (Number.isFinite(fromStrike) && fromStrike > 0) {
+    if (!Number.isFinite(fromUnit) || fromStrike > fromUnit + 0.001) {
+      return round2(fromStrike);
+    }
+  }
+  if (Number.isFinite(fromUnit) && fromUnit > 0) return round2(fromUnit);
+  return round2(itemBasePrice);
+}
+
+function flashSaleConfigMenuItemId(
+  offer: PlatformOfferRow,
+  menuItemId: unknown,
+  extras: string[]
+): string {
+  for (const it of flashSaleItemsFromOffer(offer)) {
+    if (flashPriceForMenuItem([it], menuItemId, extras) != null) return it.menuItemId;
+  }
+  return String(menuItemId ?? "");
 }
 
 export function eligibleFoodFlashSaleOffers(
@@ -48,13 +101,24 @@ export function applyFoodFlashSaleOverlayToItems(args: {
   items: NormalizedOrderItem[];
   ctx: BillContext;
   dataset: BillingDataset;
-}): { items: NormalizedOrderItem[]; overlay: FlashSaleOverlaySummary; staleClientFlash: boolean; stalePrice: boolean } {
+}): {
+  items: NormalizedOrderItem[];
+  overlay: FlashSaleOverlaySummary;
+  staleClientFlash: boolean;
+  stalePrice: boolean;
+  qtyExceeded: {
+    offerId: number;
+    requestedQuantity: number;
+    maxFlashQuantity: number;
+  } | null;
+} {
   const itemPlusAddon = Math.max(0, args.ctx.itemSubtotal + args.ctx.addonSubtotal);
   const offers = eligibleFoodFlashSaleOffers(args.ctx, args.dataset, itemPlusAddon);
   const overlay: FlashSaleOverlaySummary = emptyFlashSaleOverlay();
   let staleClientFlash = false;
   let stalePrice = false;
   const appliedOfferIds = new Set<number>();
+  const usedQtyByOfferItem = new Map<string, number>();
 
   const items = args.items.map((item) => {
     const extras = aliasesForItem(item, args.ctx);
@@ -65,9 +129,7 @@ export function applyFoodFlashSaleOverlayToItems(args: {
       snap.canonical_pricing && typeof snap.canonical_pricing === "object"
         ? { ...(snap.canonical_pricing as Record<string, unknown>) }
         : {};
-    const originalUnit = round2(
-      Number(canonicalRaw.customer_item_price_unit ?? item.basePrice) || item.basePrice
-    );
+    const originalUnit = resolveOriginalCustomerUnit(canonicalRaw, snap, item.basePrice);
 
     let applied: PlatformOfferRow | null = null;
     let flashPrice: number | null = null;
@@ -87,21 +149,55 @@ export function applyFoodFlashSaleOverlayToItems(args: {
     }
 
     const qty = Math.max(1, Math.floor(item.quantity) || 1);
+    const maxFlashQuantity = resolveMaxFlashQuantity(applied.conditions);
+    const usageKey = `${applied.id}:${flashSaleConfigMenuItemId(applied, item.menuItemId, extras)}`;
+    const already = usedQtyByOfferItem.get(usageKey) ?? 0;
+    // Soft cap: flash price only for remaining budget units; excess stay at regular unit price.
+    const flashQty = Math.min(qty, Math.max(0, maxFlashQuantity - already));
+    if (flashQty <= 0) {
+      // Entire line is past the Flash Sale unit budget — charge regular catalogue price.
+      if (clientOfferId != null) staleClientFlash = true;
+      return {
+        ...item,
+        basePrice: originalUnit,
+        isDiscountEligible: false,
+        itemSnapshot: {
+          ...snap,
+          customer_strike_price: originalUnit,
+        },
+      };
+    }
+    usedQtyByOfferItem.set(usageKey, already + flashQty);
     const math = overlayFlashCustomerUnit(originalUnit, flashPrice)!;
     const clientPrice = readClientFlashSalePrice(item.itemSnapshot);
     if (clientOfferId != null && clientOfferId !== applied.id) stalePrice = true;
-    if (clientPrice != null && Math.abs(clientPrice - math.unit) > 0.05) stalePrice = true;
-    const subsidyLine = round2(math.subsidyUnit * qty);
+    // Client may still send the pure flash unit while qty is mixed — only flag stale when
+    // the whole line is still within the flash budget (flashQty === qty).
+    if (
+      flashQty === qty &&
+      clientPrice != null &&
+      Math.abs(clientPrice - math.unit) > 0.05
+    ) {
+      stalePrice = true;
+    }
+    const subsidyLine = round2(math.subsidyUnit * flashQty);
+    const regularQty = qty - flashQty;
+    const blendedUnit =
+      regularQty > 0
+        ? round2((math.unit * flashQty + originalUnit * regularQty) / qty)
+        : math.unit;
     const merged = mergeFlashSaleSnapshot(canonicalRaw, {
       offerId: applied.id,
       originalCustomerUnit: originalUnit,
       flashUnit: math.unit,
-      quantity: qty,
+      quantity: flashQty,
+      orderedQuantity: qty,
       subsidyLine,
+      maxFlashQuantity,
     });
     overlay.lines.push({
       menuItemId: String(item.menuItemId),
-      quantity: qty,
+      quantity: flashQty,
       originalUnit,
       flashUnit: math.unit,
       subsidyLine,
@@ -112,7 +208,7 @@ export function applyFoodFlashSaleOverlayToItems(args: {
 
     return {
       ...item,
-      basePrice: math.unit,
+      basePrice: blendedUnit,
       isDiscountEligible: false,
       itemSnapshot: {
         ...snap,
@@ -124,7 +220,14 @@ export function applyFoodFlashSaleOverlayToItems(args: {
   });
 
   overlay.offerIds = [...appliedOfferIds];
-  return { items, overlay, staleClientFlash: staleClientFlash && overlay.lines.length === 0, stalePrice };
+  return {
+    items,
+    overlay,
+    staleClientFlash: staleClientFlash && overlay.lines.length === 0,
+    stalePrice,
+    // Soft cap — over-limit units use regular price; never hard-block the cart.
+    qtyExceeded: null,
+  };
 }
 
 export function stampFlashSaleSubsidyLines(
@@ -240,6 +343,7 @@ export function overlayFlashSaleOnMenuRows<T extends MenuFlashSaleRow>(
         flashUnit: next.unit,
         quantity: 1,
         subsidyLine: next.subsidyUnit,
+        maxFlashQuantity: resolveMaxFlashQuantity(o.conditions),
       });
       it.canonical_pricing = merged;
       it.flash_sale = (merged.flash_sale as Record<string, unknown>) ?? {

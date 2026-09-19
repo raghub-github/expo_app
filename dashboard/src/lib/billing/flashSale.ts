@@ -76,6 +76,38 @@ export function validateFlashSalePrice(
   return null;
 }
 
+export function parseMaxFlashQuantity(raw: unknown): number {
+  if (raw == null || raw === "") return NaN;
+  if (typeof raw === "boolean") return NaN;
+  if (typeof raw === "number") {
+    if (!Number.isInteger(raw) || raw < 1) return NaN;
+    return raw;
+  }
+  const t = String(raw).trim();
+  if (!t || !/^\d+$/.test(t)) return NaN;
+  const n = Number(t);
+  if (!Number.isInteger(n) || n < 1) return NaN;
+  return n;
+}
+
+export function validateMaxFlashQuantity(raw: unknown): string | null {
+  if (raw == null || raw === "") return null;
+  const n = parseMaxFlashQuantity(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    return "Max Flash Quantity must be a whole number of at least 1.";
+  }
+  return null;
+}
+
+export function resolveMaxFlashQuantity(conditions: unknown): number {
+  if (!conditions || typeof conditions !== "object" || Array.isArray(conditions)) {
+    return 1;
+  }
+  const c = conditions as Record<string, unknown>;
+  const n = parseMaxFlashQuantity(c.max_flash_quantity ?? c.maxFlashQuantity);
+  return Number.isInteger(n) && n >= 1 ? n : 1;
+}
+
 export function computeFlashSaleSubsidy(originalCustomerUnit: number, flashPrice: number): number {
   const orig = round2(originalCustomerUnit);
   const flash = round2(flashPrice);
@@ -146,6 +178,7 @@ export function applyFlashSaleSaveDefaults<T extends Record<string, unknown>>(in
 
 export function buildFlashSaleConditions(args: {
   items: Array<{ menuItemId: string; flashPrice: number; storeId?: number | null }>;
+  maxFlashQuantity?: number;
 }): Record<string, unknown> {
   const flash_sale_items = args.items
     .filter((it) => it.menuItemId && Number.isFinite(it.flashPrice) && it.flashPrice >= 0)
@@ -159,8 +192,11 @@ export function buildFlashSaleConditions(args: {
       }
       return row;
     });
+  const parsed = parseMaxFlashQuantity(args.maxFlashQuantity);
+  const max_flash_quantity = Number.isInteger(parsed) && parsed >= 1 ? parsed : 1;
   return {
     menu_item_ids: flash_sale_items.map((it) => String(it.menu_item_id)),
     flash_sale_items,
+    max_flash_quantity,
   };
 }

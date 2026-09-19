@@ -869,7 +869,7 @@ const styles = StyleSheet.create({
     borderColor: ADD_GREEN,
     borderRadius: 10,
     backgroundColor: QTY_FILL,
-    paddingHorizontal: 4,
+    paddingHorizontal: 12,
     flexGrow: 0,
     flexShrink: 0,
   },

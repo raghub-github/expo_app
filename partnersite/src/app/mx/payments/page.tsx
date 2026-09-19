@@ -29,6 +29,9 @@ import {
   resolveLedgerDisplayDescription,
   isMerchantVisibleLedgerEntry,
   resolveWalletDisplayBalance,
+  resolveWithdrawableBalance,
+  isWalletBalanceNegative,
+  walletBalanceCardClasses,
   resolveLedgerRowStatusBadge,
 } from '@/lib/merchant-payout-utils'
 import {
@@ -38,6 +41,7 @@ import {
 import type { LedgerEntry } from '@/lib/wallet-types';
 import { LedgerEntryAmount } from '@/components/payments/LedgerEntryAmount';
 import { WithdrawProgressButton } from '@/components/payments/WithdrawProgressButton';
+import { ClearDuesButton } from '@/components/OutstandingDuesChrome';
 import { mergeCancellationLedgerEntries } from '@/lib/merge-cancellation-ledger-entries';
 import { partnerPayoutHistoryHref } from '@/lib/partner-payments-routes';
 import { RefundPolicyContent } from '@/components/RefundPolicyContent'
@@ -108,8 +112,12 @@ function getMaxWithdrawalCap(wallet: { max_withdrawal_amount?: number } | null |
   return Number.isFinite(n) && n > 0 ? n : FALLBACK_MAX_WITHDRAWAL
 }
 
-function getWithdrawableBalance(wallet: WalletSummary | undefined | null): number {
+function getDisplayWalletBalance(wallet: WalletSummary | undefined | null): number {
   return resolveWalletDisplayBalance(wallet)
+}
+
+function getWithdrawableBalance(wallet: WalletSummary | undefined | null): number {
+  return resolveWithdrawableBalance(wallet)
 }
 
 function getMaxWithdrawalLimit(
@@ -180,6 +188,18 @@ function formatCategory(cat: string): string {
   if (key === "WITHDRAWAL") return "Withdrawal";
   if (key === "ORDER_EARNING") return "Order earning";
   return cat.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatLedgerRowCategory(row: LedgerEntry): string {
+  const meta = (row.metadata ?? null) as Record<string, unknown> | null;
+  if (
+    String(meta?.purpose ?? "").trim() === "outstanding_dues_clear" ||
+    String(meta?.entry_type ?? "").trim() === "outstanding_dues_cleared" ||
+    /^Outstanding dues Cleared$/i.test(String(row.description ?? "").trim())
+  ) {
+    return "Dues cleared";
+  }
+  return formatCategory(row.category);
 }
 
 async function copyTextToClipboard(text: string, successMessage = 'Copied to clipboard') {
@@ -277,7 +297,9 @@ function PaymentsContent() {
     [ledger]
   )
   const ledgerTotal = ledgerData?.total ?? 0
+  const displayWalletBalance = getDisplayWalletBalance(wallet as WalletSummary | undefined)
   const withdrawableBalance = getWithdrawableBalance(wallet as WalletSummary | undefined)
+  const walletCardTone = walletBalanceCardClasses(displayWalletBalance)
   const liveFreeze = usePartnerWalletFreezeState(storeId)
   const walletFrozen = Boolean(
     liveFreeze?.isFrozen ??
@@ -345,9 +367,9 @@ function PaymentsContent() {
     }
     setWithdrawalAmount(raw)
   }
+  const invalidateBankAccounts = useInvalidateBankAccounts()
   const { data: bankAccounts = [], isLoading: bankAccountsLoading } = useMerchantBankAccounts(storeId)
   const payoutMutation = usePayoutRequestMutation()
-  const invalidateBankAccounts = useInvalidateBankAccounts()
 
   const [showAddBank, setShowAddBank] = useState(false)
   const [showRefundPolicy, setShowRefundPolicy] = useState(false)
@@ -894,6 +916,7 @@ function PaymentsContent() {
                   <FileText size={16} />
                   View refund &amp; cancellation policy
                 </button>
+                <ClearDuesButton storeId={storeId} size="sm" />
                 {walletFrozen ? (
                   <button
                     type="button"
@@ -935,21 +958,26 @@ function PaymentsContent() {
             ) : null}
             {/* Wallet summary cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
-              {/* Withdrawable - Primary Card */}
-              <div className="bg-emerald-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+              {/* Withdrawable / wallet dues - Primary Card */}
+              <div className={walletCardTone.card}>
                 <div className="flex items-start justify-between">
                   <div>
-                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">Withdrawable</p>
+                    <p className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">
+                      {walletCardTone.label}
+                    </p>
                     {showWalletSkeleton ? (
                       <div className="h-7 w-20 mt-1.5 bg-gray-200 rounded animate-pulse" />
                     ) : (
-                      <p className="text-xl font-bold text-gray-900 mt-1">
-                        {formatInr(withdrawableBalance)}
+                      <p className={walletCardTone.amount}>
+                        {formatInr(displayWalletBalance)}
                       </p>
                     )}
+                    {!showWalletSkeleton && isWalletBalanceNegative(displayWalletBalance) ? (
+                      <p className="text-[10px] font-medium text-red-600 mt-1">Outstanding dues</p>
+                    ) : null}
                   </div>
-                  <div className="p-2 rounded-lg bg-emerald-100 flex-shrink-0">
-                    <Wallet size={16} className="text-emerald-700" />
+                  <div className={walletCardTone.iconWrap}>
+                    <Wallet size={16} className={walletCardTone.icon} />
                   </div>
                 </div>
               </div>
@@ -1368,7 +1396,7 @@ function PaymentsContent() {
                                   const txType = String(meta?.transaction_type ?? '').trim()
                                   if (txType === 'COMPENSATION_CREDIT') return 'Compensation Credit'
                                   if (txType === 'COMPENSATION_RECOVERY') return 'Compensation Recovery'
-                                  return formatCategory(row.category)
+                                  return formatLedgerRowCategory(row)
                                 })()}
                               </td>
                               <td className="py-3 px-4 text-gray-600 font-mono text-xs">

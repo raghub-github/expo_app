@@ -1067,7 +1067,13 @@ export function buildSettlementBreakdownFromCtmRows(
     (billingSnapshot as Record<string, unknown> | null)?.packaging_fee ??
       (billingSnapshot as Record<string, unknown> | null)?.packagingFee
   );
-  const packagingCharge = merchantRupee(Math.max(0, packagingCustomer) * factor);
+  // v1: packaging sits on the customer catalog scale, so reverse-scale by commission
+  // factor like item gross. v2 item nets are already merchant ₹ — packaging_fee is the
+  // same merchant packaging amount the partner bill shows; do NOT × factor again
+  // (that produced merchant_gross ₹4 short for 15% commission on ₹24 packaging).
+  const packagingCharge = merchantRupee(
+    Math.max(0, packagingCustomer) * (isV2 ? 1 : factor)
+  );
   const platformMerchantShare = round2(Math.max(0, funding.merchantShare));
   const platformCompanyShare = round2(Math.max(0, funding.companyShare));
   const platformDiscountTotal = round2(Math.max(0, funding.total));
@@ -1453,6 +1459,98 @@ export async function writeMerchantCtmPricingSnapshots(
 }
 
 /**
+ * For v2 CTM orders already frozen at placement: recompute packaging_charge /
+ * merchant_gross / total_ctm without rewriting line nets. Fixes the historical
+ * bug where packaging was still × (100−commission%)/100 on v2 rows.
+ */
+export async function repairV2SettlementPackagingFromExistingCtm(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  coreOrderId: number
+): Promise<boolean> {
+  if (!Number.isFinite(coreOrderId) || coreOrderId <= 0) return false;
+  try {
+    const verRows = await db.execute(sql`
+      SELECT calculation_version::int AS calculation_version
+      FROM merchant_ctm_pricing_snapshot
+      WHERE core_order_id = ${coreOrderId}
+      LIMIT 1
+    `);
+    const verRaw = Array.isArray(verRows)
+      ? verRows
+      : ((verRows as { rows?: unknown })?.rows ?? []);
+    const calcVer = num(
+      (verRaw as Array<{ calculation_version: number | null }>)[0]?.calculation_version
+    );
+    if (calcVer !== ITEM_PRICING_CALCULATION_VERSION) return false;
+
+    const coreRows = await db.execute(sql`
+      SELECT billing_snapshot
+      FROM orders_core
+      WHERE id = ${coreOrderId}
+      LIMIT 1
+    `);
+    const coreRaw = Array.isArray(coreRows)
+      ? coreRows
+      : ((coreRows as { rows?: unknown })?.rows ?? []);
+    const billingSnapshot =
+      (coreRaw as Array<{ billing_snapshot: Record<string, unknown> | null }>)[0]
+        ?.billing_snapshot ?? null;
+    const packagingCustomer = num(
+      (billingSnapshot as Record<string, unknown> | null)?.packaging_fee ??
+        (billingSnapshot as Record<string, unknown> | null)?.packagingFee
+    );
+    const packagingFull = merchantRupee(Math.max(0, packagingCustomer));
+
+    const osbRows = await db.execute(sql`
+      SELECT
+        packaging_charge::float8 AS packaging_charge,
+        merchant_gross::float8 AS merchant_gross,
+        item_total::float8 AS item_total
+      FROM order_settlement_breakdown
+      WHERE order_id = ${coreOrderId}
+      LIMIT 1
+    `);
+    const osbRaw = Array.isArray(osbRows)
+      ? osbRows
+      : ((osbRows as { rows?: unknown })?.rows ?? []);
+    const osb = (osbRaw as Array<{
+      packaging_charge: number;
+      merchant_gross: number;
+      item_total: number;
+    }>)[0];
+    if (!osb) return false;
+
+    const oldPack = num(osb.packaging_charge);
+    if (Math.abs(oldPack - packagingFull) <= 0.005) return false;
+
+    const delta = round2(packagingFull - oldPack);
+    const newGross = round2(Math.max(0, num(osb.merchant_gross) + delta));
+
+    await db.execute(sql`
+      UPDATE order_settlement_breakdown
+      SET
+        packaging_charge = ${packagingFull.toFixed(2)}::numeric,
+        merchant_gross = ${newGross.toFixed(2)}::numeric
+      WHERE order_id = ${coreOrderId}
+    `);
+    await db.execute(sql`
+      UPDATE orders_core
+      SET total_ctm = ${newGross.toFixed(2)}::numeric,
+          updated_at = NOW()
+      WHERE id = ${coreOrderId}
+    `);
+    console.info(
+      "[merchant-ctm] repaired v2 packaging/total_ctm",
+      JSON.stringify({ coreOrderId, oldPack, packagingFull, newGross })
+    );
+    return true;
+  } catch (err) {
+    console.error("[merchant-ctm] repairV2SettlementPackagingFromExistingCtm failed", coreOrderId, err);
+    return false;
+  }
+}
+
+/**
  * Post-placement safety net: if CTM rows are missing for an order, rebuild from
  * orders_core_items + billing_snapshot. Never throws (logs only) so checkout UX
  * is unaffected; merchant screens fall back until backfill succeeds.
@@ -1545,6 +1643,8 @@ export async function ensureMerchantCtmPricingSnapshotsForOrder(
           reason: "snapshots already frozen at placement",
         })
       );
+      // Line nets stay frozen; still repair v2 packaging×commission on settlement/total_ctm.
+      await repairV2SettlementPackagingFromExistingCtm(db, coreOrderId);
       return;
     }
 

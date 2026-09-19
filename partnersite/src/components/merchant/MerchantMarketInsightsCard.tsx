@@ -24,7 +24,7 @@ function RankBadge({ displayRank, own }: { displayRank: string; own?: boolean })
     return (
       <span
         className="inline-flex h-5 min-w-[1.75rem] items-center justify-center rounded-full bg-white text-[10px] font-bold text-emerald-700 tabular-nums shrink-0 ring-1 ring-white/50"
-        title={`Rank ${displayRank} by affinity`}
+        title={`Rank ${displayRank} by 90-day orders`}
       >
         {displayRank}
       </span>
@@ -34,7 +34,7 @@ function RankBadge({ displayRank, own }: { displayRank: string; own?: boolean })
     return (
       <span
         className="inline-flex h-5 min-w-[1.75rem] items-center justify-center rounded bg-amber-100 text-[10px] font-bold text-amber-700 tabular-nums shrink-0"
-        title={`Rank ${displayRank} by affinity`}
+        title={`Rank ${displayRank} by 90-day orders`}
       >
         {displayRank}
       </span>
@@ -44,7 +44,7 @@ function RankBadge({ displayRank, own }: { displayRank: string; own?: boolean })
     return (
       <span
         className="inline-flex h-5 min-w-[1.75rem] items-center justify-center rounded bg-slate-200/90 text-[10px] font-bold text-slate-600 tabular-nums shrink-0"
-        title={`Rank ${displayRank} by affinity`}
+        title={`Rank ${displayRank} by 90-day orders`}
       >
         {displayRank}
       </span>
@@ -54,7 +54,7 @@ function RankBadge({ displayRank, own }: { displayRank: string; own?: boolean })
     return (
       <span
         className="inline-flex h-5 min-w-[1.75rem] items-center justify-center rounded bg-orange-100 text-[10px] font-bold text-orange-800 tabular-nums shrink-0"
-        title={`Rank ${displayRank} by affinity`}
+        title={`Rank ${displayRank} by 90-day orders`}
       >
         {displayRank}
       </span>
@@ -217,10 +217,12 @@ export function MerchantMarketInsightsCard({
     if (!data) return [];
     return buildCompetitorLeaderboard({
       competitors: data.competitors ?? [],
-      storeId,
+      storeId: data.store_id || storeId,
       ownName: data.store_name || "Your store",
       ownLogoUrl: data.store_logo_url,
       ownAffinityPct: Number(data.your_affinity_pct) || 0,
+      ownOrders90d: Number(data.locality?.your_orders_90d) || 0,
+      yourAreaRank: data.locality?.your_area_rank ?? null,
     }).slice(0, TOP_N);
   }, [data, storeId]);
 
@@ -236,7 +238,7 @@ export function MerchantMarketInsightsCard({
         <h2 className="text-sm font-bold text-slate-900 tracking-tight">Competitors</h2>
         <span
           className="text-slate-400"
-          title="Peers ranked by customer affinity. Your area rank (trophy) is by 90-day orders."
+          title="Stores ranked by 90-day orders (same as trophy). Affinity shows customer overlap."
         >
           <Info size={15} strokeWidth={2} aria-hidden />
         </span>

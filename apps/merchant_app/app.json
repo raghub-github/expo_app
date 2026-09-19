@@ -40,7 +40,9 @@
         "WAKE_LOCK",
         "USE_FULL_SCREEN_INTENT",
         "SYSTEM_ALERT_WINDOW",
-        "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ],
       "blockedPermissions": [
         "android.permission.READ_SMS",

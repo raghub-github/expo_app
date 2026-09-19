@@ -854,6 +854,14 @@ export function FleetCustomersPage() {
                     <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3">
                       <Spec label="Language" value={(customer?.language || "en").toUpperCase()} />
                       <Spec label="Referral" value={customer?.referralCode || "—"} />
+                      <Spec
+                        label="Referred by"
+                        value={
+                          customer?.referredByName ||
+                          customer?.referredBy ||
+                          "—"
+                        }
+                      />
                       <Spec label="Joined" value={formatDateTime(customer?.createdAt || selected.createdAt)} />
                       <Spec
                         label="Last login"
@@ -904,6 +912,9 @@ export function FleetCustomersPage() {
                       </div>
                     </div>
                     <div className="mt-4 rounded-xl border border-[#EEF0F4] bg-[#F8FAFC] px-3.5 py-3">
+                      <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9CA3AF]">
+                        Selected address
+                      </p>
                       <div className="flex items-start gap-2.5">
                         <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-[#7C3AED] shadow-sm">
                           <MapPin className="h-4 w-4" />

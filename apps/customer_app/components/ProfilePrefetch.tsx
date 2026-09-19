@@ -19,7 +19,7 @@ export function ProfilePrefetch() {
   const session = useAuthStore((s) => s.session);
 
   useEffect(() => {
-    if (!hydrated || !session) return;
+    if (!hydrated || !session?.accessToken) return;
     void (async () => {
       await hydrateFastKvFromAsyncStorage([STORAGE_KEYS.PROFILE_CACHE]);
       const sync = readSyncCachedProfile();
@@ -31,7 +31,7 @@ export function ProfilePrefetch() {
       await prefetchProfile(queryClient);
       void useDietaryPreferenceStore.getState().hydrate();
     })();
-  }, [hydrated, session, queryClient]);
+  }, [hydrated, session?.accessToken, queryClient]);
 
   return null;
 }

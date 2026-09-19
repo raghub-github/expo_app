@@ -131,6 +131,11 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!sessionHydrated || !sessionAccessToken) return;
+    void flushRiderPendingActions();
+  }, [sessionHydrated, sessionAccessToken]);
+
+  useEffect(() => {
+    if (!sessionHydrated || !sessionAccessToken) return;
     const session = useSessionStore.getState().session;
     if (!session) return;
     void refreshSessionIfNeeded();

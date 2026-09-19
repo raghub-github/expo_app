@@ -5,6 +5,8 @@ import {
   discountTotalFromBilling,
   orderDiscountGrantedSummaryFromBilling,
   payableCustomerDiscountLinesFromBilling,
+  bakedInItemOfferAmountsFromBilling,
+  flashSaleSubsidyFromBilling,
   type OrderDiscountOfferSource,
 } from "@/lib/merchant-billing-discount";
 import {
@@ -55,6 +57,11 @@ export type OrderPricingLine = {
   discountTag?: "platform" | "store" | "mixed";
   /** Non-discount row badge (e.g. GMitra Plus membership fee). */
   rowBadge?: "membership";
+  /**
+   * Pre-offer list amount (CTC). When set and greater than `amount`, UI shows
+   * this value struck through next to the paid amount (item Boost / Flash Sale).
+   */
+  strikeThroughAmount?: number;
 };
 
 /** GST tax line persisted on billing_snapshot.taxes at checkout. */
@@ -606,8 +613,27 @@ export function buildOrderPricingSummary(
     round2(asNum(snap.item_total) + asNum(snap.addon_total)) ||
     round2(asNum(core.item_total) + asNum(core.addon_total));
 
+  // Item-surface Boost / Flash already netted into item_total — list (strike) vs paid.
+  const bakedItemOffers = bakedInItemOfferAmountsFromBilling(snap);
+  const flashSubsidy = flashSaleSubsidyFromBilling(snap);
+  const itemOfferSavings = round2(
+    Math.max(0, Math.max(bakedItemOffers.customerAmount, flashSubsidy))
+  );
+  const itemsListAmount =
+    itemTotal > 0.005 && itemOfferSavings > 0.005
+      ? round2(itemTotal + itemOfferSavings)
+      : null;
+
   if (itemTotal > 0) {
-    lines.push({ key: "items", label: "Items Amount Total", amount: itemTotal, kind: "charge" });
+    lines.push({
+      key: "items",
+      label: "Items Amount Total",
+      amount: itemTotal,
+      kind: "charge",
+      ...(itemsListAmount != null && itemsListAmount > itemTotal + 0.005
+        ? { strikeThroughAmount: itemsListAmount }
+        : {}),
+    });
   }
 
   const packaging = round2(asNum(snap.packaging_fee));

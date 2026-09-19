@@ -8,12 +8,12 @@ import { StoreTheme } from "@/constants/storeTheme";
 import { DietIndicator } from "./DietIndicator";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
-export type StoreFilterId = "all" | "veg" | "egg" | "nonveg" | "highlyreordered";
+export type StoreFilterId = "all" | "veg" | "egg" | "nonveg" | "highlyreordered" | "flashdeal";
 
 type FilterDef = {
   id: StoreFilterId;
   label: string;
-  type: "filters" | "diet" | "tag";
+  type: "filters" | "diet" | "tag" | "flash";
   diet?: "veg" | "egg" | "nonveg";
 };
 
@@ -29,6 +29,8 @@ export type StoreFilterBarProps = {
   onChange: (id: StoreFilterId) => void;
   onOpenFilters?: () => void;
   showHighlyReordered?: boolean;
+  /** When the store has an active Flash Sale on any menu item. */
+  showFlashDeal?: boolean;
   filtersActive?: boolean;
   style?: object | (object | null | undefined)[];
 };
@@ -38,13 +40,19 @@ export const StoreFilterBar = React.memo(function StoreFilterBar({
   onChange,
   onOpenFilters,
   showHighlyReordered = false,
+  showFlashDeal = false,
   filtersActive = false,
   style,
 }: StoreFilterBarProps) {
   const dark = useMerchantUiDark();
-  const filters: FilterDef[] = showHighlyReordered
-    ? [...BASE_FILTERS, { id: "highlyreordered", label: "Highly re...", type: "tag" }]
-    : BASE_FILTERS;
+  const filters: FilterDef[] = [
+    BASE_FILTERS[0]!, // Filters
+    ...(showFlashDeal ? [{ id: "flashdeal" as const, label: "Flash Deal", type: "flash" as const }] : []),
+    ...BASE_FILTERS.slice(1), // Veg → Egg → Non-veg
+    ...(showHighlyReordered
+      ? [{ id: "highlyreordered" as const, label: "Highly re...", type: "tag" as const }]
+      : []),
+  ];
 
   return (
     <View style={[styles.wrap, style, dark && styles.wrapDark]}>
@@ -55,6 +63,7 @@ export const StoreFilterBar = React.memo(function StoreFilterBar({
       >
         {filters.map((f) => {
           const isActive = f.type === "filters" ? filtersActive : active === f.id;
+          const flashActive = f.type === "flash" && isActive;
           return (
             <TouchableOpacity
               key={f.id}
@@ -62,7 +71,13 @@ export const StoreFilterBar = React.memo(function StoreFilterBar({
                 if (f.type === "filters") onOpenFilters?.();
                 else onChange(f.id);
               }}
-              style={[styles.chip, dark && styles.chipDark, isActive && (dark ? styles.chipActiveDark : styles.chipActive)]}
+              style={[
+                styles.chip,
+                dark && styles.chipDark,
+                isActive && (dark ? styles.chipActiveDark : styles.chipActive),
+                flashActive && styles.chipFlashActive,
+                f.type === "flash" && !isActive && styles.chipFlash,
+              ]}
               activeOpacity={0.75}
             >
               {f.type === "filters" ? (
@@ -75,6 +90,19 @@ export const StoreFilterBar = React.memo(function StoreFilterBar({
                 <>
                   <DietIndicator type={f.diet} />
                   <AppText style={[styles.chipText, dark && styles.chipTextDark]}>{f.label}</AppText>
+                </>
+              ) : f.type === "flash" ? (
+                <>
+                  <Ionicons name="flash" size={14} color={isActive ? "#0369A1" : "#0284C7"} />
+                  <AppText
+                    style={[
+                      styles.chipText,
+                      styles.chipFlashText,
+                      isActive && styles.chipFlashTextActive,
+                    ]}
+                  >
+                    {f.label}
+                  </AppText>
                 </>
               ) : (
                 <>
@@ -135,6 +163,14 @@ const styles = StyleSheet.create({
     borderColor: MerchantDarkPalette.accent,
     backgroundColor: MerchantDarkPalette.chipActive,
   },
+  chipFlash: {
+    borderColor: "#7DD3FC",
+    backgroundColor: "#F0F9FF",
+  },
+  chipFlashActive: {
+    borderColor: "#0EA5E9",
+    backgroundColor: "#E0F2FE",
+  },
   chipText: {
     fontSize: 13,
     fontWeight: "600",
@@ -142,6 +178,13 @@ const styles = StyleSheet.create({
   },
   chipTextDark: {
     color: MerchantDarkPalette.text,
+  },
+  chipFlashText: {
+    color: "#0369A1",
+    fontWeight: "700",
+  },
+  chipFlashTextActive: {
+    color: "#0C4A6E",
   },
   reorderIcon: {},
 });
