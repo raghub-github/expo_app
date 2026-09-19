@@ -191,9 +191,12 @@ export default function SettingsScreen() {
     try {
       await logout();
       setLogoutModalVisible(false);
+      // AuthNavigationGate also enforces this; call replace immediately so we
+      // leave profile/home before any post-logout 401 refetch storm.
       router.replace("/(auth)/login");
     } catch {
       setLoggingOut(null);
+      router.replace("/(auth)/login");
     }
   };
 
@@ -206,6 +209,7 @@ export default function SettingsScreen() {
       router.replace("/(auth)/login");
     } catch {
       setLoggingOut(null);
+      router.replace("/(auth)/login");
     }
   };
 

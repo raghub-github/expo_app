@@ -136,6 +136,8 @@ export function MerchantMarketInsightsPanel({ storeId }: { storeId: number | nul
       ownName: insights.store_name || selectedStore?.store_name || "Your store",
       ownLogoUrl: insights.store_logo_url,
       ownAffinityPct: Number(insights.your_affinity_pct) || 0,
+      ownOrders90d: Number(insights.locality?.your_orders_90d) || 0,
+      yourAreaRank: insights.locality?.your_area_rank ?? null,
     }).slice(0, TOP_N);
   }, [insights, publicStoreId, storeId, selectedStore?.store_name]);
 

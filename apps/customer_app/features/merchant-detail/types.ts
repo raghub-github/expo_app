@@ -35,6 +35,7 @@ export type MerchantListItemType =
   | "menu_masonry"
   | "featured_imaged_rail"
   | "footer"
+  | "oos_section"
   | "empty_menu"
   | "menu_skeleton"
   | "menu_loading"
@@ -90,6 +91,11 @@ export type MerchantFlashListItem =
       type: "pairing_strip";
       key: string;
       companions: MenuListRow[];
+    }
+  | {
+      type: "oos_section";
+      key: "oos_section";
+      items: MenuListRow[];
     }
   | { type: "footer"; key: "footer" }
   | { type: "empty_menu"; key: "empty_menu" }

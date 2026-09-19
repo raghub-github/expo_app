@@ -93,6 +93,9 @@ function warmNearbyMerchantImagery(): void {
  * Merchant /home stack sits above tabs. If Food is already the active tab,
  * `navigatePrimaryTab("food")` is a same-tab no-op — so we must dismiss the
  * overlay stack first or HOME edge / Food taps appear broken.
+ *
+ * Never call `dismissAll` unless `canDismiss()` — otherwise React Navigation
+ * logs "The action 'POP_TO_TOP' was not handled by any navigator".
  */
 export function navigateToFoodHome(
   router: Router,

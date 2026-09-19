@@ -418,11 +418,24 @@ export default function MerchantDetails({
                   href={`tel:${profile.phones[0]}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-gati-primary no-underline font-medium inline-flex items-center gap-0.5 text-[11px]"
+                  className="text-gati-primary no-underline font-medium inline-flex items-center gap-0.5 text-[12px]"
                 >
                   <i className="bi bi-telephone text-[12px]" />
                   <OrderNum>{profile.phones[0]}</OrderNum>
                 </a>
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center text-[11px] cursor-pointer opacity-80 hover:opacity-100 transition-opacity ml-1"
+                  onClick={() => handleCopyGeneric(profile.phones![0]!, "mobile")}
+                  aria-label="Copy merchant mobile"
+                >
+                  {copiedKey === "mobile" ? (
+                    <Check className="h-3 w-3 text-emerald-600" />
+                  ) : (
+                    <Copy className="h-3 w-3 text-gati-primary" />
+                  )}
+                  <span className="sr-only">Copy</span>
+                </button>
                 {profile.phones.length > 1 && (
                   <button
                     type="button"

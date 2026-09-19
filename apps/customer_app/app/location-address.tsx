@@ -6,7 +6,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Keyboard, Platform, ScrollView, FlatList, ActivityIndicator, Alert, Modal, Pressable, Animated, Easing, Image, useWindowDimensions, type KeyboardEvent } from "react-native";
+import { View, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Keyboard, Platform, ScrollView, FlatList, ActivityIndicator, Alert, Modal, Pressable, Animated, Easing, Image, useWindowDimensions, Dimensions, type KeyboardEvent, type NativeSyntheticEvent, type NativeScrollEvent } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -43,8 +43,10 @@ import { useCookingSheetKeyboardDock } from "@/hooks/useCookingSheetKeyboardDock
 
 const NEARBY_RADIUS_METERS = 500;
 const BRAND = GatiMitraColors.splashMint;
-/** Map strip while the address form keyboard is open so Save stays visible. */
-const COMPACT_MAP_HEIGHT = 96;
+/** Fixed map strip height inside the scrollable address sheet (not sticky/compact). */
+const MAP_STRIP_HEIGHT = 220;
+/** Fallback until sticky CTA `onLayout` (btn + pads). */
+const STICKY_CTA_FALLBACK_H = 88;
 
 /** Best-effort split of saved `fullAddress` into flat/area lines using structured fields. */
 function splitSavedAddressLines(addr: Address): { line1: string; line2: string } {
@@ -193,11 +195,16 @@ function SheetSkeleton({ opacity }: { opacity: Animated.AnimatedInterpolation<nu
 export default function LocationAddressScreen() {
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
-  /** Freeze first layout height so Android adjustResize cannot shrink the expanded map target. */
-  const expandedMapHeightRef = useRef(Math.round(Math.min(300, Math.max(220, windowHeight * 0.3))));
-  const mapHeightAnim = useRef(new Animated.Value(expandedMapHeightRef.current)).current;
-  const skipMapCompactRef = useRef(false);
-  const [mapCompact, setMapCompact] = useState(false);
+  const mapStripHeight = Math.round(Math.min(260, Math.max(200, windowHeight * 0.28)));
+  const sheetScrollRef = useRef<ScrollView>(null);
+  const fieldAnchorRefs = useRef<Record<string, View | null>>({});
+  const scrollOffsetRef = useRef(0);
+  const stickyCtaHeightRef = useRef(STICKY_CTA_FALLBACK_H);
+  const formKeyboardInsetRef = useRef(0);
+  /** Extra bottom inset when OS did not already resize the window for the keyboard. */
+  const [formKeyboardInset, setFormKeyboardInset] = useState(0);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [stickyCtaHeight, setStickyCtaHeight] = useState(STICKY_CTA_FALLBACK_H);
   const router = useRouter();
   const queryClient = useQueryClient();
   const submittingRef = useRef(false);
@@ -312,29 +319,37 @@ export default function LocationAddressScreen() {
   const { keyboardLift: locationSearchKeyboardLift, reset: resetLocationSearchKeyboard } =
     useCookingSheetKeyboardDock(locationSearchVisible);
 
-  skipMapCompactRef.current = locationSearchVisible || contactsModalVisible;
+  useEffect(() => {
+    formKeyboardInsetRef.current = formKeyboardInset;
+  }, [formKeyboardInset]);
+
+  useEffect(() => {
+    stickyCtaHeightRef.current = stickyCtaHeight;
+  }, [stickyCtaHeight]);
 
   useEffect(() => {
     const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
 
-    const animateMapHeight = (toValue: number, duration?: number) => {
-      Animated.timing(mapHeightAnim, {
-        toValue,
-        duration: duration && duration > 0 ? duration : 220,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
-      }).start();
-    };
-
     const onShow = (e: KeyboardEvent) => {
-      if (skipMapCompactRef.current) return;
-      setMapCompact(true);
-      animateMapHeight(COMPACT_MAP_HEIGHT, e.duration);
+      if (locationSearchVisible || contactsModalVisible) return;
+      setKeyboardOpen(true);
+
+      const kbH = Math.max(0, Math.round(e.endCoordinates?.height ?? 0));
+      // iOS never resizes the window for the keyboard — always lift the sticky Save bar.
+      // Android adjustResize already shrinks the window; only lift when it did not.
+      if (Platform.OS === "ios") {
+        setFormKeyboardInset(kbH);
+        return;
+      }
+      const winH = Dimensions.get("window").height;
+      const screenH = Dimensions.get("screen").height;
+      const alreadyResized = screenH - winH >= kbH * 0.55;
+      setFormKeyboardInset(alreadyResized ? 0 : kbH);
     };
-    const onHide = (e: KeyboardEvent) => {
-      setMapCompact(false);
-      animateMapHeight(expandedMapHeightRef.current, e.duration);
+    const onHide = () => {
+      setKeyboardOpen(false);
+      setFormKeyboardInset(0);
     };
 
     const showSub = Keyboard.addListener(showEvt, onShow);
@@ -343,18 +358,75 @@ export default function LocationAddressScreen() {
       showSub.remove();
       hideSub.remove();
     };
-  }, [mapHeightAnim]);
+  }, [locationSearchVisible, contactsModalVisible]);
 
+  const scrollFocusedFieldIntoView = useCallback((field: string) => {
+    const run = () => {
+      const anchor = fieldAnchorRefs.current[field];
+      if (!anchor || !sheetScrollRef.current) return;
+      anchor.measureInWindow((_x, y, _w, h) => {
+        const winH = Dimensions.get("window").height;
+        const kbInset = formKeyboardInsetRef.current;
+        // Leave room above sticky Save (+ keyboard lift) so the field is fully editable.
+        const clearGap = 28;
+        const visibleBottom = winH - kbInset - stickyCtaHeightRef.current - clearGap;
+        // Prefer the field in the upper half of the remaining viewport (not flush on Save).
+        const comfortBottom = Math.min(visibleBottom, Math.round(winH * 0.42));
+        const fieldBottom = y + h;
+        const fieldTop = y;
+        if (fieldBottom <= comfortBottom && fieldTop >= 12) return;
+        const delta =
+          fieldBottom > comfortBottom
+            ? fieldBottom - comfortBottom
+            : fieldTop < 12
+              ? fieldTop - 12
+              : 0;
+        if (delta === 0) return;
+        const nextY = Math.max(0, scrollOffsetRef.current + delta);
+        sheetScrollRef.current?.scrollTo({ y: nextY, animated: true });
+      });
+    };
+    requestAnimationFrame(() => {
+      setTimeout(run, Platform.OS === "ios" ? 320 : 280);
+    });
+  }, []);
+
+  // After keyboard opens / inset lands, re-scroll so the focused field clears Save + keypad.
   useEffect(() => {
-    if (!focusedField || skipMapCompactRef.current) return;
-    setMapCompact(true);
-    Animated.timing(mapHeightAnim, {
-      toValue: COMPACT_MAP_HEIGHT,
-      duration: 220,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    }).start();
-  }, [focusedField, mapHeightAnim]);
+    if (!focusedField || !keyboardOpen) return;
+    scrollFocusedFieldIntoView(focusedField);
+  }, [keyboardOpen, formKeyboardInset, focusedField, scrollFocusedFieldIntoView]);
+
+  const focusAddressField = useCallback(
+    (field: string) => {
+      setFocusedField(field);
+      scrollFocusedFieldIntoView(field);
+    },
+    [scrollFocusedFieldIntoView]
+  );
+
+  const onSheetScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scrollOffsetRef.current = e.nativeEvent.contentOffset.y;
+  }, []);
+
+  const onStickyCtaLayout = useCallback((e: { nativeEvent: { layout: { height: number } } }) => {
+    const h = Math.ceil(e.nativeEvent.layout.height);
+    if (h > 0 && Math.abs(h - stickyCtaHeightRef.current) > 1) {
+      stickyCtaHeightRef.current = h;
+      setStickyCtaHeight(h);
+    }
+  }, []);
+
+  const setFieldAnchorRef = useCallback((field: string, node: View | null) => {
+    fieldAnchorRefs.current[field] = node;
+  }, []);
+
+  const stickyBottomPad = Math.max(insets.bottom, 12) + 5;
+  /** Extra scroll room so Landmark / contact / Save-as can rise above the sticky Save (+ keyboard). */
+  const formScrollBottomPad =
+    stickyCtaHeight +
+    Math.round(Math.max(160, windowHeight * (keyboardOpen ? 0.38 : 0.28))) +
+    (formKeyboardInset > 0 ? Math.min(formKeyboardInset, 220) : 0);
   const [locationSearchQuery, setLocationSearchQuery] = useState("");
   const [locationSearchResults, setLocationSearchResults] = useState<EnrichedPlaceResult[]>([]);
   const [locationSearchLoading, setLocationSearchLoading] = useState(false);
@@ -414,13 +486,12 @@ export default function LocationAddressScreen() {
         cancelAnimationFrame(mapCoordRafRef.current);
         mapCoordRafRef.current = null;
       }
+      // User finished moving the pin — unlock edit geo lock and drop stale summary
+      // so reverse-geocode can refresh street/city/state/pin (not only the map visual).
+      if (isEditMode) setEditGeoLocked(false);
+      setGeocodeLoading(true);
+      setPinnedPlaceAddress(null);
       applyMapCenter(latitude, longitude);
-      if (isEditMode && editBaselineRef.current) {
-        const b = editBaselineRef.current;
-        if (haversineMeters(b.lat, b.lon, latitude, longitude) > 35) {
-          setEditGeoLocked(false);
-        }
-      }
     },
     [applyMapCenter, isEditMode]
   );
@@ -546,15 +617,20 @@ export default function LocationAddressScreen() {
           if (cancelled) return;
           applyReverseResult(result);
           const lock = searchSelectionLockRef.current;
-          const             stillLocked =
+          const stillLocked =
             lock != null &&
             haversineMeters(lock.lat, lock.lon, mapCenter.latitude, mapCenter.longitude) < 8;
-          if (stillLocked) return;
-          searchSelectionLockRef.current = null;
-          const name = cleanDisplayName(result.primary);
-          if (name) setPinnedPlaceName(name);
+          // Always refresh the summary address from the new pin. Only keep the
+          // search-picked primary title when the map barely moved (<8m).
+          if (!stillLocked) {
+            searchSelectionLockRef.current = null;
+            const name = cleanDisplayName(result.primary);
+            if (name) setPinnedPlaceName(name);
+            else setPinnedPlaceName(null);
+          }
           const addr = cleanDisplayName(result.fullAddress);
           if (addr) setPinnedPlaceAddress(addr);
+          else setPinnedPlaceAddress(null);
         })
         .catch(() => {
           if (!cancelled) setError("Could not fetch location details.");
@@ -1437,11 +1513,7 @@ export default function LocationAddressScreen() {
           }));
 
   return (
-    <KeyboardAvoidingView
-      enabled={!locationSearchVisible && !contactsModalVisible}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      style={styles.container}
-    >
+    <View style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} hitSlop={12}>
           <Ionicons name="arrow-back" size={22} color={TITLE_DARK} />
@@ -1451,44 +1523,49 @@ export default function LocationAddressScreen() {
           <AppText style={styles.headerSearchText}>Search for area, street name...</AppText>
         </TouchableOpacity>
       </View>
-      <View style={styles.mapCard}>
-        <Animated.View style={[styles.mapSlot, { height: mapHeightAnim }]}>
-          <MapboxWebPannableMap
-            key={isEditMode && editAddressId != null ? `edit-addr-${editAddressId}` : "new-address-map"}
-            ref={mapRef}
-            style={StyleSheet.absoluteFillObject}
-            initialRegion={mapInitialRegion}
-            onRegionChange={handleMapRegionChange}
-            onRegionChangeComplete={handleMapRegionChangeComplete}
-          />
-          {!mapCompact ? (
-            <View style={styles.mapTooltipWrap} pointerEvents="none">
-              <View style={styles.mapTooltip}>
-                <AppText style={styles.mapTooltipText}>Move pin to your exact delivery location</AppText>
-              </View>
-            </View>
-          ) : null}
-          <View pointerEvents="none" style={styles.mapPinOverlay}>
-            <Ionicons name="location" size={mapCompact ? 26 : 34} color={TEAL} />
-          </View>
-          {!mapCompact ? (
-            <TouchableOpacity style={styles.mapUseCurrentPill} onPress={handleUseCurrentLocationOnMap} activeOpacity={0.85}>
-              <Ionicons name="locate" size={15} color={TEAL} />
-              <AppText style={styles.mapUseCurrentText}>Use current location</AppText>
-            </TouchableOpacity>
-          ) : null}
-        </Animated.View>
-        {!mapCompact ? (
-          <AppText style={styles.mapHint}>Move map to set exact delivery location</AppText>
-        ) : null}
-      </View>
       <View style={styles.sheet}>
         <ScrollView
+          ref={sheetScrollRef}
           style={styles.sheetScroll}
-          contentContainerStyle={styles.sheetScrollContent}
+          contentContainerStyle={[
+            styles.sheetScrollContent,
+            // Tall pad so Landmark / contact / Save-as can scroll fully above sticky Save + keyboard.
+            { paddingBottom: formScrollBottomPad },
+          ]}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="none"
           showsVerticalScrollIndicator={false}
+          onScroll={onSheetScroll}
+          scrollEventThrottle={16}
+          nestedScrollEnabled
+          automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
         >
+          <View style={styles.mapCard}>
+            <View style={[styles.mapSlot, { height: mapStripHeight || MAP_STRIP_HEIGHT }]}>
+              <MapboxWebPannableMap
+                key={isEditMode && editAddressId != null ? `edit-addr-${editAddressId}` : "new-address-map"}
+                ref={mapRef}
+                style={StyleSheet.absoluteFillObject}
+                initialRegion={mapInitialRegion}
+                onRegionChange={handleMapRegionChange}
+                onRegionChangeComplete={handleMapRegionChangeComplete}
+              />
+              <View style={styles.mapTooltipWrap} pointerEvents="none">
+                <View style={styles.mapTooltip}>
+                  <AppText style={styles.mapTooltipText}>Move pin to your exact delivery location</AppText>
+                </View>
+              </View>
+              <View pointerEvents="none" style={styles.mapPinOverlay}>
+                <Ionicons name="location" size={34} color={TEAL} />
+              </View>
+              <TouchableOpacity style={styles.mapUseCurrentPill} onPress={handleUseCurrentLocationOnMap} activeOpacity={0.85}>
+                <Ionicons name="locate" size={15} color={TEAL} />
+                <AppText style={styles.mapUseCurrentText}>Use current location</AppText>
+              </TouchableOpacity>
+            </View>
+            <AppText style={styles.mapHint}>Move map to set exact delivery location</AppText>
+          </View>
+
           <View style={styles.card}>
           <View style={styles.sheetHandle} />
           {isCurrentLocationSheetLoading ? (
@@ -1549,6 +1626,7 @@ export default function LocationAddressScreen() {
                 </AppText>
               ) : null}
 
+              <View ref={(n) => setFieldAnchorRef("line1", n)} collapsable={false}>
               <AppText style={styles.label}>Flat / House / Building *</AppText>
           <TextInput
             style={getInputStyle("line1")}
@@ -1558,10 +1636,12 @@ export default function LocationAddressScreen() {
             value={line1}
             onChangeText={setLine1}
             editable={!submitting}
-            onFocus={() => setFocusedField("line1")}
+            onFocus={() => focusAddressField("line1")}
             onBlur={() => setFocusedField(null)}
           />
+              </View>
 
+              <View ref={(n) => setFieldAnchorRef("line2", n)} collapsable={false}>
               <AppText style={styles.label}>Street / Area (optional)</AppText>
           <TextInput
             style={getInputStyle("line2", prefilled.line2)}
@@ -1574,12 +1654,13 @@ export default function LocationAddressScreen() {
               if (!text.trim()) setPrefilled((p) => ({ ...p, line2: false }));
             }}
             editable={!submitting}
-            onFocus={() => setFocusedField("line2")}
+            onFocus={() => focusAddressField("line2")}
             onBlur={() => setFocusedField(null)}
           />
+              </View>
 
               <View style={styles.row}>
-                <View style={styles.col}>
+                <View style={styles.col} ref={(n) => setFieldAnchorRef("city", n)} collapsable={false}>
                   <AppText style={styles.label}>City *</AppText>
                   <TextInput
                     style={getInputStyle("city", prefilled.city)}
@@ -1592,11 +1673,11 @@ export default function LocationAddressScreen() {
                       if (!text.trim()) setPrefilled((p) => ({ ...p, city: false }));
                     }}
                     editable={!submitting}
-                    onFocus={() => setFocusedField("city")}
+                    onFocus={() => focusAddressField("city")}
                     onBlur={() => setFocusedField(null)}
                   />
                 </View>
-                <View style={styles.col}>
+                <View style={styles.col} ref={(n) => setFieldAnchorRef("state", n)} collapsable={false}>
                   <AppText style={styles.label}>State *</AppText>
                   <TextInput
                     style={getInputStyle("state", prefilled.state)}
@@ -1609,14 +1690,14 @@ export default function LocationAddressScreen() {
                       if (!text.trim()) setPrefilled((p) => ({ ...p, state: false }));
                     }}
                     editable={!submitting}
-                    onFocus={() => setFocusedField("state")}
+                    onFocus={() => focusAddressField("state")}
                     onBlur={() => setFocusedField(null)}
                   />
                 </View>
               </View>
 
               <View style={styles.row}>
-                <View style={styles.col}>
+                <View style={styles.col} ref={(n) => setFieldAnchorRef("pincode", n)} collapsable={false}>
                   <AppText style={styles.label}>Pincode *</AppText>
                   <TextInput
                     style={getInputStyle("pincode", prefilled.pincode)}
@@ -1629,11 +1710,11 @@ export default function LocationAddressScreen() {
                     }}
                     keyboardType="number-pad"
                     editable={!submitting}
-                    onFocus={() => setFocusedField("pincode")}
+                    onFocus={() => focusAddressField("pincode")}
                     onBlur={() => setFocusedField(null)}
                   />
                 </View>
-                <View style={styles.col}>
+                <View style={styles.col} ref={(n) => setFieldAnchorRef("landmark", n)} collapsable={false}>
                   <AppText style={styles.label}>Landmark (optional)</AppText>
                   <TextInput
                     style={getInputStyle("landmark")}
@@ -1643,7 +1724,7 @@ export default function LocationAddressScreen() {
                     value={landmark}
                     onChangeText={setLandmark}
                     editable={!submitting}
-                    onFocus={() => setFocusedField("landmark")}
+                    onFocus={() => focusAddressField("landmark")}
                     onBlur={() => setFocusedField(null)}
                   />
                 </View>
@@ -1666,7 +1747,7 @@ export default function LocationAddressScreen() {
               </View>
 
               <View style={styles.row}>
-                <View style={styles.col}>
+                <View style={styles.col} ref={(n) => setFieldAnchorRef("contactName", n)} collapsable={false}>
                   <AppText style={styles.label}>Contact name</AppText>
                   <TextInput
                     style={getInputStyle("contactName")}
@@ -1676,11 +1757,11 @@ export default function LocationAddressScreen() {
                     value={contactName}
                     onChangeText={setContactName}
                     editable={!submitting}
-                    onFocus={() => setFocusedField("contactName")}
+                    onFocus={() => focusAddressField("contactName")}
                     onBlur={() => setFocusedField(null)}
                   />
                 </View>
-                <View style={styles.col}>
+                <View style={styles.col} ref={(n) => setFieldAnchorRef("contactMobile", n)} collapsable={false}>
                   <AppText style={styles.label}>Contact mobile</AppText>
                   <TextInput
                     style={getInputStyle("contactMobile")}
@@ -1690,7 +1771,7 @@ export default function LocationAddressScreen() {
                     onChangeText={setContactMobile}
                     keyboardType="phone-pad"
                     editable={!submitting}
-                    onFocus={() => setFocusedField("contactMobile")}
+                    onFocus={() => focusAddressField("contactMobile")}
                     onBlur={() => setFocusedField(null)}
                   />
                 </View>
@@ -1725,6 +1806,7 @@ export default function LocationAddressScreen() {
                 This helps our delivery partners find your exact location faster
               </AppText>
 
+              <View ref={(n) => setFieldAnchorRef("customLabel", n)} collapsable={false}>
               <AppText style={styles.label}>Save as</AppText>
               <View style={styles.chipRow}>
             {(["Home", "Work", "Other"] as const).map((opt) => {
@@ -1752,10 +1834,11 @@ export default function LocationAddressScreen() {
               value={customLabel}
               onChangeText={setCustomLabel}
               editable={!submitting}
-              onFocus={() => setFocusedField("customLabel")}
+              onFocus={() => focusAddressField("customLabel")}
               onBlur={() => setFocusedField(null)}
             />
               )}
+              </View>
 
           </>
           )}
@@ -1764,11 +1847,21 @@ export default function LocationAddressScreen() {
 
           </View>
         </ScrollView>
-        <View style={[styles.stickyCtaWrap, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+        <View
+          style={[
+            styles.stickyCtaWrap,
+            {
+              paddingBottom: stickyBottomPad,
+              bottom: formKeyboardInset,
+            },
+          ]}
+          onLayout={onStickyCtaLayout}
+        >
           <TouchableOpacity
             style={[styles.primaryBtn, (submitting || !canSaveAddress) && styles.primaryBtnDisabled]}
             onPress={handleSave}
             disabled={submitting || !canSaveAddress}
+            activeOpacity={0.82}
           >
             {submitting ? (
               <ActivityIndicator color="#fff" />
@@ -2016,7 +2109,7 @@ export default function LocationAddressScreen() {
           </KeyboardAvoidingView>
         </View>
       </Modal>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -2052,7 +2145,8 @@ const styles = StyleSheet.create({
     backgroundColor: CARD_BG,
   },
   sheetScroll: { flex: 1 },
-  sheetScrollContent: { flexGrow: 1 },
+  /** flexGrow:0 — content height drives scroll; large paddingBottom unlocks lower fields. */
+  sheetScrollContent: { flexGrow: 0, paddingHorizontal: 0 },
   mapCard: {
     flexShrink: 0,
     backgroundColor: CARD_BG,
@@ -2227,11 +2321,14 @@ const styles = StyleSheet.create({
   },
   errorText: { fontSize: 13, color: "#DC2626", marginTop: 4, marginBottom: 4 },
   primaryBtn: {
-    marginTop: 4,
     backgroundColor: TEAL,
     borderRadius: 14,
-    paddingVertical: 14,
+    paddingVertical: 15,
     alignItems: "center",
+    justifyContent: "center",
+    minHeight: 52,
+    overflow: "hidden",
+    elevation: 3,
   },
   primaryBtnDisabled: { opacity: 0.7 },
   primaryBtnText: { color: "#FFF", fontSize: 16, fontWeight: "700" },
@@ -2280,11 +2377,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   stickyCtaWrap: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
     backgroundColor: CARD_BG,
     borderTopWidth: 1,
     borderTopColor: BORDER,
     paddingHorizontal: 14,
-    paddingTop: 10,
+    paddingTop: 12,
+    zIndex: 2,
+    elevation: 8,
   },
   modalOverlay: {
     flex: 1,

@@ -5,7 +5,10 @@ import { useCartStore, type CartItem } from "@/store/cartStore";
 import { useCartChromeStore } from "@/store/cartChromeStore";
 import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
 import { cartLineBaseUnitPrice } from "@/lib/cart-line-pricing";
+import { computeFlashSaleSplitPricing, parseMenuFlashSale } from "@/lib/itemOfferDisplay";
 import { billingService } from "@/services/billing.service";
+import { cartItemBaseId } from "@/lib/cart-line-identity";
+import { buildCheckoutOffersQueryKey } from "@/lib/checkoutOffersQuery";
 import {
   formatStoreCartOfferBannerText,
   resolveBestEligibleCheckoutOffer,
@@ -64,41 +67,51 @@ export function MerchantCartDock({
     if (!merchantCartMatchesRoute(s.merchantId, merchantId)) return 0;
     return s.items.reduce((n, i) => n + i.quantity, 0);
   });
-  const cartSubtotalForOffers = useCartStore((s) => {
-    if (!merchantCartMatchesRoute(s.merchantId, merchantId)) return 0;
-    return s.items.reduce((sum, i) => {
-      const base = cartLineBaseUnitPrice(i);
-      const line = base * i.quantity;
+  const cartItemsForDock = useCartStore((s) =>
+    merchantCartMatchesRoute(s.merchantId, merchantId) ? s.items : EMPTY_CART_ITEMS
+  );
+  /** Match checkout — repeat base id by qty so shared cache responses stay correct. */
+  const cartMenuItemIdsForOffers = useMemo(() => {
+    const ids: string[] = [];
+    for (const line of cartItemsForDock) {
+      const raw = String(line.menuItemId ?? "").trim();
+      if (!raw) continue;
+      const base = cartItemBaseId(raw) || raw;
+      const qty = Math.max(1, Math.floor(Number(line.quantity) || 1));
+      for (let i = 0; i < qty; i++) ids.push(base);
+    }
+    return ids;
+  }, [cartItemsForDock]);
+  const cartSubtotalForOffers = useMemo(() => {
+    return cartItemsForDock.reduce((sum, i) => {
+      const bid = cartItemBaseId(i.menuItemId);
+      const menuItem = merchantMenu?.find(
+        (m) =>
+          m.id === bid ||
+          (m.menuItemId != null && String(m.menuItemId) === bid) ||
+          String(m.menuItemId ?? "") === String(i.menuItemId)
+      );
+      const flash = menuItem
+        ? parseMenuFlashSale(menuItem as unknown as Record<string, unknown>)
+        : null;
+      let line: number;
+      if (flash) {
+        line = computeFlashSaleSplitPricing({
+          quantity: i.quantity,
+          flashUnit: flash.flashPrice,
+          regularUnit: flash.originalCustomerUnit,
+          maxFlashQuantity: flash.maxFlashQuantity ?? 1,
+        }).lineTotal;
+      } else {
+        line = cartLineBaseUnitPrice(i) * i.quantity;
+      }
       const addonLine = (i.addons ?? []).reduce(
         (a, ad) => a + ad.addonPrice * ad.quantity * i.quantity,
         0
       );
       return sum + line + addonLine;
     }, 0);
-  });
-  const cartMenuItemIdsKey = useCartStore((s) => {
-    if (!merchantCartMatchesRoute(s.merchantId, merchantId)) return "";
-    const ids = new Set<string>();
-    for (const line of s.items) {
-      const raw = String(line.menuItemId ?? "").trim();
-      if (!raw) continue;
-      ids.add(raw);
-      const base = raw.includes("::")
-        ? raw.split("::")[0]!
-        : raw.includes("_")
-          ? raw.split("_")[0]!
-          : raw;
-      if (base) ids.add(base);
-    }
-    return [...ids].sort().join(",");
-  });
-  const cartMenuItemIdsForOffers = useMemo(
-    () => (cartMenuItemIdsKey ? cartMenuItemIdsKey.split(",") : []),
-    [cartMenuItemIdsKey]
-  );
-  const cartItemsForDock = useCartStore((s) =>
-    merchantCartMatchesRoute(s.merchantId, merchantId) ? s.items : EMPTY_CART_ITEMS
-  );
+  }, [cartItemsForDock, merchantMenu]);
 
   // Flash is authoritative while pending — including flashCount === 0 (instant hide).
   const displayCount = flashActive ? flashCount : totalInCart;
@@ -112,16 +125,23 @@ export function MerchantCartDock({
     }
   }, [flashActive, flashCount, totalInCart, clearFlash]);
 
+  const cartQtyFingerprint = useMemo(
+    () =>
+      cartItemsForDock
+        .map((i) => `${cartItemBaseId(i.menuItemId)}:${i.quantity}`)
+        .sort()
+        .join("|"),
+    [cartItemsForDock]
+  );
+
   const checkoutOffersQuery = useQuery({
-    queryKey: [
-      "billing-checkout-offers",
+    queryKey: buildCheckoutOffersQueryKey({
       merchantId,
-      resolvedDeliveryAddress?.id,
-      cartSubtotalForOffers,
-      cartMenuItemIdsKey,
+      addressId: resolvedDeliveryAddress?.id,
+      cartQtyFingerprint,
       pincode,
       state,
-    ],
+    }),
     queryFn: () =>
       billingService.getCheckoutOffers({
         merchantId,
@@ -135,6 +155,8 @@ export function MerchantCartDock({
       }),
     enabled: !!merchantId && !!resolvedDeliveryAddress && hasCart,
     staleTime: 60 * 1000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 
   const offerBannerText = useMemo(() => {

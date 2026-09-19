@@ -158,6 +158,7 @@ export interface WalletRequestRow {
   reviewed_at: string | null;
   review_note: string | null;
   order_id: number | null;
+  formatted_order_id?: string | null;
 }
 
 export interface WalletRequestsListResponse {
@@ -308,7 +309,14 @@ export const merchantStoreApi = baseApi.injectEndpoints({
 
     createWalletRequest: build.mutation<
       { success: boolean; request?: WalletRequestRow; error?: string },
-      { storeId: string; direction: "CREDIT" | "DEBIT"; amount: number; reason: string; order_id?: number }
+      {
+        storeId: string;
+        direction: "CREDIT" | "DEBIT";
+        amount: number;
+        reason: string;
+        order_id?: number;
+        order_label?: string;
+      }
     >({
       query: ({ storeId, ...body }) => ({
         url: `/merchant/stores/${storeId}/wallet-requests`,
@@ -318,13 +326,20 @@ export const merchantStoreApi = baseApi.injectEndpoints({
       invalidatesTags: (_result, _error, { storeId }) => [
         { type: "Payment" as const, id: `WALLET-REQUESTS-${storeId}` },
         { type: "Payment" as const, id: `WALLET-REQUESTS-SUMMARY-${storeId}` },
-        { type: "Payment" as const, id: `WALLET-${storeId}` },
+        // Do NOT invalidate WALLET/LEDGER on create — balance updates only after approve.
       ],
     }),
 
     updateWalletRequestStatus: build.mutation<
       { success: boolean; status?: string; error?: string },
-      { storeId: string; requestId: number; action: "APPROVE" | "REJECT"; review_note?: string }
+      {
+        storeId: string;
+        requestId: number;
+        action: "APPROVE" | "REJECT";
+        review_note?: string;
+        ledger_remark?: string;
+        amount?: number;
+      }
     >({
       query: ({ storeId, requestId, ...body }) => ({
         url: `/merchant/stores/${storeId}/wallet-requests/${requestId}`,
@@ -336,6 +351,20 @@ export const merchantStoreApi = baseApi.injectEndpoints({
         { type: "Payment" as const, id: `WALLET-REQUESTS-SUMMARY-${storeId}` },
         { type: "Payment" as const, id: `WALLET-${storeId}` },
         { type: "Payment" as const, id: `LEDGER-${storeId}` },
+      ],
+    }),
+
+    deleteWalletRequest: build.mutation<
+      { success: boolean; deleted_id?: number; error?: string },
+      { storeId: string; requestId: number }
+    >({
+      query: ({ storeId, requestId }) => ({
+        url: `/merchant/stores/${storeId}/wallet-requests/${requestId}`,
+        method: "DELETE",
+      }),
+      invalidatesTags: (_result, _error, { storeId }) => [
+        { type: "Payment" as const, id: `WALLET-REQUESTS-${storeId}` },
+        { type: "Payment" as const, id: `WALLET-REQUESTS-SUMMARY-${storeId}` },
       ],
     }),
   }),
@@ -354,5 +383,6 @@ export const {
   useGetWalletRequestsSummaryQuery,
   useCreateWalletRequestMutation,
   useUpdateWalletRequestStatusMutation,
+  useDeleteWalletRequestMutation,
 } = merchantStoreApi;
 

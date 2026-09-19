@@ -1,6 +1,6 @@
 /**
- * Bottom nav sheet: full-bleed bar, rounded top corners,
- * connected to the screen bottom (Android gesture area is filled; tabs pad above it).
+ * Bottom nav sheet: full-bleed bar, rounded top corners, connected to screen bottom.
+ * System-nav inset is filled by the sheet; tab icons sit above that safe area.
  * Flat edge stroke only — no drop shadow on the dock.
  */
 import React, { useMemo } from "react";

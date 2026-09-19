@@ -1200,7 +1200,6 @@ export async function authRoutes(app: FastifyInstance) {
             .limit(1);
 
           let customerUserId: string;
-          let isNewSignup = false;
           if (existing.length > 0) {
             // Closed/deactivated accounts cannot be revived by logging back in.
             // Deletion is request → review → deactivate, and it is permanent.
@@ -1237,7 +1236,6 @@ export async function authRoutes(app: FastifyInstance) {
             if (!inserted) throw new Error("Failed to create customer");
             const id = inserted.id;
             customerUserId = `GM${100000 + id}`;
-            isNewSignup = true;
             await db
               .update(customers)
               .set({
@@ -1259,18 +1257,8 @@ export async function authRoutes(app: FastifyInstance) {
             })
             .where(eq(customers.customerId, customerUserId));
 
-          if (isNewSignup) {
-            try {
-              const { emitEvent } = await import("../notifications/index.js");
-              emitEvent("user.signup", {
-                userId: customerUserId,
-                role: "customer",
-                name: null,
-              });
-            } catch {
-              /* non-blocking */
-            }
-          }
+          // CUSTOMER_SIGNUP fires when profile_completed becomes true (me.routes),
+          // after the user has a name — not at OTP when no push token exists yet.
 
           const expiresInSec = 60 * 60 * 24 * 365; // 1 year
           const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
@@ -2021,16 +2009,7 @@ export async function authRoutes(app: FastifyInstance) {
           .update(customers)
           .set({ customerId: customerUserId, primaryMobileNormalized: normalizedMobile, updatedAt: new Date() })
           .where(eq(customers.id, id));
-        try {
-          const { emitEvent } = await import("../notifications/index.js");
-          emitEvent("user.signup", {
-            userId: customerUserId,
-            role: "customer",
-            name: null,
-          });
-        } catch {
-          /* non-blocking */
-        }
+        // CUSTOMER_SIGNUP deferred until profile_completed (see me.routes).
       }
 
       const normalizedMobile = phoneE164.replace(/\D/g, "");

@@ -1787,7 +1787,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: ADD_GREEN,
     borderRadius: 10,
-    paddingHorizontal: 4,
+    paddingHorizontal: 12,
     backgroundColor: QTY_FILL,
     flexGrow: 0,
     flexShrink: 0,

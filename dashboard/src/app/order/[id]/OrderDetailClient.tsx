@@ -1473,8 +1473,24 @@ export default function OrderDetailClient({
         const label = MANUAL_STATUS_LABELS[selectedStatus];
         setShowStatusModal(false);
         setOrder((prev) =>
-          prev ? { ...prev, status: selectedStatus, currentStatus: label } : prev
+          prev
+            ? {
+                ...prev,
+                status: selectedStatus,
+                currentStatus: label,
+                manualStatusUpdatedByEmail: loggedInEmail || prev.manualStatusUpdatedByEmail,
+              }
+            : prev
         );
+        setStatusHistory((prev) => [
+          {
+            toStatus: selectedStatus,
+            updatedByEmail: loggedInEmail || "unknown",
+            updatedByRole: "AGENT",
+            createdAt: new Date().toISOString(),
+          },
+          ...prev,
+        ]);
         setTimelineEntries((prev) => {
           const newEntry: OrderTimelineEntry = {
             id: -Date.now(),
@@ -2036,7 +2052,8 @@ export default function OrderDetailClient({
     !canApplyManualStatusUpdate(dispatchStage, selectedStatus);
 
   const lastStatusUpdaterEmail = order.manualStatusUpdatedByEmail?.trim() || null;
-  const hasManualStatusUpdate = !!lastStatusUpdaterEmail;
+  const hasManualStatusUpdate =
+    !!lastStatusUpdaterEmail || statusHistory.length > 0;
 
   const orderCategoryLabel =
     order.orderType === "parcel"
@@ -2297,7 +2314,9 @@ export default function OrderDetailClient({
                 className="inline-flex items-center gap-1.5 text-[12px] text-gati-text-primary cursor-pointer"
                 title="View status history"
               >
-                <span className="truncate max-w-[200px]">{lastStatusUpdaterEmail}</span>
+                <span className="truncate max-w-[200px]">
+                  {lastStatusUpdaterEmail || statusHistory[0]?.updatedByEmail || "Status history"}
+                </span>
                 <span className="ml-1 text-[10px] text-slate-500 shrink-0">▾</span>
               </button>
             )}
@@ -2415,7 +2434,7 @@ export default function OrderDetailClient({
           ) : (
           <>
           {/* Main grid of sections — food / parcel */}
-          <div className="grid items-stretch gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid items-stretch gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(300px,1.2fr)]">
             {/* Customer card */}
             <div className="min-h-0 min-w-0 h-full">
             <CustomerDetails
@@ -2485,9 +2504,15 @@ export default function OrderDetailClient({
           </>
           )}
 
-          {/* Rider + map — rider card stays md:w-1/2 even when map is hidden (delivered/cancelled) */}
-          <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-stretch">
-            <div className="w-full md:w-1/2 md:max-w-[50%] md:min-w-0 md:shrink-0">
+          {/* Rider + map — rider stays half-width when map is hidden (no full-row expand) */}
+          <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-stretch md:gap-4">
+            <div
+              className={
+                showLiveRiderMap
+                  ? "w-full min-w-0 md:flex-1 md:basis-0 md:min-w-[min(100%,22.5rem)]"
+                  : "w-full min-w-0 md:w-1/2 md:max-w-[50%] md:shrink-0"
+              }
+            >
             <RiderDetails
               className="h-full flex flex-col"
               initialRiderTimeline={riderTimelineInitial}
@@ -2556,7 +2581,7 @@ export default function OrderDetailClient({
             />
             </div>
             {showLiveRiderMap ? (
-              <div className="w-full md:w-1/2 md:min-w-0 md:shrink-0">
+              <div className="w-full min-w-0 md:flex-1 md:basis-0 md:min-w-[min(100%,22.5rem)]">
               <RiderRouteMap
                 key={`rider-map-${order.riderId ?? "unassigned"}`}
                 className="h-full flex flex-col"

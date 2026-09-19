@@ -1,10 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useCurrentSubscription, useCheckoutSubscriptionPlan } from "@/hooks/useCustomerSubscription";
 import {
   isLongDistanceBeyondMembershipFreeDelivery,
   resolveMembershipFreeDeliveryRadiusKm,
 } from "@/lib/longDistanceSheet";
+import { useLongDistanceSheetSeenStore } from "@/store/longDistanceSheetSeenStore";
 
+/**
+ * Far-away store warning — once per storeId per app session.
+ * Marks seen immediately when presenting (not only on dismiss) so remounts /
+ * focus / checkout→back cannot re-open. Checkout never mounts this hook.
+ */
 export function useLongDistanceSheet(args: {
   merchantId: string;
   distanceKm: number | null | undefined;
@@ -13,7 +19,6 @@ export function useLongDistanceSheet(args: {
   const { data: current } = useCurrentSubscription(true);
   const { checkoutPlan } = useCheckoutSubscriptionPlan();
   const [visible, setVisible] = useState(false);
-  const dismissedForMerchantRef = useRef<string | null>(null);
 
   const freeDeliveryRadiusKm = useMemo(
     () =>
@@ -45,12 +50,19 @@ export function useLongDistanceSheet(args: {
       setVisible(false);
       return;
     }
-    if (dismissedForMerchantRef.current === id) return;
+    const seenStore = useLongDistanceSheetSeenStore.getState();
+    if (seenStore.hasSeen(id)) {
+      setVisible(false);
+      return;
+    }
+    // Mark before open — prevents duplicate sheets from remount/focus races.
+    seenStore.markSeen(id);
     setVisible(true);
   }, [args.merchantId, shouldShow]);
 
   const onClose = useCallback(() => {
-    dismissedForMerchantRef.current = args.merchantId.trim() || null;
+    const id = args.merchantId.trim();
+    if (id) useLongDistanceSheetSeenStore.getState().markSeen(id);
     setVisible(false);
   }, [args.merchantId]);
 

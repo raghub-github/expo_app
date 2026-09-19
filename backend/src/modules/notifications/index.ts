@@ -43,6 +43,7 @@ export {
   pollAbandonedCartReminders,
 } from "./abandonedCartReminder.js";
 export { emitEvent, registerDomainEventHandlers, type DomainEventMap } from "./eventBus.js";
+export { maybeRetryCustomerSignupOsPush } from "./customerSignupPush.js";
 
 export type {
   NotificationRole,

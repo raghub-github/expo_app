@@ -10,7 +10,7 @@ function resetStore() {
     dockVisible: false,
     dockKind: null,
     footingOwner: "nav",
-    navExpandedByUser: false,
+    navExpandedByUser: true,
     dockBottom: 24,
   } satisfies Partial<FloatingDockUiState>);
 }
@@ -18,33 +18,30 @@ function resetStore() {
 describe("floatingDockUiStore footing", () => {
   beforeEach(() => resetStore());
 
-  it("Track appearing collapses nav to dock footing immediately", () => {
+  it("Track appearing keeps full nav footing (no HOME edge swap)", () => {
     const { setDockVisible } = useFloatingDockUiStore.getState();
     setDockVisible(true, "track");
     const s = useFloatingDockUiStore.getState();
     assert.equal(s.dockVisible, true);
     assert.equal(s.dockKind, "track");
-    assert.equal(s.footingOwner, "dock");
-    assert.equal(s.navExpandedByUser, false);
+    assert.equal(s.footingOwner, "nav");
+    assert.equal(s.navExpandedByUser, true);
   });
 
-  it("Track disappearing restores nav footing without sticky edge state", () => {
-    const { setDockVisible, expandNav } = useFloatingDockUiStore.getState();
+  it("Track disappearing clears dock and keeps nav footing", () => {
+    const { setDockVisible } = useFloatingDockUiStore.getState();
     setDockVisible(true, "track");
-    expandNav();
-    assert.equal(useFloatingDockUiStore.getState().footingOwner, "nav");
     setDockVisible(false);
     const s = useFloatingDockUiStore.getState();
     assert.equal(s.dockVisible, false);
     assert.equal(s.dockKind, null);
     assert.equal(s.footingOwner, "nav");
-    assert.equal(s.navExpandedByUser, false);
+    assert.equal(s.navExpandedByUser, true);
   });
 
-  it("stale cart→track kind swap does not flip footing if user expanded nav", () => {
-    const { setDockVisible, expandNav } = useFloatingDockUiStore.getState();
+  it("cart→track kind swap keeps nav footing", () => {
+    const { setDockVisible } = useFloatingDockUiStore.getState();
     setDockVisible(true, "cart");
-    expandNav();
     setDockVisible(true, "track");
     const s = useFloatingDockUiStore.getState();
     assert.equal(s.dockKind, "track");
@@ -62,6 +59,6 @@ describe("floatingDockUiStore footing", () => {
     const s = useFloatingDockUiStore.getState();
     assert.equal(s.dockVisible, true);
     assert.equal(s.dockKind, "track");
-    assert.equal(s.footingOwner, "dock");
+    assert.equal(s.footingOwner, "nav");
   });
 });

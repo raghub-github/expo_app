@@ -12,8 +12,9 @@ const ALLOWLIST = new Set([
   "components/AppText.tsx",
   "components/store/StoreText.tsx",
   "components/MarkdownView.tsx",
-  // Monospace rows kept as RN Text (partial)
+  // Monospace rows / emoji-safe / OTP digit faces kept as RN Text
   "app/(auth)/login.tsx",
+  "app/(auth)/otp.tsx",
   "app/location-map.tsx",
 ]);
 

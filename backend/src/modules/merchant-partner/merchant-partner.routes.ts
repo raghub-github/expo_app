@@ -4472,6 +4472,102 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
+      /** GET /merchant-partner/stores/:storeId/wallet/dues — outstanding dues snapshot. */
+      protectedApp.get<{ Params: { storeId: string } }>(
+        "/stores/:storeId/wallet/dues",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) return reply.code(401).send({ error: "merchant_required" });
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) return reply.code(400).send({ error: "invalid_store_id" });
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+          const sc = await sql`SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1`;
+          if (sc.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          const { getMerchantOutstandingDues } = await import("../../lib/merchant-wallet-dues-payment.service.js");
+          const dues = await getMerchantOutstandingDues(storeId);
+          return reply.send({ success: true, ...dues });
+        }
+      );
+
+      /** POST /merchant-partner/stores/:storeId/wallet/dues/create-payment-order */
+      protectedApp.post<{ Params: { storeId: string } }>(
+        "/stores/:storeId/wallet/dues/create-payment-order",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ success: false, error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ success: false, error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ success: false, error: "partner_not_found" });
+
+          const { createMerchantOutstandingDuesPaymentOrder } = await import(
+            "../../lib/merchant-wallet-dues-payment.service.js"
+          );
+          const result = await createMerchantOutstandingDuesPaymentOrder({
+            storeId,
+            parentId,
+            source: "merchant_app",
+          });
+          if (!result.ok) {
+            return reply.code(result.status).send({ success: false, ...result });
+          }
+          return reply.send({ success: true, ...result });
+        }
+      );
+
+      /** POST /merchant-partner/stores/:storeId/wallet/dues/verify-payment */
+      protectedApp.post<{
+        Params: { storeId: string };
+        Body: {
+          razorpay_order_id?: string;
+          razorpay_payment_id?: string;
+          razorpay_signature?: string;
+        };
+      }>(
+        "/stores/:storeId/wallet/dues/verify-payment",
+        async (req, reply) => {
+          if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+            return reply.code(401).send({ success: false, error: "merchant_required" });
+          }
+          const storeId = Number(req.params.storeId);
+          if (!Number.isInteger(storeId) || storeId < 1) {
+            return reply.code(400).send({ success: false, error: "invalid_store_id" });
+          }
+          const sql = getSql();
+          const parentId = await getPartnerParentId(sql, req.auth.sub);
+          if (parentId == null) return reply.code(404).send({ success: false, error: "partner_not_found" });
+
+          const body = req.body ?? {};
+          const razorpayOrderId = String(body.razorpay_order_id ?? "").trim();
+          const razorpayPaymentId = String(body.razorpay_payment_id ?? "").trim();
+          const razorpaySignature = String(body.razorpay_signature ?? "").trim();
+          if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+            return reply.code(400).send({ success: false, error: "payment_fields_required" });
+          }
+
+          const { verifyMerchantOutstandingDuesPayment } = await import(
+            "../../lib/merchant-wallet-dues-payment.service.js"
+          );
+          const result = await verifyMerchantOutstandingDuesPayment({
+            storeId,
+            parentId,
+            razorpayOrderId,
+            razorpayPaymentId,
+            razorpaySignature,
+            source: "merchant_app",
+          });
+          if (!result.ok) {
+            return reply.code(result.status).send({ success: false, error: result.error });
+          }
+          return reply.send({ success: true, ...result });
+        }
+      );
+
       /** GET /merchant-partner/stores/:storeId/wallet/ledger — paginated ledger. */
       protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string; offset?: string; from?: string; to?: string; direction?: string; category?: string; search?: string } }>(
         "/stores/:storeId/wallet/ledger",

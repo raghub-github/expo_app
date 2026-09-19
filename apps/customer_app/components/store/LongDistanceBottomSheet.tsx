@@ -89,6 +89,7 @@ export function LongDistanceBottomSheet({ visible, onClose }: Props) {
 
             <Pressable
               onPress={onClose}
+              android_ripple={{ color: "rgba(255,255,255,0.28)" }}
               style={({ pressed }) => [styles.ctaPress, pressed && styles.ctaPressed]}
               accessibilityRole="button"
               accessibilityLabel="Okay, got it!"
@@ -207,10 +208,19 @@ const styles = StyleSheet.create({
   ctaPress: {
     borderRadius: 12,
     overflow: "hidden",
+    ...Platform.select({
+      ios: {
+        shadowColor: GatiMitraColors.deepMintStart,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+      },
+      android: { elevation: 5 },
+    }),
   },
   ctaPressed: {
-    opacity: 0.92,
-    transform: [{ scale: 0.995 }],
+    opacity: 0.86,
+    transform: [{ scale: 0.98 }],
   },
   cta: {
     minHeight: 52,

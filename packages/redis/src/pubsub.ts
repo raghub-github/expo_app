@@ -7,11 +7,12 @@
  * `rider:42`, `store:45`. Subscribers can also use Redis pattern subscribe
  * (`psubscribe`) if they need wildcards.
  */
-import { getRedis, getRedisSubscriber } from "./client.js";
+import { ensureRedisConnected, getRedis, getRedisSubscriber } from "./client.js";
 
 export async function publish(channel: string, payload: unknown): Promise<void> {
   try {
     const redis = getRedis();
+    await ensureRedisConnected(redis);
     await redis.publish(channel, JSON.stringify(payload));
   } catch {
     /* Redis optional — realtime push skipped for this event. */
@@ -25,6 +26,7 @@ export async function subscribe(
   handler: (payload: unknown) => void,
 ): Promise<Unsubscribe> {
   const sub = getRedisSubscriber();
+  await ensureRedisConnected(sub);
   const listener = (ch: string, message: string) => {
     if (ch !== channel) return;
     try {

@@ -388,3 +388,65 @@ export function enrichLedgerEntriesWithHoldPayoutLinks<
     };
   });
 }
+
+/** Keep in sync with packages/merchant-payout resolveWalletDisplayBalance. */
+export type WalletBalanceSource = {
+  withdrawable_balance?: number | null;
+  available_balance?: number | null;
+};
+
+const WALLET_NEGATIVE_EPS = -0.005;
+
+export function isWalletBalanceNegative(amount: number | null | undefined): boolean {
+  const n = Number(amount);
+  return Number.isFinite(n) && n < WALLET_NEGATIVE_EPS;
+}
+
+export function resolveWalletDisplayBalance(
+  wallet: WalletBalanceSource | null | undefined
+): number {
+  if (!wallet) return 0;
+  const available = Number(wallet.available_balance);
+  if (Number.isFinite(available) && available < WALLET_NEGATIVE_EPS) {
+    return Math.round(available * 100) / 100;
+  }
+  const w = wallet.withdrawable_balance ?? wallet.available_balance ?? 0;
+  const n = Number(w);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
+export function resolveWithdrawableBalance(
+  wallet: WalletBalanceSource | null | undefined
+): number {
+  if (!wallet) return 0;
+  const w = wallet.withdrawable_balance ?? wallet.available_balance ?? 0;
+  const n = Number(w);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.round(n * 100) / 100);
+}
+
+export function walletBalanceCardClasses(amount: number): {
+  card: string;
+  iconWrap: string;
+  icon: string;
+  amount: string;
+  label: string;
+} {
+  if (isWalletBalanceNegative(amount)) {
+    return {
+      card: "bg-red-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow",
+      iconWrap: "p-2 rounded-lg bg-red-100 flex-shrink-0",
+      icon: "text-red-700",
+      amount: "text-xl font-bold text-red-700 mt-1 tabular-nums",
+      label: "Wallet balance",
+    };
+  }
+  return {
+    card: "bg-emerald-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow",
+    iconWrap: "p-2 rounded-lg bg-emerald-100 flex-shrink-0",
+    icon: "text-emerald-700",
+    amount: "text-xl font-bold text-gray-900 mt-1 tabular-nums",
+    label: "Withdrawable",
+  };
+}
+

@@ -11,6 +11,7 @@ export const FLASH_SALE_UNAVAILABLE = "FLASH_SALE_UNAVAILABLE";
 export const FLASH_SALE_PRICE_STALE = "FLASH_SALE_PRICE_STALE";
 export const FLASH_SALE_ALREADY_USED = "FLASH_SALE_ALREADY_USED";
 export const FLASH_SALE_ALREADY_RESERVED = "FLASH_SALE_ALREADY_RESERVED";
+export const FLASH_SALE_QTY_EXCEEDED = "FLASH_SALE_QTY_EXCEEDED";
 
 export type FlashSaleItemConfig = {
   menuItemId: string;
@@ -179,6 +180,54 @@ export function validateFlashSalePrice(
   return null;
 }
 
+/** Integer ≥ 1 from stored offer config. Missing/invalid → NaN (do not invent a cap). */
+export function parseMaxFlashQuantity(raw: unknown): number {
+  if (raw == null || raw === "") return NaN;
+  if (typeof raw === "boolean") return NaN;
+  if (typeof raw === "number") {
+    if (!Number.isInteger(raw) || raw < 1) return NaN;
+    return raw;
+  }
+  const t = String(raw).trim();
+  if (!t || !/^\d+$/.test(t)) return NaN;
+  const n = Number(t);
+  if (!Number.isInteger(n) || n < 1) return NaN;
+  return n;
+}
+
+export function validateMaxFlashQuantity(raw: unknown): string | null {
+  if (raw == null || raw === "") return null;
+  const n = parseMaxFlashQuantity(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    return "Max Flash Quantity must be a whole number of at least 1.";
+  }
+  return null;
+}
+
+/**
+ * Read max_flash_quantity from the stored offer `conditions` JSON.
+ * Unmigrated Flash Sale rows (field absent) fall back to 1 only to prevent unlimited qty.
+ * After migration / admin save, the database value is always used.
+ */
+export function resolveMaxFlashQuantity(conditions: unknown): number {
+  if (!conditions || typeof conditions !== "object" || Array.isArray(conditions)) {
+    return 1;
+  }
+  const c = conditions as Record<string, unknown>;
+  const n = parseMaxFlashQuantity(c.max_flash_quantity ?? c.maxFlashQuantity);
+  return Number.isInteger(n) && n >= 1 ? n : 1;
+}
+
+export function flashSaleQtyExceededMessage(maxFlashQuantity: number): string {
+  const n = Math.floor(Number(maxFlashQuantity));
+  if (!Number.isInteger(n) || n < 1) {
+    return "This Flash Sale quantity limit was exceeded.";
+  }
+  return n === 1
+    ? `Maximum ${n} quantity allowed for this Flash Sale item.`
+    : `Maximum ${n} quantities allowed for this Flash Sale item.`;
+}
+
 export function validateFoodFlashSaleConfig(args: {
   merchantIds: unknown;
   conditions: unknown;
@@ -192,6 +241,13 @@ export function validateFoodFlashSaleConfig(args: {
   for (const it of items) {
     const err = validateFlashSalePrice(it.flashPrice);
     if (err) return err;
+  }
+  if (args.conditions && typeof args.conditions === "object" && !Array.isArray(args.conditions)) {
+    const c = args.conditions as Record<string, unknown>;
+    if (c.max_flash_quantity != null || c.maxFlashQuantity != null) {
+      const qtyErr = validateMaxFlashQuantity(c.max_flash_quantity ?? c.maxFlashQuantity);
+      if (qtyErr) return qtyErr;
+    }
   }
   return null;
 }
@@ -249,29 +305,55 @@ export function mergeFlashSaleSnapshot(
     offerId: number;
     originalCustomerUnit: number;
     flashUnit: number;
+    /** Flash-priced units only (≤ max_flash_quantity). */
     quantity: number;
     subsidyLine: number;
+    maxFlashQuantity?: number;
+    /** Full ordered qty on the cart line (flash + regular). Defaults to `quantity`. */
+    orderedQuantity?: number;
   }
 ): Record<string, unknown> {
-  const qty = Math.max(1, Math.floor(overlay.quantity) || 1);
+  const flashQty = Math.max(1, Math.floor(overlay.quantity) || 1);
+  const orderedQty = Math.max(
+    flashQty,
+    Math.floor(Number(overlay.orderedQuantity ?? overlay.quantity) || flashQty)
+  );
+  const regularQty = Math.max(0, orderedQty - flashQty);
   const oldUnit = num(canonical.customer_item_price_unit);
   const oldLine = num(canonical.customer_item_price_line);
+  // Prefer prior ordered qty for addon residual when the menu overlay used qty=1.
+  const oldQtyHint = Math.max(
+    1,
+    Math.floor(Number(canonical.ordered_quantity ?? orderedQty) || orderedQty)
+  );
   const addonCustomer =
     Number.isFinite(oldUnit) && Number.isFinite(oldLine)
-      ? Math.max(0, round2(oldLine - oldUnit * qty))
+      ? Math.max(0, round2(oldLine - oldUnit * oldQtyHint))
       : 0;
+  const flashTotal = round2(overlay.flashUnit * flashQty);
+  const regularTotal = round2(overlay.originalCustomerUnit * regularQty);
+  const lineTotal = round2(flashTotal + regularTotal + addonCustomer);
+  const blendedUnit =
+    orderedQty > 0 ? round2((flashTotal + regularTotal) / orderedQty) : overlay.flashUnit;
   return {
     ...canonical,
     customer_strike_unit: overlay.originalCustomerUnit,
-    customer_strike_line: round2(overlay.originalCustomerUnit * qty + addonCustomer),
-    customer_item_price_unit: overlay.flashUnit,
-    customer_item_price_line: round2(overlay.flashUnit * qty + addonCustomer),
+    customer_strike_line: round2(overlay.originalCustomerUnit * orderedQty + addonCustomer),
+    customer_item_price_unit: blendedUnit,
+    customer_item_price_line: lineTotal,
     flash_sale: {
       offer_id: overlay.offerId,
       original_customer_unit: overlay.originalCustomerUnit,
       flash_price: overlay.flashUnit,
       subsidy_unit: round2(overlay.originalCustomerUnit - overlay.flashUnit),
       subsidy_line: overlay.subsidyLine,
+      max_flash_quantity: overlay.maxFlashQuantity,
+      ordered_quantity: orderedQty,
+      flash_sale_quantity: flashQty,
+      regular_quantity: regularQty,
+      flash_sale_total: flashTotal,
+      regular_total: regularTotal,
+      line_total: lineTotal,
     },
   };
 }

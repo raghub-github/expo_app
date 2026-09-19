@@ -5,7 +5,15 @@ import { STANDARD_REMARKS } from "@/lib/remarks/standardRemarks";
 import { useAuthOptional } from "@/providers/AuthProvider";
 import { syncServerSessionCookies } from "@/lib/auth/sync-server-session";
 import { isNetworkOrTransientError } from "@/lib/auth/session-errors";
-import { Bell, ClipboardCheck, MessageCircle, Pencil, UserCircle2, X } from "lucide-react";
+import {
+  Bell,
+  ChevronDown,
+  ClipboardCheck,
+  MessageCircle,
+  Pencil,
+  UserCircle2,
+  X,
+} from "lucide-react";
 import ItemsRefundModal from "./ItemsRefundModal";
 import { classifyRefund, orderRefundState } from "@/lib/orders/refund-status";
 import type { OrderItemsPayload } from "@/lib/orderItemsPayload";
@@ -21,7 +29,14 @@ import {
   shouldShowMerchantUpdatedKpt,
 } from "@/lib/orders/order-detail-display";
 import { useLiveElapsedSeconds } from "@/hooks/useLiveElapsedSeconds";
+import { usePermission } from "@/hooks/usePermission";
+import { useAppPathname } from "@/hooks/useAppSearchParams";
+import { getDashboardTypeFromPath } from "@/lib/permissions/path-mapping";
 import { OrderEtaHistorySideSheet } from "./OrderEtaHistorySideSheet";
+import {
+  ManualWalletAdjustmentSideSheet,
+  type SheetTab,
+} from "@/components/merchants/ManualWalletAdjustmentSideSheet";
 import {
   RejectionInfoEntryCard,
   RejectionInfoSideSheet,
@@ -566,7 +581,8 @@ function shouldSkipEmbeddedActivityFetch(
   activityRefreshKey: number,
   initialData: unknown[] | null | undefined
 ): boolean {
-  return activityRefreshKey === 0 && initialData != null;
+  // Only skip when parent already embedded a non-empty list. Empty [] must still fetch.
+  return activityRefreshKey === 0 && Array.isArray(initialData) && initialData.length > 0;
 }
 
 function isBenignSidebarFetchError(error: unknown): boolean {
@@ -611,6 +627,24 @@ export default function OrderRightSidebar({
   const auth = useAuthOptional();
   const authReady = auth?.authReady ?? false;
   const userEmail = auth?.user?.email ?? null;
+  const pathname = useAppPathname();
+  const { canPerformAction, isSuperAdmin, loading: permissionsLoading } = usePermission();
+  const orderDashboardType =
+    getDashboardTypeFromPath(pathname ?? "") ?? "ORDER_FOOD";
+  const hasRefundPermission =
+    isSuperAdmin ||
+    canPerformAction(orderDashboardType, "REFUND", {
+      access_point_group: "ORDER_REFUND",
+    });
+  const hasCancellationPermission =
+    isSuperAdmin ||
+    canPerformAction(orderDashboardType, "CANCEL", {
+      access_point_group: "ORDER_CANCEL",
+    });
+  // Permission gate only — order fully-refunded lock just swaps Create refund → View Item.
+  // While permissions load, keep refund CTA visible so Super Admin / agents with access don't flash-hide.
+  const canShowRefundCta =
+    permissionsLoading || (hasRefundPermission && hasCancellationPermission);
   const [remarks, setRemarks] = useState<Remark[]>(initialRemarks ?? []);
   const [remarkType, setRemarkType] = useState<string>("CUSTOMER");
   const [remarkPreset, setRemarkPreset] = useState<string>("");
@@ -658,6 +692,46 @@ export default function OrderRightSidebar({
   );
   const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
   const [showItemsRefundModal, setShowItemsRefundModal] = useState(false);
+  const [showManualAdjustment, setShowManualAdjustment] = useState(false);
+  const [walletAdjTab, setWalletAdjTabState] = useState<SheetTab>("form");
+  const [refundActionMethod, setRefundActionMethod] = useState<"refund" | "adjustment">("refund");
+  const [refundActionMenuOpen, setRefundActionMenuOpen] = useState(false);
+  const refundActionMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const syncWalletAdjUrl = useCallback((tab: SheetTab | null) => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (tab) url.searchParams.set("walletAdj", tab);
+    else url.searchParams.delete("walletAdj");
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", next);
+  }, []);
+
+  const setWalletAdjTab = useCallback(
+    (tab: SheetTab | null) => {
+      if (tab) {
+        setWalletAdjTabState(tab);
+        setShowManualAdjustment(true);
+        syncWalletAdjUrl(tab);
+      } else {
+        setShowManualAdjustment(false);
+        syncWalletAdjUrl(null);
+      }
+    },
+    [syncWalletAdjUrl]
+  );
+
+  // Restore sheet tab from URL on refresh / deep link.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = (new URLSearchParams(window.location.search).get("walletAdj") ?? "")
+      .trim()
+      .toLowerCase();
+    if (raw === "form" || raw === "request") {
+      setWalletAdjTabState(raw);
+      setShowManualAdjustment(true);
+    }
+  }, []);
 
   const openItemsModal = () => {
     onPrefetchOrderItems?.();
@@ -1118,9 +1192,29 @@ export default function OrderRightSidebar({
     };
   }, [templateMenuOpen]);
 
+  useEffect(() => {
+    if (!refundActionMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      const el = refundActionMenuRef.current;
+      if (el && !el.contains(event.target as Node)) {
+        setRefundActionMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRefundActionMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [refundActionMenuOpen]);
+
   const loadRecons = useCallback(
-    async (signal?: AbortSignal) => {
-      if (shouldSkipEmbeddedActivityFetch(activityRefreshKey, initialRecons)) {
+    async (opts?: { signal?: AbortSignal; force?: boolean }) => {
+      const signal = opts?.signal;
+      if (!opts?.force && shouldSkipEmbeddedActivityFetch(activityRefreshKey, initialRecons)) {
         return;
       }
       if (signal?.aborted) return;
@@ -1130,6 +1224,7 @@ export default function OrderRightSidebar({
         let res = await fetch(`/api/orders/${order.id}/recons`, {
           credentials: "include",
           signal,
+          cache: "no-store",
         });
         // Transient auth/DB blip under parallel sidebar loads — quiet retry, then silence.
         if (res.status === 503 && !signal?.aborted) {
@@ -1138,6 +1233,7 @@ export default function OrderRightSidebar({
             res = await fetch(`/api/orders/${order.id}/recons`, {
               credentials: "include",
               signal,
+              cache: "no-store",
             });
           }
         }
@@ -1197,7 +1293,7 @@ export default function OrderRightSidebar({
       void loadNotifications(signal);
     }, 120);
     const tRecons = window.setTimeout(() => {
-      void loadRecons(signal);
+      void loadRecons({ signal });
     }, 240);
 
     return () => {
@@ -2009,36 +2105,157 @@ export default function OrderRightSidebar({
         </dl>
       </section>
 
-      {/* Refund / view-items CTA — opens Items / Refund modal */}
+      {/* Refund / view-items CTA — permission-gated; order lock only swaps Create refund → View Item */}
+      {canShowRefundCta || order.merchantStoreId != null ? (
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
-        <button
-          type="button"
-          className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-[13px] font-medium text-white shadow-sm transition cursor-pointer ${
-            refundActionsDisabled
-              ? "bg-[#1B2B4B] hover:bg-[#152238]"
-              : "bg-emerald-500 hover:bg-emerald-600"
-          }`}
-          onPointerEnter={() => onPrefetchOrderItems?.()}
-          onClick={openItemsModal}
-        >
-          {refundActionsDisabled ? (
-            <>
-              <i className="bi bi-eye" />
-              View Item
-            </>
-          ) : (
-            <>
-              <i className="bi bi-arrow-counterclockwise" />
-              Create refund
-            </>
-          )}
-        </button>
-        {refundActionsDisabled && (
-          <p className="mt-2 text-center text-[11px] leading-snug text-slate-500">
-            Order cancelled &amp; fully refunded.
-          </p>
-        )}
+        {!canShowRefundCta && order.merchantStoreId != null ? (
+          <>
+            <button
+              type="button"
+              className="flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 text-[13px] font-medium text-white shadow-sm transition hover:bg-indigo-700 cursor-pointer"
+              onClick={() => setWalletAdjTab("form")}
+            >
+              <i className="bi bi-wallet2" aria-hidden />
+              Manual adjustment
+            </button>
+            <p className="mt-2 text-center text-[11px] leading-snug text-slate-500">
+              Submit a wallet credit or debit request for this store.
+            </p>
+          </>
+        ) : canShowRefundCta && order.merchantStoreId != null ? (
+          <div className="relative w-full" ref={refundActionMenuRef}>
+            {(() => {
+              const isAdjustment = refundActionMethod === "adjustment";
+              const primaryLabel = refundActionsDisabled ? "View Item" : "Create refund";
+              const primaryIcon = refundActionsDisabled
+                ? "bi bi-eye"
+                : "bi bi-arrow-counterclockwise";
+              const btnBg = isAdjustment
+                ? "bg-indigo-600 hover:bg-indigo-700"
+                : refundActionsDisabled
+                  ? "bg-[#1B2B4B] hover:bg-[#152238]"
+                  : "bg-emerald-500 hover:bg-emerald-600";
+              return (
+                <div
+                  className={`flex h-10 w-full overflow-hidden rounded-lg ${btnBg} text-white shadow-sm ring-1 ring-black/10`}
+                >
+                  <button
+                    type="button"
+                    onPointerEnter={() => {
+                      if (!isAdjustment) onPrefetchOrderItems?.();
+                    }}
+                    onClick={() => {
+                      if (isAdjustment) {
+                        setWalletAdjTab("form");
+                      } else {
+                        openItemsModal();
+                      }
+                    }}
+                    className="flex flex-1 items-center justify-center gap-2 px-3 text-[13px] font-medium text-white cursor-pointer"
+                    aria-label={isAdjustment ? "Manual Wallet Adjustment" : primaryLabel}
+                  >
+                    {isAdjustment ? (
+                      <i className="bi bi-wallet2" aria-hidden />
+                    ) : (
+                      <i className={primaryIcon} aria-hidden />
+                    )}
+                    <span className="whitespace-nowrap">
+                      {isAdjustment ? "Manual adjustment" : primaryLabel}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRefundActionMenuOpen((v) => !v)}
+                    className="flex h-full w-9 shrink-0 items-center justify-center border-l border-white/40 text-white cursor-pointer"
+                    aria-haspopup="listbox"
+                    aria-expanded={refundActionMenuOpen}
+                    aria-label="Open refund / adjustment options"
+                  >
+                    <ChevronDown
+                      className={`h-3.5 w-3.5 transition-transform ${
+                        refundActionMenuOpen ? "rotate-180" : ""
+                      }`}
+                    />
+                  </button>
+                </div>
+              );
+            })()}
+            {refundActionMenuOpen ? (
+              <div
+                className="absolute left-0 right-0 bottom-full z-50 mb-1 overflow-hidden rounded-md border border-indigo-100 bg-slate-50 py-1 shadow-lg ring-1 ring-black/5"
+                role="listbox"
+              >
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={refundActionMethod === "refund"}
+                  onClick={() => {
+                    setRefundActionMethod("refund");
+                    setRefundActionMenuOpen(false);
+                  }}
+                  className={`w-full px-3 py-2 text-left text-[12px] font-medium text-slate-800 cursor-pointer ${
+                    refundActionsDisabled ? "hover:bg-white" : "hover:bg-emerald-50"
+                  }`}
+                >
+                  {refundActionsDisabled ? "View Item" : "Create refund"}
+                </button>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={refundActionMethod === "adjustment"}
+                  onClick={() => {
+                    setRefundActionMethod("adjustment");
+                    setRefundActionMenuOpen(false);
+                  }}
+                  className="w-full px-3 py-2 text-left text-[12px] font-medium text-slate-800 hover:bg-indigo-50 cursor-pointer"
+                >
+                  Manual adjustment
+                </button>
+              </div>
+            ) : null}
+            {refundActionMethod === "adjustment" ? (
+              <p className="mt-2 text-center text-[11px] leading-snug text-slate-500">
+                Submit a wallet credit or debit request for this store.
+              </p>
+            ) : refundActionsDisabled ? (
+              <p className="mt-2 text-center text-[11px] leading-snug text-slate-500">
+                Order cancelled &amp; fully refunded.
+              </p>
+            ) : null}
+          </div>
+        ) : canShowRefundCta ? (
+          <>
+            <button
+              type="button"
+              className={`flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-[13px] font-medium text-white shadow-sm transition cursor-pointer ${
+                refundActionsDisabled
+                  ? "bg-[#1B2B4B] hover:bg-[#152238]"
+                  : "bg-emerald-500 hover:bg-emerald-600"
+              }`}
+              onPointerEnter={() => onPrefetchOrderItems?.()}
+              onClick={openItemsModal}
+            >
+              {refundActionsDisabled ? (
+                <>
+                  <i className="bi bi-eye" />
+                  View Item
+                </>
+              ) : (
+                <>
+                  <i className="bi bi-arrow-counterclockwise" />
+                  Create refund
+                </>
+              )}
+            </button>
+            {refundActionsDisabled ? (
+              <p className="mt-2 text-center text-[11px] leading-snug text-slate-500">
+                Order cancelled &amp; fully refunded.
+              </p>
+            ) : null}
+          </>
+        ) : null}
       </section>
+      ) : null}
 
       {/* Add remarks */}
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
@@ -2227,7 +2444,10 @@ export default function OrderRightSidebar({
           <button
             type="button"
             className="text-xs text-emerald-700 hover:text-emerald-800 cursor-pointer underline-offset-2 hover:underline"
-            onClick={() => setShowReconsModal(true)}
+            onClick={() => {
+              setShowReconsModal(true);
+              void loadRecons({ force: true });
+            }}
           >
             <OrderMixedText>{`See all (${reconsCountDisplay})`}</OrderMixedText>
           </button>
@@ -2761,6 +2981,19 @@ export default function OrderRightSidebar({
               ) : recons.length === 0 ? (
                 <div className="py-8 text-center text-xs text-slate-500">No recons available.</div>
               ) : (
+                (() => {
+                  const reconCols = recons.map((r) => {
+                    const rejectionOption = r.reasonCategory?.trim() || null;
+                    const commentText =
+                      r.comment?.trim() ||
+                      (!rejectionOption ? r.reason?.trim() : null) ||
+                      null;
+                    return { rejectionOption, commentText };
+                  });
+                  const showRejectionCol = reconCols.some((c) => !!c.rejectionOption);
+                  const showRemarkCol = reconCols.some((c) => !!c.commentText);
+
+                  return (
                 <div className="overflow-x-auto rounded-lg border border-gray-200">
                   <table className="w-max min-w-full table-auto divide-y divide-gray-200">
                     <thead>
@@ -2771,24 +3004,24 @@ export default function OrderRightSidebar({
                         <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600">
                           Date &amp; time
                         </th>
-                        <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600">
-                          Rejection option
-                        </th>
-                        <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600">
-                          Reason / comment
-                        </th>
+                        {showRejectionCol ? (
+                          <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600">
+                            Rejection option
+                          </th>
+                        ) : null}
+                        {showRemarkCol ? (
+                          <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap border-r border-gray-200 text-gray-600">
+                            Reason / comment
+                          </th>
+                        ) : null}
                         <th className="sticky top-0 z-[15] bg-gray-50 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide whitespace-nowrap text-gray-600">
                           Submitted by
                         </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200 bg-white">
-                      {recons.map((r) => {
-                        const rejectionOption = r.reasonCategory?.trim() || null;
-                        const commentText =
-                          r.comment?.trim() ||
-                          (!rejectionOption ? r.reason?.trim() : null) ||
-                          null;
+                      {recons.map((r, idx) => {
+                        const { rejectionOption, commentText } = reconCols[idx]!;
 
                         return (
                           <tr key={r.id} className="hover:bg-gray-50 transition-colors">
@@ -2804,18 +3037,22 @@ export default function OrderRightSidebar({
                             <td className="px-3 py-2 align-top whitespace-nowrap text-[11px] text-gray-900 border-r border-gray-100 orders-num">
                               {r.time}
                             </td>
-                            <td className="px-3 py-2 align-top text-[11px] text-gray-900 border-r border-gray-100 min-w-[9rem]">
-                              {rejectionOption ?? (
-                                <span className="text-gray-400">Not selected</span>
-                              )}
-                            </td>
-                            <td className="px-3 py-2 align-top text-[11px] text-gray-900 border-r border-gray-100 min-w-[10rem] max-w-[18rem]">
-                              {commentText ? (
-                                <span className="whitespace-pre-line">{commentText}</span>
-                              ) : (
-                                <span className="text-gray-400">—</span>
-                              )}
-                            </td>
+                            {showRejectionCol ? (
+                              <td className="px-3 py-2 align-top text-[11px] text-gray-900 border-r border-gray-100 min-w-[9rem]">
+                                {rejectionOption ?? (
+                                  <span className="text-gray-400">—</span>
+                                )}
+                              </td>
+                            ) : null}
+                            {showRemarkCol ? (
+                              <td className="px-3 py-2 align-top text-[11px] text-gray-900 border-r border-gray-100 min-w-[10rem] max-w-[18rem]">
+                                {commentText ? (
+                                  <span className="whitespace-pre-line">{commentText}</span>
+                                ) : (
+                                  <span className="text-gray-400">—</span>
+                                )}
+                              </td>
+                            ) : null}
                             <td className="px-3 py-2 align-top text-[11px] text-gray-900 min-w-[8.5rem]">
                               <div className="flex flex-wrap items-center gap-1.5">
                                 {r.actorEmail ? (
@@ -2834,6 +3071,8 @@ export default function OrderRightSidebar({
                     </tbody>
                   </table>
                 </div>
+                  );
+                })()
               )}
             </div>
           </div>
@@ -2854,6 +3093,21 @@ export default function OrderRightSidebar({
       refundRemainingRefundable={refundRemainingRefundable}
       onRefundCreated={onRefundCreated}
     />
+
+    {order.merchantStoreId != null ? (
+      <ManualWalletAdjustmentSideSheet
+        open={showManualAdjustment}
+        onClose={() => setWalletAdjTab(null)}
+        storeId={order.merchantStoreId}
+        orderCoreId={order.id}
+        orderLabel={
+          order.formattedOrderId?.trim() ||
+          (order.orderId ? String(order.orderId) : null)
+        }
+        sheetTab={walletAdjTab}
+        onSheetTabChange={setWalletAdjTab}
+      />
+    ) : null}
 
     <OrderEtaHistorySideSheet
       open={showEtaHistory}

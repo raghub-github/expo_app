@@ -120,6 +120,9 @@ export async function clearCustomerScopedState(
   }
 
   try {
+    // Stop in-flight authenticated requests first so logout does not spam 401s
+    // while screens are still mounted for one frame.
+    void queryClient.cancelQueries();
     // Drops every cached response — no customer-specific query key is trusted
     // across an account boundary.
     queryClient.clear();

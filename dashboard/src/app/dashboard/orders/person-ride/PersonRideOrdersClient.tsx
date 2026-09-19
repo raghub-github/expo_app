@@ -280,7 +280,7 @@ export default function PersonRideOrdersClient() {
   const totalPages = data?.totalPages ?? cachedListData?.totalPages ?? initialSnapshot?.totalPages ?? 1;
   const showTableLoading = hasMounted && ((isLoading && orders.length === 0) || searchPending);
   const [manualRefreshing, setManualRefreshing] = useState(false);
-  const isRefreshing = manualRefreshing || (hasMounted && isFetching && orders.length > 0);
+  const isRefreshing = manualRefreshing
 
   const replaceParams = useCallback(
     (patch: Record<string, string | null>) => {
@@ -420,7 +420,7 @@ export default function PersonRideOrdersClient() {
               setManualRefreshing(true);
               void Promise.resolve(refetch()).finally(() => setManualRefreshing(false));
             }}
-            disabled={isFetching && orders.length === 0}
+            disabled={manualRefreshing}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer disabled:opacity-60"
             style={{ backgroundColor: ACCENT, color: ACCENT_TEXT, borderColor: ACCENT }}
           >

@@ -597,6 +597,130 @@ app.get<{
   }
 });
 
+app.post<{ Params: { storeId: string }; Body: { source?: string } }>(
+  "/v1/internal/merchant/stores/:storeId/wallet/dues/create-payment-order",
+  async (req, reply) => {
+    const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+    if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+    const storeId = Number((req.params as { storeId: string }).storeId);
+    if (!Number.isInteger(storeId) || storeId < 1) {
+      return reply.code(400).send({ error: "invalid_store_id" });
+    }
+    const source =
+      (req.body as { source?: string } | undefined)?.source === "merchant_app"
+        ? "merchant_app"
+        : "partnersite";
+    try {
+      const { createMerchantOutstandingDuesPaymentOrder } = await import(
+        "./lib/merchant-wallet-dues-payment.service.js"
+      );
+      const result = await createMerchantOutstandingDuesPaymentOrder({
+        storeId,
+        source,
+      });
+      if (!result.ok) {
+        return reply.code(result.status).send({ success: false, ...result });
+      }
+      return reply.send({ success: true, ...result });
+    } catch (e) {
+      req.log.error({ err: e, storeId }, "internal_merchant_dues_create_failed");
+      return reply.code(500).send({ success: false, error: "dues_create_failed" });
+    }
+  },
+);
+
+app.post<{
+  Params: { storeId: string };
+  Body: {
+    razorpay_order_id?: string;
+    razorpay_payment_id?: string;
+    razorpay_signature?: string;
+    source?: string;
+  };
+}>("/v1/internal/merchant/stores/:storeId/wallet/dues/verify-payment", async (req, reply) => {
+  const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+  if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const storeId = Number((req.params as { storeId: string }).storeId);
+  if (!Number.isInteger(storeId) || storeId < 1) {
+    return reply.code(400).send({ error: "invalid_store_id" });
+  }
+  const body = (req.body || {}) as {
+    razorpay_order_id?: string;
+    razorpay_payment_id?: string;
+    razorpay_signature?: string;
+    source?: string;
+  };
+  const razorpayOrderId = String(body.razorpay_order_id ?? "").trim();
+  const razorpayPaymentId = String(body.razorpay_payment_id ?? "").trim();
+  const razorpaySignature = String(body.razorpay_signature ?? "").trim();
+  if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+    return reply.code(400).send({ success: false, error: "payment_fields_required" });
+  }
+  const source = body.source === "merchant_app" ? "merchant_app" : "partnersite";
+  try {
+    const { verifyMerchantOutstandingDuesPayment } = await import(
+      "./lib/merchant-wallet-dues-payment.service.js"
+    );
+    const result = await verifyMerchantOutstandingDuesPayment({
+      storeId,
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+      source,
+    });
+    if (!result.ok) {
+      return reply.code(result.status).send({ success: false, error: result.error });
+    }
+    return reply.send({ success: true, ...result });
+  } catch (e) {
+    req.log.error({ err: e, storeId }, "internal_merchant_dues_verify_failed");
+    return reply.code(500).send({ success: false, error: "dues_verify_failed" });
+  }
+});
+
+app.post<{
+  Params: { storeId: string };
+  Body: { razorpay_order_id?: string; source?: string };
+}>("/v1/internal/merchant/stores/:storeId/wallet/dues/settle-from-order", async (req, reply) => {
+  const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
+  if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const storeId = Number((req.params as { storeId: string }).storeId);
+  if (!Number.isInteger(storeId) || storeId < 1) {
+    return reply.code(400).send({ error: "invalid_store_id" });
+  }
+  const body = (req.body || {}) as { razorpay_order_id?: string; source?: string };
+  const razorpayOrderId = String(body.razorpay_order_id ?? "").trim();
+  if (!razorpayOrderId) {
+    return reply.code(400).send({ success: false, error: "razorpay_order_id required" });
+  }
+  const source = body.source === "merchant_app" ? "merchant_app" : "partnersite";
+  try {
+    const { settleMerchantOutstandingDuesFromOrder } = await import(
+      "./lib/merchant-wallet-dues-payment.service.js"
+    );
+    const result = await settleMerchantOutstandingDuesFromOrder({
+      storeId,
+      razorpayOrderId,
+      source,
+    });
+    if (!result.ok) {
+      return reply
+        .code("status" in result && typeof result.status === "number" ? result.status : 400)
+        .send({ success: false, ...result });
+    }
+    return reply.send({ success: true, ...result });
+  } catch (e) {
+    req.log.error({ err: e, storeId }, "internal_merchant_dues_settle_failed");
+    return reply.code(500).send({ success: false, error: "dues_settle_failed" });
+  }
+});
+
 app.post<{
   Params: { storeId: string };
   Body: { amount?: number; bank_account_id?: number; source?: string; idempotency_key?: string };

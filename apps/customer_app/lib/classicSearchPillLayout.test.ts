@@ -22,7 +22,7 @@ describe("resolveClassicSearchPillBottom", () => {
     );
   });
 
-  it("lifts above cart dock when cart owns footing", () => {
+  it("lifts above cart dock when cart floats above tab", () => {
     const bottom = resolveClassicSearchPillBottom({
       safeBottom: 0,
       resolveChromeBottom: () => 10,
@@ -32,7 +32,7 @@ describe("resolveClassicSearchPillBottom", () => {
     });
     assert.equal(
       bottom,
-      10 + CLASSIC_SEARCH_PILL_NAV_CLEARANCE + CLASSIC_SEARCH_PILL_ABOVE_CHROME_GAP + 64 + 10
+      10 + CLASSIC_SEARCH_PILL_NAV_CLEARANCE + CLASSIC_SEARCH_PILL_ABOVE_CHROME_GAP + 64 + 16
     );
   });
 });

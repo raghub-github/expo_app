@@ -17,6 +17,7 @@ export type FoodItemUnderPrice = {
     offerId: number;
     originalCustomerUnit: number;
     flashPrice: number;
+    maxFlashQuantity?: number;
   } | null;
 };
 

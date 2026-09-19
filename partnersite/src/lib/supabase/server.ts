@@ -14,7 +14,9 @@ export async function createServerSupabaseClient() {
     global: { fetch: serverFetch },
     cookies: {
       getAll() {
-        return cookieStore.getAll();
+        return cookieStore
+          .getAll()
+          .filter((c) => typeof c.value === "string" && c.value.length > 0);
       },
       setAll(cookiesToSet) {
         try {

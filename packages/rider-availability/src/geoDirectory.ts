@@ -24,7 +24,7 @@ export function deriveOnlineStatus(args: {
   locationFresh: boolean;
   hasActiveOrder: boolean;
 }): RiderOnlineStatus {
-  if (args.dutyStatus !== "ON") return "OFFLINE";
+  if (String(args.dutyStatus ?? "").trim().toUpperCase() !== "ON") return "OFFLINE";
   if (!args.locationFresh) return "STALE";
   return args.hasActiveOrder ? "BUSY" : "ONLINE";
 }
@@ -138,7 +138,7 @@ export async function queryRiderGeoDirectory(
           dl.service_types
         FROM public.duty_logs dl
         WHERE dl.rider_id = r.id
-        ORDER BY dl.timestamp DESC
+        ORDER BY dl.timestamp DESC, dl.id DESC
         LIMIT 1
       ) ld ON true
       LEFT JOIN LATERAL (

@@ -17,9 +17,17 @@ const clear =
   process.env.EXPO_CLEAR_CACHE === "1" ||
   // npm start --clear sometimes lands here via npm_config_clear
   process.env.npm_config_clear === "true" ||
-  process.env.npm_config_clear === "";
+  process.env.npm_config_clear === "" ||
+  // `npm start -c` is swallowed by npm; it still sets npm_config_c.
+  process.env.npm_config_c === "true" ||
+  process.env.npm_config_c === "";
 
-const expoArgs = ["expo", "start", "--port", process.env.EXPO_PORT || "8081"];
+const expoArgs = [
+  "expo",
+  "start",
+  "--port",
+  process.env.EXPO_PORT || "8081",
+];
 if (clear) expoArgs.push("--clear");
 for (const a of args) {
   if (a === "-c" || a === "--clear") continue;
@@ -37,6 +45,8 @@ const env = {
   NODE_OPTIONS: nodeOptions,
   METRO_MAX_WORKERS: process.env.METRO_MAX_WORKERS || "1",
   EXPO_NO_TELEMETRY: "1",
+  // Prevent a browser tab from hitting /_expo/loading and web-bundling the rider app.
+  BROWSER: "none",
   // Default: no file-map disk cache on Windows (EMFILE on fs/promises writes).
   METRO_NO_FILEMAP_CACHE:
     process.env.METRO_NO_FILEMAP_CACHE != null

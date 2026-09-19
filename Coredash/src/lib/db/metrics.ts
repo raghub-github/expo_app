@@ -1339,6 +1339,8 @@ export async function fetchOrders(periodRaw: string | null) {
               customer_name: string | null;
               customer_mobile: string | null;
               customer_cc: string | null;
+              customer_address: string | null;
+              referred_by_name: string | null;
               store_name: string | null;
               rider_name: string | null;
               created_at: Date | string;
@@ -1358,11 +1360,61 @@ export async function fetchOrders(periodRaw: string | null) {
               c.full_name AS customer_name,
               c.primary_mobile AS customer_mobile,
               c.primary_mobile_country_code AS customer_cc,
+              COALESCE(
+                NULLIF(
+                  TRIM(BOTH ', ' FROM CONCAT_WS(', ',
+                    NULLIF(TRIM(ca.address_line1), ''),
+                    NULLIF(TRIM(ca.address_line2), ''),
+                    NULLIF(TRIM(ca.landmark), ''),
+                    NULLIF(TRIM(ca.city), ''),
+                    NULLIF(TRIM(ca.state), ''),
+                    NULLIF(TRIM(ca.postal_code), '')
+                  )),
+                  ''
+                ),
+                NULLIF(TRIM(COALESCE(NULLIF(oc.drop_address_normalized, ''), oc.drop_address_raw)), ''),
+                NULLIF(
+                  TRIM(BOTH ', ' FROM CONCAT_WS(', ',
+                    NULLIF(TRIM(c.address_line1), ''),
+                    NULLIF(TRIM(c.address_line2), ''),
+                    NULLIF(TRIM(c.city), ''),
+                    NULLIF(TRIM(c.state), ''),
+                    NULLIF(TRIM(c.pincode), '')
+                  )),
+                  ''
+                )
+              ) AS customer_address,
+              COALESCE(NULLIF(TRIM(ref.full_name), ''), NULLIF(TRIM(c.referred_by), '')) AS referred_by_name,
               ms.store_name,
               r.name AS rider_name,
               oc.created_at
             FROM orders_core oc
             LEFT JOIN customers c ON c.id = oc.customer_id
+            LEFT JOIN customers ref ON (
+              (c.referrer_customer_id IS NOT NULL AND ref.id = c.referrer_customer_id)
+              OR (
+                c.referrer_customer_id IS NULL
+                AND NULLIF(TRIM(c.referred_by), '') IS NOT NULL
+                AND UPPER(ref.referral_code) = UPPER(TRIM(c.referred_by))
+              )
+            )
+            LEFT JOIN LATERAL (
+              SELECT
+                ca.address_line1,
+                ca.address_line2,
+                ca.landmark,
+                ca.city,
+                ca.state,
+                ca.postal_code
+              FROM customer_addresses ca
+              WHERE ca.customer_id = c.id
+              ORDER BY
+                COALESCE(ca.is_default, false) DESC,
+                COALESCE(ca.is_last_used, false) DESC,
+                ca.last_used_at DESC NULLS LAST,
+                ca.created_at DESC
+              LIMIT 1
+            ) ca ON TRUE
             LEFT JOIN merchant_stores ms ON ms.id = oc.merchant_store_id
             LEFT JOIN riders r ON r.id = oc.rider_id
             WHERE oc.created_at >= ${from}::timestamptz AND oc.created_at < ${to}::timestamptz
@@ -1488,6 +1540,8 @@ export async function fetchOrders(periodRaw: string | null) {
       gst: num(r.gst),
       customer: str(r.customer_name) || "—",
       customerPhone: formatCustomerMobile(str(r.customer_mobile), r.customer_cc),
+      customerAddress: str(r.customer_address) || null,
+      referredByName: str(r.referred_by_name) || null,
       store: str(r.store_name) || "—",
       rider: str(r.rider_name) || "—",
       createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : str(r.created_at),
@@ -1724,6 +1778,8 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
             gmitra_plus_active: boolean | null;
             profile_image_url: string | null;
             referral_code: string | null;
+            referred_by: string | null;
+            referred_by_name: string | null;
             preferred_language: string | null;
             wallet: number;
             wallet_locked: number;
@@ -1755,6 +1811,8 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
             c.gmitra_plus_active,
             c.profile_image_url,
             c.referral_code,
+            c.referred_by,
+            COALESCE(NULLIF(TRIM(ref.full_name), ''), NULLIF(TRIM(c.referred_by), '')) AS referred_by_name,
             c.preferred_language,
             COALESCE(c.wallet_balance, 0)::float AS wallet,
             COALESCE(c.wallet_locked_amount, 0)::float AS wallet_locked,
@@ -1783,6 +1841,14 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
             c.created_at,
             c.created_via
           FROM customers c
+          LEFT JOIN customers ref ON (
+            (c.referrer_customer_id IS NOT NULL AND ref.id = c.referrer_customer_id)
+            OR (
+              c.referrer_customer_id IS NULL
+              AND NULLIF(TRIM(c.referred_by), '') IS NOT NULL
+              AND UPPER(ref.referral_code) = UPPER(TRIM(c.referred_by))
+            )
+          )
           WHERE c.deleted_at IS NULL
             AND (c.customer_id = ${customerId} OR c.id::text = ${customerId})
           LIMIT 1
@@ -1960,10 +2026,27 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
   if (!profile) throw new Error("Customer not found");
 
   const active = activeRows[0] ?? null;
-  const address = [str(profile.address_line1), str(profile.address_line2), str(profile.city), str(profile.state), str(profile.pincode)]
+  const selectedAddressRow = addressRows[0] ?? null;
+  const selectedAddress = selectedAddressRow
+    ? [str(selectedAddressRow.address_line1), str(selectedAddressRow.address_line2), str(selectedAddressRow.landmark), str(selectedAddressRow.city), str(selectedAddressRow.state), str(selectedAddressRow.postal_code)]
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .join(", ")
+    : "";
+  const profileAddress = [str(profile.address_line1), str(profile.address_line2), str(profile.city), str(profile.state), str(profile.pincode)]
     .map((s) => s.trim())
     .filter(Boolean)
     .join(", ");
+  const address = selectedAddress || profileAddress;
+  const displayCity = selectedAddressRow
+    ? str(selectedAddressRow.city) || str(profile.city) || "—"
+    : str(profile.city) || "—";
+  const displayState = selectedAddressRow
+    ? str(selectedAddressRow.state) || str(profile.state) || "—"
+    : str(profile.state) || "—";
+  const displayPincode = selectedAddressRow
+    ? str(selectedAddressRow.postal_code) || str(profile.pincode)
+    : str(profile.pincode);
 
   const derivedLastOrder =
     profile.last_order_at instanceof Date
@@ -1989,15 +2072,17 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
       email: str(profile.email) || "—",
       mobile: formatCustomerMobile(profile.primary_mobile, profile.country_code),
       status: str(profile.account_status),
-      city: str(profile.city) || "—",
-      state: str(profile.state) || "—",
-      pincode: str(profile.pincode),
+      city: displayCity,
+      state: displayState,
+      pincode: displayPincode,
       address: address || "—",
       risk: str(profile.risk_flag) || "LOW",
       trustScore: profile.trust_score == null ? null : num(profile.trust_score),
       plus: Boolean(profile.gmitra_plus_active),
       avatarUrl: resolveSelfieUrl(str(profile.profile_image_url)) || null,
       referralCode: str(profile.referral_code) || null,
+      referredBy: str(profile.referred_by) || null,
+      referredByName: str(profile.referred_by_name) || null,
       language: str(profile.preferred_language) || "en",
       wallet: num(profile.wallet),
       walletLocked: num(profile.wallet_locked),

@@ -377,6 +377,37 @@ describe("buildSettlementBreakdownFromCtmRows", () => {
     assert.equal(b.merchantGross, 96);
   });
 
+  it("v2 keeps packaging at full billing packaging_fee (no commission reverse-scale)", () => {
+    // Regression: line nets 682 + packaging 24 must stay 706 at 15% commission —
+    // v1-style ×0.85 on packaging alone produced 702 and PartnerSite "rebalanced"
+    // the item subtotal down to 678.
+    const rows: CtmRow[] = [
+      { gross: 99, disc: 0, offerType: "NONE", net: 99, calculationVersion: 2 },
+      { gross: 69, disc: 0, offerType: "NONE", net: 69, calculationVersion: 2 },
+      { gross: 236, disc: 0, offerType: "NONE", net: 236, calculationVersion: 2 },
+      { gross: 278, disc: 0, offerType: "NONE", net: 278, calculationVersion: 2 },
+    ];
+    const billingSnapshot = { packaging_fee: 24 };
+    const b = buildSettlementBreakdownFromCtmRows(rows, billingSnapshot, 15);
+    assert.equal(b.calculationVersion, 2);
+    assert.equal(b.itemTotal, 682);
+    assert.equal(b.packagingCharge, 24);
+    assert.equal(b.merchantGross, 706);
+  });
+
+  it("v1 still reverse-scales packaging when calculationVersion is absent", () => {
+    const rows: CtmRow[] = [
+      { gross: 682, disc: 0, offerType: "NONE" },
+    ];
+    const billingSnapshot = { packaging_fee: 24 };
+    const b = buildSettlementBreakdownFromCtmRows(rows, billingSnapshot, 15);
+    assert.equal(b.calculationVersion, 1);
+    // merchantRupee rounds: 24×0.85=20.4→20; 682×0.85=579.7→580
+    assert.equal(b.packagingCharge, 20);
+    assert.equal(b.itemTotal, 580);
+    assert.equal(b.merchantGross, 600);
+  });
+
   it("high quantity / large discount never drives merchantGross negative", () => {
     const rows: CtmRow[] = [{ gross: 500, disc: 500, offerType: "BOOST" }];
     const b = buildSettlementBreakdownFromCtmRows(rows, null, 0);

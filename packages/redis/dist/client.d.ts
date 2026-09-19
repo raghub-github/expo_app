@@ -7,6 +7,8 @@ export declare function isRedisConfigured(): boolean;
  * Defaults to true in non-production unless REDIS_OPTIONAL=false.
  */
 export declare function isRedisOptional(): boolean;
+/** ioredis lazyConnect leaves status "wait" until connect() — commands then throw. */
+export declare function ensureRedisConnected(instance: RedisInstance): Promise<void>;
 export declare function getRedis(): RedisInstance;
 /**
  * A dedicated subscriber connection. Redis pub/sub requires a separate

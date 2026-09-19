@@ -647,14 +647,14 @@ body.mx-no-page-scroll .mx-main-scroll {
   font-weight: 600;
 }
 .auth-register-page .auth-num-bold {
-  font-family: var(--font-auth-lora), Georgia, "Times New Roman", serif !important;
+  font-family: var(--font-site-lora, var(--font-auth-lora)), Georgia, "Times New Roman", serif !important;
   font-weight: 700 !important;
   font-variant-numeric: tabular-nums;
 }
 .auth-register-page label,
 .auth-register-page h1,
 .auth-register-page button {
-  font-family: var(--font-auth-lora), Georgia, "Times New Roman", serif;
+  font-family: var(--font-site-lora, var(--font-auth-lora)), Georgia, "Times New Roman", serif;
 }
 
 /* Incoming order accept modal — Lora (copy) + Poppins (digits) */

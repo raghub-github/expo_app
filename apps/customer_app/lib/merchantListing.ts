@@ -5,7 +5,6 @@
 
 import type { MerchantSummary } from "@/services/merchant.service";
 import type { LiveStatus } from "@/store/storeStatusStore";
-import { toTimestamp } from "@/lib/storeScheduleUi";
 
 export type MerchantListSort = "default" | "rating" | "distance";
 export type DeliveryFilter = "any" | "30" | "45" | "60";
@@ -25,17 +24,16 @@ export function resolveMerchantLiveStatus(
   return statusMap[merchant.id] ?? apiStatus ?? fromIsOpen ?? "CLOSED";
 }
 
-/** Same open/closed the list badge uses — live flag plus nextCloseAt / nextOpenAt. */
+/** Same open/closed the list badge uses — live flag is authoritative. */
 export function isMerchantCurrentlyOpen(
   merchant: Pick<MerchantSummary, "id" | "liveStatus" | "isOpen" | "nextOpenAt" | "nextCloseAt">,
   statusMap: Record<string, LiveStatus | undefined>,
-  nowMs: number = Date.now()
+  _nowMs: number = Date.now()
 ): boolean {
-  const live = resolveMerchantLiveStatus(merchant, statusMap);
-  if (live !== "OPEN") return false;
-  const nextCloseTs = toTimestamp(merchant.nextCloseAt);
-  if (nextCloseTs != null && nextCloseTs <= nowMs) return false;
-  return true;
+  // Trust live/realtime status. Do NOT second-guess with nextCloseAt — that field
+  // can lag the schedule tick and wrongly hide stores that are still OPEN on the API
+  // (empty "Open Now" list while closed cards still painted from a stale cache).
+  return resolveMerchantLiveStatus(merchant, statusMap) === "OPEN";
 }
 
 export type MerchantListingFilters = {
@@ -151,7 +149,7 @@ export function merchantListingStoreCountLabel(
   const total = merchants.length;
   if (total === 0) return "0 stores";
   if (!openNow) return `${total} ${total === 1 ? "store" : "stores"}`;
-  const open = merchants.filter((m) => resolveMerchantLiveStatus(m, statusMap) === "OPEN").length;
+  const open = merchants.filter((m) => isMerchantCurrentlyOpen(m, statusMap)).length;
   const closed = total - open;
   if (closed > 0) {
     return `${open} open · ${closed} closed`;
@@ -164,7 +162,7 @@ export function openRestaurantsDeliveringLabel(
   merchants: MerchantSummary[],
   statusMap: Record<string, LiveStatus | undefined>
 ): string {
-  const open = merchants.filter((m) => resolveMerchantLiveStatus(m, statusMap) === "OPEN").length;
+  const open = merchants.filter((m) => isMerchantCurrentlyOpen(m, statusMap)).length;
   if (open === 0) return "NO RESTAURANTS OPEN NEAR YOU";
   return `${open} RESTAURANT${open === 1 ? "" : "S"} DELIVERING TO YOU`;
 }

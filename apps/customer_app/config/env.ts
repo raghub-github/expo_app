@@ -330,9 +330,22 @@ export function isCustomerWsEnabled(): boolean {
 }
 
 /** REST (:3000) and ws-gateway (:4100) are separate services in local dev. */
+function healStaleLanWsUrl(url: string): string {
+  if (!__DEV__) return url;
+  try {
+    const asHttp = url.replace(/^wss:/i, "https:").replace(/^ws:/i, "http:");
+    const healed = healStaleLanApiUrl(asHttp);
+    const parsed = new URL(healed);
+    parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+    return parsed.origin;
+  } catch {
+    return url;
+  }
+}
+
 export function resolveWsBaseUrl(apiBaseUrl: string): string {
   const fromEnv = process.env.EXPO_PUBLIC_WS_BASE_URL?.trim();
-  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+  if (fromEnv) return healStaleLanWsUrl(fromEnv.replace(/\/+$/, ""));
 
   try {
     const parsed = new URL(apiBaseUrl);
@@ -341,7 +354,7 @@ export function resolveWsBaseUrl(apiBaseUrl: string): string {
       parsed.port = wsPort;
     }
     parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
-    return parsed.origin;
+    return healStaleLanWsUrl(parsed.origin);
   } catch {
     return __DEV__ ? "ws://localhost:4100" : "wss://ws.gatimitra.com";
   }

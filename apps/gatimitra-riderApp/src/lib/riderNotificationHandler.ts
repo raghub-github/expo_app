@@ -19,8 +19,18 @@ export async function installRiderForegroundNotificationHandler(): Promise<void>
         const data = (notification?.request?.content?.data ?? {}) as Record<string, unknown>;
         const isDispatch = isRiderDispatchOfferPushData(data);
         const appActive = AppState.currentState === "active";
-        // Dispatch: always present in OS tray. Mute OS only while open (JS modal owns sound).
-        const suppressOsSound = isDispatch && appActive;
+        let nativeOwns = false;
+        if (isDispatch) {
+          try {
+            const { isNativeOrderAlertAvailable } = await import("@gatimitra/expo-push-kit");
+            nativeOwns = isNativeOrderAlertAvailable();
+          } catch {
+            nativeOwns = false;
+          }
+        }
+        // Dispatch: always present in OS tray. Mute OS while native FGS owns
+        // audio, or while the rider is in the app (JS modal fallback).
+        const suppressOsSound = nativeOwns || (isDispatch && appActive);
         return {
           shouldShowAlert: true,
           shouldPlaySound: !suppressOsSound,

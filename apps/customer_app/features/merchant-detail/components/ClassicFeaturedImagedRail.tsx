@@ -98,24 +98,31 @@ function FeaturedRailCard({
           onPress={() => onItemPress(item)}
           style={[styles.imagePressBottomLeft, { height: dockH, right: dockW }]}
         />
-        {/* Always mount when in stock — on-image so meta cannot cover the +. */}
-        {!out ? (
-          <View style={styles.addOnImage} pointerEvents="box-none" collapsable={false}>
-            <StoreMenuInstantCartControl
-              itemKey={`${merchantId}:${item.listRowKey ?? item.id}`}
-              merchantId={merchantId}
-              quantity={cartQty}
-              disabled={isStoreClosed}
-              size="circle"
-              allowOptimisticAdd={!isCustomisable}
-              imageCornerCutout
-              onAdd={() => onAdd(item)}
-              onIncrement={() => onIncrement(item.id, item.menuItemId)}
-              onDecrement={() => onDecrement(item.id, item.menuItemId)}
-              accessibilityLabel={`${item.name} quantity`}
-            />
-          </View>
-        ) : null}
+        <View style={styles.addOnImage} pointerEvents="box-none" collapsable={false}>
+          <StoreMenuInstantCartControl
+            itemKey={`${merchantId}:${item.listRowKey ?? item.id}`}
+            merchantId={merchantId}
+            quantity={out && item.inStock === false ? 0 : cartQty}
+            disabled={out}
+            soldOut={item.inStock === false && !isStoreClosed}
+            size="circle"
+            allowOptimisticAdd={!isCustomisable && !out}
+            imageCornerCutout
+            onAdd={() => {
+              if (out) return;
+              onAdd(item);
+            }}
+            onIncrement={() => {
+              if (out) return;
+              onIncrement(item.id, item.menuItemId);
+            }}
+            onDecrement={() => {
+              if (out) return;
+              onDecrement(item.id, item.menuItemId);
+            }}
+            accessibilityLabel={`${item.name} quantity`}
+          />
+        </View>
       </View>
       <View style={styles.meta}>
         <TouchableOpacity activeOpacity={0.92} onPress={() => onItemPress(item)}>

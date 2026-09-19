@@ -173,10 +173,20 @@ export function merchantBillPartsFromItems(
   const discount = pricing.discount ?? 0;
   const computed = menuRupee(Math.max(0, itemsLineTotal + packaging - discount));
   const frozen = Number(pricing.total);
+  const fromLines = menuRupee(itemsLineTotal);
+  const reconstructed = menuRupee(Math.max(0, fromLines + packaging - discount));
+  // When CTM/catalog line amounts are present, line sum + packaging is authoritative.
+  // Prefer reconstructed over a drifted frozen total (do NOT invent a fake subtotal
+  // by back-solving from the wrong frozen total).
   const total =
-    Number.isFinite(frozen) && frozen > 0 ? menuRupee(frozen) : computed;
-  // Frozen CTM is SSOT. Catalog line sums must not drift from that total.
-  const itemsSubtotal = reconcileItemsSubtotal({
+    fromLines > 0.005 && reconstructed > 0.005
+      ? Number.isFinite(frozen) && frozen > 0 && Math.abs(reconstructed - frozen) <= 0.5
+        ? menuRupee(frozen)
+        : reconstructed
+      : Number.isFinite(frozen) && frozen > 0
+        ? menuRupee(frozen)
+        : computed;
+  const itemsSubtotal = fromLines > 0.005 ? fromLines : reconcileItemsSubtotal({
     lineSum: itemsLineTotal,
     packaging,
     discount,

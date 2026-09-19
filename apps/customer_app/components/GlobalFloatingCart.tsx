@@ -15,8 +15,6 @@ import { useRouter, useSegments, usePathname } from "expo-router";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { Ionicons } from "@expo/vector-icons";
 import Animated, {
-  SlideInLeft,
-  SlideOutLeft,
   FadeIn,
   Easing,
 } from "react-native-reanimated";
@@ -36,10 +34,13 @@ import { closedStoreCtaCopy, getOpenSoonState } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { FloatingOrderTrackingPill } from "@/components/orders/FloatingOrderTrackingPill";
 import { isTerminalOrderStatus } from "@/lib/customer-order-status-display";
-import { EdgePeekTab } from "@/components/EdgePeekTab";
 import { FLOATING_EDGE_TAB_GAP } from "@/components/FloatingEdgeChrome";
 import { StoreText } from "@/components/store/StoreText";
-import { resolveCustomerFloatingChromeBottom, PARCEL_TRACK_ABOVE_LEGAL_LIFT, FLOATING_CART_BAR_HEIGHT } from "@/constants/layout";
+import {
+  resolveFloatingCartAboveTabBottom,
+  PARCEL_TRACK_ABOVE_LEGAL_LIFT,
+  FLOATING_CART_BAR_HEIGHT,
+} from "@/constants/layout";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { prefetchSubscriptionPlans } from "@/lib/subscriptionCache";
 import { useAuthStore } from "@/store/authStore";
@@ -550,9 +551,9 @@ export function GlobalFloatingCart() {
   /** Prefer CART label when cart is showing; TRACK when only live orders. */
   const dockKind = showFloatingFoodCart ? "cart" : showActiveOrderTracking ? "track" : null;
 
-  // Same bottom Y as CustomerTabBar — Track/cart must not hop when they replace the capsule.
+  // Sit above the full tab bar (edge peeks removed — Home/Food/Orders/Profile stay visible).
   const bottomOffset =
-    resolveCustomerFloatingChromeBottom(insets.bottom) +
+    resolveFloatingCartAboveTabBottom(insets.bottom) +
     // Courier: sit above prohibited-items + T&Cs footer, not on top of it.
     (isParcelServiceHome && showActiveOrderTracking ? PARCEL_TRACK_ABOVE_LEGAL_LIFT : 0);
 
@@ -562,9 +563,6 @@ export function GlobalFloatingCart() {
     store.setDockVisible(visible, dockKind);
     if (visible) {
       store.setDockBottom(bottomOffset);
-      if (!store.navExpandedByUser && store.footingOwner !== "dock") {
-        store.expandDock();
-      }
     }
   }, [visible, dockKind, bottomOffset]);
 
@@ -573,10 +571,6 @@ export function GlobalFloatingCart() {
       useFloatingDockUiStore.getState().setDockVisible(false);
     };
   }, []);
-
-  // Subscribe after sync publish so this render uses the latest footing.
-  const footingOwner = useFloatingDockUiStore((s) => s.footingOwner);
-  const expandNav = useFloatingDockUiStore((s) => s.expandNav);
 
   const itemLabel = totalCount === 1 ? "1 item" : `${totalCount} items`;
 
@@ -618,44 +612,23 @@ export function GlobalFloatingCart() {
     return rows;
   }, [hasCart, itemLabel, merchantId, merchantName, resolvedThumbUri, stashedCarts]);
 
-  // Nav owns footing → CustomerTabBar shows CART/TRACK peek (no full bar).
-  if (!visible || footingOwner !== "dock") return null;
+  // Nav always stays; cart/track float above it.
+  if (!visible) return null;
 
   const floatDockStyle = {
     bottom: bottomOffset,
   } as const;
 
-  // Soft fade on the cart — edge owns the L/R slide (no double SlideIn jerk).
+  // Soft fade on the cart — no HOME edge peek.
   const cartFadeIn = FadeIn.duration(220).easing(Easing.out(Easing.cubic));
-  const edgeSlideIn = SlideInLeft.duration(280).easing(Easing.out(Easing.cubic));
-  const edgeSlideOut = SlideOutLeft.duration(220).easing(Easing.in(Easing.cubic));
   const compact = isCartCompact;
-  /** HOME edge — same height as cart bar; hidden while Remove is expanded. */
+  /** Full-width cart/track row — no left HOME edge. */
   const withHomeEdge = (main: ReactNode) => (
     <View
-      style={[
-        styles.footRow,
-        floatDockStyle,
-        cartRemoveExpanded && styles.footRowNoEdge,
-      ]}
+      style={[styles.footRow, styles.footRowNoEdge, floatDockStyle]}
       pointerEvents="box-none"
       collapsable={false}
     >
-      {!cartRemoveExpanded ? (
-        <Animated.View
-          key="home-edge"
-          entering={edgeSlideIn}
-          exiting={edgeSlideOut}
-          collapsable={false}
-        >
-          <EdgePeekTab
-            side="left"
-            label="HOME"
-            height={FLOATING_CART_BAR_HEIGHT}
-            onPress={expandNav}
-          />
-        </Animated.View>
-      ) : null}
       <Animated.View
         entering={cartFadeIn}
         style={styles.footMain}
@@ -694,7 +667,9 @@ export function GlobalFloatingCart() {
         <Pressable
           style={styles.gmLeftPress}
           onPress={handleViewMenuPress}
-          hitSlop={4}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${merchantName ?? "restaurant"} menu`}
           android_ripple={{ color: "rgba(5, 150, 105, 0.08)" }}
         >
           <View style={[styles.gmThumb, compact && styles.gmThumbCompact]}>
@@ -732,10 +707,14 @@ export function GlobalFloatingCart() {
         <Pressable
           onPress={handleCartPress}
           disabled={isCartStoreClosed}
-          style={[
+          android_ripple={
+            isCartStoreClosed ? undefined : { color: "rgba(255,255,255,0.28)" }
+          }
+          style={({ pressed }) => [
             styles.gmViewCartCta,
             compact && styles.gmViewCartCtaCompact,
             isCartStoreClosed && styles.gmViewCartCtaClosed,
+            pressed && !isCartStoreClosed && styles.gmViewCartCtaPressed,
           ]}
           accessibilityRole="button"
           accessibilityState={{ disabled: isCartStoreClosed }}
@@ -775,7 +754,7 @@ export function GlobalFloatingCart() {
             accessibilityRole="button"
             accessibilityLabel={cartRemoveExpanded ? "Cancel remove cart" : "Remove cart"}
           >
-            <Ionicons name="close" size={compact ? 18 : 20} color={dockDark ? DiscoveryColors.textMuted : GatiMitraColors.textSecondary} />
+            <Ionicons name="close" size={compact ? 16 : 18} color={dockDark ? DiscoveryColors.textMuted : GatiMitraColors.textSecondary} />
           </Pressable>
           {cartRemoveExpanded ? (
             <Pressable
@@ -1130,21 +1109,20 @@ const styles = StyleSheet.create({
   overlayHost: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 80,
-    elevation: 80,
   },
-  /** Dining-style: edge peeks half off-screen; cart keeps its own UI unchanged. */
+  /** Cart/track row above the tab bar — no elevation shadow. */
   footRow: {
     position: "absolute",
     left: 0,
     right: 16,
     zIndex: 80,
-    elevation: 80,
     flexDirection: "row",
-    // Bottom-align so Home edge + cart bar share one baseline even when
-    // the cart shell is taller (All carts tab paddingTop).
     alignItems: "flex-end",
     gap: 6,
     overflow: "visible",
+  },
+  footEdgeSlot: {
+    zIndex: 5,
   },
   /** Remove expanded — give the cart full width so text does not wrap under the edge. */
   footRowNoEdge: {
@@ -1153,6 +1131,7 @@ const styles = StyleSheet.create({
   footMain: {
     flex: 1,
     minWidth: 0,
+    zIndex: 1,
     alignItems: "stretch",
     justifyContent: "flex-end",
   },
@@ -1210,15 +1189,6 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingVertical: 5,
     paddingHorizontal: 12,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 6,
-      },
-      android: { elevation: 3 },
-    }),
   },
   allCartsTabDark: {
     backgroundColor: DiscoveryColors.cardElevated,
@@ -1241,15 +1211,7 @@ const styles = StyleSheet.create({
     gap: 4,
     borderWidth: 1,
     borderColor: FLOAT_BAR_BORDER,
-    ...Platform.select({
-      android: { elevation: 20 },
-      ios: {
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.18,
-        shadowRadius: 16,
-      },
-    }),
+    // Flat — no box shadow / elevation (matches pre-shadow cart chrome).
   },
   gmBarDark: {
     backgroundColor: DiscoveryColors.card,
@@ -1263,12 +1225,14 @@ const styles = StyleSheet.create({
   },
   gmLeftPress: {
     flex: 1,
+    alignSelf: "stretch",
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     minWidth: 0,
+    minHeight: FLOATING_CART_BAR_HEIGHT,
     paddingVertical: 2,
-    paddingRight: 4,
+    paddingRight: 8,
   },
   gmThumb: {
     width: 44,
@@ -1334,6 +1298,10 @@ const styles = StyleSheet.create({
   gmViewCartCtaClosed: {
     opacity: 0.58,
   },
+  gmViewCartCtaPressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.98 }],
+  },
   dockPillClosed: {
     opacity: 0.58,
   },
@@ -1371,9 +1339,9 @@ const styles = StyleSheet.create({
     fontSize: 9,
   },
   gmCloseBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: "rgba(255,255,255,0.85)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: FLOAT_BAR_BORDER,
@@ -1385,9 +1353,9 @@ const styles = StyleSheet.create({
     borderColor: DiscoveryColors.border,
   },
   gmCloseBtnCompact: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
   },
   gmRightActions: {
     flexDirection: "row",

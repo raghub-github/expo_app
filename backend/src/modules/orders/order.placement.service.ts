@@ -643,6 +643,7 @@ async function persistOfferSnapshots(
           (err && typeof err === "object" &&
             ((err as { code?: string }).code === "FLASH_SALE_UNAVAILABLE" ||
               (err as { code?: string }).code === "FLASH_SALE_PRICE_STALE" ||
+              (err as { code?: string }).code === "FLASH_SALE_QTY_EXCEEDED" ||
               (err as { code?: string }).code === "FLASH_SALE_ALREADY_USED")) ||
           (err instanceof Error && err.name === "FlashSaleRedemptionError")
         ) {

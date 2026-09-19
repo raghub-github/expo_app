@@ -74,6 +74,14 @@ function markUnavailable(): void {
   _lastConnectAttemptMs = Date.now();
 }
 
+/** ioredis lazyConnect leaves status "wait" until connect() — commands then throw. */
+export async function ensureRedisConnected(instance: RedisInstance): Promise<void> {
+  if (instance.status === "ready") return;
+  if (instance.status === "wait") {
+    await instance.connect();
+  }
+}
+
 function shouldAttemptConnect(): boolean {
   if (!_redisMarkedUnavailable) return true;
   return Date.now() - _lastConnectAttemptMs >= UNAVAILABLE_RETRY_MS;

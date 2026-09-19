@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   buildItemOfferDisplayMap,
+  computeFlashSaleSplitPricing,
   flashSaleItemDisplay,
+  flashSaleItemQtyLimitMessage,
   parseMenuFlashSale,
   resolveMenuOfferPriceDisplay,
 } from "./itemOfferDisplay";
@@ -23,6 +25,61 @@ describe("Flash Sale menu display", () => {
     assert.equal(view.strike, 99);
     assert.equal(view.showStrike, true);
     assert.equal(display.label, "Flash Sale");
+    assert.equal(flash!.maxFlashQuantity, null);
+  });
+
+  it("splits flash vs regular when quantity exceeds max_flash_quantity", () => {
+    const split = computeFlashSaleSplitPricing({
+      quantity: 3,
+      flashUnit: 9,
+      regularUnit: 99,
+      maxFlashQuantity: 1,
+    });
+    assert.equal(split.flashQty, 1);
+    assert.equal(split.regularQty, 2);
+    assert.equal(split.lineTotal, 207);
+    assert.equal(split.subsidyTotal, 90);
+  });
+
+  it("qty within cap is all flash", () => {
+    const split = computeFlashSaleSplitPricing({
+      quantity: 2,
+      flashUnit: 9,
+      regularUnit: 99,
+      maxFlashQuantity: 3,
+    });
+    assert.equal(split.flashQty, 2);
+    assert.equal(split.regularQty, 0);
+    assert.equal(split.lineTotal, 18);
+  });
+
+  it("null max treats all units as flash (legacy)", () => {
+    const split = computeFlashSaleSplitPricing({
+      quantity: 3,
+      flashUnit: 9,
+      regularUnit: 99,
+      maxFlashQuantity: null,
+    });
+    assert.equal(split.flashQty, 3);
+    assert.equal(split.regularQty, 0);
+    assert.equal(split.lineTotal, 27);
+  });
+});
+
+describe("Flash Sale menu display continued", () => {
+  it("reads max_flash_quantity from the overlay blob", () => {
+    const flash = parseMenuFlashSale({
+      flash_sale: { offer_id: 7, original_customer_unit: 99, flash_price: 9, max_flash_quantity: 5 },
+    });
+    assert.equal(flash?.maxFlashQuantity, 5);
+    assert.equal(
+      flashSaleItemQtyLimitMessage(5),
+      "You can add up to 5 of this item at the Flash Sale price."
+    );
+    assert.equal(
+      flashSaleItemQtyLimitMessage(1),
+      "You can add up to 1 of this item at the Flash Sale price."
+    );
   });
 
   it("prefers backend flash overlay over a Boost offer on the same item", () => {

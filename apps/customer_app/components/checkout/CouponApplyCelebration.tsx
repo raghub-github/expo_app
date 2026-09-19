@@ -148,7 +148,7 @@ export function CouponApplyCelebration({
               <CheckoutText style={styles.cardIconPct}>%</CheckoutText>
             </View>
             <CheckoutText style={styles.cardCodeLine} numberOfLines={2}>
-              '{couponCode}' applied
+              {couponCode?.trim() ? `'${couponCode.trim()}' applied` : "Offers applied"}
             </CheckoutText>
             <CheckoutText style={styles.cardSaved}>{savedLabel}</CheckoutText>
             <CheckoutText style={styles.ctaText}>Woohoo! Thanks</CheckoutText>

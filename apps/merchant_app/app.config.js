@@ -154,10 +154,18 @@ module.exports = ({ config }) => ({
             },
             // Legacy quiet channel — keep registered so old FCM payloads still resolve.
             { id: "merchant_store_status", name: "Store status (legacy)", importance: 3 },
+            {
+              id: "order_alert_fgs_ongoing_v1",
+              name: "Ongoing order alert",
+              importance: 4,
+              silent: true,
+            },
             { id: "default", name: "Store & Orders", importance: 4 },
           ],
         },
       ],
+      // After expo-notifications so we can subclass/replace ExpoFirebaseMessagingService.
+      "./plugins/withCriticalOrderAlertFgs",
       // Resolve via file path — Expo's plugin resolver cannot load
       // `@rnmapbox/maps` by package name (exports map hides app.plugin).
       ...(fs.existsSync(path.resolve(__dirname, "node_modules/@rnmapbox/maps/app.plugin.js"))

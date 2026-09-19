@@ -19,6 +19,8 @@ import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardSta
 import { useMerchantWalletFreezeState } from "@/hooks/useMerchantWalletFreezeLive";
 import { getMerchantWalletFreezeSnapshot } from "@/lib/merchantWalletFreezeBus";
 import { listBankAccounts, type BankAccount } from "@/services/bankAccountApi";
+import { createDuesPaymentOrder, verifyDuesPayment } from "@/services/duesPaymentApi";
+import { RazorpayCheckoutModal, type RazorpayOrderParams } from "@/components/subscription/RazorpayCheckoutModal";
 import { parsePgTimestamp } from "@/lib/parsePgTimestamp";
 import {
   buildPayoutCards,
@@ -34,6 +36,8 @@ import {
   resolveLedgerCategoryLabel,
   isMerchantVisibleLedgerEntry,
   resolveWalletDisplayBalance,
+  resolveWithdrawableBalance,
+  isWalletBalanceNegative,
   statusBadgeStyle,
   statusLabel,
   TX_FILTER_CHIPS,
@@ -48,8 +52,12 @@ import { WithdrawProgressButton } from "@/components/earnings/WithdrawProgressBu
 const FALLBACK_MIN_WITHDRAWAL = 100;
 const FALLBACK_MAX_WITHDRAWAL = 100_000;
 
-function getWithdrawableBalance(wallet: WalletSummary | null): number {
+function getDisplayWalletBalance(wallet: WalletSummary | null): number {
   return resolveWalletDisplayBalance(wallet);
+}
+
+function getWithdrawableBalance(wallet: WalletSummary | null): number {
+  return resolveWithdrawableBalance(wallet);
 }
 
 function getMinWithdrawal(wallet: WalletSummary | null): number {
@@ -125,6 +133,9 @@ export default function EarningsScreen() {
   const [cycleCards, setCycleCards] = useState<PayoutCard[] | null>(null);
   const [recentPayoutRequests, setRecentPayoutRequests] = useState<PayoutRequestListItem[]>([]);
   const [holdReasonModal, setHoldReasonModal] = useState<PayoutCard | null>(null);
+  const [clearingDues, setClearingDues] = useState(false);
+  const [duesRazorpayVisible, setDuesRazorpayVisible] = useState(false);
+  const [duesOrderParams, setDuesOrderParams] = useState<RazorpayOrderParams | null>(null);
 
   const ledgerQuery = useMemo(
     () => (activeTab === "transactions" ? txFilterToLedgerQuery(txFilter) : {}),
@@ -224,7 +235,12 @@ export default function EarningsScreen() {
     };
   }, [storeId, token, currentCycleCard]);
 
+  const displayWalletBalance = getDisplayWalletBalance(wallet);
   const withdrawableBalance = getWithdrawableBalance(wallet);
+  const walletBalanceNegative = isWalletBalanceNegative(displayWalletBalance);
+  const outstandingDuesAmount = walletBalanceNegative
+    ? Math.round(Math.abs(displayWalletBalance) * 100) / 100
+    : 0;
   const walletFrozen = Boolean(
     liveFreeze?.isFrozen ??
       (wallet?.isFrozen || String(wallet?.status ?? "").toUpperCase() === "FROZEN"),
@@ -287,6 +303,26 @@ export default function EarningsScreen() {
     }
   };
 
+  const startClearDues = async () => {
+    if (!storeId || !token || outstandingDuesAmount < 0.01 || clearingDues) return;
+    setClearingDues(true);
+    try {
+      const order = await createDuesPaymentOrder(storeId, token);
+      if (!order.orderId || !order.keyId || !order.amount) {
+        throw new Error(order.error ?? "Could not start payment");
+      }
+      setDuesOrderParams({
+        orderId: order.orderId,
+        keyId: order.keyId,
+        amount: order.amount,
+      });
+      setDuesRazorpayVisible(true);
+    } catch (e) {
+      setClearingDues(false);
+      Alert.alert("Clear dues", e instanceof Error ? e.message : "Could not start payment");
+    }
+  };
+
   const handleWithdraw = async () => {
     if (walletFrozen) {
       Alert.alert(
@@ -344,7 +380,7 @@ export default function EarningsScreen() {
     const cycleBadge = statusBadgeStyle(currentCycleCard.status);
     const displayEstPayout = currentCycleEstPayout ?? currentCycleCard.netPayout;
     return (
-      <View style={s.currentCycleWrap}>
+      <View style={[s.currentCycleWrap, walletBalanceNegative ? s.currentCycleWrapNeg : null]}>
         {walletFrozen ? (
           <View style={s.frozenBanner}>
             <Text style={s.frozenTitle}>Wallet Frozen</Text>
@@ -361,8 +397,12 @@ export default function EarningsScreen() {
             accessibilityRole="button"
           >
             <View style={s.cycleTitleRow}>
-              <View style={s.cycleWalletIconWrap}>
-                <Ionicons name="wallet-outline" size={16} color={GatiMitraMerchant.primary} />
+            <View style={[s.cycleWalletIconWrap, walletBalanceNegative ? s.cycleWalletIconWrapNeg : null]}>
+                <Ionicons
+                  name="wallet-outline"
+                  size={16}
+                  color={walletBalanceNegative ? "#DC2626" : GatiMitraMerchant.primary}
+                />
               </View>
               <Text style={s.cycleSectionLabel}>Current cycle</Text>
             </View>
@@ -379,10 +419,13 @@ export default function EarningsScreen() {
             onPress={() => setCycleExpanded((v) => !v)}
             style={({ pressed }) => [s.cycleRowLeft, pressed && s.pressed]}
           >
-            <Text style={s.payoutAmount}>
-              {formatCurrency(withdrawableBalance)}
+            <Text style={[s.payoutAmount, walletBalanceNegative ? s.payoutAmountNegative : null]}>
+              {formatCurrency(displayWalletBalance)}
             </Text>
             <Text style={s.cycleMetricLabel}>Wallet balance</Text>
+            {walletBalanceNegative ? (
+              <Text style={s.duesHint}>Outstanding dues</Text>
+            ) : null}
             <Text style={s.payoutOrders}>
               Est. cycle payout · {formatCurrency(displayEstPayout)}
             </Text>
@@ -394,7 +437,23 @@ export default function EarningsScreen() {
               </>
             ) : null}
           </Pressable>
-          {walletFrozen ? (
+          {walletBalanceNegative ? (
+            <Pressable
+              onPress={() => void startClearDues()}
+              disabled={clearingDues}
+              style={({ pressed }) => [
+                s.clearDuesBtn,
+                clearingDues && s.cardWithdrawBtnDisabled,
+                pressed && s.pressed,
+              ]}
+            >
+              {clearingDues ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={s.clearDuesBtnText}>Clear dues</Text>
+              )}
+            </Pressable>
+          ) : walletFrozen ? (
             <Pressable disabled style={[s.cardWithdrawBtn, s.cardWithdrawBtnDisabled]}>
               <Text style={[s.cardWithdrawBtnText, s.cardWithdrawBtnTextDisabled]}>Frozen</Text>
             </Pressable>
@@ -776,6 +835,44 @@ export default function EarningsScreen() {
         </Pressable>
       </Modal>
 
+      <RazorpayCheckoutModal
+        visible={duesRazorpayVisible}
+        orderParams={duesOrderParams}
+        themeColor="#DC2626"
+        onSuccess={async (result) => {
+          setDuesRazorpayVisible(false);
+          setDuesOrderParams(null);
+          if (!storeId || !token) {
+            setClearingDues(false);
+            return;
+          }
+          try {
+            await verifyDuesPayment(storeId, token, {
+              razorpay_order_id: result.razorpayOrderId,
+              razorpay_payment_id: result.razorpayPaymentId,
+              razorpay_signature: result.razorpaySignature,
+            });
+            Alert.alert("Dues cleared", "Outstanding dues Cleared. Wallet updated.");
+            await load(true);
+          } catch (e) {
+            Alert.alert("Clear dues", e instanceof Error ? e.message : "Verification failed");
+          } finally {
+            setClearingDues(false);
+          }
+        }}
+        onCancel={() => {
+          setDuesRazorpayVisible(false);
+          setDuesOrderParams(null);
+          setClearingDues(false);
+        }}
+        onFailure={(info) => {
+          setDuesRazorpayVisible(false);
+          setDuesOrderParams(null);
+          setClearingDues(false);
+          Alert.alert("Payment failed", info.message || "Please try again");
+        }}
+      />
+
       <WithdrawalSuccessSheet
         visible={successSheet != null}
         amountLabel={successSheet?.amountLabel ?? ""}
@@ -809,6 +906,10 @@ const s = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 12,
+  },
+  currentCycleWrapNeg: {
+    backgroundColor: "#FEF2F2",
+    borderColor: "#FECACA",
   },
   cycleRow: {
     flexDirection: "row",
@@ -855,10 +956,16 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  cycleWalletIconWrapNeg: {
+    backgroundColor: "#FEE2E2",
+  },
   cycleMetricLabel: {
     fontSize: 12,
     color: GatiMitraMerchant.textSecondary,
     marginTop: 2,
+  },
+  payoutAmountNegative: {
+    color: "#B91C1C",
   },
   pastPayoutCard: { paddingHorizontal: 16, paddingTop: 18, paddingBottom: 4 },
   payoutCardBorder: { borderTopWidth: 1, borderTopColor: "#EEEEEE" },
@@ -961,6 +1068,20 @@ const s = StyleSheet.create({
     backgroundColor: "#F3F4F6",
   },
   cardWithdrawBtnTextDisabled: { color: "#9CA3AF" },
+  clearDuesBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "#DC2626",
+    flexShrink: 0,
+    minWidth: 96,
+    minHeight: 36,
+  },
+  clearDuesBtnText: { fontSize: 13, fontWeight: "700", color: "#fff" },
+  duesHint: { fontSize: 11, fontWeight: "600", color: "#DC2626", marginTop: 2 },
   cardWithdrawProgress: {
     maxWidth: 148,
     minWidth: 108,

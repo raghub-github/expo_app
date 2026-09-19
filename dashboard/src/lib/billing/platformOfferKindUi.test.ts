@@ -49,5 +49,22 @@ describe("FLASH_SALE kind UI", () => {
       }),
       null
     );
+    assert.ok(
+      validatePlatformOfferKindFieldsForApi({
+        offer_kind: "FLASH_SALE",
+        service_type: "FOOD",
+        conditions: { flash_sale_items: [{ menu_item_id: "10", flash_price: 9 }], max_flash_quantity: 0 },
+        merchant_ids: [42],
+      })
+    );
+    assert.equal(
+      validatePlatformOfferKindFieldsForApi({
+        offer_kind: "FLASH_SALE",
+        service_type: "FOOD",
+        conditions: { flash_sale_items: [{ menu_item_id: "10", flash_price: 9 }], max_flash_quantity: 5 },
+        merchant_ids: [42],
+      }),
+      null
+    );
   });
 });

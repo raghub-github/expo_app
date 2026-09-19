@@ -671,6 +671,8 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
                    queued_at, sent_at, delivered_at, clicked_at, failed_at
             FROM public.notification_dispatch_logs
             WHERE campaign_id = ${id}
+              -- Hide companion inbox twins (real push row is the OS delivery record).
+              AND coalesce(error_code, '') <> 'IN_APP_INBOX'
             ORDER BY queued_at DESC
             LIMIT 100
           `,
@@ -1235,6 +1237,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
                  queued_at, sent_at, delivered_at, clicked_at, failed_at
           FROM public.notification_dispatch_logs
           WHERE 1=1
+            AND coalesce(error_code, '') <> 'IN_APP_INBOX'
             ${q.user_id ? sql`AND recipient_user_id = ${q.user_id}` : sql``}
             ${q.status ? sql`AND status = ${q.status}` : sql``}
             ${q.template ? sql`AND template_code = ${q.template}` : sql``}

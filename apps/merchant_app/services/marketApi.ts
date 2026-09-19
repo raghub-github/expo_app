@@ -11,6 +11,7 @@ export type CompetitorRow = {
   affinity_pct: number;
   rank_delta: number | null;
   shared_customers: number;
+  orders_90d?: number;
 };
 
 export type LocalityInsight = {

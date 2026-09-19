@@ -41,6 +41,7 @@ export type DispatchOfferPayload = {
   waveNumber: number;
   pickupDistanceMeters: number;
   effectiveRadiusMeters: number;
+  alertSessionId?: string;
   /** Rider Fare Engine v3.0 — same fields as GET /orders/available */
   estimatedEarning?: number;
   baseEarning?: number;
@@ -155,6 +156,7 @@ export async function notifyRiderDispatchOffer(
       });
 
 
+    const alertSessionId = `RIDER_NEW_ORDER:${target.orderId}:${rider.riderId}:${target.waveNumber}`;
     const basePayload: DispatchOfferPayload = {
       type: "dispatch_offer",
       orderId: target.orderId,
@@ -164,6 +166,7 @@ export async function notifyRiderDispatchOffer(
       waveNumber: target.waveNumber,
       pickupDistanceMeters: Math.round(rider.distanceMeters),
       effectiveRadiusMeters: target.effectiveRadiusMeters,
+      alertSessionId,
     };
 
 
@@ -227,7 +230,8 @@ export async function notifyRiderDispatchOffer(
           skip_in_app_banner: true,
           realert: realert ? "1" : "0",
           alertStartedAt: String(assignment_notify_started_at),
-          alertSessionId: `RIDER_NEW_ORDER:${target.orderId}:${rider.riderId}:${target.waveNumber}${keySuffix}`,
+          alertSessionId: `RIDER_NEW_ORDER:${target.orderId}:${rider.riderId}:${target.waveNumber}`,
+          gmAlertAction: "start",
         };
         const sharedOverrides = { title, body };
 
@@ -266,7 +270,7 @@ export async function notifyRiderDispatchOffer(
             overrides: sharedOverrides,
             metadata: {
               ...sharedMetadata,
-              alertSessionId: `RIDER_NEW_ORDER:${target.orderId}:${rider.riderId}:${target.waveNumber}${keySuffix}`,
+              alertSessionId,
             },
           });
         }
@@ -321,6 +325,18 @@ export async function notifyRiderDispatchOffer(
               accepted: result.accepted ?? result.queued,
             })
           );
+        }
+        try {
+          const { sendRiderAlertControl } = await import("./critical-alert-control.js");
+          await sendRiderAlertControl({
+            riderId: rider.riderId,
+            action: "start",
+            alertSessionId,
+            orderId: target.orderId,
+            serviceType: target.serviceType,
+          });
+        } catch {
+          /* companion FCM is best-effort */
         }
       } catch (err) {
         console.warn(

@@ -20,12 +20,13 @@ function javaSource(packageName, channels) {
       const id = String(ch.id || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
       const name = String(ch.name || ch.id || "Alerts").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
       const importance = Number(ch.importance) === 5 ? 5 : Number(ch.importance) === 3 ? 3 : 4;
-      const sound = ch.sound != null && String(ch.sound).trim()
+      const silent = ch.silent === true || ch.sound === false;
+      const sound = !silent && ch.sound != null && String(ch.sound).trim()
         ? String(ch.sound).trim().replace(/\\/g, "\\\\").replace(/"/g, '\\"')
         : "";
       return `    create(context, manager, "${id}", "${name}", ${importance}, ${
-        sound ? `"${sound}"` : "null"
-      });`;
+        silent ? "\"\"" : sound ? `"${sound}"` : "null"
+      }, ${silent ? "true" : "false"});`;
     })
     .join("\n");
 
@@ -56,14 +57,17 @@ ${creates}
       String id,
       String name,
       int importance,
-      String soundRaw
+      String soundRaw,
+      boolean silent
   ) {
     if (manager.getNotificationChannel(id) != null) return;
     NotificationChannel channel = new NotificationChannel(id, name, importance);
-    channel.enableVibration(true);
+    channel.enableVibration(!silent);
     channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-    channel.setShowBadge(true);
-    if (soundRaw != null && !soundRaw.isEmpty()) {
+    channel.setShowBadge(!silent);
+    if (silent) {
+      channel.setSound(null, null);
+    } else if (soundRaw != null && !soundRaw.isEmpty()) {
       Uri soundUri = Uri.parse("android.resource://" + context.getPackageName() + "/raw/" + soundRaw);
       AudioAttributes attrs = new AudioAttributes.Builder()
           .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)

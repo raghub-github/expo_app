@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -35,60 +35,27 @@ import {
   flashSaleRemainingRedemptions,
   isFlashSaleKind,
   parseFlashSaleItems,
+  resolveMaxFlashQuantity,
   validateFlashSalePrice,
+  validateMaxFlashQuantity,
 } from "@/lib/billing/flashSale";
 import { cn } from "@/lib/utils";
+import {
+  BudgetProgress,
+  EditorField as FormField,
+  editorControlCls as controlCls,
+  editorSelectCls as selectCls,
+  formatOfferDateLabel,
+  formatRupeeAmount,
+  primaryButtonCls,
+  secondaryButtonCls,
+  SectionCard,
+  StatusBadge,
+  StatusToggle,
+} from "@/components/super-admin/platformOfferEditorUi";
+import { CalendarDays, Shield, Users, Wallet, Zap } from "lucide-react";
 
-const cardCls =
-  "w-full rounded-2xl border border-slate-200/80 bg-white p-5 text-slate-900 shadow-[0_4px_24px_-4px_rgba(15,23,42,0.08)] ring-1 ring-slate-900/[0.03] sm:p-8";
-const controlCls =
-  "w-full min-h-[42px] rounded-lg border border-slate-200/90 bg-slate-50/40 px-3 py-2.5 text-sm text-slate-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] transition-[border-color,box-shadow,background-color] placeholder:text-slate-400 focus:border-indigo-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20";
-const selectCls = cn(controlCls, "cursor-pointer");
-const checkboxCls = "h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500/30";
-
-function FormField({
-  label,
-  hint,
-  htmlFor,
-  children,
-  className,
-}: {
-  label: string;
-  hint?: string;
-  htmlFor?: string;
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={cn("flex flex-col gap-1.5", className)}>
-      <label htmlFor={htmlFor} className="text-[13px] font-medium leading-none text-slate-700">
-        {label}
-      </label>
-      {children}
-      {hint ? <p className="text-xs leading-relaxed text-slate-500">{hint}</p> : null}
-    </div>
-  );
-}
-
-function FormSection({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="space-y-4 border-b border-slate-100 pb-6 last:border-0 last:pb-0">
-      <div>
-        <h3 className="text-sm font-semibold tracking-tight text-slate-900">{title}</h3>
-        {description ? <p className="mt-1 text-xs text-slate-500">{description}</p> : null}
-      </div>
-      {children}
-    </div>
-  );
-}
+const checkboxCls = "h-4 w-4 rounded border-slate-300 text-[#00A88F] focus:ring-[#00A88F]/30";
 
 function toDatetimeLocal(iso: string | null | undefined): string {
   if (!iso) return "";
@@ -151,6 +118,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
   const [conditionsBaseline, setConditionsBaseline] = useState<Record<string, unknown> | null>(null);
   const [flashStores, setFlashStores] = useState<FlashSaleStoreRef[]>([]);
   const [flashItems, setFlashItems] = useState<FlashSaleSelectedItem[]>([]);
+  const [flashMaxQuantity, setFlashMaxQuantity] = useState("1");
   const [rideSampleFare, setRideSampleFare] = useState("");
   const [editBudgetUsed, setEditBudgetUsed] = useState<string | null>(null);
   const [editRedemptions, setEditRedemptions] = useState<number | null>(null);
@@ -255,6 +223,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       return v.map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0);
     })();
     const parsedFlash = parseFlashSaleItems(cond);
+    setFlashMaxQuantity(String(resolveMaxFlashQuantity(cond)));
     setFlashStores(
       parsedMerchantIds.map((id) => ({
         id,
@@ -367,6 +336,18 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
 
   const busy = createState.isLoading || updateState.isLoading;
 
+  const flashHeadlinePrice = useMemo(() => {
+    const prices = flashItems
+      .map((it) => Number(it.flashPrice))
+      .filter((n) => Number.isFinite(n) && n >= 0);
+    if (prices.length === 0) return null;
+    return Math.min(...prices);
+  }, [flashItems]);
+
+  const budgetTotalN = Number(form.budget_total);
+  const budgetUsedN = Number(editBudgetUsed ?? 0);
+  const remainingBudget = flashSaleBudgetRemaining(form.budget_total || null, editBudgetUsed);
+
   const save = async () => {
     setErr(null);
     const codeErr = validatePlatformOfferCouponCode(form.coupon_code);
@@ -399,6 +380,11 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
           setErr(`${it.name}: ${priceErr}`);
           return;
         }
+      }
+      const qtyErr = validateMaxFlashQuantity(flashMaxQuantity.trim() === "" ? 1 : flashMaxQuantity);
+      if (qtyErr) {
+        setErr(qtyErr);
+        return;
       }
     }
     if (!rideParcelService) {
@@ -481,6 +467,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
             flashPrice: Number(it.flashPrice),
             storeId: it.storeId > 0 ? it.storeId : null,
           })),
+          maxFlashQuantity: parseInt(flashMaxQuantity, 10) || 1,
         })
       );
     } else {
@@ -614,8 +601,49 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
   }
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-b from-slate-50/80 to-white px-4 pb-16 pt-4 sm:px-6 sm:pt-6 lg:px-8">
-      <p className="mb-4 max-w-3xl text-sm text-slate-600">
+    <div className="w-full max-w-full overflow-x-hidden">
+      <div className="mb-3 overflow-hidden rounded-xl border border-[#00A88F]/20 bg-white shadow-[0_8px_24px_-18px_rgba(0,168,143,0.45)]">
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-[linear-gradient(135deg,rgba(0,168,143,0.12),rgba(255,255,255,0.94)_58%)] px-4 py-2.5 sm:px-5">
+          <div className="min-w-0">
+            {isFlashSale ? (
+              <p className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#007a68]">
+                <Zap className="h-3.5 w-3.5" />
+                {form.offer_kind.replaceAll("_", " ")}
+              </p>
+            ) : (
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                {form.offer_kind.replaceAll("_", " ")}
+              </p>
+            )}
+            <p className="mt-0.5 truncate text-[17px] font-semibold tracking-tight text-slate-950">
+              {form.name.trim() || "Untitled offer"}
+              {isFlashSale &&
+              flashHeadlinePrice != null &&
+              !form.name.includes(formatRupeeAmount(flashHeadlinePrice)) ? (
+                <span className="ml-2 text-sm font-semibold text-[#007a68]">
+                  · Deals @ {formatRupeeAmount(flashHeadlinePrice)}
+                </span>
+              ) : null}
+            </p>
+            <p className="mt-0.5 text-[11px] uppercase tracking-wide text-slate-500">
+              {form.service_type} • {form.offer_audience} • {form.customer_segment}
+              <span className="ml-2 font-normal normal-case tracking-normal text-slate-400">
+                {formatOfferDateLabel(form.starts_at)} → {form.ends_at ? formatOfferDateLabel(form.ends_at) : "Open"}
+              </span>
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge active={form.is_active} />
+            {mode === "edit" && offerId != null ? (
+              <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold tabular-nums text-slate-600">
+                #{offerId}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <p className="mb-3 max-w-3xl text-[12px] leading-snug text-slate-500">
         {isFlashSale ? (
           <>
             Flash Sale is store-targeted: it shows on that store&apos;s menu and applies at checkout for matching
@@ -624,7 +652,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
         ) : (
           <>
             Full offer configuration. Map geo coverage in{" "}
-            <Link href="/dashboard/super-admin/geo" className="font-medium text-indigo-600 hover:underline">
+            <Link href="/dashboard/super-admin/geo" className="font-medium text-[#007a68] hover:underline">
               Geo &amp; coverage
             </Link>{" "}
             after save — unmapped offers stay hidden at checkout.
@@ -633,15 +661,15 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       </p>
 
       {err ? (
-        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" role="alert">
+        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
           {err}
         </div>
       ) : null}
 
-      <section className={cn(cardCls, "space-y-6")}>
-        <FormSection title="Basics" description="Identity, coupon code, vertical, kind, and who can redeem.">
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            <FormField label="Offer name" htmlFor="po-name" className="lg:col-span-2">
+      <div className="space-y-3">
+        <SectionCard title="Basic Information" subtitle="Identity, targeting and offer configuration">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 lg:grid-cols-4">
+            <FormField label="Offer name" htmlFor="po-name">
               <input
                 id="po-name"
                 className={controlCls}
@@ -653,8 +681,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
             <FormField
               label="Coupon code"
               htmlFor="po-coupon"
-              className="lg:col-span-2"
-              hint="Auto-generated from the offer name. Editable. Unique; A–Z, 0–9, _, - only."
+              hint="Auto from name · A–Z, 0–9, _, -"
             >
               <input
                 id="po-coupon"
@@ -768,12 +795,11 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
               <FormField
                 label="Eligibility"
                 htmlFor="po-first-ride"
-                hint="Person Ride only: customer must have zero completed person rides. Independent of Per user limit. Recommended with Per user = 1 and Consume = On delivered."
-                className="sm:col-span-2 lg:col-span-2"
+                hint="Zero completed person rides"
               >
                 <label
                   htmlFor="po-first-ride"
-                  className="flex min-h-[42px] cursor-pointer items-center gap-2.5 rounded-lg border border-slate-200/90 bg-slate-50/40 px-3 py-2.5 text-sm text-slate-800"
+                  className="flex min-h-[34px] cursor-pointer items-center gap-2.5 rounded-lg border border-slate-200/90 bg-slate-50/40 px-3 py-2 text-sm text-slate-800"
                 >
                   <input
                     id="po-first-ride"
@@ -789,7 +815,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
             <FormField
               label="Priority"
               htmlFor="po-pri"
-              hint="Lower number sorts first in listings; checkout still picks the max discount."
+              hint="Lower number lists first"
             >
               <input
                 id="po-pri"
@@ -803,7 +829,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
               <FormField
                 label="Exclusion group"
                 htmlFor="po-excl"
-                hint="Offers in the same group do not stack together."
+                hint="Same group does not stack"
               >
                 <input
                   id="po-excl"
@@ -815,12 +841,14 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
               </FormField>
             ) : null}
           </div>
-        </FormSection>
+        </SectionCard>
 
         {!isRideOrParcel && offerKindUi.showFlashSaleBuilder ? (
-          <FormSection
-            title="Flash Sale items"
-            description="One or more outlets · per-item customer price. Catalogue and merchant CTC stay unchanged."
+          <SectionCard
+            accent
+            icon={<Zap className="h-4 w-4" />}
+            title="Flash Sale Items"
+            subtitle="Choose eligible outlets and set Flash Sale prices for individual items."
           >
             <FlashSaleFoodBuilder
               stores={flashStores}
@@ -828,16 +856,57 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
               onStoresChange={setFlashStores}
               onItemsChange={setFlashItems}
             />
-            <p className="mt-2 text-[11px] text-slate-500">
-              Flash Sale is store-targeted via the outlets you add above — geo map bindings are optional.
-            </p>
-          </FormSection>
+          </SectionCard>
+        ) : null}
+
+        {!isRideOrParcel && offerKindUi.showFlashSaleBuilder ? (
+          <SectionCard
+            accent
+            icon={<Shield className="h-4 w-4" />}
+            title="Flash Quantity Limit"
+            subtitle="Maximum Flash Sale quantity allowed per eligible item in each order."
+          >
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,240px)_1fr]">
+              <div className="rounded-xl border border-[#00A88F]/25 bg-[linear-gradient(180deg,#f4fbf9,white)] p-3">
+                <FormField
+                  label="Max Flash Quantity"
+                  htmlFor="po-max-flash-qty"
+                  hint="Each eligible Flash Sale item can use the Flash Sale price up to this quantity in the same order."
+                >
+                  <input
+                    id="po-max-flash-qty"
+                    className={cn(controlCls, "text-base font-semibold tabular-nums")}
+                    inputMode="numeric"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={flashMaxQuantity}
+                    onChange={(e) => setFlashMaxQuantity(e.target.value)}
+                  />
+                </FormField>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+                <p className="text-[13px] font-semibold text-slate-900">Quantity Protection</p>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600">
+                  This limit applies per eligible Flash Sale item. It does not limit the total number of different
+                  Flash Sale items in one order.
+                </p>
+                <ul className="mt-3 space-y-1.5 text-[12px] leading-relaxed text-slate-600">
+                  <li>
+                    ✓ 1 Burger + 1 Sandwich + 1 Tandoori Sandwich — allowed when max quantity is{" "}
+                    {flashMaxQuantity.trim() || "the configured value"}
+                  </li>
+                  <li>✕ 2 of the same item — Flash Sale benefit cannot exceed the configured limit</li>
+                </ul>
+              </div>
+            </div>
+          </SectionCard>
         ) : null}
 
         {isRideOrParcel ? (
-          <FormSection
+          <SectionCard
             title={form.service_type === "PARCEL" ? "Parcel promo builder" : "Ride promo builder"}
-            description="Dedicated offer types for Person Ride / Parcel. Food offer fields stay unchanged for FOOD service."
+            subtitle="Dedicated offer types for Person Ride / Parcel. Food offer fields stay unchanged for FOOD service."
           >
             <RideParcelPromoBuilder
               service={form.service_type === "PARCEL" ? "PARCEL" : "RIDE"}
@@ -856,7 +925,7 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
               sampleFare={rideSampleFare}
               onSampleFareChange={setRideSampleFare}
             />
-            <div className="mt-4 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <FormField label="Min order / fare" htmlFor="po-min-rp">
                 <input
                   id="po-min-rp"
@@ -868,15 +937,15 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                 />
               </FormField>
             </div>
-          </FormSection>
+          </SectionCard>
         ) : null}
 
         {!isRideOrParcel && offerKindUi.showCartDiscount ? (
-          <FormSection
+          <SectionCard
             title={offerKindUi.cartBlockTitle}
-            description={offerKindUi.cartValueHint || "Cart / fee discount applied at checkout."}
+            subtitle={offerKindUi.cartValueHint || "Cart / fee discount applied at checkout."}
           >
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <FormField label="Discount type" htmlFor="po-dtype">
                 <select
                   id="po-dtype"
@@ -919,15 +988,15 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                 />
               </FormField>
             </div>
-          </FormSection>
+          </SectionCard>
         ) : null}
 
         {!isRideOrParcel && offerKindUi.showDeliveryBlock ? (
-          <FormSection
+          <SectionCard
             title="Delivery discount"
-            description="Optional delivery fee relief (required for FREE_DELIVERY)."
+            subtitle="Optional delivery fee relief (required for FREE_DELIVERY)."
           >
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <FormField label="Delivery discount type" htmlFor="po-ddtype">
                 <select
                   id="po-ddtype"
@@ -976,11 +1045,11 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
               />
               Auto Apply when eligible (OFF = customer must apply manually at checkout)
             </label>
-          </FormSection>
+          </SectionCard>
         ) : null}
 
         {!isRideOrParcel && !offerKindUi.showDeliveryBlock && !offerKindUi.showFlashSaleBuilder ? (
-          <FormSection title="Apply behaviour" description="Whether checkout may auto-apply this platform offer.">
+          <SectionCard title="Apply behaviour" subtitle="Whether checkout may auto-apply this platform offer.">
             <label className="flex items-center gap-2 text-sm text-slate-700">
               <input
                 type="checkbox"
@@ -990,12 +1059,12 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
               />
               Auto Apply when eligible (OFF = customer must apply manually at checkout)
             </label>
-          </FormSection>
+          </SectionCard>
         ) : null}
 
         {!isRideOrParcel && offerKindUi.showBuyXGetYFields ? (
-          <FormSection title="Buy X Get Y" description="Requires buy qty and get qty.">
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <SectionCard title="Buy X Get Y" subtitle="Requires buy qty and get qty.">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <FormField label="Buy quantity (X)" htmlFor="po-buy">
                 <input
                   id="po-buy"
@@ -1028,12 +1097,12 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                 />
               </FormField>
             </div>
-          </FormSection>
+          </SectionCard>
         ) : null}
 
         {!isRideOrParcel && offerKindUi.showFreeMenuFields ? (
-          <FormSection title="Free menu item" description="Waives cheapest eligible units up to free quantity.">
-            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <SectionCard title="Free menu item" subtitle="Waives cheapest eligible units up to free quantity.">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <FormField label="Free quantity" htmlFor="po-free-qty">
                 <input
                   id="po-free-qty"
@@ -1058,32 +1127,42 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                 />
               </FormField>
             </div>
-          </FormSection>
+          </SectionCard>
         ) : null}
 
-        <FormSection
-          title="Schedule, budget & usage limits"
-          description="Validity window, spend cap, consume mode, and per-customer caps."
-        >
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            <FormField label="Starts at" htmlFor="po-start">
-              <input
-                id="po-start"
-                type="datetime-local"
-                className={controlCls}
-                value={form.starts_at}
-                onChange={(e) => setForm((f) => ({ ...f, starts_at: e.target.value }))}
-              />
-            </FormField>
-            <FormField label="Ends at" htmlFor="po-end" hint="Empty = never expires.">
-              <input
-                id="po-end"
-                type="datetime-local"
-                className={controlCls}
-                value={form.ends_at}
-                onChange={(e) => setForm((f) => ({ ...f, ends_at: e.target.value }))}
-              />
-            </FormField>
+        <div className="grid gap-3 lg:grid-cols-3">
+          <SectionCard
+            icon={<CalendarDays className="h-4 w-4" />}
+            title="Campaign Schedule"
+            subtitle="When this offer starts and ends."
+          >
+            <div className="grid gap-4">
+              <FormField label="Starts at" htmlFor="po-start">
+                <input
+                  id="po-start"
+                  type="datetime-local"
+                  className={controlCls}
+                  value={form.starts_at}
+                  onChange={(e) => setForm((f) => ({ ...f, starts_at: e.target.value }))}
+                />
+              </FormField>
+              <FormField label="Ends at" htmlFor="po-end" hint="Empty = never expires.">
+                <input
+                  id="po-end"
+                  type="datetime-local"
+                  className={controlCls}
+                  value={form.ends_at}
+                  onChange={(e) => setForm((f) => ({ ...f, ends_at: e.target.value }))}
+                />
+              </FormField>
+            </div>
+          </SectionCard>
+
+          <SectionCard
+            icon={<Wallet className="h-4 w-4" />}
+            title="Campaign Budget"
+            subtitle="Platform spend cap for this campaign."
+          >
             <FormField label="Campaign budget (₹)" htmlFor="po-budget" hint="Empty = unlimited.">
               <input
                 id="po-budget"
@@ -1093,160 +1172,170 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
                 onChange={(e) => setForm((f) => ({ ...f, budget_total: e.target.value }))}
               />
             </FormField>
-            {isFlashSale && mode === "edit" ? (
-              <p className="sm:col-span-2 lg:col-span-3 xl:col-span-4 text-xs text-slate-600">
-                {editBudgetUsed != null
-                  ? `Budget used ₹${Number(editBudgetUsed).toFixed(2)}`
-                  : "Budget used ₹0.00"}
-                {flashSaleBudgetRemaining(form.budget_total || null, editBudgetUsed) != null
-                  ? ` · remaining ₹${flashSaleBudgetRemaining(form.budget_total || null, editBudgetUsed)!.toFixed(2)}`
-                  : ""}
-                {editRedemptions != null ? ` · ${editRedemptions} active redemption(s)` : ""}
-                {flashSaleRemainingRedemptions(form.max_uses_total || null, editRedemptions ?? 0) != null
-                  ? ` · ${flashSaleRemainingRedemptions(form.max_uses_total || null, editRedemptions ?? 0)} remaining`
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Budget</p>
+                <p className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
+                  {Number.isFinite(budgetTotalN) && budgetTotalN > 0
+                    ? formatRupeeAmount(budgetTotalN)
+                    : "Unlimited"}
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Used</p>
+                <p className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
+                  {formatRupeeAmount(mode === "edit" ? budgetUsedN : 0)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-[#00A88F]/20 bg-[#00A88F]/5 px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-[#007a68]">Remaining</p>
+                <p className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
+                  {remainingBudget != null ? formatRupeeAmount(remainingBudget) : "—"}
+                </p>
+              </div>
+            </div>
+            {mode === "edit" && Number.isFinite(budgetTotalN) && budgetTotalN > 0 ? (
+              <BudgetProgress used={Number.isFinite(budgetUsedN) ? budgetUsedN : 0} total={budgetTotalN} />
+            ) : null}
+            {isFlashSale && mode === "edit" && editRedemptions != null ? (
+              <p className="mt-3 text-[11px] text-slate-500">
+                {editRedemptions} active redemption{editRedemptions === 1 ? "" : "s"}
+                {flashSaleRemainingRedemptions(form.max_uses_total || null, editRedemptions) != null
+                  ? ` · ${flashSaleRemainingRedemptions(form.max_uses_total || null, editRedemptions)} remaining`
                   : ""}
               </p>
             ) : null}
-            <FormField label="Consume mode" htmlFor="po-consume">
-              <select
-                id="po-consume"
-                className={selectCls}
-                value={form.consume_mode}
-                onChange={(e) => setForm((f) => ({ ...f, consume_mode: e.target.value }))}
+          </SectionCard>
+
+          <SectionCard
+            icon={<Users className="h-4 w-4" />}
+            title="Usage Limits"
+            subtitle="How redemptions are consumed and capped."
+          >
+            <div className="grid gap-4">
+              <FormField label="Consume mode" htmlFor="po-consume">
+                <select
+                  id="po-consume"
+                  className={selectCls}
+                  value={form.consume_mode}
+                  onChange={(e) => setForm((f) => ({ ...f, consume_mode: e.target.value }))}
+                >
+                  <option value="ON_PLACED">On order placed</option>
+                  <option value="ON_DELIVERED">On ride / order completed</option>
+                </select>
+              </FormField>
+              <FormField
+                label="Per user limit"
+                htmlFor="po-per-user"
+                hint={
+                  isFlashSale
+                    ? "Flash Sale is always one redemption per customer per offer."
+                    : "e.g. 1 = once per customer."
+                }
               >
-                <option value="ON_PLACED">On order placed</option>
-                <option value="ON_DELIVERED">On ride / order completed</option>
-              </select>
-            </FormField>
-            <FormField
-              label="Per user limit"
-              htmlFor="po-per-user"
-              hint={
-                isFlashSale
-                  ? "Flash Sale is always one redemption per customer per offer."
-                  : "e.g. 1 = once per customer."
-              }
-            >
-              <input
-                id="po-per-user"
-                className={controlCls}
-                inputMode="numeric"
-                placeholder="unlimited"
-                disabled={isFlashSale}
-                value={isFlashSale ? "1" : form.max_uses_per_user}
-                onChange={(e) => setForm((f) => ({ ...f, max_uses_per_user: e.target.value }))}
-              />
-            </FormField>
-            <FormField label="Lifetime (all users)" htmlFor="po-life">
-              <input
-                id="po-life"
-                className={controlCls}
-                inputMode="numeric"
-                placeholder="unlimited"
-                value={form.max_uses_total}
-                onChange={(e) => setForm((f) => ({ ...f, max_uses_total: e.target.value }))}
-              />
-            </FormField>
-            {isFlashSale ? null : (
-              <>
-                <FormField label="Daily / user" htmlFor="po-day">
-                  <input
-                    id="po-day"
-                    className={controlCls}
-                    inputMode="numeric"
-                    placeholder="unlimited"
-                    value={form.max_uses_per_day}
-                    onChange={(e) => setForm((f) => ({ ...f, max_uses_per_day: e.target.value }))}
-                  />
-                </FormField>
-                <FormField label="Monthly / user" htmlFor="po-month">
-                  <input
-                    id="po-month"
-                    className={controlCls}
-                    inputMode="numeric"
-                    placeholder="unlimited"
-                    value={form.max_uses_per_month}
-                    onChange={(e) => setForm((f) => ({ ...f, max_uses_per_month: e.target.value }))}
-                  />
-                </FormField>
-              </>
-            )}
-          </div>
-
-          <div className="mt-4 flex flex-wrap gap-x-6 gap-y-3 rounded-xl border border-slate-100 bg-slate-50/50 p-4 text-sm text-slate-700">
-            <label className="flex cursor-pointer items-center gap-2.5">
-              <input
-                type="checkbox"
-                className={checkboxCls}
-                checked={form.restore_on_cancel}
-                onChange={(e) => setForm((f) => ({ ...f, restore_on_cancel: e.target.checked }))}
-              />
-              Restore usage on cancel
-            </label>
-            <label className="flex cursor-pointer items-center gap-2.5">
-              <input
-                type="checkbox"
-                className={checkboxCls}
-                checked={form.restore_on_refund}
-                onChange={(e) => setForm((f) => ({ ...f, restore_on_refund: e.target.checked }))}
-              />
-              Restore usage on refund
-            </label>
-            <label className={cn("flex cursor-pointer items-center gap-2.5", isFlashSale && "hidden")}>
-              <input
-                type="checkbox"
-                className={checkboxCls}
-                checked={form.is_stackable}
-                onChange={(e) => setForm((f) => ({ ...f, is_stackable: e.target.checked }))}
-              />
-              Stackable (flag)
-            </label>
-            <label className="flex cursor-pointer items-center gap-2.5">
-              <input
-                type="checkbox"
-                className={checkboxCls}
-                checked={form.is_active}
-                onChange={(e) => setForm((f) => ({ ...f, is_active: e.target.checked }))}
-              />
-              Active
-            </label>
-            <label className="flex cursor-pointer items-center gap-2.5">
-              <input
-                type="checkbox"
-                className={checkboxCls}
-                checked={form.is_hidden}
-                onChange={(e) => setForm((f) => ({ ...f, is_hidden: e.target.checked }))}
-              />
-              Hidden from listings
-            </label>
-          </div>
-        </FormSection>
-
-        <div className="flex flex-wrap items-center gap-3 pt-2">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void save()}
-            className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 px-6 text-sm font-semibold text-white shadow-md shadow-indigo-500/25 transition hover:from-indigo-500 hover:to-violet-500 disabled:opacity-60"
-          >
-            {busy ? (
-              <span className="inline-flex items-center gap-2">
-                <LoadingSpinner variant="button" size="sm" /> Saving…
-              </span>
-            ) : mode === "edit" ? (
-              "Save changes"
-            ) : (
-              "Create offer"
-            )}
-          </button>
-          <Link
-            href="/dashboard/super-admin/offers-coupons"
-            className="inline-flex min-h-[44px] items-center justify-center rounded-lg border border-slate-200 bg-white px-5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-          >
-            Cancel
-          </Link>
+                <input
+                  id="po-per-user"
+                  className={controlCls}
+                  inputMode="numeric"
+                  placeholder="unlimited"
+                  disabled={isFlashSale}
+                  value={isFlashSale ? "1" : form.max_uses_per_user}
+                  onChange={(e) => setForm((f) => ({ ...f, max_uses_per_user: e.target.value }))}
+                />
+              </FormField>
+              <FormField label="Lifetime (all users)" htmlFor="po-life">
+                <input
+                  id="po-life"
+                  className={controlCls}
+                  inputMode="numeric"
+                  placeholder="unlimited"
+                  value={form.max_uses_total}
+                  onChange={(e) => setForm((f) => ({ ...f, max_uses_total: e.target.value }))}
+                />
+              </FormField>
+              {isFlashSale ? null : (
+                <>
+                  <FormField label="Daily / user" htmlFor="po-day">
+                    <input
+                      id="po-day"
+                      className={controlCls}
+                      inputMode="numeric"
+                      placeholder="unlimited"
+                      value={form.max_uses_per_day}
+                      onChange={(e) => setForm((f) => ({ ...f, max_uses_per_day: e.target.value }))}
+                    />
+                  </FormField>
+                  <FormField label="Monthly / user" htmlFor="po-month">
+                    <input
+                      id="po-month"
+                      className={controlCls}
+                      inputMode="numeric"
+                      placeholder="unlimited"
+                      value={form.max_uses_per_month}
+                      onChange={(e) => setForm((f) => ({ ...f, max_uses_per_month: e.target.value }))}
+                    />
+                  </FormField>
+                </>
+              )}
+            </div>
+          </SectionCard>
         </div>
-      </section>
+
+        <SectionCard title="Status Controls" subtitle="Usage recovery and listing visibility.">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-2.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Usage Recovery</p>
+              <StatusToggle
+                checked={form.restore_on_cancel}
+                onChange={(next) => setForm((f) => ({ ...f, restore_on_cancel: next }))}
+                label="Restore usage on cancel"
+              />
+              <StatusToggle
+                checked={form.restore_on_refund}
+                onChange={(next) => setForm((f) => ({ ...f, restore_on_refund: next }))}
+                label="Restore usage on refund"
+              />
+              {isFlashSale ? null : (
+                <StatusToggle
+                  checked={form.is_stackable}
+                  onChange={(next) => setForm((f) => ({ ...f, is_stackable: next }))}
+                  label="Stackable (flag)"
+                />
+              )}
+            </div>
+            <div className="space-y-2.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Visibility</p>
+              <StatusToggle
+                checked={form.is_active}
+                onChange={(next) => setForm((f) => ({ ...f, is_active: next }))}
+                label="Active"
+              />
+              <StatusToggle
+                checked={form.is_hidden}
+                onChange={(next) => setForm((f) => ({ ...f, is_hidden: next }))}
+                label="Hidden from listings"
+              />
+            </div>
+          </div>
+        </SectionCard>
+      </div>
+
+      <div className="sticky bottom-0 z-20 mt-3 flex items-center justify-end gap-2 border-t border-slate-200/80 bg-white/95 py-2.5 backdrop-blur-sm">
+        <Link href="/dashboard/super-admin/offers-coupons" className={secondaryButtonCls()}>
+          Cancel
+        </Link>
+        <button type="button" disabled={busy} onClick={() => void save()} className={primaryButtonCls(busy)}>
+          {busy ? (
+            <span className="inline-flex items-center gap-2">
+              <LoadingSpinner variant="button" size="sm" /> Saving…
+            </span>
+          ) : mode === "edit" ? (
+            "Save Changes"
+          ) : (
+            "Create offer"
+          )}
+        </button>
+      </div>
     </div>
   );
 }

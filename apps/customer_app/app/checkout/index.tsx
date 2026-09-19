@@ -138,11 +138,18 @@ import {
   hasAppliedMembershipFreeDelivery,
 } from "@/lib/checkoutAppliedSavings";
 import { resolveMembershipDeliverySavingsDisplay } from "@/lib/gmitraPlusDeliverySave";
+import { isStoreWithinMembershipFreeDeliveryRadius } from "@/lib/membershipFreeDelivery";
+import {
+  formatMinOrderLockReason,
+  resolveOfferMinOrderAmount,
+  resolveOfferMinOrderGap,
+} from "@/lib/checkoutOfferMinOrder";
 import {
   buildBillingCalculateParams,
   buildBillingCalculateQueryKey,
   type BillingCalculateKeyParams,
 } from "@/lib/billingCalculateQuery";
+import { buildCheckoutOffersQueryKey } from "@/lib/checkoutOffersQuery";
 import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
 import {
   computeCheckoutStrikethroughTotal,
@@ -165,6 +172,7 @@ import { openCheckoutAddAddress } from "@/lib/openCheckoutAddAddress";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import {
   buildItemOfferDisplayMap,
+  computeFlashSaleSplitPricing,
   estimateBoostUnitPrice,
   formatOfferRupee,
   parseMenuFlashSale,
@@ -232,9 +240,33 @@ function cartLineStrikeNetTotals(
 ): { strike: number | null; net: number; catalog: number } {
   const baseId = cartItemBaseId(item.menuItemId);
   const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
+  const addonPerUnit = cartAddonTotalPerUnit(item);
+
+  // Flash Sale: soft max_flash_quantity — only capped units at flash price.
+  if (
+    itemOffer?.kind === "flash_sale" &&
+    itemOffer.offerPrice != null &&
+    itemOffer.strikePrice != null &&
+    itemOffer.strikePrice > itemOffer.offerPrice + 0.001
+  ) {
+    const split = computeFlashSaleSplitPricing({
+      quantity: item.quantity,
+      flashUnit: itemOffer.offerPrice,
+      regularUnit: itemOffer.strikePrice,
+      // Align with billing: missing cap → 1 (prevents unlimited flash on over-qty).
+      maxFlashQuantity: itemOffer.maxFlashQuantity ?? 1,
+    });
+    const net = split.lineTotal + Math.round(addonPerUnit) * item.quantity;
+    const catalog = Math.round(itemOffer.strikePrice + addonPerUnit) * item.quantity;
+    return {
+      strike: catalog > net ? catalog : null,
+      net,
+      catalog,
+    };
+  }
+
   const catalogBase =
     item.basePrice != null && item.basePrice > 0 ? item.basePrice : cartLineBaseUnitPrice(item);
-  const addonPerUnit = cartAddonTotalPerUnit(item);
   const boostBase = estimateBoostUnitPrice(catalogBase, itemOffer);
   const showOfferPrice = boostBase != null && boostBase < catalogBase - 0.001;
   const catalogAllIn = Math.round(catalogBase + addonPerUnit);
@@ -289,21 +321,69 @@ function computeFullCartSubtotal(cartItems: CartItem[]): number {
   }, 0);
 }
 
-/** Checkout-offer-eligible base (lines without item Boost/BOGO) — shared live/debounced. */
+type ServerLineEligibility = {
+  isDiscountEligible: boolean;
+  ineligibilityReason: "ITEM_PROMO" | "MRP" | null;
+};
+
+/** Same gates as checkout line "NOT ELIGIBLE FOR CHECKOUT OFFERS". */
+function cartLineHasCheckoutOfferBlock(
+  item: CartItem & { catalogMrp?: number | null },
+  itemOfferById: Map<string, ItemOfferDisplay>,
+  serverLineEligibilityById?: Map<string, ServerLineEligibility>
+): boolean {
+  const baseId = cartItemBaseId(item.menuItemId);
+  const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
+  if (itemOffer != null) return true;
+  if (item.isDiscountEligible === false) return true;
+  const serverElig =
+    serverLineEligibilityById?.get(baseId) ?? serverLineEligibilityById?.get(item.menuItemId);
+  if (serverElig?.isDiscountEligible === false) return true;
+  if (serverElig?.ineligibilityReason === "ITEM_PROMO" || serverElig?.ineligibilityReason === "MRP") {
+    return true;
+  }
+  const catalogBase =
+    item.basePrice != null && item.basePrice > 0 ? item.basePrice : cartLineBaseUnitPrice(item);
+  const boostBase = estimateBoostUnitPrice(catalogBase, itemOffer);
+  if (boostBase != null && boostBase < catalogBase - 0.001) return true;
+  const { strike, net } = cartLineStrikeNetTotals(item, itemOfferById);
+  if (strike != null && strike > net + 0.005) return true;
+  const selling = cartLineBaseUnitPrice(item);
+  const catalogOrBase =
+    item.basePrice != null && item.basePrice > 0
+      ? item.basePrice
+      : item.catalogMrp != null && item.catalogMrp > 0
+        ? item.catalogMrp
+        : selling;
+  return catalogOrBase > selling + 0.005;
+}
+
+/** Checkout-offer-eligible base — only lines with no strikethrough / item offer price. */
 function computeEligibleCheckoutSubtotal(
   cartItems: CartItem[],
-  itemOfferById: Map<string, ItemOfferDisplay>
+  itemOfferById: Map<string, ItemOfferDisplay>,
+  serverLineEligibilityById?: Map<string, ServerLineEligibility>
 ): number {
   let sum = 0;
   for (const item of cartItems) {
-    const baseId = cartItemBaseId(item.menuItemId);
-    const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
-    if (itemOffer != null) continue;
-    if (item.isDiscountEligible === false) continue;
-    const unit = cartLineBaseUnitPrice(item) + cartAddonTotalPerUnit(item);
+    if (cartLineHasCheckoutOfferBlock(item, itemOfferById, serverLineEligibilityById)) continue;
+    const selling = cartLineBaseUnitPrice(item);
+    const unit = selling + cartAddonTotalPerUnit(item);
     sum += unit * item.quantity;
   }
   return Math.max(0, Math.round(sum * 100) / 100);
+}
+
+/** True when every cart line already has an item offer / strikethrough price. */
+function cartIsOnlyItemDealLines(
+  cartItems: CartItem[],
+  itemOfferById: Map<string, ItemOfferDisplay>,
+  serverLineEligibilityById?: Map<string, ServerLineEligibility>
+): boolean {
+  if (cartItems.length === 0) return false;
+  return cartItems.every((item) =>
+    cartLineHasCheckoutOfferBlock(item, itemOfferById, serverLineEligibilityById)
+  );
 }
 
 function normalizePlanHexColor(hex: string | null | undefined, fallback = "#059669"): string {
@@ -543,7 +623,8 @@ function resolveBillingMenuItemId(
  * keeping one function means the two can never silently diverge in shape. */
 function buildItemsWithSnapshots(
   cartItems: CartItem[],
-  merchantMenu: import("@/services/merchant.service").MenuItem[] | undefined
+  merchantMenu: import("@/services/merchant.service").MenuItem[] | undefined,
+  itemOfferById?: Map<string, ItemOfferDisplay>
 ) {
   return cartItems.map((i) => {
     const bid = cartItemBaseId(i.menuItemId);
@@ -586,11 +667,17 @@ function buildItemsWithSnapshots(
         offer_id: flash.offerId,
         original_customer_unit: flash.originalCustomerUnit,
         flash_price: flash.flashPrice,
+        max_flash_quantity: flash.maxFlashQuantity,
       };
       if (snap.customer_strike_price == null) {
         snap.customer_strike_price = flash.originalCustomerUnit;
       }
     }
+    const itemOffer =
+      itemOfferById?.get(i.menuItemId) ?? itemOfferById?.get(bid) ?? null;
+    // Prefer live menu/offer math over cart-store flag so we don't wait on
+    // syncDiscountEligibility (which used to rewrite cart and re-key billing).
+    const isDiscountEligible = computeIsDiscountEligible(menuItem, itemOffer);
     return {
       menuItemId: billingMenuItemId,
       itemName: i.name,
@@ -599,7 +686,7 @@ function buildItemsWithSnapshots(
       variantId: i.variantId ?? null,
       variantName: i.variantName ?? null,
       specialInstructions: note,
-      isDiscountEligible: i.isDiscountEligible,
+      isDiscountEligible,
       addons: (i.addons ?? [])
         .filter((a) => {
           const id = String(a.addonId ?? "").trim();
@@ -781,18 +868,15 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
   const sub = item.checkoutSubtext;
   const baseId = cartItemBaseId(item.menuItemId);
   const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
-  const catalogBase =
-    item.basePrice != null && item.basePrice > 0 ? item.basePrice : cartLineBaseUnitPrice(item);
-  const boostBase = estimateBoostUnitPrice(catalogBase, itemOffer);
-  const showOfferPrice = boostBase != null && boostBase < catalogBase - 0.001;
   const { strike: strikeLineTotal, net: netLineTotal, catalog: catalogLineTotalRounded } =
     cartLineStrikeNetTotals(item, itemOfferById);
   const showStrikeRow = strikeLineTotal != null && strikeLineTotal > netLineTotal;
-  const serverElig =
-    serverLineEligibilityById.get(baseId) ?? serverLineEligibilityById.get(item.menuItemId);
-  // Boost/BOGO on the line → always show; server ITEM_PROMO reinforces.
-  const showCheckoutOfferIneligible =
-    itemOffer?.kind === "bogo" || showOfferPrice || serverElig?.ineligibilityReason === "ITEM_PROMO";
+  // Any strikethrough / item deal / Flash / Boost → not for checkout coupons.
+  const showCheckoutOfferIneligible = cartLineHasCheckoutOfferBlock(
+    item,
+    itemOfferById,
+    serverLineEligibilityById
+  );
   const fmtLine = formatOfferRupee;
 
   const handleEditPress = useCallback(() => onEdit(item), [onEdit, item]);
@@ -997,6 +1081,7 @@ function CheckoutScreen() {
   const scrollRef = useRef<ScrollView>(null);
   const missedOfferSheetPromptKeyRef = useRef<string | null>(null);
   const pendingMissedOfferWalletRef = useRef<import("@/lib/checkout-missed-offer-wallet").MissedOfferWalletCompensation | null>(null);
+  const merchantMenuRef = useRef<import("@/services/merchant.service").MenuItem[] | undefined>(undefined);
 
   // [PERF][CHECKOUT] mount timing — first render → committed mount (dev only).
   const perfMountStartRef = useRef(perfNow());
@@ -1057,7 +1142,10 @@ function CheckoutScreen() {
   /** Stable per-line dispatchers — required for CheckoutCartLineRow's React.memo to bail
    * on rows other than the one actually tapped (see component definition above). */
   const handleIncrementCartLine = useCallback(
-    (lineId: string) => updateQuantity(lineId, 1),
+    (lineId: string) => {
+      // Flash Sale cap is soft: qty past max_flash_quantity is charged at regular price by billing.
+      updateQuantity(lineId, 1);
+    },
     [updateQuantity]
   );
   const handleDecrementCartLine = useCallback(
@@ -1079,13 +1167,16 @@ function CheckoutScreen() {
   );
   const isStoreClosed = storeStatus === "CLOSED";
   const { checkoutPlan, defaultPrice, hasPlans } = useCheckoutSubscriptionPlan();
-  const { data: currentSubscription, refetch: refetchCurrentSubscription } =
+  const { data: currentSubscription, isFetched: subscriptionFetched } =
     useCurrentSubscription(true);
   /** Live membership from GET /subscription/current (DB: active + not expired). */
   const subscriptionActiveFromApi = currentSubscription?.active === true;
   const alreadySubscribed = subscriptionActiveFromApi;
-  /** Upsell / opt-in — never for users the API already marks as active members. */
-  const showSubscriptionPromo = hasPlans && !alreadySubscribed && checkoutPlan != null;
+  /** Upsell / opt-in — never for users the API already marks as active members.
+   * Wait until /subscription/current has settled so we don't bill with upsell
+   * fields then re-key after membership resolves. */
+  const showSubscriptionPromo =
+    subscriptionFetched && hasPlans && !alreadySubscribed && checkoutPlan != null;
   const subscriptionPlanName = checkoutPlan?.planName ?? checkoutPlan?.name ?? "Membership";
   const subscriptionAccentColor = useMemo(
     () => normalizePlanHexColor(checkoutPlan?.badgeColor),
@@ -1182,6 +1273,8 @@ function CheckoutScreen() {
   const [couponApplyError, setCouponApplyError] = useState<string | null>(null);
   const [couponCelebrationVisible, setCouponCelebrationVisible] = useState(false);
   const [couponCelebrationCode, setCouponCelebrationCode] = useState("");
+  /** Only celebrate after billing confirms the pinned offer actually discounted the bill. */
+  const pendingCouponCelebrationRef = useRef<string | null>(null);
   const [useGatiCashWallet, setUseGatiCashWallet] = useState(false);
   const [missedOfferWalletPending, setMissedOfferWalletPending] = useState(false);
   const [selectedMissedOfferKey, setSelectedMissedOfferKey] = useState<string | null>(null);
@@ -1212,9 +1305,14 @@ function CheckoutScreen() {
   useFocusEffect(
     useCallback(() => {
       if (paymentInProgress) return;
-      void refetchCurrentSubscription();
-      void queryClient.invalidateQueries({ queryKey: CURRENT_SUBSCRIPTION_QUERY_KEY });
-    }, [queryClient, refetchCurrentSubscription, paymentInProgress])
+      // One refresh max — never pair refetch() with invalidateQueries (that
+      // double-hit GET /subscription/current on every checkout focus).
+      void queryClient.refetchQueries({
+        queryKey: CURRENT_SUBSCRIPTION_QUERY_KEY,
+        type: "active",
+        stale: true,
+      });
+    }, [queryClient, paymentInProgress])
   );
 
   /**
@@ -1702,6 +1800,7 @@ function CheckoutScreen() {
     refetchOnMount: false,
     staleTime: 30_000,
   });
+  merchantMenuRef.current = merchant?.menu;
 
   const storeOffersGeo = useMemo(
     () => ({
@@ -1726,7 +1825,7 @@ function CheckoutScreen() {
     ]
   );
 
-  const { data: storeOffersData } = useQuery({
+  const storeOffersQuery = useQuery({
     queryKey: buildStoreOffersQueryKey(merchantId ?? "", storeOffersGeo),
     queryFn: () =>
       offersService.getStoreOffers({
@@ -1741,6 +1840,10 @@ function CheckoutScreen() {
     enabled: !!merchantId,
     staleTime: STORE_OFFERS_STALE_MS,
   });
+  const storeOffersData = storeOffersQuery.data;
+  /** Wait for store-offers (or failure) so isDiscountEligible in the bill key does not flip mid-flight. */
+  const storeOffersSettled =
+    !merchantId || storeOffersQuery.isFetched || storeOffersQuery.isError;
 
   const itemOfferById = useMemo(() => {
     const offers = storeOffersData?.merchant_offers ?? [];
@@ -1813,6 +1916,9 @@ function CheckoutScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [merchant?.menu, resolveMenuItemIdsFromCatalog, syncPricesFromMap]);
 
+  // Eligibility is computed live in buildItemsWithSnapshots for billing.
+  // Persist a best-effort cart flag for other screens without rewriting when unchanged
+  // (a mid-checkout rewrite used to churn React Query keys).
   useEffect(() => {
     if (!merchant?.menu || items.length === 0) return;
     const eligibleById: Record<string, boolean> = {};
@@ -1822,9 +1928,11 @@ function CheckoutScreen() {
       const offer =
         itemOfferById.get(line.menuItemId) ?? itemOfferById.get(baseId) ?? null;
       const eligible = computeIsDiscountEligible(menuItem, offer);
+      if (line.isDiscountEligible === eligible) continue;
       eligibleById[line.menuItemId] = eligible;
       eligibleById[baseId] = eligible;
     }
+    if (Object.keys(eligibleById).length === 0) return;
     syncDiscountEligibility(eligibleById);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [merchant?.menu, itemOfferById, syncDiscountEligibility, items.length]);
@@ -2260,8 +2368,8 @@ function CheckoutScreen() {
    * lag behind a quantity tap the user just made.
    */
   const itemsWithSnapshots = useMemo(
-    () => buildItemsWithSnapshots(items, merchant?.menu),
-    [items, merchant?.menu]
+    () => buildItemsWithSnapshots(items, merchant?.menu, itemOfferById),
+    [items, merchant?.menu, itemOfferById]
   );
 
   /**
@@ -2270,8 +2378,8 @@ function CheckoutScreen() {
    * request instead of firing on every tap. Never used for order submission.
    */
   const debouncedItemsWithSnapshots = useMemo(
-    () => buildItemsWithSnapshots(debouncedItems, merchant?.menu),
-    [debouncedItems, merchant?.menu]
+    () => buildItemsWithSnapshots(debouncedItems, merchant?.menu, itemOfferById),
+    [debouncedItems, merchant?.menu, itemOfferById]
   );
 
   const billingCartKey = useMemo(
@@ -2283,6 +2391,7 @@ function CheckoutScreen() {
           p: i.basePrice,
           v: i.variantId ?? null,
           n: i.specialInstructions ?? null,
+          // Eligibility from menu/offer math (not cart-store sync) — stable for a given cart+offers.
           e: i.isDiscountEligible !== false,
           a: (i.addons ?? []).map((ad) => [ad.addonId, ad.quantity, ad.addonPrice]),
         }))
@@ -2329,9 +2438,11 @@ function CheckoutScreen() {
     selectedPlatformOfferId,
     selectedMerchantOfferId,
     forceNoAutoOffer,
-    subscriptionOptIn,
-    subscriptionBillingCycle,
-    subscriptionPlanId: checkoutPlan?.id,
+    // Keep subscription fields out of the key unless the upsell is actually offered —
+    // otherwise plans/membership settling re-keys billing after the first settle.
+    subscriptionOptIn: showSubscriptionPromo ? subscriptionOptIn : false,
+    subscriptionBillingCycle: showSubscriptionPromo ? subscriptionBillingCycle : undefined,
+    subscriptionPlanId: showSubscriptionPromo ? checkoutPlan?.id : undefined,
     deliveryType,
     pickupLat,
     pickupLon,
@@ -2370,11 +2481,12 @@ function CheckoutScreen() {
         }),
         { signal }
       ),
-    enabled: canRequestBilling && billingItemsHaveResolvableIds,
+    enabled: canRequestBilling && billingItemsHaveResolvableIds && storeOffersSettled,
     /** Keeps last bill on screen while cart/tip/donation refetch — avoids skeleton layout jump. */
     placeholderData: keepPreviousData,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
+    refetchOnMount: false,
     retry: (failureCount, error) => isNetworkError(error) && failureCount < 1,
   });
 
@@ -2669,6 +2781,15 @@ function CheckoutScreen() {
    */
   const membershipFreeDeliveryOnBill = subscriptionBenefitSavings > 0.005;
 
+  /** Drop must be within plan free-delivery radius before Plus upsell is shown. */
+  const membershipDeliveryWithinRadius = useMemo(() => {
+    if (deliveryType !== "delivery" || !checkoutPlan?.freeDeliveryEnabled) return false;
+    return isStoreWithinMembershipFreeDeliveryRadius({
+      storeDistanceKm: uiDistanceKm,
+      maxFreeDeliveryRadiusKm: checkoutPlan.maxFreeDeliveryRadiusKm,
+    });
+  }, [deliveryType, checkoutPlan, uiDistanceKm]);
+
   /** Single GMitra Plus delivery savings figure — upsell, ADDED state, and green applied row. */
   const membershipDeliverySavingsDisplay = useMemo(() => {
     if (!serverBill || deliveryType !== "delivery" || !checkoutPlan?.freeDeliveryEnabled) {
@@ -2730,6 +2851,15 @@ function CheckoutScreen() {
     !(membershipFreeDeliveryOnBill && !subscriptionOptIn) &&
     !platformFreeDeliveryOnBill;
 
+  /** Exact delivery save — only when drop is inside membership free-delivery radius. */
+  const hasValidMembershipSaveAmount =
+    membershipDeliveryWithinRadius &&
+    membershipDeliverySavingsDisplay != null &&
+    membershipDeliverySavingsDisplay > 0.005;
+
+  // Keep checkout opt-in sticky while the membership row is shown (even without a
+  // delivery-save amount on this drop). Billing still applies only eligible benefits.
+
   /** Debounced — this query is read-only (fetches available offers, doesn't submit
    * anything), so it's safe to fully key off the debounced cart like billingQuery. */
   const checkoutCartMenuItemIds = useMemo(() => {
@@ -2755,21 +2885,14 @@ function CheckoutScreen() {
   );
 
   const checkoutOffersQuery = useQuery({
-    queryKey: [
-      "billing-checkout-offers",
+    queryKey: buildCheckoutOffersQueryKey({
       merchantId,
-      selectedAddress?.id,
-      debouncedClientFullCartSubtotal,
-      debouncedClientEligibleCheckoutSubtotal,
-      checkoutCartQtyFingerprint,
-      livePincode,
-      liveState,
-      subscriptionBenefitSavings,
-      // selectedPlatformOfferId/selectedMerchantOfferId intentionally excluded — the
-      // request (billingService.getCheckoutOffers below) never sends them, so keying on
-      // them only forced pointless refetches every time the offer selection changed.
-      checkoutCartMenuItemIds.join(","),
-    ],
+      addressId: selectedAddress?.id,
+      cartQtyFingerprint: checkoutCartQtyFingerprint,
+      // Address geo only — live GPS used to re-key offers after geocode settles.
+      pincode: selectedAddress?.pincode ?? livePincode,
+      state: selectedAddress?.state ?? liveState,
+    }),
     queryFn: async () => {
       // Send full item+addon cart — backend scales min-order to the eligible share.
       const cartSubtotal = debouncedClientFullCartSubtotal;
@@ -2778,36 +2901,52 @@ function CheckoutScreen() {
         addressId: String(selectedAddress!.id),
         cartSubtotal,
         serviceType: billingServiceType,
-        pincode: livePincode,
-        state: liveState,
-        city: liveCity,
+        pincode: selectedAddress?.pincode ?? livePincode,
+        state: selectedAddress?.state ?? liveState,
+        city: selectedAddress?.city ?? liveCity,
         menuItemIds: checkoutCartMenuItemIds,
       });
       // Live unlock math must use eligible checkout base (not full cart).
       return { ...data, fetchedCartSubtotal: debouncedClientEligibleCheckoutSubtotal };
     },
     enabled: !!merchantId && !!selectedAddress && items.length > 0,
-    staleTime: couponSheetVisible ? 0 : 10_000,
+    staleTime: 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
     placeholderData: keepPreviousData,
   });
 
   /**
-   * Live eligible checkout base (excludes item-deal lines). Prefer client over listing
-   * `eligibleSubtotal` so GatiCash / unlock UI don't use a stale or qty-skewed server share.
+   * Live eligible checkout base for APPLY lock / min-order.
+   * Use the *lower* of client vs settled bill so Flash/Boost/strike lines never falsely unlock APPLY.
    */
   const cartSubtotalForOffersResolved = useMemo(() => {
-    if (clientEligibleCheckoutSubtotal > 0.005) return clientEligibleCheckoutSubtotal;
-    const fromOffers = checkoutOffersQuery.data?.eligibleSubtotal;
-    if (fromOffers != null && Number.isFinite(fromOffers) && fromOffers >= 0) return fromOffers;
-    return cartSubtotalForOffers;
+    const client = Math.max(
+      0,
+      computeEligibleCheckoutSubtotal(items, itemOfferById, serverLineEligibilityById)
+    );
+    const fromBill = serverBill?.eligibleSubtotal;
+    if (fromBill != null && Number.isFinite(fromBill) && fromBill >= 0) {
+      return Math.min(client, Math.max(0, fromBill));
+    }
+    return Math.min(client, Math.max(0, cartSubtotalForOffers));
   }, [
-    clientEligibleCheckoutSubtotal,
-    checkoutOffersQuery.data?.eligibleSubtotal,
+    items,
+    itemOfferById,
+    serverLineEligibilityById,
+    serverBill?.eligibleSubtotal,
     cartSubtotalForOffers,
   ]);
 
+  /** Every line already has offer/strikethrough price — checkout coupons must stay locked. */
+  const cartOnlyItemDealLines = useMemo(
+    () => cartIsOnlyItemDealLines(items, itemOfferById, serverLineEligibilityById),
+    [items, itemOfferById, serverLineEligibilityById]
+  );
+
   /** At least one cart rupee can receive checkout coupons / platform cart offers. */
-  const hasEligibleCheckoutOfferBase = cartSubtotalForOffersResolved > 0.005;
+  const hasEligibleCheckoutOfferBase =
+    !cartOnlyItemDealLines && cartSubtotalForOffersResolved > 0.005;
 
   const primaryCheckoutDiscount = useMemo(() => {
     if (cartLevelCheckoutPromoDiscounts.length === 0) return null;
@@ -3196,13 +3335,21 @@ function CheckoutScreen() {
     [subscriptionBenefitDiscounts]
   );
 
-  const offersAppliedHeadline = useMemo(() => {
-    if (!hasEligibleCheckoutOfferBase) {
-      return "Item deals already applied — checkout coupons not available";
+  const offersAppliedParts = useMemo(() => {
+    const parts: { label: string; amount: number }[] = [];
+
+    if (primaryCheckoutDiscount && primaryCheckoutDiscount.amount > 0.005) {
+      parts.push({
+        label: friendlyCheckoutDiscountLabel(primaryCheckoutDiscount.label),
+        amount: primaryCheckoutDiscount.amount,
+      });
     }
 
-    if (missedOfferWalletPending && displayMissedOfferWalletComp) {
-      return `${friendlyCheckoutDiscountLabel(displayMissedOfferWalletComp.offerTitle)} unlocked`;
+    if (flashSaleSavingsTotal > 0.005) {
+      parts.push({
+        label: flashSaleBillLine?.label || "Flash Sale",
+        amount: flashSaleSavingsTotal,
+      });
     }
 
     const subLabel = subscriptionBenefitDiscounts[0]?.label;
@@ -3210,47 +3357,63 @@ function CheckoutScreen() {
       membershipDeliverySavingsDisplay != null && membershipDeliverySavingsDisplay > 0.005
         ? membershipDeliverySavingsDisplay
         : subscriptionBenefitSavings;
-    /** Past-tense membership savings only when free delivery is actually on the bill. */
-    const membershipApplied = membershipFreeDeliveryOnBill;
-    const flashSave = flashSaleSavingsTotal;
-    const flashApplied = flashSave > 0.005;
-
-    if (primaryCheckoutDiscount) {
-      const promoSave = primaryCheckoutDiscount.amount;
-      const promoLabel = friendlyCheckoutDiscountLabel(primaryCheckoutDiscount.label);
-      if (membershipApplied && subSave > 0.005 && subLabel) {
-        return `You saved ₹${formatCheckoutSavingsRupees(promoSave + subSave)} with ${promoLabel} + free delivery`;
-      }
-      if (promoSave > 0.005) {
-        return `You saved ₹${formatCheckoutSavingsRupees(promoSave)} with ${promoLabel}`;
-      }
-      return `${promoLabel} applied!`;
+    if (membershipFreeDeliveryOnBill && subSave > 0.005) {
+      parts.push({
+        label: friendlyCheckoutDiscountLabel(subLabel || "GMitra Plus"),
+        amount: subSave,
+      });
     }
 
-    if (flashApplied && membershipApplied && subSave > 0.005 && subLabel) {
-      return `You saved ₹${formatCheckoutSavingsRupees(flashSave + subSave)} with Flash Sale + ${friendlyCheckoutDiscountLabel(subLabel)}`;
-    }
-    if (flashApplied) {
-      return `You saved ₹${formatCheckoutSavingsRupees(flashSave)} with Flash Sale`;
+    // Boost / BOGO / strikethrough item deals (exclude flash already listed above).
+    const itemOnly = Math.max(0, appliedItemDealSavings - flashSaleSavingsTotal);
+    if (itemOnly > 0.005) {
+      parts.push({ label: "Item deals", amount: itemOnly });
     }
 
-    if (membershipApplied && subSave > 0.005 && subLabel) {
-      return `You saved ₹${formatCheckoutSavingsRupees(subSave)} with ${friendlyCheckoutDiscountLabel(subLabel)}`;
+    return parts;
+  }, [
+    primaryCheckoutDiscount,
+    flashSaleSavingsTotal,
+    flashSaleBillLine?.label,
+    subscriptionBenefitDiscounts,
+    membershipDeliverySavingsDisplay,
+    subscriptionBenefitSavings,
+    membershipFreeDeliveryOnBill,
+    appliedItemDealSavings,
+  ]);
+
+  const offersAppliedHeadline = useMemo(() => {
+    if (missedOfferWalletPending && displayMissedOfferWalletComp) {
+      return `${friendlyCheckoutDiscountLabel(displayMissedOfferWalletComp.offerTitle)} unlocked`;
+    }
+
+    if (checkoutSavingsTotal > 0.005 && offersAppliedParts.length > 0) {
+      const labels = offersAppliedParts.map((p) => p.label);
+      const shown = labels.slice(0, 2);
+      const more = labels.length > 2;
+      return `You saved ₹${formatCheckoutSavingsRupees(checkoutSavingsTotal)} with ${shown.join(" + ")}${
+        more ? " + more" : ""
+      }`;
+    }
+
+    if (checkoutSavingsTotal > 0.005) {
+      return `You saved ₹${formatCheckoutSavingsRupees(checkoutSavingsTotal)} on this order`;
+    }
+
+    if (!hasEligibleCheckoutOfferBase) {
+      return "Checkout coupons is not eligible for this order";
     }
 
     if (appliedCouponCode) {
-      // Don't claim "applied" until the server bill includes a matching discount line.
       if (!primaryCheckoutDiscount && (billingQuery.isFetching || !serverBill)) {
         return `Applying ${friendlyCheckoutDiscountLabel(appliedCouponLabel ?? appliedCouponCode)}…`;
       }
       if (!primaryCheckoutDiscount) {
-        // Bill settled without a cut — error effect surfaces the reason; avoid false success.
         if (featuredCoupon) {
           return featuredCoupon.description || `Save more with '${featuredCoupon.code}'`;
         }
         return "Apply a coupon to save on this order";
       }
-      return `${friendlyCheckoutDiscountLabel(appliedCouponLabel ?? appliedCouponCode)} applied`;
     }
 
     if (featuredCoupon) {
@@ -3259,20 +3422,17 @@ function CheckoutScreen() {
 
     return "Apply a coupon to save on this order";
   }, [
-    hasEligibleCheckoutOfferBase,
-    primaryCheckoutDiscount,
-    subscriptionBenefitDiscounts,
-    subscriptionBenefitSavings,
-    membershipFreeDeliveryOnBill,
-    membershipDeliverySavingsDisplay,
-    flashSaleSavingsTotal,
-    appliedCouponCode,
-    appliedCouponLabel,
-    featuredCoupon,
     missedOfferWalletPending,
     displayMissedOfferWalletComp,
+    checkoutSavingsTotal,
+    offersAppliedParts,
+    hasEligibleCheckoutOfferBase,
+    appliedCouponCode,
+    appliedCouponLabel,
+    primaryCheckoutDiscount,
     billingQuery.isFetching,
     serverBill,
+    featuredCoupon,
   ]);
 
   const offersAppliedSubline = useMemo(() => {
@@ -3281,6 +3441,36 @@ function CheckoutScreen() {
     }
     return null;
   }, [missedOfferWalletPending, displayMissedOfferWalletComp]);
+
+  /** Fingerprint of currently applied savings — crackers fire when this changes to a non-empty value. */
+  const appliedOffersCelebrationKey = useMemo(() => {
+    if (checkoutSavingsTotal <= 0.005) return "";
+    return [
+      ...offersAppliedParts.map((p) => `${p.label}:${Math.round(p.amount * 100)}`),
+      `t:${Math.round(checkoutSavingsTotal * 100)}`,
+    ].join("|");
+  }, [checkoutSavingsTotal, offersAppliedParts]);
+
+  const lastOffersCelebrationKeyRef = useRef("");
+  useEffect(() => {
+    if (!appliedOffersCelebrationKey) {
+      lastOffersCelebrationKeyRef.current = "";
+      return;
+    }
+    if (lastOffersCelebrationKeyRef.current === appliedOffersCelebrationKey) return;
+    lastOffersCelebrationKeyRef.current = appliedOffersCelebrationKey;
+
+    const labels = offersAppliedParts.map((p) => p.label);
+    const shown = labels.slice(0, 2);
+    const more = labels.length > 2;
+    const fromPending = pendingCouponCelebrationRef.current?.trim() || null;
+    pendingCouponCelebrationRef.current = null;
+    const code =
+      fromPending ||
+      (shown.length > 0 ? `${shown.join(" + ")}${more ? " + more" : ""}` : "Offers");
+    setCouponCelebrationCode(code);
+    setCouponCelebrationVisible(true);
+  }, [appliedOffersCelebrationKey, offersAppliedParts]);
 
   const hasMissedOfferUnlocked = Boolean(missedOfferWalletPending && displayMissedOfferWalletComp);
 
@@ -3310,9 +3500,9 @@ function CheckoutScreen() {
     );
   }, [checkoutOffersQuery.data]);
 
-  /** Hide the apply-coupon row when nothing can be applied (avoids empty-sheet frustration). */
+  /** Keep coupons row/sheet visible even when every line is already on an item deal (locked APPLY). */
   const showCheckoutCouponRow = useMemo(() => {
-    if (!hasEligibleCheckoutOfferBase) return false;
+    if (items.length === 0) return false;
     if (
       hasAppliedCheckoutPromo ||
       hasMissedOfferUnlocked ||
@@ -3322,8 +3512,10 @@ function CheckoutScreen() {
       return true;
     }
     if (checkoutOffersQuery.isLoading && !checkoutOffersQuery.data) return false;
-    return hasCheckoutOffersCatalog;
+    // Show locked catalog / empty-eligible state so users can open the sheet.
+    return hasCheckoutOffersCatalog || !hasEligibleCheckoutOfferBase;
   }, [
+    items.length,
     hasEligibleCheckoutOfferBase,
     hasAppliedCheckoutPromo,
     hasMissedOfferUnlocked,
@@ -3332,6 +3524,55 @@ function CheckoutScreen() {
     checkoutOffersQuery.isLoading,
     checkoutOffersQuery.data,
     hasCheckoutOffersCatalog,
+  ]);
+
+  /**
+   * Checkout-row APPLY is active only when at least one non-applied offer is currently eligible
+   * (same bar as Coupons & offers sheet). Locked / min-order offers keep APPLY deactivated.
+   */
+  const hasEligibleApplyableOffer = useMemo(() => {
+    if (!hasEligibleCheckoutOfferBase) return false;
+    const d = checkoutOffersQuery.data;
+    if (!d) return false;
+    const eligibleCart = cartSubtotalForOffersResolved;
+    const appliedPf = appliedPlatformOfferId;
+    const appliedMo = appliedMerchantOfferId;
+    const appliedCode = (effectiveAppliedCouponCode ?? "").toUpperCase();
+
+    for (const o of d.platformOffers ?? []) {
+      if (appliedPf === o.id) continue;
+      if (String(o.offerKind ?? "").toUpperCase() === "FLASH_SALE") continue;
+      const gap = resolveOfferMinOrderGap({ summary: o.summary }, eligibleCart);
+      if (gap > 0) continue;
+      return true;
+    }
+    for (const o of d.merchantOffers ?? []) {
+      if (o.displaySurface === "item") continue;
+      if (appliedMo === o.id) continue;
+      const gap = resolveOfferMinOrderGap(
+        { minOrderAmount: o.minOrderAmount, summary: o.summary },
+        eligibleCart
+      );
+      if (gap > 0) continue;
+      return true;
+    }
+    for (const c of d.coupons ?? []) {
+      if (c.code.toUpperCase() === appliedCode) continue;
+      const gap = resolveOfferMinOrderGap(
+        { minOrderAmount: c.minOrderAmount, description: c.description },
+        eligibleCart
+      );
+      if (gap > 0) continue;
+      return true;
+    }
+    return false;
+  }, [
+    hasEligibleCheckoutOfferBase,
+    checkoutOffersQuery.data,
+    cartSubtotalForOffersResolved,
+    appliedPlatformOfferId,
+    appliedMerchantOfferId,
+    effectiveAppliedCouponCode,
   ]);
 
   const hasCheckoutOfferSavings =
@@ -3378,6 +3619,7 @@ function CheckoutScreen() {
           : null;
       if (platformId != null) {
         if (selectedPlatformOfferId !== platformId) setSelectedPlatformOfferId(platformId);
+        // Celebration is handled by appliedOffersCelebrationKey effect.
         return;
       }
       // Bill settled without this platform discount — drop the pin (don't leave
@@ -3387,6 +3629,7 @@ function CheckoutScreen() {
       setAppliedCouponLabel(null);
       setCheckoutOfferUserPinned(false);
       setCouponCelebrationVisible(false);
+      pendingCouponCelebrationRef.current = null;
       const stillListed = (checkoutOffersQuery.data?.platformOffers ?? []).some(
         (o) => o.id === selectedPlatformOfferId
       );
@@ -3410,6 +3653,7 @@ function CheckoutScreen() {
           setAppliedCouponCode(null);
           setAppliedCouponLabel(null);
         }
+        // Celebration is handled by appliedOffersCelebrationKey effect.
         return;
       }
       const stillListed = (checkoutOffersQuery.data?.merchantOffers ?? []).some(
@@ -3418,6 +3662,7 @@ function CheckoutScreen() {
       if (!stillListed && !checkoutOffersQuery.isFetching) {
         setSelectedMerchantOfferId(null);
         setCheckoutOfferUserPinned(false);
+        pendingCouponCelebrationRef.current = null;
         setCouponApplyError("Your store offer is no longer available and was removed.");
       }
       return;
@@ -3430,25 +3675,33 @@ function CheckoutScreen() {
         const listed = (checkoutOffersQuery.data?.coupons ?? []).find(
           (c) => c.code.toUpperCase() === appliedCouponCode.toUpperCase()
         );
-        const minOrd = listed?.minOrderAmount;
-        const gap =
-          minOrd != null && minOrd > 0
-            ? Math.ceil(Math.max(0, minOrd - (cartSubtotalForOffers ?? 0)))
-            : 0;
+        const minAmt = resolveOfferMinOrderAmount({
+          minOrderAmount: listed?.minOrderAmount,
+          description: listed?.description,
+        });
+        const gap = resolveOfferMinOrderGap(
+          {
+            minOrderAmount: listed?.minOrderAmount,
+            description: listed?.description,
+          },
+          cartSubtotalForOffersResolved
+        );
         let msg = "This coupon could not be applied on this order.";
-        if (gap > 0) {
-          msg = `Add ₹${gap} more to use this coupon (min order ₹${Math.round(minOrd!)}).`;
+        if (gap > 0 && minAmt != null) {
+          msg = formatMinOrderLockReason(gap, minAmt);
         } else if (listed?.customerSegment === "NEW") {
           msg = "This coupon is for new customers only.";
-        } else if (minOrd != null && minOrd > 0) {
-          msg = `Minimum order value ₹${Math.round(minOrd)} required for this coupon.`;
+        } else if (minAmt != null && minAmt > 0) {
+          msg = `Minimum order value ₹${Math.round(minAmt)} required for this coupon.`;
         }
         setAppliedCouponCode(null);
         setAppliedCouponLabel(null);
         setCheckoutOfferUserPinned(false);
         setCouponCelebrationVisible(false);
+        pendingCouponCelebrationRef.current = null;
         setCouponApplyError(msg);
       }
+      // Success celebration is handled by appliedOffersCelebrationKey effect.
     }
   }, [
     serverBill,
@@ -3463,7 +3716,7 @@ function CheckoutScreen() {
     cartLevelCheckoutPromoDiscounts,
     checkoutOffersQuery.data,
     checkoutOffersQuery.isFetching,
-    cartSubtotalForOffers,
+    cartSubtotalForOffersResolved,
   ]);
 
   /** Surface when a user-pinned platform/store promo did not land on this bill (transient). */
@@ -3509,7 +3762,7 @@ function CheckoutScreen() {
 
   const applyCouponCode = useCallback((code: string, label?: string) => {
     if (!hasEligibleCheckoutOfferBase) {
-      setCouponApplyError("Add items without item deals to use checkout offers");
+      setCouponApplyError("Checkout coupons is not eligible for this order");
       return;
     }
     const trimmed = code.trim();
@@ -3521,26 +3774,42 @@ function CheckoutScreen() {
         .toUpperCase()
         .replace(/[^A-Z0-9_-]/g, "");
     const want = norm(trimmed);
+    const eligibleCart = cartSubtotalForOffersResolved;
     // Match eligible first, then soft-locked (min-order) platform offers by coupon code.
     const platformHit =
       checkoutOffersQuery.data?.platformOffers.find((o) => norm(o.couponCode) === want) ??
       checkoutOffersQuery.data?.platformOffersIneligible?.find((o) => norm(o.couponCode) === want) ??
       null;
     if (platformHit) {
+      const inEligibleList = (checkoutOffersQuery.data?.platformOffers ?? []).some(
+        (o) => o.id === platformHit.id
+      );
       const ineligible = (checkoutOffersQuery.data?.platformOffersIneligible ?? []).find(
         (o) => o.id === platformHit.id
       );
-      if (ineligible && !(checkoutOffersQuery.data?.platformOffers ?? []).some((o) => o.id === platformHit.id)) {
-        const minOrd = ineligible.minCartAmount;
-        const gap =
-          minOrd != null && minOrd > 0
-            ? Math.ceil(Math.max(0, minOrd - (cartSubtotalForOffers ?? 0)))
-            : 0;
+      const minAmt = resolveOfferMinOrderAmount({
+        minCartAmount: ineligible?.minCartAmount,
+        summary: platformHit.summary,
+        reason: ineligible?.reason,
+      });
+      const gap = resolveOfferMinOrderGap(
+        {
+          minCartAmount: minAmt,
+          summary: platformHit.summary,
+          reason: ineligible?.reason,
+        },
+        eligibleCart
+      );
+      if (gap > 0) {
         setCouponApplyError(
-          gap > 0
-            ? `Add ₹${gap} more to use this offer (min order ₹${Math.round(minOrd!)}).`
-            : ineligible.reason || "This offer is not eligible on this order yet."
+          minAmt != null
+            ? formatMinOrderLockReason(gap, minAmt)
+            : "This offer is not eligible on this order yet."
         );
+        return;
+      }
+      if (ineligible && !inEligibleList) {
+        setCouponApplyError(ineligible.reason || "This offer is not eligible on this order yet.");
         return;
       }
       setSelectedMerchantOfferId(null);
@@ -3557,23 +3826,28 @@ function CheckoutScreen() {
       setAppliedCouponLabel(platformHit.name ?? label ?? trimmed);
       setCouponCodeInput("");
       setCouponSheetVisible(false);
-      setCouponCelebrationCode(platformHit.couponCode?.trim() || trimmed);
-      setCouponCelebrationVisible(true);
+      pendingCouponCelebrationRef.current =
+        platformHit.couponCode?.trim() || trimmed;
+      setCouponCelebrationVisible(false);
       return;
     }
 
     const listed = checkoutOffersQuery.data?.coupons?.find(
       (c) => c.code.toUpperCase() === trimmed.toUpperCase()
     );
-    const minOrd = listed?.minOrderAmount;
-    const gap =
-      minOrd != null && minOrd > 0
-        ? Math.ceil(Math.max(0, minOrd - (cartSubtotalForOffers ?? 0)))
-        : 0;
-    if (gap > 0) {
-      setCouponApplyError(
-        `Add ₹${gap} more to use this coupon (min order ₹${Math.round(minOrd!)}).`
-      );
+    const minAmt = resolveOfferMinOrderAmount({
+      minOrderAmount: listed?.minOrderAmount,
+      description: listed?.description,
+    });
+    const gap = resolveOfferMinOrderGap(
+      {
+        minOrderAmount: listed?.minOrderAmount,
+        description: listed?.description,
+      },
+      eligibleCart
+    );
+    if (gap > 0 && minAmt != null) {
+      setCouponApplyError(formatMinOrderLockReason(gap, minAmt));
       return;
     }
 
@@ -3590,26 +3864,63 @@ function CheckoutScreen() {
     setAppliedCouponLabel(label ?? trimmed);
     setCouponCodeInput("");
     setCouponSheetVisible(false);
-    setCouponCelebrationCode(trimmed);
-    setCouponCelebrationVisible(true);
+    pendingCouponCelebrationRef.current = trimmed;
+    setCouponCelebrationVisible(false);
   }, [
     hasEligibleCheckoutOfferBase,
     checkoutOffersQuery.data?.platformOffers,
     checkoutOffersQuery.data?.platformOffersIneligible,
     checkoutOffersQuery.data?.coupons,
-    cartSubtotalForOffers,
+    cartSubtotalForOffersResolved,
   ]);
 
   const applyPlatformOfferById = useCallback((offerId: number, name: string | null) => {
-    if (!hasEligibleCheckoutOfferBase) return;
+    if (!hasEligibleCheckoutOfferBase) {
+      setCouponApplyError("Checkout coupons is not eligible for this order");
+      setCouponSheetVisible(true);
+      return;
+    }
     const fromList =
       checkoutOffersQuery.data?.platformOffers.find((o) => o.id === offerId) ??
       checkoutOffersQuery.data?.platformOffersIneligible?.find((o) => o.id === offerId);
-    const code = fromList?.couponCode?.trim() || null;
-    // Platform offers pin by id only — do NOT dual-write appliedCouponCode (that made the
-    // coupon sheet claim "Applied" while billing never waived delivery).
+    if (!fromList) return;
+    const inEligibleList = (checkoutOffersQuery.data?.platformOffers ?? []).some(
+      (o) => o.id === offerId
+    );
+    const ineligible = (checkoutOffersQuery.data?.platformOffersIneligible ?? []).find(
+      (o) => o.id === offerId
+    );
+    const minAmt = resolveOfferMinOrderAmount({
+      minCartAmount: ineligible?.minCartAmount,
+      summary: fromList.summary,
+      reason: ineligible?.reason,
+    });
+    const gap = resolveOfferMinOrderGap(
+      {
+        minCartAmount: minAmt,
+        summary: fromList.summary,
+        reason: ineligible?.reason,
+      },
+      cartSubtotalForOffersResolved
+    );
+    // Hard block — never optimistic-pin an ineligible offer (that caused Applied → clear).
+    if (gap > 0) {
+      setCouponApplyError(
+        minAmt != null
+          ? formatMinOrderLockReason(gap, minAmt)
+          : "This offer is not eligible on this order yet."
+      );
+      setCouponSheetVisible(true);
+      return;
+    }
+    if (ineligible && !inEligibleList) {
+      setCouponApplyError(ineligible.reason || "This offer is not eligible on this order yet.");
+      setCouponSheetVisible(true);
+      return;
+    }
+    const code = fromList.couponCode?.trim() || null;
     setAppliedCouponCode(null);
-    setAppliedCouponLabel(name ?? fromList?.name ?? code);
+    setAppliedCouponLabel(name ?? fromList.name ?? code);
     setSelectedMerchantOfferId(null);
     pendingMissedOfferWalletRef.current = null;
     setMissedOfferWalletPending(false);
@@ -3620,12 +3931,41 @@ function CheckoutScreen() {
     setCheckoutOfferUserPinned(true);
     setCouponApplyError(null);
     setCouponSheetVisible(false);
-    setCouponCelebrationCode(code || name?.trim() || "Offer");
-    setCouponCelebrationVisible(true);
-  }, [hasEligibleCheckoutOfferBase, checkoutOffersQuery.data]);
+    pendingCouponCelebrationRef.current = code || name?.trim() || "Offer";
+    setCouponCelebrationVisible(false);
+  }, [
+    hasEligibleCheckoutOfferBase,
+    checkoutOffersQuery.data,
+    cartSubtotalForOffersResolved,
+  ]);
 
   const applyMerchantOfferById = useCallback((offerId: number, couponCode?: string | null) => {
     if (!hasEligibleCheckoutOfferBase) return;
+    const fromList =
+      checkoutOffersQuery.data?.merchantOffers.find((o) => o.id === offerId) ??
+      checkoutOffersQuery.data?.merchantOffersIneligible?.find((o) => o.id === offerId);
+    const gap = fromList
+      ? resolveOfferMinOrderGap(
+          {
+            minOrderAmount: fromList.minOrderAmount,
+            summary: fromList.summary,
+            reason: (fromList as { reason?: string }).reason,
+            lockReason: (fromList as { lockReason?: string }).lockReason,
+          },
+          cartSubtotalForOffersResolved
+        )
+      : 0;
+    const minAmt = fromList
+      ? resolveOfferMinOrderAmount({
+          minOrderAmount: fromList.minOrderAmount,
+          summary: fromList.summary,
+        })
+      : null;
+    if (gap > 0 && minAmt != null) {
+      setCouponApplyError(formatMinOrderLockReason(gap, minAmt));
+      setCouponSheetVisible(true);
+      return;
+    }
     setSelectedPlatformOfferId(null);
     setAppliedCouponLabel(null);
     pendingMissedOfferWalletRef.current = null;
@@ -3641,13 +3981,10 @@ function CheckoutScreen() {
       setAppliedCouponCode(null);
     }
     setCouponSheetVisible(false);
-    const offerTitle =
-      checkoutOffersQuery.data?.merchantOffers.find((o) => o.id === offerId)?.title ??
-      checkoutOffersQuery.data?.merchantOffersIneligible?.find((o) => o.id === offerId)?.title ??
-      "Offer";
-    setCouponCelebrationCode(offerTitle);
-    setCouponCelebrationVisible(true);
-  }, [hasEligibleCheckoutOfferBase, checkoutOffersQuery.data]);
+    const offerTitle = fromList?.title ?? "Offer";
+    pendingCouponCelebrationRef.current = offerTitle;
+    setCouponCelebrationVisible(false);
+  }, [hasEligibleCheckoutOfferBase, checkoutOffersQuery.data, cartSubtotalForOffersResolved]);
 
   const consumePendingCheckoutOffer = useCheckoutOfferStore((s) => s.consumePending);
 
@@ -3701,28 +4038,8 @@ function CheckoutScreen() {
     [couponAvailablePrompt, applyCouponCode, applyMerchantOfferById, applyPlatformOfferById]
   );
 
-  useEffect(() => {
-    if (!couponSheetVisible) return;
-    if (!hasEligibleCheckoutOfferBase) {
-      setCouponSheetVisible(false);
-      return;
-    }
-    if (
-      !checkoutOffersQuery.isLoading &&
-      !hasCheckoutOffersCatalog &&
-      !hasAppliedCheckoutPromo &&
-      !hasMissedOfferUnlocked
-    ) {
-      setCouponSheetVisible(false);
-    }
-  }, [
-    hasEligibleCheckoutOfferBase,
-    couponSheetVisible,
-    checkoutOffersQuery.isLoading,
-    hasCheckoutOffersCatalog,
-    hasAppliedCheckoutPromo,
-    hasMissedOfferUnlocked,
-  ]);
+  // Intentionally do not auto-close the coupons sheet when checkout offers are
+  // ineligible — user must still open it to see Flash deals + locked APPLY rows.
 
   useEffect(() => {
     if (!hasEligibleCheckoutOfferBase) {
@@ -3952,47 +4269,57 @@ function CheckoutScreen() {
           ? buildAddPlanCopy(checkoutPlan, defaultPrice)
           : `Join ${subscriptionPlanName}`;
       const freeDeliveryRadius = checkoutPlan?.maxFreeDeliveryRadiusKm ?? 7;
-      const saveAmt = gmitraPlusDeliverySave;
-      const payDelivery = gmitraPlusMembershipDeliveryFee;
+      const saveAmt = hasValidMembershipSaveAmount ? gmitraPlusDeliverySave : null;
+      const payDelivery = hasValidMembershipSaveAmount ? gmitraPlusMembershipDeliveryFee : null;
       const partialNote =
-        subscriptionDeliveryBenefitResolved?.isPartial && freeDeliveryRadius > 0
+        hasValidMembershipSaveAmount &&
+        subscriptionDeliveryBenefitResolved?.isPartial &&
+        freeDeliveryRadius > 0
           ? `${freeDeliveryRadius} km covered — pay only for extra distance`
           : null;
       const upsellSaveLine =
         saveAmt != null
           ? `Save ₹${formatCheckoutSavingsRupees(saveAmt)} on delivery with ${subscriptionPlanName}`
-          : `Add ${subscriptionPlanName} for free delivery benefits`;
+          : `Add ${subscriptionPlanName}`;
       const upsellPayLine =
         payDelivery != null && subscriptionDeliveryBenefitResolved?.isPartial
           ? `Pay only ₹${payDelivery} delivery after membership`
           : saveAmt != null
-            ? `Unlock ₹${saveAmt} delivery savings`
-            : `Unlock free delivery benefits`;
+            ? `Unlock ₹${formatCheckoutSavingsRupees(saveAmt)} delivery savings`
+            : `Add ${subscriptionPlanName}`;
       return {
         offersTitle: subscriptionOptIn
-          ? `${subscriptionPlanName} savings on this order`
+          ? saveAmt != null
+            ? `${subscriptionPlanName} savings on this order`
+            : `${subscriptionPlanName} added`
           : upsellSaveLine,
         offersSub: subscriptionOptIn
-          ? subscriptionDeliveryBenefitResolved?.isPartial
+          ? subscriptionDeliveryBenefitResolved?.isPartial && saveAmt != null
             ? `${subscriptionPlanName}: ${freeDeliveryRadius} km free — you pay only for extra distance.`
             : saveAmt != null && saveAmt > 0
               ? `You're saving ₹${formatCheckoutSavingsRupees(saveAmt)} on delivery on this order.`
-              : `${subscriptionPlanName} benefits are applied to your bill.`
+              : `${subscriptionPlanName} benefits apply on eligible deliveries.`
           : saveAmt != null && saveAmt > 0
             ? `${addCopy}. Apply to save ₹${formatCheckoutSavingsRupees(saveAmt)} on delivery.`
             : partialNote
               ? `${addCopy}. ${partialNote}`
               : addCopy,
         attachTitle: subscriptionOptIn
-          ? `${subscriptionPlanName} applied on this order`
+          ? saveAmt != null
+            ? `${subscriptionPlanName} applied on this order`
+            : `${subscriptionPlanName} added`
           : upsellPayLine,
         attachSub: subscriptionOptIn
-          ? subscriptionDeliveryBenefitResolved?.isPartial
-            ? `You save ₹${formatCheckoutSavingsRupees(saveAmt ?? 0)} — delivery ₹${payDelivery ?? 0} for extra km + base fare`
-            : "Member benefits are included in your bill."
-          : partialNote ? `${addCopy}. ${partialNote}` : addCopy,
+          ? subscriptionDeliveryBenefitResolved?.isPartial && saveAmt != null
+            ? `You save ₹${formatCheckoutSavingsRupees(saveAmt)} — delivery ₹${payDelivery ?? 0} for extra km + base fare`
+            : saveAmt != null
+              ? "Member benefits are included in your bill."
+              : "Member benefits apply on eligible deliveries."
+          : partialNote
+            ? `${addCopy}. ${partialNote}`
+            : addCopy,
         freeDeliveryNote: checkoutPlan?.freeDeliveryEnabled
-          ? subscriptionDeliveryBenefitResolved?.isPartial
+          ? subscriptionDeliveryBenefitResolved?.isPartial && hasValidMembershipSaveAmount
             ? `${subscriptionPlanName} Free Delivery — ${freeDeliveryRadius} km covered`
             : `Free delivery within ${freeDeliveryRadius} km`
           : null,
@@ -4012,6 +4339,8 @@ function CheckoutScreen() {
       checkoutPlan,
       defaultPrice,
       subscriptionPlanName,
+      hasValidMembershipSaveAmount,
+      gmitraPlusDeliverySave,
     ]
   );
 
@@ -5791,7 +6120,7 @@ function CheckoutScreen() {
                           subscriptionOptIn && styles.offersApplyFilledText,
                         ]}
                       >
-                        {subscriptionOptIn ? "ADDED" : "JOIN"}
+                        {subscriptionOptIn ? "ADDED" : hasValidMembershipSaveAmount ? "JOIN" : "ADD"}
                       </CheckoutText>
                     </TouchableOpacity>
                   </View>
@@ -5805,11 +6134,12 @@ function CheckoutScreen() {
               <View style={[styles.offersDottedSep, isDiscoveryDark && styles.darkDash]} />
             ) : null}
             <View style={styles.offersAppliedRow}>
-              {hasEligibleCheckoutOfferBase &&
-              (hasAppliedCheckoutPromo ||
-                hasMissedOfferUnlocked ||
-                membershipFreeDeliveryOnBill ||
-                flashSaleSavingsTotal > 0.005) ? (
+              {checkoutSavingsTotal > 0.005 ||
+              (hasEligibleCheckoutOfferBase &&
+                (hasAppliedCheckoutPromo ||
+                  hasMissedOfferUnlocked ||
+                  membershipFreeDeliveryOnBill ||
+                  flashSaleSavingsTotal > 0.005)) ? (
                 <View style={styles.offersGreenTick}>
                   <Ionicons name="checkmark" size={14} color="#fff" />
                 </View>
@@ -5823,15 +6153,24 @@ function CheckoutScreen() {
                   {offersAppliedHeadline}
                 </CheckoutText>
                 {offersAppliedSubline ? (
-                  <CheckoutText style={[styles.offersSubLineMuted, dMuted]} numberOfLines={2}>
+                  <CheckoutText
+                    style={[
+                      styles.offersSubLineMuted,
+                      !hasEligibleCheckoutOfferBase ? styles.offersSubLineIneligible : dMuted,
+                    ]}
+                    numberOfLines={2}
+                  >
                     {offersAppliedSubline}
                   </CheckoutText>
                 ) : null}
-                {hasEligibleCheckoutOfferBase ? (
-                  <TouchableOpacity onPress={() => setCouponSheetVisible(true)} activeOpacity={0.7} hitSlop={6}>
-                    <CheckoutText style={styles.offersLearnMore}>View all coupons ›</CheckoutText>
-                  </TouchableOpacity>
-                ) : null}
+                <Pressable
+                  onPress={() => setCouponSheetVisible(true)}
+                  hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+                  accessibilityRole="button"
+                  accessibilityLabel="View all coupons"
+                >
+                  <CheckoutText style={styles.offersLearnMore}>View all coupons ›</CheckoutText>
+                </Pressable>
               </View>
               {hasEligibleCheckoutOfferBase && hasMissedOfferUnlocked ? (
                 <TouchableOpacity onPress={handleRemoveMissedOfferWallet} hitSlop={8} activeOpacity={0.7}>
@@ -5841,19 +6180,29 @@ function CheckoutScreen() {
                 <TouchableOpacity onPress={removeAllCheckoutOffers} hitSlop={8} activeOpacity={0.7}>
                   <CheckoutText style={styles.offersRemoveRed}>Remove</CheckoutText>
                 </TouchableOpacity>
-              ) : hasEligibleCheckoutOfferBase && !membershipFreeDeliveryOnBill ? (
+              ) : !membershipFreeDeliveryOnBill ? (
                 <TouchableOpacity
                   style={[
                     styles.offersApplyOutline,
                     isDiscoveryDark && styles.darkApplyOutline,
+                    !hasEligibleApplyableOffer && styles.offersApplyOutlineDisabled,
                   ]}
                   onPress={() => {
-                    if (featuredCoupon) setCouponCodeInput(featuredCoupon.code);
+                    if (hasEligibleApplyableOffer && featuredCoupon) {
+                      setCouponCodeInput(featuredCoupon.code);
+                    }
                     setCouponSheetVisible(true);
                   }}
                   activeOpacity={0.85}
                 >
-                  <CheckoutText style={styles.offersApplyOutlineText}>APPLY</CheckoutText>
+                  <CheckoutText
+                    style={[
+                      styles.offersApplyOutlineText,
+                      !hasEligibleApplyableOffer && styles.offersApplyOutlineTextDisabled,
+                    ]}
+                  >
+                    APPLY
+                  </CheckoutText>
                 </TouchableOpacity>
               ) : null}
             </View>
@@ -6152,10 +6501,11 @@ function CheckoutScreen() {
       <CouponApplyCelebration
         visible={couponCelebrationVisible}
         couponCode={couponCelebrationCode}
-        // primaryCheckoutDiscount reflects whichever promo is currently active (coupon,
-        // Precision, or Platform) — couponDiscountAmount alone would show 0 for the
-        // latter two since it only matches against appliedCouponCode.
-        savedAmount={primaryCheckoutDiscount?.amount ?? couponDiscountAmount}
+        savedAmount={
+          checkoutSavingsTotal > 0.005
+            ? checkoutSavingsTotal
+            : (primaryCheckoutDiscount?.amount ?? couponDiscountAmount)
+        }
         onDismiss={() => setCouponCelebrationVisible(false)}
       />
 
@@ -6194,7 +6544,8 @@ function CheckoutScreen() {
         error={checkoutOffersQuery.isError && !checkoutOffersQuery.data}
         data={checkoutOffersQuery.data}
         merchantId={merchantId}
-        cartSubtotal={clientEligibleCheckoutSubtotal}
+        cartSubtotal={cartSubtotalForOffersResolved}
+        checkoutOffersAllowed={hasEligibleCheckoutOfferBase}
         itemDealSavingsByOfferId={itemDealSavingsByOfferId}
         flashSaleSavingsByOfferId={flashSaleSavingsByOfferId}
         pendingMissedOfferKey={
@@ -7544,6 +7895,10 @@ const styles = StyleSheet.create({
     color: "#6B7280",
     marginTop: 3,
   },
+  offersSubLineIneligible: {
+    color: "#DC2626",
+    fontWeight: "600",
+  },
   offersMemberSaveLine: {
     fontSize: 13,
     fontWeight: "700",
@@ -7605,11 +7960,18 @@ const styles = StyleSheet.create({
     borderColor: CX.mint,
     backgroundColor: "#FFFFFF",
   },
+  offersApplyOutlineDisabled: {
+    borderColor: "#D1D5DB",
+    backgroundColor: "#F3F4F6",
+  },
   offersApplyOutlineText: {
     fontSize: 11,
     fontWeight: "700",
     color: CX.mint,
     letterSpacing: 0.6,
+  },
+  offersApplyOutlineTextDisabled: {
+    color: "#9CA3AF",
   },
   offersApplyFilled: {
     backgroundColor: CX.mint,

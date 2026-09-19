@@ -14,6 +14,7 @@ let warnedCategoryAssignmentsFailure = false;
 
 export function useCategoryServiceAssignments() {
   const session = useSessionStore((s) => s.session);
+  const hydrated = useSessionStore((s) => s.hydrated);
 
   return useQuery({
     queryKey: ["rider", "onboarding", "category-service-assignments"],
@@ -48,7 +49,9 @@ export function useCategoryServiceAssignments() {
       }
       return { rows: [], byCategory: FALLBACK_CATEGORY_SERVICE_BY_CODE };
     },
-    // Public config endpoint — fetch even before session hydrates.
+    // Wait for session hydrate so this public call does not fight boot traffic
+    // and timeout on a busy local DB pool.
+    enabled: hydrated,
     staleTime: 10 * 60_000,
     gcTime: 30 * 60_000,
     retry: 1,

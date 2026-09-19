@@ -76,12 +76,62 @@ export type WalletBalanceSource = {
   available_balance?: number | null;
 };
 
-/** Same field Home dashboard and Earnings must show. */
+const NEGATIVE_EPS = -0.005;
+
+export function isWalletBalanceNegative(amount: number | null | undefined): boolean {
+  const n = Number(amount);
+  return Number.isFinite(n) && n < NEGATIVE_EPS;
+}
+
+/**
+ * Card / KPI display amount.
+ * When available is overdrawn (dues), show that negative figure.
+ * Otherwise show withdrawable (payout-ready) balance.
+ */
 export function resolveWalletDisplayBalance(wallet: WalletBalanceSource | null | undefined): number {
   if (!wallet) return 0;
+  const available = Number(wallet.available_balance);
+  if (Number.isFinite(available) && available < NEGATIVE_EPS) {
+    return Math.round(available * 100) / 100;
+  }
   const w = wallet.withdrawable_balance ?? wallet.available_balance ?? 0;
   const n = Number(w);
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
+/** Withdrawable for payout actions — never negative. */
+export function resolveWithdrawableBalance(wallet: WalletBalanceSource | null | undefined): number {
+  if (!wallet) return 0;
+  const w = wallet.withdrawable_balance ?? wallet.available_balance ?? 0;
+  const n = Number(w);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.round(n * 100) / 100);
+}
+
+/** Web card tone classes (partnersite + control dashboard). */
+export function walletBalanceCardClasses(amount: number): {
+  card: string;
+  iconWrap: string;
+  icon: string;
+  amount: string;
+  label: string;
+} {
+  if (isWalletBalanceNegative(amount)) {
+    return {
+      card: "bg-red-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow",
+      iconWrap: "p-2 rounded-lg bg-red-100 flex-shrink-0",
+      icon: "text-red-700",
+      amount: "text-xl font-bold text-red-700 mt-1 tabular-nums",
+      label: "Wallet balance",
+    };
+  }
+  return {
+    card: "bg-emerald-50 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow",
+    iconWrap: "p-2 rounded-lg bg-emerald-100 flex-shrink-0",
+    icon: "text-emerald-700",
+    amount: "text-xl font-bold text-gray-900 mt-1 tabular-nums",
+    label: "Withdrawable",
+  };
 }
 
 /** Clean merchant-facing copy for withdrawal reject / fail credits. */
@@ -133,8 +183,16 @@ export const LEDGER_CATEGORY_LABELS: Record<string, string> = {
 export function resolveLedgerCategoryLabel(entry: {
   category: string;
   metadata?: Record<string, unknown> | null;
+  description?: string | null;
 }): string {
   const meta = entry.metadata ?? null;
+  if (
+    String(meta?.purpose ?? "").trim() === "outstanding_dues_clear" ||
+    String(meta?.entry_type ?? "").trim() === "outstanding_dues_cleared" ||
+    /^Outstanding dues Cleared$/i.test(String(entry.description ?? "").trim())
+  ) {
+    return "Dues cleared";
+  }
   const txType = String(meta?.transaction_type ?? "").trim().toUpperCase();
   if (txType && LEDGER_CATEGORY_LABELS[txType]) return LEDGER_CATEGORY_LABELS[txType];
   return LEDGER_CATEGORY_LABELS[entry.category] ?? entry.category.replace(/_/g, " ");

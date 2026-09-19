@@ -1,27 +1,19 @@
-import { Platform, StyleSheet, useColorScheme, View } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
-import { resolveAndroidSystemNavBackground } from "@/constants/layout";
 
 /**
- * Paints the Android system navigation inset with the device theme color
- * (white in light mode, black in dark). pointerEvents none so Back/Home/Recents
- * stay tappable. Height is 0 on gesture nav.
+ * Reserves the Android system-navigation inset without painting a solid "edge"
+ * fill — gesture / 3-button chrome stays visible under floating tab + cart.
+ * pointerEvents none so Back/Home/Recents stay tappable.
  */
 export function AndroidSystemNavigationFill() {
   const { bottom } = useAppSafeAreaInsets();
-  const colorScheme = useColorScheme();
   if (Platform.OS !== "android" || bottom <= 0) return null;
 
   return (
     <View
       pointerEvents="none"
-      style={[
-        styles.fill,
-        {
-          height: bottom,
-          backgroundColor: resolveAndroidSystemNavBackground(colorScheme),
-        },
-      ]}
+      style={[styles.fill, { height: bottom }]}
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
     />
@@ -34,8 +26,9 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    // Stay under the floating tab sheet (was 100000 and could cover nav chrome).
+    // Transparent — do not cover the system gesture / nav row with a white strip.
+    backgroundColor: "transparent",
     zIndex: 1,
-    elevation: 1,
+    elevation: 0,
   },
 });

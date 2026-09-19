@@ -17,7 +17,7 @@ import {
   RefreshControl,
 } from "react-native";
 import { AppText } from "@/components/AppText";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -253,6 +253,25 @@ export default function SelectLocationScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ fromOnboarding?: string; afterSaveReturn?: string; focusSearch?: string }>();
   const insets = useSafeAreaInsets();
+  /** Blocks double-tap → duplicate /location-address stack entries. */
+  const navLockRef = useRef(false);
+  const pushAddressOnce = useCallback(
+    (run: () => void) => {
+      if (navLockRef.current) return;
+      navLockRef.current = true;
+      try {
+        run();
+      } catch {
+        navLockRef.current = false;
+      }
+    },
+    []
+  );
+  useFocusEffect(
+    useCallback(() => {
+      navLockRef.current = false;
+    }, [])
+  );
   const {
     address,
     coords,
@@ -692,29 +711,37 @@ export default function SelectLocationScreen() {
   };
 
   const handleAddAddressDirect = async () => {
-    await requestPermissionAndFetch({ forceDevice: true });
-    const { permissionStatus, coords: latestCoords, address: latestAddress } = useLocationStore.getState();
-    if (permissionStatus !== "granted" || !latestCoords) {
-      Alert.alert(
-        "Location required",
-        "Please enable location to add your delivery address directly."
-      );
-      return;
+    if (navLockRef.current) return;
+    navLockRef.current = true;
+    try {
+      await requestPermissionAndFetch({ forceDevice: true });
+      const { permissionStatus, coords: latestCoords, address: latestAddress } = useLocationStore.getState();
+      if (permissionStatus !== "granted" || !latestCoords) {
+        navLockRef.current = false;
+        Alert.alert(
+          "Location required",
+          "Please enable location to add your delivery address directly."
+        );
+        return;
+      }
+      router.push({
+        pathname: "/location-address",
+        params: {
+          latitude: String(latestCoords.latitude),
+          longitude: String(latestCoords.longitude),
+          primary: latestAddress?.primary ?? "Current location",
+          fullAddress: latestAddress?.fullAddress ?? "",
+          ...forwardParams,
+        },
+      });
+    } catch {
+      navLockRef.current = false;
     }
-    router.push({
-      pathname: "/location-address",
-      params: {
-        latitude: String(latestCoords.latitude),
-        longitude: String(latestCoords.longitude),
-        primary: latestAddress?.primary ?? "Current location",
-        fullAddress: latestAddress?.fullAddress ?? "",
-        ...forwardParams,
-      },
-    });
   };
 
   const handleSelectSearchResult = async (place: EnrichedPlaceResult) => {
-    if (resolvingSearchPlace) return;
+    if (resolvingSearchPlace || navLockRef.current) return;
+    navLockRef.current = true;
     setResolvingSearchPlace(true);
     try {
       let resolved = await resolveMapboxEnrichedPlace(place, "food-delivery");
@@ -730,6 +757,7 @@ export default function SelectLocationScreen() {
         }
       }
       if (!isValidMapCoordinate(resolved.latitude, resolved.longitude)) {
+        navLockRef.current = false;
         Alert.alert(
           "Location unavailable",
           "Could not load map coordinates for this place. Try another search result."
@@ -752,6 +780,8 @@ export default function SelectLocationScreen() {
           ...forwardParams,
         },
       });
+    } catch {
+      navLockRef.current = false;
     } finally {
       setResolvingSearchPlace(false);
     }
@@ -1143,15 +1173,17 @@ export default function SelectLocationScreen() {
                   : null;
               const isSelected = saved.id === matchedSavedIdForPill;
               const openEdit = () => {
-                router.push({
-                  pathname: "/location-address",
-                  params: {
-                    latitude: String(saved.latitude),
-                    longitude: String(saved.longitude),
-                    addressId: String(saved.id),
-                    primary: saved.label ?? saved.fullAddress.slice(0, 40),
-                    ...forwardParams,
-                  },
+                pushAddressOnce(() => {
+                  router.push({
+                    pathname: "/location-address",
+                    params: {
+                      latitude: String(saved.latitude),
+                      longitude: String(saved.longitude),
+                      addressId: String(saved.id),
+                      primary: saved.label ?? saved.fullAddress.slice(0, 40),
+                      ...forwardParams,
+                    },
+                  });
                 });
               };
               return (
@@ -1292,15 +1324,17 @@ export default function SelectLocationScreen() {
           if (!optionsAddress) return;
           const saved = optionsAddress;
           setOptionsAddress(null);
-          router.push({
-            pathname: "/location-address",
-            params: {
-              latitude: String(saved.latitude),
-              longitude: String(saved.longitude),
-              addressId: String(saved.id),
-              primary: saved.label ?? saved.fullAddress.slice(0, 40),
-              ...forwardParams,
-            },
+          pushAddressOnce(() => {
+            router.push({
+              pathname: "/location-address",
+              params: {
+                latitude: String(saved.latitude),
+                longitude: String(saved.longitude),
+                addressId: String(saved.id),
+                primary: saved.label ?? saved.fullAddress.slice(0, 40),
+                ...forwardParams,
+              },
+            });
           });
         }}
         onDelete={() => {

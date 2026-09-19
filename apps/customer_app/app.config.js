@@ -24,10 +24,21 @@ const hasGoogleServices = fs.existsSync(googleServicesFile);
 
 const CUSTOMER_EAS_PROJECT_ID = "52247a95-93fe-4274-b7ff-47a113a2d683";
 
+/** Enable web only for `export:web` / explicit EXPO_WEB=1 — otherwise Metro
+ *  web-SSR (`/_expo/loading` + expo-router/node/render.js) races the Android
+ *  bundle and hangs around 25% on Windows. */
+const enableWeb =
+  process.env.EXPO_WEB === "1" ||
+  process.env.npm_lifecycle_event === "export:web" ||
+  process.env.npm_lifecycle_event === "start:web" ||
+  process.env.npm_lifecycle_event === "serve:web";
+
 module.exports = {
   ...appJson,
   expo: {
     ...appJson.expo,
+    // Native-first for `expo start`. Web stays available via EXPO_WEB=1 / export:web.
+    ...(enableWeb ? {} : { platforms: ["ios", "android"] }),
     jsEngine: "hermes",
     newArchEnabled: true,
     icon: APP_ICON,

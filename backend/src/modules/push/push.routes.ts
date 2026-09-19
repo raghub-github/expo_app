@@ -407,6 +407,21 @@ export async function pushRoutes(app: FastifyInstance) {
           },
           "push_tokens_registered"
         );
+
+        // Profile often completes before notification permission — deliver welcome OS push now.
+        if (role === "customer" && (expoToken || nativeToken)) {
+          void import("../notifications/customerSignupPush.js")
+            .then(({ maybeRetryCustomerSignupOsPush }) =>
+              maybeRetryCustomerSignupOsPush(userId),
+            )
+            .catch((err) => {
+              req.log.warn(
+                { err, userId: userId.slice(0, 8) },
+                "customer_signup_os_push_retry_failed",
+              );
+            });
+        }
+
         return reply.send({ ok: true, topics });
       }
     );

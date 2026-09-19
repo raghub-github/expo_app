@@ -83,6 +83,16 @@ describe("merchant withdrawal accounting lifecycle", () => {
     assert.equal(view.pending_withdrawal, x);
   });
 
+  it("preserves negative available_balance for dues display while withdrawable stays 0", () => {
+    const view = calculateMerchantWithdrawalAccounting({
+      available_balance: -2599.4,
+      hold_balance: 0,
+      pending_withdrawal_total: 0,
+    });
+    assert.equal(view.available_balance, money(-2599.4));
+    assert.equal(view.withdrawable_balance, 0);
+  });
+
   it("failed / rejected / cancelled / reversed release restores original X", () => {
     const x = money(500 + Math.random() * 2500);
     const y = money(100 + Math.random() * Math.min(300, x - 101));

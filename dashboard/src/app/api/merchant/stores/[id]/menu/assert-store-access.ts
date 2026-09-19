@@ -2,31 +2,46 @@
  * Shared store access for dashboard menu API routes.
  * Returns MerchantAccess for fine-grained permission checks.
  */
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import type { NextRequest } from "next/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { getMerchantAccess, type MerchantAccess } from "@/lib/permissions/merchant-access";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getMerchantStoreById } from "@/lib/db/operations/merchant-stores";
 import crypto from "node:crypto";
 
-export async function assertStoreAccess(storeId: number): Promise<
+export async function assertStoreAccess(
+  storeId: number,
+  request?: NextRequest
+): Promise<
   | { ok: false; status: number; error: string }
   | { ok: true; access: MerchantAccess; user: { id: string; email: string } }
 > {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user?.email) return { ok: false as const, status: 401, error: "Not authenticated" };
+  const auth = await getAuthenticatedApiUser(request);
+  if (!auth.ok) {
+    if (auth.status === 503 || auth.status === 499) {
+      return { ok: false as const, status: 503, error: "Service temporarily unavailable" };
+    }
+    return { ok: false as const, status: 401, error: "Not authenticated" };
+  }
+  let email = (auth.user.email ?? "").trim();
+  if (!email) {
+    const mapped = await resolveSystemUserForSupabaseAuth(auth.user.id, undefined);
+    email = (mapped?.email ?? "").trim();
+  }
+  if (!email) return { ok: false as const, status: 401, error: "Not authenticated" };
 
-  const access = await getMerchantAccess(user.id, user.email);
+  const access = await getMerchantAccess(auth.user.id, email);
   if (!access) return { ok: false as const, status: 403, error: "Merchant dashboard access required" };
 
   // Org-wide when MERCHANT_VIEW / admin merchant access; otherwise AM assignment scope.
   const areaManagerId = await resolveMerchantListAreaManagerId({
-    supabaseAuthId: user.id,
-    email: user.email,
+    supabaseAuthId: auth.user.id,
+    email,
   });
   const store = await getMerchantStoreById(storeId, areaManagerId);
   if (!store) return { ok: false as const, status: 404, error: "Store not found" };
-  return { ok: true as const, access, user: { id: user.id, email: user.email } };
+  return { ok: true as const, access, user: { id: auth.user.id, email } };
 }
 
 function genId(prefix: string) {

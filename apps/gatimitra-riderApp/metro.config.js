@@ -36,7 +36,13 @@ config.cacheStores = ({ FileStore }) => {
       return await origGet(key);
     } catch (err) {
       const code = err && typeof err === "object" ? err.code : null;
-      if (code === "EMFILE" || code === "ENFILE" || code === "EAGAIN") {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (
+        code === "EMFILE" ||
+        code === "ENFILE" ||
+        code === "EAGAIN" ||
+        /deserialize|cloned data/i.test(msg)
+      ) {
         return undefined;
       }
       throw err;
@@ -266,5 +272,6 @@ withExpoPlatformFallback(config);
 // Cap workers hard — Metro FileStore uses fs/promises (not graceful-fs).
 // Override with METRO_MAX_WORKERS if needed.
 config.maxWorkers = Number(process.env.METRO_MAX_WORKERS) || 1;
+config.cacheVersion = `${config.cacheVersion || "1"}-rider-native`;
 
 module.exports = config;

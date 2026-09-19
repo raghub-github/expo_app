@@ -168,14 +168,53 @@ export async function GET(req: NextRequest) {
     }));
 
     const orderRefs = list.filter((e) => e.reference_type === 'ORDER' && e.reference_id != null);
-    const metaCoreIds = [
+
+    // Older ADMIN manual credit/debit rows only stored wallet_credit_request_id —
+    // pull order_id from the original adjustment request metadata.
+    const creditRequestIds = [
       ...new Set(
         list
-          .map((e) => Number((e.metadata as Record<string, unknown> | null)?.orders_core_id))
+          .map((e) => Number((e.metadata as Record<string, unknown> | null)?.wallet_credit_request_id))
           .filter((id) => Number.isFinite(id) && id > 0)
       ),
     ];
-    if (orderRefs.length > 0 || metaCoreIds.length > 0) {
+    const orderIdByCreditRequest = new Map<number, number>();
+    if (creditRequestIds.length > 0) {
+      const { data: creditReqs } = await db
+        .from('merchant_wallet_credit_requests')
+        .select('id, metadata')
+        .in('id', creditRequestIds);
+      for (const req of creditReqs || []) {
+        const meta = (req.metadata ?? null) as Record<string, unknown> | null;
+        const oid = Number(meta?.order_id ?? meta?.orders_core_id);
+        if (Number.isFinite(oid) && oid > 0) {
+          orderIdByCreditRequest.set(Number(req.id), oid);
+        }
+      }
+    }
+
+    const metaCoreIds = [
+      ...new Set(
+        list
+          .map((e) => {
+            const meta = (e.metadata as Record<string, unknown> | null) ?? null;
+            const fromOrdersCore = Number(meta?.orders_core_id);
+            if (Number.isFinite(fromOrdersCore) && fromOrdersCore > 0) return fromOrdersCore;
+            const fromOrderId = Number(meta?.order_id);
+            if (Number.isFinite(fromOrderId) && fromOrderId > 0) return fromOrderId;
+            const fromReq = orderIdByCreditRequest.get(Number(meta?.wallet_credit_request_id));
+            if (fromReq != null) return fromReq;
+            return NaN;
+          })
+          .filter((id) => Number.isFinite(id) && id > 0)
+      ),
+    ];
+    if (
+      orderRefs.length > 0 ||
+      metaCoreIds.length > 0 ||
+      list.some((e) => Number(e.order_id) > 0) ||
+      orderIdByCreditRequest.size > 0
+    ) {
       const foodIds = [...new Set(orderRefs.map((e) => Number(e.reference_id!)).filter((id) => Number.isFinite(id) && id > 0))];
       const { data: foodRows } = foodIds.length
         ? await db.from('orders_food').select('id, order_id').in('id', foodIds)
@@ -196,13 +235,36 @@ export async function GET(req: NextRequest) {
           .from('orders_core')
           .select('id, order_id, formatted_order_id')
           .in('id', orderIds);
-        if (coreRows?.length) {
-          orderMeta = coreRows as {
+        orderMeta = (coreRows || []) as {
+          id: number;
+          order_id: string | null;
+          formatted_order_id: string | null;
+        }[];
+
+        // Also resolve by public formatted id when stored value is the GMF suffix
+        // (e.g. request metadata.order_id = 100041 for GMF100041).
+        const foundIds = new Set(orderMeta.map((o) => o.id));
+        const missing = orderIds.filter((id) => !foundIds.has(id));
+        if (missing.length > 0) {
+          const orFilters = missing
+            .flatMap((id) => [`formatted_order_id.eq.GMF${id}`, `formatted_order_id.eq.GM${id}`])
+            .join(',');
+          const { data: byFmt } = await db
+            .from('orders_core')
+            .select('id, order_id, formatted_order_id')
+            .or(orFilters);
+          for (const row of (byFmt || []) as {
             id: number;
             order_id: string | null;
             formatted_order_id: string | null;
-          }[];
-        } else {
+          }[]) {
+            if (!foundIds.has(row.id)) {
+              orderMeta.push(row);
+              foundIds.add(row.id);
+            }
+          }
+        }
+        if (!orderMeta.length) {
           const { data: ordRows } = await db
             .from('orders')
             .select('id, order_id, formatted_order_id')
@@ -220,30 +282,60 @@ export async function GET(req: NextRequest) {
           o.formatted_order_id?.trim() || o.order_id?.trim() || null,
         ])
       );
+      // Map numeric suffixes (100041) → public id when core PK differs
+      const suffixToPublic = new Map<string, { coreId: number; publicId: string }>();
+      for (const o of orderMeta) {
+        const publicId = (o.formatted_order_id?.trim() || o.order_id?.trim() || '').replace(/^#/, '');
+        if (!publicId) continue;
+        const digits = publicId.replace(/\D/g, '');
+        if (digits) suffixToPublic.set(digits, { coreId: o.id, publicId });
+        suffixToPublic.set(String(o.id), { coreId: o.id, publicId });
+      }
       const resolvePublicOrderId = (entry: (typeof list)[number]): string | null => {
         const meta = (entry.metadata ?? null) as Record<string, unknown> | null;
         const fromMeta = String(meta?.formatted_order_id ?? '').trim().replace(/^#/, '');
         if (fromMeta && !/^\d+$/.test(fromMeta)) return fromMeta;
 
         const foodCore = entry.reference_id != null ? foodMap.get(Number(entry.reference_id)) : undefined;
+        const fromReq = orderIdByCreditRequest.get(Number(meta?.wallet_credit_request_id));
+        const metaCore =
+          Number.isFinite(Number(meta?.orders_core_id)) && Number(meta?.orders_core_id) > 0
+            ? Number(meta?.orders_core_id)
+            : Number.isFinite(Number(meta?.order_id)) && Number(meta?.order_id) > 0
+              ? Number(meta?.order_id)
+              : fromReq ?? null;
         const coreId =
           foodCore ??
-          (Number.isFinite(Number(meta?.orders_core_id)) && Number(meta?.orders_core_id) > 0
-            ? Number(meta?.orders_core_id)
-            : Number.isFinite(Number(entry.order_id)) && Number(entry.order_id) > 0
-              ? Number(entry.order_id)
-              : null);
+          metaCore ??
+          (Number.isFinite(Number(entry.order_id)) && Number(entry.order_id) > 0
+            ? Number(entry.order_id)
+            : null);
         if (coreId != null) {
-          entry.order_id = coreId;
           const mapped = orderMetaMap.get(coreId);
-          if (mapped && !/^\d+$/.test(mapped.replace(/^#/, ''))) return mapped.replace(/^#/, '');
-          if (mapped) return mapped.replace(/^#/, '');
+          if (mapped) {
+            entry.order_id = coreId;
+            return mapped.replace(/^#/, '');
+          }
+          const viaSuffix = suffixToPublic.get(String(coreId));
+          if (viaSuffix) {
+            entry.order_id = viaSuffix.coreId;
+            return viaSuffix.publicId.replace(/^#/, '');
+          }
         }
         return null;
       };
 
       for (const e of list) {
-        if (String(e.reference_type ?? '').toUpperCase() !== 'ORDER' && !e.metadata) continue;
+        const meta = (e.metadata as Record<string, unknown> | null) ?? null;
+        const ref = String(e.reference_type ?? '').toUpperCase();
+        const hasLink =
+          ref === 'ORDER' ||
+          Number(e.order_id) > 0 ||
+          !!meta?.formatted_order_id ||
+          !!meta?.orders_core_id ||
+          !!meta?.order_id ||
+          !!meta?.wallet_credit_request_id;
+        if (!hasLink) continue;
         const publicId = resolvePublicOrderId(e);
         if (publicId) {
           e.formatted_order_id = publicId;

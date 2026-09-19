@@ -34,8 +34,12 @@ import { readRiderDeviceOrderAlerts, volumeStepTo01 } from "@/src/lib/riderDevic
 import {
   playIncomingOrderAlert,
   playOrderAlertSound,
-  stopOrderAlertSound,
 } from "@/src/lib/playOrderAlertSound";
+import {
+  attachRiderDispatchBuzzer,
+  startRiderDispatchBuzzer,
+  stopRiderDispatchBuzzer,
+} from "@/src/lib/nativeDispatchAlert";
 import {
   subscribeDispatchOfferWithdrawn,
 } from "@/src/lib/riderDispatchTakenToast";
@@ -286,7 +290,7 @@ export function IncomingRideOrderHost() {
     (orderId: string) => {
       const id = orderId.trim();
       if (!id) return;
-      stopOrderAlertSound();
+      stopRiderDispatchBuzzer(orderId);
       offerShownAtRef.current.delete(id);
       soundPlayedRef.current.delete(id);
       if (activeOrderIdRef.current === id) {
@@ -350,7 +354,7 @@ export function IncomingRideOrderHost() {
       if (stale) {
         riderDispatchLog("DROP OFFER", { reason: "unauthenticated" });
       }
-      stopOrderAlertSound();
+      stopRiderDispatchBuzzer(stale);
       setActiveOrderId(null);
       setModalVisible(false);
       modalOpenLoggedRef.current = null;
@@ -362,7 +366,7 @@ export function IncomingRideOrderHost() {
         owner: offerOwnerRiderId,
         me,
       });
-      stopOrderAlertSound();
+      stopRiderDispatchBuzzer();
       setActiveOrderId(null);
       setModalVisible(false);
       modalOpenLoggedRef.current = null;
@@ -370,7 +374,7 @@ export function IncomingRideOrderHost() {
     }
 
     if (!isOnDuty) {
-      stopOrderAlertSound();
+      stopRiderDispatchBuzzer();
       setActiveOrderId(null);
       setModalVisible(false);
       expiredRef.current.clear();
@@ -392,7 +396,7 @@ export function IncomingRideOrderHost() {
           return;
         }
       }
-      stopOrderAlertSound();
+      stopRiderDispatchBuzzer(stickyId);
       setActiveOrderId(null);
       setModalVisible(false);
       modalOpenLoggedRef.current = null;
@@ -460,30 +464,48 @@ export function IncomingRideOrderHost() {
     if (soundPlayedRef.current.has(poolHeadId)) return;
     soundPlayedRef.current.add(poolHeadId);
     const device = readRiderDeviceOrderAlerts();
-    if (acceptanceSettings) {
+    const riderId = session?.riderId?.trim() || session?.userId?.trim() || "";
+    const head = ordersRef.current.find((o) => o.id === poolHeadId);
+    void (async () => {
+      const native = await startRiderDispatchBuzzer({
+        orderId: poolHeadId,
+        riderId,
+        serviceType: head?.category ?? activeOrderRef.current?.category ?? null,
+      });
+      if (native) {
+        riderDispatchLog("sound_started_at", {
+          offerId: poolHeadId,
+          sound_started_at: Date.now(),
+          owner: "native_fgs",
+        });
+        return;
+      }
+      if (acceptanceSettings) {
+        riderDispatchLog("sound_started_at", {
+          offerId: poolHeadId,
+          sound_started_at: Date.now(),
+        });
+        void playIncomingOrderAlert(acceptanceSettings, device);
+        return;
+      }
+      if (!device.orderAlertsEnabled || !device.soundAlertsEnabled) return;
       riderDispatchLog("sound_started_at", {
         offerId: poolHeadId,
         sound_started_at: Date.now(),
       });
-      void playIncomingOrderAlert(acceptanceSettings, device);
-      return;
-    }
-    if (!device.orderAlertsEnabled || !device.soundAlertsEnabled) return;
-    riderDispatchLog("sound_started_at", {
-      offerId: poolHeadId,
-      sound_started_at: Date.now(),
-    });
-    void playOrderAlertSound(null, 8, volumeStepTo01(device.volumeStep), device.ringInSilent);
-  }, [isOnDuty, poolHeadId, acceptanceSettings]);
+      void playOrderAlertSound(null, 8, volumeStepTo01(device.volumeStep), device.ringInSilent);
+    })();
+  }, [isOnDuty, poolHeadId, acceptanceSettings, session?.riderId, session?.userId]);
 
   useEffect(() => {
+    void attachRiderDispatchBuzzer();
     return () => {
-      stopOrderAlertSound();
+      stopRiderDispatchBuzzer();
     };
   }, []);
 
   const closeModal = useCallback(() => {
-    stopOrderAlertSound();
+    stopRiderDispatchBuzzer(activeOrderIdRef.current);
     setModalVisible(false);
   }, []);
 

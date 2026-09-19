@@ -1226,9 +1226,12 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
   for (const r of realRecipients) {
     const mask = masks.get(r.userId) ?? { push: true, in_app: true, browser: true, email: false };
     // Tokenless / Expo Go fallback: inbox history only — never attempt push.
+    // Use inboxOnlyFallback (not template channel) so push-channel templates still
+    // land in-app when no token exists; explicit intent.channel=push skips fallback upstream.
     const channelSource = intent.channel ?? template.channel;
-    const allowed =
-      (inboxOnlyFallback || r.deviceToken === IN_APP_ONLY_TOKEN) && channelSource !== "push"
+    const tokenlessInbox =
+      inboxOnlyFallback || r.deviceToken === IN_APP_ONLY_TOKEN;
+    const allowed = tokenlessInbox
       ? (["in_app"] as const).filter(() => mask.in_app !== false)
       : allowedChannelsFor(channelSource, mask);
     if (allowed.length === 0) {
@@ -1239,6 +1242,10 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     for (const channel of allowed) {
       if (channel === "in_app") {
         if (inAppEmittedForUser.has(r.userId)) continue;
+        // Real push for this user already covers OS delivery; inbox API surfaces
+        // push-only rows. Skip companion in_app so logs/KPIs are not duplicated
+        // (delivered push + IN_APP_INBOX twin).
+        if (!tokenlessInbox && allowed.includes("push")) continue;
         inAppEmittedForUser.add(r.userId);
       }
       if (channel === "push" || channel === "browser") {

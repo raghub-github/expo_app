@@ -12,12 +12,14 @@ import {
   getFoodDeliveryInstructions,
   getFoodOrderMeta,
   getOrderTimelineEntriesWithFallback,
+  getOrderManualStatusHistory,
   recordEtaBreachIfNeeded,
   ensureOrderEtaWhenAccepted,
   type OrderSearchType,
   type OrderStatusFilter,
   type OrderTimelineEntry,
   type OrdersCoreRow,
+  type OrderManualStatusHistoryEntry,
 } from "@/lib/db/operations/orders-core";
 import { getOrderDetailEnrichment } from "@/lib/db/operations/order-detail-enrichment";
 import { getPersonRideOrderDetail, getPersonRideBillingContext } from "@/lib/db/operations/person-ride-order-detail";
@@ -118,10 +120,25 @@ function serializeTimelineEntries(entries: OrderTimelineEntry[]) {
   }));
 }
 
+function serializeManualStatusHistory(entries: OrderManualStatusHistoryEntry[]) {
+  return entries.map((e) => ({
+    toStatus: e.toStatus,
+    updatedByEmail: e.updatedByEmail,
+    updatedByRole: e.updatedByRole,
+    createdAt:
+      e.createdAt instanceof Date
+        ? e.createdAt.toISOString()
+        : e.createdAt != null
+          ? String(e.createdAt)
+          : "",
+  }));
+}
+
 type SingleOrderEnrichment = {
   data: OrderCoreApiListItem[];
   merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> | null;
   timeline: ReturnType<typeof serializeTimelineEntries>;
+  statusHistory: ReturnType<typeof serializeManualStatusHistory>;
   riderDispatchUi: OrderRiderAssignmentSnapshot | null;
   routedToHistory: Awaited<ReturnType<typeof listOrderRoutedToHistory>>;
   paymentDetail: OrderPaymentDetail | null;
@@ -143,6 +160,7 @@ async function enrichSingleOrderDetail(
 
   let merchantSummary: Awaited<ReturnType<typeof getMerchantStoreSummaryByStoreId>> = null;
   let timeline: ReturnType<typeof serializeTimelineEntries> = [];
+  let statusHistory: ReturnType<typeof serializeManualStatusHistory> = [];
   let riderDispatchUi: OrderRiderAssignmentSnapshot | null = null;
   let routedToHistory: Awaited<ReturnType<typeof listOrderRoutedToHistory>> = [];
   let paymentDetail: OrderPaymentDetail | null = null;
@@ -172,6 +190,7 @@ async function enrichSingleOrderDetail(
       riderDispatchUiResult,
       routedToHistoryResult,
       paymentDetailResult,
+      statusHistoryResult,
     ] = await Promise.all([
       storeIdNum != null ? getMerchantStoreSummaryByStoreId(storeIdNum) : Promise.resolve(null),
       first?.orderType === "food"
@@ -208,10 +227,15 @@ async function enrichSingleOrderDetail(
         console.error("[GET /api/orders/core] payment detail fetch failed", err);
         return null;
       }),
+      getOrderManualStatusHistory(orderId).catch((err) => {
+        console.error("[GET /api/orders/core] manual status history fetch failed", err);
+        return [] as OrderManualStatusHistoryEntry[];
+      }),
     ]);
 
     merchantSummary = summary;
     timeline = serializeTimelineEntries(timelineEntries);
+    statusHistory = serializeManualStatusHistory(statusHistoryResult);
     riderDispatchUi = riderDispatchUiResult;
     routedToHistory = routedToHistoryResult;
     paymentDetail = paymentDetailResult;
@@ -391,6 +415,7 @@ async function enrichSingleOrderDetail(
     data,
     merchantSummary,
     timeline,
+    statusHistory,
     riderDispatchUi,
     routedToHistory,
     paymentDetail,
@@ -404,6 +429,7 @@ function buildSingleOrderResponseExtras(
   return {
     ...(enrichment.merchantSummary != null && { merchantSummary: enrichment.merchantSummary }),
     timeline: enrichment.timeline,
+    statusHistory: enrichment.statusHistory,
     riderDispatchUi: enrichment.riderDispatchUi,
     routedToHistory: enrichment.routedToHistory,
     ...(enrichment.paymentDetail != null && { paymentDetail: enrichment.paymentDetail }),

@@ -287,7 +287,11 @@ export function resolveDutyServiceTypesForToggle(
   const selected =
     stored.length > 0 ? normalizeSelectedServices(stored, eligible) : [];
 
-  return selected.length > 0 ? selected : undefined;
+  if (selected.length > 0) return selected;
+  // Home dropdown can already show Food/Person while eligibility cache is cold.
+  // Don't block ON-DUTY just because the reconstructed pool was empty.
+  if (stored.length > 0) return stored;
+  return eligible.length > 0 ? eligible : undefined;
 }
 
 export { migrateLegacyServiceFilter };

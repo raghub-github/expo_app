@@ -1,4 +1,5 @@
 import type { PlatformOfferKind } from "@/lib/billing/platformOfferKinds";
+import { validateMaxFlashQuantity } from "@/lib/billing/flashSale";
 
 /** Which major blocks appear in the platform offer builder for a given kind. */
 export type PlatformOfferKindSections = {
@@ -266,6 +267,8 @@ export function validatePlatformOfferKindFieldsForApi(d: {
       }
       const merchants = Array.isArray(d.merchant_ids) ? d.merchant_ids : [];
       if (merchants.length < 1) return "Flash Sale requires at least one store.";
+      const qtyErr = validateMaxFlashQuantity(cond.max_flash_quantity ?? cond.maxFlashQuantity);
+      if (qtyErr) return qtyErr;
     }
   }
   const feeKinds = [

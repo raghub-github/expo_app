@@ -46,11 +46,18 @@ if (!isExpoGo()) {
         const isDispatchOffer = isRiderDispatchOfferData(data);
         const AppState = require("react-native").AppState;
         const appActive = AppState.currentState === "active";
-        // Never hide from shade in any state. Only mute OS for dispatch while
-        // the rider is actively in the app (in-app offer host plays the chime).
+        let nativeOwns = false;
+        try {
+          const { isNativeOrderAlertAvailable } = require("@gatimitra/expo-push-kit");
+          nativeOwns = isDispatchOffer && isNativeOrderAlertAvailable();
+        } catch {
+          nativeOwns = false;
+        }
+        // Never hide from shade in any state. Mute OS when native FGS owns
+        // audio, or for dispatch while the rider is in the app.
         return {
           shouldShowAlert: true,
-          shouldPlaySound: !(isDispatchOffer && appActive),
+          shouldPlaySound: !(nativeOwns || (isDispatchOffer && appActive)),
           shouldSetBadge: true,
           shouldShowBanner: true,
           shouldShowList: true,

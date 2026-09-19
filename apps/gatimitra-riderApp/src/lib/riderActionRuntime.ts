@@ -10,6 +10,7 @@ import {
 } from "@/src/lib/rider-action-kind";
 import { riderActionLog } from "@/src/lib/rider-action-log";
 import { isRiderNetworkOnline } from "@/src/stores/riderNetworkStore";
+import { useSessionStore } from "@/src/stores/sessionStore";
 import { useRiderPendingActionStore } from "@/src/stores/riderPendingActionStore";
 import { isOrderTakenByAnotherRiderError } from "@/src/lib/rider-dispatch-accept-errors";
 
@@ -359,6 +360,7 @@ export async function flushRiderPendingActions(): Promise<void> {
   const store = useRiderPendingActionStore.getState();
   if (!store.hydrated) await store.hydrate();
   if (!isRiderNetworkOnline()) return;
+  if (!useSessionStore.getState().session?.accessToken) return;
   const pending = [...store.actions];
   for (const action of pending) {
     if (inflight.has(action.actionId)) continue;

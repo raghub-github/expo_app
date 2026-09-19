@@ -258,20 +258,23 @@ export function computeMerchantWithdrawalBuckets(input) {
 /**
  * Canonical merchant withdrawal accounting. Frontends must display these fields
  * from the backend — they must not recompute remaining wallet locally.
+ *
+ * `available_balance` may be negative (manual/adjustment overdraft / dues).
+ * `withdrawable_balance` is always >= 0 (cannot withdraw dues).
  */
 export function calculateMerchantWithdrawalAccounting(input) {
-    const available = roundMoney(Math.max(0, Number(input.available_balance) || 0));
+    const rawAvailable = roundMoney(Number(input.available_balance) || 0);
     const hold = roundMoney(Math.max(0, Number(input.hold_balance) || 0));
     const pending = roundMoney(Math.max(0, Number(input.pending_balance) || 0));
     const buckets = computeMerchantWithdrawalBuckets({
-        available_balance: available,
+        available_balance: rawAvailable,
         hold_balance: hold,
         pending_withdrawal_total: input.pending_withdrawal_total,
         in_process_withdrawal_total: input.in_process_withdrawal_total,
     });
     const isFrozen = input.is_frozen === true;
     return {
-        available_balance: available,
+        available_balance: rawAvailable,
         held_balance: hold,
         pending_balance: pending,
         pending_withdrawal: buckets.pending_withdrawal_total,

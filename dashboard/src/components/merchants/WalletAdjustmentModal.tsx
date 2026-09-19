@@ -51,6 +51,7 @@ export function WalletAdjustmentModal({
           amount: amt,
           reason: r,
           order_id: order.order_id,
+          order_label: order.formatted_order_id || undefined,
         }),
       });
       const data = await res.json();
@@ -80,7 +81,10 @@ export function WalletAdjustmentModal({
             <div>
               <h2 className="text-lg font-bold text-white">Add or deduct amount</h2>
               <p className="text-indigo-100 text-sm">
-                Order {order.formatted_order_id || `#${order.order_id}`}
+                Order{" "}
+                {order.formatted_order_id
+                  ? `#${String(order.formatted_order_id).replace(/^#/, "")}`
+                  : `#${order.order_id}`}
               </p>
             </div>
           </div>
@@ -140,7 +144,11 @@ export function WalletAdjustmentModal({
             />
           </div>
           <p className="text-xs text-gray-500">
-            Order ID #{order.order_id} will be linked to this request automatically.
+            Order{" "}
+            {order.formatted_order_id
+              ? `#${String(order.formatted_order_id).replace(/^#/, "")}`
+              : `#${order.order_id}`}{" "}
+            will be linked to this request automatically.
           </p>
         </div>
         <div className="flex-shrink-0 bg-gray-50 px-4 py-4 flex gap-3 border-t border-gray-200">

@@ -46,7 +46,7 @@ import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedAct
 import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 import { formatCurrency } from "@/lib/merchantPayoutUtils";
-import { resolveWalletDisplayBalance } from "@gatimitra/merchant-payout";
+import { resolveWalletDisplayBalance, isWalletBalanceNegative } from "@gatimitra/merchant-payout";
 import { subscribeMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
 import {
   OnboardingBenefitsCard,
@@ -75,16 +75,28 @@ function KpiCard({
   value,
   icon,
   accent,
+  negative = false,
 }: {
   title: string;
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
   accent: "primary" | "navy";
+  negative?: boolean;
 }) {
-  const iconColor = accent === "primary" ? GatiMitraMerchant.primary : GatiMitraMerchant.navy;
+  const iconColor = negative
+    ? "#DC2626"
+    : accent === "primary"
+      ? GatiMitraMerchant.primary
+      : GatiMitraMerchant.navy;
 
   return (
-    <View style={[styles.kpiCardWrap, { width: KPI_CARD_WIDTH }]}>
+    <View
+      style={[
+        styles.kpiCardWrap,
+        { width: KPI_CARD_WIDTH },
+        negative ? styles.kpiCardNegative : null,
+      ]}
+    >
       <View style={styles.kpiTopRow}>
         <View style={[styles.kpiIconWrap, { backgroundColor: iconColor }]}>
           <Ionicons name={icon} size={KPI_ICON_GLYPH} color="#fff" />
@@ -94,7 +106,7 @@ function KpiCard({
         </Text>
       </View>
       <Text
-        style={styles.kpiValue}
+        style={[styles.kpiValue, negative ? styles.kpiValueNegative : null]}
         numberOfLines={1}
         adjustsFontSizeToFit
         minimumFontScale={0.7}
@@ -435,6 +447,7 @@ export default function DashboardScreen() {
             value={formatCurrency(walletBalance)}
             icon="wallet-outline"
             accent="navy"
+            negative={isWalletBalanceNegative(walletBalance)}
           />
         </ScrollView>
       </View>
@@ -602,6 +615,10 @@ const styles = StyleSheet.create({
     borderColor: GatiMitraMerchant.border,
     overflow: "hidden",
   },
+  kpiCardNegative: {
+    backgroundColor: "#FEF2F2",
+    borderColor: "#FECACA",
+  },
   kpiTopRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -636,6 +653,9 @@ const styles = StyleSheet.create({
     maxWidth: "100%",
     paddingRight: 8,
     fontVariant: ["tabular-nums"],
+  },
+  kpiValueNegative: {
+    color: "#B91C1C",
   },
   tabRow: {
     flexDirection: "row",

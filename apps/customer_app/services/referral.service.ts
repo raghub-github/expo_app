@@ -74,12 +74,16 @@ export type ReferralMeResponse = {
 export const referralService = {
   async getConfig(): Promise<ReferralPublicConfig> {
     const { data } = await api.get(`${PREFIX}/config`, {
-      params: { userType: "customer" },
+      params: { userType: "customer", fresh: "1" },
     });
     const body = data as ReferralPublicConfig & { ok?: boolean };
     return {
       ...body,
       configVersion: Number(body.configVersion) || 0,
+      enabled: body.enabled === true,
+      referralEnabled: body.referralEnabled === true,
+      rewardEnabled: body.rewardEnabled === true,
+      autoApplyEnabled: body.autoApplyEnabled === true,
       minOrderAmount: Number(body.minOrderAmount) || 0,
       monthlyRewardCap: Number(body.monthlyRewardCap) || 0,
       milestones: (body.milestones ?? []).map((m) => ({

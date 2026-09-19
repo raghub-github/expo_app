@@ -17,6 +17,7 @@ import {
   useWindowDimensions,
   StatusBar as NativeStatusBar,
   InteractionManager,
+  Alert,
 } from "react-native";
 import { FlashList } from "@shopify/flash-list";
 import { LinearGradient } from "expo-linear-gradient";
@@ -462,7 +463,7 @@ export default function FoodMerchantsScreen() {
     setVegPopoverAnchor(anchor);
   }, []);
 
-  const [openNow, setOpenNow] = useState(true);
+  const [openNow, setOpenNow] = useState(false);
   const [topBrands, setTopBrands] = useState(false);
   const [nearFast, setNearFast] = useState(false);
   const [flashDeals, setFlashDeals] = useState(false);
@@ -482,7 +483,7 @@ export default function FoodMerchantsScreen() {
   const [noPackagingCharges, setNoPackagingCharges] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  const cachedMerchantsInitial = useMemo(() => {
+  const cachedMerchantsEntry = useMemo(() => {
     if (merchantsAnchorCoords?.latitude == null || merchantsAnchorCoords?.longitude == null) {
       return undefined;
     }
@@ -493,8 +494,10 @@ export default function FoodMerchantsScreen() {
       HOME_MERCHANTS_STORE_TYPE
     );
     // Only hydrate non-empty cache — empty buckets must wait for a live network confirm.
-    return entry?.items?.length ? entry.items : undefined;
+    return entry?.items?.length ? entry : undefined;
   }, [merchantsAnchorCoords?.latitude, merchantsAnchorCoords?.longitude, vegOnly]);
+
+  const cachedMerchantsInitial = cachedMerchantsEntry?.items;
 
   const {
     data: merchantsData,
@@ -529,14 +532,18 @@ export default function FoodMerchantsScreen() {
     enabled:
       merchantsAnchorCoords?.latitude != null && merchantsAnchorCoords?.longitude != null,
     initialData: cachedMerchantsInitial,
-    // Treat sync cache as fresh so mount does not immediately race a second network paint.
-    initialDataUpdatedAt: cachedMerchantsInitial ? Date.now() : undefined,
+    // Force seed stale (same as grocery home) so mount always background-refetches.
+    // A "fresh" MMKV paint of a partial list was locking Food Home on 1 store
+    // while /v1/merchants already returned the full nearby set.
+    initialDataUpdatedAt: cachedMerchantsInitial
+      ? Date.now() - MERCHANTS_LIST_STALE_MS
+      : undefined,
     staleTime: MERCHANTS_LIST_STALE_MS,
     gcTime: MERCHANTS_LIST_GC_MS,
     // Keep prior list across veg/geo key flips — pure-veg client filter narrows instantly.
     placeholderData: (previousData) => previousData,
-    refetchOnMount: false,
-    refetchOnReconnect: false,
+    refetchOnMount: true,
+    refetchOnReconnect: true,
     refetchOnWindowFocus: false,
     retry: 2,
   });
@@ -762,7 +769,7 @@ export default function FoodMerchantsScreen() {
     useCallback(() => {
       if (consumeFoodHomeFlashDealFilter()) {
         setFlashDeals(true);
-        setOpenNow(true);
+        // Do not force Open Now — show full nearby list (open + closed).
       }
     }, [])
   );
@@ -786,7 +793,8 @@ export default function FoodMerchantsScreen() {
         selectedCuisines,
         noPackagingCharges,
         nearFast,
-        hideClosed: false,
+        // Open Now = only open stores. Off = full nearby list (open + closed).
+        hideClosed: openNow,
       }),
     [
       merchants,
@@ -1181,6 +1189,7 @@ export default function FoodMerchantsScreen() {
             offer_id: item.flashSale.offerId,
             original_customer_unit: item.flashSale.originalCustomerUnit,
             flash_price: item.flashSale.flashPrice,
+            max_flash_quantity: item.flashSale.maxFlashQuantity,
           }
         : undefined,
     };
@@ -1289,9 +1298,7 @@ export default function FoodMerchantsScreen() {
         1
       );
       const dock = useFloatingDockUiStore.getState();
-      if (dock.navExpandedByUser || dock.footingOwner !== "dock") {
-        dock.expandDock();
-      }
+      dock.setDockVisible(true, "cart");
 
       // Warm menu before push so focus scroll does not wait on a cold fetch.
       seedMerchantMenuQueryIfCached(queryClient, item.storePublicId);
@@ -1316,6 +1323,7 @@ export default function FoodMerchantsScreen() {
       if (!ensureClassicCartActive(item.storePublicId)) return;
       const lineId = getClassicCartLineId(item);
       if (!lineId) return;
+      // Flash Sale cap is soft — over-limit units use regular price in billing.
       useCartStore.getState().updateQuantity(lineId, 1);
     },
     [ensureClassicCartActive, getClassicCartLineId]

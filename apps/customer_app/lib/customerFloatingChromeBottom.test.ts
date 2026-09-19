@@ -7,17 +7,18 @@ import {
 } from "./customerFloatingChromeBottom";
 
 describe("resolveCustomerFloatingChromeBottomPure", () => {
-  it("matches tab-bar bottom inset (nav and Track share Y; sheet is screen-connected)", () => {
+  it("sits float-gap above tab-bar bottom inset (nav and Track share Y)", () => {
     for (const raw of [0, 16, 24, 34, 48]) {
       for (const platform of ["ios", "android"] as const) {
         const chrome = resolveCustomerFloatingChromeBottomPure(raw, platform);
-        const expected = resolveTabBarBottomInsetPure(raw, platform);
+        const expected =
+          resolveTabBarBottomInsetPure(raw, platform) + CUSTOMER_TAB_BAR_FLOAT_GAP_PURE;
         assert.equal(chrome, expected);
       }
     }
   });
 
-  it("float gap is zero for connected bottom sheet", () => {
+  it("float gap is zero — sheet connects to screen bottom; icons use safe-area inset", () => {
     assert.equal(CUSTOMER_TAB_BAR_FLOAT_GAP_PURE, 0);
   });
 
