@@ -28,6 +28,10 @@ const PERMISSIONS = [
   "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
   "android.permission.WAKE_LOCK",
   "android.permission.VIBRATE",
+  // Required for the call-style full-screen order/dispatch popup to launch over the
+  // lock screen / while the app is killed (setFullScreenIntent). Without this the
+  // alert can only appear as a heads-up notification, never the full acceptance page.
+  "android.permission.USE_FULL_SCREEN_INTENT",
 ];
 
 function ensureUsesPermission(androidManifest, name) {

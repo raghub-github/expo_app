@@ -173,10 +173,15 @@ public class OrderAlertForegroundService extends Service {
         .setAutoCancel(false)
         .setSilent(true)
         .setOnlyAlertOnce(true)
-        .setCategory(NotificationCompat.CATEGORY_ALARM)
-        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setCategory(NotificationCompat.CATEGORY_CALL)
+        .setPriority(NotificationCompat.PRIORITY_MAX)
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setContentIntent(content)
+        // Call-style full-screen order/dispatch page over the lock screen / when killed.
+        // Requires USE_FULL_SCREEN_INTENT (declared by the config plugin) + a HIGH/MAX channel.
+        // Degrades gracefully to a heads-up notification when the OS/user does not permit
+        // full-screen (e.g. Android 14+ without the special-access grant).
+        .setFullScreenIntent(content, true)
         .addAction(0, "Stop alert", stopPi)
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
         .build();
