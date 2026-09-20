@@ -44,7 +44,11 @@ export function resolveOrderLegVehicleType(args: {
     const v = String(args.parcelVehicleCategory ?? "").trim();
     return VALID_LEG_VEHICLES.has(v) ? (v as LegVehicleType) : null;
   }
-  return null;
+  // Food is a 2-wheeler (bike) service and its leg/waiting rules were seeded as '2_wheeler'.
+  // Resolving food as 2_wheeler makes the leg lookup match those rules; the leg query matches
+  // `vehicle_type IS NULL OR = '2_wheeler'`, so it works whether the food rows are tagged
+  // '2_wheeler' or re-tagged to NULL (migration 0641) — no migration ordering dependency.
+  return "2_wheeler";
 }
 
 export type OrderLegResult = {
