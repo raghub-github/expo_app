@@ -11,6 +11,7 @@ import { canPerformActionByAuth } from "@/lib/permissions/actions";
 import { logActionFromRequest } from "@/lib/utils/action-audit";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import {
+  isAllowedAdminUploadFile,
   removeRiderDocumentImage,
   uploadRiderDocumentImage,
 } from "@/lib/rider-document-admin";
@@ -65,22 +66,8 @@ async function authorizeRiderDocumentUpdate(riderId: number, documentId: number)
     };
   }
 
-  // Selfie / profile photo can always be replaced or removed by admin —
-  // rider-app APP_VERIFIED still stores a real image on R2 + riders.selfie_url.
-  const docType = String(currentDoc.docType || "").toLowerCase();
-  const isSelfieDoc = docType === "selfie" || docType === "profile_photo";
-  if (currentDoc.verificationMethod === "APP_VERIFIED" && !isSelfieDoc) {
-    return {
-      error: NextResponse.json(
-        {
-          success: false,
-          error: "APP_VERIFIED documents cannot be edited. They are verified through the app and don't have images.",
-        },
-        { status: 400 }
-      ),
-    };
-  }
-
+  // Admin may always replace / remove images from the rider dashboard,
+  // including after onboarding is complete and the rider is verified.
   return { user, currentDoc };
 }
 
@@ -176,8 +163,7 @@ export async function PUT(
     }
 
     if (file) {
-      const allowedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp", "application/pdf"];
-      if (!allowedTypes.includes(file.type)) {
+      if (!isAllowedAdminUploadFile(file)) {
         return NextResponse.json(
           { success: false, error: "Invalid file type. Allowed types: JPEG, PNG, WebP, PDF" },
           { status: 400 }

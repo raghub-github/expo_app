@@ -419,7 +419,7 @@ interface PaymentDetailsProps {
 const formatCurrency = (value?: number | null) => formatInrWithGap(value);
 
 const paymentDetailRowClass =
-  'text-[12px] flex flex-nowrap items-center gap-x-1.5 whitespace-nowrap min-w-0 overflow-x-auto';
+  'text-[12px] flex flex-nowrap items-baseline gap-x-2 whitespace-nowrap min-w-0 overflow-x-auto overscroll-x-contain';
 
 const formatPlain = (value?: string | number | boolean | null) => {
   if (value == null || value === '') return '—';
@@ -1293,6 +1293,12 @@ export default function PaymentDetails({
 
       return {
         totalAmount: totalCtc,
+        totalAmountBeforeDiscount:
+          paymentDetail.totalAmountBeforeDiscount ??
+          (totalCtc != null &&
+          discount.customerAmount > 0.005
+            ? Math.round((totalCtc + discount.customerAmount) * 100) / 100
+            : null),
         totalCtm,
         totalCashbackEarned: paymentDetail.totalCashbackEarned,
         gatiCashUsed: paymentDetail.gatiCashUsed ?? null,
@@ -1331,6 +1337,10 @@ export default function PaymentDetails({
 
     return {
       totalAmount: totalCtc,
+      totalAmountBeforeDiscount:
+        totalCtc != null && discount.customerAmount > 0.005
+          ? Math.round((totalCtc + discount.customerAmount) * 100) / 100
+          : null,
       totalCtm,
       totalCashbackEarned: null,
       gatiCashUsed: null,
@@ -1431,14 +1441,37 @@ export default function PaymentDetails({
               capturedAmount: resolved.totalAmount,
             });
             return (
-              <div className="text-[12px] min-w-0">
-                <div className="flex flex-nowrap items-center gap-x-1.5 overflow-x-auto whitespace-nowrap">
+              <div className="text-[12px] min-w-0 overflow-x-auto overscroll-x-contain">
+                <div className="inline-flex flex-nowrap items-baseline gap-x-2 whitespace-nowrap min-w-min">
                   <span className="text-gati-text-secondary font-medium shrink-0">
                     Total Amount (CTC):
                   </span>
-                  <span className="text-gati-text-primary font-semibold orders-num shrink-0">
-                    {formatCurrency(ctc > 0 ? ctc : resolved.totalAmount)}
-                  </span>
+                  {(() => {
+                    const paid = ctc > 0 ? ctc : Number(resolved.totalAmount) || 0;
+                    const list =
+                      Number(resolved.totalAmountBeforeDiscount) > 0
+                        ? Number(resolved.totalAmountBeforeDiscount)
+                        : (() => {
+                            const disc = Number(resolved.totalDiscountGranted ?? 0) || 0;
+                            return disc > 0.005 && paid > 0.005
+                              ? Math.round((paid + disc) * 100) / 100
+                              : null;
+                          })();
+                    const showStrike =
+                      list != null && Number.isFinite(list) && list > paid + 0.005;
+                    return (
+                      <>
+                        {showStrike ? (
+                          <span className="text-slate-400 line-through decoration-slate-400 orders-num shrink-0 font-medium">
+                            {formatCurrency(list)}
+                          </span>
+                        ) : null}
+                        <span className="text-gati-text-primary font-semibold orders-num shrink-0">
+                          {formatCurrency(paid)}
+                        </span>
+                      </>
+                    );
+                  })()}
                   <CustomerCtcIconSplit
                     cashin={cashin}
                     gatiCashUsed={gati}
@@ -1542,9 +1575,11 @@ export default function PaymentDetails({
           resolved.refundAmount != null &&
           Number.isFinite(resolved.refundAmount) &&
           resolved.refundAmount > 0 ? (
-            <div className="text-[12px] min-w-0">
-              <div className="flex flex-nowrap items-center gap-x-1.5 overflow-x-auto whitespace-nowrap">
-                <span className="text-gati-text-secondary font-medium shrink-0">Refund Amount:</span>
+            <div className="text-[12px] min-w-0 overflow-x-auto overscroll-x-contain">
+              <div className="inline-flex flex-nowrap items-baseline gap-x-2 whitespace-nowrap min-w-min">
+                <span className="text-gati-text-secondary font-medium shrink-0">
+                  Refund Amount:
+                </span>
                 <span className="text-gati-text-primary font-medium orders-num shrink-0">
                   {formatCurrency(resolved.refundAmount)}
                 </span>

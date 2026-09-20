@@ -365,6 +365,64 @@ export async function meRoutes(app: FastifyInstance) {
     }
   );
 
+  app.get(
+    "/email-availability",
+    {
+      schema: {
+        querystring: z.object({
+          email: z.string().min(3).max(254),
+        }),
+        response: {
+          200: z.object({
+            available: z.boolean(),
+            message: z.string().optional(),
+          }),
+          401: z.object({ error: z.string(), message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth!.sub;
+      const role = req.auth!.role;
+      const emailNorm = String((req.query as { email?: string }).email ?? "")
+        .trim()
+        .toLowerCase();
+      if (!emailNorm || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNorm)) {
+        return reply.send({ available: true });
+      }
+      return withSqlRetry(async () => {
+        const db = getDb();
+        const customerId = await resolveCustomerId(db, sub, role, req.auth?.phone);
+        if (!customerId) {
+          const rows = await db
+            .select({ customerId: customers.customerId })
+            .from(customers)
+            .where(eq(customers.email, emailNorm))
+            .limit(1);
+          if (rows.length > 0) {
+            return {
+              available: false,
+              message: "This email is already registered. Use a different email.",
+            };
+          }
+          return { available: true };
+        }
+        const duplicateEmail = await db
+          .select({ customerId: customers.customerId })
+          .from(customers)
+          .where(and(eq(customers.email, emailNorm), ne(customers.customerId, customerId)))
+          .limit(1);
+        if (duplicateEmail.length > 0) {
+          return {
+            available: false,
+            message: "This email is already registered. Use a different email.",
+          };
+        }
+        return { available: true };
+      });
+    }
+  );
+
   app.patch(
     "/profile",
     {
@@ -520,6 +578,23 @@ export async function meRoutes(app: FastifyInstance) {
             .returning();
           if (!updated) {
             return reply.code(500).send({ message: "Could not save. Try again." } as any);
+          }
+          // Welcome system push once profile creation completes (not at OTP).
+          if (newProfileCompleted && !existing.profileCompleted) {
+            try {
+              const { emitEvent } = await import("../notifications/index.js");
+              const welcomeName =
+                effectiveFullName.trim().toLowerCase() === "pending"
+                  ? ""
+                  : effectiveFullName.trim();
+              emitEvent("user.signup", {
+                userId: customerId,
+                role: "customer",
+                name: welcomeName || null,
+              });
+            } catch {
+              /* non-blocking */
+            }
           }
           return await customerPatchResponse(updated);
         }

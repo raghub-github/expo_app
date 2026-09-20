@@ -127,16 +127,17 @@ const DROP_ZONE_FILL_ID = "drop-zone-fill";
 const DROP_ZONE_STROKE_ID = "drop-zone-stroke";
 const MAP_STYLE = "mapbox://styles/mapbox/standard";
 /** Flat 2D day navigation — no 3D buildings / tilt. */
-const MAP_INITIAL_ZOOM = 16;
+const MAP_INITIAL_ZOOM = 14.2;
 const MAP_INITIAL_PITCH = 0;
 const MAP_INITIAL_BEARING = 0;
-const MAP_FIT_MAX_ZOOM = 17.5;
+/** Cap zoom so the full 200m store/customer zone stays on screen (not pin-zoomed). */
+const MAP_FIT_MAX_ZOOM = 14.35;
 const SAME_POINT_METERS = 18;
 /** Same off-route reroute threshold as customer / rider / merchant maps. */
 const OFF_ROUTE_REROUTE_M = 45;
 const CONNECTOR_MIN_METERS = 6;
-const RIDER_ANIM_MIN_MS = 400;
-const RIDER_ANIM_MAX_MS = 2800;
+const RIDER_ANIM_MIN_MS = 800;
+const RIDER_ANIM_MAX_MS = 6500;
 const RIDER_ANIM_MIN_DIST_M = 0.35;
 
 function easeOutCubic(t: number): number {
@@ -144,7 +145,7 @@ function easeOutCubic(t: number): number {
 }
 
 function riderAnimationDurationMs(distanceM: number): number {
-  const scaled = distanceM * 48;
+  const scaled = distanceM * 85;
   return Math.round(Math.min(RIDER_ANIM_MAX_MS, Math.max(RIDER_ANIM_MIN_MS, scaled)));
 }
 
@@ -305,6 +306,19 @@ function formatSeconds(sec: number): string {
   const min = Math.floor(sec / 60);
   const rem = Math.round(sec % 60);
   return rem > 0 ? `${min} min ${rem} s` : `${min} min`;
+}
+
+/** Keep a meter-radius (store/customer geofence) inside the camera instead of pin-zooming. */
+function extendBoundsByRadiusM(
+  bounds: { extend: (pt: [number, number]) => void },
+  center: [number, number],
+  radiusM: number
+) {
+  const latRad = (center[1] * Math.PI) / 180;
+  const dLat = radiusM / 110540;
+  const dLng = radiusM / (111320 * Math.max(0.15, Math.cos(latRad)));
+  bounds.extend([center[0] - dLng, center[1] - dLat]);
+  bounds.extend([center[0] + dLng, center[1] + dLat]);
 }
 
 function normalizeStatus(value: string | null | undefined): string {
@@ -1238,15 +1252,17 @@ export default function RiderRouteMap({
       } else if (navPhase === "rider_to_drop") {
         extend(riderPoint);
         extend(dropPoint);
+        if (dropPoint) extendBoundsByRadiusM(bounds, dropPoint, FOOD_DELIVERY_GEOFENCE_RADIUS_M);
       } else {
         extend(riderPoint);
         extend(storeLngLat);
+        if (storeLngLat) extendBoundsByRadiusM(bounds, storeLngLat, FOOD_DELIVERY_GEOFENCE_RADIUS_M);
         if (!riderPoint) extend(dropPoint);
       }
       if (hasBounds) {
         // Flat 2D day navigation camera.
         map.fitBounds(bounds, {
-          padding: 72,
+          padding: 96,
           duration: 0,
           maxZoom: MAP_FIT_MAX_ZOOM,
           pitch: MAP_INITIAL_PITCH,
@@ -1949,8 +1965,12 @@ export default function RiderRouteMap({
         if (!navFollowRef.current) {
           navFollowRef.current = new NavigationFollowController({
             pitch: MAP_INITIAL_PITCH,
-            lookAheadM: 70,
-            cameraSmoothMs: 520,
+            lookAheadM: 18,
+            cameraSmoothMs: 820,
+            maxImpliedSpeedMps: 18,
+            /** Keep follow zoom aligned with 200m zone fit — avoid pin-level zoom. */
+            minZoom: 13.4,
+            maxZoom: 14.35,
           });
         }
         const nav = navFollowRef.current;

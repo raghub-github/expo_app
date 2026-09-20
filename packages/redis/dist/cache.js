@@ -13,11 +13,12 @@
  *   - Tag-based invalidation (we don't need it yet; add when the first
  *     real cache-invalidation pain happens)
  */
-import { getRedis } from "./client.js";
+import { ensureRedisConnected, getRedis } from "./client.js";
 const NS = "cache:";
 export async function cacheGet(key) {
     try {
         const redis = getRedis();
+        await ensureRedisConnected(redis);
         const raw = await redis.get(NS + key);
         if (raw == null)
             return null;
@@ -37,6 +38,7 @@ export async function cacheSet(key, value, ttlSec) {
         throw new Error("cacheSet: ttlSec must be > 0");
     try {
         const redis = getRedis();
+        await ensureRedisConnected(redis);
         await redis.set(NS + key, JSON.stringify(value), "EX", ttlSec);
     }
     catch {
@@ -46,6 +48,7 @@ export async function cacheSet(key, value, ttlSec) {
 export async function cacheDel(key) {
     try {
         const redis = getRedis();
+        await ensureRedisConnected(redis);
         await redis.del(NS + key);
     }
     catch {
@@ -65,6 +68,7 @@ export async function cacheGetOrSet(key, ttlSec, compute, opts) {
     let redis;
     try {
         redis = getRedis();
+        await ensureRedisConnected(redis);
     }
     catch {
         return compute();

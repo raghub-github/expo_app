@@ -244,6 +244,9 @@ export declare function computeMerchantWithdrawalBuckets(input: {
 /**
  * Canonical merchant withdrawal accounting. Frontends must display these fields
  * from the backend — they must not recompute remaining wallet locally.
+ *
+ * `available_balance` may be negative (manual/adjustment overdraft / dues).
+ * `withdrawable_balance` is always >= 0 (cannot withdraw dues).
  */
 export declare function calculateMerchantWithdrawalAccounting(input: {
     available_balance: number;

@@ -46,6 +46,7 @@ import {
   MerchantScheduleOffBanner,
   MerchantRushHourBanner,
   MerchantExpiredLicenceBanner,
+  MerchantOutstandingDuesBanner,
   type MerchantHomeBannerSlide,
 } from "@/components/MerchantHomeBannerCarousel";
 import { MerchantLicenseUploadSheet } from "@/components/MerchantLicenseUploadSheet";
@@ -57,6 +58,15 @@ import {
   isLicenseVerificationWatched,
   type LicenseDocumentActionItem,
 } from "@/services/licenseDocumentsApi";
+import { fetchWalletSummary } from "@/services/walletApi";
+import { createDuesPaymentOrder, verifyDuesPayment } from "@/services/duesPaymentApi";
+import { RazorpayCheckoutModal } from "@/components/subscription/RazorpayCheckoutModal";
+import {
+  isWalletBalanceNegative,
+  resolveWalletDisplayBalance,
+  formatCurrency,
+} from "@/lib/merchantPayoutUtils";
+import type { RazorpayOrderParams } from "@/components/subscription/RazorpayCheckoutModal";
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
 import { formatStoreActionSourceLabel } from "@/lib/storeActionSource";
 import { useNetworkStatus } from "@/context/NetworkStatusContext";
@@ -850,6 +860,10 @@ export function MerchantCustomHeader() {
   const [licenseAwaitingRefresh, setLicenseAwaitingRefresh] = useState(false);
   const [licenseUploadedModal, setLicenseUploadedModal] = useState(false);
   const [licenseVerifiedSheet, setLicenseVerifiedSheet] = useState(false);
+  const [outstandingDuesAmount, setOutstandingDuesAmount] = useState(0);
+  const [duesPaying, setDuesPaying] = useState(false);
+  const [duesRazorpayVisible, setDuesRazorpayVisible] = useState(false);
+  const [duesOrderParams, setDuesOrderParams] = useState<RazorpayOrderParams | null>(null);
   const watchingVerificationRef = useRef(false);
   const licenseBlockedRef = useRef(licenseBlocked);
   const verifiedDocLabelRef = useRef<string | null>(null);
@@ -989,6 +1003,49 @@ export function MerchantCustomHeader() {
     if (!selectedStore?.id || !token) return;
     refreshLicenseDocs();
   }, [isHomeScreen, selectedStore?.id, token, refreshLicenseDocs]);
+
+  const refreshOutstandingDues = useCallback(() => {
+    if (!selectedStore?.id || !token) {
+      setOutstandingDuesAmount(0);
+      return;
+    }
+    const storeId = selectedStore.id;
+    void fetchWalletSummary(storeId, token)
+      .then((w) => {
+        const bal = resolveWalletDisplayBalance(w);
+        setOutstandingDuesAmount(
+          isWalletBalanceNegative(bal) ? Math.round(Math.abs(bal) * 100) / 100 : 0,
+        );
+      })
+      .catch(() => setOutstandingDuesAmount(0));
+  }, [selectedStore?.id, token]);
+
+  useEffect(() => {
+    if (!isHomeScreen) return;
+    refreshOutstandingDues();
+    const id = setInterval(refreshOutstandingDues, 45_000);
+    return () => clearInterval(id);
+  }, [isHomeScreen, refreshOutstandingDues]);
+
+  const startClearDuesPayment = useCallback(async () => {
+    if (!selectedStore?.id || !token || outstandingDuesAmount < 0.01 || duesPaying) return;
+    setDuesPaying(true);
+    try {
+      const order = await createDuesPaymentOrder(selectedStore.id, token);
+      if (!order.orderId || !order.keyId || !order.amount) {
+        throw new Error(order.error ?? "Could not start payment");
+      }
+      setDuesOrderParams({
+        orderId: order.orderId,
+        keyId: order.keyId,
+        amount: order.amount,
+      });
+      setDuesRazorpayVisible(true);
+    } catch (e) {
+      setDuesPaying(false);
+      Alert.alert("Clear dues", e instanceof Error ? e.message : "Could not start payment");
+    }
+  }, [selectedStore?.id, token, outstandingDuesAmount, duesPaying]);
 
   useEffect(() => {
     const watching =
@@ -1419,7 +1476,7 @@ export function MerchantCustomHeader() {
 
   const storeStatusSlide: MerchantHomeBannerSlide = {
     id: "store_status",
-    durationMs: 6_000,
+    durationMs: 15_000,
     element: (
       <StoreStatusCard
         onPressCard={() => merchantNavPush("/restaurant-status")}
@@ -1446,10 +1503,23 @@ export function MerchantCustomHeader() {
   };
 
   const homeBannerSlides: MerchantHomeBannerSlide[] = [];
+  if (outstandingDuesAmount > 0) {
+    homeBannerSlides.push({
+      id: "outstanding_dues",
+      durationMs: 40_000,
+      element: (
+        <MerchantOutstandingDuesBanner
+          amountLabel={formatCurrency(outstandingDuesAmount)}
+          paying={duesPaying}
+          onPay={() => void startClearDuesPayment()}
+        />
+      ),
+    });
+  }
   if (licenseExpiredDocs.length > 0 || licensePendingDocs.length > 0 || licenseAwaitingRefresh) {
     homeBannerSlides.push({
       id: "license_expired",
-      durationMs: 6_000,
+      durationMs: 15_000,
       element: (
         <MerchantExpiredLicenceBanner
           expiredCount={Math.max(1, licenseExpiredDocs.length + licensePendingDocs.length)}
@@ -1473,7 +1543,7 @@ export function MerchantCustomHeader() {
   if (!notificationsGranted) {
     homeBannerSlides.push({
       id: "order_notifications_disabled",
-      durationMs: 6_000,
+      durationMs: 15_000,
       element: <OrderNotificationsDisabledBanner visible />,
     });
   }
@@ -1482,7 +1552,7 @@ export function MerchantCustomHeader() {
     if (windowText) {
       homeBannerSlides.push({
         id: "schedule_off_active",
-        durationMs: 6_000,
+        durationMs: 15_000,
         element: (
           <MerchantScheduleOffBanner
             phase="active"
@@ -1500,7 +1570,7 @@ export function MerchantCustomHeader() {
     if (windowText) {
       homeBannerSlides.push({
         id: "schedule_off_upcoming",
-        durationMs: 6_000,
+        durationMs: 15_000,
         element: (
           <MerchantScheduleOffBanner
             phase="upcoming"
@@ -1516,7 +1586,7 @@ export function MerchantCustomHeader() {
   if (activeRush && activeRush.is_active && activeRush.remaining_minutes > 0) {
     homeBannerSlides.push({
       id: "rush_active",
-      durationMs: 6_000,
+      durationMs: 15_000,
       element: (
         <MerchantRushHourBanner
           remainingMinutes={activeRush.remaining_minutes}
@@ -1565,6 +1635,44 @@ export function MerchantCustomHeader() {
         }}
       />
     ) : null}
+    <RazorpayCheckoutModal
+      visible={duesRazorpayVisible}
+      orderParams={duesOrderParams}
+      themeColor="#DC2626"
+      onSuccess={async (result) => {
+        setDuesRazorpayVisible(false);
+        setDuesOrderParams(null);
+        if (!selectedStore?.id || !token) {
+          setDuesPaying(false);
+          return;
+        }
+        try {
+          await verifyDuesPayment(selectedStore.id, token, {
+            razorpay_order_id: result.razorpayOrderId,
+            razorpay_payment_id: result.razorpayPaymentId,
+            razorpay_signature: result.razorpaySignature,
+          });
+          setOutstandingDuesAmount(0);
+          refreshOutstandingDues();
+          Alert.alert("Dues cleared", "Outstanding dues Cleared. Wallet updated.");
+        } catch (e) {
+          Alert.alert("Clear dues", e instanceof Error ? e.message : "Verification failed");
+        } finally {
+          setDuesPaying(false);
+        }
+      }}
+      onCancel={() => {
+        setDuesRazorpayVisible(false);
+        setDuesOrderParams(null);
+        setDuesPaying(false);
+      }}
+      onFailure={(info) => {
+        setDuesRazorpayVisible(false);
+        setDuesOrderParams(null);
+        setDuesPaying(false);
+        Alert.alert("Payment failed", info.message || "Please try again");
+      }}
+    />
     <LicenseUploadedModal
       visible={licenseUploadedModal}
       onClose={() => setLicenseUploadedModal(false)}

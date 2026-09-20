@@ -3,7 +3,8 @@
  * Returns status counts for wallet credit/debit requests across stores (scoped by access).
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { authFailureResponse, getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { getMerchantAccess } from "@/lib/permissions/merchant-access";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import { getSql } from "@/lib/db/client";
@@ -12,11 +13,17 @@ export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error || !user?.email) {
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) return authFailureResponse(auth);
+    let email = (auth.user.email ?? "").trim();
+    if (!email) {
+      const mapped = await resolveSystemUserForSupabaseAuth(auth.user.id, undefined);
+      email = (mapped?.email ?? "").trim();
+    }
+    if (!email) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
+    const user = { id: auth.user.id, email };
 
     const access = await getMerchantAccess(user.id, user.email);
     if (!access) {

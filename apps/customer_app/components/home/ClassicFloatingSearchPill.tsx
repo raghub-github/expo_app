@@ -29,7 +29,6 @@ export function ClassicFloatingSearchPill({ extraBottom = 0 }: Props) {
   const visible = useClassicFoodChromeStore((s) => s.searchPillVisible);
   const onPress = useClassicFoodChromeStore((s) => s.onSearchPress);
   const dockVisible = useFloatingDockUiStore((s) => s.dockVisible);
-  const footingOwner = useFloatingDockUiStore((s) => s.footingOwner);
   const classicFooting = useClassicFoodChromeStore((s) => s.footingOwner);
 
   if (!visible || !onPress) return null;
@@ -37,7 +36,7 @@ export function ClassicFloatingSearchPill({ extraBottom = 0 }: Props) {
   const bottomOffset = resolveClassicSearchPillBottom({
     safeBottom: bottom,
     resolveChromeBottom: resolveCustomerFloatingChromeBottom,
-    cartDockVisible: dockVisible && footingOwner === "dock",
+    cartDockVisible: dockVisible,
     floatingCartBarHeight: FLOATING_CART_BAR_HEIGHT,
     classicNavExpanded: classicFooting === "nav" && !dockVisible,
     extraBottom,

@@ -547,11 +547,20 @@ export async function GET(req: NextRequest) {
           : 0;
 
         const frozenCtm = Number((core as { total_ctm?: unknown }).total_ctm);
+        // When every line has a CTM snapshot, Σ(nets)+packaging−precision is the
+        // authoritative merchant bill (same formula as computeMerchantCtmForPartnerOrder).
+        // Prefer it over a drifted orders_core.total_ctm (e.g. pre-fix v2 packaging×commission).
+        const billTotal =
+          allCtmFrozen && resolvedTotal > 0.005
+            ? resolvedTotal
+            : Number.isFinite(frozenCtm) && frozenCtm > 0
+              ? frozenCtm
+              : resolvedTotal;
         const bill = merchantBillPartsFromItems(items, {
           subtotal: merchantSubtotal,
           packaging: customerPricing.packaging,
           discount: resolvedDisc,
-          total: Number.isFinite(frozenCtm) && frozenCtm > 0 ? frozenCtm : resolvedTotal,
+          total: billTotal,
         });
         const pricing = {
           subtotal: bill.itemsSubtotal,
@@ -606,10 +615,11 @@ export async function GET(req: NextRequest) {
           display_item_count: displayItemCount,
           food_items_total_value: bill.total,
           customer_paid_total: pricingTotal ?? customerPricing.total,
-          total_ctm:
+          total_ctm: bill.total > 0.005 ? bill.total : (
             core.total_ctm != null && core.total_ctm !== ''
               ? Number(core.total_ctm)
-              : bill.total,
+              : bill.total
+          ),
           merchant_precision_discount: merchantPrecisionDiscount,
           requires_utensils: food?.requires_utensils ?? null,
           is_fragile: food?.is_fragile ?? false,

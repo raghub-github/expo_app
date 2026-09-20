@@ -20,7 +20,10 @@ import {
   isFatalRefreshTokenError,
   isRefreshTokenAlreadyUsed,
 } from "@/lib/auth/session-errors";
-import { readCookieAccessSession } from "@/lib/auth/read-cookie-access-session";
+import {
+  isSupabaseSessionCookieName,
+  readCookieAccessSession,
+} from "@/lib/auth/read-cookie-access-session";
 
 /** Build path + search for redirect param, stripping OAuth code/state so login URL stays clean. */
 function redirectPathWithoutOAuthParams(pathname: string, search: string): string {
@@ -29,6 +32,13 @@ function redirectPathWithoutOAuthParams(pathname: string, search: string): strin
   params.delete("state");
   const q = params.toString();
   return q ? `${pathname}?${q}` : pathname;
+}
+
+/** Real session cookies only — never treat empty or PKCE verifier cookies as logged-in. */
+function requestHasSupabaseSessionCookie(request: NextRequest): boolean {
+  return request.cookies.getAll().some(
+    (c) => isSupabaseSessionCookieName(c.name) && Boolean(c.value?.trim())
+  );
 }
 
 export async function proxy(request: NextRequest) {
@@ -128,7 +138,11 @@ export async function proxy(request: NextRequest) {
         global: { fetch: safeFetch },
         cookies: {
           getAll() {
-            return request.cookies.getAll();
+            // Drop empty values — @supabase/ssr JSON.parse("") throws
+            // "Unexpected end of JSON input" and can 500 /auth under cookie-clear races.
+            return request.cookies
+              .getAll()
+              .filter((c) => typeof c.value === "string" && c.value.length > 0);
           },
           setAll(cookiesToSet) {
             cookiesToSet.forEach(({ name, value, options }) => {
@@ -153,11 +167,7 @@ export async function proxy(request: NextRequest) {
       }
     );
 
-    const hasAuthCookie =
-      request.cookies.has("sb-access-token") ||
-      request.cookies.has("sb-refresh-token") ||
-      request.cookies.getAll().some((c) => c.name.startsWith("sb-"));
-
+    const hasAuthCookie = requestHasSupabaseSessionCookie(request);
     const publicRoutes = ["/auth", "/api/auth", "/api/onboarding", "/api/referral", "/merchant-ref"];
     const isPublicRoute = publicRoutes.some((r) => pathname.startsWith(r));
     const isLoginPage =
@@ -190,7 +200,8 @@ export async function proxy(request: NextRequest) {
     if (hasAuthCookie) {
       const cookieSession = readCookieAccessSession({
         get: (name) => request.cookies.get(name),
-        getAll: () => request.cookies.getAll(),
+        getAll: () =>
+          request.cookies.getAll().filter((c) => typeof c.value === "string" && c.value.length > 0),
       });
       if (cookieSession?.user?.id) {
         session = {

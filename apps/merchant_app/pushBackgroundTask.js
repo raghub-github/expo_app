@@ -110,6 +110,13 @@ if (!isExpoGo()) {
         const isNewOrder = isMerchantNewOrderData(data);
         const AppState = require("react-native").AppState;
         const appActive = AppState.currentState === "active";
+        let nativeOwns = false;
+        try {
+          const { isNativeOrderAlertAvailable } = require("@gatimitra/expo-push-kit");
+          nativeOwns = isNewOrder && isNativeOrderAlertAvailable();
+        } catch {
+          nativeOwns = false;
+        }
         if (isStoreStatusData(data)) {
           const state = String(data.state ?? data.storeState ?? "").toUpperCase();
           const headsUp =
@@ -127,7 +134,7 @@ if (!isExpoGo()) {
         }
 
         let cachedUri = null;
-        if (isNewOrder) {
+        if (isNewOrder && !nativeOwns) {
           cachedUri = await readCachedAlertLocalUri();
           // App open → JS/modal owns sound. Background with cache → play Manage communication tone.
           if (!appActive && cachedUri) {
@@ -135,11 +142,11 @@ if (!isExpoGo()) {
           }
         }
 
-        // Mute OS bundled chime whenever we will play the selected store alert
-        // (foreground JS, or background cached file). Keep OS sound only as
-        // fallback when nothing is cached yet (e.g. first install).
+        // Native FGS owns the looping buzzer — mute OS + skip cached JS playback.
         const suppressOsSound =
-          (isNewOrder && appActive) || (isNewOrder && !!cachedUri);
+          nativeOwns ||
+          (isNewOrder && appActive) ||
+          (isNewOrder && !!cachedUri);
         return {
           shouldShowAlert: true,
           shouldPlaySound: !suppressOsSound,
@@ -165,6 +172,12 @@ if (!isExpoGo()) {
           const content = notification?.request?.content ?? notification?.content ?? {};
           const payload = content?.data ?? {};
           if (!isMerchantNewOrderData(payload)) return;
+          try {
+            const { isNativeOrderAlertAvailable } = require("@gatimitra/expo-push-kit");
+            if (isNativeOrderAlertAvailable()) return;
+          } catch {
+            /* fallback to cached clip */
+          }
           const cachedUri = await readCachedAlertLocalUri();
           if (cachedUri) {
             await playCachedAlertSound(cachedUri);

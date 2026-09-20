@@ -1131,7 +1131,7 @@ export default function FoodOrdersClient() {
           <button
             type="button"
             onClick={refreshData}
-            disabled={isFetching && orders.length === 0}
+            disabled={manualRefreshing}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border cursor-pointer disabled:opacity-60"
             style={{ backgroundColor: ACCENT, color: ACCENT_TEXT, borderColor: ACCENT }}
           >

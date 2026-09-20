@@ -31,6 +31,7 @@ import { StoreComboSection } from "@/components/store/StoreComboSection";
 import { StoreSectionHeader } from "@/components/store/StoreSectionHeader";
 import { StoreFooterSection } from "@/components/store/StoreFooterSection";
 import { StoreMenuItemRow } from "@/components/store/StoreMenuItemRow";
+import { StoreOosSection } from "@/components/store/StoreOosSection";
 import { StoreMenuPairingSection } from "@/components/store/StoreMenuPairingSection";
 import { MerchantClosedBanner } from "./MerchantClosedBanner";
 import { MerchantRushBanner } from "./MerchantRushBanner";
@@ -114,6 +115,7 @@ export type MerchantDetailFlashListProps = {
   onFilterChange: (id: StoreFilterId) => void;
   onOpenFilters: () => void;
   showHighlyReordered: boolean;
+  showFlashDeal?: boolean;
   filtersActive: boolean;
   getQty: (itemId: string, menuItemId?: number) => number;
   onAdd: (item: MenuItem) => void;
@@ -233,6 +235,7 @@ const MerchantDetailFlashListInner = forwardRef<
     onFilterChange,
     onOpenFilters,
     showHighlyReordered,
+    showFlashDeal = false,
     filtersActive,
     getQty,
     onAdd,
@@ -532,6 +535,7 @@ const MerchantDetailFlashListInner = forwardRef<
               onChange={onFilterChange}
               onOpenFilters={onOpenFilters}
               showHighlyReordered={showHighlyReordered}
+              showFlashDeal={showFlashDeal}
               filtersActive={filtersActive}
             />
             {!dark ? <ClassicFreeDeliveryBanner /> : null}
@@ -669,6 +673,21 @@ const MerchantDetailFlashListInner = forwardRef<
           </View>
         );
 
+      case "oos_section":
+        if (item.items.length === 0) return <View style={styles.zeroCell} />;
+        return (
+          <StoreOosSection
+            items={item.items}
+            merchantId={merchantId}
+            isStoreClosed={isStoreClosed}
+            onAdd={onAdd}
+            onIncrement={onIncrement}
+            onDecrement={onDecrement}
+            onItemPress={onItemPress}
+            itemOfferById={itemOfferById}
+          />
+        );
+
       case "footer":
         return (
           <StoreFooterSection
@@ -766,6 +785,7 @@ const MerchantDetailFlashListInner = forwardRef<
       filter,
       filtersActive,
       showHighlyReordered,
+      showFlashDeal,
     ]
   );
 
@@ -987,7 +1007,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     backgroundColor: StoreTheme.background,
-    paddingBottom: 8,
+    paddingBottom: 0,
   },
   listContentDark: {
     backgroundColor: MerchantDarkPalette.bg,

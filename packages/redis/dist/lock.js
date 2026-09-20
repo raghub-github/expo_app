@@ -15,7 +15,7 @@
  *   });
  */
 import { randomBytes } from "node:crypto";
-import { getRedis, isRedisOptional } from "./client.js";
+import { ensureRedisConnected, getRedis, isRedisOptional } from "./client.js";
 const RELEASE_SCRIPT = `
 if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("del", KEYS[1])
@@ -35,6 +35,7 @@ export async function tryAcquireLock(key, ttlMs) {
         throw new Error("tryAcquireLock: invalid key/ttl");
     try {
         const redis = getRedis();
+        await ensureRedisConnected(redis);
         const token = randomBytes(16).toString("hex");
         const fullKey = `lock:${key}`;
         const ok = await redis.set(fullKey, token, "PX", ttlMs, "NX");

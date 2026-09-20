@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bike, Loader2, RefreshCw, Search, X } from "lucide-react";
 import { OrderMixedText, OrderNum } from "@/components/orders/orders-typography";
+import { isForceAssignmentOnDuty } from "@/lib/orders/force-assignment-online-status";
 
 export type SelectableRider = {
   riderId: number;
@@ -132,7 +133,7 @@ export function RiderSelectionSideSheet({
       return d != null && d <= radiusKm;
     });
     if (onlineOnly) {
-      list = list.filter((r) => r.onlineStatus === "ONLINE" || r.onlineStatus === "BUSY");
+      list = list.filter((r) => isForceAssignmentOnDuty(r.onlineStatus));
     }
     const q = query.trim().toLowerCase();
     if (q) {

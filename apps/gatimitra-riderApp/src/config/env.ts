@@ -293,9 +293,22 @@ export function isRiderWsEnabled(): boolean {
  * REST API (backend :3000) and WebSocket gateway (ws-gateway :4100) are different services.
  * Without EXPO_PUBLIC_WS_BASE_URL the rider app was opening ws://host:3000/v1/ws → HTTP 404 spam.
  */
+function healStaleLanWsUrl(url: string): string {
+  if (!__DEV__) return url;
+  try {
+    const asHttp = url.replace(/^wss:/i, "https:").replace(/^ws:/i, "http:");
+    const healed = healStaleLanApiUrl(asHttp);
+    const parsed = new URL(healed);
+    parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+    return parsed.origin;
+  } catch {
+    return url;
+  }
+}
+
 export function resolveWsBaseUrl(apiBaseUrl: string): string {
   const fromEnv = process.env.EXPO_PUBLIC_WS_BASE_URL?.trim();
-  if (fromEnv) return fromEnv.replace(/\/+$/, "");
+  if (fromEnv) return healStaleLanWsUrl(fromEnv.replace(/\/+$/, ""));
 
   try {
     const parsed = new URL(apiBaseUrl);
@@ -304,7 +317,7 @@ export function resolveWsBaseUrl(apiBaseUrl: string): string {
       parsed.port = wsPort;
     }
     parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
-    return parsed.origin;
+    return healStaleLanWsUrl(parsed.origin);
   } catch {
     return apiBaseUrl.replace(/^http/i, "ws").replace(/\/+$/, "");
   }

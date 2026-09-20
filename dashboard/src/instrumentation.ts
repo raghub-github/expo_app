@@ -128,6 +128,18 @@ export async function register() {
       // ignore older Node
     }
 
+    // Next.js HMR / parallel compiles attach many listeners to stdout/stderr.
+    try {
+      const { EventEmitter } = await import("node:events");
+      if (typeof EventEmitter.defaultMaxListeners === "number") {
+        EventEmitter.defaultMaxListeners = Math.max(EventEmitter.defaultMaxListeners, 32);
+      }
+      process.stdout?.setMaxListeners?.(32);
+      process.stderr?.setMaxListeners?.(32);
+    } catch {
+      // ignore
+    }
+
     const originalError = console.error.bind(console);
     console.error = (...args: unknown[]) => {
       if (argsLookLikeAbortNoise(args)) return;
@@ -138,6 +150,13 @@ export async function register() {
     const originalWarn = console.warn.bind(console);
     console.warn = (...args: unknown[]) => {
       if (argsLookLikeAbortNoise(args)) return;
+      const joined = args.map((a) => String(a ?? "")).join(" ");
+      if (
+        joined.includes("MaxListenersExceededWarning") ||
+        joined.includes("Possible EventEmitter memory leak")
+      ) {
+        return;
+      }
       originalWarn(...args);
     };
 

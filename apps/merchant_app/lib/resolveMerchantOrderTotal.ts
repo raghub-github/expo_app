@@ -118,10 +118,22 @@ function billFromItems(order: MerchantOrderTotalInput, opts?: { forceRecomputeTo
 
 /**
  * Merchant-visible order payout / CTM — Partner Site resolveMerchantCtm parity:
- * Prefer frozen orders_core.total_ctm whenever present (never lose to a drifted pricing.total).
- * Then pricing.total, line recompute, food_items_total_value, mapped totals.
+ * Prefer reconstructed line nets + packaging when items carry CTM snapshots
+ * (authoritative), then frozen orders_core.total_ctm, then pricing.total.
  */
 export function resolveMerchantOrderTotal(order: MerchantOrderTotalInput): number {
+  const items = resolveItems(order);
+  if (items.length > 0 && items.every((it) => it.ctm_from_snapshot === true)) {
+    const fromBill = billFromItems(order, { forceRecomputeTotal: true });
+    if (fromBill && fromBill.total > 0.005) {
+      const frozen = Number(order.total_ctm ?? order.totalCtm);
+      // Trust line reconstruction when it disagrees with a drifted frozen CTM.
+      if (!(Number.isFinite(frozen) && frozen > 0) || Math.abs(fromBill.total - frozen) > 0.5) {
+        return round2(fromBill.total);
+      }
+    }
+  }
+
   const fromFrozen = Number(order.total_ctm ?? order.totalCtm);
   if (Number.isFinite(fromFrozen) && fromFrozen > 0) return round2(fromFrozen);
 

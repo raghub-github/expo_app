@@ -9,6 +9,10 @@ import {
   type DashboardStoreOverview,
 } from "@/lib/partner-dashboard-cache";
 import {
+  isWalletBalanceNegative,
+  resolveWalletDisplayBalance,
+} from "@/lib/merchant-payout-utils";
+import {
   PARTNER_DASHBOARD_METRIC_BOX_CLASS,
   PARTNER_DASHBOARD_METRIC_BOX_SKELETON_CLASS,
   PARTNER_DASHBOARD_TOP_CARD_CLASS,
@@ -99,6 +103,8 @@ export function PartnerDashboardStoreOverviewCard({ storeId, wallet, walletLoadi
 
   const showPlaceholderPulse = !hydratedFromCache;
   const showWalletSkeleton = walletLoading && !wallet;
+  const displayAvailable = resolveWalletDisplayBalance(wallet ?? null);
+  const availableNegative = isWalletBalanceNegative(displayAvailable);
 
   return (
     <div className={PARTNER_DASHBOARD_TOP_CARD_CLASS}>
@@ -161,8 +167,12 @@ export function PartnerDashboardStoreOverviewCard({ storeId, wallet, walletLoadi
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
             <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>
               <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Available</p>
-              <p className="mt-0.5 text-sm font-bold tabular-nums text-emerald-700">
-                {formatInr(wallet?.withdrawable_balance ?? Number(wallet?.available_balance ?? 0))}
+              <p
+                className={`mt-0.5 text-sm font-bold tabular-nums ${
+                  availableNegative ? "text-red-600" : "text-emerald-700"
+                }`}
+              >
+                {formatInr(displayAvailable)}
               </p>
             </div>
             <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>

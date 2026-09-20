@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { ordersCore } from "@/lib/db/schema";
 import { searchRidersNearPoint } from "@/lib/area-manager/queries";
+import { mapForceAssignmentOnlineStatus } from "@/lib/orders/force-assignment-online-status";
 
 export type ForceSelectableRiderRow = {
   riderId: number;
@@ -101,13 +102,8 @@ export async function listForceAssignmentRidersFromDb(
   for (const r of geo.riders) {
     if (currentRiderId != null && r.id === currentRiderId) continue;
 
-    const status = String(r.status ?? "OFFLINE").toUpperCase();
-    const onlineStatus: "ONLINE" | "BUSY" | "OFFLINE" =
-      status === "ONLINE" || status === "BUSY" || status === "OFFLINE"
-        ? status
-        : "OFFLINE";
-
     const occupied = Boolean(r.currentAssignedOrderId?.trim());
+    const onlineStatus = mapForceAssignmentOnlineStatus(r.status, occupied);
     const distanceFromMxKm = r.distanceKm;
     const distanceFromCxKm =
       hasDrop && Number.isFinite(r.lat) && Number.isFinite(r.lng)

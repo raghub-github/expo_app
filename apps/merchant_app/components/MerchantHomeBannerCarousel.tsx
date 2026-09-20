@@ -346,6 +346,48 @@ export function MerchantRushHourBanner({
   );
 }
 
+export function MerchantOutstandingDuesBanner({
+  amountLabel,
+  paying = false,
+  onPay,
+}: {
+  amountLabel: string;
+  paying?: boolean;
+  onPay: () => void;
+}) {
+  return (
+    <View style={[styles.closedBanner, styles.duesBanner]}>
+      <Ionicons name="wallet-outline" size={22} color="#B91C1C" />
+      <View style={styles.bannerCopy}>
+        <Text bold style={[styles.bannerEyebrow, styles.duesTitle]}>
+          Outstanding dues
+        </Text>
+        <Text style={styles.closedText} numberOfLines={2}>
+          {amountLabel} due · Clear to restore withdrawals
+        </Text>
+      </View>
+      <View style={styles.uploadCtaCol}>
+        <Pressable
+          style={[styles.uploadBtn, styles.duesPayBtn]}
+          onPress={onPay}
+          disabled={paying}
+          accessibilityRole="button"
+          accessibilityLabel="Clear outstanding dues"
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          {paying ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Text bold style={[styles.uploadBtnText, styles.duesPayBtnText]} numberOfLines={1}>
+              Clear Dues
+            </Text>
+          )}
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   wrap: {
     marginHorizontal: H_PADDING,
@@ -434,6 +476,27 @@ const styles = StyleSheet.create({
   licenceBanner: {
     backgroundColor: "#F5B7BB",
     borderBottomColor: "#E8A0A5",
+  },
+  duesBanner: {
+    backgroundColor: "#FEE2E2",
+    borderBottomColor: "#FECACA",
+  },
+  duesTitle: {
+    color: "#991B1B",
+    fontSize: 12,
+    lineHeight: 15,
+    fontWeight: "800",
+    letterSpacing: 0.6,
+  },
+  duesPayBtn: {
+    backgroundColor: "#DC2626",
+    minWidth: 100,
+    maxWidth: 120,
+  },
+  duesPayBtnText: {
+    fontSize: 12,
+    lineHeight: 14,
+    fontWeight: "800",
   },
   bannerCopy: {
     flex: 1,

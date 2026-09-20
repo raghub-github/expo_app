@@ -56,6 +56,7 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
   const [resolvingPlace, setResolvingPlace] = useState(false);
   const searchInputRef = useRef<TextInput>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const addNavLockRef = useRef(false);
 
   useEffect(() => {
     if (autoFocusSearch) {
@@ -230,6 +231,8 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
               <TouchableOpacity
                 style={styles.addRow}
                 onPress={() => {
+                  if (addNavLockRef.current) return;
+                  addNavLockRef.current = true;
                   onComplete();
                   router.push("/location");
                 }}

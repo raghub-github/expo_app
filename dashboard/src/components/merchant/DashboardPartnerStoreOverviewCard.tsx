@@ -5,6 +5,7 @@ import {
   PARTNER_DASHBOARD_METRIC_BOX_CLASS,
   PARTNER_DASHBOARD_TOP_CARD_CLASS,
 } from "@/components/merchant/partner-dashboard-card-styles";
+import { isWalletBalanceNegative } from "@/lib/merchant-ledger-visibility";
 
 type Props = {
   totalProducts?: number;
@@ -35,6 +36,9 @@ export function DashboardPartnerStoreOverviewCard({
   walletPending = 0,
   walletLoading,
 }: Props) {
+  const availableAmt = Number(walletAvailable ?? 0);
+  const availableNegative = isWalletBalanceNegative(availableAmt);
+
   return (
     <div className={PARTNER_DASHBOARD_TOP_CARD_CLASS}>
       <div className="flex items-center gap-2 mb-2 shrink-0">
@@ -61,7 +65,11 @@ export function DashboardPartnerStoreOverviewCard({
 
       <div className="border-t border-slate-200/80 pt-2 shrink-0">
         <div className="flex items-center gap-2 mb-2.5">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-600">
+          <span
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${
+              availableNegative ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-600"
+            }`}
+          >
             <Wallet className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
           </span>
           <div className="min-w-0">
@@ -79,10 +87,20 @@ export function DashboardPartnerStoreOverviewCard({
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>
+            <div
+              className={
+                availableNegative
+                  ? "rounded-md bg-red-50 px-2 py-1.5 ring-1 ring-red-200/80 min-w-0"
+                  : PARTNER_DASHBOARD_METRIC_BOX_CLASS
+              }
+            >
               <p className="text-[9px] font-medium uppercase tracking-wide text-slate-500">Available</p>
-              <p className="mt-1 text-sm font-bold tabular-nums text-emerald-700">
-                {formatInr(Number(walletAvailable ?? 0))}
+              <p
+                className={`mt-1 text-sm font-bold tabular-nums ${
+                  availableNegative ? "text-red-700" : "text-emerald-700"
+                }`}
+              >
+                {formatInr(availableAmt)}
               </p>
             </div>
             <div className={PARTNER_DASHBOARD_METRIC_BOX_CLASS}>

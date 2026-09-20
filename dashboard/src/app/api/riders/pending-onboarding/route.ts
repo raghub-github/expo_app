@@ -4,42 +4,32 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { authFailureResponse, getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import { listRidersPendingOnboarding } from "@/lib/db/operations/riders";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
-import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 
 export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) return authFailureResponse(auth);
 
-    if (userError || !user) {
-      if (isInvalidRefreshToken(userError)) {
-        await signOutIfSessionDead(supabase, userError);
-        return NextResponse.json(
-          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-          { status: 401 }
-        );
-      }
+    let email = (auth.user.email ?? "").trim();
+    if (!email) {
+      const mapped = await resolveSystemUserForSupabaseAuth(auth.user.id, undefined);
+      email = (mapped?.email ?? "").trim();
+    }
+    if (!email) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
       );
     }
 
-    const session = { user };
-    const userIsSuperAdmin = await isSuperAdmin(session.user.id, session.user.email!);
-    const hasRiderAccess = await hasDashboardAccessByAuth(
-      session.user.id,
-      session.user.email!,
-      "RIDER"
-    );
+    const userIsSuperAdmin = await isSuperAdmin(auth.user.id, email);
+    const hasRiderAccess = await hasDashboardAccessByAuth(auth.user.id, email, "RIDER");
 
     if (!userIsSuperAdmin && !hasRiderAccess) {
       return NextResponse.json(

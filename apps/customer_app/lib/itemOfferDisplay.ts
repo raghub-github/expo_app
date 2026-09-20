@@ -18,6 +18,8 @@ export type ItemOfferDisplay = {
   offerPrice: number | null;
   /** Catalog/base price to strike when offerPrice is set. */
   strikePrice: number | null;
+  /** Flash Sale soft qty cap — units beyond this are regular-priced. */
+  maxFlashQuantity?: number | null;
   /** Raw offer math — re-estimate Boost for variant / size prices. */
   discountPercentage?: number | null;
   discountValue?: number | null;
@@ -38,6 +40,7 @@ export type ItemOfferCatalogItem = {
     offerId: number;
     originalCustomerUnit: number;
     flashPrice: number;
+    maxFlashQuantity?: number | null;
   } | null;
 };
 
@@ -162,7 +165,7 @@ export function offerPriority(o: MerchantOfferItem): number {
 
 export function parseMenuFlashSale(
   raw: Record<string, unknown> | null | undefined
-): { offerId: number; originalCustomerUnit: number; flashPrice: number } | null {
+): { offerId: number; originalCustomerUnit: number; flashPrice: number; maxFlashQuantity: number | null } | null {
   if (!raw || typeof raw !== "object") return null;
   const blob =
     (raw.flashSale as Record<string, unknown> | undefined) ??
@@ -180,13 +183,73 @@ export function parseMenuFlashSale(
   if (!Number.isInteger(offerId) || offerId < 1) return null;
   if (!Number.isFinite(original) || original <= 0) return null;
   if (!Number.isFinite(flash) || flash < 0 || flash >= original - 0.0001) return null;
-  return { offerId, originalCustomerUnit: original, flashPrice: flash };
+  const rawMax = blob.max_flash_quantity ?? blob.maxFlashQuantity;
+  const parsedMax = Math.floor(Number(rawMax));
+  const maxFlashQuantity = Number.isInteger(parsedMax) && parsedMax >= 1 ? parsedMax : null;
+  return { offerId, originalCustomerUnit: original, flashPrice: flash, maxFlashQuantity };
+}
+
+/**
+ * Soft Flash Sale qty cap — first `maxFlashQuantity` units at flash price,
+ * remaining units at regular (original) price. Does not reject over-limit qty.
+ *
+ * When maxFlashQuantity is null/invalid, treat as unlimited flash units
+ * (legacy rows without a configured cap).
+ */
+export function computeFlashSaleSplitPricing(args: {
+  quantity: number;
+  flashUnit: number;
+  regularUnit: number;
+  maxFlashQuantity?: number | null;
+}): {
+  flashQty: number;
+  regularQty: number;
+  flashTotal: number;
+  regularTotal: number;
+  lineTotal: number;
+  blendedUnit: number;
+  subsidyPerUnit: number;
+  subsidyTotal: number;
+} {
+  const qty = Math.max(1, Math.floor(Number(args.quantity) || 1));
+  const flashUnit = Math.round(Number(args.flashUnit) || 0);
+  const regularUnit = Math.round(Number(args.regularUnit) || 0);
+  const rawMax = args.maxFlashQuantity;
+  const maxParsed = Math.floor(Number(rawMax));
+  const hasCap = Number.isInteger(maxParsed) && maxParsed >= 1;
+  const flashQty = hasCap ? Math.min(qty, maxParsed) : qty;
+  const regularQty = Math.max(0, qty - flashQty);
+  const flashTotal = flashUnit * flashQty;
+  const regularTotal = regularUnit * regularQty;
+  const lineTotal = flashTotal + regularTotal;
+  const blendedUnit = qty > 0 ? Math.round((lineTotal / qty) * 100) / 100 : flashUnit;
+  const subsidyPerUnit = Math.max(0, regularUnit - flashUnit);
+  const subsidyTotal = subsidyPerUnit * flashQty;
+  return {
+    flashQty,
+    regularQty,
+    flashTotal,
+    regularTotal,
+    lineTotal,
+    blendedUnit,
+    subsidyPerUnit,
+    subsidyTotal,
+  };
+}
+
+export function flashSaleItemQtyLimitMessage(maxFlashQuantity: number): string {
+  const n = Math.floor(Number(maxFlashQuantity));
+  if (!Number.isInteger(n) || n < 1) {
+    return "You can add more of this item — extra units are charged at the regular price.";
+  }
+  return `You can add up to ${n} of this item at the Flash Sale price.`;
 }
 
 export function flashSaleItemDisplay(flash: {
   offerId: number;
   originalCustomerUnit: number;
   flashPrice: number;
+  maxFlashQuantity?: number | null;
 }): ItemOfferDisplay {
   return {
     offerId: flash.offerId,
@@ -194,6 +257,7 @@ export function flashSaleItemDisplay(flash: {
     label: "Flash Sale",
     offerPrice: Math.round(flash.flashPrice),
     strikePrice: Math.round(flash.originalCustomerUnit),
+    maxFlashQuantity: flash.maxFlashQuantity ?? null,
     autoApply: true,
   };
 }

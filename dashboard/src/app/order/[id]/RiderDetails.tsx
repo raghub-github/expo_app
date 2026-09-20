@@ -769,10 +769,16 @@ export default function RiderDetails({
 
   const orderStatusUpper = String(order.currentStatus ?? order.status ?? "").toUpperCase();
   const isDeliveredOrder = orderStatusUpper === "DELIVERED";
+  const orderPastStoreWait =
+    isDeliveredOrder ||
+    ["PICKED_UP", "OUT_FOR_DELIVERY", "DISPATCHED", "IN_TRANSIT", "CANCELLED", "FAILED", "REJECTED"].includes(
+      orderStatusUpper
+    );
   const serverHasFinalizedWait =
     order.riderRestaurantWaitSeconds != null &&
     Number.isFinite(order.riderRestaurantWaitSeconds);
-  const riderWaitLive = Boolean(order.riderRestaurantWaitLive);
+  const riderWaitLive =
+    Boolean(order.riderRestaurantWaitLive) && !orderPastStoreWait;
   const riderWaitAnchorAt = order.riderRestaurantWaitAnchorAt;
   const liveRiderWaitSeconds = useLiveElapsedSeconds(riderWaitAnchorAt, riderWaitLive);
   const riderWaitDisplaySeconds = riderWaitLive

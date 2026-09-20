@@ -340,7 +340,15 @@ export function seedMerchantsListQueryIfCached(
 
 
 
-  queryClient.setQueryData(queryKey, cached);
+  // Mark seed stale so Food/Grocery home always background-refetch — a "fresh"
+
+  // partial MMKV list was locking the UI on 1 store while the API had more.
+
+  queryClient.setQueryData(queryKey, cached, {
+
+    updatedAt: Date.now() - MERCHANTS_LIST_STALE_MS,
+
+  });
 
   return true;
 

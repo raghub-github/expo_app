@@ -96,6 +96,7 @@ const flashOffer = (overrides: Partial<PlatformOfferRow> = {}): PlatformOfferRow
   conditions: {
     menu_item_ids: ["10"],
     flash_sale_items: [{ menu_item_id: "10", flash_price: 9 }],
+    max_flash_quantity: 1,
   },
   ...overrides,
 });
@@ -188,15 +189,237 @@ describe("FLASH_SALE overlay apply", () => {
     assert.equal(applied.staleClientFlash, false);
   });
 
-  it("qty 3 of the ₹9 item is one overlay with ₹270 subsidy", () => {
+  it("qty 3 of the ₹9 item is one overlay with ₹270 subsidy when max_flash_quantity allows it", () => {
     const ctx = baseCtx({ itemSubtotal: 297 });
     const applied = applyFoodFlashSaleOverlayToItems({
       items: [item({ quantity: 3, itemSnapshot: { canonical_pricing: { customer_item_price_unit: 99, customer_item_price_line: 297 } } })],
       ctx,
-      dataset: dataset([flashOffer()]),
+      dataset: dataset([
+        flashOffer({
+          conditions: {
+            menu_item_ids: ["10"],
+            flash_sale_items: [{ menu_item_id: "10", flash_price: 9 }],
+            max_flash_quantity: 5,
+          },
+        }),
+      ]),
     });
+    assert.equal(applied.qtyExceeded, null);
     assert.equal(applied.overlay.subsidyTotal, 270);
     assert.equal(applied.items[0]!.basePrice, 9);
+  });
+
+  it("qty 2 with max_flash_quantity 1 applies flash to 1 unit and regular price to the rest", () => {
+    const ctx = baseCtx({ itemSubtotal: 198 });
+    const applied = applyFoodFlashSaleOverlayToItems({
+      items: [item({ quantity: 2, itemSnapshot: { canonical_pricing: { customer_item_price_unit: 99, customer_item_price_line: 198 } } })],
+      ctx,
+      dataset: dataset([flashOffer()]),
+    });
+    assert.equal(applied.qtyExceeded, null);
+    assert.equal(applied.overlay.lines.length, 1);
+    assert.equal(applied.overlay.lines[0]!.quantity, 1);
+    assert.equal(applied.overlay.subsidyTotal, 90); // (99-9)*1
+    // Blended unit: (9*1 + 99*1) / 2 = 54
+    assert.equal(applied.items[0]!.basePrice, 54);
+  });
+
+  it("qty 6 with max_flash_quantity 5 flashes 5 units and charges 1 at regular", () => {
+    const ctx = baseCtx({ itemSubtotal: 594 });
+    const applied = applyFoodFlashSaleOverlayToItems({
+      items: [
+        item({
+          quantity: 6,
+          itemSnapshot: { canonical_pricing: { customer_item_price_unit: 99, customer_item_price_line: 594 } },
+        }),
+      ],
+      ctx,
+      dataset: dataset([
+        flashOffer({
+          conditions: {
+            menu_item_ids: ["10"],
+            flash_sale_items: [{ menu_item_id: "10", flash_price: 9 }],
+            max_flash_quantity: 5,
+          },
+        }),
+      ]),
+    });
+    assert.equal(applied.qtyExceeded, null);
+    assert.equal(applied.overlay.lines[0]!.quantity, 5);
+    assert.equal(applied.overlay.subsidyTotal, 450); // (99-9)*5
+    // Blended: (9*5 + 99*1) / 6 = 24
+    assert.equal(applied.items[0]!.basePrice, 24);
+  });
+
+  it("two qty-1 lines of the same item: only the first gets flash when max_flash_quantity is 1", () => {
+    const ctx = baseCtx({ itemSubtotal: 198 });
+    const applied = applyFoodFlashSaleOverlayToItems({
+      items: [
+        item({ quantity: 1 }),
+        item({ quantity: 1, variantKey: "split" }),
+      ],
+      ctx,
+      dataset: dataset([flashOffer()]),
+    });
+    assert.equal(applied.qtyExceeded, null);
+    assert.equal(applied.overlay.lines.length, 1);
+    assert.equal(applied.items[0]!.basePrice, 9);
+    assert.equal(applied.items[1]!.basePrice, 99);
+  });
+
+  it("max_flash_quantity is per eligible item: 1 of each flash item in the same order is allowed", () => {
+    const ctx = baseCtx({ itemSubtotal: 297 });
+    const applied = applyFoodFlashSaleOverlayToItems({
+      items: [
+        item({ menuItemId: 10, quantity: 1 }),
+        item({ menuItemId: 11, quantity: 1, itemName: "Sandwich" }),
+        item({ menuItemId: 12, quantity: 1, itemName: "Tandoori" }),
+      ],
+      ctx,
+      dataset: dataset([
+        flashOffer({
+          conditions: {
+            menu_item_ids: ["10", "11", "12"],
+            flash_sale_items: [
+              { menu_item_id: "10", flash_price: 19 },
+              { menu_item_id: "11", flash_price: 21 },
+              { menu_item_id: "12", flash_price: 39 },
+            ],
+            max_flash_quantity: 1,
+          },
+        }),
+      ]),
+    });
+    assert.equal(applied.qtyExceeded, null);
+    assert.equal(applied.overlay.lines.length, 3);
+    assert.equal(applied.items[0]!.basePrice, 19);
+    assert.equal(applied.items[1]!.basePrice, 21);
+    assert.equal(applied.items[2]!.basePrice, 39);
+  });
+
+  it("mixed over-limit quantities flash the capped units and charge the rest at regular", () => {
+    const ctx = baseCtx({ itemSubtotal: 693 });
+    const applied = applyFoodFlashSaleOverlayToItems({
+      items: [
+        item({
+          menuItemId: 10,
+          quantity: 3,
+          itemName: "Burger",
+          itemSnapshot: { canonical_pricing: { customer_item_price_unit: 99, customer_item_price_line: 297 } },
+        }),
+        item({
+          menuItemId: 11,
+          quantity: 2,
+          itemName: "Sandwich",
+          itemSnapshot: { canonical_pricing: { customer_item_price_unit: 99, customer_item_price_line: 198 } },
+        }),
+        item({
+          menuItemId: 12,
+          quantity: 1,
+          itemName: "Tandoori",
+          itemSnapshot: { canonical_pricing: { customer_item_price_unit: 99, customer_item_price_line: 99 } },
+        }),
+      ],
+      ctx,
+      dataset: dataset([
+        flashOffer({
+          conditions: {
+            menu_item_ids: ["10", "11", "12"],
+            flash_sale_items: [
+              { menu_item_id: "10", flash_price: 19 },
+              { menu_item_id: "11", flash_price: 21 },
+              { menu_item_id: "12", flash_price: 39 },
+            ],
+            max_flash_quantity: 1,
+          },
+        }),
+      ]),
+    });
+    assert.equal(applied.qtyExceeded, null);
+    assert.equal(applied.overlay.lines.length, 3);
+    // Burger: (19 + 99 + 99) / 3
+    assert.equal(applied.items[0]!.basePrice, 72.33);
+    // Sandwich: (21 + 99) / 2
+    assert.equal(applied.items[1]!.basePrice, 60);
+    assert.equal(applied.items[2]!.basePrice, 39);
+  });
+
+  it("max_flash_quantity 2 allows 2 of each eligible item in the same order", () => {
+    const ctx = baseCtx({ itemSubtotal: 594 });
+    const applied = applyFoodFlashSaleOverlayToItems({
+      items: [
+        item({ menuItemId: 10, quantity: 2, itemName: "Burger" }),
+        item({ menuItemId: 11, quantity: 2, itemName: "Sandwich" }),
+        item({ menuItemId: 12, quantity: 2, itemName: "Tandoori" }),
+      ],
+      ctx,
+      dataset: dataset([
+        flashOffer({
+          conditions: {
+            menu_item_ids: ["10", "11", "12"],
+            flash_sale_items: [
+              { menu_item_id: "10", flash_price: 19 },
+              { menu_item_id: "11", flash_price: 21 },
+              { menu_item_id: "12", flash_price: 39 },
+            ],
+            max_flash_quantity: 2,
+          },
+        }),
+      ]),
+    });
+    assert.equal(applied.qtyExceeded, null);
+    assert.equal(applied.overlay.lines.length, 3);
+    assert.equal(applied.items[0]!.basePrice, 19);
+    assert.equal(applied.items[1]!.basePrice, 21);
+    assert.equal(applied.items[2]!.basePrice, 39);
+  });
+
+  it("max_flash_quantity 2 flashes 2 units and charges the 3rd at regular", () => {
+    const ctx = baseCtx({ itemSubtotal: 297 });
+    const applied = applyFoodFlashSaleOverlayToItems({
+      items: [
+        item({
+          menuItemId: 10,
+          quantity: 3,
+          itemName: "Burger",
+          itemSnapshot: { canonical_pricing: { customer_item_price_unit: 99, customer_item_price_line: 297 } },
+        }),
+      ],
+      ctx,
+      dataset: dataset([
+        flashOffer({
+          conditions: {
+            menu_item_ids: ["10"],
+            flash_sale_items: [{ menu_item_id: "10", flash_price: 19 }],
+            max_flash_quantity: 2,
+          },
+        }),
+      ]),
+    });
+    assert.equal(applied.qtyExceeded, null);
+    assert.equal(applied.overlay.lines[0]!.quantity, 2);
+    assert.equal(applied.overlay.subsidyTotal, 160); // (99-19)*2
+    // Blended: (19*2 + 99*1) / 3 = 45.666… → 45.67
+    assert.equal(applied.items[0]!.basePrice, 45.67);
+  });
+
+  it("manipulated qty 100 only flashes max_flash_quantity units", () => {
+    const ctx = baseCtx({ itemSubtotal: 9900 });
+    const applied = applyFoodFlashSaleOverlayToItems({
+      items: [
+        item({
+          quantity: 100,
+          itemSnapshot: { canonical_pricing: { customer_item_price_unit: 99, customer_item_price_line: 9900 } },
+        }),
+      ],
+      ctx,
+      dataset: dataset([flashOffer()]),
+    });
+    assert.equal(applied.qtyExceeded, null);
+    assert.equal(applied.overlay.lines[0]!.quantity, 1);
+    assert.equal(applied.overlay.subsidyTotal, 90);
+    // Blended: (9*1 + 99*99) / 100 = 98.1
+    assert.equal(applied.items[0]!.basePrice, 98.1);
   });
 
   it("stamps a non-bill-reducing subsidy line so payable is not discounted twice", () => {
@@ -321,6 +544,50 @@ describe("FLASH_SALE overlay apply", () => {
     assert.equal(merged.discounted_ctm_unit, 70);
     assert.equal(merged.customer_item_price_unit, 9);
     assert.equal((merged.flash_sale as { subsidy_unit: number }).subsidy_unit, 90);
+  });
+
+  it("recovers original unit when menu overlay already baked flash into customer_item_price_unit", () => {
+    const ctx = baseCtx({ itemSubtotal: 27 });
+    const applied = applyFoodFlashSaleOverlayToItems({
+      items: [
+        item({
+          quantity: 3,
+          basePrice: 9,
+          itemSnapshot: {
+            flash_sale: {
+              offer_id: 7,
+              original_customer_unit: 99,
+              flash_price: 9,
+              max_flash_quantity: 1,
+            },
+            customer_strike_price: 99,
+            canonical_pricing: {
+              customer_item_price_unit: 9,
+              customer_item_price_line: 9,
+              customer_strike_unit: 99,
+              flash_sale: {
+                offer_id: 7,
+                original_customer_unit: 99,
+                flash_price: 9,
+                max_flash_quantity: 1,
+              },
+            },
+          },
+        }),
+      ],
+      ctx,
+      dataset: dataset([flashOffer()]),
+    });
+    assert.equal(applied.qtyExceeded, null);
+    assert.equal(applied.overlay.lines[0]!.quantity, 1);
+    assert.equal(applied.overlay.subsidyTotal, 90);
+    // (9*1 + 99*2) / 3 = 69
+    assert.equal(applied.items[0]!.basePrice, 69);
+    const flashMeta = (applied.items[0]!.itemSnapshot as { flash_sale?: Record<string, unknown> })
+      .flash_sale;
+    assert.equal(flashMeta?.flash_sale_quantity, 1);
+    assert.equal(flashMeta?.regular_quantity, 2);
+    assert.equal(flashMeta?.line_total, 207);
   });
 
   it("only reopens the unique slot when restore flags allow cancel/refund", () => {

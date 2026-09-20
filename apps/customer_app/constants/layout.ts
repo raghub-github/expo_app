@@ -84,8 +84,11 @@ export const FLOATING_NAV_RADIUS = 32;
 /** Active tab indicator radius — one token for all four tabs (Android needs this on the same style as bg). */
 export const ACTIVE_TAB_RADIUS = 16;
 
-/** Connected bottom sheet — no float gap above the system gesture / home indicator. */
+/** Connected tab sheet — flush to screen bottom; icons pad above system nav (safe area). */
 export const CUSTOMER_TAB_BAR_FLOAT_GAP = 0;
+
+/** Gap between floating cart/track bar and the full tab capsule below it. */
+export const FLOATING_CART_ABOVE_TAB_GAP = 8;
 
 /** Bottom inset for tab / ride nav — never collapse under Android system chrome. */
 export function resolveTabBarBottomInset(insetsBottom: number): number {
@@ -137,13 +140,23 @@ export const MERCHANT_FLOATING_UI_LIFT = FLOATING_CART_UI_LIFT;
 export const PARCEL_TRACK_ABOVE_LEGAL_LIFT = 56;
 
 /**
- * Shared bottom Y for the floating tab capsule and cart/track dock when they
- * replace each other. One formula everywhere — Home↔Food / Track on/off must
- * not hop the chrome vertically.
+ * Shared bottom Y for tab *icons* (padding above system nav inside a screen-connected sheet).
+ * Sheet itself is bottom:0 — this is only the inset under the capsule row.
  * Keep in sync with `resolveCustomerFloatingChromeBottomPure` (node tests).
  */
 export function resolveCustomerFloatingChromeBottom(rawBottom: number): number {
-  return resolveTabBarBottomInset(rawBottom);
+  return resolveTabBarBottomInset(rawBottom) + CUSTOMER_TAB_BAR_FLOAT_GAP;
+}
+
+/**
+ * Floating cart/track Y — sits above the full tab bar (never replaces it with an edge peek).
+ */
+export function resolveFloatingCartAboveTabBottom(rawBottom: number): number {
+  return (
+    resolveCustomerFloatingChromeBottom(rawBottom) +
+    CUSTOMER_BOTTOM_NAV_CONTENT_HEIGHT +
+    FLOATING_CART_ABOVE_TAB_GAP
+  );
 }
 
 /** Floating cart / dock — no artificial 48dp gap on Android. */

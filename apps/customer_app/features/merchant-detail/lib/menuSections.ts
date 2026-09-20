@@ -1,5 +1,12 @@
 import type { MenuItem } from "@/services/merchant.service";
+import { getBasePrice } from "@/components/store/storeMenuUtils";
 import type { MenuListRow, MenuSection } from "../types";
+
+/** True when the menu card would show a strike-through / offer price. */
+export function menuItemHasStrikeThrough(item: MenuItem): boolean {
+  const base = getBasePrice(item);
+  return base != null && base > item.price + 0.001;
+}
 
 /** Collapse rows that describe the same dish, so a repeated API row never renders twice. */
 export function dedupeMenuItems(menu: MenuItem[]): MenuItem[] {
@@ -100,8 +107,14 @@ function sectionDisplayOrder(sec: MenuSection): number {
   return raw != null && Number.isFinite(raw) ? raw : Number.MAX_SAFE_INTEGER;
 }
 
-/** Items with photos + store-wide repeat orders float to the top of each category. */
+/**
+ * Inner-page item ranking:
+ * 1) Strike-through / active offer price (Flash, % OFF, etc.)
+ * 2) Photos + store-wide repeat orders
+ */
 export function compareMenuItemsForInnerPage(a: MenuItem, b: MenuItem): number {
+  const offer = Number(menuItemHasStrikeThrough(b)) - Number(menuItemHasStrikeThrough(a));
+  if (offer !== 0) return offer;
   const img = Number(itemHasImage(b)) - Number(itemHasImage(a));
   if (img !== 0) return img;
   const orders = Math.max(0, Number(b.orderCount ?? 0)) - Math.max(0, Number(a.orderCount ?? 0));
@@ -113,12 +126,15 @@ export function compareMenuItemsForInnerPage(a: MenuItem, b: MenuItem): number {
   return String(a.name ?? "").localeCompare(String(b.name ?? ""));
 }
 
+function sectionHasStrikeThrough(sec: MenuSection): boolean {
+  return sec.data.some(menuItemHasStrikeThrough);
+}
+
 /**
  * Inner store page ranking:
- * 1) Categories that have images (category tile or item photos)
- * 2) Categories with the most repeat customer orders for this store
- * 3) Merchant display_order
- * Within each category, photo + high-order items come first.
+ * 1) Pull every strike-through / offer item into a leading "Offers" block
+ * 2) Remaining categories: images → order volume → display_order
+ * Within each category, offer items come first, then photo + high-order.
  */
 export function sortMenuSectionsForInnerPage(sections: MenuSection[]): MenuSection[] {
   if (sections.length === 0) return sections;
@@ -126,8 +142,10 @@ export function sortMenuSectionsForInnerPage(sections: MenuSection[]): MenuSecti
     ...sec,
     data: [...sec.data].sort(compareMenuItemsForInnerPage) as MenuListRow[],
   }));
-  return [...sortedItems].sort((a, b) => {
+  const ranked = [...sortedItems].sort((a, b) => {
     if (Boolean(a.isSmart) !== Boolean(b.isSmart)) return a.isSmart ? -1 : 1;
+    const offer = Number(sectionHasStrikeThrough(b)) - Number(sectionHasStrikeThrough(a));
+    if (offer !== 0) return offer;
     const img = Number(sectionHasImages(b)) - Number(sectionHasImages(a));
     if (img !== 0) return img;
     const volume = sectionOrderVolume(b) - sectionOrderVolume(a);
@@ -136,6 +154,31 @@ export function sortMenuSectionsForInnerPage(sections: MenuSection[]): MenuSecti
     if (display !== 0) return display;
     return 0;
   });
+  return promoteStrikeThroughItemsToTop(ranked);
+}
+
+/**
+ * Move every dish with a visible strike / offer price into one leading section
+ * so they sit at the top of the store menu list (no duplicates in later categories).
+ */
+export function promoteStrikeThroughItemsToTop(sections: MenuSection[]): MenuSection[] {
+  if (sections.length === 0) return sections;
+  const offerItems: MenuListRow[] = [];
+  const rest: MenuSection[] = [];
+  for (const sec of sections) {
+    const offers: MenuListRow[] = [];
+    const normal: MenuListRow[] = [];
+    for (const item of sec.data) {
+      if (menuItemHasStrikeThrough(item)) offers.push(item);
+      else normal.push(item);
+    }
+    offerItems.push(...offers);
+    if (normal.length > 0) rest.push({ ...sec, data: normal });
+  }
+  if (offerItems.length === 0) return sections;
+  const uniqueOffers = dedupeMenuItems(offerItems) as MenuListRow[];
+  uniqueOffers.sort(compareMenuItemsForInnerPage);
+  return [{ title: "Offers", data: uniqueOffers, isSmart: true }, ...rest];
 }
 
 /** Categories with 2+ dishes first; single-item categories stay below. Relative order is kept. */

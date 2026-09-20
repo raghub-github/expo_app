@@ -1,13 +1,34 @@
-import { Stack } from "expo-router";
+import { Stack, useRouter } from "expo-router";
+import { useEffect } from "react";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
 import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { hasCompletedProfileSync } from "@/lib/profileCache";
+import { useAuthStore } from "@/store/authStore";
 
 export default function HomeLayout() {
   const discovery = useDiscoveryLayout();
+  const router = useRouter();
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const accessToken = useAuthStore((s) => s.session?.accessToken ?? null);
   const barStyle = discovery ? "light" : "dark";
   const barBg = discovery ? DiscoveryColors.bg : GatiMitraColors.softBackground;
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!accessToken) {
+      router.replace("/(auth)/login");
+      return;
+    }
+    if (!hasCompletedProfileSync()) {
+      router.replace("/(onboarding)");
+    }
+  }, [hydrated, accessToken, router]);
+
+  if (!hydrated || !accessToken || !hasCompletedProfileSync()) {
+    return null;
+  }
 
   return (
     <>

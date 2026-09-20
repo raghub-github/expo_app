@@ -529,7 +529,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
               </section>
 
               <section className={PARTNER_DASHBOARD_TOP_CARD_SECTION_CLASS}>
-                {showTopCardSkeletons && walletLoading && walletAvailableBalance == null ? (
+                {showTopCardSkeletons && !statsQuery.data ? (
                   <PartnerDashboardStoreOverviewSkeleton />
                 ) : (
                 <DashboardPartnerStoreOverviewCard
@@ -546,7 +546,7 @@ export function StoreFullDashboard({ storeId }: { storeId: string }) {
                   walletToday={walletTodayEarning}
                   walletYesterday={walletYesterdayEarning}
                   walletPending={walletPendingBalance}
-                  walletLoading={walletLoading}
+                  walletLoading={walletLoading && walletAvailableBalance == null}
                 />
                 )}
               </section>

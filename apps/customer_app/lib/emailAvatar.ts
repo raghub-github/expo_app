@@ -232,16 +232,26 @@ export function pickVerifiedEmailAvatarUrl(
 
 const prefetchedAvatarUris = new Set<string>();
 
+export function isAvatarUriPrefetched(uri: string | null | undefined): boolean {
+  const trimmed = uri?.trim();
+  return !!trimmed && prefetchedAvatarUris.has(trimmed);
+}
+
+export function markAvatarUriPrefetched(uri: string | null | undefined): void {
+  const trimmed = uri?.trim();
+  if (trimmed) prefetchedAvatarUris.add(trimmed);
+}
+
 export function prefetchEmailAvatar(profile: Pick<UserProfile, "email" | "is_email_verified" | "profile_image_url">) {
   const stored = resolveStoredProfileAvatarUri(profile.profile_image_url);
   if (stored && !prefetchedAvatarUris.has(stored)) {
     prefetchedAvatarUris.add(stored);
-    void Image.prefetch(stored, { cachePolicy: "memory-disk" });
+    void Image.prefetch(stored, { cachePolicy: "memory-disk" }).catch(() => {});
   }
 
   if (!profile.is_email_verified || !profile.email?.trim()) return;
   const uri = pickVerifiedEmailAvatarUrl(profile.email, profile.profile_image_url);
   if (!uri || prefetchedAvatarUris.has(uri)) return;
   prefetchedAvatarUris.add(uri);
-  void Image.prefetch(uri, { cachePolicy: "memory-disk" });
+  void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => {});
 }

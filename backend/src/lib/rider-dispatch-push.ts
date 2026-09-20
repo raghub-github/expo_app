@@ -148,6 +148,9 @@ export async function sendRiderDispatchDirectPush(args: {
     const channelId = channelIdForService(args.serviceType);
     const sound = soundForService(args.serviceType);
     const deepLink = "/(tabs)/orders";
+    const alertSessionId =
+      String(args.data?.alertSessionId ?? "").trim() ||
+      `RIDER_NEW_ORDER:${args.orderId}:${args.riderId}`;
     const data = flattenData({
       ...(args.data ?? {}),
       type: "dispatch_offer",
@@ -159,6 +162,8 @@ export async function sendRiderDispatchDirectPush(args: {
       deepLink,
       screen: deepLink,
       skip_in_app_banner: true,
+      alertSessionId,
+      gmAlertAction: "start",
     });
 
     let anyOk = false;
@@ -222,6 +227,21 @@ export async function sendRiderDispatchDirectPush(args: {
             push_dispatch_started_at,
           })
         );
+      }
+    }
+
+    if (nativeTokens.length > 0) {
+      try {
+        const { sendCriticalAlertControlFcm } = await import("./critical-alert-control.js");
+        await sendCriticalAlertControlFcm({
+          tokens: nativeTokens,
+          action: "start",
+          alertSessionId,
+          appRole: "rider",
+          data,
+        });
+      } catch {
+        /* companion FCM is best-effort */
       }
     }
 

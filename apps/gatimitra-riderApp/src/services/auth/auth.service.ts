@@ -16,6 +16,7 @@ import { getSupabaseAuth, getSupabaseOtpEnvDebugInfo } from "@/src/lib/supabaseC
 import { getRiderLoginDeviceMeta } from "@/src/lib/riderDeviceInfo";
 import type { RiderLoginGeoPayload } from "@/src/lib/getRiderLoginGeoFromDevice";
 import { RIDER_HIGH_TRAFFIC_MESSAGE, sanitizeRiderAuthError } from "@/src/lib/sanitizeRiderAuthError";
+import { notifyForceLogoutIfNeeded } from "@/src/services/rider-auth-errors";
 
 const AUTH_PREFIX = "/v1/auth";
 
@@ -510,11 +511,15 @@ export const riderAuthService = {
       throw new Error(sanitizeRiderAuthError("Invalid response while refreshing session."));
     }
     if (!res.ok) {
-      throw new Error(
-        (typeof dataJson.message === "string" && dataJson.message) ||
-          (typeof dataJson.error === "string" && dataJson.error) ||
-          "Could not refresh session.",
-      );
+      const code = typeof dataJson.error === "string" ? dataJson.error.trim() : "";
+      const msg =
+        (typeof dataJson.message === "string" && dataJson.message.trim()) ||
+        code ||
+        "Could not refresh session.";
+      if (res.status === 401) {
+        notifyForceLogoutIfNeeded(res.status, raw);
+      }
+      throw new RiderAuthError(code || "refresh_failed", msg);
     }
     assertSession(dataJson);
     return dataJson;

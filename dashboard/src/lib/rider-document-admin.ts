@@ -234,10 +234,13 @@ export async function uploadRiderDocumentImage(params: {
     }
   }
 
-  await uploadWithKey(file, r2Key);
+  await uploadWithKey(file, r2Key, file.type || "image/jpeg");
+
+  const cacheBust = Date.now();
+  const viewUrl = `${proxyUrl}${proxyUrl.includes("?") ? "&" : "?"}v=${cacheBust}`;
 
   const docUpdates: Record<string, unknown> = {
-    fileUrl: proxyUrl,
+    fileUrl: viewUrl,
     r2Key,
     updatedAt: new Date(),
   };
@@ -250,7 +253,7 @@ export async function uploadRiderDocumentImage(params: {
       await db
         .update(riderDocumentFiles)
         .set({
-          fileUrl: proxyUrl,
+          fileUrl: viewUrl,
           r2Key,
           mimeType: file.type || "image/jpeg",
         })
@@ -259,7 +262,7 @@ export async function uploadRiderDocumentImage(params: {
       const sortOrder = side === "front" ? 0 : 1;
       await db.insert(riderDocumentFiles).values({
         documentId,
-        fileUrl: proxyUrl,
+        fileUrl: viewUrl,
         r2Key,
         side,
         mimeType: file.type || "image/jpeg",
@@ -282,12 +285,15 @@ export async function uploadRiderDocumentImage(params: {
     await db.update(riderDocuments).set(docUpdates).where(eq(riderDocuments.id, documentId));
   }
 
-  await syncRiderProfileFields(riderId, baseType, proxyUrl, false);
+  await syncRiderProfileFields(riderId, baseType, viewUrl, false);
 
   // Admin selfie → Manual verified; rider app replace uses APP_VERIFIED (Auto verified).
   if (baseType === "selfie" || baseType === "profile_photo") {
     const { autoVerifyUploadedRiderSelfie } = await import("@/lib/rider-selfie-auto-verify");
-    await autoVerifyUploadedRiderSelfie(riderId, { source: "admin" }).catch(() => false);
+    await autoVerifyUploadedRiderSelfie(riderId, {
+      source: "admin",
+      documentId,
+    }).catch(() => false);
   }
 
   const [updated] = await db
@@ -304,6 +310,7 @@ const ALLOWED_DISPLAY_DOC_TYPES = new Set([
   "aadhaar_back",
   "pan",
   "selfie",
+  "profile_photo",
   "dl_front",
   "dl_back",
   "rc",
@@ -315,6 +322,21 @@ const ALLOWED_DISPLAY_DOC_TYPES = new Set([
   "upi_qr_proof",
 ]);
 
+const ALLOWED_ADMIN_UPLOAD_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "application/pdf",
+]);
+
+export function isAllowedAdminUploadFile(file: File): boolean {
+  const type = (file.type || "").toLowerCase();
+  if (ALLOWED_ADMIN_UPLOAD_TYPES.has(type)) return true;
+  // Some browsers (Windows photo picker) send an empty MIME type.
+  return !type && /\.(jpe?g|png|webp|pdf)$/i.test(file.name || "");
+}
+
 export function isAllowedAdminDisplayDocType(displayDocType: string): boolean {
   return ALLOWED_DISPLAY_DOC_TYPES.has(displayDocType);
 }
@@ -323,6 +345,7 @@ export function isAllowedAdminDisplayDocType(displayDocType: string): boolean {
 export function storedDocTypeForDisplay(displayDocType: string): string {
   const { baseType } = parseDisplayDocType(displayDocType);
   if (isMultiSideBaseType(baseType)) return baseType;
+  if (baseType === "profile_photo") return "selfie";
   return displayDocType;
 }
 
@@ -367,7 +390,11 @@ export async function ensureRiderDocumentRow(params: {
 
   const storedType = storedDocTypeForDisplay(displayDocType);
   const db = getDb();
-  const candidates = Array.from(new Set([storedType, displayDocType]));
+  const selfieAlias =
+    storedType === "selfie" || displayDocType === "selfie" || displayDocType === "profile_photo"
+      ? (["selfie", "profile_photo"] as const)
+      : [];
+  const candidates = Array.from(new Set([storedType, displayDocType, ...selfieAlias]));
 
   const existing = await db
     .select()

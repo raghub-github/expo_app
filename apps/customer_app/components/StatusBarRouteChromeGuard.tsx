@@ -10,6 +10,7 @@ import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 const DEFAULT_SOLID_BAR = GatiMitraColors.softBackground;
+const ONBOARDING_BAR = GatiMitraColors.splashMint;
 function barStyleFromChrome(
   style: "light" | "dark" | undefined,
   backgroundColor?: string
@@ -125,9 +126,17 @@ export function StatusBarRouteChromeGuard() {
       applyBarVisibility(
         barStyleFromChrome(chrome.statusBarStyle, chrome.statusBarBackground)
       );
-    } else if ((segments[0] ?? "") === "(auth)") {
-      // Match login/OTP screen chrome — avoid white↔mint status-bar flicker.
-      assertStatusBarVisible({ backgroundColor: "#F0F4F3", barStyle: "dark" });
+    } else if ((segments[0] ?? "") === "(auth)" || (segments[0] ?? "") === "(onboarding)") {
+      // Auth: soft strip. Onboarding: translucent so teal screen + local veil show through.
+      if ((segments[0] ?? "") === "(onboarding)") {
+        applyBarVisibility("dark-content");
+        if (Platform.OS === "android") {
+          NativeStatusBar.setTranslucent(true);
+          NativeStatusBar.setBackgroundColor("transparent", true);
+        }
+      } else {
+        assertStatusBarVisible({ backgroundColor: "#F0F4F3", barStyle: "dark" });
+      }
     } else {
       // Honor screen-set chrome (e.g. courier mint / discovery dark).
       const chrome = useScreenChromeStore.getState();
@@ -154,8 +163,16 @@ export function StatusBarRouteChromeGuard() {
         );
         return;
       }
-      if ((segments[0] ?? "") === "(auth)") {
-        assertStatusBarVisible({ backgroundColor: "#F0F4F3", barStyle: "dark" });
+      if ((segments[0] ?? "") === "(auth)" || (segments[0] ?? "") === "(onboarding)") {
+        if ((segments[0] ?? "") === "(onboarding)") {
+          applyBarVisibility("dark-content");
+          if (Platform.OS === "android") {
+            NativeStatusBar.setTranslucent(true);
+            NativeStatusBar.setBackgroundColor("transparent", true);
+          }
+        } else {
+          assertStatusBarVisible({ backgroundColor: "#F0F4F3", barStyle: "dark" });
+        }
         return;
       }
       const chrome = useScreenChromeStore.getState();
@@ -192,7 +209,12 @@ export function StatusBarRouteChromeGuard() {
     // set a solid dark bar (discovery wallet / store).
     const chrome = useScreenChromeStore.getState();
     const authChrome = (segments[0] ?? "") === "(auth)";
-    const desiredBar = authChrome ? "#F0F4F3" : DEFAULT_SOLID_BAR;
+    const onboardingChrome = (segments[0] ?? "") === "(onboarding)";
+    const desiredBar = onboardingChrome
+      ? ONBOARDING_BAR
+      : authChrome
+        ? "#F0F4F3"
+        : DEFAULT_SOLID_BAR;
     const hasSolidDarkChrome =
       chrome.statusBarStyle === "light" &&
       chrome.statusBarBackground !== "transparent" &&
@@ -202,6 +224,21 @@ export function StatusBarRouteChromeGuard() {
         backgroundColor: chrome.statusBarBackground,
         barStyle: "light",
       });
+      return;
+    }
+    // Keep onboarding translucent — teal veil on screen covers the icon strip.
+    if (onboardingChrome) {
+      useScreenChromeStore.setState({
+        statusBarBackground: "transparent",
+        statusBarStyle: "dark",
+        hideStatusBarSpacer: true,
+        bootstrapActive: false,
+      });
+      applyBarVisibility("dark-content");
+      if (Platform.OS === "android") {
+        NativeStatusBar.setTranslucent(true);
+        NativeStatusBar.setBackgroundColor("transparent", true);
+      }
       return;
     }
     if (

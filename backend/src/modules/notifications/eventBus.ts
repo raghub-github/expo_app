@@ -241,7 +241,8 @@ export type DomainEventMap = {
     rewardKey?: string | null;
   };
 
-  // Customer / merchant / rider account welcome after signup.
+  // Welcome push. Customer: emit when profile_completed flips true (not at OTP).
+  // Merchant / rider: emit when the account row is first created.
   "user.signup": {
     userId: string;
     role: "customer" | "merchant" | "rider";
@@ -464,6 +465,23 @@ export function registerDomainEventHandlers(): void {
           });
         } catch {
           /* inbox clear is best-effort */
+        }
+        try {
+          const { sendMerchantAlertControl } = await import("../../lib/critical-alert-control.js");
+          const foodId = await lookupFoodOrderIdByCoreOrderText(getSql(), {
+            orderIdText: e.orderId,
+            merchantStoreId: e.merchantStoreId,
+          });
+          const orderKey = foodId ?? e.orderId;
+          await sendMerchantAlertControl({
+            storeId: e.merchantStoreId,
+            action: "stop",
+            alertSessionId: `MERCHANT_NEW_ORDER:${orderKey}:${e.merchantStoreId}`,
+            orderId: e.orderId,
+            foodOrderId: foodId != null && Number.isFinite(Number(foodId)) ? Number(foodId) : null,
+          });
+        } catch {
+          /* native stop-alert is best-effort */
         }
       }
       try {

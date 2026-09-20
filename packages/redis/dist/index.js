@@ -7,7 +7,7 @@
  *
  *   import { withLock } from "@gatimitra/redis/lock";
  */
-export { getRedis, getRedisSubscriber, closeRedis, isRedisConfigured, isRedisOptional } from "./client.js";
+export { getRedis, getRedisSubscriber, closeRedis, isRedisConfigured, isRedisOptional, ensureRedisConnected } from "./client.js";
 export { withLock, tryAcquireLock } from "./lock.js";
 export { cacheGet, cacheSet, cacheDel, cacheGetOrSet } from "./cache.js";
 export { publish, subscribe } from "./pubsub.js";

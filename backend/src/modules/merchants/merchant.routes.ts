@@ -186,7 +186,11 @@ function mapCustomerMenuItem(
     hasCustomizations: m.has_customizations === true,
     hasAddons: m.has_addons === true,
     hasVariants: m.has_variants === true,
-    inStock: m.in_stock !== false,
+    // Prefer effective_in_stock (OOS until / manual / category) when the query provides it.
+    inStock:
+      (m as { effective_in_stock?: boolean | null }).effective_in_stock != null
+        ? (m as { effective_in_stock?: boolean | null }).effective_in_stock !== false
+        : m.in_stock !== false,
     flashSale: m.flash_sale ?? (m.canonical_pricing as { flash_sale?: unknown } | undefined)?.flash_sale ?? undefined,
     sizeValue:
       m.item_size_value != null && String(m.item_size_value).trim() !== ""

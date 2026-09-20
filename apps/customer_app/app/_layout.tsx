@@ -53,6 +53,7 @@ import { CustomerServiceBlockSheetHost } from "@/components/CustomerServiceBlock
 import { CustomerServiceBlocksSync } from "@/components/CustomerServiceBlocksSync";
 import { useSmsPermissionStore } from "@/store/smsPermissionStore";
 import { GlobalFloatingCart } from "@/components/GlobalFloatingCart";
+import { FlashSaleQtyLimitSheetHost } from "@/components/store/FlashSaleQtyLimitSheetHost";
 import { ClassicFloatingSearchPill } from "@/components/home/ClassicFloatingSearchPill";
 import { AppAlertModal } from "@/components/AppAlertModal";
 import { AbandonedCartReminderBootstrap } from "@/components/AbandonedCartReminderBootstrap";
@@ -457,7 +458,6 @@ export default function RootLayout() {
                     <CheckoutPaymentFailureHost />
                     <CartCheckoutGateHost />
                     <CartUpdatedModal />
-                    <FloatingCartErrorBoundary />
                     <CustomerPermissionSheetsHost />
                     <ServiceBlockedGateHost />
                     <CustomerAccountBlockedGateHost />
@@ -486,6 +486,27 @@ export default function RootLayout() {
                   ]}
                 >
                   <ClassicFloatingSearchPill />
+                </View>
+                {/*
+                  Floating cart/track MUST also sit above CustomerTabBar (elev 50).
+                  Inside elev-40 it painted under the tab sheet → overlap on Food home.
+                */}
+                <View
+                  pointerEvents="box-none"
+                  style={[StyleSheet.absoluteFillObject, { zIndex: 120 }]}
+                >
+                  <FloatingCartErrorBoundary />
+                </View>
+                {/*
+                  Flash Sale qty-limit sheet MUST sit above floating cart / Continue dock
+                  (Android elevation). Absolute overlay host — not RN Modal — so footer
+                  CTAs cannot paint under merchant chrome.
+                */}
+                <View
+                  pointerEvents="box-none"
+                  style={[StyleSheet.absoluteFillObject, { zIndex: 400, elevation: 400 }]}
+                >
+                  <FlashSaleQtyLimitSheetHost />
                 </View>
                 {/* Above navigator content so mint paints in the system-nav inset (tab bar
                     already draws this on main Home; Food / merchant pages need this layer). */}
@@ -1042,6 +1063,8 @@ function RootStack({
   const segments = useSegments() as string[];
   const discoveryLayout = useDiscoveryLayout();
   const inAuthStack = segments[0] === "(auth)";
+  const inOnboardingStack = segments[0] === "(onboarding)";
+  const inAuthOrOnboarding = inAuthStack || inOnboardingStack;
   const inProfileStack = segments[0] === "profile";
   const inLegalStack = segments[0] === "legal";
   const inCheckoutStack = segments[0] === "checkout";
@@ -1065,8 +1088,9 @@ function RootStack({
   const splashChromeActive = splashActive || bootstrapActive;
   // Tabs Home always self-pads — never stack root spacer + header inset (large white gap).
   // All (tabs) screens share the same immersive top chrome so tab switches don't reflow height.
+  // Auth + onboarding self-pad with splash teal (no white root spacer).
   const immersiveStatusBar =
-    hideStatusBarSpacer || splashChromeActive || inTabsHome || inTabs;
+    hideStatusBarSpacer || splashChromeActive || inTabsHome || inTabs || inAuthOrOnboarding;
   const effectiveStatusBarHeight =
     inProfileStack ||
     inLegalStack ||
@@ -1075,23 +1099,27 @@ function RootStack({
     hideStatusBarSpacer ||
     splashChromeActive ||
     inTabsHome ||
-    inTabs
+    inTabs ||
+    inAuthOrOnboarding
       ? 0
       : statusBarHeight;
   // Never pad the stack for Android/iOS system nav — that created a white gap row
   // above the nav bar on search and other non-home routes. Screens add insets themselves.
-  const AUTH_CHROME = "#F0F4F3";
+  /** Auth / onboarding screens use splash teal edge-to-edge. */
+  const AUTH_CHROME = GatiMitraColors.splashMint;
   const resolvedStatusBarBackground = splashChromeActive
     ? SPLASH_CHROME_COLOR
     : inDiscoveryFood
       ? DiscoveryColors.bg
-      : inAuthStack
-      ? AUTH_CHROME
-      : immersiveStatusBar && statusBarBackground === "transparent"
-      ? "transparent"
-      : statusBarBackground === "transparent"
-        ? GatiMitraColors.softBackground
-        : statusBarBackground;
+      : inOnboardingStack
+        ? "transparent"
+        : inAuthStack
+          ? AUTH_CHROME
+          : immersiveStatusBar && statusBarBackground === "transparent"
+            ? "transparent"
+            : statusBarBackground === "transparent"
+              ? GatiMitraColors.softBackground
+              : statusBarBackground;
   // Derive the icon style from the ACTUAL bar background so icons can never be
   // invisible (e.g. a screen that leaves "light" icons on a white bar). Splash keeps
   // its light icons over the mint chrome. Discovery Food always forces white icons.
@@ -1170,8 +1198,8 @@ function RootStack({
             contentStyle: {
               backgroundColor: splashChromeActive
                 ? SPLASH_CHROME_COLOR
-                : inAuthStack
-                  ? "#F0F4F3"
+                : inAuthOrOnboarding
+                  ? GatiMitraColors.splashMint
                   : GatiMitraColors.softBackground,
             },
             animation: "slide_from_right",

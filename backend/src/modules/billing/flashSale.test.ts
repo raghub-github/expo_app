@@ -6,11 +6,15 @@ import {
   flashPriceForMenuItem,
   overlayFlashCustomerUnit,
   parseFlashSaleItems,
+  parseMaxFlashQuantity,
+  resolveMaxFlashQuantity,
   validateFlashSalePrice,
   validateFoodFlashSaleConfig,
+  validateMaxFlashQuantity,
   flashSaleBudgetRemaining,
   flashSaleRemainingRedemptions,
   menuRowEligibleForFlashOverlay,
+  flashSaleQtyExceededMessage,
 } from "./flashSale.js";
 
 describe("FLASH_SALE config and overlay math", () => {
@@ -39,6 +43,46 @@ describe("FLASH_SALE config and overlay math", () => {
     assert.equal(original, 99);
     assert.equal(overlayFlashCustomerUnit(99, 99), null);
     assert.equal(overlayFlashCustomerUnit(99, 120), null);
+  });
+
+  it("max_flash_quantity is read from stored offer conditions (not a hardcoded cap)", () => {
+    assert.ok(Number.isNaN(parseMaxFlashQuantity(undefined)));
+    assert.ok(Number.isNaN(parseMaxFlashQuantity(null)));
+    assert.ok(Number.isNaN(parseMaxFlashQuantity("")));
+    assert.equal(parseMaxFlashQuantity(1), 1);
+    assert.equal(parseMaxFlashQuantity(5), 5);
+    assert.ok(Number.isNaN(parseMaxFlashQuantity(0)));
+    assert.ok(Number.isNaN(parseMaxFlashQuantity(-1)));
+    assert.ok(Number.isNaN(parseMaxFlashQuantity(1.5)));
+    assert.ok(Number.isNaN(parseMaxFlashQuantity("abc")));
+    assert.equal(validateMaxFlashQuantity(0), "Max Flash Quantity must be a whole number of at least 1.");
+    assert.equal(validateMaxFlashQuantity(1.5), "Max Flash Quantity must be a whole number of at least 1.");
+    assert.equal(validateMaxFlashQuantity("abc"), "Max Flash Quantity must be a whole number of at least 1.");
+    assert.equal(validateMaxFlashQuantity(1), null);
+    assert.equal(resolveMaxFlashQuantity({}), 1);
+    assert.equal(resolveMaxFlashQuantity({ max_flash_quantity: 5 }), 5);
+    assert.equal(resolveMaxFlashQuantity({ max_flash_quantity: 3 }), 3);
+    assert.equal(
+      flashSaleQtyExceededMessage(1),
+      "Maximum 1 quantity allowed for this Flash Sale item."
+    );
+    assert.equal(
+      flashSaleQtyExceededMessage(3),
+      "Maximum 3 quantities allowed for this Flash Sale item."
+    );
+    assert.ok(
+      validateFoodFlashSaleConfig({
+        merchantIds: [1],
+        conditions: { flash_sale_items: [{ menu_item_id: "10", flash_price: 9 }], max_flash_quantity: 0 },
+      })
+    );
+    assert.equal(
+      validateFoodFlashSaleConfig({
+        merchantIds: [1],
+        conditions: { flash_sale_items: [{ menu_item_id: "10", flash_price: 9 }], max_flash_quantity: 3 },
+      }),
+      null
+    );
   });
 
   it("requires at least one store and at least one priced item", () => {

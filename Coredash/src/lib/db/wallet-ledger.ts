@@ -151,3 +151,174 @@ export async function fetchCustomerWalletLedger(
     }),
   };
 }
+
+export type MerchantWalletLedgerEntry = {
+  id: string;
+  direction: string;
+  category: string;
+  title: string;
+  amount: number;
+  balanceAfter: number | null;
+  formattedOrderId: string | null;
+  status: string | null;
+  createdAt: string;
+};
+
+const MERCHANT_LEDGER_LABELS: Record<string, string> = {
+  ORDER_EARNING: "Order Earning",
+  ORDER_ADJUSTMENT: "Adjustment",
+  WITHDRAWAL: "Withdrawal",
+  PENALTY: "Penalty",
+  SUBSCRIPTION_FEE: "Subscription",
+  COMMISSION_DEDUCTION: "Commission",
+  BONUS: "Bonus",
+  CASHBACK: "Cashback",
+  REFUND_REVERSAL: "Refund Reversal",
+  MANUAL_CREDIT: "Manual Credit",
+  MANUAL_DEBIT: "Manual Debit",
+  ADJUSTMENT: "Adjustment",
+  ADJUSTMENT_DEBIT: "Adjustment Debit",
+  ADJUSTMENT_CREDIT: "Adjustment Credit",
+  COMPENSATION_CREDIT: "Compensation Credit",
+  COMPENSATION_RECOVERY: "Compensation Recovery",
+  FAILED_WITHDRAWAL_REVERSAL: "Withdrawal returned",
+  HOLD_LOCK: "Withdrawal",
+  HOLD_RELEASE: "Withdrawal update",
+};
+
+function merchantLedgerTitle(
+  category: string,
+  description: string | null,
+  direction: string
+): string {
+  const desc = description?.trim();
+  if (desc) return desc;
+  const cat = category.toUpperCase();
+  if (MERCHANT_LEDGER_LABELS[cat]) return MERCHANT_LEDGER_LABELS[cat];
+  if (direction.toUpperCase() === "DEBIT") return "Debit";
+  if (direction.toUpperCase() === "CREDIT") return "Credit";
+  return category || "Ledger entry";
+}
+
+/** Full merchant_wallet_ledger for a store (by internal id or public store_id e.g. GMMC1026). */
+export async function fetchMerchantWalletLedger(
+  storeKeyRaw: string,
+  limitRaw?: number
+): Promise<{ entries: MerchantWalletLedgerEntry[]; balance: number; storeName: string }> {
+  const sql = getSql();
+  const storeKey = str(storeKeyRaw).trim();
+  if (!storeKey) throw new Error("Invalid store id");
+  const limit = Math.min(Math.max(Number(limitRaw) || 50, 1), 100);
+
+  const profile = await withPgRetry(
+    () =>
+      sql<{ id: number; store_name: string; wallet: number | string }[]>`
+        SELECT
+          ms.id,
+          COALESCE(NULLIF(TRIM(ms.store_display_name), ''), ms.store_name, ms.store_id) AS store_name,
+          COALESCE(mw.available_balance, 0) AS wallet
+        FROM merchant_stores ms
+        LEFT JOIN merchant_wallet mw ON mw.merchant_store_id = ms.id
+        WHERE ms.store_id = ${storeKey} OR ms.id::text = ${storeKey}
+        ORDER BY CASE WHEN ms.store_id = ${storeKey} THEN 0 ELSE 1 END
+        LIMIT 1
+      `,
+    "merchant-wallet-ledger-resolve"
+  );
+  const row = profile[0];
+  if (!row) throw new Error("Merchant store not found");
+  const storeId = Number(row.id);
+
+  const txRows = await withPgRetry(
+    () =>
+      sql<
+        {
+          id: number | string;
+          direction: string;
+          category: string;
+          amount: number | string;
+          balance_after: number | string | null;
+          description: string | null;
+          status: string | null;
+          created_at: Date | string;
+          formatted_order_id: string | null;
+        }[]
+      >`
+        SELECT
+          l.id,
+          l.direction::text AS direction,
+          l.category::text AS category,
+          l.amount,
+          l.balance_after,
+          l.description,
+          l.status::text AS status,
+          l.created_at,
+          COALESCE(
+            NULLIF(TRIM(oc.formatted_order_id), ''),
+            NULLIF(TRIM(oc.order_id::text), ''),
+            NULLIF(TRIM(l.metadata->>'formatted_order_id'), ''),
+            CASE
+              WHEN (l.metadata->>'order_id') ~ '^[0-9]+$'
+                THEN 'GMF' || (l.metadata->>'order_id')
+              ELSE NULL
+            END
+          ) AS formatted_order_id
+        FROM merchant_wallet_ledger l
+        JOIN merchant_wallet w ON w.id = l.wallet_id
+        LEFT JOIN LATERAL (
+          SELECT o.formatted_order_id, o.order_id
+          FROM orders_core o
+          WHERE o.merchant_store_id = ${storeId}
+            AND (
+              (
+                (l.metadata->>'orders_core_id') ~ '^[0-9]+$'
+                AND o.id = (l.metadata->>'orders_core_id')::bigint
+              )
+              OR (
+                (l.metadata->>'order_id') ~ '^[0-9]+$'
+                AND o.id = (l.metadata->>'order_id')::bigint
+              )
+              OR (
+                UPPER(COALESCE(l.reference_type::text, '')) IN ('ORDER', 'ORDERS_CORE')
+                AND l.reference_id IS NOT NULL
+                AND o.id = l.reference_id
+              )
+            )
+          ORDER BY o.id DESC
+          LIMIT 1
+        ) oc ON TRUE
+        WHERE w.merchant_store_id = ${storeId}
+        ORDER BY l.created_at DESC, l.id DESC
+        LIMIT ${limit}
+      `,
+    "merchant-wallet-ledger-list"
+  );
+
+  return {
+    balance: num(row.wallet),
+    storeName: String(row.store_name ?? storeKey),
+    entries: txRows.map((tx) => {
+      const direction = String(tx.direction ?? "CREDIT").toUpperCase();
+      const category = String(tx.category ?? "");
+      const description = tx.description != null ? String(tx.description) : null;
+      const rawAmount = Math.abs(num(tx.amount));
+      const signed = direction === "DEBIT" ? -rawAmount : rawAmount;
+      const formattedOrderId =
+        tx.formatted_order_id != null && String(tx.formatted_order_id).trim()
+          ? String(tx.formatted_order_id).trim().replace(/^#/, "")
+          : null;
+      return {
+        id: String(tx.id),
+        direction,
+        category,
+        title: merchantLedgerTitle(category, description, direction),
+        amount: signed,
+        balanceAfter: tx.balance_after != null ? num(tx.balance_after) : null,
+        formattedOrderId,
+        status: tx.status != null ? String(tx.status) : null,
+        createdAt: new Date(String(tx.created_at)).toISOString(),
+      };
+    }),
+  };
+}
+

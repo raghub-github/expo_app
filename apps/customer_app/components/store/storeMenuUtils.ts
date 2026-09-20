@@ -48,6 +48,36 @@ export function getBasePrice(item: MenuItem): number | null {
   return null;
 }
 
+/** True when the dish currently carries an active Flash Sale price. */
+export function menuItemHasFlashDeal(item: MenuItem): boolean {
+  if (item.flashSale && typeof item.flashSale === "object") {
+    const flash = item.flashSale as {
+      flashPrice?: unknown;
+      flash_price?: unknown;
+      flash_unit?: unknown;
+      originalCustomerUnit?: unknown;
+      original_customer_unit?: unknown;
+      offer_id?: unknown;
+      offerId?: unknown;
+    };
+    const offerId = Number(flash.offerId ?? flash.offer_id);
+    if (Number.isInteger(offerId) && offerId >= 1) return true;
+    const flashPrice = Number(flash.flashPrice ?? flash.flash_price ?? flash.flash_unit);
+    const original = Number(flash.originalCustomerUnit ?? flash.original_customer_unit);
+    if (Number.isFinite(flashPrice) && Number.isFinite(original) && flashPrice < original) {
+      return true;
+    }
+  }
+  const canon = item.canonicalPricing;
+  if (canon && typeof canon === "object") {
+    const blob =
+      (canon as { flash_sale?: unknown; flashSale?: unknown }).flash_sale ??
+      (canon as { flashSale?: unknown }).flashSale;
+    if (blob && typeof blob === "object") return true;
+  }
+  return false;
+}
+
 function orderMatchesStore(
   order: OrderSummary,
   merchantId: string,
@@ -243,7 +273,7 @@ export function buildOfferPriceTiers(menu: MenuItem[]): number[] {
 
 export type MenuFilterOptions = {
   searchQuery?: string;
-  quickFilter?: "all" | "veg" | "egg" | "nonveg" | "highlyreordered";
+  quickFilter?: "all" | "veg" | "egg" | "nonveg" | "highlyreordered" | "flashdeal";
   advanced?: {
     sortBy: "default" | "price_asc" | "price_desc";
     veg: boolean;
@@ -267,6 +297,8 @@ export function filterMenuItems(menu: MenuItem[], opts: MenuFilterOptions): Menu
   else if (quick === "nonveg") list = list.filter((m) => getItemDiet(m) === "nonveg");
   else if (quick === "highlyreordered") {
     list = list.filter((m) => opts.highlyReorderedIds.has(m.id));
+  } else if (quick === "flashdeal") {
+    list = list.filter((m) => menuItemHasFlashDeal(m));
   }
 
   const adv = opts.advanced;

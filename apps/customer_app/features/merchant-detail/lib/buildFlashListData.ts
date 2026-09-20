@@ -6,6 +6,7 @@ import type {
   MerchantCategoryChip,
   MerchantFlashListItem,
   MenuSection,
+  MenuListRow,
   MerchantScrollIndexMap,
 } from "../types";
 import { partitionSectionsForClassicImagedView } from "./menuSections";
@@ -38,6 +39,8 @@ export type BuildFlashListInput = {
    * Grid-first must stay list rows (classicImagedLayout=false).
    */
   classicImagedLayout?: boolean;
+  /** Out-of-stock dishes — shown in a block just above "Try these similar". */
+  oosItems?: MenuListRow[];
 };
 
 function itemMatchesPairingAnchor(
@@ -104,6 +107,7 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
     hideInfoCard = false,
     masonry = false,
     classicImagedLayout = false,
+    oosItems = [],
   } = input;
 
   const data: MerchantFlashListItem[] = [];
@@ -162,9 +166,9 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
   if (menuPending) {
     push({ type: "menu_loading", key: "menu_loading" });
   } else {
-    if (sections.length === 0) {
+    if (sections.length === 0 && oosItems.length === 0) {
       push({ type: "empty_menu", key: "empty_menu" });
-    } else {
+    } else if (sections.length > 0) {
       if (classicPart && classicPart.featuredImaged.length >= 2) {
         push({
           type: "featured_imaged_rail",
@@ -292,6 +296,13 @@ export function buildFlashListData(input: BuildFlashListInput): BuildFlashListRe
           }
         });
       }
+    }
+    if (oosItems.length > 0) {
+      push({
+        type: "oos_section",
+        key: "oos_section",
+        items: oosItems,
+      });
     }
     push({ type: "footer", key: "footer" });
   }

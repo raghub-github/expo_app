@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -22,17 +22,35 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Scale,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useDispatch } from "react-redux";
 import { readApiJson } from "@/lib/payment/read-api-json";
 import { formatInr } from "@/lib/format-inr";
 import { merchantStoreApi } from "@/store/api/merchantStoreApi";
 import { PaymentThresholdPanel } from "@/components/payments/PaymentThresholdPanel";
+import { WalletAdjustmentsPanel } from "@/components/payments/WalletAdjustmentsPanel";
 import { usePaymentPayoutsLiveSync } from "@/hooks/usePaymentPayoutsLiveSync";
+import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 
-type PaymentParty = "merchant" | "rider" | "threshold";
+type PaymentParty = "merchant" | "rider" | "threshold" | "adjustment";
+
+const PAYMENT_PARTIES: readonly PaymentParty[] = [
+  "merchant",
+  "rider",
+  "threshold",
+  "adjustment",
+] as const;
+
+function parsePaymentParty(raw: string | null): PaymentParty {
+  const t = (raw ?? "").trim().toLowerCase();
+  return (PAYMENT_PARTIES as readonly string[]).includes(t)
+    ? (t as PaymentParty)
+    : "merchant";
+}
 
 type MerchantPayoutRow = {
   id: number;
@@ -125,7 +143,21 @@ function matchesPayoutFilters(
 
 export function PaymentManagementClient() {
   const dispatch = useDispatch();
-  const [party, setParty] = useState<PaymentParty>("merchant");
+  const router = useRouter();
+  const pathname = useAppPathname();
+  const searchParams = useAppSearchParams();
+  const party = parsePaymentParty(searchParams.get("tab"));
+
+  const setParty = useCallback(
+    (next: PaymentParty) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("tab", next);
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [pathname, router, searchParams]
+  );
+
   const [migrationRequired, setMigrationRequired] = useState(false);
   const [payouts, setPayouts] = useState<MerchantPayoutRow[]>([]);
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -160,7 +192,7 @@ export function PaymentManagementClient() {
   }, []);
 
   const loadPayouts = useCallback(async () => {
-    if (party === "threshold") {
+    if (party === "threshold" || party === "adjustment") {
       setPayouts([]);
       return;
     }
@@ -203,7 +235,7 @@ export function PaymentManagementClient() {
   }, [loadConfig, loadPayouts]);
 
   usePaymentPayoutsLiveSync(() => {
-    if (party === "threshold") return;
+    if (party === "threshold" || party === "adjustment") return;
     return loadPayouts();
   });
 
@@ -373,6 +405,8 @@ export function PaymentManagementClient() {
 
       {party === "threshold" ? (
         <PaymentThresholdPanel />
+      ) : party === "adjustment" ? (
+        <WalletAdjustmentsPanel />
       ) : (
         <>
           {/* Filters */}
@@ -701,6 +735,7 @@ function PaymentPartyTabs({
     { id: "merchant", label: "Merchant", icon: <Store className="h-4 w-4" /> },
     { id: "rider", label: "Rider", icon: <Bike className="h-4 w-4" /> },
     { id: "threshold", label: "Threshold", icon: <Gauge className="h-4 w-4" /> },
+    { id: "adjustment", label: "Adjustment", icon: <Scale className="h-4 w-4" /> },
   ];
 
   return (

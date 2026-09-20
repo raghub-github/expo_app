@@ -90,7 +90,8 @@ export function EdgePeekTab({
 
 const styles = StyleSheet.create({
   hit: {
-    zIndex: 2,
+    zIndex: 4,
+    elevation: 28,
     justifyContent: "center",
     overflow: "visible",
   },
@@ -106,6 +107,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 2,
     overflow: "hidden",
+    zIndex: 4,
     ...Platform.select({
       ios: {
         shadowColor: "#0F172A",
@@ -113,7 +115,8 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.2,
         shadowRadius: 10,
       },
-      android: { elevation: 12 },
+      // Above GlobalFloatingCart gmBar elevation (20) so HOME/CART edge never paints under the dock.
+      android: { elevation: 28 },
       default: {},
     }),
   },

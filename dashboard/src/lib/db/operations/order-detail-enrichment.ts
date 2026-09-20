@@ -208,6 +208,9 @@ type FoodTimingMeta = {
   prepDelayMinutes: number | null;
   pickupWaitSeconds: number | null;
   riderReachedPickupAt: string | null;
+  riderPickedUpAt: string | null;
+  dispatchedAt: string | null;
+  deliveredAt: string | null;
 };
 
 function toIso(v: unknown): string | null {
@@ -217,6 +220,22 @@ function toIso(v: unknown): string | null {
   if (!s) return null;
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? s : d.toISOString();
+}
+
+function foodStatusEndsStoreWait(orderStatus: string | null): boolean {
+  const s = (orderStatus ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_");
+  if (!s) return false;
+  return (
+    s.includes("PICKED_UP") ||
+    s.includes("OUT_FOR_DELIVERY") ||
+    s.includes("DISPATCH") ||
+    s.includes("IN_TRANSIT") ||
+    s.includes("DELIVER") ||
+    s.includes("COMPLETE") ||
+    s.includes("CANCEL") ||
+    s.includes("REJECT") ||
+    s.includes("FAILED")
+  );
 }
 
 async function fetchFoodTimingMeta(orderId: number): Promise<FoodTimingMeta> {
@@ -231,9 +250,31 @@ async function fetchFoodTimingMeta(orderId: number): Promise<FoodTimingMeta> {
     prepDelayMinutes: null,
     pickupWaitSeconds: null,
     riderReachedPickupAt: null,
+    riderPickedUpAt: null,
+    dispatchedAt: null,
+    deliveredAt: null,
   };
   const db = getDb();
   const queries = [
+    sql`
+      SELECT
+        order_status,
+        accepted_at,
+        preparing_at,
+        prepared_at,
+        prep_ready_by_at,
+        prepared_late_minutes,
+        preparation_time_minutes,
+        prep_delay_minutes,
+        pickup_wait_seconds,
+        rider_reached_pickup_at,
+        rider_picked_up_at,
+        dispatched_at,
+        delivered_at
+      FROM orders_food
+      WHERE order_id = ${orderId}
+      LIMIT 1
+    `,
     sql`
       SELECT
         order_status,
@@ -282,6 +323,9 @@ async function fetchFoodTimingMeta(orderId: number): Promise<FoodTimingMeta> {
         prepDelayMinutes: asNum(row.prep_delay_minutes),
         pickupWaitSeconds: asNum(row.pickup_wait_seconds),
         riderReachedPickupAt: toIso(row.rider_reached_pickup_at),
+        riderPickedUpAt: toIso(row.rider_picked_up_at),
+        dispatchedAt: toIso(row.dispatched_at),
+        deliveredAt: toIso(row.delivered_at),
       };
     } catch {
       // slimmer SELECT when pickup columns are missing
@@ -351,19 +395,38 @@ function resolveRiderRestaurantWait(meta: FoodTimingMeta): {
     };
   }
 
-  if (meta.riderReachedPickupAt && meta.preparedAt) {
+  const waitEndAt =
+    meta.preparedAt ||
+    meta.riderPickedUpAt ||
+    meta.dispatchedAt ||
+    meta.deliveredAt ||
+    null;
+
+  if (meta.riderReachedPickupAt && waitEndAt) {
     const reachedMs = new Date(meta.riderReachedPickupAt).getTime();
-    const preparedMs = new Date(meta.preparedAt).getTime();
-    if (Number.isFinite(reachedMs) && Number.isFinite(preparedMs)) {
+    const endMs = new Date(waitEndAt).getTime();
+    if (Number.isFinite(reachedMs) && Number.isFinite(endMs)) {
       return {
-        seconds: Math.max(0, Math.floor((preparedMs - reachedMs) / 1000)),
+        seconds: Math.max(0, Math.floor((endMs - reachedMs) / 1000)),
         live: false,
         anchorAt: null,
       };
     }
   }
 
-  if (meta.riderReachedPickupAt && !meta.preparedAt) {
+  // Rider left the store / order closed — never keep the live timer running.
+  if (meta.riderReachedPickupAt && foodStatusEndsStoreWait(meta.orderStatus)) {
+    const reachedMs = new Date(meta.riderReachedPickupAt).getTime();
+    if (Number.isFinite(reachedMs)) {
+      return {
+        seconds: Math.max(0, Math.floor((Date.now() - reachedMs) / 1000)),
+        live: false,
+        anchorAt: null,
+      };
+    }
+  }
+
+  if (meta.riderReachedPickupAt && !waitEndAt) {
     const reachedMs = new Date(meta.riderReachedPickupAt).getTime();
     if (Number.isFinite(reachedMs)) {
       const elapsed = Math.max(0, Math.floor((Date.now() - reachedMs) / 1000));

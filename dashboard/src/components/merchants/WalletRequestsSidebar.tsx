@@ -20,6 +20,7 @@ type RequestItem = {
   reviewed_by_name: string | null;
   reviewed_at: string | null;
   order_id: number | null;
+  formatted_order_id?: string | null;
 };
 
 export function WalletRequestsSidebar({ storeId }: { storeId?: string | null } = {}) {
@@ -110,7 +111,9 @@ export function WalletRequestsSidebar({ storeId }: { storeId?: string | null } =
                   <p className="text-xs font-medium text-gray-900 truncate">{r.store_name}</p>
                   <p className="text-[10px] text-gray-500">
                     {r.direction === "CREDIT" ? "+" : "−"}₹{r.amount.toLocaleString("en-IN")}
-                    {r.order_id ? ` · Order #${r.order_id}` : ""}
+                    {r.formatted_order_id || r.order_id
+                      ? ` · ${r.formatted_order_id ? `#${String(r.formatted_order_id).replace(/^#/, "")}` : `#${r.order_id}`}`
+                      : ""}
                   </p>
                   <p className="text-[10px] text-gray-600 truncate mt-0.5">{r.reason}</p>
                 </div>

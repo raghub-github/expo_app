@@ -1203,6 +1203,7 @@ export async function getMenuByStoreId(
             m.discount_percentage,
             m.packaging_charges,
             m.in_stock,
+            ${effectiveInStock} AS effective_in_stock,
             m.is_active,
             m.is_popular,
             m.is_recommended,
@@ -1236,7 +1237,6 @@ export async function getMenuByStoreId(
             AND ${customerApproval}
             -- Entitlement gate: items locked by the merchant's plan limit are hidden from customers.
             AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
-            AND ${effectiveInStock} = TRUE
             AND m.item_name ILIKE ${"%" + trimmedSearch + "%"}
           ORDER BY
             COALESCE(oc_cnt.order_count, 0) DESC,
@@ -1263,6 +1263,7 @@ export async function getMenuByStoreId(
             m.discount_percentage,
             m.packaging_charges,
             m.in_stock,
+            ${effectiveInStock} AS effective_in_stock,
             m.is_active,
             m.is_popular,
             m.is_recommended,
@@ -1296,7 +1297,6 @@ export async function getMenuByStoreId(
             AND ${customerApproval}
             -- Entitlement gate: items locked by the merchant's plan limit are hidden from customers.
             AND COALESCE(m.is_locked_by_plan, FALSE) = FALSE
-            AND ${effectiveInStock} = TRUE
           ORDER BY
             COALESCE(oc_cnt.order_count, 0) DESC,
             CASE WHEN ${customerImage} IS NOT NULL THEN 1 ELSE 0 END DESC,
@@ -1505,13 +1505,13 @@ export async function getMenuDelta(
     if (!itemId) continue;
 
     const visibleApproval = isCustomerVisibleMenuApprovalStatus(row.approval_status);
+    // OOS items stay on the menu (client shows Sold Out) — only hide deleted/locked/inactive.
     const active =
       row.is_active === true &&
       row.is_deleted !== true &&
       visibleApproval &&
       // Plan-locked items are hidden from customers → tell the SWR client to remove them.
-      row.is_locked_by_plan !== true &&
-      row.effective_in_stock !== false;
+      row.is_locked_by_plan !== true;
 
     if (!active) {
       deletedItemIds.push(itemId);

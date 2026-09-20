@@ -125,7 +125,7 @@ export function deriveAvailability(input: AvailabilityInputs): DerivedAvailabili
   const locationFresh =
     locationAgeSeconds != null && locationAgeSeconds <= input.freshnessMaxAgeMinutes * 60;
 
-  const onDuty = input.dutyStatus === "ON";
+  const onDuty = String(input.dutyStatus ?? "").trim().toUpperCase() === "ON";
   const serviceEligible = input.dutyServiceTypes.includes(input.service);
   const accountActive = input.accountStatus === "ACTIVE" && input.onboardingStage === "ACTIVE";
 
@@ -257,7 +257,7 @@ export async function queryRiderAvailabilityCandidates(
         SELECT dl.status, dl.service_types
         FROM duty_logs dl
         WHERE dl.rider_id = rcl.rider_id
-        ORDER BY dl.timestamp DESC
+        ORDER BY dl.timestamp DESC, dl.id DESC
         LIMIT 1
       ) ld ON true
       WHERE r.deleted_at IS NULL
@@ -365,7 +365,7 @@ export async function evaluateSingleRiderAvailability(
         SELECT dl.status, dl.service_types
         FROM duty_logs dl
         WHERE dl.rider_id = r.id
-        ORDER BY dl.timestamp DESC
+        ORDER BY dl.timestamp DESC, dl.id DESC
         LIMIT 1
       ) ld ON true
       WHERE r.id = ${riderId}

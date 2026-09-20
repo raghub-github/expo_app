@@ -10,6 +10,7 @@ export function isFlashSaleCheckoutError(data: {
   if (
     c === FLASH_SALE_UNAVAILABLE ||
     c === FLASH_SALE_PRICE_STALE ||
+    c === "FLASH_SALE_QTY_EXCEEDED" ||
     c === "FLASH_SALE_ALREADY_USED" ||
     c === "FLASH_SALE_ALREADY_RESERVED"
   ) {
@@ -20,7 +21,9 @@ export function isFlashSaleCheckoutError(data: {
     msg.includes("FLASH_SALE_UNAVAILABLE") ||
     msg.includes("FLASH_SALE_PRICE_STALE") ||
     msg.includes("FLASH_SALE_ALREADY_USED") ||
-    msg.includes("ALREADY USED THIS FLASH")
+    msg.includes("ALREADY USED THIS FLASH") ||
+    msg.includes("FLASH_SALE_QTY_EXCEEDED") ||
+    msg.includes("QUANTITY ALLOWED FOR THIS FLASH")
   );
 }
 

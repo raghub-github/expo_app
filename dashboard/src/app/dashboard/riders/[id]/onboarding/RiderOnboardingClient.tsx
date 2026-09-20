@@ -52,7 +52,7 @@ import {
   type ElectronicVerifyPending,
 } from "@/components/verification/ElectronicVerifyReviewModal";
 import { usePermission } from "@/hooks/usePermission";
-import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
+import { resolveAttachmentProxyUrl, withAttachmentCacheBust } from "@/lib/attachments/resolve-attachment-proxy-url";
 
 interface Rider {
   id: number;
@@ -121,6 +121,19 @@ interface Document {
   metadata?: Record<string, unknown> | null;
   verifiedAt?: string | null;
   createdAt: string;
+}
+
+function isSelfieDocType(docType: string | null | undefined): boolean {
+  const t = String(docType || "").toLowerCase();
+  return t === "selfie" || t === "profile_photo";
+}
+
+function isAllowedBrowserUploadFile(file: File): boolean {
+  const type = (file.type || "").toLowerCase();
+  if (["image/jpeg", "image/jpg", "image/png", "image/webp", "application/pdf"].includes(type)) {
+    return true;
+  }
+  return !type && /\.(jpe?g|png|webp|pdf)$/i.test(file.name || "");
 }
 
 function isManualUploadMethod(method: string | null | undefined): boolean {
@@ -310,8 +323,9 @@ function summaryCardPreviewUrl(
   document: Document | null,
   docType: string,
   selfieUrl?: string | null,
+  cacheBust?: number,
 ): string | null {
-  const fallback = docType === "selfie" ? selfieUrl : null;
+  const fallback = isSelfieDocType(docType) ? selfieUrl : null;
   const url = resolveDocumentPreviewUrl(document, fallback);
   if (!url) return null;
   const hasRealUpload =
@@ -320,8 +334,12 @@ function summaryCardPreviewUrl(
       !isNonImageFileRef(document!.fileUrl) &&
       document!.fileUrl !== "pending" &&
       !String(document!.fileUrl).startsWith("placeholder")) ||
-    (docType === "selfie" && Boolean(fallback) && !isNonImageFileRef(fallback));
-  return hasRealUpload ? url : null;
+    (isSelfieDocType(docType) && Boolean(fallback) && !isNonImageFileRef(fallback));
+  return hasRealUpload
+    ? cacheBust
+      ? withAttachmentCacheBust(url, cacheBust)
+      : url
+    : null;
 }
 
 function resolveDocumentPreviewUrl(
@@ -647,6 +665,7 @@ export default function RiderOnboardingClient() {
   const [evReviewBusy, setEvReviewBusy] = useState(false);
   // Force image reload on card when document is updated (fixes stale image after edit)
   const [imageRefreshKeys, setImageRefreshKeys] = useState<Record<number, number>>({});
+  const [mediaNonce, setMediaNonce] = useState(0);
   const [detailDocType, setDetailDocType] = useState<string | null>(null);
 
   // Check if user has rider access
@@ -901,13 +920,89 @@ export default function RiderOnboardingClient() {
   };
 
   const handleEditDocument = (doc: Document) => {
-    const isSelfie = doc.docType === "selfie" || doc.docType === "profile_photo";
+    const isSelfie = isSelfieDocType(doc.docType);
     // Selfie: admin may replace/remove anytime (including App Verified / Auto verified).
     if (isSelfie || isManualUploadMethod(doc.verificationMethod)) {
       setEditingDoc(doc);
       setDetailDocType(doc.docType);
       setDetailEditing(true);
     }
+  };
+
+  const bumpDocumentImage = (docId?: number) => {
+    const now = Date.now();
+    setMediaNonce(now);
+    if (docId && docId > 0) {
+      setImageRefreshKeys((prev) => ({ ...prev, [docId]: now }));
+    }
+  };
+
+  const uploadDocumentImage = async (target: Document, file: File) => {
+    if (!isAllowedBrowserUploadFile(file)) {
+      throw new Error("Invalid file type. Allowed types: JPEG, PNG, WebP, PDF");
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      throw new Error("File size exceeds 10MB limit");
+    }
+
+    const formData = new FormData();
+    const displayDocType = isSelfieDocType(target.docType) ? "selfie" : target.docType;
+    formData.append("displayDocType", displayDocType);
+    if (target.docNumber != null && String(target.docNumber).trim()) {
+      formData.append("docNumber", String(target.docNumber).trim());
+    }
+    formData.append("file", file);
+
+    const isNew = target.id <= 0;
+    const response = await fetch(
+      isNew
+        ? `/api/riders/${riderId}/documents`
+        : `/api/riders/${riderId}/documents/${target.id}`,
+      {
+        method: isNew ? "POST" : "PUT",
+        body: formData,
+      },
+    );
+
+    const text = await response.text();
+    let result: { success?: boolean; data?: { id?: number; fileUrl?: string | null }; error?: string };
+    try {
+      result = text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error(response.ok ? "Invalid response from server" : `Update failed (${response.status})`);
+    }
+    if (!result.success) {
+      throw new Error(result.error || "Failed to update document");
+    }
+
+    const savedId = result.data?.id && result.data.id > 0 ? result.data.id : target.id;
+    bumpDocumentImage(savedId);
+
+    if (isSelfieDocType(target.docType) && result.data?.fileUrl) {
+      const nextUrl = withAttachmentCacheBust(String(result.data.fileUrl), Date.now());
+      setRiderData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          rider: { ...prev.rider, selfieUrl: nextUrl },
+          documents: prev.documents.map((d) =>
+            d.id === savedId || (isSelfieDocType(d.docType) && (d.id === target.id || target.id <= 0))
+              ? {
+                  ...d,
+                  id: savedId > 0 ? savedId : d.id,
+                  fileUrl: String(result.data?.fileUrl || d.fileUrl),
+                  verified: true,
+                  verificationMethod: "MANUAL_UPLOAD",
+                }
+              : d,
+          ),
+        };
+      });
+    }
+
+    setDetailEditing(false);
+    setEditingDoc(null);
+    await refetchRiderDataInBackground();
   };
 
   const handleStartUpload = (docType: string) => {
@@ -949,15 +1044,17 @@ export default function RiderOnboardingClient() {
         editingDoc.id > 0 ? documentActionKey(editingDoc) : `upload:${editingDoc.docType}`,
       );
 
+      if (data.file) {
+        await uploadDocumentImage(editingDoc, data.file);
+        return;
+      }
+
       const formData = new FormData();
-      formData.append("displayDocType", editingDoc.docType);
+      formData.append("displayDocType", isSelfieDocType(editingDoc.docType) ? "selfie" : editingDoc.docType);
       if (data.docNumber !== undefined && data.docNumber !== null) {
         formData.append("docNumber", String(data.docNumber).trim() || "");
       } else if (editingDoc.docNumber != null && String(editingDoc.docNumber).trim()) {
         formData.append("docNumber", String(editingDoc.docNumber).trim());
-      }
-      if (data.file) {
-        formData.append("file", data.file);
       }
 
       const isNew = editingDoc.id <= 0;
@@ -989,6 +1086,43 @@ export default function RiderOnboardingClient() {
     } catch (err) {
       console.error("Error updating document:", err);
       alert(err instanceof Error ? err.message : "Failed to update document");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleReplaceImage = async (docType: string, file: File) => {
+    if (isBlocked) return;
+    const existing = getLatestDocument(docType);
+    const target: Document = existing && existing.id > 0
+      ? existing
+      : {
+          id: 0,
+          docType,
+          fileUrl: "pending",
+          r2Key: null,
+          docNumber: null,
+          verificationMethod: "MANUAL_UPLOAD",
+          verified: false,
+          verifierUserId: null,
+          verifierName: null,
+          rejectedReason: null,
+          extractedName: null,
+          extractedDob: null,
+          extractedDataSummary: null,
+          lastVerificationId: null,
+          lastProviderReference: null,
+          metadata: null,
+          verifiedAt: null,
+          createdAt: new Date().toISOString(),
+        };
+
+    try {
+      setActionLoading(target.id > 0 ? documentActionKey(target) : `upload:${docType}`);
+      await uploadDocumentImage(target, file);
+    } catch (err) {
+      console.error("Error replacing document image:", err);
+      alert(err instanceof Error ? err.message : "Failed to upload image");
     } finally {
       setActionLoading(null);
     }
@@ -1058,6 +1192,7 @@ export default function RiderOnboardingClient() {
       setEditingDoc(null);
       setDetailEditing(false);
       setDetailDocType(null);
+      bumpDocumentImage(target.id);
       // Silent refresh — do not full-page "Loading rider verification…"
       await refetchRiderDataInBackground();
     } catch (err) {
@@ -1369,6 +1504,14 @@ export default function RiderOnboardingClient() {
   const getLatestDocument = (docType: string): Document | null => {
     const docs = getDocumentsByType(docType);
     if (docs.length > 0) return docs[0];
+    if (docType === "selfie") {
+      const profile = getDocumentsByType("profile_photo");
+      if (profile.length > 0) return profile[0];
+    }
+    if (docType === "profile_photo") {
+      const selfie = getDocumentsByType("selfie");
+      if (selfie.length > 0) return selfie[0];
+    }
     // App Cashfree bank verify used to write only rider_payment_methods —
     // surface that as a bank_proof card so agents aren't stuck on "No document".
     if (docType === "bank_proof") {
@@ -2053,6 +2196,7 @@ export default function RiderOnboardingClient() {
               doc,
               docType,
               riderData.rider.selfieUrl,
+              mediaNonce || (doc && doc.id > 0 ? imageRefreshKeys[doc.id] : undefined),
             );
             return (
               <DocumentSummaryBlock
@@ -2273,10 +2417,20 @@ export default function RiderOnboardingClient() {
                   currentImageUrl={
                     resolveDocumentPreviewUrl(
                       editingDoc,
-                      editingDoc.docType === "selfie"
+                      isSelfieDocType(editingDoc.docType)
                         ? riderData?.rider?.selfieUrl
                         : null,
-                    ) || null
+                    )
+                      ? withAttachmentCacheBust(
+                          resolveDocumentPreviewUrl(
+                            editingDoc,
+                            isSelfieDocType(editingDoc.docType)
+                              ? riderData?.rider?.selfieUrl
+                              : null,
+                          ),
+                          mediaNonce || imageRefreshKeys[editingDoc.id] || Date.now(),
+                        )
+                      : null
                   }
                   currentR2Key={
                     editingDoc.fileUrl === "pending" || !editingDoc.r2Key
@@ -2307,19 +2461,30 @@ export default function RiderOnboardingClient() {
                   isIdentity ? riderData?.rider?.panNumber ?? null : null
                 }
                 fallbackPreviewUrl={
-                  docType === "selfie" ? riderData?.rider?.selfieUrl ?? null : null
+                  isSelfieDocType(docType)
+                    ? riderData?.rider?.selfieUrl
+                      ? withAttachmentCacheBust(
+                          riderData.rider.selfieUrl,
+                          mediaNonce ||
+                            (actionDoc && actionDoc.id > 0
+                              ? imageRefreshKeys[actionDoc.id]
+                              : undefined),
+                        )
+                      : null
+                    : null
                 }
                 imageRefreshKey={
-                  actionDoc && actionDoc.id > 0
+                  mediaNonce ||
+                  (actionDoc && actionDoc.id > 0
                     ? imageRefreshKeys[actionDoc.id]
                     : doc
                       ? imageRefreshKeys[doc.id]
-                      : undefined
+                      : undefined)
                 }
                 onView={() => {
                   if (!doc || (isSyntheticBank && docType === "bank_proof")) return;
                   const previewFallback =
-                    docType === "selfie" ? riderData?.rider?.selfieUrl : null;
+                    isSelfieDocType(docType) ? riderData?.rider?.selfieUrl : null;
                   if (!hasDocumentPreview(doc, previewFallback)) return;
                   handleViewDocument({
                     ...doc,
@@ -2329,9 +2494,7 @@ export default function RiderOnboardingClient() {
                 }}
                 onEdit={() => {
                   if (isBlocked) return;
-                  const isSelfie =
-                    docType === "selfie" || docType === "profile_photo";
-                  if (isSelfie) {
+                  if (isSelfieDocType(docType)) {
                     if (actionDoc && actionDoc.id > 0) {
                       handleEditDocument(actionDoc);
                     } else {
@@ -2346,9 +2509,14 @@ export default function RiderOnboardingClient() {
                     handleEditDocument(actionDoc);
                   }
                 }}
+                onReplaceImage={
+                  !isBlocked
+                    ? (file) => handleReplaceImage(docType, file)
+                    : undefined
+                }
                 onUpload={() => !isBlocked && handleStartUpload(docType)}
                 onRemoveImage={
-                  docType === "selfie" || docType === "profile_photo"
+                  isSelfieDocType(docType)
                     ? async () => {
                         if (isBlocked) return;
                         if (!actionDoc || actionDoc.id <= 0) {
@@ -2420,10 +2588,18 @@ export default function RiderOnboardingClient() {
             setSelectedDocument(null);
           }}
           imageUrl={
-            resolveDocumentPreviewUrl(
-              selectedDocument,
-              selectedDocument.docType === "selfie" ? riderData?.rider?.selfieUrl : null,
-            ) || selectedDocument.fileUrl || ""
+            (() => {
+              const url =
+                resolveDocumentPreviewUrl(
+                  selectedDocument,
+                  isSelfieDocType(selectedDocument.docType)
+                    ? riderData?.rider?.selfieUrl
+                    : null,
+                ) || selectedDocument.fileUrl || "";
+              return url
+                ? withAttachmentCacheBust(url, mediaNonce || imageRefreshKeys[selectedDocument.id])
+                : url;
+            })()
           }
           documentName={DOCUMENT_LABELS[selectedDocument.docType] ?? selectedDocument.docType ?? "Document"}
           documentNumber={selectedDocument.docNumber ?? null}
@@ -2607,6 +2783,8 @@ interface DocumentCardProps {
   onView: () => void;
   onEdit: () => void;
   onUpload?: () => void;
+  /** Immediate file replace (selfie / any image) without opening the edit modal. */
+  onReplaceImage?: (file: File) => void | Promise<void>;
   /** Selfie (and similar): remove current image without opening the edit modal. */
   onRemoveImage?: () => void | Promise<void>;
   onApprove: () => void;
@@ -2644,6 +2822,7 @@ function DocumentCard({
   onView,
   onEdit,
   onUpload,
+  onReplaceImage,
   onRemoveImage,
   onApprove,
   onReject,
@@ -2657,6 +2836,7 @@ function DocumentCard({
 }: DocumentCardProps) {
   const [evModalOpen, setEvModalOpen] = useState(false);
   const [previewBroken, setPreviewBroken] = useState(false);
+  const replaceInputRef = useRef<HTMLInputElement>(null);
   const hasMultipleVersions = allVersions.length > 1;
   const showDocNumber = DOC_TYPES_WITH_NUMBER.has(docType);
   const autoVerifyDisplay =
@@ -2688,8 +2868,13 @@ function DocumentCard({
       ? "N/A"
       : "?";
   const imageUrl = resolveDocumentPreviewUrl(document, fallbackPreviewUrl);
-  const imageKey = imageUrl ? `${imageUrl}-${imageRefreshKey ?? document?.id ?? ""}` : "no-image";
-  const isPdfPreview = Boolean(imageUrl && isPdfAttachmentRef(imageUrl));
+  const displayImageUrl = imageUrl
+    ? withAttachmentCacheBust(imageUrl, imageRefreshKey)
+    : "";
+  const imageKey = displayImageUrl
+    ? `${displayImageUrl}-${imageRefreshKey ?? document?.id ?? ""}`
+    : "no-image";
+  const isPdfPreview = Boolean(displayImageUrl && isPdfAttachmentRef(displayImageUrl));
   const hasRealUpload =
     (Boolean(document?.r2Key) && !isNonImageFileRef(document?.r2Key)) ||
     (Boolean(document?.fileUrl) &&
@@ -2698,12 +2883,12 @@ function DocumentCard({
       !String(document!.fileUrl).startsWith("placeholder"));
   // Only show image area when a real upload exists — hide for electronic-only verifies.
   const showPreview =
-    Boolean(imageUrl) &&
+    Boolean(displayImageUrl) &&
     !previewBroken &&
     hasRealUpload &&
     hasDocumentPreview(document, fallbackPreviewUrl) &&
     !isPdfPreview;
-  const showPdfPreview = Boolean(imageUrl) && hasRealUpload && isPdfPreview;
+  const showPdfPreview = Boolean(displayImageUrl) && hasRealUpload && isPdfPreview;
 
   useEffect(() => {
     setPreviewBroken(false);
@@ -2809,7 +2994,7 @@ function DocumentCard({
         )}
       </div>
 
-      {document && showPdfPreview && imageUrl ? (
+      {document && showPdfPreview && displayImageUrl ? (
         <button
           type="button"
           onClick={onView}
@@ -2819,12 +3004,12 @@ function DocumentCard({
           <span className="text-xs font-bold uppercase tracking-wide text-rose-700">PDF attached</span>
           <span className="text-[10px] font-semibold text-rose-600/80">Tap to view</span>
         </button>
-      ) : document && showPreview && imageUrl ? (
+      ) : document && showPreview && displayImageUrl ? (
         <button
           type="button"
           onClick={onView}
           className={
-            docType === "selfie"
+            docType === "selfie" || docType === "profile_photo"
               ? "group relative mx-auto flex h-52 w-52 items-center justify-center overflow-hidden rounded-full border-2 border-emerald-200 bg-slate-100 shadow-sm"
               : "group relative block h-28 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-100"
           }
@@ -2832,7 +3017,7 @@ function DocumentCard({
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             key={imageKey}
-            src={imageUrl}
+            src={displayImageUrl}
             alt={DOCUMENT_LABELS[docType]}
             className="h-full w-full object-cover object-center"
             onError={() => setPreviewBroken(true)}
@@ -2841,7 +3026,7 @@ function DocumentCard({
             <Eye className="h-5 w-5 text-white opacity-0 drop-shadow transition group-hover:opacity-100" />
           </span>
         </button>
-      ) : !document && docType === "selfie" && fallbackPreviewUrl ? (
+      ) : !document && (docType === "selfie" || docType === "profile_photo") && fallbackPreviewUrl ? (
         <button
           type="button"
           onClick={onView}
@@ -2895,11 +3080,22 @@ function DocumentCard({
 
             {isSelfieDoc && selfieHasImage && !isDisabled ? (
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                {showPreview || imageUrl || fallbackPreviewUrl ? (
+                <input
+                  ref={replaceInputRef}
+                  type="file"
+                  accept="image/jpeg,image/jpg,image/png,image/webp"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.currentTarget.value = "";
+                    if (file && onReplaceImage) void onReplaceImage(file);
+                  }}
+                />
+                {showPreview || displayImageUrl || fallbackPreviewUrl ? (
                   <button
                     type="button"
                     onClick={onView}
-                    disabled={!showPreview && !imageUrl && !fallbackPreviewUrl}
+                    disabled={!showPreview && !displayImageUrl && !fallbackPreviewUrl}
                     className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Eye className="h-3.5 w-3.5 shrink-0" />
@@ -2908,13 +3104,23 @@ function DocumentCard({
                 ) : null}
                 <button
                   type="button"
-                  onClick={onEdit}
+                  onClick={() => {
+                    if (onReplaceImage) {
+                      replaceInputRef.current?.click();
+                      return;
+                    }
+                    onEdit();
+                  }}
                   disabled={isLoading || isDisabled}
                   className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
                   title="Upload a new selfie"
                 >
-                  <Upload className="h-3.5 w-3.5 shrink-0" />
-                  Upload new
+                  {isLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                  ) : (
+                    <Upload className="h-3.5 w-3.5 shrink-0" />
+                  )}
+                  {isLoading ? "Uploading…" : "Upload new"}
                 </button>
                 {onRemoveImage ? (
                   <button

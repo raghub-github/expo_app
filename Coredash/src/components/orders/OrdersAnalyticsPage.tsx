@@ -22,7 +22,6 @@ import {
   Bike,
   CheckCircle2,
   Clock3,
-  Download,
   ExternalLink,
   IndianRupee,
   MoreVertical,
@@ -639,60 +638,46 @@ function HistoryView({ data }: { data: OrdersData }) {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-[13px] text-[#6B6894]">
-            Search, view and manage all orders across Food, Grocery, Ride and Parcel.
-          </p>
-        </div>
-        <button
-          type="button"
-          className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-[#4B49AC] px-4 py-2.5 text-[13px] font-semibold text-white shadow-sm hover:bg-[#3A3894]"
-          onClick={() => exportCsv(filtered)}
-        >
-          <Download className="h-4 w-4" />
-          Export
-        </button>
-      </div>
-
       <div className="rounded-2xl border border-[#E4E7F7] bg-white p-4 shadow-[0_8px_30px_rgba(75,73,172,0.06)]">
-        <div className="flex items-center gap-2 rounded-xl border border-[#E4E7F7] bg-[#F8F9FF] px-3.5 py-3">
-          <Search className="h-4 w-4 shrink-0 text-[#8B89B3]" />
-          <input
-            value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
-              setPage(1);
-            }}
-            placeholder="Search by Order ID, Customer Name, Phone…"
-            className="w-full bg-transparent text-[14px] text-[#1E1C4A] outline-none placeholder:text-[#8B89B3]"
-          />
-        </div>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <SelectChip
-            value={category}
-            onChange={(v) => {
-              setCategory(v);
-              setPage(1);
-            }}
-            options={[
-              { value: "ALL", label: "All Categories" },
-              ...types.map((t) => ({ value: t, label: prettyLabel(t) })),
-            ]}
-          />
-          <SelectChip
-            value={status}
-            onChange={(v) => {
-              setStatus(v);
-              setPage(1);
-            }}
-            options={[
-              { value: "ALL", label: "All Status" },
-              { value: "DELIVERED", label: "Delivered" },
-              { value: "ONGOING", label: "Ongoing" },
-              { value: "CANCELLED", label: "Cancelled" },
-            ]}
-          />
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-[#E4E7F7] bg-[#F8F9FF] px-3.5 py-3">
+            <Search className="h-4 w-4 shrink-0 text-[#8B89B3]" />
+            <input
+              value={q}
+              onChange={(e) => {
+                setQ(e.target.value);
+                setPage(1);
+              }}
+              placeholder="Search by Order ID, Customer Name, Phone…"
+              className="w-full bg-transparent text-[14px] text-[#1E1C4A] outline-none placeholder:text-[#8B89B3]"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2 lg:shrink-0">
+            <SelectChip
+              value={category}
+              onChange={(v) => {
+                setCategory(v);
+                setPage(1);
+              }}
+              options={[
+                { value: "ALL", label: "All Categories" },
+                ...types.map((t) => ({ value: t, label: prettyLabel(t) })),
+              ]}
+            />
+            <SelectChip
+              value={status}
+              onChange={(v) => {
+                setStatus(v);
+                setPage(1);
+              }}
+              options={[
+                { value: "ALL", label: "All Status" },
+                { value: "DELIVERED", label: "Delivered" },
+                { value: "ONGOING", label: "Ongoing" },
+                { value: "CANCELLED", label: "Cancelled" },
+              ]}
+            />
+          </div>
         </div>
       </div>
 
@@ -702,7 +687,7 @@ function HistoryView({ data }: { data: OrdersData }) {
           icon={CheckCircle2}
           label="Delivered"
           value={formatCount(k.delivered)}
-          sub={`(${formatPct(k.completionRate, 0)})`}
+          sub={`(${k.orders ? formatPct((k.delivered / k.orders) * 100, 0) : "0%"})`}
           tone="green"
         />
         <HistStat
@@ -715,16 +700,16 @@ function HistoryView({ data }: { data: OrdersData }) {
         <HistStat
           icon={Clock3}
           label="Ongoing"
-          value={formatCount(ongoing || k.live)}
-          sub={`(${k.orders ? formatPct(((ongoing || k.live) / k.orders) * 100, 0) : "0%"})`}
+          value={formatCount(ongoing)}
+          sub={`(${k.orders ? formatPct((ongoing / k.orders) * 100, 0) : "0%"})`}
           tone="amber"
         />
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-[#E4E7F7] bg-white shadow-[0_8px_30px_rgba(75,73,172,0.06)]">
-        <div className="overflow-x-auto">
+        <div className="max-h-[min(70vh,720px)] overflow-auto">
           <table className="w-full min-w-[1000px] border-collapse text-left text-[13px]">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr className="border-b border-[#E4E7F7] bg-[#F8F9FF] text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8B89B3]">
                 <th className="px-5 py-3.5">Order ID</th>
                 <th className="px-3 py-3.5">Date & Time</th>
@@ -771,6 +756,16 @@ function HistoryView({ data }: { data: OrdersData }) {
                       <td className="px-3 py-4">
                         <p className="font-semibold text-[#1E1C4A]">{r.customer}</p>
                         <p className="text-[12px] text-[#8B89B3]">{r.customerPhone || "—"}</p>
+                        {r.customerAddress ? (
+                          <p className="mt-0.5 max-w-[220px] truncate text-[11px] text-[#6B6894]" title={r.customerAddress}>
+                            {r.customerAddress}
+                          </p>
+                        ) : null}
+                        {r.referredByName ? (
+                          <p className="mt-0.5 text-[11px] font-medium text-[#4B49AC]">
+                            Referred by {r.referredByName}
+                          </p>
+                        ) : null}
                       </td>
                       <td className="px-3 py-4">
                         <span className="inline-flex items-center gap-2">
@@ -1171,44 +1166,3 @@ function shortDay(v: string) {
     : d.toLocaleString("en-GB", { day: "numeric", month: "short" });
 }
 
-function exportCsv(rows: OrderRow[]) {
-  const header = [
-    "Order ID",
-    "Created",
-    "Customer",
-    "Phone",
-    "Type",
-    "Store",
-    "Rider",
-    "Status",
-    "Amount",
-    "GST",
-    "Tip",
-  ];
-  const lines = rows.map((r) =>
-    [
-      r.orderId,
-      r.createdAt,
-      r.customer,
-      r.customerPhone,
-      r.type,
-      r.store,
-      r.rider,
-      r.status,
-      r.amount,
-      r.gst,
-      r.tip,
-    ]
-      .map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`)
-      .join(",")
-  );
-  const blob = new Blob([[header.join(","), ...lines].join("\n")], {
-    type: "text/csv;charset=utf-8",
-  });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "gatimitra-orders.csv";
-  a.click();
-  URL.revokeObjectURL(url);
-}

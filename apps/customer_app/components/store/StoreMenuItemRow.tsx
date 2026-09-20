@@ -123,20 +123,23 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
     ensureMenuItemImageWarm(imageUri);
   }, [imageUri]);
 
+  const outOfStock = item.inStock === false;
+  const controlsDisabled = isStoreClosed || outOfStock;
+
   const handleAdd = useCallback(() => {
-    if (isStoreClosed) return;
+    if (controlsDisabled) return;
     onAdd(item);
-  }, [isStoreClosed, item, onAdd]);
+  }, [controlsDisabled, item, onAdd]);
 
   const handleIncrementPress = useCallback(() => {
-    if (isStoreClosed) return;
+    if (controlsDisabled) return;
     onIncrement(item.id, item.menuItemId);
-  }, [isStoreClosed, item.id, item.menuItemId, onIncrement]);
+  }, [controlsDisabled, item.id, item.menuItemId, onIncrement]);
 
   const handleDecrementPress = useCallback(() => {
-    if (isStoreClosed) return;
+    if (controlsDisabled) return;
     onDecrement(item.id, item.menuItemId);
-  }, [isStoreClosed, item.id, item.menuItemId, onDecrement]);
+  }, [controlsDisabled, item.id, item.menuItemId, onDecrement]);
 
   const handleBookmarkPress = useCallback(
     (event: GestureResponderEvent) => {
@@ -397,7 +400,8 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
               itemKey={`${merchantId}:${item.listRowKey ?? item.id}`}
               merchantId={merchantId}
               quantity={cartQty}
-              disabled={isStoreClosed}
+              disabled={controlsDisabled}
+              soldOut={outOfStock && !isStoreClosed}
               allowOptimisticAdd={!isCustomisable}
               onAdd={handleAdd}
               onIncrement={handleIncrementPress}

@@ -29,7 +29,7 @@ import {
 } from "./checkoutCouponEligibility.js";
 import { executeBillingPipeline } from "./executeBillingPipeline.js";
 import { applyFoodFlashSaleOverlayToItems, markFlashSaleOrderLines } from "./flashSaleApply.js";
-import { FLASH_SALE_PRICE_STALE, FLASH_SALE_UNAVAILABLE, isFlashSaleKind, isFoodFlashSale } from "./flashSale.js";
+import { FLASH_SALE_PRICE_STALE, FLASH_SALE_QTY_EXCEEDED, FLASH_SALE_UNAVAILABLE, flashSaleQtyExceededMessage, isFlashSaleKind, isFoodFlashSale } from "./flashSale.js";
 import {
   applyDynamicSurchargesToBilling,
   resolveActiveDynamicSurchargesFromRefs,
@@ -728,6 +728,21 @@ export async function computeBillForOrder(
     ctx,
     dataset,
   });
+  if (flashOverlay.qtyExceeded) {
+    const { offerId, requestedQuantity, maxFlashQuantity } = flashOverlay.qtyExceeded;
+    console.warn("[FLASH_SALE] quantity cap", {
+      offerId,
+      requestedQuantity,
+      maxFlashQuantity,
+      customerId: input.customerId > 0 ? input.customerId : undefined,
+      storeId: resolved.merchantStoreId > 0 ? resolved.merchantStoreId : undefined,
+    });
+    return {
+      ok: false,
+      code: FLASH_SALE_QTY_EXCEEDED,
+      message: flashSaleQtyExceededMessage(maxFlashQuantity),
+    };
+  }
   if (flashOverlay.stalePrice) {
     return {
       ok: false,
@@ -1770,7 +1785,7 @@ export async function listCheckoutBillOffers(
     merchantOffersIneligible,
     platformOffers,
     platformOffersIneligible,
-    eligibleSubtotal: Math.round(grossCart * 100) / 100,
+    eligibleSubtotal: Math.round(catalogEligible * 100) / 100,
     orderLineEligibility: orderLines.map((l) => ({
       menuItemId: l.menuItemId,
       lineTotal: l.lineTotal,

@@ -31,8 +31,23 @@ export type WalletBalanceSource = {
     withdrawable_balance?: number | null;
     available_balance?: number | null;
 };
-/** Same field Home dashboard and Earnings must show. */
+export declare function isWalletBalanceNegative(amount: number | null | undefined): boolean;
+/**
+ * Card / KPI display amount.
+ * When available is overdrawn (dues), show that negative figure.
+ * Otherwise show withdrawable (payout-ready) balance.
+ */
 export declare function resolveWalletDisplayBalance(wallet: WalletBalanceSource | null | undefined): number;
+/** Withdrawable for payout actions — never negative. */
+export declare function resolveWithdrawableBalance(wallet: WalletBalanceSource | null | undefined): number;
+/** Web card tone classes (partnersite + control dashboard). */
+export declare function walletBalanceCardClasses(amount: number): {
+    card: string;
+    iconWrap: string;
+    icon: string;
+    amount: string;
+    label: string;
+};
 /** Clean merchant-facing copy for withdrawal reject / fail credits. */
 export declare function resolveWithdrawalReversalDisplayDescription(raw: string | null | undefined, metadata?: Record<string, unknown> | null): string;
 /** Shared category labels (Partner Site + Merchant App). */

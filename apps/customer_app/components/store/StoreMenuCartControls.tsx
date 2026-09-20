@@ -208,6 +208,11 @@ type InstantCartControlProps = {
   merchantId?: string;
   quantity: number;
   disabled?: boolean;
+  /**
+   * When true (and store is open), show red "Sold Out" instead of gray "Closed".
+   * Closed always wins when `disabled` is from store hours.
+   */
+  soldOut?: boolean;
   /** Compact mint “+” square + slim stepper for masonry cards. Circle = home on-image +. */
   size?: "default" | "compact" | "circle";
   /** Green (menu default) vs pink (past-order / reorder rows). */
@@ -248,6 +253,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
   merchantId,
   quantity,
   disabled = false,
+  soldOut = false,
   size = "default",
   accent = "default",
   darkSurface = false,
@@ -260,6 +266,9 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
 }: InstantCartControlProps) {
   const compact = size === "compact" || size === "circle";
   const circle = size === "circle";
+  /** OOS while store open → red Sold Out; store closed → gray Closed. */
+  const unavailableLabel = soldOut ? "Sold Out" : "Closed";
+  const unavailableSoldOutStyle = Boolean(soldOut);
   const zomato = accent === "zomato";
   const accentColor = darkSurface
     ? MerchantDarkPalette.accent
@@ -965,6 +974,7 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
             darkSurface && styles.addBtnDark,
             darkSurface && { borderColor: accentColor },
             disabled ? styles.addBtnDisabled : null,
+            disabled && unavailableSoldOutStyle ? styles.addBtnSoldOut : null,
             compact && disabled && styles.addBtnCompactDisabled,
             !zomato && !darkSurface && compact ? { borderColor: accentColor } : null,
           ]}
@@ -975,10 +985,11 @@ export const StoreMenuInstantCartControl = React.memo(function StoreMenuInstantC
               style={[
                 styles.addBtnText,
                 styles.addBtnTextDisabled,
+                unavailableSoldOutStyle && styles.addBtnTextSoldOut,
                 compact && styles.addBtnTextCompactDisabled,
               ]}
             >
-              {compact || circle ? "—" : "Closed"}
+              {compact || circle ? "—" : unavailableLabel}
             </AppText>
           ) : compact || circle ? (
             <AppText style={[styles.addPlusGlyphCompact, { color: accentColor }]}>+</AppText>
@@ -1367,7 +1378,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 10,
+    paddingHorizontal: 16,
     zIndex: 1,
   },
   cutoutHalfBtn: {
@@ -1398,7 +1409,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 10,
+    paddingHorizontal: 16,
     height: MENU_CIRCLE_CONTROL_SIZE,
   },
   controlShellCompact: {
@@ -1489,6 +1500,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 0,
     elevation: 0,
   },
+  addBtnSoldOut: {
+    backgroundColor: "#DC2626",
+    borderColor: "#DC2626",
+    shadowOpacity: 0,
+    elevation: 0,
+  },
   addBtnZomato: {
     borderWidth: 1,
     borderRadius: 8,
@@ -1546,7 +1563,7 @@ const styles = StyleSheet.create({
     borderRadius: MENU_CIRCLE_CONTROL_SIZE / 2,
   },
   qtyVisualRowOnCurve: {
-    paddingHorizontal: 4,
+    paddingHorizontal: 12,
   },
   qtyCircleBtn: {
     width: 28,
@@ -1630,6 +1647,12 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     letterSpacing: 0.2,
   },
+  addBtnTextSoldOut: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
   qtyWrap: {
     position: "relative",
     flexDirection: "row",
@@ -1684,7 +1707,7 @@ const styles = StyleSheet.create({
     overflow: "visible",
   },
   qtyVisualRowCompact: {
-    paddingHorizontal: 8,
+    paddingHorizontal: 14,
   },
   qtyGlyphCompact: {
     fontSize: 20,
@@ -1703,7 +1726,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     zIndex: 1,
   },
   qtyGlyph: {

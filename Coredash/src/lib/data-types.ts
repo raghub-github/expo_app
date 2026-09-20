@@ -203,6 +203,8 @@ export type OrdersData = {
     gst: number;
     customer: string;
     customerPhone: string;
+    customerAddress: string | null;
+    referredByName: string | null;
     store: string;
     rider: string;
     createdAt: string;
@@ -265,6 +267,8 @@ export type CustomerDetailData = {
     plus: boolean;
     avatarUrl: string | null;
     referralCode: string | null;
+    referredBy: string | null;
+    referredByName: string | null;
     language: string;
     wallet: number;
     walletLocked: number;

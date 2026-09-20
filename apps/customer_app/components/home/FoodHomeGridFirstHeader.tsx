@@ -22,9 +22,13 @@ import { useIsFocused } from "@react-navigation/native";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 import { useCurrentSubscription } from "@/hooks/useCustomerSubscription";
 import { useProfile } from "@/hooks/useProfile";
-import { isCustomProfileUploadUrl } from "@/lib/emailAvatar";
+import {
+  isAvatarUriPrefetched,
+  markAvatarUriPrefetched,
+  pickVerifiedEmailAvatarUrl,
+  resolveStoredProfileAvatarUri,
+} from "@/lib/emailAvatar";
 import { getNameInitials } from "@/lib/nameInitials";
-import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useAuthStore } from "@/store/authStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
@@ -120,19 +124,30 @@ export function FoodHomeGridFirstHeader({
 
   const displayName = profile?.full_name?.trim() || "Customer";
   const initials = useMemo(() => getNameInitials(displayName), [displayName]);
-  const profileImageUrl = profile?.profile_image_url?.trim() || null;
   const avatarUri = useMemo(() => {
-    if (!isCustomProfileUploadUrl(profileImageUrl) || !profileImageUrl) return null;
-    return toAbsoluteImageUrl(profileImageUrl);
-  }, [profileImageUrl]);
-  const [avatarReady, setAvatarReady] = useState(false);
+    const stored = resolveStoredProfileAvatarUri(profile?.profile_image_url);
+    if (stored) return stored;
+    if (profile?.is_email_verified && profile.email?.trim()) {
+      return pickVerifiedEmailAvatarUrl(profile.email, profile.profile_image_url);
+    }
+    return null;
+  }, [profile?.profile_image_url, profile?.is_email_verified, profile?.email]);
+  // Prefetched / disk-cached avatars paint on first frame — no initials flash.
+  const [avatarReady, setAvatarReady] = useState(() => isAvatarUriPrefetched(avatarUri));
 
   useEffect(() => {
-    setAvatarReady(false);
-    if (!avatarUri) return;
+    if (!avatarUri) {
+      setAvatarReady(false);
+      return;
+    }
+    if (isAvatarUriPrefetched(avatarUri)) {
+      setAvatarReady(true);
+      return;
+    }
     let cancelled = false;
     void Image.prefetch(avatarUri, { cachePolicy: "memory-disk" })
       .then(() => {
+        markAvatarUriPrefetched(avatarUri);
         if (!cancelled) setAvatarReady(true);
       })
       .catch(() => {
@@ -267,9 +282,13 @@ export function FoodHomeGridFirstHeader({
                 style={[styles.avatarImg, !avatarReady && styles.avatarImgPending]}
                 contentFit="cover"
                 cachePolicy="memory-disk"
+                priority="high"
                 recyclingKey={avatarUri}
                 transition={0}
-                onLoad={() => setAvatarReady(true)}
+                onLoad={() => {
+                  markAvatarUriPrefetched(avatarUri);
+                  setAvatarReady(true);
+                }}
                 onError={() => setAvatarReady(false)}
               />
             ) : null}

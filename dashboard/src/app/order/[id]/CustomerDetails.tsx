@@ -472,7 +472,7 @@ export default function CustomerDetails({
             </div>
           </div>
 
-          {/* Lat/Lon and View on Map */}
+          {/* Lat/Lon and Map */}
           <div className="grid grid-cols-[120px_1fr] items-start min-h-[22px]">
             <div className="text-[12px] text-gati-text-secondary font-medium">
               Lat/Lon:
@@ -488,7 +488,7 @@ export default function CustomerDetails({
                   className="inline-flex items-center gap-0.5 text-gati-primary no-underline font-medium text-[10px] px-1 py-0.5 rounded-full bg-gati-primary-super-light border border-gati-primary-light cursor-pointer whitespace-nowrap"
                 >
                   <i className="bi bi-geo-alt text-[10px]" />
-                  View on Map
+                  Map
                 </button>
               )}
             </div>

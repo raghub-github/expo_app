@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { riderDocuments } from "@/lib/db/schema";
 
@@ -68,7 +68,7 @@ function resolveSelfieMethod(docs: DocRow[]): "APP_VERIFIED" | "CASHFREE_AUTO" {
  */
 export async function autoVerifyUploadedRiderSelfie(
   riderId: number,
-  opts?: { source?: "rider" | "admin" },
+  opts?: { source?: "rider" | "admin"; documentId?: number },
 ): Promise<boolean> {
   const source = opts?.source === "admin" ? "admin" : "rider";
   const db = getDb();
@@ -83,7 +83,14 @@ export async function autoVerifyUploadedRiderSelfie(
       fileUrl: riderDocuments.fileUrl,
     })
     .from(riderDocuments)
-    .where(and(eq(riderDocuments.riderId, riderId), eq(riderDocuments.docType, "selfie")))) as DocRow[];
+    .where(
+      and(
+        eq(riderDocuments.riderId, riderId),
+        opts?.documentId
+          ? eq(riderDocuments.id, opts.documentId)
+          : inArray(riderDocuments.docType, ["selfie", "profile_photo"]),
+      ),
+    )) as DocRow[];
 
   if (!selfie?.fileUrl || selfie.fileUrl === "pending") return false;
 
@@ -141,7 +148,9 @@ export async function maybeAutoVerifyRiderSelfie(riderId: number): Promise<boole
   const pan = docs.find((d) => d.docType === "pan");
   if (pan && !isElectronicallyVerified(pan)) return false;
 
-  const selfie = docs.find((d) => d.docType === "selfie");
+  const selfie =
+    docs.find((d) => d.docType === "selfie") ??
+    docs.find((d) => d.docType === "profile_photo");
   if (!selfie?.fileUrl || selfie.fileUrl === "pending") return false;
   if (selfie.verified === true) return true;
 

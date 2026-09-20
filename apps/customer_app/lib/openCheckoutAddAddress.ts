@@ -17,6 +17,30 @@ export type OpenCheckoutAddAddressOptions = {
   hideCartGate?: boolean;
 };
 
+/** Prevents multi-tap → stacked /location-address entries. */
+let addAddressNavLock = false;
+let addAddressNavUnlockTimer: ReturnType<typeof setTimeout> | null = null;
+
+function lockAddAddressNav(): boolean {
+  if (addAddressNavLock) return false;
+  addAddressNavLock = true;
+  if (addAddressNavUnlockTimer) clearTimeout(addAddressNavUnlockTimer);
+  // Safety unlock if navigation never settles (permission denied path clears sooner).
+  addAddressNavUnlockTimer = setTimeout(() => {
+    addAddressNavLock = false;
+    addAddressNavUnlockTimer = null;
+  }, 2500);
+  return true;
+}
+
+function unlockAddAddressNav(): void {
+  addAddressNavLock = false;
+  if (addAddressNavUnlockTimer) {
+    clearTimeout(addAddressNavUnlockTimer);
+    addAddressNavUnlockTimer = null;
+  }
+}
+
 /**
  * Opens the Add Address form directly (GPS-prefilled), skipping the global
  * /location picker. Shared by checkout modal + CheckoutAddressSelectSheet.
@@ -24,6 +48,8 @@ export type OpenCheckoutAddAddressOptions = {
 export async function openCheckoutAddAddress(
   options: OpenCheckoutAddAddressOptions
 ): Promise<void> {
+  if (!lockAddAddressNav()) return;
+
   const {
     router,
     closeAddressSheet,
@@ -41,24 +67,29 @@ export async function openCheckoutAddAddress(
     useCheckoutSheetStore.getState().hide();
   }
 
-  await useLocationStore.getState().requestPermissionAndFetch({ forceDevice: true });
-  const { permissionStatus, coords, address } = useLocationStore.getState();
-  if (permissionStatus !== "granted" || !coords) {
-    Alert.alert(
-      "Location required",
-      "Please enable location to add your delivery address."
-    );
-    return;
-  }
+  try {
+    await useLocationStore.getState().requestPermissionAndFetch({ forceDevice: true });
+    const { permissionStatus, coords, address } = useLocationStore.getState();
+    if (permissionStatus !== "granted" || !coords) {
+      unlockAddAddressNav();
+      Alert.alert(
+        "Location required",
+        "Please enable location to add your delivery address."
+      );
+      return;
+    }
 
-  router.push({
-    pathname: "/location-address",
-    params: {
-      latitude: String(coords.latitude),
-      longitude: String(coords.longitude),
-      primary: address?.primary ?? "Current location",
-      fullAddress: address?.fullAddress ?? "",
-      afterSaveReturn: "checkout",
-    },
-  });
+    router.push({
+      pathname: "/location-address",
+      params: {
+        latitude: String(coords.latitude),
+        longitude: String(coords.longitude),
+        primary: address?.primary ?? "Current location",
+        fullAddress: address?.fullAddress ?? "",
+        afterSaveReturn: "checkout",
+      },
+    });
+  } catch {
+    unlockAddAddressNav();
+  }
 }

@@ -367,7 +367,6 @@ export function FleetMerchantsPage() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyQuery, setHistoryQuery] = useState("");
   const [ratingsOpen, setRatingsOpen] = useState(false);
   const [payoutsOpen, setPayoutsOpen] = useState(false);
   const statsRange = periodToRange(period);
@@ -437,7 +436,6 @@ export function FleetMerchantsPage() {
 
   useEffect(() => {
     setHistoryOpen(false);
-    setHistoryQuery("");
     setRatingsOpen(false);
     setPayoutsOpen(false);
   }, [selectedId]);
@@ -496,13 +494,6 @@ export function FleetMerchantsPage() {
   }, [stores, selectedId]);
 
   const allOrders = detail?.orderHistory ?? [];
-  const filteredOrders = useMemo(() => {
-    const needle = historyQuery.trim().toLowerCase();
-    if (!needle) return allOrders;
-    return allOrders.filter((o) =>
-      [o.code, o.type, o.status, o.pickup, o.dropoff].join(" ").toLowerCase().includes(needle)
-    );
-  }, [allOrders, historyQuery]);
 
   if (loading) return <LoadingGrid />;
   if (error || !data) return <ErrorState message={error || "Failed"} onRetry={reload} />;
@@ -660,7 +651,11 @@ export function FleetMerchantsPage() {
                   <button
                     type="button"
                     onClick={() => setPayoutsOpen(true)}
-                    className="inline-flex cursor-pointer items-center gap-1 rounded-full bg-[#F3F4F6] px-2.5 py-1 text-[11px] font-semibold text-[#111827] hover:bg-[#E5E7EB]"
+                    className={`inline-flex cursor-pointer items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                      Number(store?.wallet ?? selected.wallet) < -0.005
+                        ? "bg-[#FEF2F2] text-[#B91C1C] hover:bg-[#FEE2E2] ring-1 ring-[#FECACA]"
+                        : "bg-[#F3F4F6] text-[#111827] hover:bg-[#E5E7EB]"
+                    }`}
                   >
                     <Wallet className="h-3 w-3" />
                     {formatInr(store?.wallet ?? selected.wallet)}
@@ -706,16 +701,22 @@ export function FleetMerchantsPage() {
                     label: "Lifetime orders",
                     value: formatCount(store?.lifetimeOrders ?? selected.orders),
                     sub: `${formatCount(store?.lifetimeDelivered ?? selected.delivered)} ok`,
+                    negative: false,
                   },
                   {
-                    label: "CTM earned",
-                    value: formatInr(store?.lifetimeCtm ?? selected.gmv),
-                    sub: `Period ${formatInr(store?.periodCtm ?? 0)}`,
+                    label: "Current balance",
+                    value: formatInr(store?.wallet ?? selected.wallet),
+                    sub:
+                      Number(store?.wallet ?? selected.wallet) < -0.005
+                        ? "Outstanding dues · same as app"
+                        : `Available · same as app / partner`,
+                    negative: Number(store?.wallet ?? selected.wallet) < -0.005,
                   },
                   {
                     label: "Commission",
                     value: formatInr(store?.lifetimeCommission ?? selected.commission),
                     sub: `${cancelRate.toFixed(0)}% cancel`,
+                    negative: false,
                   },
                   {
                     label: "Deliver rate",
@@ -723,16 +724,26 @@ export function FleetMerchantsPage() {
                     sub: store?.lastActivityAt
                       ? `Active ${formatDateTime(store.lastActivityAt)}`
                       : "No activity",
+                    negative: false,
                   },
                 ].map((m) => (
-                  <div key={m.label} className="bg-white px-4 py-3">
+                  <div
+                    key={m.label}
+                    className={`px-4 py-3 ${m.negative ? "bg-[#FEF2F2]" : "bg-white"}`}
+                  >
                     <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9CA3AF]">
                       {m.label}
                     </p>
-                    <p className="mt-0.5 font-mono text-[18px] font-semibold tabular-nums text-[#111827]">
+                    <p
+                      className={`mt-0.5 font-mono text-[18px] font-semibold tabular-nums ${
+                        m.negative ? "text-[#B91C1C]" : "text-[#111827]"
+                      }`}
+                    >
                       {m.value}
                     </p>
-                    <p className="truncate text-[11px] text-[#6B7280]">{m.sub}</p>
+                    <p className={`truncate text-[11px] ${m.negative ? "text-[#DC2626]" : "text-[#6B7280]"}`}>
+                      {m.sub}
+                    </p>
                   </div>
                 ))}
               </div>
@@ -993,23 +1004,12 @@ export function FleetMerchantsPage() {
         )}
       </section>
 
-      {historyOpen ? (
-        <SideSheet
-          title="Order history"
-          subtitle={`${selected?.name} · ${formatCount(filteredOrders.length)} orders`}
+      {historyOpen && selected ? (
+        <MerchantWalletLedgerSheet
+          storeKey={selected.storeId}
+          storeName={selected.name}
           onClose={() => setHistoryOpen(false)}
-        >
-          <div className="mb-3 flex items-center gap-2 rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-2.5">
-            <Search className="h-4 w-4 text-[#9CA3AF]" />
-            <input
-              value={historyQuery}
-              onChange={(e) => setHistoryQuery(e.target.value)}
-              placeholder="Search ID, type, address…"
-              className="w-full bg-transparent text-[13px] text-[#111827] outline-none placeholder:text-[#9CA3AF]"
-            />
-          </div>
-          <OrderHistoryList items={filteredOrders} />
-        </SideSheet>
+        />
       ) : null}
 
       {ratingsOpen ? (
@@ -1029,7 +1029,11 @@ export function FleetMerchantsPage() {
           onClose={() => setPayoutsOpen(false)}
         >
           <div className="mb-4 grid grid-cols-2 gap-2">
-            <MiniStat label="Available" value={formatInr(store?.wallet ?? 0)} />
+            <MiniStat
+              label="Available"
+              value={formatInr(store?.wallet ?? 0)}
+              negative={Number(store?.wallet ?? 0) < -0.005}
+            />
             <MiniStat label="Pending" value={formatInr(store?.walletPending ?? 0)} />
             <MiniStat label="Earned" value={formatInr(store?.totalEarned ?? 0)} />
             <MiniStat label="Withdrawn" value={formatInr(store?.totalWithdrawn ?? 0)} />
@@ -1074,6 +1078,188 @@ function SideSheet({
           </button>
         </div>
         <div className="cd-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+      </aside>
+    </div>
+  );
+}
+
+function MerchantWalletLedgerSheet({
+  storeKey,
+  storeName,
+  onClose,
+}: {
+  storeKey: string;
+  storeName: string;
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [balance, setBalance] = useState(0);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [query, setQuery] = useState("");
+  const [entries, setEntries] = useState<
+    Array<{
+      id: string;
+      title: string;
+      amount: number;
+      balanceAfter: number | null;
+      createdAt: string;
+      direction: string;
+      formattedOrderId?: string | null;
+    }>
+  >([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/merchants/${encodeURIComponent(storeKey)}/wallet/ledger?limit=80`,
+          { cache: "no-store" }
+        );
+        const json = (await res.json()) as {
+          success?: boolean;
+          error?: string;
+          data?: {
+            balance?: number;
+            entries?: Array<{
+              id: string;
+              title: string;
+              amount: number;
+              balanceAfter: number | null;
+              createdAt: string;
+              direction: string;
+              formattedOrderId?: string | null;
+            }>;
+          };
+        };
+        if (!res.ok || !json.success || !json.data) {
+          throw new Error(json.error || "Failed to load ledger");
+        }
+        if (cancelled) return;
+        setBalance(Number(json.data.balance ?? 0));
+        setEntries(json.data.entries ?? []);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load ledger");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [storeKey, reloadKey]);
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return entries;
+    return entries.filter((e) =>
+      [e.title, e.formattedOrderId, e.direction, e.amount].join(" ").toLowerCase().includes(needle)
+    );
+  }, [entries, query]);
+
+  const balanceNeg = balance < -0.005;
+
+  return (
+    <div className="fixed inset-0 z-[70] flex justify-end bg-black/35" onClick={onClose}>
+      <aside
+        className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="flex items-center justify-between border-b border-[#E5E7EB] px-5 py-4">
+          <div>
+            <h3 className="text-[17px] font-semibold text-[#111827]">Full ledger</h3>
+            <p className="text-[12px] text-[#6B7280]">
+              {storeName} ·{" "}
+              <span className={balanceNeg ? "font-semibold text-[#B91C1C]" : undefined}>
+                {formatInr(balance)}
+              </span>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-[#F3F4F6] text-[#111827] hover:bg-[#E5E7EB]"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="cd-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <div className="mb-3 flex items-center gap-2 rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-2.5">
+            <Search className="h-4 w-4 text-[#9CA3AF]" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search description, order, type…"
+              className="w-full bg-transparent text-[13px] text-[#111827] outline-none placeholder:text-[#9CA3AF]"
+            />
+          </div>
+          {loading ? (
+            <p className="py-10 text-center text-[13px] text-[#9CA3AF]">Loading ledger…</p>
+          ) : error ? (
+            <div className="space-y-3">
+              <p className="rounded-xl bg-[#FEF2F2] px-3 py-2 text-[12px] text-[#B91C1C]">{error}</p>
+              <button
+                type="button"
+                onClick={() => setReloadKey((n) => n + 1)}
+                className="cursor-pointer rounded-xl bg-[#F3F4F6] px-3 py-2 text-[12px] font-semibold text-[#111827] hover:bg-[#E5E7EB]"
+              >
+                Retry
+              </button>
+            </div>
+          ) : filtered.length === 0 ? (
+            <p className="py-10 text-center text-[13px] text-[#9CA3AF]">No ledger entries yet.</p>
+          ) : (
+            <ul className="space-y-2">
+              {filtered.map((tx) => {
+                const credit = tx.amount >= 0;
+                return (
+                  <li
+                    key={tx.id}
+                    className="flex items-start gap-3 rounded-xl border border-[#EEF0F4] bg-[#F9FAFB] px-3 py-3"
+                  >
+                    <span
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+                        credit ? "bg-[#DCFCE7] text-[#16A34A]" : "bg-[#FEE2E2] text-[#DC2626]"
+                      }`}
+                    >
+                      <Wallet className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] font-semibold text-[#111827]">{tx.title}</p>
+                      {tx.formattedOrderId ? (
+                        <p className="mt-0.5 truncate text-[11px] font-semibold tracking-wide text-[#4B5563]">
+                          {tx.formattedOrderId}
+                        </p>
+                      ) : null}
+                      <p className="mt-0.5 text-[11px] text-[#9CA3AF]">{formatDateTime(tx.createdAt)}</p>
+                      {tx.balanceAfter != null ? (
+                        <p
+                          className={`mt-0.5 text-[11px] ${
+                            Number(tx.balanceAfter) < -0.005 ? "text-[#B91C1C]" : "text-[#6B7280]"
+                          }`}
+                        >
+                          Balance {formatInr(tx.balanceAfter)}
+                        </p>
+                      ) : null}
+                    </div>
+                    <p
+                      className={`shrink-0 text-[13px] font-semibold ${
+                        credit ? "text-[#16A34A]" : "text-[#DC2626]"
+                      }`}
+                    >
+                      {credit ? "+" : "−"} {formatInr(Math.abs(tx.amount))}
+                    </p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       </aside>
     </div>
   );
@@ -1185,11 +1371,29 @@ function PayoutsList({ items }: { items: MerchantDetailData["payouts"] }) {
   );
 }
 
-function MiniStat({ label, value }: { label: string; value: string }) {
+function MiniStat({
+  label,
+  value,
+  negative = false,
+}: {
+  label: string;
+  value: string;
+  negative?: boolean;
+}) {
   return (
-    <div className="rounded-xl border border-[#EEF0F4] bg-[#F9FAFB] px-2.5 py-2">
+    <div
+      className={`rounded-xl border px-2.5 py-2 ${
+        negative ? "border-[#FECACA] bg-[#FEF2F2]" : "border-[#EEF0F4] bg-[#F9FAFB]"
+      }`}
+    >
       <p className="text-[10px] uppercase tracking-wide text-[#9CA3AF]">{label}</p>
-      <p className="mt-0.5 truncate text-[12px] font-semibold text-[#111827]">{value}</p>
+      <p
+        className={`mt-0.5 truncate text-[12px] font-semibold ${
+          negative ? "text-[#B91C1C]" : "text-[#111827]"
+        }`}
+      >
+        {value}
+      </p>
     </div>
   );
 }

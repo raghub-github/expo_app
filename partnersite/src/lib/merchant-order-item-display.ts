@@ -279,16 +279,20 @@ export function merchantBillPartsFromItems(
   const discount = pricing.discount ?? 0;
   const computed = menuRupee(Math.max(0, itemsLineTotal + packaging - discount));
   const frozen = Number(pricing.total);
-  const total =
-    Number.isFinite(frozen) && frozen > 0 ? menuRupee(frozen) : computed;
   const fromLines = menuRupee(itemsLineTotal);
   const reconstructed = menuRupee(Math.max(0, fromLines + packaging - discount));
-  const itemsSubtotal =
-    frozen > 0 && Math.abs(reconstructed - total) > 0.5
-      ? menuRupee(Math.max(0, total - packaging + discount))
-      : fromLines;
+  // Line nets + packaging are authoritative when lines exist. Do not back-solve a
+  // fake subtotal from a drifted frozen total_ctm (v2 packaging×commission bug).
+  const total =
+    fromLines > 0.005 && reconstructed > 0.005
+      ? Number.isFinite(frozen) && frozen > 0 && Math.abs(reconstructed - frozen) <= 0.5
+        ? menuRupee(frozen)
+        : reconstructed
+      : Number.isFinite(frozen) && frozen > 0
+        ? menuRupee(frozen)
+        : computed;
   return {
-    itemsSubtotal,
+    itemsSubtotal: fromLines > 0.005 ? fromLines : menuRupee(Math.max(0, total - packaging + discount)),
     itemBaseTotal: menuRupee(baseSubtotal),
     customizationsTotal: menuRupee(customizationsTotal),
     showCustomizations: customizationsTotal > 0.005,
@@ -298,7 +302,8 @@ export function merchantBillPartsFromItems(
   };
 }
 
-/** Single merchant-visible order total (CTM) — prefer frozen orders_core.total_ctm, then pricing.total. */
+/** Single merchant-visible order total (CTM) — prefer reconstructed line+pack when
+ * CTM snapshots exist; else frozen orders_core.total_ctm, then pricing.total. */
 export function resolveMerchantCtm(order: {
   pricing?: { total?: number | null; packaging?: number; discount?: number } | null;
   total_ctm?: number | string | null;
@@ -306,16 +311,34 @@ export function resolveMerchantCtm(order: {
   merchant_precision_discount?: number | string | null;
   items?: NormalizedOrderLineItem[] | null;
 }): number {
+  const items = order.items ?? [];
+  if (items.length > 0 && items.every((it) => it.ctmFromSnapshot === true)) {
+    const packaging = Number(order.pricing?.packaging) || 0;
+    const precision = Math.max(
+      0,
+      Number(order.merchant_precision_discount) || Number(order.pricing?.discount) || 0
+    );
+    const lineSum = items.reduce((s, it) => s + merchantLineTotalForItem(it), 0);
+    if (lineSum > 0.005) {
+      const reconstructed = round2(Math.max(0, lineSum + packaging - precision));
+      const fromFrozen = Number(order.total_ctm);
+      if (
+        !(Number.isFinite(fromFrozen) && fromFrozen > 0) ||
+        Math.abs(reconstructed - fromFrozen) > 0.5
+      ) {
+        return reconstructed;
+      }
+    }
+  }
+
   const fromFrozen = Number(order.total_ctm);
   if (Number.isFinite(fromFrozen) && fromFrozen > 0) return round2(fromFrozen);
 
   const fromPricing = Number(order.pricing?.total);
   if (Number.isFinite(fromPricing) && fromPricing > 0) return round2(fromPricing);
 
-  const items = order.items ?? [];
   if (items.length > 0) {
     const packaging = Number(order.pricing?.packaging) || 0;
-    // Prefer cart precision column when present; pricing.discount is precision-only on frozen CTM.
     const precision = Math.max(
       0,
       Number(order.merchant_precision_discount) || Number(order.pricing?.discount) || 0

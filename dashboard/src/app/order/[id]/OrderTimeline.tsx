@@ -374,8 +374,8 @@ export default function OrderTimeline({
 
   const n = displayEntries.length;
   const gridCols = Math.min(n, 10);
-  /** Min width per column so labels + timestamps don't overlap on small screens when scrolling. */
-  const minColPx = 80;
+  /** Min width per column so labels + timestamps don't overlap (incl. large ETA badges). */
+  const minColPx = 100;
   const timelineContentMinWidth = n * minColPx;
   const cancelledIndex = displayEntries.findIndex(
     (e) =>

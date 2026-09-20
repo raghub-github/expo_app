@@ -23,6 +23,9 @@ test("isAuthRejectionMessage: definite auth rejections ARE rejections (sign out)
     "HTTP 401 Unauthorized",
     "Your login has expired",
     "token is invalid",
+    "Signed out from this device.",
+    "Signed out from all devices.",
+    "session_revoked",
     "Signed out from this device (session revoked)",
     "Rider not found",
     "session no longer valid",
@@ -52,6 +55,10 @@ test("isDefiniteRiderSessionRevocation: non-401 / unknown / ambiguous do NOT rev
   assert.equal(isDefiniteRiderSessionRevocation(500, "invalid_token", ""), false); // not a 401
   assert.equal(isDefiniteRiderSessionRevocation(403, "forbidden", ""), false);
   assert.equal(isDefiniteRiderSessionRevocation(401, "rate_limited", ""), false);
-  assert.equal(isDefiniteRiderSessionRevocation(401, "session_revoked", "temporary glitch"), false);
+  assert.equal(isDefiniteRiderSessionRevocation(401, "session_revoked", "temporary glitch"), true);
   assert.equal(isDefiniteRiderSessionRevocation(401, null, null), false);
+  assert.equal(
+    isDefiniteRiderSessionRevocation(401, null, "Signed out from this device."),
+    true
+  );
 });

@@ -13,6 +13,7 @@ import { logActionFromRequest } from "@/lib/utils/action-audit";
 import {
   createOrUpdateRiderDocumentFromAdmin,
   isAllowedAdminDisplayDocType,
+  isAllowedAdminUploadFile,
 } from "@/lib/rider-document-admin";
 
 export const runtime = "nodejs";
@@ -73,8 +74,7 @@ export async function POST(
       return NextResponse.json({ success: false, error: "A document image or PDF is required" }, { status: 400 });
     }
 
-    const allowedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp", "application/pdf"];
-    if (file.type && !allowedTypes.includes(file.type)) {
+    if (!isAllowedAdminUploadFile(file)) {
       return NextResponse.json(
         { success: false, error: "Invalid file type. Allowed types: JPEG, PNG, WebP, PDF" },
         { status: 400 },

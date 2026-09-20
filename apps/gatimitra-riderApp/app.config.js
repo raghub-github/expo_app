@@ -28,6 +28,10 @@ module.exports = {
     name: "GatiMitra Rider",
     slug: "gatimitra-riderapp",
     version: "1.0.0",
+    // Native-only — serving web from `expo start` SSR-bundles the whole app
+    // (pointerEvents/shadow warnings, [RiderNetwork] OFFLINE, Premature close)
+    // before a phone ever scans the QR.
+    platforms: ["ios", "android"],
     orientation: "portrait",
     icon: APP_ICON,
     scheme: "gatimitra-rider",
@@ -90,7 +94,8 @@ module.exports = {
         "RECEIVE_BOOT_COMPLETED",
         "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
         "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_LOCATION"
+        "FOREGROUND_SERVICE_LOCATION",
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ],
       queries: {
         schemes: ["google.navigation", "geo", "comgooglemaps", "https"],
@@ -196,9 +201,17 @@ module.exports = {
             },
             { id: "default", name: "Orders & alerts", importance: 4 },
             { id: "rider_default", name: "Orders & alerts", importance: 4 },
+            {
+              id: "order_alert_fgs_ongoing_v1",
+              name: "Ongoing order alert",
+              importance: 4,
+              silent: true,
+            },
           ],
         },
       ],
+      // After expo-notifications so we can subclass/replace ExpoFirebaseMessagingService.
+      "./plugins/withCriticalDispatchAlertFgs",
       [
         "./plugins/withBootReconnectNotification",
         {

@@ -23,13 +23,11 @@ export function resolveTabBarBottomInsetPure(
 }
 
 /**
- * Shared chrome Y: tab sheet + Track/cart dock.
- * Sheet is screen-connected (bottom: 0); this is the inset under the tab row
- * so icons stay above the Android gesture / home indicator.
+ * Shared chrome inset under the tab row (sheet is screen-connected at bottom: 0).
  */
 export function resolveCustomerFloatingChromeBottomPure(
   rawBottom: number,
   platform: "ios" | "android" | "web" = "android"
 ): number {
-  return resolveTabBarBottomInsetPure(rawBottom, platform);
+  return resolveTabBarBottomInsetPure(rawBottom, platform) + CUSTOMER_TAB_BAR_FLOAT_GAP_PURE;
 }

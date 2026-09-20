@@ -1,23 +1,9 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { Lora, Poppins } from "next/font/google";
+import type { CSSProperties } from "react";
 import NeedHelpBadge from "@/components/NeedHelpBadge";
 import { GlobalToaster } from "@/components/GlobalToaster";
-
-const authLora = Lora({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-auth-lora",
-  display: "swap",
-});
-
-const authPoppins = Poppins({
-  subsets: ["latin"],
-  weight: ["500", "600", "700", "800"],
-  variable: "--font-auth-poppins",
-  display: "swap",
-});
 
 /** Routes where Help button should be shown (after user is in a logged-in flow). */
 function showHelpOnRoute(pathname: string): boolean {
@@ -33,6 +19,11 @@ function showHelpOnRoute(pathname: string): boolean {
   return true;
 }
 
+/**
+ * Auth layout — reuses Lora/Poppins from root layout (`--font-site-*`).
+ * Do NOT call next/font/google here: a second Google Fonts fetch during
+ * `/auth` compile under load has caused `JSON.parse` empty-body 500s.
+ */
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const showHelp = showHelpOnRoute(pathname ?? "");
@@ -40,12 +31,13 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
   const isResubmit = (pathname ?? "").includes("/auth/resubmit-onboarding");
   const useLoraPage = isRegister || isResubmit;
 
+  const fontVars = {
+    ["--font-auth-lora"]: "var(--font-site-lora)",
+    ["--font-auth-poppins"]: "var(--font-site-poppins)",
+  } as CSSProperties;
+
   return (
-    <div
-      className={`${authLora.variable} ${authPoppins.variable} ${
-        useLoraPage ? "auth-register-page" : ""
-      }`}
-    >
+    <div className={useLoraPage ? "auth-register-page" : ""} style={fontVars}>
       {children}
       <GlobalToaster />
       {showHelp && (

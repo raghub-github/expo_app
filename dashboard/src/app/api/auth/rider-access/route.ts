@@ -4,8 +4,9 @@
  * Used to show/hide Add Penalty, Revert, Blacklist/Whitelist actions, Wallet freeze, etc.
  */
 
-import { NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { NextRequest, NextResponse } from "next/server";
+import { authFailureResponse, getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { resolveSystemUserForSupabaseAuth } from "@/lib/auth/user-mapping";
 import {
   getSystemUserIdFromAuthUser,
   hasDashboardAccess,
@@ -16,35 +17,29 @@ import {
   canPerformRiderServiceAction,
   canPerformRiderActionAnyService,
 } from "@/lib/permissions/actions";
-import { isInvalidRefreshToken, signOutIfSessionDead } from "@/lib/auth/session-errors";
 
 export const runtime = "nodejs";
 
 const SERVICES = ["food", "parcel", "person_ride"] as const;
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    // Use getUser() instead of getSession() to avoid refresh token race conditions
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    
-    if (userError || !user || !user.email) {
-      // Check if it's an invalid refresh token error
-      if (isInvalidRefreshToken(userError)) {
-        await signOutIfSessionDead(supabase, userError);
-        return NextResponse.json(
-          { success: false, error: "Session invalid", code: "SESSION_INVALID" },
-          { status: 401 }
-        );
-      }
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) return authFailureResponse(auth);
+
+    let email = (auth.user.email ?? "").trim();
+    if (!email) {
+      const mapped = await resolveSystemUserForSupabaseAuth(auth.user.id, undefined);
+      email = (mapped?.email ?? "").trim();
+    }
+    if (!email) {
       return NextResponse.json(
         { success: false, error: "Not authenticated" },
         { status: 401 }
       );
     }
 
-    const authId = user.id;
-    const email = user.email ?? "";
+    const authId = auth.user.id;
     const systemUserId = await getSystemUserIdFromAuthUser(authId, email);
     if (!systemUserId) {
       return NextResponse.json({
@@ -79,7 +74,6 @@ export async function GET() {
           canBlock[svc] = true;
           canUnblock[svc] = true;
         } else {
-          // All agents with rider access (including view-only) can add penalty and add amount
           canAddPenalty[svc] = true;
           canRevertPenalty[svc] = await canPerformRiderServiceAction(authId, email, svc, "UPDATE");
           canBlock[svc] = await canPerformRiderServiceAction(authId, email, svc, "BLOCK");
@@ -91,7 +85,6 @@ export async function GET() {
     const canFreezeWallet =
       superAdmin || (hasRiderAccess && (await canPerformRiderActionAnyService(authId, email, "UPDATE")));
 
-    // Any agent with rider access (view or full) can request wallet credit (add amount)
     const canRequestWalletCredit = !!hasRiderAccess || superAdmin;
 
     const canApproveRejectWalletCredit =

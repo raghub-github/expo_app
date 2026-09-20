@@ -11,21 +11,28 @@ type OtpVerifyModule = {
   getHash?: () => Promise<string[]>;
 };
 
-function extractSixDigitCode(message: string): string | null {
-  return /\b(\d{6})\b/.exec(message)?.[1] ?? null;
+export function extractSixDigitCode(message: string): string | null {
+  return /\b(\d{6})\b/.exec(String(message ?? ""))?.[1] ?? null;
+}
+
+/** True when react-native-otp-verify native module is linked (dev/prod builds, not Expo Go). */
+export function isAndroidSmsRetrieverAvailable(): boolean {
+  return Platform.OS === "android" && !!NativeModules.OtpVerify;
 }
 
 /**
  * Android SMS Retriever (zero-tap OTP). No-op on iOS, Expo Go, or when the native
- * module is not linked — react-native-otp-verify throws during import if OtpVerify
- * is missing from NativeModules.
+ * module is not linked.
+ *
+ * No READ_SMS permission required. Pair with OS autofill (`sms-otp` / `oneTimeCode`)
+ * and clipboard paste for Expo Go / iOS manual fallback.
  */
 export async function startAndroidSmsOtpListener(options: {
   onCode: (code: string) => void;
 }): Promise<AndroidSmsOtpListener | null> {
-  if (Platform.OS !== "android" || !NativeModules.OtpVerify) {
+  if (!isAndroidSmsRetrieverAvailable()) {
     if (__DEV__) {
-      console.log("[otp] SMS Retriever unavailable — manual OTP entry only");
+      console.log("[otp] SMS Retriever unavailable — use keyboard autofill / manual entry");
     }
     return null;
   }
@@ -58,7 +65,7 @@ export async function startAndroidSmsOtpListener(options: {
 
   const deliver = (message: string) => {
     if (stopped) return;
-    const code = extractSixDigitCode(String(message ?? ""));
+    const code = extractSixDigitCode(message);
     if (code) {
       options.onCode(code);
       stop();

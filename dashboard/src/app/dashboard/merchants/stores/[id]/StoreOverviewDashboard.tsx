@@ -27,6 +27,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { useStore } from "@/hooks/useStore";
+import { isWalletBalanceNegative } from "@/lib/merchant-ledger-visibility";
 import {
   useStoreWalletQuery,
   useStoreOperationsQuery,
@@ -221,6 +222,7 @@ export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
   const outForDelivery = stats?.outForDeliveryCount ?? 0;
 
   const walletAvailable = wallet?.available_balance ?? 0;
+  const walletAvailableNegative = isWalletBalanceNegative(walletAvailable);
   const walletToday = wallet?.today_earning ?? 0;
   const walletYesterday = wallet?.yesterday_earning ?? 0;
   const walletPending = wallet?.pending_balance ?? 0;
@@ -268,17 +270,33 @@ export function StoreOverviewDashboard({ storeId }: { storeId: string }) {
         handleCancelClosePopup={handleCancelClosePopup}
       />
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="rounded-xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50/90 to-green-50/70 p-4 shadow-sm">
+        <div
+          className={`rounded-xl border p-4 shadow-sm ${
+            walletAvailableNegative
+              ? "border-red-200/80 bg-gradient-to-br from-red-50/90 to-rose-50/70"
+              : "border-emerald-200/80 bg-gradient-to-br from-emerald-50/90 to-green-50/70"
+          }`}
+        >
           <div className="flex items-center gap-2 mb-3">
-            <div className="p-1.5 rounded-lg bg-emerald-500/20">
-              <Wallet className="h-4 w-4 text-emerald-700" />
+            <div
+              className={`p-1.5 rounded-lg ${
+                walletAvailableNegative ? "bg-red-500/20" : "bg-emerald-500/20"
+              }`}
+            >
+              <Wallet
+                className={`h-4 w-4 ${walletAvailableNegative ? "text-red-700" : "text-emerald-700"}`}
+              />
             </div>
             <p className="text-[10px] font-semibold text-gray-600 uppercase">Wallet &amp; Earnings</p>
           </div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-2">
             <div>
               <p className="text-[9px] font-medium text-gray-500 uppercase">Available</p>
-              <p className="text-sm font-bold text-emerald-800">
+              <p
+                className={`text-sm font-bold tabular-nums ${
+                  walletAvailableNegative ? "text-red-700" : "text-emerald-800"
+                }`}
+              >
                 ₹{Number(walletAvailable).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
             </div>

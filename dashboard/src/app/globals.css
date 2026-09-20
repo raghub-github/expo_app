@@ -639,6 +639,53 @@ select option {
   font-weight: 700;
 }
 
+/* Manual wallet adjustment side sheet — Lora (titles/copy) + Poppins (controls/amounts) */
+.wallet-adj-sheet {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
+}
+.wallet-adj-sheet .wallet-adj-title,
+.wallet-adj-sheet .wallet-adj-label {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-weight: 700;
+  font-optical-sizing: auto;
+}
+.wallet-adj-sheet .wallet-adj-reason {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+}
+.wallet-adj-sheet .wallet-adj-num,
+.wallet-adj-sheet .wallet-adj-controls,
+.wallet-adj-sheet .wallet-adj-controls button,
+.wallet-adj-sheet .wallet-adj-controls input,
+.wallet-adj-sheet .wallet-adj-controls textarea,
+.wallet-adj-sheet input.wallet-adj-controls,
+.wallet-adj-sheet textarea.wallet-adj-controls,
+.wallet-adj-sheet .tabular-nums,
+.wallet-adj-sheet .font-mono {
+  font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
+  font-optical-sizing: auto;
+}
+.wallet-adj-sheet .wallet-adj-num {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+.wallet-adj-reason-popover {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
+}
+.wallet-adj-reason-popover .wallet-adj-title {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-weight: 700;
+}
+
 /* Keep the hanging tab tight against the order-id row (overrides space-y). */
 .nth-hang + * {
   margin-top: 0;

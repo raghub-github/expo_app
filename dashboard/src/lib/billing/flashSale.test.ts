@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   applyFlashSaleSaveDefaults,
+  buildFlashSaleConditions,
   computeFlashSaleOffPercent,
   computeFlashSaleSubsidy,
   flashSaleBudgetRemaining,
   flashSaleRemainingRedemptions,
+  parseMaxFlashQuantity,
+  resolveMaxFlashQuantity,
   validateFlashSalePrice,
+  validateMaxFlashQuantity,
 } from "./flashSale";
 
 describe("dashboard FLASH_SALE helpers", () => {
@@ -32,6 +36,20 @@ describe("dashboard FLASH_SALE helpers", () => {
     assert.equal(next.funding_mode, "PLATFORM_ONLY");
     assert.equal(next.max_uses_per_user, 1);
     assert.equal(next.target_scope, "MERCHANT");
+  });
+
+  it("parses and validates max_flash_quantity", () => {
+    assert.ok(Number.isNaN(parseMaxFlashQuantity(undefined)));
+    assert.equal(parseMaxFlashQuantity(3), 3);
+    assert.ok(Number.isNaN(parseMaxFlashQuantity(0)));
+    assert.ok(Number.isNaN(parseMaxFlashQuantity(1.5)));
+    assert.equal(validateMaxFlashQuantity("abc"), "Max Flash Quantity must be a whole number of at least 1.");
+    assert.equal(resolveMaxFlashQuantity({ max_flash_quantity: 10 }), 10);
+    const cond = buildFlashSaleConditions({
+      items: [{ menuItemId: "10", flashPrice: 9 }],
+      maxFlashQuantity: 2,
+    });
+    assert.equal(cond.max_flash_quantity, 2);
   });
 
   it("reports remaining budget and remaining redemptions", () => {

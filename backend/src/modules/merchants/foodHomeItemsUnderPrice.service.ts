@@ -37,6 +37,7 @@ export type FoodItemUnderPriceDto = {
     offerId: number;
     originalCustomerUnit: number;
     flashPrice: number;
+    maxFlashQuantity?: number;
   } | null;
 };
 
@@ -180,6 +181,10 @@ function mapItemRow(
         offerId: Number(flashBlob.offer_id),
         originalCustomerUnit: original,
         flashPrice: flashUnit,
+        maxFlashQuantity: (() => {
+          const n = Math.floor(Number(flashBlob.max_flash_quantity ?? flashBlob.maxFlashQuantity));
+          return Number.isInteger(n) && n >= 1 ? n : 1;
+        })(),
       };
       if (!Number.isInteger(flashSale.offerId) || flashSale.offerId < 1) {
         flashSale = null;
