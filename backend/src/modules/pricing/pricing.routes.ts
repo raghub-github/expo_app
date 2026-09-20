@@ -284,7 +284,9 @@ export async function pricingRoutes(app: FastifyInstance): Promise<void> {
         surge,
         waiting,
         tip: b.tip ?? 0,
-        capExcessToPool: b.capExcessToPool,
+        // Default to the guaranteed-floor model (company funds the shortfall over the pool) so
+        // the simulator matches the live offer/credit paths; an explicit request value still wins.
+        capExcessToPool: b.capExcessToPool ?? false,
       });
 
       // Plain-language narration of which mode was used per leg, so the dashboard doesn't

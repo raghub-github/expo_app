@@ -175,9 +175,6 @@ export async function buildDispatchOfferRiderEarnings(args: {
     parcelVehicleCategory,
   });
 
-  const customerFare = await resolveCustomerFareForRiderPayout(args.orderCoreId, service);
-  if (customerFare <= 0) return null;
-
   const pickupLat = parseCoord(core.pickupLat);
   const pickupLng = parseCoord(core.pickupLon);
   const dropLat = parseCoord(core.dropLat);
@@ -198,34 +195,10 @@ export async function buildDispatchOfferRiderEarnings(args: {
     return null;
   }
 
-  const payout = await resolveOrderRiderPayoutBreakdown({
-    service,
-    customerFare,
-    pickupLat,
-    pickupLng,
-    dropLat,
-    dropLng,
-    pickupKm: pickupDistanceKm,
-    dropKm: bookingTripKm,
-    riderLat: args.riderLat,
-    riderLng: args.riderLng,
-    riderId: args.riderId,
-    rideCatalogCode: rideType,
-    // parcel's real vehicle so a vehicle-specific rider%/waiting rule actually matches —
-    // the internal fallback only resolves vehicle for "ride" (via rideCatalogCode).
-    vehicleType: legVehicleType,
-    pincode: rideGeo.pickupPincode,
-    state: rideGeo.pickupState,
-  });
+  const tripDistanceKm = Math.max(0, bookingTripKm ?? 0);
+  const round2 = (n: number) => Math.round(n * 100) / 100;
 
-  if (payout == null || payout.finalAmount <= 0) return null;
-
-  // First-mile allowance estimate — SAME computation persisted at accept + paid on
-  // delivery, so the offer never promises more than the rider is paid. 0 unless a rate
-  // is configured.
-  // Geo-aware for ALL services: ride carries pickup pincode/state in checkout metadata;
-  // food (store) / parcel (drop-off) fall back to the pickup lat/lng via the cached
-  // reverse-geocoder. So every service resolves the per-location pre-pickup rate + funding.
+  // First-mile allowance fallback (used only when no pre-leg rule is configured). 0 otherwise.
   const prePickup = await computePrePickupAllowance(
     args.serviceType,
     args.pickupDistanceMeters,
@@ -242,21 +215,10 @@ export async function buildDispatchOfferRiderEarnings(args: {
     defaultPrePickupFunding(service)
   );
 
-  const tripDistanceKm = Math.max(0, bookingTripKm ?? 0);
-
-  // Company-funded dynamic incentive (night/rain/peak/festival) — a Ledger-B top-up.
-  const dynIncentive = readDynamicRiderIncentiveFromSnapshot(core.billingSnapshot);
-  const dynamicIncentiveEarning = dynIncentive.amount > 0 ? dynIncentive.amount : 0;
-  const mergedSurges = [
-    ...payout.appliedSurges,
-    ...dynIncentive.lines.map((l) => ({ name: l.name, amount: l.amount })),
-  ];
-
-  // v3.2 — resolve the two legs INDEPENDENTLY. PRE falls back to the legacy first-mile when
-  // no pre-leg rule exists; POST is 0 (⇒ pool remainder) when no post-leg rule exists — so
-  // with an empty rider_leg_pricing table this is byte-identical to the v3.1 composition.
-  // Vehicle (ride catalog code / parcel booked category) + parcel weight are the order's
-  // REAL values, so vehicle-/weight-specific leg rules actually match real orders.
+  // Rider pay is derived SOLELY from the rider's own pre/post distance slabs (rider_leg_pricing)
+  // — NOT from the customer delivery fee. The customer bill and rider pay are separate rule sets.
+  // Vehicle (ride catalog / parcel booked category) + parcel weight are the order's real values
+  // so vehicle-/weight-specific leg rules match.
   const legs = await resolveRiderLegsForOrder({
     serviceType: args.serviceType,
     vehicleType: legVehicleType,
@@ -271,15 +233,56 @@ export async function buildDispatchOfferRiderEarnings(args: {
     },
     fallbackPre: { amount: prePickupRaw, funding: prePickupFunding },
   });
+  const legBase = round2(legs.pre.amount + legs.post.amount);
 
+  // Surge + waiting are resolved from the geo rules ONLY (never the customer fee). The rider
+  // base passed here is the distance-leg sum, so any percentage surge applies to the rider's own
+  // pay, not the delivery fee.
+  const payout = await resolveOrderRiderPayoutBreakdown({
+    service,
+    customerFare: 0,
+    riderBaseOverride: legBase,
+    pickupLat,
+    pickupLng,
+    dropLat,
+    dropLng,
+    pickupKm: pickupDistanceKm,
+    dropKm: bookingTripKm,
+    riderLat: args.riderLat,
+    riderLng: args.riderLng,
+    riderId: args.riderId,
+    rideCatalogCode: rideType,
+    vehicleType: legVehicleType,
+    pincode: rideGeo.pickupPincode,
+    state: rideGeo.pickupState,
+  });
+
+  if (payout == null || payout.finalAmount <= 0) return null;
+
+  // Company-funded dynamic incentive (night/rain/peak/festival) — a Ledger-B top-up.
+  const dynIncentive = readDynamicRiderIncentiveFromSnapshot(core.billingSnapshot);
+  const dynamicIncentiveEarning = dynIncentive.amount > 0 ? dynIncentive.amount : 0;
+  const mergedSurges = [
+    ...payout.appliedSurges,
+    ...dynIncentive.lines.map((l) => ({ name: l.name, amount: l.amount })),
+  ];
+
+  // Rider pay = pre-leg + post-leg (+ surge + waiting + tip + incentive). The pool is the
+  // CUSTOMER-funded portion of the legs so company-funded legs (e.g. food first-mile) add on
+  // top; there is no delivery-fee % pool. Total therefore = legBase + surge + waiting + tip.
+  const custLegSum = round2(
+    (legs.pre.funding === "customer" ? legs.pre.amount : 0) +
+      (legs.post.funding === "customer" ? legs.post.amount : 0)
+  );
   const composition = reconcileRiderLegs({
-    pool: Math.max(0, payout.subtotalBeforeSurge - payout.waitingAmount),
+    pool: custLegSum,
     pre: { rawAmount: legs.pre.amount, funding: legs.pre.funding },
     post: { rawAmount: legs.post.amount, funding: legs.post.funding },
     surge: payout.surgeTotal,
     waiting: payout.waitingAmount,
     tip,
     companyIncentive: dynamicIncentiveEarning,
+    capExcessToPool: false,
   });
   const prePickupPaid = Math.round((composition.pre.allocated + composition.pre.companyFunded) * 100) / 100;
 
@@ -287,7 +290,7 @@ export async function buildDispatchOfferRiderEarnings(args: {
 
   return {
     estimatedEarning: total,
-    baseEarning: payout.subtotalBeforeSurge,
+    baseEarning: legBase,
     waitingEarning: payout.waitingAmount > 0 ? payout.waitingAmount : undefined,
     surgeEarning:
       payout.surgeTotal + dynamicIncentiveEarning > 0

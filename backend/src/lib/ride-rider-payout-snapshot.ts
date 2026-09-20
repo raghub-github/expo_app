@@ -776,8 +776,14 @@ export async function applyRidePickupWaitingToBilling(
     const updatedSnapshot: RideRiderPayoutSnapshot = {
       ...snapshot,
       waitingEarning: riderWaiting,
+      // Swap ONLY the waiting component; preserve everything else already in totalEarning
+      // (base pool + surge + tip + the company-funded distance-leg residual). Rebuilding as
+      // base+waiting+surge+tip dropped the company-funded post-leg (a residual inside
+      // totalEarning, not inside baseEarning), collapsing the frozen payout on pickup-wait
+      // orders. The delivery-time credit recomputes legs and pays correctly regardless — this
+      // keeps the frozen snapshot the rider SEES in sync with what is actually credited.
       totalEarning: round0(
-        snapshot.baseEarning + riderWaiting + snapshot.surgeEarning + tip
+        Math.max(0, snapshot.totalEarning - snapshot.waitingEarning) + riderWaiting
       ),
     };
     await writeRideRiderPayoutSnapshot(orderCorePk, updatedSnapshot, tip);

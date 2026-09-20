@@ -38,16 +38,31 @@ export function formatDeliverySlabExplainSubtext(args: {
       ...new Set(segments.filter((s) => s.perKmRate > 0.005).map((s) => s.perKmRate)),
     ];
 
-    if (base > 0 && includedKm > 0 && activePerKmRates.length > 0) {
-      if (activePerKmRates.length === 1) {
-        return `₹${fmtInr(base)} for first ${fmtKm(includedKm)} km, then ₹${fmtInr(activePerKmRates[0]!)} per km`;
-      }
-      const bandText = segments
+    if (base > 0 && activePerKmRates.length > 0) {
+      // "Included" free km ONLY when the first (0 km) slab genuinely charges ₹0/km. Otherwise
+      // the base is a flat fee and per-km applies from km 0 (e.g. ₹15 base + ₹7.50/km). The old
+      // "₹15 for first 3 km" wording wrongly implied the first 3 km were free — they are charged
+      // at the first band's per-km rate (dashboard preview: 3 km = ₹15 + ₹7.50×3 = ₹37.50).
+      const firstSeg = segments.find((s) => Number(s.minKm) <= 0.005);
+      const includedFreeKm =
+        firstSeg && firstSeg.perKmRate <= 0.005 && firstSeg.maxKm != null
+          ? Number(firstSeg.maxKm)
+          : 0;
+      const paidBands = segments
         .filter((s) => s.perKmRate > 0.005 && s.segmentKm > 0.005)
-        .map((s) => `₹${fmtInr(s.perKmRate)}/km × ${fmtKm(s.segmentKm)} km`)
+        .map((s) => {
+          const range =
+            s.maxKm != null
+              ? `${fmtKm(s.minKm)}–${fmtKm(s.maxKm)} km`
+              : `beyond ${fmtKm(s.minKm)} km`;
+          return `₹${fmtInr(s.perKmRate)}/km (${range})`;
+        })
         .join(", ");
-      if (bandText) {
-        return `₹${fmtInr(base)} base (first ${fmtKm(includedKm)} km included), ${bandText}`;
+      if (includedFreeKm > 0 && paidBands) {
+        return `₹${fmtInr(base)} for first ${fmtKm(includedFreeKm)} km, then ${paidBands}`;
+      }
+      if (paidBands) {
+        return `₹${fmtInr(base)} base + ${paidBands}`;
       }
     }
 

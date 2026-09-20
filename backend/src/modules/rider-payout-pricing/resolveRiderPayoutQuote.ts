@@ -136,6 +136,11 @@ export async function resolveRiderPayoutQuote(args: {
   /** Preview: force specific surge IDs active */
   forceActiveSurgeIds?: number[];
   now?: Date;
+  /**
+   * Rider base = this fixed amount (pre+post distance-leg pay) instead of rider% × customerFare.
+   * Surge % is then applied to THIS base, so rider pay is fully independent of the customer fee.
+   */
+  baseOverride?: number;
 }): Promise<
   | { ok: true; quote: RiderPayoutQuote }
   | { ok: false; code: string; message: string }
@@ -168,6 +173,7 @@ export async function resolveRiderPayoutQuote(args: {
     waitingMinutes: 0,
     riderHasGmitraMax: riderIsMax,
     surgeWaitMaxOnly: globalSettings.surgeWaitMaxOnly,
+    baseOverride: args.baseOverride,
   });
   if (!preSurge.ok) return preSurge;
 
@@ -202,6 +208,7 @@ export async function resolveRiderPayoutQuote(args: {
     surgeTotal: surgeResolution.surgeTotal,
     surgeCapped: surgeResolution.surgeCapped,
     maxTotalSurgeAmount: surgeResolution.maxTotalSurgeAmount,
+    baseOverride: args.baseOverride,
   });
 }
 

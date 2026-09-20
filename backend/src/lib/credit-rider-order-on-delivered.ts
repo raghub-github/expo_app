@@ -460,7 +460,6 @@ export async function creditRiderOrderEarningOnDelivered(
   // tracked surge/waiting — the composition total is identical either way.
   const snapSurge = round2(Math.max(0, Number(payoutSnap?.surgeEarning ?? 0)));
   const snapWaiting = round2(Math.max(0, Number(payoutSnap?.waitingEarning ?? 0)));
-  const basePool = round2(Math.max(0, deliveryFee - snapSurge - snapWaiting));
 
   // v3.2 — settle the two legs INDEPENDENTLY, resolving them the SAME way the offer did so
   // offered == paid. PRE: a pre-leg rule if configured, else the frozen first-mile. POST:
@@ -511,12 +510,20 @@ export async function creditRiderOrderEarningOnDelivered(
     "customer"
   );
 
+  // Rider pay is derived SOLELY from the rider's own pre/post distance legs (rider_leg_pricing),
+  // never from the customer delivery fee. The pool is the CUSTOMER-funded portion of the legs so
+  // company-funded legs (e.g. food first-mile) add on top; total = pre + post + surge + waiting.
+  const custLegSum = round2(
+    (preLegFunding === "customer" ? preLegAmount : 0) +
+      (postLegFunding === "customer" ? postLegAmount : 0)
+  );
   const composition = reconcileRiderLegs({
-    pool: basePool,
+    pool: custLegSum,
     pre: { rawAmount: preLegAmount, funding: preLegFunding },
     post: { rawAmount: postLegAmount, funding: postLegFunding },
     surge: snapSurge,
     waiting: snapWaiting,
+    capExcessToPool: false,
   });
   // Single wallet delivery credit (tip + dynamic incentive credited separately below).
   deliveryFee = composition.riderDeliveryCredit;
