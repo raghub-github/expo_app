@@ -186,7 +186,15 @@ export async function applyFoodPickupWaitingToBilling(
     const updatedSnapshot: RideRiderPayoutSnapshot = {
       ...snapshot,
       waitingEarning: riderWaiting,
-      totalEarning: round2(snapshot.baseEarning + riderWaiting + snapshot.surgeEarning + tip),
+      // Swap ONLY the waiting component; preserve everything else already in totalEarning
+      // (base pool + surge + tip + the company-funded distance-leg residual). Rebuilding as
+      // base+waiting+surge+tip silently dropped the company-funded post-leg — which lives in
+      // totalEarning as a residual, not in baseEarning — collapsing a ₹38 payout down to ₹18
+      // on any order where pickup waiting was recorded (the delivery-time credit recomputes
+      // the legs and still paid ₹38, so this was a display-only corruption, not lost money).
+      totalEarning: round2(
+        Math.max(0, snapshot.totalEarning - snapshot.waitingEarning) + riderWaiting
+      ),
     };
     await writeRideRiderPayoutSnapshot(orderCorePk, updatedSnapshot, tip);
   }
