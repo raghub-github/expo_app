@@ -198,50 +198,59 @@ export async function buildDispatchOfferRiderEarnings(args: {
   const tripDistanceKm = Math.max(0, bookingTripKm ?? 0);
   const round2 = (n: number) => Math.round(n * 100) / 100;
 
-  // First-mile allowance fallback (used only when no pre-leg rule is configured). 0 otherwise.
-  const prePickup = await computePrePickupAllowance(
-    args.serviceType,
-    args.pickupDistanceMeters,
-    {
-      pincode: rideGeo.pickupPincode,
-      state: rideGeo.pickupState,
-      latitude: pickupLat,
-      longitude: pickupLng,
-    }
-  ).catch(() => null);
-  const prePickupRaw = prePickup && prePickup.amount > 0 ? prePickup.amount : 0;
-  const prePickupFunding = normalizePrePickupFunding(
-    prePickup?.funding,
-    defaultPrePickupFunding(service)
-  );
+  const isDelivery = service === "food" || service === "parcel";
 
-  // Rider pay is derived SOLELY from the rider's own pre/post distance slabs (rider_leg_pricing)
-  // — NOT from the customer delivery fee. The customer bill and rider pay are separate rule sets.
-  // Vehicle (ride catalog / parcel booked category) + parcel weight are the order's real values
-  // so vehicle-/weight-specific leg rules match.
-  const legs = await resolveRiderLegsForOrder({
-    serviceType: args.serviceType,
-    vehicleType: legVehicleType,
-    weightKg: parcelWeightKg,
-    pickupKm: pickupDistanceKm,
-    dropKm: tripDistanceKm,
-    geo: {
-      pincode: rideGeo.pickupPincode,
-      state: rideGeo.pickupState,
-      latitude: pickupLat,
-      longitude: pickupLng,
-    },
-    fallbackPre: { amount: prePickupRaw, funding: prePickupFunding },
-  });
-  const legBase = round2(legs.pre.amount + legs.post.amount);
+  // Rider pay basis:
+  //  • FOOD / PARCEL — the rider's OWN pre/post distance slabs (rider_leg_pricing), NEVER a % of
+  //    the customer delivery fee (the delivery bill and rider pay are separate rule sets).
+  //  • RIDE — riderPercentage × ride fare, matching the ride settlement SSOT
+  //    (rideSettlement.engine.ts) so the offer equals what settlement actually pays. Ride does
+  //    NOT use the delivery legs.
+  let legs: Awaited<ReturnType<typeof resolveRiderLegsForOrder>> | null = null;
+  let legBase = 0;
+  if (isDelivery) {
+    // First-mile fallback used only when no pre-leg rule is configured.
+    const prePickup = await computePrePickupAllowance(
+      args.serviceType,
+      args.pickupDistanceMeters,
+      {
+        pincode: rideGeo.pickupPincode,
+        state: rideGeo.pickupState,
+        latitude: pickupLat,
+        longitude: pickupLng,
+      }
+    ).catch(() => null);
+    const prePickupRaw = prePickup && prePickup.amount > 0 ? prePickup.amount : 0;
+    const prePickupFunding = normalizePrePickupFunding(
+      prePickup?.funding,
+      defaultPrePickupFunding(service)
+    );
+    legs = await resolveRiderLegsForOrder({
+      serviceType: args.serviceType,
+      vehicleType: legVehicleType,
+      weightKg: parcelWeightKg,
+      pickupKm: pickupDistanceKm,
+      dropKm: tripDistanceKm,
+      geo: {
+        pincode: rideGeo.pickupPincode,
+        state: rideGeo.pickupState,
+        latitude: pickupLat,
+        longitude: pickupLng,
+      },
+      fallbackPre: { amount: prePickupRaw, funding: prePickupFunding },
+    });
+    legBase = round2(legs.pre.amount + legs.post.amount);
+  }
 
-  // Surge + waiting are resolved from the geo rules ONLY (never the customer fee). The rider
-  // base passed here is the distance-leg sum, so any percentage surge applies to the rider's own
-  // pay, not the delivery fee.
+  // Surge + waiting always come from the geo rules. Delivery passes the leg sum as the base
+  // (surge % applies to the rider's slab pay); ride passes the ride fare (the % model).
+  const rideFare = isDelivery
+    ? 0
+    : await resolveCustomerFareForRiderPayout(args.orderCoreId, service);
   const payout = await resolveOrderRiderPayoutBreakdown({
     service,
-    customerFare: 0,
-    riderBaseOverride: legBase,
+    customerFare: rideFare,
+    riderBaseOverride: isDelivery ? legBase : undefined,
     pickupLat,
     pickupLng,
     dropLat,
@@ -267,17 +276,28 @@ export async function buildDispatchOfferRiderEarnings(args: {
     ...dynIncentive.lines.map((l) => ({ name: l.name, amount: l.amount })),
   ];
 
-  // Rider pay = pre-leg + post-leg (+ surge + waiting + tip + incentive). The pool is the
-  // CUSTOMER-funded portion of the legs so company-funded legs (e.g. food first-mile) add on
-  // top; there is no delivery-fee % pool. Total therefore = legBase + surge + waiting + tip.
-  const custLegSum = round2(
-    (legs.pre.funding === "customer" ? legs.pre.amount : 0) +
-      (legs.post.funding === "customer" ? legs.post.amount : 0)
-  );
+  // FOOD/PARCEL: total = legs + surge + waiting + tip (pool = the customer-funded leg portion so
+  // company-funded legs add on top). RIDE: total = riderPercentage × fare + surge + waiting + tip
+  // (pool = the % pool; no legs) — identical to what ride settlement pays.
+  const pool =
+    isDelivery && legs
+      ? round2(
+          (legs.pre.funding === "customer" ? legs.pre.amount : 0) +
+            (legs.post.funding === "customer" ? legs.post.amount : 0)
+        )
+      : Math.max(0, payout.subtotalBeforeSurge - payout.waitingAmount);
+  const preLeg =
+    isDelivery && legs
+      ? { rawAmount: legs.pre.amount, funding: legs.pre.funding }
+      : { rawAmount: 0, funding: "company" as const };
+  const postLeg =
+    isDelivery && legs
+      ? { rawAmount: legs.post.amount, funding: legs.post.funding }
+      : { rawAmount: 0, funding: "company" as const };
   const composition = reconcileRiderLegs({
-    pool: custLegSum,
-    pre: { rawAmount: legs.pre.amount, funding: legs.pre.funding },
-    post: { rawAmount: legs.post.amount, funding: legs.post.funding },
+    pool,
+    pre: preLeg,
+    post: postLeg,
     surge: payout.surgeTotal,
     waiting: payout.waitingAmount,
     tip,
@@ -290,7 +310,7 @@ export async function buildDispatchOfferRiderEarnings(args: {
 
   return {
     estimatedEarning: total,
-    baseEarning: legBase,
+    baseEarning: isDelivery ? legBase : payout.subtotalBeforeSurge,
     waitingEarning: payout.waitingAmount > 0 ? payout.waitingAmount : undefined,
     surgeEarning:
       payout.surgeTotal + dynamicIncentiveEarning > 0
@@ -304,7 +324,7 @@ export async function buildDispatchOfferRiderEarnings(args: {
     prePickupCompanyFunded:
       composition.pre.companyFunded > 0 ? composition.pre.companyFunded : undefined,
     postPickupEarning: composition.post.allocated > 0 ? composition.post.allocated : undefined,
-    prePickupFunding: legs.pre.funding,
+    prePickupFunding: legs ? legs.pre.funding : undefined,
     dynamicIncentiveEarning: dynamicIncentiveEarning > 0 ? dynamicIncentiveEarning : undefined,
     totalEarning: total,
     pickupDistanceKm,
