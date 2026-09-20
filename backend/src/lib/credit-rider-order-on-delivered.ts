@@ -517,6 +517,10 @@ export async function creditRiderOrderEarningOnDelivered(
     post: { rawAmount: postLegAmount, funding: postLegFunding },
     surge: snapSurge,
     waiting: snapWaiting,
+    // Guaranteed-floor model (must match the dispatch offer, build-dispatch-offer-rider-earnings):
+    // company funds any shortfall when the customer-funded distance legs exceed the pool, so the
+    // rider is credited MAX(pool, distance-leg) — never below the per-vehicle slab.
+    capExcessToPool: false,
   });
   // Single wallet delivery credit (tip + dynamic incentive credited separately below).
   deliveryFee = composition.riderDeliveryCredit;

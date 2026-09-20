@@ -280,6 +280,11 @@ export async function buildDispatchOfferRiderEarnings(args: {
     waiting: payout.waitingAmount,
     tip,
     companyIncentive: dynamicIncentiveEarning,
+    // Guaranteed-floor model: the per-vehicle distance legs are a MINIMUM. When the
+    // customer-funded legs exceed the % pool, the company funds the shortfall so the rider
+    // is never paid below the distance slab (rider earns MAX(pool, distance-leg)). Without
+    // this the excess was silently dropped and a rich per-vehicle leg was capped to the pool.
+    capExcessToPool: false,
   });
   const prePickupPaid = Math.round((composition.pre.allocated + composition.pre.companyFunded) * 100) / 100;
 

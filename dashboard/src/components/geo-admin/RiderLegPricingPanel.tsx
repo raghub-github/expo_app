@@ -220,10 +220,11 @@ export function RiderLegPricingPanel(props: {
         <>
           {leg === "post" && list.some(({ r }) => r.funding === "customer") ? (
             <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
-              Rows with Funding = <b>Customer</b> below: the rate/min/max are informational
-              only — the rider&apos;s actual post-pickup pay is always the pool remainder
-              (see the explainer above). Switch Funding to <b>Company</b> or <b>Shared</b> to
-              make a row&apos;s amount a real guaranteed top-up paid on top of the pool.
+              Rows with Funding = <b>Customer</b> below act as a <b>guaranteed floor</b>: the
+              rider earns MAX(% pool, pre + post legs) — the company funds any shortfall when the
+              legs exceed the pool, so the rider is never paid below the slab. Switch Funding to{" "}
+              <b>Company</b> or <b>Shared</b> to instead pay this row&apos;s amount as a top-up on
+              top of the pool.
             </p>
           ) : null}
         <div className="mt-2 overflow-x-auto">
@@ -323,22 +324,20 @@ export function RiderLegPricingPanel(props: {
         Independent ₹/km rules per leg. <b>Pre-pickup</b> <span className="inline-flex items-center gap-0.5">rider <ArrowRight className="h-3 w-3" /> pickup</span>, <b>Post-pickup</b> <span className="inline-flex items-center gap-0.5">pickup <ArrowRight className="h-3 w-3" /> drop</span>. Closest-ancestor-wins; the calculator above reflects these live.
       </p>
       <div className="mt-2 rounded-lg border border-violet-100 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-600">
-        <b className="text-violet-800">How the rider is actually paid:</b> Rider base pool =
-        eligible delivery fee × rider %. <b>Pre-pickup</b> is deducted from that pool first —
-        a Pre-pickup slab rule below always wins; only when none exists does the legacy
-        flat-rate fallback (nested in the Pre-pickup card) take over.{" "}
-        <b>Post-pickup</b> is whatever remains — it has <b>no separate rate</b> of its own
-        unless its Funding below is <b>Company</b> or <b>Shared</b>, in which case that
-        portion is a guaranteed top-up paid <b>on top of</b> the pool (and does not reduce
-        the other leg). A rate typed into a <b>Customer</b>-funded post-pickup row is
-        informational only.
+        <b className="text-violet-800">How the rider is actually paid:</b> Rider % pool =
+        eligible delivery fee × rider %. The rider earns the <b>greater of</b> that pool or the
+        distance legs (pre + post slabs) — the per-distance slab is a <b>guaranteed floor</b>:
+        when the <b>Customer</b>-funded legs exceed the pool, the company funds the shortfall so
+        the rider is never paid below the slab. Legs whose Funding is <b>Company</b> or{" "}
+        <b>Shared</b> are added <b>on top of</b> that instead. Surge, waiting and tip are always
+        added on top.
       </div>
       {loading ? (
         <p className="mt-3 flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading leg rules…</p>
       ) : (
         <>
           {renderLeg("pre", pre, "Pre-pickup (rider → pickup)", "First-mile. A slab rule here always wins over the legacy flat rate below. Company-funded by default (paid on top).")}
-          {renderLeg("post", post, "Post-pickup (pickup → drop)", "Delivery leg. Customer-funded by default (within the % pool).")}
+          {renderLeg("post", post, "Post-pickup (pickup → drop)", "Delivery leg. Customer-funded by default — a guaranteed floor: rider earns MAX(pool, legs).")}
         </>
       )}
     </div>
