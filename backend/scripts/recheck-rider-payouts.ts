@@ -1,18 +1,20 @@
 /**
- * READ-ONLY rider-payout recheck for the last N orders.
+ * READ-ONLY billing + rider-payout recheck for the last N orders.
  *
- * For each recent order it prints, side by side:
- *   - the STORED rider payout (billing_snapshot.rider_payout_snapshot + ledger fields)
- *   - a fresh RECOMPUTE using the live engine (buildDispatchOfferRiderEarnings), fed the
- *     order's own frozen pickup/trip distances
- *   - the matched service_payout_rule (rider %) and the pre/post rider_leg_pricing rules
- *     (base + rate/km, clamped to [min,max], funding) that produced the number
+ * For each recent order it prints:
+ *   - CUSTOMER BILL: every money field stored in billing_snapshot (how the order was
+ *     actually billed) + the resolved net delivery fee / ride fare.
+ *   - STORED rider payout (billing_snapshot.rider_payout_snapshot + ledger fields).
+ *   - RECOMPUTE using the live engine (buildDispatchOfferRiderEarnings), fed the order's
+ *     own frozen pickup/trip distances — flags a MISMATCH vs the stored value.
+ *   - The matched service_payout_rule (rider %) and pre/post rider_leg_pricing rules
+ *     (amount, rate/km, funding) that produced the rider number.
  *
- * It writes NOTHING. Safe to run on the VPS against prod:
- *     cd /opt/gatimitra/backend   (wherever the backend .env.local lives)
- *     npx tsx scripts/recheck-rider-payouts.ts            # last 10, all services
- *     npx tsx scripts/recheck-rider-payouts.ts 20 food    # last 20 food orders
- *     npx tsx scripts/recheck-rider-payouts.ts 10 person_ride
+ * Writes NOTHING. Safe on prod:
+ *     cd /opt/gatimitra && git fetch -q origin diag/rider-payout-recheck \
+ *       && git checkout origin/diag/rider-payout-recheck -- backend/scripts/recheck-rider-payouts.ts \
+ *       && cd backend && npx tsx scripts/recheck-rider-payouts.ts 10
+ *   args: [limit=10] [service=all|food|parcel|person_ride]
  */
 
 import { loadEnv } from "../src/config/loadEnv.js";
@@ -34,6 +36,9 @@ type ServiceArg = DispatchServiceType | "all";
 
 const LIMIT = Math.max(1, Math.min(100, Number(process.argv[2]) || 10));
 const SERVICE_FILTER = (process.argv[3] as ServiceArg) || "all";
+// null → no enum cast is ever attempted (fixes "invalid input value for enum order_type: all").
+const SERVICE_SQL: DispatchServiceType | null =
+  SERVICE_FILTER === "all" ? null : SERVICE_FILTER;
 
 function n(v: unknown): number {
   const x = typeof v === "number" ? v : Number(v);
@@ -47,6 +52,27 @@ function money(v: unknown): string {
 }
 function asObj(v: unknown): Record<string, unknown> {
   return v != null && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+
+/** Print every top-level scalar money/number/bool/string field in billing_snapshot. */
+function dumpBillingScalars(billing: Record<string, unknown>): void {
+  const keys = Object.keys(billing).sort();
+  const scalars: string[] = [];
+  const nested: string[] = [];
+  for (const k of keys) {
+    const v = billing[k];
+    if (v == null) continue;
+    if (typeof v === "object") {
+      nested.push(`${k}{${Array.isArray(v) ? `[${v.length}]` : "obj"}}`);
+    } else {
+      scalars.push(`${k}=${typeof v === "number" ? v : JSON.stringify(v)}`);
+    }
+  }
+  // Chunk scalars so long lines wrap readably.
+  for (let i = 0; i < scalars.length; i += 4) {
+    console.log(`    ${scalars.slice(i, i + 4).join("  |  ")}`);
+  }
+  if (nested.length) console.log(`    nested: ${nested.join("  ")}`);
 }
 
 async function run() {
@@ -66,6 +92,7 @@ async function run() {
       distance_km: string | null;
       fare_amount: string | null;
       rider_earning: string | null;
+      grand_total: string | null;
       tip_amount: string | null;
       checkout_metadata: unknown;
       billing_snapshot: unknown;
@@ -73,7 +100,6 @@ async function run() {
       ride_type: string | null;
       estimated_fare: string | null;
       final_fare: string | null;
-      customer_tip_amount: string | null;
       weight_kg: string | null;
       vehicle_category: string | null;
       rider_lat: string | null;
@@ -82,22 +108,22 @@ async function run() {
   >`
     SELECT c.id, c.formatted_order_id, c.order_type, c.status, c.rider_id,
            c.pickup_lat, c.pickup_lon, c.drop_lat, c.drop_lon, c.distance_km,
-           c.fare_amount, c.rider_earning, c.tip_amount,
+           c.fare_amount, c.rider_earning, c.grand_total, c.tip_amount,
            c.checkout_metadata, c.billing_snapshot, c.created_at,
-           rd.ride_type, rd.estimated_fare, rd.final_fare, rd.customer_tip_amount,
+           rd.ride_type, rd.estimated_fare, rd.final_fare,
            pc.weight_kg, pc.vehicle_category,
            rr.lat AS rider_lat, rr.lon AS rider_lon
     FROM orders_core c
     LEFT JOIN orders_ride   rd ON rd.order_id = c.id
     LEFT JOIN orders_parcel pc ON pc.order_id = c.id
     LEFT JOIN riders        rr ON rr.id = c.rider_id
-    WHERE (${SERVICE_FILTER} = 'all' OR c.order_type = ${SERVICE_FILTER}::order_type)
+    WHERE (${SERVICE_SQL}::order_type IS NULL OR c.order_type = ${SERVICE_SQL}::order_type)
     ORDER BY c.id DESC
     LIMIT ${LIMIT}
   `;
 
   console.log(
-    `\n=== Rider payout recheck — last ${rows.length} order(s)${
+    `\n=== Billing + rider payout recheck — last ${rows.length} order(s)${
       SERVICE_FILTER === "all" ? "" : ` (${SERVICE_FILTER})`
     } ===\n`
   );
@@ -108,23 +134,21 @@ async function run() {
     const billing = asObj(row.billing_snapshot);
     const snap = readRideRiderPayoutSnapshot(row.billing_snapshot);
 
-    // Distances the payout was frozen with (fall back to order distance / 0).
     const pickupKm = snap?.pickupDistanceKm ?? 0;
     const tripKm = snap?.tripDistanceKm ?? n(row.distance_km);
     const pickupMeters = pickupKm * 1000;
 
-    // Customer basis
-    const customerFare =
-      service === "person_ride"
-        ? n(row.final_fare ?? row.estimated_fare ?? row.fare_amount)
-        : resolveCustomerDeliveryFeeFromBilling(billing);
+    const isRide = service === "person_ride";
+    const customerFare = isRide
+      ? n(row.final_fare ?? row.estimated_fare ?? row.fare_amount)
+      : resolveCustomerDeliveryFeeFromBilling(billing);
 
     const vehicle = resolveOrderLegVehicleType({
-      service: service === "person_ride" ? "ride" : service,
+      service: isRide ? "ride" : service,
       rideCatalogCode: row.ride_type,
       parcelVehicleCategory: row.vehicle_category,
     });
-    const geoMeta = service === "person_ride" ? rideGeoFromCheckoutMetadata(row.checkout_metadata) : {};
+    const geoMeta = isRide ? rideGeoFromCheckoutMetadata(row.checkout_metadata) : {};
     const geo = {
       pincode: (geoMeta as { pickupPincode?: string }).pickupPincode,
       state: (geoMeta as { pickupState?: string }).pickupState,
@@ -132,50 +156,56 @@ async function run() {
       longitude: n(row.pickup_lon),
     };
 
-    console.log("────────────────────────────────────────────────────────");
+    console.log("════════════════════════════════════════════════════════════");
     console.log(
       `${label}  [${service}]  status=${row.status}  rider=${row.rider_id ?? "-"}  ` +
         `${new Date(row.created_at).toLocaleString("en-IN")}`
     );
     console.log(
       `  vehicle=${vehicle ?? "any"}  weight=${row.weight_kg ?? "-"}  ` +
-        `pickupKm=${pickupKm}  tripKm=${tripKm}  customerFare(basis)=${money(customerFare)}`
+        `pickupKm=${pickupKm}  tripKm=${tripKm}  grand_total=${money(row.grand_total)}`
     );
 
-    // ---- STORED ----
+    // ---- CUSTOMER BILL (how the order was actually billed) ----
+    console.log(`  CUSTOMER BILL  net_${isRide ? "fare" : "deliveryFee"}(basis)=${money(customerFare)}`);
+    if (Object.keys(billing).length) {
+      dumpBillingScalars(billing);
+    } else {
+      console.log("    (billing_snapshot empty)");
+    }
+
+    // ---- STORED rider payout ----
     if (snap) {
-      const derivedBase = r0(snap.totalEarning - snap.waitingEarning - snap.surgeEarning);
+      const derivedFareLine = r0(snap.totalEarning - snap.waitingEarning - snap.surgeEarning);
       console.log(
-        `  STORED    total=${money(snap.totalEarning)}  base=${money(snap.baseEarning)} ` +
-          `(derived fare line=${money(derivedBase)})  waiting=${money(snap.waitingEarning)}  ` +
+        `  RIDER STORED  total=${money(snap.totalEarning)}  base=${money(snap.baseEarning)} ` +
+          `(fare line=${money(derivedFareLine)})  waiting=${money(snap.waitingEarning)}  ` +
           `surge=${money(snap.surgeEarning)}  surges=[${snap.appliedSurges
             .map((s) => `${s.name}:${r0(s.amount)}`)
             .join(", ")}]`
       );
     } else {
       console.log(
-        `  STORED    (no rider_payout_snapshot)  rider_earning col=${money(row.rider_earning)}`
+        `  RIDER STORED  (no rider_payout_snapshot)  rider_earning col=${money(row.rider_earning)}`
       );
     }
-    const ledgerFare = billing.customer_fare;
-    const ledgerRev = billing.platform_revenue;
-    const ledgerPct = billing.rider_percentage_effective;
-    if (ledgerFare != null || ledgerPct != null) {
+    if (billing.customer_fare != null || billing.rider_percentage_effective != null) {
       console.log(
-        `  LEDGER    customer_fare=${money(ledgerFare)}  platform_revenue=${money(ledgerRev)}  ` +
-          `rider%_effective=${n(ledgerPct)}%`
+        `  RIDER LEDGER  customer_fare=${money(billing.customer_fare)}  ` +
+          `platform_revenue=${money(billing.platform_revenue)}  ` +
+          `rider%_effective=${n(billing.rider_percentage_effective)}%`
       );
     }
 
     if (customerFare <= 0) {
-      console.log("  RECOMPUTE (skipped — no positive customer fare basis)\n");
+      console.log("  RIDER RECOMPUTE (skipped — no positive fare basis)\n");
       continue;
     }
 
-    // ---- RULE INSPECTION (why the number is what it is) ----
+    // ---- WHY: the rules behind the number ----
     try {
       const payout = await resolveOrderRiderPayoutBreakdown({
-        service: service === "person_ride" ? "ride" : service,
+        service: isRide ? "ride" : service,
         customerFare,
         pickupLat: geo.latitude,
         pickupLng: geo.longitude,
@@ -191,17 +221,18 @@ async function run() {
       });
       if (payout) {
         console.log(
-          `  %POOL     rider%=${payout.trace?.riderPercentage ?? "?"}  ` +
+          `  RIDER %POOL   rider%=${payout.trace?.riderPercentage ?? "?"}  ` +
             `poolBeforeSurge=${money(payout.subtotalBeforeSurge)}  waiting=${money(
               payout.waitingAmount
-            )}  surge=${money(payout.surgeTotal)}  ruleId=${payout.trace?.ruleId ?? "-"} ` +
-            `@ ${payout.trace?.level ?? "?"}`
+            )}  surge=${money(payout.surgeTotal)}  ruleId=${payout.trace?.ruleId ?? "-"} @ ${
+              payout.trace?.level ?? "?"
+            }`
         );
       } else {
-        console.log("  %POOL     (no service_payout_rule matched)");
+        console.log("  RIDER %POOL   (no service_payout_rule matched)");
       }
     } catch (e) {
-      console.log(`  %POOL     (error: ${e instanceof Error ? e.message : e})`);
+      console.log(`  RIDER %POOL   (error: ${e instanceof Error ? e.message : e})`);
     }
 
     try {
@@ -213,16 +244,17 @@ async function run() {
         dropKm: tripKm,
         geo,
       });
-      const fmt = (leg: typeof legs.pre) =>
-        `amount=${money(leg.amount)} rate=${leg.ratePerKm}/km funding=${leg.funding} ` +
-        `matched=${leg.matched} ruleId=${leg.ruleId ?? "-"}`;
-      console.log(`  PRE-leg   ${fmt(legs.pre)}`);
-      console.log(`  POST-leg  ${fmt(legs.post)}`);
+      const fmt = (leg: typeof legs.pre, km: number) =>
+        `amount=${money(leg.amount)}  rate=${leg.ratePerKm}/km×${km}km=${money(
+          leg.ratePerKm * km
+        )}  funding=${leg.funding}  matched=${leg.matched}  ruleId=${leg.ruleId ?? "-"}`;
+      console.log(`  RIDER PRE-leg   ${fmt(legs.pre, pickupKm)}`);
+      console.log(`  RIDER POST-leg  ${fmt(legs.post, tripKm)}`);
     } catch (e) {
-      console.log(`  LEGS      (error: ${e instanceof Error ? e.message : e})`);
+      console.log(`  RIDER LEGS      (error: ${e instanceof Error ? e.message : e})`);
     }
 
-    // ---- RECOMPUTE (full engine, exactly as the offer/accept path) ----
+    // ---- RECOMPUTE (full engine) ----
     try {
       const recomputed = await buildDispatchOfferRiderEarnings({
         orderCoreId: row.id,
@@ -237,18 +269,19 @@ async function run() {
         const diff = r0(recomputed.totalEarning) - r0(stored);
         const flag = snap && Math.abs(diff) > 1 ? `  <<< MISMATCH (Δ ${diff > 0 ? "+" : ""}${diff})` : "";
         console.log(
-          `  RECOMPUTE total=${money(recomputed.totalEarning)}  base=${money(
+          `  RIDER RECOMPUTE total=${money(recomputed.totalEarning)}  base=${money(
             recomputed.baseEarning
           )}  waiting=${money(recomputed.waitingEarning)}  surge=${money(
             recomputed.surgeEarning
-          )}  firstMileOnTop=${money(recomputed.prePickupCompanyFunded)}  ` +
-            `post=${money(recomputed.postPickupEarning)}${flag}`
+          )}  firstMileOnTop=${money(recomputed.prePickupCompanyFunded)}  post=${money(
+            recomputed.postPickupEarning
+          )}${flag}`
         );
       } else {
-        console.log("  RECOMPUTE (engine returned null — no positive payout)");
+        console.log("  RIDER RECOMPUTE (engine returned null — no positive payout)");
       }
     } catch (e) {
-      console.log(`  RECOMPUTE (error: ${e instanceof Error ? e.message : e})`);
+      console.log(`  RIDER RECOMPUTE (error: ${e instanceof Error ? e.message : e})`);
     }
     console.log("");
   }
