@@ -54,21 +54,47 @@ export function calculatePercentageRiderPayout(args: {
   surgeTotal?: number;
   surgeCapped?: boolean;
   maxTotalSurgeAmount?: number | null;
+  /**
+   * When set, the rider BASE is this fixed amount (the rider's own pre+post distance-leg pay),
+   * NOT rider_percentage × customerFare. The customer fee is then never consulted for pay — rider
+   * pay comes solely from rider_leg_pricing. Split pickup/drop by distance ratio for display only.
+   */
+  baseOverride?: number;
 }): { ok: true; quote: RiderPayoutQuote } | { ok: false; code: string; message: string } {
   const pickupKm = Math.max(0, args.pickupKm);
   const dropKm = Math.max(0, args.dropKm);
   const customerFare = Math.max(0, args.customerFare);
+  const hasOverride =
+    args.baseOverride != null && Number.isFinite(args.baseOverride);
 
-  if (customerFare <= 0) {
+  if (!hasOverride && customerFare <= 0) {
     return { ok: false, code: "NO_CUSTOMER_FARE", message: "Customer fare is required to derive rider payout" };
   }
 
-  const split = calcServicePayoutRuleSplit({
-    customerFare,
-    pickupKm,
-    dropKm,
-    rule: toRule(args.rule),
-  });
+  const split = hasOverride
+    ? (() => {
+        // Leg-based rider pay: the base is the rider's own distance-leg entitlement, split
+        // pickup/drop by distance ratio purely for the display breakdown (sum is unchanged).
+        const riderTotal = round2(Math.max(0, args.baseOverride as number));
+        const totalKm = pickupKm + dropKm;
+        const pickupRatio = totalKm > 0 ? pickupKm / totalKm : 1;
+        const pickupAmount = totalKm > 0 ? round2(riderTotal * pickupRatio) : riderTotal;
+        return {
+          customerFare: 0,
+          riderTotal,
+          platformRevenue: 0,
+          pickupRatio: round2(pickupRatio * 100),
+          dropRatio: round2((1 - pickupRatio) * 100),
+          pickupAmount,
+          dropAmount: round2(riderTotal - pickupAmount),
+        };
+      })()
+    : calcServicePayoutRuleSplit({
+        customerFare,
+        pickupKm,
+        dropKm,
+        rule: toRule(args.rule),
+      });
 
   // The global surge_wait_max_only flag now gates ONLY waiting minutes for non-Max riders.
   // Surge eligibility is decided per-surge by the "GMitra Max riders only" checkbox inside

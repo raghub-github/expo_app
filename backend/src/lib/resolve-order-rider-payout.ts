@@ -50,6 +50,12 @@ export async function resolveOrderRiderPayoutBreakdown(args: {
   vehicleType?: RideVehiclePricingType | null;
   rideCatalogCode?: string | null;
   waitingMinutes?: number;
+  /**
+   * Rider base = this fixed amount (pre+post distance-leg pay) instead of rider% × customerFare.
+   * When set, the customer fee is NOT used to derive the base — the rider is paid purely from
+   * rider_leg_pricing; surge % applies to this base and waiting comes from the rule.
+   */
+  riderBaseOverride?: number;
 }): Promise<OrderRiderPayoutBreakdown | null> {
   const pickupLat = parseCoord(args.pickupLat);
   const pickupLng = parseCoord(args.pickupLng);
@@ -106,7 +112,12 @@ export async function resolveOrderRiderPayoutBreakdown(args: {
       ? catalogCodeToPricingVehicle(args.rideCatalogCode)
       : null);
 
-  if (!Number.isFinite(args.customerFare) || args.customerFare <= 0) return null;
+  const hasBaseOverride =
+    args.riderBaseOverride != null && Number.isFinite(args.riderBaseOverride);
+  // When paying from the rider's own distance legs (baseOverride), the customer fee is irrelevant.
+  if (!hasBaseOverride && (!Number.isFinite(args.customerFare) || args.customerFare <= 0)) {
+    return null;
+  }
 
   const quote = await resolveRiderPayoutQuote({
     level,
@@ -118,6 +129,7 @@ export async function resolveOrderRiderPayoutBreakdown(args: {
     waitingMinutes: args.waitingMinutes ?? 0,
     riderId: args.riderId ?? undefined,
     vehicleType,
+    baseOverride: hasBaseOverride ? args.riderBaseOverride : undefined,
   });
 
   if (!quote.ok || quote.quote.finalAmount <= 0) return null;

@@ -213,18 +213,17 @@ export function RiderLegPricingPanel(props: {
       {list.length === 0 ? (
         <p className="mt-2 text-xs text-slate-500">
           {leg === "post"
-            ? "No post-pickup rule at this node — post-pickup falls back to the pool remainder."
+            ? "No post-pickup slab at this node — add one, or the rider earns ₹0 for the delivery leg (post-pickup pay comes ONLY from these slabs, not the customer fee)."
             : "No Pre-pickup slab rule at this node — the legacy flat-rate fallback above is what riders are actually paid."}
         </p>
       ) : (
         <>
-          {leg === "post" && list.some(({ r }) => r.funding === "customer") ? (
-            <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
-              Rows with Funding = <b>Customer</b> below act as a <b>guaranteed floor</b>: the
-              rider earns MAX(% pool, pre + post legs) — the company funds any shortfall when the
-              legs exceed the pool, so the rider is never paid below the slab. Switch Funding to{" "}
-              <b>Company</b> or <b>Shared</b> to instead pay this row&apos;s amount as a top-up on
-              top of the pool.
+          {leg === "post" ? (
+            <p className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[11px] text-emerald-800">
+              Rider pay = this post-pickup slab (₹ base + ₹/km) — the rider is paid <b>directly</b>{" "}
+              by distance, <b>independent of the customer delivery fee</b>. The <b>Funding</b> column
+              is only an accounting label (who bears the cost); it does not change the amount the
+              rider receives.
             </p>
           ) : null}
         <div className="mt-2 overflow-x-auto">
@@ -324,20 +323,19 @@ export function RiderLegPricingPanel(props: {
         Independent ₹/km rules per leg. <b>Pre-pickup</b> <span className="inline-flex items-center gap-0.5">rider <ArrowRight className="h-3 w-3" /> pickup</span>, <b>Post-pickup</b> <span className="inline-flex items-center gap-0.5">pickup <ArrowRight className="h-3 w-3" /> drop</span>. Closest-ancestor-wins; the calculator above reflects these live.
       </p>
       <div className="mt-2 rounded-lg border border-violet-100 bg-white px-3 py-2 text-[11px] leading-relaxed text-slate-600">
-        <b className="text-violet-800">How the rider is actually paid:</b> Rider % pool =
-        eligible delivery fee × rider %. The rider earns the <b>greater of</b> that pool or the
-        distance legs (pre + post slabs) — the per-distance slab is a <b>guaranteed floor</b>:
-        when the <b>Customer</b>-funded legs exceed the pool, the company funds the shortfall so
-        the rider is never paid below the slab. Legs whose Funding is <b>Company</b> or{" "}
-        <b>Shared</b> are added <b>on top of</b> that instead. Surge, waiting and tip are always
-        added on top.
+        <b className="text-violet-800">How the rider is actually paid:</b> Rider pay ={" "}
+        <b>Pre-pickup slab</b> (rider → pickup) + <b>Post-pickup slab</b> (pickup → drop) +
+        surge + waiting + tip. It is computed <b>entirely from these distance slabs</b> and is{" "}
+        <b>completely independent of the customer delivery fee</b> — the customer bill and rider
+        pay are separate rule sets. (The old &ldquo;rider % of the delivery fee&rdquo; pool is no
+        longer used.) Surge % applies to the rider&apos;s slab pay, never the delivery fee.
       </div>
       {loading ? (
         <p className="mt-3 flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading leg rules…</p>
       ) : (
         <>
-          {renderLeg("pre", pre, "Pre-pickup (rider → pickup)", "First-mile. A slab rule here always wins over the legacy flat rate below. Company-funded by default (paid on top).")}
-          {renderLeg("post", post, "Post-pickup (pickup → drop)", "Delivery leg. Customer-funded by default — a guaranteed floor: rider earns MAX(pool, legs).")}
+          {renderLeg("pre", pre, "Pre-pickup (rider → pickup)", "First-mile pay: ₹/km for the rider→pickup distance. A slab rule here wins over the legacy flat rate below.")}
+          {renderLeg("post", post, "Post-pickup (pickup → drop)", "Delivery pay: ₹ base + ₹/km for the pickup→drop distance. This is the rider's pay — independent of the customer delivery fee.")}
         </>
       )}
     </div>
