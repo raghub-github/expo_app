@@ -62,11 +62,13 @@ import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
 import { seedMerchantMenuQueryIfCached } from "@/lib/merchantMenuCache";
 import { markFoodHomeRouteMounted } from "@/lib/navigateToFoodHome";
+import { foodFixDbg, foodNavDbg, useTabScreenDebug } from "@/lib/tabNavDebug";
 import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 import { navigateToMealsUnderPrice } from "@/lib/navigateToMealsUnderPrice";
 import {
   markFoodHomeListScrollActive,
   markFoodHomeListScrollEnded,
+  registerFoodHomeListScroller,
   resetFoodHomeListScrollGuard,
 } from "@/lib/foodHomeScrollGuard";
 import {
@@ -279,6 +281,7 @@ function computeCategoryRailMetrics(windowWidth: number, horizontalSafeInset = 0
 }
 
 export default function FoodMerchantsScreen() {
+  useTabScreenDebug("food");
   const mountT0 = useRef(__DEV__ ? Date.now() : 0);
   const insets = useAppSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -292,12 +295,26 @@ export default function FoodMerchantsScreen() {
 
   // Prevent stacking a second Food entry when Order Food / tab press both fire.
   useEffect(() => {
-    if (__DEV__) {
-      // eslint-disable-next-line no-console
-      console.log(`[FOOD_NAV] screen-mounted +${Date.now() - mountT0.current}ms`);
-    }
+    foodNavDbg("MOUNT", {
+      source: "FoodMerchantsScreen",
+      method: "mount",
+      from: segments.join("/"),
+      to: underTabs ? "(tabs)/food" : "/home",
+      reason: underTabs ? "tab-instance" : "stack-instance",
+      underTabs,
+    });
     markFoodHomeRouteMounted(true);
-    return () => markFoodHomeRouteMounted(false);
+    return () => {
+      foodNavDbg("UNMOUNT", {
+        source: "FoodMerchantsScreen",
+        method: "unmount",
+        reason: underTabs ? "tab-instance" : "stack-instance",
+        underTabs,
+      });
+      markFoodHomeRouteMounted(false);
+    };
+    // Capture mount-time route identity for the dual-instance probe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -844,6 +861,22 @@ export default function FoodMerchantsScreen() {
   const navigation = useNavigation();
   const handleBack = useCallback(() => {
     resetFoodHomeListScrollGuard();
+    foodFixDbg("LEAVE food", {
+      source: "FoodMerchantsScreen.handleBack",
+      method: underTabs ? "navigatePrimaryTab(index)" : "foodHomeRouterBack",
+      from: underTabs ? "(tabs)/food" : "/home",
+      target: underTabs ? "index" : "stack-back-or-home-tab",
+      reason: "header-back",
+      underTabs,
+    });
+    foodNavDbg("LEAVE", {
+      source: "FoodMerchantsScreen.handleBack",
+      method: underTabs ? "navigatePrimaryTab(index)" : "foodHomeRouterBack",
+      from: underTabs ? "(tabs)/food" : "/home",
+      to: underTabs ? "index" : "stack-back-or-/(tabs)/",
+      reason: "header-back",
+      underTabs,
+    });
     if (underTabs) {
       navigatePrimaryTab("index", "FoodMerchantsScreen.handleBack", router);
       return;
@@ -2221,6 +2254,16 @@ export default function FoodMerchantsScreen() {
   );
 
   const gridFirstScrollY = useSharedValue(0);
+  const foodHomeFlashListRef = useRef<FlashList<MerchantSummary>>(null);
+
+  useEffect(() => {
+    const scrollToTop = () => {
+      foodHomeFlashListRef.current?.scrollToOffset({ offset: 0, animated: false });
+      gridFirstScrollY.value = 0;
+    };
+    registerFoodHomeListScroller(scrollToTop);
+    return () => registerFoodHomeListScroller(null);
+  }, [gridFirstScrollY]);
   const gridFirstSearchStickAtSv = useSharedValue(gridFirstSearchStickAt);
   const gridFirstCategoryStickAtSv = useSharedValue(gridFirstCategoryStickAt);
   const gridFirstFilterStickAtSv = useSharedValue(gridFirstFilterStickAt);
@@ -2394,6 +2437,13 @@ export default function FoodMerchantsScreen() {
     isGridFirstLayout &&
     (!gridFirstHeroHasSlides || (showMerchantsSkeleton && !gridFirstHeroReady));
 
+  useEffect(() => {
+    if (!isGridFirstLayout) return;
+    if (gridFirstScrollY.value > 16) return;
+    foodHomeFlashListRef.current?.scrollToOffset({ offset: 0, animated: false });
+    gridFirstScrollY.value = 0;
+  }, [gridFirstSkyHeight, pinChromeAtRest, isGridFirstLayout, gridFirstScrollY]);
+
   const gridFirstCategoryFlowStyle = useAnimatedStyle(() => {
     // No-hero: sticky chrome owns the rail from y=0 — keep in-flow as invisible spacer only.
     if (pinChromeAtRest) {
@@ -2546,6 +2596,7 @@ export default function FoodMerchantsScreen() {
         {/* Always mount FlashList + chrome — never swap a boot-shell header (that
             was the main→food entry layout shift). Loading only fills list body. */}
         <FlashList
+          ref={foodHomeFlashListRef}
           style={StyleSheet.flatten([styles.scroll, isDiscoveryLayout && styles.discoveryScroll])}
           data={
             showMerchantsSkeleton
@@ -2749,6 +2800,7 @@ export default function FoodMerchantsScreen() {
                   styles.categoryTabsSection,
                   pinChromeAtRest && styles.categoryTabsSectionTight,
                   {
+                    height: gridFirstCategoryBlockHeight(categoryRailLayout.circle),
                     minHeight: gridFirstCategoryBlockHeight(categoryRailLayout.circle),
                   },
                 ]}

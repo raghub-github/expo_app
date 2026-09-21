@@ -50,6 +50,7 @@ import {
   siblingNotificationIds,
 } from "@/lib/notificationDedupe";
 import { resolveNotificationDeepLink } from "@/lib/notificationDeepLinkResolver";
+import { navigateCustomerAppHref } from "@/lib/navigateToFoodHome";
 
 const LORA = StoreFonts.loraRegular;
 const LORA_BOLD = StoreFonts.loraBold;
@@ -395,7 +396,7 @@ export default function NotificationsScreen() {
     });
     if (metaHref && isValidAppDeepLink(metaHref) && !metaHref.startsWith("http")) {
       try {
-        router.push(metaHref as never);
+        navigateCustomerAppHref(router, metaHref, "NotificationsInbox.meta");
         return;
       } catch {
         /* fall through */
@@ -405,7 +406,7 @@ export default function NotificationsScreen() {
     const deepLink = item.deep_link?.trim() ?? "";
     if (isValidAppDeepLink(deepLink) && !deepLink.startsWith("http")) {
       try {
-        router.push(deepLink as never);
+        navigateCustomerAppHref(router, deepLink, "NotificationsInbox.deepLink");
         return;
       } catch {
         /* fall through to detail */

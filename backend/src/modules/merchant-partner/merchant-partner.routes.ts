@@ -4803,7 +4803,10 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const sql = getSql();
           const parentId = await getPartnerParentId(sql, req.auth.sub);
           if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
-          await runStoreScheduleTickForStore(storeId, req.log);
+          // Do not block GET status on the schedule tick (was 14s+ and starved food-orders).
+          void runStoreScheduleTickForStore(storeId, req.log).catch((err) => {
+            req.log.warn({ err, storeId }, "status GET schedule tick background failed");
+          });
           const rows = await sql`
             SELECT ms.id,
                    ms.operational_status,

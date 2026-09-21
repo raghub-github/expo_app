@@ -12,9 +12,12 @@ import {
   foodHomeRouterBack,
   resolveAndroidBackFallback,
   safeRouterBack,
+  applySafeBackFallback,
+  FOOD_HOME_FALLBACK,
   type SafeRouterBackFallback,
 } from "@/lib/safeRouterBack";
 import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
+import { foodFixDbg, foodNavDbg } from "@/lib/tabNavDebug";
 
 type AndroidBackHandlerProps = {
   /** When set, used instead of segment-based fallback when the stack cannot go back. */
@@ -34,6 +37,20 @@ export function AndroidBackHandler({ fallback, preferFallback = false }: Android
       const root = segments[0];
       // Food tab hides the main dock — back should return to Home, not exit the app.
       if (root === "(tabs)" && segments[1] === "food" && !fallback) {
+        foodFixDbg("LEAVE food", {
+          source: "AndroidBackHandler",
+          method: "navigatePrimaryTab(index)",
+          from: "(tabs)/food",
+          target: "index",
+          reason: "hardware-back-on-food-tab",
+        });
+        foodNavDbg("LEAVE", {
+          source: "AndroidBackHandler",
+          method: "navigatePrimaryTab(index)",
+          from: "(tabs)/food",
+          to: "index",
+          reason: "hardware-back-on-food-tab",
+        });
         navigatePrimaryTab("index", "AndroidBackHandler.food→home", router);
         return true;
       }
@@ -44,7 +61,16 @@ export function AndroidBackHandler({ fallback, preferFallback = false }: Android
 
       const resolvedFallback = fallback ?? resolveAndroidBackFallback(segments);
       if (preferFallback && resolvedFallback) {
-        router.replace(resolvedFallback);
+        if (resolvedFallback === FOOD_HOME_FALLBACK) {
+          foodNavDbg("LEAVE", {
+            source: "AndroidBackHandler.preferFallback",
+            method: "navigatePrimaryTab(food)",
+            from: segments.join("/"),
+            to: "food",
+            reason: "food-listing-fallback",
+          });
+        }
+        applySafeBackFallback(router, resolvedFallback, "AndroidBackHandler.preferFallback");
         return true;
       }
 

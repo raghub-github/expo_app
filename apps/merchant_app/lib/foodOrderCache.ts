@@ -26,6 +26,23 @@ export function setCachedFoodOrder(
   evictIfNeeded();
 }
 
+/** Optimistic accept/reject so a later cache hydrate cannot revive CREATED. */
+export function patchCachedFoodOrderStatus(
+  storeId: number,
+  foodId: number,
+  orderStatus: string,
+  extra?: { rejected_reason?: string; cancelled_at?: string }
+): void {
+  const hit = getCachedFoodOrder(foodId, storeId);
+  if (!hit) return;
+  setCachedFoodOrder(hit.storeId, foodId, {
+    ...hit.order,
+    order_status: orderStatus,
+    ...(extra?.rejected_reason ? { rejected_reason: extra.rejected_reason } : {}),
+    ...(extra?.cancelled_at ? { cancelled_at: extra.cancelled_at } : {}),
+  });
+}
+
 export function cacheFoodOrders(storeId: number, orders: ApiFoodOrder[]): void {
   for (const order of orders) {
     if (order.core_only) continue;

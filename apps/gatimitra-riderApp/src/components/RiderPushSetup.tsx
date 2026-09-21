@@ -6,6 +6,7 @@ import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   navigateFromPushData,
+  persistNativeAlertSound,
   usePushPermissionController,
   setInAppBannerUiEnabled,
   rememberPushPresented,
@@ -241,7 +242,11 @@ export function RiderPushSetup() {
     autoStart: true,
   });
 
-  // Install OS presentation handler immediately — never wait on pill host mount.
+  // Arm native buzzer ON at process start (bundled raw). No settings screen required.
+  useEffect(() => {
+    void persistNativeAlertSound({ enabled: true, ringInSilent: true, volume01: 1 });
+  }, []);
+
   useEffect(() => {
     void installRiderForegroundNotificationHandler();
   }, []);

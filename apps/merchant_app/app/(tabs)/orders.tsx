@@ -64,7 +64,7 @@ import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
 import { MerchantPrepDelaySheet } from "@/components/order/MerchantPrepDelaySheet";
 import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
-import { rejectReasonNeedsFollowUp, isNotOperationalTodayReason } from "@/lib/merchantCancellationReasons";
+import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import { PastOrdersBanner } from "@/components/order/PastOrdersBanner";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
 import {
@@ -398,7 +398,6 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const [refreshing, setRefreshing] = useState(false);
   const nowMs = useNowMs(true, 60_000);
   const [rejectTarget, setRejectTarget] = useState<OrderRecord | null>(null);
-  const [rejectLoading, setRejectLoading] = useState(false);
   const [prepDelayOrder, setPrepDelayOrder] = useState<OrderRecord | null>(null);
   const [prepDelayLoading, setPrepDelayLoading] = useState(false);
   const { followUp, beginFollowUp, dismissFollowUp, setFollowUp } = useRejectFollowUp();
@@ -622,32 +621,12 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     async (reason: MerchantCancellationReason) => {
       if (!rejectTarget) return;
       const orderSnap = rejectTarget;
+      setRejectTarget(null);
+      void transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason }).catch(
+        () => {}
+      );
       if (rejectReasonNeedsFollowUp(reason)) {
-        setRejectTarget(null);
-        if (isNotOperationalTodayReason(reason)) {
-          try {
-            await transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason });
-          } catch {
-            /* error surfaced via useOrders */
-          }
-          beginFollowUp(reason, orderSnap.lineItems, async () => {});
-          return;
-        }
-        beginFollowUp(reason, orderSnap.lineItems, () =>
-          void transitionOrder(orderSnap.id, "rejected", { rejectedReason: reason }).catch(
-            () => {}
-          )
-        );
-        return;
-      }
-      setRejectLoading(true);
-      try {
-        await transitionOrder(rejectTarget.id, "rejected", { rejectedReason: reason });
-        setRejectTarget(null);
-      } catch {
-        /* error surfaced via useOrders */
-      } finally {
-        setRejectLoading(false);
+        beginFollowUp(reason, orderSnap.lineItems, async () => {});
       }
     },
     [rejectTarget, transitionOrder, beginFollowUp]
@@ -891,8 +870,8 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
             ? Number(rejectTarget.id) || rejectTarget.ordersCoreId
             : 0
         }
-        loading={rejectLoading}
-        onClose={() => !rejectLoading && setRejectTarget(null)}
+        loading={false}
+        onClose={() => setRejectTarget(null)}
         onConfirm={confirmReject}
       />
       <RejectFollowUpHost

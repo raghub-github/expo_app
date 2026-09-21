@@ -17,6 +17,28 @@ function isExpoGo() {
 }
 
 if (!isExpoGo()) {
+  function patchMyOrdersFromPush(payload) {
+    if (!payload || typeof payload !== "object") return;
+    try {
+      const { statusFromCustomerLifecyclePush } = require("./lib/customer-order-status-machine");
+      const { applyStatusToCachedMyOrders } = require("./lib/myOrdersCache");
+      const status = statusFromCustomerLifecyclePush(payload);
+      if (!status) return;
+      applyStatusToCachedMyOrders(
+        [
+          payload.orderId,
+          payload.order_id,
+          payload.orderIdText,
+          payload.formattedOrderId,
+          payload.formatted_order_id,
+        ],
+        status
+      );
+    } catch {
+      /* cache patch is best-effort in headless JS */
+    }
+  }
+
   try {
     const Notifications = require("expo-notifications");
     const {
@@ -29,6 +51,7 @@ if (!isExpoGo()) {
     Notifications.setNotificationHandler({
       handleNotification: async (notification) => {
         const data = notification?.request?.content?.data ?? {};
+        patchMyOrdersFromPush(data);
         const result = liveProgressHandlerResult(data);
         try {
           if (result.clearProgress || shouldClearLiveProgress(data)) {
@@ -67,6 +90,7 @@ if (!isExpoGo()) {
         if (error) return;
         const payload = data?.notification?.request?.content?.data ?? data?.data ?? null;
         if (payload && typeof payload === "object") {
+          patchMyOrdersFromPush(payload);
           try {
             if (shouldClearLiveProgress(payload)) {
               const oid = String(payload.orderId || payload.order_id || "").trim();

@@ -9,7 +9,6 @@ import {
   Modal,
   Platform,
   Dimensions,
-  Animated as RNAnimated,
   PanResponder,
   Vibration,
 } from "react-native";
@@ -40,6 +39,7 @@ import { readDeviceOrderAlertsAsync } from "@/lib/deviceOrderAlerts";
 import {
   takeoverNewOrderAlertByModal,
   stopNewOrderAlert,
+  peekNewOrderAlertSessionId,
 } from "@/lib/newOrderAlertManager";
 import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
 import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
@@ -62,7 +62,7 @@ import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, HEADER_HEIGHT } from "@/cons
 import { merchantIncomingBillPartsFromOrder } from "@/lib/resolveMerchantOrderTotal";
 import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
-import { rejectReasonNeedsFollowUp, isNotOperationalTodayReason } from "@/lib/merchantCancellationReasons";
+import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import {
   acceptSecondsLeft,
   acceptDeadlineMs,
@@ -83,11 +83,20 @@ import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import * as SecureStore from "expo-secure-store";
 import {
   hydrateIncomingOrderDismissedLocal,
-  isIncomingOrderDismissed,
+  isIncomingOrderResolved,
   markIncomingOrderDismissedLocal,
+  markIncomingOrderResolved,
 } from "@/lib/incomingOrderDismissed";
 
 const NativeText = getTextHost();
+
+function rejectFlowLog(step: string, orderId: string, alertSessionId: string): void {
+  console.log(`[REJECT_FLOW] ${step}`, {
+    timestamp: Date.now(),
+    orderId,
+    alertSessionId,
+  });
+}
 
 // v3: clear prior dismiss poison (v1 auto-dismissed on list flicker; v2 still
  // blocked re-open after a failed board hydrate). Fresh devices always show the
@@ -100,6 +109,7 @@ const PREP_STEP_MINUTES = 5;
 function pendingCreatedFifo(orders: OrderRecord[]): OrderRecord[] {
   return orders
     .filter((o) => o.status === "created" && !o.id.startsWith("core-"))
+    .filter((o) => !isIncomingOrderResolved(o.ordersCoreId, o.id))
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 }
 
@@ -132,8 +142,8 @@ async function getDismissed(): Promise<Set<number>> {
 }
 
 /** In-memory dismiss helpers — X / accept poison before SecureStore round-trip. */
-function isDismissedCore(orderCoreId: number): boolean {
-  return isIncomingOrderDismissed(orderCoreId);
+function isDismissedCore(orderCoreId: number, foodId?: string | null): boolean {
+  return isIncomingOrderResolved(orderCoreId, foodId);
 }
 
 async function addDismissed(orderCoreId: number) {
@@ -313,7 +323,7 @@ function AcceptOrderSwipeButton({
 }) {
   const trackWidth = useRef(0);
   const trackWidthSv = useSharedValue(0);
-  const dragX = useRef(new RNAnimated.Value(0)).current;
+  const dragX = useSharedValue(0);
   const confirmedRef = useRef(false);
   const btnPulse = useSharedValue(1);
   const progressWidth = useSharedValue(timeProgress * 100);
@@ -362,16 +372,12 @@ function AcceptOrderSwipeButton({
 
   useEffect(() => {
     confirmedRef.current = false;
-    dragX.setValue(0);
+    dragX.value = 0;
   }, [orderKey, dragX]);
 
   const resetDrag = useCallback(() => {
     confirmedRef.current = false;
-    RNAnimated.timing(dragX, {
-      toValue: 0,
-      duration: 140,
-      useNativeDriver: true,
-    }).start();
+    dragX.value = withTiming(0, { duration: 140 });
   }, [dragX]);
 
   const maxTravel = useCallback(
@@ -386,11 +392,7 @@ function AcceptOrderSwipeButton({
     confirmedRef.current = true;
     Vibration.vibrate(15);
     press();
-    RNAnimated.timing(dragX, {
-      toValue: maxTravel(),
-      duration: 90,
-      useNativeDriver: true,
-    }).start();
+    dragX.value = withTiming(maxTravel(), { duration: 90 });
   }, [dragX, maxTravel]);
 
   liveRef.current.confirm = confirmSwipe;
@@ -407,7 +409,7 @@ function AcceptOrderSwipeButton({
         if (confirmedRef.current || liveRef.current.disabled || liveRef.current.loading) return;
         const max = liveRef.current.max();
         const next = Math.min(max, Math.max(0, gesture.dx));
-        dragX.setValue(next);
+        dragX.value = next;
         // Never accept mid-drag — only on release.
       },
       onPanResponderRelease: (_, gesture) => {
@@ -436,6 +438,10 @@ function AcceptOrderSwipeButton({
 
   const progressStyle = useAnimatedStyle(() => ({
     width: Math.max(0, (progressWidth.value / 100) * trackWidthSv.value),
+  }));
+
+  const handleStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: dragX.value }],
   }));
 
   const trackBg = urgent ? SLIDE_ACTION_URGENT : SLIDE_ACTION_GREEN;
@@ -481,8 +487,8 @@ function AcceptOrderSwipeButton({
         >
           {loading ? "Accepting..." : `Accept order (${countdown})`}
         </NativeText>
-        <RNAnimated.View
-          style={[styles.acceptHandle, { transform: [{ translateX: dragX }] }]}
+        <Animated.View
+          style={[styles.acceptHandle, handleStyle]}
           pointerEvents="none"
         >
           {loading ? (
@@ -490,7 +496,7 @@ function AcceptOrderSwipeButton({
           ) : (
             <SwipeHintArrow color={thumbIcon} />
           )}
-        </RNAnimated.View>
+        </Animated.View>
       </View>
     </Animated.View>
   );
@@ -534,7 +540,7 @@ export default function IncomingOrderModal() {
   const [sheetOrder, setSheetOrder] = useState<OrderRecord | null>(null);
   const sheetOrderRef = useRef<OrderRecord | null>(null);
   sheetOrderRef.current = sheetOrder;
-  const { orders, upsertOrder, transitionOrder } = useOrders();
+  const { orders, upsertOrder, transitionOrder, getOrdersSnapshot } = useOrders();
   const { settings: acceptanceSettings, acceptanceWindowMinutes } = useOrderAcceptanceSettings();
 
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -542,6 +548,9 @@ export default function IncomingOrderModal() {
   const [billBreakdownOpen, setBillBreakdownOpen] = useState(false);
   const [customizationItem, setCustomizationItem] = useState<LineItem | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [rejectingFoodId, setRejectingFoodId] = useState<string | null>(null);
+  const rejectingFoodIdRef = useRef<string | null>(null);
+  rejectingFoodIdRef.current = rejectingFoodId;
   const [prepMinutes, setPrepMinutes] = useState(PLATFORM_DEFAULT_PREP_MINUTES);
   const storeDefaultPrepRef = useRef(PLATFORM_DEFAULT_PREP_MINUTES);
   const [nowTick, setNowTick] = useState(() => Date.now());
@@ -871,8 +880,10 @@ export default function IncomingOrderModal() {
       try {
         const updated = await fetchFoodOrder(actionStoreId, foodId, token);
         if (cancelled) return;
+        const mapped = mapFetchedOrder(updated, actionStoreId);
+        if (mapped.status === "created" && isDismissedCore(sheetOrder.ordersCoreId)) return;
         setCachedFoodOrder(actionStoreId, foodId, updated);
-        upsertOrder(mapFetchedOrder(updated, actionStoreId));
+        upsertOrder(mapped);
       } catch {
         /* verifyOpenOrder / board refresh will retry */
       }
@@ -974,20 +985,14 @@ export default function IncomingOrderModal() {
       const markDismissed = opts?.markDismissed !== false;
       const parkIfLast = opts?.parkIfLast === true;
       const current = sheetOrderRef.current;
-      if (
-        opts?.forCoreId != null &&
-        Number.isFinite(Number(opts.forCoreId)) &&
-        current &&
-        Number(current.ordersCoreId) !== Number(opts.forCoreId)
-      ) {
-        if (markDismissed) await addDismissed(Number(opts.forCoreId));
-        return;
+      // Sheet already left this order (instant accept/reject close) — never reopen it.
+      if (opts?.forCoreId != null && Number.isFinite(Number(opts.forCoreId))) {
+        if (!current || Number(current.ordersCoreId) !== Number(opts.forCoreId)) {
+          if (markDismissed) await addDismissed(Number(opts.forCoreId));
+          return;
+        }
       }
-      if (
-        opts?.forFoodId != null &&
-        current &&
-        String(current.id) !== String(opts.forFoodId)
-      ) {
+      if (opts?.forFoodId != null && current && String(current.id) !== String(opts.forFoodId)) {
         if (markDismissed && opts.forCoreId != null) {
           await addDismissed(Number(opts.forCoreId));
         }
@@ -1005,7 +1010,7 @@ export default function IncomingOrderModal() {
       }
 
       if (current && markDismissed) {
-        await addDismissed(current.ordersCoreId);
+        markIncomingOrderDismissedLocal(current.ordersCoreId);
       }
 
       setRejectOpen(false);
@@ -1039,20 +1044,21 @@ export default function IncomingOrderModal() {
         }
         setParked(false);
         setSheetOrder(target);
-        return;
-      }
-
-      // Last pending card — close the sheet.
-      if (parkIfLast) {
+      } else if (parkIfLast) {
         setParked(true);
         if (current) {
           shownCoreIdsRef.current.delete(`c:${current.ordersCoreId}`);
           seenFoodIdsRef.current.delete(current.id);
         }
+        setSheetOrder(null);
       } else {
         setParked(false);
+        setSheetOrder(null);
       }
-      setSheetOrder(null);
+
+      if (current && markDismissed) {
+        void addDismissed(current.ordersCoreId);
+      }
     },
     [pendingList, currentIndex, setParked]
   );
@@ -1062,6 +1068,7 @@ export default function IncomingOrderModal() {
    * With multiple pending orders, advance to the next FIFO card (partnersite parity).
    */
   const dismissByUser = useCallback(() => {
+    if (rejectingFoodIdRef.current) return;
     const current = sheetOrderRef.current;
     if (current) void stopNewOrderAlert(current.id, "dismissed");
     setRejectOpen(false);
@@ -1115,15 +1122,10 @@ export default function IncomingOrderModal() {
       const actedFoodId = current.id;
       if (!Number.isFinite(foodId)) return;
       const stopReason = status === "ACCEPTED" ? "accepted" : "rejected";
-      // Poison reopen + chime immediately (before API / board lag can re-open the sheet).
-      void addDismissed(actedCoreId);
-      shownCoreIdsRef.current.add(`c:${actedCoreId}`);
-      void stopNewOrderAlert(current.id, stopReason);
-      setActionLoading(true);
-      try {
-        // Do not upsert the still-CREATED row first — that re-stamps pendingOptimistic
-        // and a concurrent refetch can revive the card on New after reject/accept.
-        const applied = await transitionOrder(
+      const alertSessionId = peekNewOrderAlertSessionId(actedFoodId);
+
+      const runTransition = () =>
+        transitionOrder(
           current.id,
           status === "ACCEPTED" ? "preparing" : "rejected",
           {
@@ -1134,20 +1136,77 @@ export default function IncomingOrderModal() {
             cancelMode: status === "CANCELLED" ? mode : undefined,
           }
         );
-        if (!applied) {
-          // Still keep dismissed — merchant already committed the gesture; avoid reopen loop.
-          await advanceOrCloseSheet({
-            markDismissed: true,
-            parkIfLast: false,
-            stopReason,
-            forCoreId: actedCoreId,
-            forFoodId: actedFoodId,
-          });
-          return;
+
+      // Accept (and auto-cancel) keep the previous immediate-hide path.
+      if (status === "ACCEPTED" || mode === "auto") {
+        void addDismissed(actedCoreId);
+        shownCoreIdsRef.current.add(`c:${actedCoreId}`);
+        markIncomingOrderResolved({ orderCoreId: actedCoreId, foodId: actedFoodId });
+        void stopNewOrderAlert(current.id, stopReason);
+        const patchPromise = runTransition();
+        void advanceOrCloseSheet({
+          markDismissed: true,
+          parkIfLast: false,
+          stopReason,
+          forCoreId: actedCoreId,
+          forFoodId: actedFoodId,
+        });
+        setActionLoading(true);
+        try {
+          const applied = await patchPromise;
+          if (!applied) return;
+          if (status === "CANCELLED" && mode === "auto") {
+            showToast("Order cancelled");
+          }
+        } catch (err) {
+          if (isInvalidTransitionError(err)) {
+            upsertOrder({
+              ...current,
+              status: status === "ACCEPTED" ? "preparing" : "rejected",
+              pipelineStatus: status,
+            });
+            if (status === "CANCELLED" && mode === "auto") showToast("Order cancelled");
+            requestMerchantDashboardStatsRefresh();
+            return;
+          }
+          if (status === "ACCEPTED") {
+            const msg = err instanceof Error && err.message.trim() ? err.message : "Could not accept order";
+            showToast(msg);
+          }
+        } finally {
+          setActionLoading(false);
         }
-        if (status === "CANCELLED" && mode === "auto") {
-          showToast("Order cancelled");
+        return;
+      }
+
+      rejectFlowLog("CLICK", actedFoodId, alertSessionId);
+      setRejectingFoodId(actedFoodId);
+      rejectFlowLog("MODAL_LOADING_ON", actedFoodId, alertSessionId);
+
+      try {
+        rejectFlowLog("API_START", actedFoodId, alertSessionId);
+        const applied = await runTransition();
+        rejectFlowLog("API_SUCCESS", actedFoodId, alertSessionId);
+        if (!applied) return;
+
+        rejectFlowLog("ORDER_REMOVE_START", actedFoodId, alertSessionId);
+        rejectFlowLog("CACHE_RECONCILE_START", actedFoodId, alertSessionId);
+        const board = getOrdersSnapshot();
+        const stillPending = board.some(
+          (o) =>
+            o.status === "created" &&
+            (o.id === actedFoodId || o.ordersCoreId === actedCoreId)
+        );
+        rejectFlowLog("CACHE_RECONCILE_DONE", actedFoodId, alertSessionId);
+        if (!stillPending) {
+          rejectFlowLog("ORDER_REMOVED", actedFoodId, alertSessionId);
         }
+
+        markIncomingOrderResolved({ orderCoreId: actedCoreId, foodId: actedFoodId });
+        shownCoreIdsRef.current.add(`c:${actedCoreId}`);
+        rejectFlowLog("ALERT_STOP", actedFoodId, alertSessionId);
+        await stopNewOrderAlert(current.id, stopReason);
+        rejectFlowLog("MODAL_CLOSE", actedFoodId, alertSessionId);
         await advanceOrCloseSheet({
           markDismissed: true,
           parkIfLast: false,
@@ -1159,11 +1218,14 @@ export default function IncomingOrderModal() {
         if (isInvalidTransitionError(err)) {
           upsertOrder({
             ...current,
-            status: status === "ACCEPTED" ? "preparing" : "rejected",
+            status: "rejected",
             pipelineStatus: status,
           });
-          if (status === "CANCELLED" && mode === "auto") showToast("Order cancelled");
-          requestMerchantDashboardStatsRefresh();
+          markIncomingOrderResolved({ orderCoreId: actedCoreId, foodId: actedFoodId });
+          shownCoreIdsRef.current.add(`c:${actedCoreId}`);
+          rejectFlowLog("ALERT_STOP", actedFoodId, alertSessionId);
+          await stopNewOrderAlert(current.id, stopReason);
+          rejectFlowLog("MODAL_CLOSE", actedFoodId, alertSessionId);
           await advanceOrCloseSheet({
             markDismissed: true,
             parkIfLast: false,
@@ -1171,25 +1233,25 @@ export default function IncomingOrderModal() {
             forCoreId: actedCoreId,
             forFoodId: actedFoodId,
           });
+          requestMerchantDashboardStatsRefresh();
           return;
         }
-        if (status === "ACCEPTED") {
-          const msg = err instanceof Error && err.message.trim() ? err.message : "Could not accept order";
-          showToast(msg);
-        }
-        // Keep sheet closed for this order — do not let lag reopen + chime.
-        await advanceOrCloseSheet({
-          markDismissed: true,
-          parkIfLast: false,
-          stopReason,
-          forCoreId: actedCoreId,
-          forFoodId: actedFoodId,
-        });
       } finally {
-        setActionLoading(false);
+        if (rejectingFoodIdRef.current === actedFoodId) {
+          setRejectingFoodId(null);
+        }
       }
     },
-    [token, sheetOrder, advanceOrCloseSheet, showToast, prepMinutes, upsertOrder, transitionOrder]
+    [
+      token,
+      sheetOrder,
+      advanceOrCloseSheet,
+      showToast,
+      prepMinutes,
+      upsertOrder,
+      transitionOrder,
+      getOrdersSnapshot,
+    ]
   );
 
   const stepPrep = useCallback((delta: number) => {
@@ -1210,6 +1272,7 @@ export default function IncomingOrderModal() {
     // closing here would both hide and permanently dismiss a still-pending order.
     // `displayOrder` falls back to the opened sheetOrder; the next reconcile restores it.
     if (live && live.status !== "created") {
+      if (rejectingFoodIdRef.current === sheetOrder.id) return;
       // Drop only the acted order; advanceOrClose keeps other pending cards open.
       void advanceOrCloseSheet({
         markDismissed: true,
@@ -1261,13 +1324,16 @@ export default function IncomingOrderModal() {
 
         const updated = await fetchFoodOrder(actionStoreId, foodId, token);
         if (cancelled) return;
+        const mapped = mapFetchedOrder(updated, actionStoreId);
+        if (mapped.status === "created" && isDismissedCore(syncCoreId)) return;
         setCachedFoodOrder(actionStoreId, foodId, updated);
-        upsertOrder(mapFetchedOrder(updated, actionStoreId));
+        upsertOrder(mapped);
         // Only drop THIS order — if the pager already advanced to another card, do nothing.
         const stillViewing =
           sheetOrderRef.current?.id === String(foodId) ||
           Number(sheetOrderRef.current?.ordersCoreId) === syncCoreId;
         if (!stillViewing) return;
+        if (rejectingFoodIdRef.current === String(foodId)) return;
         const stage = String(updated.order_status || "").toUpperCase();
         if (stage && stage !== "CREATED" && stage !== "NEW" && stage !== "PLACED") {
           await advanceOrCloseSheet({
@@ -1364,7 +1430,7 @@ export default function IncomingOrderModal() {
   // matches Active cards instead of recomputing from customer-priced lines.
   const incomingBill = order ? merchantIncomingBillPartsFromOrder(order) : null;
   const sheetVisible =
-    !!order && !rejectOpen && !allItemsOpen && !billBreakdownOpen && !customizationItem;
+    !!order && !allItemsOpen && !billBreakdownOpen && !customizationItem;
   const lineItems = order?.lineItems ?? [];
   const previewItems = lineItems.slice(0, MAX_PREVIEW_ITEMS);
   const moreCount = Math.max(0, lineItems.length - MAX_PREVIEW_ITEMS);
@@ -1428,18 +1494,29 @@ export default function IncomingOrderModal() {
                   <View style={styles.headerSideSlot}>
                     <Pressable
                       onPress={() => setRejectOpen(true)}
-                      disabled={actionLoading}
+                      disabled={actionLoading || rejectingFoodId === order.id}
                       style={({ pressed }) => [
                         styles.rejectPill,
-                        actionLoading && styles.btnDisabled,
+                        (actionLoading || rejectingFoodId === order.id) && styles.btnDisabled,
                         pressed && styles.pressed,
                       ]}
                       hitSlop={8}
                     >
-                      <Text style={styles.rejectPillText} maxFontSizeMultiplier={1.2}>
-                        Reject
-                      </Text>
-                      <Ionicons name="close" size={14} color="#EF4444" />
+                      {rejectingFoodId === order.id ? (
+                        <>
+                          <ActivityIndicator color="#EF4444" size="small" />
+                          <Text style={styles.rejectPillText} maxFontSizeMultiplier={1.2}>
+                            Rejecting...
+                          </Text>
+                        </>
+                      ) : (
+                        <>
+                          <Text style={styles.rejectPillText} maxFontSizeMultiplier={1.2}>
+                            Reject
+                          </Text>
+                          <Ionicons name="close" size={14} color="#EF4444" />
+                        </>
+                      )}
                     </Pressable>
                   </View>
                 </View>
@@ -1626,7 +1703,7 @@ export default function IncomingOrderModal() {
                         <View style={styles.prepStepper}>
                           <Pressable
                             style={[styles.prepBtn, prepMinutes <= PREP_TIME_MIN && styles.prepBtnDisabled]}
-                            disabled={prepMinutes <= PREP_TIME_MIN || actionLoading}
+                            disabled={prepMinutes <= PREP_TIME_MIN || actionLoading || !!rejectingFoodId}
                             onPress={() => stepPrep(-PREP_STEP_MINUTES)}
                           >
                             <Text style={styles.prepBtnText}>−</Text>
@@ -1634,7 +1711,7 @@ export default function IncomingOrderModal() {
                           <Text style={styles.prepValue}>{prepMinutes}m</Text>
                           <Pressable
                             style={[styles.prepBtn, prepMinutes >= PREP_TIME_MAX && styles.prepBtnDisabled]}
-                            disabled={prepMinutes >= PREP_TIME_MAX || actionLoading}
+                            disabled={prepMinutes >= PREP_TIME_MAX || actionLoading || !!rejectingFoodId}
                             onPress={() => stepPrep(PREP_STEP_MINUTES)}
                           >
                             <Text style={styles.prepBtnText}>+</Text>
@@ -1646,7 +1723,7 @@ export default function IncomingOrderModal() {
                     <View style={styles.footer}>
                       <AcceptOrderSwipeButton
                         loading={actionLoading}
-                        disabled={secondsLeft <= 0}
+                        disabled={secondsLeft <= 0 || !!rejectingFoodId}
                         countdown={mmss}
                         timeProgress={fuseProgress}
                         remainingMs={Math.max(0, fuseBaselineMs * fuseProgress)}
@@ -1708,24 +1785,22 @@ export default function IncomingOrderModal() {
             visible={rejectOpen}
             formattedOrderId={order.formattedOrderId}
             fallbackOrderId={order.ordersCoreId}
-            loading={actionLoading}
-            onClose={() => setRejectOpen(false)}
+            loading={!!rejectingFoodId}
+            onClose={() => !rejectingFoodId && setRejectOpen(false)}
             onConfirm={(reason: MerchantCancellationReason) => {
               if (!order) return;
               const snap = order;
               setRejectOpen(false);
-              if (rejectReasonNeedsFollowUp(reason)) {
-                if (isNotOperationalTodayReason(reason)) {
-                  void patchStatus("CANCELLED", { rejected_reason: reason }, "manual", snap);
+              void (async () => {
+                await patchStatus("CANCELLED", { rejected_reason: reason }, "manual", snap);
+                if (
+                  rejectReasonNeedsFollowUp(reason) &&
+                  rejectingFoodIdRef.current == null &&
+                  sheetOrderRef.current?.id !== snap.id
+                ) {
                   beginFollowUp(reason, snap.lineItems, async () => {});
-                  return;
                 }
-                beginFollowUp(reason, snap.lineItems, () =>
-                  patchStatus("CANCELLED", { rejected_reason: reason }, "manual", snap)
-                );
-                return;
-              }
-              void patchStatus("CANCELLED", { rejected_reason: reason }, "manual", snap);
+              })();
             }}
           />
         </>

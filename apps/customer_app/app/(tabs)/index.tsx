@@ -44,10 +44,12 @@ import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { prioritizeVisibleMerchantBanners } from "@/lib/prefetchMerchantBanners";
 import { resetFoodHomeListScrollGuard } from "@/lib/foodHomeScrollGuard";
 import { warmFoodHomeEntry } from "@/lib/navigateToFoodHome";
+import { useTabScreenDebug } from "@/lib/tabNavDebug";
 
 const PAGE_BG = GatiMitraColors.softBackground;
 const STATUS_CHROME = GatiMitraColors.softBackground;
 export default function HomeScreen() {
+  useTabScreenDebug("index");
   const insets = useAppSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();

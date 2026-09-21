@@ -20,6 +20,13 @@ const merchantAcceptNotifyBody = z.object({
   store_name: z.string().max(200).optional(),
 });
 
+const orderCancelNotifyBody = z.object({
+  orders_core_id: z.number().int().min(1),
+  from_status: z.string().max(64).optional(),
+  store_name: z.string().max(200).optional(),
+  reason: z.string().max(400).optional(),
+});
+
 export async function ordersInternalRoutes(app: FastifyInstance) {
   app.addHook("preHandler", async (req, reply) => {
     const env = getEnv();
@@ -400,6 +407,90 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
       return reply.send({ ok: true });
     } catch (err) {
       req.log.warn({ err }, "merchant-accept-notify failed");
+      return reply.code(500).send({ ok: false, error: "notify_failed" });
+    }
+  });
+
+  /** Dashboard / Partner Site cancel — customer + merchant + rider push. */
+  app.post("/orders/cancel-notify", async (req, reply) => {
+    const parsed = orderCancelNotifyBody.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "validation_failed" });
+    }
+    const { orders_core_id, from_status, store_name, reason } = parsed.data;
+    const sql = getSql();
+    try {
+      const preferredStore = store_name?.trim() || null;
+      const rows = (await sql`
+        SELECT
+          oc.order_id,
+          oc.formatted_order_id,
+          oc.current_status,
+          oc.status,
+          c.customer_id AS customer_user_id,
+          ms.id AS merchant_store_id,
+          mp.parent_merchant_id AS merchant_user_id,
+          COALESCE(
+            ${preferredStore},
+            NULLIF(TRIM(ms.store_display_name), ''),
+            'Store'
+          ) AS store_name,
+          cr.refund_status,
+          cr.refund_amount,
+          cr.display_reason
+        FROM public.orders_core oc
+        LEFT JOIN public.customers c ON c.id = oc.customer_id
+        LEFT JOIN public.merchant_stores ms ON ms.id = oc.merchant_store_id
+        LEFT JOIN public.merchant_parents mp ON mp.id = ms.parent_id
+        LEFT JOIN LATERAL (
+          SELECT refund_status, refund_amount, display_reason
+          FROM public.order_cancellation_reasons
+          WHERE order_id = oc.id
+          ORDER BY cancelled_at DESC NULLS LAST, id DESC
+          LIMIT 1
+        ) cr ON TRUE
+        WHERE oc.id = ${orders_core_id}
+        LIMIT 1
+      `) as unknown as Array<{
+        order_id: string | null;
+        formatted_order_id: string | null;
+        current_status: string | null;
+        status: string | null;
+        customer_user_id: string | null;
+        merchant_store_id: number | null;
+        merchant_user_id: string | null;
+        store_name: string | null;
+        refund_status: string | null;
+        refund_amount: unknown;
+        display_reason: string | null;
+      }>;
+      const row = rows[0];
+      const orderIdText = row?.order_id?.trim();
+      if (!orderIdText) {
+        return reply.code(404).send({ ok: false, error: "order_not_found" });
+      }
+      const refundAmount =
+        row?.refund_amount != null && Number.isFinite(Number(row.refund_amount))
+          ? Number(row.refund_amount)
+          : null;
+      const { emitEvent } = await import("../notifications/eventBus.js");
+      emitEvent("order.status_changed", {
+        orderId: orderIdText,
+        orderShortId: row.formatted_order_id?.trim() || orderIdText,
+        fromStatus: (from_status ?? row.current_status ?? row.status ?? "CREATED").toUpperCase(),
+        toStatus: "CANCELLED",
+        customerId: row.customer_user_id ?? null,
+        merchantUserId: row.merchant_user_id ?? null,
+        merchantStoreId: row.merchant_store_id ?? null,
+        merchantName: row.store_name ?? "Store",
+        reason: reason?.trim() || row.display_reason || "Order cancelled",
+        refundStatus: row.refund_status ?? null,
+        refundAmount,
+        refundEligible: refundAmount != null && refundAmount > 0.005 ? true : undefined,
+      });
+      return reply.send({ ok: true });
+    } catch (err) {
+      req.log.warn({ err }, "cancel-notify failed");
       return reply.code(500).send({ ok: false, error: "notify_failed" });
     }
   });

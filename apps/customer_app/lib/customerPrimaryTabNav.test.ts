@@ -5,6 +5,7 @@ import {
   commitPrimaryTab,
   getCustomerPrimaryTabNavState,
   hrefForPrimaryTab,
+  hrefForRequestedPrimaryTab,
   isStalePrimaryTabEpoch,
   primaryTabFromPathname,
   primaryTabFromRouteName,
@@ -171,6 +172,12 @@ describe("customerPrimaryTabNav — Home↔Food authority", () => {
     assert.equal(primaryTabFromPathname("/orders"), "orders");
   });
 
+  it("bootstrap href follows requested Food instead of stomping Home", () => {
+    assert.equal(hrefForRequestedPrimaryTab(), "/(tabs)/");
+    requestPrimaryTab("food", "user");
+    assert.equal(hrefForRequestedPrimaryTab(), "/(tabs)/food");
+  });
+
   it("commitPrimaryTab rejects stale epochs for a different tab", () => {
     const d = requestPrimaryTab("food", "x");
     assert.equal(d.action, "commit");
@@ -178,5 +185,24 @@ describe("customerPrimaryTabNav — Home↔Food authority", () => {
     requestPrimaryTab("index", "y");
     assert.equal(commitPrimaryTab(d.epoch, "food", "stale-commit"), false);
     assert.equal(getCustomerPrimaryTabNavState().requestedTab, "index");
+  });
+
+  it("idle Home flash does not steal a settled Food request", () => {
+    requestPrimaryTab("food", "user");
+    acknowledgeNavigatorPrimaryTab("food");
+    acknowledgeNavigatorPrimaryTab("index", "home-flash");
+    const s = getCustomerPrimaryTabNavState();
+    assert.equal(s.requestedTab, "food");
+    assert.equal(s.committedTab, "food");
+    assert.equal(s.inflightEpoch, null);
+  });
+
+  it("idle Orders deep link is still adopted after Food has settled", () => {
+    requestPrimaryTab("food", "user");
+    acknowledgeNavigatorPrimaryTab("food");
+    acknowledgeNavigatorPrimaryTab("orders", "deep-link");
+    const s = getCustomerPrimaryTabNavState();
+    assert.equal(s.requestedTab, "orders");
+    assert.equal(s.committedTab, "orders");
   });
 });

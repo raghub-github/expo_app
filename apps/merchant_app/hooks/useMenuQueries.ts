@@ -5,6 +5,7 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import {
@@ -120,13 +121,19 @@ export function useMenuItems(
   });
 }
 
-/** Warm menu cache when tabs mount so Catalog opens instantly. */
+/** Warm menu cache after the orders board has had a chance to fetch. */
 export function usePrefetchMenuCatalog() {
   const { token } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.store_id ?? null;
-  useMenuCategories(storeId, token);
-  useMenuItems(storeId, token, MENU_CATALOG_LIST_FILTERS);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    setReady(false);
+    const t = setTimeout(() => setReady(true), 2_500);
+    return () => clearTimeout(t);
+  }, [storeId]);
+  useMenuCategories(ready ? storeId : null, ready ? token : null);
+  useMenuItems(ready ? storeId : null, ready ? token : null, MENU_CATALOG_LIST_FILTERS);
 }
 
 export function useMenuItem(

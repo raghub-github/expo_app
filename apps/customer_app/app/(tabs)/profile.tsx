@@ -37,6 +37,7 @@ import { CURRENT_SUBSCRIPTION_QUERY_KEY } from "@/lib/subscriptionCache";
 import { formatSubscriptionExpiryCountdown } from "@/services/subscription.service";
 import { resolveSubscriptionExpiryIso } from "@/lib/subscriptionExpiry";
 import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
+import { useTabScreenDebug } from "@/lib/tabNavDebug";
 
 import { GatiMitraColors } from "@/constants/gatimitra";
 
@@ -58,6 +59,7 @@ type MenuItem = {
 };
 
 export default function ProfileScreen() {
+  useTabScreenDebug("profile");
   const { t } = useTranslation();
   const router = useRouter();
   const segments = useSegments();

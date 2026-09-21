@@ -1378,7 +1378,8 @@ export async function completeOrderRefundFromRazorpayWebhook(args: {
       `;
       await releasePlatformOfferUsagesOnRefund(
         getDb(),
-        core?.order_id ?? orderCoreId
+        core?.order_id ?? orderCoreId,
+        orderCoreId
       );
     } catch {
       /* non-fatal */

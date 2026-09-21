@@ -20,6 +20,7 @@ import {
 import { formatPlanPriceLine, formatSubscriptionExpiryLabel, formatSubscriptionExpiryCountdown } from "@/services/subscription.service";
 import { resolveSubscriptionExpiryIso } from "@/lib/subscriptionExpiry";
 import { safeRouterBack, PROFILE_TAB_FALLBACK } from "@/lib/safeRouterBack";
+import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { ProfileTheme } from "@/constants/profileTheme";
 
@@ -110,8 +111,8 @@ export default function SubscriptionScreen() {
   }, [router]);
 
   const handleBrowse = useCallback(() => {
-    router.push("/home");
-  }, [router]);
+    navigatePrimaryTab("food", "Subscription.handleBrowse");
+  }, []);
 
   const showRadiusBenefit =
     freeDeliveryEnabled &&

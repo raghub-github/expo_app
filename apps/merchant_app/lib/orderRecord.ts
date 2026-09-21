@@ -237,6 +237,38 @@ export function apiStatusToStage(api: string | null | undefined): OrderStage {
   return "created";
 }
 
+/** Later kitchen / terminal stages beat a stale CREATED poll so reject/accept never flash back. */
+const ORDER_STAGE_RANK: Record<OrderStage, number> = {
+  created: 0,
+  preparing: 1,
+  ready: 2,
+  picked_up: 3,
+  delivered: 4,
+  rejected: 5,
+  rto: 5,
+};
+
+/**
+ * Keep a local accept/reject/advance when a concurrent list/detail fetch still
+ * returns CREATED (replica lag / in-flight GET). Never revive a New-tab card.
+ */
+export function preferProgressedOrderRecord(
+  incoming: OrderRecord,
+  existing: OrderRecord | undefined
+): OrderRecord {
+  if (!existing) return incoming;
+  const incomingRank = ORDER_STAGE_RANK[incoming.status] ?? 0;
+  const existingRank = ORDER_STAGE_RANK[existing.status] ?? 0;
+  if (existingRank <= incomingRank) return incoming;
+  return {
+    ...incoming,
+    status: existing.status,
+    pipelineStatus: existing.pipelineStatus,
+    rejectedReason: existing.rejectedReason ?? incoming.rejectedReason,
+    cancelledAt: existing.cancelledAt ?? incoming.cancelledAt,
+  };
+}
+
 const LIVE_CONTACT_STATUSES = new Set([
   "CREATED",
   "NEW",

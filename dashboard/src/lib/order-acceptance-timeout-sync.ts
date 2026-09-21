@@ -193,6 +193,15 @@ async function finalizeCancelledRows(
           },
         });
       }
+      void import("@/lib/notify-order-cancelled")
+        .then(({ notifyOrderCancelled }) =>
+          notifyOrderCancelled({
+            ordersCoreId: coreId,
+            fromStatus: "CREATED",
+            reason: AUTO_CANCEL_REASON,
+          })
+        )
+        .catch(() => {});
       // Move money (GatiCash / Razorpay) — previously missing on dashboard sync path.
       await triggerOrderAutoRefund({
         orderCorePk: coreId,

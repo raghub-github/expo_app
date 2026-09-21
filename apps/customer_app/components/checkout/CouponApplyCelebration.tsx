@@ -126,6 +126,13 @@ export function CouponApplyCelebration({
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
 
+  const playIdRef = useRef(0);
+  const wasVisibleRef = useRef(false);
+  if (visible && !wasVisibleRef.current) {
+    playIdRef.current += 1;
+  }
+  wasVisibleRef.current = visible;
+
   useEffect(() => {
     if (!visible) return;
     const timer = setTimeout(() => onDismissRef.current(), 2500);
@@ -133,28 +140,36 @@ export function CouponApplyCelebration({
   }, [visible]);
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss} statusBarTranslucent>
-      <View style={styles.overlay}>
-        <Pressable
-          style={StyleSheet.absoluteFill}
-          onPress={onDismiss}
-          accessibilityRole="button"
-          accessibilityLabel="Dismiss coupon celebration"
-        />
-        <CheckoutConfettiOverlay visible={visible} />
-        <Pressable onPress={onDismiss} style={styles.cardPress} accessibilityRole="button">
-          <Animated.View entering={FadeIn.duration(220)} style={styles.card}>
-            <View style={styles.cardIcon}>
-              <CheckoutText style={styles.cardIconPct}>%</CheckoutText>
-            </View>
-            <CheckoutText style={styles.cardCodeLine} numberOfLines={2}>
-              {couponCode?.trim() ? `'${couponCode.trim()}' applied` : "Offers applied"}
-            </CheckoutText>
-            <CheckoutText style={styles.cardSaved}>{savedLabel}</CheckoutText>
-            <CheckoutText style={styles.ctaText}>Woohoo! Thanks</CheckoutText>
-          </Animated.View>
-        </Pressable>
-      </View>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onDismiss}
+      statusBarTranslucent
+    >
+      {visible ? (
+        <View style={styles.overlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={onDismiss}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss coupon celebration"
+          />
+          <CheckoutConfettiOverlay key={playIdRef.current} visible />
+          <Pressable onPress={onDismiss} style={styles.cardPress} accessibilityRole="button">
+            <Animated.View entering={FadeIn.duration(220)} style={styles.card}>
+              <View style={styles.cardIcon}>
+                <CheckoutText style={styles.cardIconPct}>%</CheckoutText>
+              </View>
+              <CheckoutText style={styles.cardCodeLine} numberOfLines={2}>
+                {couponCode?.trim() ? `'${couponCode.trim()}' applied` : "Offers applied"}
+              </CheckoutText>
+              <CheckoutText style={styles.cardSaved}>{savedLabel}</CheckoutText>
+              <CheckoutText style={styles.ctaText}>Woohoo! Thanks</CheckoutText>
+            </Animated.View>
+          </Pressable>
+        </View>
+      ) : null}
     </Modal>
   );
 }

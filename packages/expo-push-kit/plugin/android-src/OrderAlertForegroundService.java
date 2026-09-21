@@ -18,9 +18,10 @@ import androidx.core.app.NotificationCompat;
 import org.json.JSONObject;
 
 /**
- * Owns the continuous order/dispatch buzzer. Started from FCM (no JS required)
- * or from the JS bridge. stopWithTask=false so swipe-from-recents does not
- * kill the siren while Android still allows the process to live.
+ * Owns the continuous order/dispatch buzzer AND the native TYPE_APPLICATION_OVERLAY
+ * incoming-order card. Started from FCM (no JS required) or from the JS bridge.
+ * stopWithTask=false so swipe-from-recents does not kill the siren while Android
+ * still allows the process to live.
  */
 public class OrderAlertForegroundService extends Service {
   public static final String ACTION_START = "{{PACKAGE}}.ORDER_ALERT_START";
@@ -56,6 +57,9 @@ public class OrderAlertForegroundService extends Service {
     String soundType = intent != null ? intent.getStringExtra(OrderAlertController.EXTRA_SOUND_TYPE) : "notification";
     String title = intent != null ? intent.getStringExtra(OrderAlertController.EXTRA_TITLE) : null;
     String body = intent != null ? intent.getStringExtra(OrderAlertController.EXTRA_BODY) : null;
+    String pickup = intent != null ? intent.getStringExtra(OrderAlertController.EXTRA_PICKUP) : "";
+    String drop = intent != null ? intent.getStringExtra(OrderAlertController.EXTRA_DROP) : "";
+    String orderType = intent != null ? intent.getStringExtra(OrderAlertController.EXTRA_ORDER_TYPE) : "";
 
     JSONObject active = OrderAlertController.getActive(this);
     if ((sessionId == null || sessionId.trim().length() == 0) && active != null) {
@@ -65,6 +69,9 @@ public class OrderAlertForegroundService extends Service {
       if (soundType == null || soundType.length() == 0) soundType = active.optString("soundType", "notification");
       if (title == null || title.length() == 0) title = active.optString("title", "");
       if (body == null || body.length() == 0) body = active.optString("body", "");
+      if (pickup == null || pickup.length() == 0) pickup = active.optString("pickup", "");
+      if (drop == null || drop.length() == 0) drop = active.optString("drop", "");
+      if (orderType == null || orderType.length() == 0) orderType = active.optString("orderType", "");
     }
 
     if (sessionId == null || sessionId.trim().length() == 0) {
@@ -73,8 +80,22 @@ public class OrderAlertForegroundService extends Service {
     }
 
     Notification notification = buildNotification(sessionId, orderId, title, body);
-    startAsForeground(notification);
+    AlertEngineLog.log(this, "NOTIFICATION_POST_START", sessionId, orderId, "id=" + NOTIFICATION_ID);
+    try {
+      startAsForeground(notification);
+      AlertEngineLog.log(this, "NOTIFICATION_POST_SUCCESS", sessionId, orderId, "id=" + NOTIFICATION_ID);
+    } catch (Throwable t) {
+      AlertEngineLog.log(this, "NOTIFICATION_POST_FAILED", sessionId, orderId, "err=" + t.getMessage());
+    }
+    OrderAlertOverlay.debug(this, "FGS_STARTED", sessionId, orderId, "sound=" + soundType);
+    OrderAlertOverlay.debug(this, "NOTIFICATION_POSTED", sessionId, orderId, "id=" + NOTIFICATION_ID);
+    AlertEngineLog.log(this, "FGS_START", sessionId, orderId, "started=1");
     OrderAlertController.onServiceStart(this, intent);
+    AlertEngineLog.log(this, "OVERLAY_START", sessionId, orderId, null);
+    // Overlay MUST use this Service as WindowManager host (not MainActivity).
+    // Independent of JS / Manage Communication / selected-sound cache.
+    // startForeground() already ran so Android allows the overlay window.
+    OrderAlertOverlay.show(this, sessionId, orderId, offerId, title, body, pickup, drop, orderType);
     handler.removeCallbacks(watchdog);
     handler.postDelayed(watchdog, MAX_ALERT_MS);
     Log.i(TAG, "started sessionId=" + sessionId + " orderId=" + orderId);
@@ -84,6 +105,7 @@ public class OrderAlertForegroundService extends Service {
   @Override
   public void onDestroy() {
     handler.removeCallbacks(watchdog);
+    OrderAlertOverlay.hideAll(this);
     OrderAlertController.onServiceDestroy();
     releaseWakeLock();
     try {
@@ -100,6 +122,7 @@ public class OrderAlertForegroundService extends Service {
 
   private void stopInternal() {
     handler.removeCallbacks(watchdog);
+    OrderAlertOverlay.hideAll(this);
     OrderAlertController.onServiceDestroy();
     try {
       stopForeground(true);
@@ -171,17 +194,16 @@ public class OrderAlertForegroundService extends Service {
         .setStyle(new NotificationCompat.BigTextStyle().bigText(safeBody))
         .setOngoing(true)
         .setAutoCancel(false)
-        .setSilent(true)
+        // Channel itself is silent so MediaPlayer owns the selected looping sound.
+        // Do not setSilent(true) — OEM trays often hide fully-silent FGS notices.
         .setOnlyAlertOnce(true)
         .setCategory(NotificationCompat.CATEGORY_CALL)
         .setPriority(NotificationCompat.PRIORITY_MAX)
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setContentIntent(content)
-        // Call-style full-screen order/dispatch page over the lock screen / when killed.
-        // Requires USE_FULL_SCREEN_INTENT (declared by the config plugin) + a HIGH/MAX channel.
-        // Degrades gracefully to a heads-up notification when the OS/user does not permit
-        // full-screen (e.g. Android 14+ without the special-access grant).
-        .setFullScreenIntent(content, true)
+        // Do NOT setFullScreenIntent. That launches MainActivity (React) and
+        // steals the foreground from Chrome/Zomato. Appear-on-top is only
+        // OrderAlertOverlay TYPE_APPLICATION_OVERLAY after startForeground().
         .addAction(0, "Stop alert", stopPi)
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
         .build();

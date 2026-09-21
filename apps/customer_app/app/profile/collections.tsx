@@ -23,6 +23,7 @@ import { addressService } from "@/services/address.service";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { ProfileTheme } from "@/constants/profileTheme";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 
 type TabId = "restaurants" | "dishes";
 
@@ -215,7 +216,7 @@ export default function CollectionsScreen() {
         ) : dishesEmpty ? (
           <CollectionsEmptyState
             variant="dishes"
-            onExplore={() => router.push("/home")}
+            onExplore={() => navigatePrimaryTab("food", "Collections.exploreDishes")}
           />
         ) : (
           <ScrollView
@@ -245,7 +246,7 @@ export default function CollectionsScreen() {
       ) : restaurantsEmpty ? (
         <CollectionsEmptyState
           variant="restaurants"
-          onExplore={() => router.push("/home")}
+          onExplore={() => navigatePrimaryTab("food", "Collections.exploreRestaurants")}
         />
       ) : (
         <ScrollView

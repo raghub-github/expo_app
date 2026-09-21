@@ -8,18 +8,12 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { billingPlatformOffers, flashSaleRedemptions } from "../../db/schema.js";
 import { FLASH_SALE_KIND, FLASH_SALE_UNAVAILABLE, FLASH_SALE_ALREADY_USED, classifyFlashSaleInsertConflict, shouldRestoreFlashSaleRedemption } from "./flashSale.js";
+import {
+  offerLedgerOrderPredicate,
+  parseOfferOrderNumericPk,
+  resolveOfferOrderKeys,
+} from "./offerOrderKeys.js";
 import { recordPlatformOfferUsageAtPlacement } from "./platformOfferUsage.service.js";
-
-function asOrderPk(orderId: string | number | null | undefined): number | null {
-  if (orderId == null) return null;
-  if (typeof orderId === "number" && Number.isFinite(orderId) && orderId > 0) {
-    return Math.floor(orderId);
-  }
-  const digits = String(orderId).replace(/\D/g, "");
-  if (!digits) return null;
-  const n = Number(digits);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
 
 export class FlashSaleRedemptionError extends Error {
   code: string;
@@ -34,7 +28,7 @@ export type RecordFlashSaleRedemptionInput = {
   platformOfferId: number;
   customerId: number;
   orderId: string | number;
-  /** Prefer orders_core.id when known; otherwise digits are parsed from orderId. */
+  /** Prefer orders_core.id when known. Do not strip digits from GM/GMF public ids. */
   orderPk?: number | null;
   serviceType: string;
   storeId?: number | null;
@@ -60,7 +54,7 @@ export async function recordFlashSaleRedemptionAtPlacement(
   const orderPk =
     input.orderPk != null && Number.isFinite(input.orderPk) && input.orderPk > 0
       ? Math.floor(input.orderPk)
-      : asOrderPk(input.orderId);
+      : parseOfferOrderNumericPk(input.orderId);
   const orderIdText = String(input.orderId ?? "").trim() || null;
   const subsidy = Math.max(0, Number(input.subsidyAmount) || 0);
   const now = new Date();
@@ -107,6 +101,7 @@ export async function recordFlashSaleRedemptionAtPlacement(
     platformOfferId: offerId,
     customerId,
     orderId: input.orderId,
+    orderPk,
     discountAmount: subsidy,
     consumeMode: input.consumeMode,
     orderSaleAmount: input.orderSaleAmount,
@@ -140,11 +135,11 @@ export async function recordFlashSaleRedemptionAtPlacement(
 export async function releaseFlashSaleRedemptionsOnCancelOrRefund(
   db: PostgresJsDatabase<Record<string, unknown>>,
   orderId: string | number,
-  nextStatus: "cancelled" | "refunded"
+  nextStatus: "cancelled" | "refunded",
+  orderPkHint?: number | null
 ): Promise<void> {
-  const orderPk = asOrderPk(orderId);
-  const orderIdText = String(orderId ?? "").trim();
-  if (!orderPk && !orderIdText) return;
+  const keys = await resolveOfferOrderKeys(db, orderId, orderPkHint);
+  if (keys.pks.length === 0 && keys.texts.length === 0) return;
   const now = new Date();
 
   const rows = await db
@@ -161,9 +156,11 @@ export async function releaseFlashSaleRedemptionsOnCancelOrRefund(
     .where(
       and(
         inArray(flashSaleRedemptions.status, ["reserved", "consumed"]),
-        orderPk
-          ? eq(flashSaleRedemptions.orderId, orderPk)
-          : eq(flashSaleRedemptions.orderIdText, orderIdText)
+        offerLedgerOrderPredicate(
+          flashSaleRedemptions.orderId,
+          flashSaleRedemptions.orderIdText,
+          keys
+        )
       )
     );
 
@@ -180,6 +177,7 @@ export async function releaseFlashSaleRedemptionsOnCancelOrRefund(
         status: nextStatus,
         cancelledAt: nextStatus === "cancelled" ? now : row.redemption.cancelledAt,
         refundedAt: nextStatus === "refunded" ? now : row.redemption.refundedAt,
+        consumedBudget: "0",
         updatedAt: now,
       })
       .where(
@@ -189,6 +187,64 @@ export async function releaseFlashSaleRedemptionsOnCancelOrRefund(
         )
       );
   }
+}
+
+/**
+ * Reopen unique slots for redemptions whose order is already cancelled/refunded
+ * when Status Controls allow restore. Repairs rows missed by the old GM-digit match.
+ */
+async function reconcileStaleFlashSaleRedemptions(
+  customerId: number,
+  storePk: number
+): Promise<void> {
+  if (!(customerId > 0) || !(storePk > 0)) return;
+  const { getSql } = await import("../../db/client.js");
+  const sqlClient = getSql();
+  await sqlClient`
+    UPDATE flash_sale_redemptions r
+    SET
+      status = 'cancelled',
+      cancelled_at = COALESCE(r.cancelled_at, now()),
+      consumed_budget = 0,
+      updated_at = now()
+    FROM billing_platform_offers o, orders_core oc
+    WHERE o.id = r.platform_offer_id
+      AND r.customer_id = ${customerId}
+      AND r.store_id IS NOT DISTINCT FROM ${storePk}
+      AND r.status IN ('reserved', 'consumed')
+      AND COALESCE(o.restore_on_cancel, TRUE) = TRUE
+      AND (
+        oc.id = r.order_id
+        OR (r.order_id_text IS NOT NULL AND oc.order_id = r.order_id_text)
+        OR (r.order_id_text IS NOT NULL AND oc.formatted_order_id = r.order_id_text)
+      )
+      AND (
+        oc.cancelled_at IS NOT NULL
+        OR LOWER(BTRIM(COALESCE(oc.current_status, oc.status::text)))
+          IN ('cancelled', 'canceled')
+      )
+  `;
+  await sqlClient`
+    UPDATE flash_sale_redemptions r
+    SET
+      status = 'refunded',
+      refunded_at = COALESCE(r.refunded_at, now()),
+      consumed_budget = 0,
+      updated_at = now()
+    FROM billing_platform_offers o, orders_core oc
+    WHERE o.id = r.platform_offer_id
+      AND r.customer_id = ${customerId}
+      AND r.store_id IS NOT DISTINCT FROM ${storePk}
+      AND r.status IN ('reserved', 'consumed')
+      AND COALESCE(o.restore_on_refund, TRUE) = TRUE
+      AND (
+        oc.id = r.order_id
+        OR (r.order_id_text IS NOT NULL AND oc.order_id = r.order_id_text)
+        OR (r.order_id_text IS NOT NULL AND oc.formatted_order_id = r.order_id_text)
+      )
+      AND LOWER(COALESCE(oc.payment_status::text, ''))
+        IN ('refunded', 'partially_refunded')
+  `;
 }
 
 export async function loadActiveFoodFlashSalesForStore(
@@ -323,6 +379,7 @@ export async function usedFoodFlashOfferIdsForCustomerStore(
 ): Promise<Set<number>> {
   const ids = offerIds.filter((n) => Number.isInteger(n) && n > 0);
   if (!(customerId > 0) || !(storePk > 0) || ids.length === 0) return new Set();
+  await reconcileStaleFlashSaleRedemptions(customerId, storePk).catch(() => undefined);
   const { getSql } = await import("../../db/client.js");
   const sqlClient = getSql();
   const used = await sqlClient<Array<{ platform_offer_id: number }>>`

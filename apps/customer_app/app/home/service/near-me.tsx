@@ -53,7 +53,7 @@ import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { merchantService, type MerchantSummary } from "@/services/merchant.service";
 import { prefetchMerchantCardImages } from "@/lib/imageEngine";
 import { prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
-import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
+import { HOME_TAB_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
 
 const PAGE_BG = GatiMitraColors.softBackground;
 const SURFACE = "#FFFFFF";
@@ -365,7 +365,7 @@ export default function ExploreNearbyScreen() {
         <View style={styles.headerRow}>
           <TouchableOpacity
             style={styles.backBtn}
-            onPress={() => safeRouterBack(router, FOOD_HOME_FALLBACK)}
+            onPress={() => safeRouterBack(router, HOME_TAB_FALLBACK)}
             accessibilityLabel="Go back"
             activeOpacity={0.8}
           >
@@ -483,7 +483,7 @@ export default function ExploreNearbyScreen() {
           }}
           ListEmptyComponent={
             listEmpty ? (
-              <EmptyRestaurantsNearby onPress={() => safeRouterBack(router, FOOD_HOME_FALLBACK)} />
+              <EmptyRestaurantsNearby onPress={() => safeRouterBack(router, HOME_TAB_FALLBACK)} />
             ) : null
           }
           ListFooterComponent={merchants.length > 0 ? <BrandingFooter /> : null}
