@@ -22,7 +22,7 @@ import {
 import { FlashList } from "@shopify/flash-list";
 import { LinearGradient } from "expo-linear-gradient";
 import type { NativeScrollEvent, NativeSyntheticEvent } from "react-native";
-import type { ListRenderItem } from "@shopify/flash-list";
+import type { ListRenderItem, FlashListRef } from "@shopify/flash-list";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -2254,7 +2254,7 @@ export default function FoodMerchantsScreen() {
   );
 
   const gridFirstScrollY = useSharedValue(0);
-  const foodHomeFlashListRef = useRef<FlashList<MerchantSummary>>(null);
+  const foodHomeFlashListRef = useRef<FlashListRef<MerchantSummary>>(null);
 
   useEffect(() => {
     const scrollToTop = () => {

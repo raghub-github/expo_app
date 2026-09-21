@@ -82,6 +82,7 @@ export async function cacheMerchantAlertSound(args: {
   const dir = cacheDir();
   if (!dir) return remote;
 
+  const slot = Math.max(0, Math.min(2, Math.floor(args.slot)));
   const existing = await readMeta();
   if (existing?.url === remote && existing.localUri) {
     try {
@@ -95,7 +96,6 @@ export async function cacheMerchantAlertSound(args: {
     }
   }
 
-  const slot = Math.max(0, Math.min(2, Math.floor(args.slot)));
   const dest = `${dir}/${FILE_PREFIX}${slot}.${extFromUrl(remote)}`;
   try {
     const result = await FileSystem.downloadAsync(remote, dest);

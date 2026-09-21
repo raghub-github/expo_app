@@ -313,10 +313,18 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   }, [activeRouteName, state.index, activeIndex, state.routes]);
 
   useEffect(() => {
-    const start = navigation.addListener("transitionStart", (e) => {
+    // transitionStart/End are emitted by the tab navigator at runtime but are not in the
+    // BottomTab event-map types; cast for this debug-only listener registration.
+    const nav = navigation as unknown as {
+      addListener: (
+        type: string,
+        cb: (e: { target?: string; data?: unknown }) => void
+      ) => () => void;
+    };
+    const start = nav.addListener("transitionStart", (e) => {
       tabDbg("TRANSITION_START", { target: e.target, data: e.data });
     });
-    const end = navigation.addListener("transitionEnd", (e) => {
+    const end = nav.addListener("transitionEnd", (e) => {
       tabDbg("TRANSITION_END", { target: e.target, data: e.data });
     });
     return () => {

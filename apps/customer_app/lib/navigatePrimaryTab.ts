@@ -202,7 +202,7 @@ export function navigatePrimaryTab(
       source,
       method: tabsNavigation
         ? "tabsNavigation.jumpTo"
-        : tab === "food"
+        : isFoodRelated
           ? "queue"
           : router
             ? "router.navigate"
