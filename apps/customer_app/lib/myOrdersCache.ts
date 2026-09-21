@@ -6,6 +6,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { STORAGE_KEYS } from "@/constants";
 import { fastGetString, fastSetString, hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
 import { getActiveCustomerScopeId, isOwnedByActiveCustomer } from "@/lib/customerScope";
+import { selectAuthoritativeCustomerStatus } from "@/lib/customer-order-status-machine";
 
 type OrderLike = Record<string, unknown>;
 
@@ -83,6 +84,64 @@ export function clearCachedMyOrders(): void {
   } catch {
     /* non-blocking */
   }
+}
+
+/** Drop the in-process snapshot so a background-task write is visible on resume. */
+export function reloadMyOrdersMemory(): void {
+  memory = null;
+  hydrateMemorySync();
+}
+
+function orderRowKeys(row: OrderLike): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of [row.orderId, row.formattedOrderId, row.coreOrderId, row.order_id]) {
+    const key = String(raw ?? "").trim().toUpperCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+/**
+ * Patch disk-backed My Orders without React Query — used when FCM arrives
+ * while the app is killed / backgrounded so Active is already clear on next open.
+ * Keeps the existing customerId stamp (auth scope may be missing in headless JS).
+ */
+export function applyStatusToCachedMyOrders(
+  orderIds: Array<string | null | undefined>,
+  status: string
+): boolean {
+  const applied = String(status ?? "").trim();
+  if (!applied) return false;
+  const idSet = new Set(
+    orderIds.map((id) => String(id ?? "").trim().toUpperCase()).filter(Boolean)
+  );
+  if (idSet.size === 0) return false;
+
+  hydrateMemorySync();
+  if (!memory || !Array.isArray(memory.orders) || memory.orders.length === 0) return false;
+
+  let changed = false;
+  const nextOrders = memory.orders.map((row) => {
+    const keys = orderRowKeys(row);
+    if (!keys.some((k) => idSet.has(k))) return row;
+    const current = String(row.status ?? "");
+    const merged = selectAuthoritativeCustomerStatus(current, applied);
+    if (merged === current) return row;
+    changed = true;
+    return { ...row, status: merged };
+  });
+  if (!changed) return false;
+
+  memory = { ...memory, orders: nextOrders, cachedAt: Date.now() };
+  try {
+    fastSetString(STORAGE_KEYS.MY_ORDERS_CACHE, JSON.stringify(memory));
+  } catch {
+    /* non-blocking */
+  }
+  return true;
 }
 
 export async function hydrateMyOrdersMemoryFromStorage(): Promise<void> {

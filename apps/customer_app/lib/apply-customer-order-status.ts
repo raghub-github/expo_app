@@ -61,6 +61,22 @@ function persistMyOrders(queryClient: QueryClient) {
   }
 }
 
+/** Keep terminal / newer statuses when a slower list response still has ACCEPTED. */
+export function mergeIncomingMyOrdersList(
+  incoming: OrderSummary[],
+  previous: OrderSummary[] | undefined
+): OrderSummary[] {
+  if (!Array.isArray(incoming) || incoming.length === 0) return incoming;
+  if (!previous?.length) return incoming;
+  return incoming.map((row) => {
+    const prev = previous.find((p) => orderRefsMatch(p, row));
+    if (!prev) return row;
+    const mergedStatus = selectAuthoritativeCustomerStatus(prev.status, row.status);
+    if (mergedStatus === row.status) return row;
+    return { ...row, status: mergedStatus };
+  });
+}
+
 /**
  * Write a server status into caches/store. Never invents COMPLETED locally —
  * callers must pass a status that came from WS/HTTP/push metadata.

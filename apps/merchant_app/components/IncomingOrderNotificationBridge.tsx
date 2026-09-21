@@ -13,6 +13,7 @@ import { useOrders } from "@/hooks/useOrders";
 import { mapApiOrder, type OrderRecord } from "@/lib/orderRecord";
 import { fetchFoodOrder } from "@/services/ordersApi";
 import { isNewOrderAcceptNotification } from "@/lib/merchant-notification-display";
+import { isIncomingOrderResolved } from "@/lib/incomingOrderDismissed";
 import type { MerchantNotification } from "@/context/NotificationContext";
 
 export default function IncomingOrderNotificationBridge() {
@@ -62,6 +63,16 @@ export default function IncomingOrderNotificationBridge() {
         const order: OrderRecord = mapApiOrder(
           await fetchFoodOrder(store, foodId, auth)
         );
+        if (isIncomingOrderResolved(order.ordersCoreId, order.id)) {
+          if (order.status === "created") {
+            upsertRef.current({
+              ...order,
+              status: "rejected",
+              pipelineStatus: "CANCELLED",
+            });
+          }
+          return;
+        }
         upsertRef.current(order);
         if (order.status === "created" && !order.id.startsWith("core-")) {
           openRef.current(order);

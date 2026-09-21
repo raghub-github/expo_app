@@ -39,6 +39,46 @@ public class OrderAlertModule extends ReactContextBaseJavaModule {
   }
 
   @ReactMethod
+  public void persistSoundSettings(
+      boolean enabled,
+      String fileUri,
+      int slot,
+      boolean ringInSilent,
+      double volume01,
+      Promise promise
+  ) {
+    try {
+      String path = OrderAlertSoundStore.persist(
+          getReactApplicationContext(),
+          enabled,
+          fileUri,
+          slot,
+          ringInSilent,
+          (float) volume01
+      );
+      AlertEngineLog.log(
+          getReactApplicationContext(),
+          "SOUND_SETTING_READ",
+          "",
+          "",
+          "persisted=1 enabled=" + enabled + " slot=" + slot + " path=" + (path == null ? "" : path)
+      );
+      promise.resolve(path);
+    } catch (Throwable t) {
+      promise.reject("E_SOUND_PERSIST", t);
+    }
+  }
+
+  @ReactMethod
+  public void canDrawOverlays(Promise promise) {
+    try {
+      promise.resolve(OrderAlertOverlay.canDraw(getReactApplicationContext()));
+    } catch (Throwable t) {
+      promise.reject("E_OVERLAY_PERM", t);
+    }
+  }
+
+  @ReactMethod
   public void stopAlert(String sessionId, Promise promise) {
     try {
       OrderAlertController.stop(getReactApplicationContext(), sessionId);

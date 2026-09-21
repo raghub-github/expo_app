@@ -98,7 +98,8 @@ async function releasePlatformOfferUsageForCorePk(
     `;
     await releasePlatformOfferUsagesOnCancel(
       getDb(),
-      core?.order_id ?? orderCorePk
+      core?.order_id ?? orderCorePk,
+      orderCorePk
     );
   } catch {
     /* non-fatal — must not block cancellation bookkeeping */

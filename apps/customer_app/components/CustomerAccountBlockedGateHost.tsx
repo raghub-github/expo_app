@@ -11,6 +11,7 @@ import {
   gateServiceToHomeId,
 } from "@/lib/customerHomeServiceMeta";
 import { useCustomerServiceBlockSheetStore } from "@/store/customerServiceBlockSheetStore";
+import { foodNavDbg } from "@/lib/tabNavDebug";
 
 type GateService = "food" | "ride" | "parcel" | "ecom" | "vouchers" | "near-me";
 
@@ -119,6 +120,13 @@ export function CustomerAccountBlockedGateHost() {
     });
 
     if (activeBlock.service === "food" && isFoodInnerRoute(pathname)) {
+      foodNavDbg("LEAVE", {
+        source: "CustomerAccountBlockedGateHost",
+        method: "router.replace",
+        from: pathname,
+        to: "/(tabs)",
+        reason: "food-account-block",
+      });
       router.replace("/(tabs)" as never);
     }
   }, [activeBlock, pathname, openSheet, router]);

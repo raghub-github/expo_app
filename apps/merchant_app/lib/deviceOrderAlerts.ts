@@ -1,7 +1,11 @@
 /**
  * Per-device order alert preferences (AsyncStorage via SecureStore).
+ * Also mirrors enabled/slot/file into native SharedPreferences when JS is alive.
+ * Killed FCM does not need this write — native defaults to buzzer ON + bundled raw.
  */
 import * as SecureStore from "expo-secure-store";
+import { persistNativeAlertSound } from "@gatimitra/expo-push-kit";
+import { getCachedMerchantAlertSoundUri } from "@/lib/merchantAlertSoundCache";
 
 const STORAGE_VER = "v1";
 const STORAGE_PREFIX = `merchant_device_order_alerts_${STORAGE_VER}:`;
@@ -60,6 +64,18 @@ export async function writeDeviceOrderAlerts(
   const prev = await readDeviceOrderAlertsAsync(storeId);
   const next = { ...prev, ...patch };
   await SecureStore.setItemAsync(storageKey(storeId), JSON.stringify(next));
+  try {
+    const cached = await getCachedMerchantAlertSoundUri();
+    await persistNativeAlertSound({
+      enabled: next.orderAlertsEnabled !== false && next.soundAlertsEnabled !== false,
+      fileUri: cached,
+      slot: next.alertSoundSlot,
+      ringInSilent: next.ringInSilent !== false,
+      volume01: volumeStepTo01(next.volumeStep),
+    });
+  } catch {
+    /* native persist is best-effort */
+  }
   return next;
 }
 

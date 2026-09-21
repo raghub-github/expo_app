@@ -7,7 +7,7 @@ export const ROUTES = {
   LOGIN: "/(auth)/login",
   OTP: "/(auth)/otp",
   HOME: "/(tabs)/",
-  HOME_FOOD: "/home",
+  HOME_FOOD: "/(tabs)/food",
   HOME_SERVICE: "/home/service",
   SEARCH: "/(tabs)/search",
   ORDERS: "/(tabs)/orders",

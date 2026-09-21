@@ -20,6 +20,7 @@ import { useNotifications } from "@/context/NotificationContext";
 import { useIncomingOrderSheet } from "@/context/IncomingOrderSheetContext";
 import { useOrders, mapApiOrder } from "@/hooks/useOrders";
 import { fetchFoodOrder } from "@/services/ordersApi";
+import { isIncomingOrderResolved } from "@/lib/incomingOrderDismissed";
 import { registerStorePushToken, unregisterAllStorePushTokens } from "@/services/pushTokenApi";
 import { getConfig } from "@/config/env";
 import { setMerchantPushUnregister } from "@/lib/merchantPushUnregister";
@@ -401,14 +402,23 @@ export default function NotificationSetup() {
             if (!t || !sid || !Number.isFinite(foodId)) return;
             try {
               const order = mapApiOrder(await fetchFoodOrder(sid, foodId, t));
+              if (isIncomingOrderResolved(order.ordersCoreId, order.id)) {
+                if (order.status === "created") {
+                  upsertOrderRef.current({
+                    ...order,
+                    status: "rejected",
+                    pipelineStatus: "CANCELLED",
+                  });
+                }
+                return;
+              }
               upsertOrderRef.current(order);
               if (order.status === "created" && !order.id.startsWith("core-")) {
                 openIncomingOrderSheetRef.current(order);
               }
+              void refetchOrdersRef.current();
             } catch {
               /* notification bridge + orders poll will retry */
-            } finally {
-              void refetchOrdersRef.current();
             }
           })();
         }

@@ -94,6 +94,8 @@ export {
   getActiveNativeOrderAlert,
   claimNativeOrderAlert,
   releaseNativeOrderAlert,
+  canDrawNativeOverlays,
+  persistNativeAlertSound,
   extractAlertSessionId,
   merchantAlertSessionId,
   riderAlertSessionId,

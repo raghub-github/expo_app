@@ -52,6 +52,8 @@ import {
   seedMyOrdersQueryIfCached,
   writeCachedMyOrders,
 } from "@/lib/myOrdersCache";
+import { catchUpActiveCustomerOrders } from "@/lib/catchUpActiveCustomerOrders";
+import { mergeIncomingMyOrdersList } from "@/lib/apply-customer-order-status";
 import {
   findOrderInListCache,
   mergeIncomingOrderDetail,
@@ -70,6 +72,7 @@ import {
 import { resolveOrderCustomerPaidAmount } from "@/lib/orderBillBreakdown";
 import { textIncludes } from "@/lib/safe-text";
 import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
+import { useTabScreenDebug } from "@/lib/tabNavDebug";
 
 const GREEN = GatiMitraColors.primaryMint;
 const ERROR = GatiMitraColors.errorRed;
@@ -534,6 +537,7 @@ function HistoryOrderCard({
 }
 
 export default function OrdersScreen() {
+  useTabScreenDebug("orders");
   const router = useRouter();
   const queryClient = useQueryClient();
   const insets = useAppSafeAreaInsets();
@@ -590,11 +594,17 @@ export default function OrdersScreen() {
       navLockRef.current = false;
       reorderInFlightRef.current = false;
       seedMyOrdersQueryIfCached(queryClient);
+      const listed =
+        (queryClient.getQueryData<OrderSummary[]>(["my-orders"]) as OrderSummary[] | undefined) ??
+        (readSyncMyOrders() as OrderSummary[] | undefined) ??
+        [];
+      const hasLive = listed.some((o) => isActiveOrderStatus(o.status));
       const now = Date.now();
-      if (now - lastOrdersFocusRefetchRef.current > 15_000) {
+      if (hasLive || now - lastOrdersFocusRefetchRef.current > 15_000) {
         lastOrdersFocusRefetchRef.current = now;
         void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
       }
+      void catchUpActiveCustomerOrders(queryClient);
       return () => setIsScreenFocused(false);
     }, [queryClient])
   );
@@ -603,11 +613,24 @@ export default function OrdersScreen() {
     queryKey: ["my-orders"],
     queryFn: async () => {
       const list = await orderService.getMyOrders({ limit: 50 });
-      void writeCachedMyOrders(list);
-      return list;
+      const prev =
+        queryClient.getQueryData<OrderSummary[]>(["my-orders"]) ??
+        (readSyncMyOrders() as OrderSummary[] | undefined);
+      const merged = mergeIncomingMyOrdersList(list, prev);
+      void writeCachedMyOrders(merged);
+      return merged;
     },
-    staleTime: 15_000,
-    refetchInterval: false,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnReconnect: true,
+    refetchOnWindowFocus: "always",
+    refetchInterval: (query) => {
+      if (!isScreenFocused) return false;
+      const list = query.state.data as OrderSummary[] | undefined;
+      if (!list?.some((o) => isActiveOrderStatus(o.status))) return false;
+      return 8_000;
+    },
+    refetchIntervalInBackground: false,
     initialData: cachedOrders,
     initialDataUpdatedAt: getMyOrdersCachedAt(),
     placeholderData: (previous) => previous ?? cachedOrders,

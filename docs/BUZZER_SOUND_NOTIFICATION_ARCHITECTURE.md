@@ -1,22 +1,66 @@
 # Merchant & Rider Buzzer / Sound Notification Architecture Audit
 
-**Date:** 2026-09-19  
+**Date:** 2026-09-21 (native engine hardening)  
 **Scope:** Production Android paths for Merchant Partner app + Rider app  
-**Constraint:** Audit only — no code changes in this pass.
+**Status:** Source implementation is in place. **Not production-fixed until real-device tests A–G pass.**
 
-This document traces **backend event → FCM/Expo push → OS notification → app handlers → buzzer/sound** for every app lifecycle state.
+This document traces **backend event → FCM → native service → notification + looping buzzer + overlay**.
 
 ---
 
-## Executive verdict
+## Native engine — first install (no Manage Communication)
 
-| Goal | Current reality |
+Opening Manage Communication is **not** a prerequisite. Fresh install → login → kill must still alert.
+
+### Sound waterfall (native, no JS)
+
+```
+selected cached file in app filesDir (optional Super Admin slot)
+        ↓ missing / corrupt / never copied
+bundled res/raw (notification.wav / food_order / parcel_order / ride_order)
+        ↓ missing
+notification channel / system ringtone
+```
+
+`OrderAlertSoundStore` defaults: **buzzer ON**, **ring-in-silent ON**. `selectedFile()` returns null until JS later copies a slot file. `OrderAlertController.createPlayer` then uses bundled raw. Overlay and `startForeground` notification do **not** wait on that copy.
+
+| Remote Super Admin sound | What native does |
+|--------------------------|------------------|
+| Never cached (first install) | Bundled raw |
+| Cached file deleted | Bundled raw |
+| URL unavailable / download fail | Bundled raw |
+| User selects Sound 1 then Sound 2 | Native `commit()` copy to `gatimitra_selected_alert_{slot}.*` immediately — next killed order uses Sound 2. No app restart. |
+
+### Overlay
+
+`OrderAlertForegroundService` calls `OrderAlertOverlay.show` after `startForeground`. It does **not** depend on React, Manage Communication, or a cached sound. Appear-on-top (`SYSTEM_ALERT_WINDOW`) must be ON for `TYPE_APPLICATION_OVERLAY` above Chrome/Zomato.
+
+### Android exception (do not classify as “killed”)
+
+**Force stop** from Android Settings can block FCM until the user manually opens the app. Swipe-from-recents / process death is **not** force stop.
+
+### Acceptance matrix (source; device-prove before claiming fixed)
+
+| State | Notification | Buzzer | Overlay |
+|-------|--------------|--------|---------|
+| Foreground | YES | YES | YES / in-app host |
+| Background | YES | YES | YES (Appear-on-top ON) |
+| Process killed | YES | YES | YES (Appear-on-top ON) |
+| Fresh install (never open Manage Communication) | YES | YES (bundled if slot uncached) | YES (Appear-on-top ON) |
+
+Device test after Partner/Rider native APK install: A fresh install → B never open Manage Communication → C login → D kill → E Chrome/Zomato → F new order → G logs `FCM_RECEIVED`, `CRITICAL_EVENT_DETECTED`, `SOUND_RESOLVED`, `NOTIFICATION_POST_SUCCESS`, `BUZZER_STARTED`, `OVERLAY_ADD_VIEW_SUCCESS`, `OVERLAY_VISIBLE` **and** physically see the GatiMitra card above Chrome/Zomato. Repeat after Sound 1, then Sound 2.
+
+---
+
+## Executive verdict (historical 2026-09-19 audit below this line)
+
+| Goal | Native engine (current source) |
 |------|-----------------|
-| Audible alert while app is **foreground** | **Yes** — JS owns repeating chime; OS channel sound muted |
-| Audible alert while app is **background** (process alive) | **Usually yes** — OS channel sound (once); Merchant may also play cached JS sound via TaskManager |
-| Audible alert while app is **killed** / swiped away | **Partial** — OS plays **channel sound once** via FCM `notification` block; **no JS repeat loop** |
-| Audible alert while **phone locked** | **Same as background/killed** — depends on FCM delivery + channel importance + OEM |
-| Repeat until accept/ack while killed | **No** — Android notification channel sound does not loop; JS `newOrderAlertManager` / rider modal never runs until process starts |
+| Audible alert while app is **foreground** | **Yes** — native FGS + in-app host |
+| Audible alert while app is **background** (process alive) | **Yes** — FCM → native FGS looping MediaPlayer |
+| Audible alert while app is **killed** / swiped away | **Yes in source** — FCM → `CriticalAlertMessagingService` → FGS. **Device-prove.** |
+| Audible alert while **phone locked** | Same native FGS path if FCM is delivered |
+| Repeat until accept/ack while killed | **Yes in source** — looping MediaPlayer until accept/reject/stop/TTL |
 
 ---
 

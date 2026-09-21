@@ -42,7 +42,10 @@ export async function authFetch(
     normalizedBody != null &&
     !(typeof FormData !== "undefined" && normalizedBody instanceof FormData);
 
-  const timeoutMs = typeof opts.timeoutMs === "number" && opts.timeoutMs > 0 ? opts.timeoutMs : 0;
+  // Default 20s so a hung wallet/menu/status call cannot pin Android's ~6
+  // connections-per-host forever and starve food-orders (infinite "Loading…").
+  const timeoutMs =
+    typeof opts.timeoutMs === "number" ? opts.timeoutMs : 20_000;
   const externalSignal = opts.signal;
   const timeoutController = timeoutMs > 0 ? new AbortController() : null;
   const timeoutId =

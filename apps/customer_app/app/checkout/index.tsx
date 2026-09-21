@@ -865,7 +865,6 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
   onDecrement,
 }: CheckoutCartLineRowProps) {
   const dark = useMerchantUiDark();
-  const sub = item.checkoutSubtext;
   const baseId = cartItemBaseId(item.menuItemId);
   const itemOffer = itemOfferById.get(item.menuItemId) ?? itemOfferById.get(baseId) ?? null;
   const { strike: strikeLineTotal, net: netLineTotal, catalog: catalogLineTotalRounded } =
@@ -958,11 +957,6 @@ const CheckoutCartLineRow = React.memo(function CheckoutCartLineRow({
             </View>
           ) : null}
         </View>
-        {sub ? (
-          <CheckoutText style={[styles.orderItemCustom, dark && styles.darkMuted]} numberOfLines={2}>
-            {sub}
-          </CheckoutText>
-        ) : null}
         {item.specialInstructions?.trim() ? (
           <CheckoutText style={styles.orderItemCooking} numberOfLines={2}>
             Cooking: {item.specialInstructions.trim()}
@@ -1273,7 +1267,7 @@ function CheckoutScreen() {
   const [couponApplyError, setCouponApplyError] = useState<string | null>(null);
   const [couponCelebrationVisible, setCouponCelebrationVisible] = useState(false);
   const [couponCelebrationCode, setCouponCelebrationCode] = useState("");
-  /** Only celebrate after billing confirms the pinned offer actually discounted the bill. */
+  /** Crackers fire on user Apply only — not on auto savings / quote refetch. */
   const pendingCouponCelebrationRef = useRef<string | null>(null);
   const [useGatiCashWallet, setUseGatiCashWallet] = useState(false);
   const [missedOfferWalletPending, setMissedOfferWalletPending] = useState(false);
@@ -3208,6 +3202,7 @@ function CheckoutScreen() {
         setSelectedMerchantOfferId(null);
         setForceNoAutoOffer(true);
         setCheckoutOfferUserPinned(false);
+        pendingCouponCelebrationRef.current = null;
         setCouponCelebrationVisible(false);
 
         pendingMissedOfferWalletRef.current = nextComp;
@@ -3248,6 +3243,7 @@ function CheckoutScreen() {
     setSelectedMerchantOfferId(null);
     setForceNoAutoOffer(true);
     setCheckoutOfferUserPinned(false);
+    pendingCouponCelebrationRef.current = null;
     setCouponCelebrationVisible(false);
 
     pendingMissedOfferWalletRef.current = missedOfferWalletComp;
@@ -3442,35 +3438,9 @@ function CheckoutScreen() {
     return null;
   }, [missedOfferWalletPending, displayMissedOfferWalletComp]);
 
-  /** Fingerprint of currently applied savings — crackers fire when this changes to a non-empty value. */
-  const appliedOffersCelebrationKey = useMemo(() => {
-    if (checkoutSavingsTotal <= 0.005) return "";
-    return [
-      ...offersAppliedParts.map((p) => `${p.label}:${Math.round(p.amount * 100)}`),
-      `t:${Math.round(checkoutSavingsTotal * 100)}`,
-    ].join("|");
-  }, [checkoutSavingsTotal, offersAppliedParts]);
-
-  const lastOffersCelebrationKeyRef = useRef("");
-  useEffect(() => {
-    if (!appliedOffersCelebrationKey) {
-      lastOffersCelebrationKeyRef.current = "";
-      return;
-    }
-    if (lastOffersCelebrationKeyRef.current === appliedOffersCelebrationKey) return;
-    lastOffersCelebrationKeyRef.current = appliedOffersCelebrationKey;
-
-    const labels = offersAppliedParts.map((p) => p.label);
-    const shown = labels.slice(0, 2);
-    const more = labels.length > 2;
-    const fromPending = pendingCouponCelebrationRef.current?.trim() || null;
-    pendingCouponCelebrationRef.current = null;
-    const code =
-      fromPending ||
-      (shown.length > 0 ? `${shown.join(" + ")}${more ? " + more" : ""}` : "Offers");
-    setCouponCelebrationCode(code);
-    setCouponCelebrationVisible(true);
-  }, [appliedOffersCelebrationKey, offersAppliedParts]);
+  // Crackers fire only from user apply (applyCouponCode / applyPlatformOfferById /
+  // applyMerchantOfferById). Do not fingerprint savings — quote refetch used to
+  // remount this modal repeatedly.
 
   const hasMissedOfferUnlocked = Boolean(missedOfferWalletPending && displayMissedOfferWalletComp);
 
@@ -3619,7 +3589,6 @@ function CheckoutScreen() {
           : null;
       if (platformId != null) {
         if (selectedPlatformOfferId !== platformId) setSelectedPlatformOfferId(platformId);
-        // Celebration is handled by appliedOffersCelebrationKey effect.
         return;
       }
       // Bill settled without this platform discount — drop the pin (don't leave
@@ -3653,7 +3622,6 @@ function CheckoutScreen() {
           setAppliedCouponCode(null);
           setAppliedCouponLabel(null);
         }
-        // Celebration is handled by appliedOffersCelebrationKey effect.
         return;
       }
       const stillListed = (checkoutOffersQuery.data?.merchantOffers ?? []).some(
@@ -3701,7 +3669,6 @@ function CheckoutScreen() {
         pendingCouponCelebrationRef.current = null;
         setCouponApplyError(msg);
       }
-      // Success celebration is handled by appliedOffersCelebrationKey effect.
     }
   }, [
     serverBill,
@@ -3826,9 +3793,9 @@ function CheckoutScreen() {
       setAppliedCouponLabel(platformHit.name ?? label ?? trimmed);
       setCouponCodeInput("");
       setCouponSheetVisible(false);
-      pendingCouponCelebrationRef.current =
-        platformHit.couponCode?.trim() || trimmed;
-      setCouponCelebrationVisible(false);
+      pendingCouponCelebrationRef.current = null;
+      setCouponCelebrationCode(platformHit.couponCode?.trim() || trimmed);
+      setCouponCelebrationVisible(true);
       return;
     }
 
@@ -3864,8 +3831,9 @@ function CheckoutScreen() {
     setAppliedCouponLabel(label ?? trimmed);
     setCouponCodeInput("");
     setCouponSheetVisible(false);
-    pendingCouponCelebrationRef.current = trimmed;
-    setCouponCelebrationVisible(false);
+    pendingCouponCelebrationRef.current = null;
+    setCouponCelebrationCode(trimmed);
+    setCouponCelebrationVisible(true);
   }, [
     hasEligibleCheckoutOfferBase,
     checkoutOffersQuery.data?.platformOffers,
@@ -3931,8 +3899,9 @@ function CheckoutScreen() {
     setCheckoutOfferUserPinned(true);
     setCouponApplyError(null);
     setCouponSheetVisible(false);
-    pendingCouponCelebrationRef.current = code || name?.trim() || "Offer";
-    setCouponCelebrationVisible(false);
+    pendingCouponCelebrationRef.current = null;
+    setCouponCelebrationCode(code || name?.trim() || "Offer");
+    setCouponCelebrationVisible(true);
   }, [
     hasEligibleCheckoutOfferBase,
     checkoutOffersQuery.data,
@@ -3982,8 +3951,9 @@ function CheckoutScreen() {
     }
     setCouponSheetVisible(false);
     const offerTitle = fromList?.title ?? "Offer";
-    pendingCouponCelebrationRef.current = offerTitle;
-    setCouponCelebrationVisible(false);
+    pendingCouponCelebrationRef.current = null;
+    setCouponCelebrationCode(offerTitle);
+    setCouponCelebrationVisible(true);
   }, [hasEligibleCheckoutOfferBase, checkoutOffersQuery.data, cartSubtotalForOffersResolved]);
 
   const consumePendingCheckoutOffer = useCheckoutOfferStore((s) => s.consumePending);
@@ -6501,11 +6471,7 @@ function CheckoutScreen() {
       <CouponApplyCelebration
         visible={couponCelebrationVisible}
         couponCode={couponCelebrationCode}
-        savedAmount={
-          checkoutSavingsTotal > 0.005
-            ? checkoutSavingsTotal
-            : (primaryCheckoutDiscount?.amount ?? couponDiscountAmount)
-        }
+        savedAmount={primaryCheckoutDiscount?.amount ?? couponDiscountAmount}
         onDismiss={() => setCouponCelebrationVisible(false)}
       />
 

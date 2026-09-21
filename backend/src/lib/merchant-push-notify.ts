@@ -156,6 +156,24 @@ async function sendMerchantNativeFcm(
           data,
           deepLink,
         });
+        const tail = token.length > 6 ? token.slice(-6) : "******";
+        const sessionId = String(payload.data?.alertSessionId ?? "");
+        const orderId = String(payload.data?.orderId ?? payload.data?.foodOrderId ?? "");
+        if (res.ok) {
+          console.info(
+            `[ALERT_ENGINE] FCM_SEND_SUCCESS store token_tail=${tail} messageId=${
+              "messageId" in res ? res.messageId : ""
+            } orderId=${orderId} alertSessionId=${sessionId} priority=${
+              isNewOrderAlert ? "critical" : "high"
+            } ts=${Date.now()}`
+          );
+        } else {
+          console.warn(
+            `[ALERT_ENGINE] FCM_SEND_FAILED store token_tail=${tail} code=${
+              "errorCode" in res ? res.errorCode : ""
+            } orderId=${orderId} alertSessionId=${sessionId} ts=${Date.now()}`
+          );
+        }
         return { token, res };
       } catch {
         return { token, res: { ok: false as const, errorCode: "FCM_THROW", errorMessage: "send failed" } };
@@ -468,6 +486,12 @@ async function notifyMerchantStore(
   // native send fails (stale/unregistered token), fall back to Expo so
   // background/killed new-order alerts are not black-holed.
   if (nativeTokens.length > 0) {
+    console.info(
+      `[ALERT_ENGINE] TOKEN_VALID store=${args.storeId} nativeCount=${nativeTokens.length} ` +
+        `expoCount=${expoTokens.length} token_tail=${nativeTokens[0].slice(-6)} ` +
+        `orderId=${args.pushData?.orderId ?? args.orderId ?? ""} ` +
+        `alertSessionId=${args.pushData?.alertSessionId ?? ""} ts=${Date.now()}`
+    );
     const nativeResult = await sendMerchantNativeFcm(nativeTokens, pushPayload);
     const isCriticalNewOrder =
       args.channelId === "merchant_new_orders_alert" ||
@@ -516,8 +540,8 @@ async function notifyMerchantStore(
       String(args.pushData?.template_code ?? "").toUpperCase() === "MERCHANT_NEW_ORDER";
     if (isCriticalNewOrder) {
       console.error(
-        `[merchant-push] push_failure reason=NO_PUSH_TOKEN store=${args.storeId} ` +
-          `type=${args.type} title=${JSON.stringify(args.title)} ` +
+        `[ALERT_ENGINE] TOKEN_MISSING store=${args.storeId} orderId=${args.pushData?.orderId ?? args.orderId ?? ""} ` +
+          `alertSessionId=${args.pushData?.alertSessionId ?? ""} ts=${Date.now()} ` +
           `(inbox may exist; FCM not sent)`,
       );
     } else {
@@ -887,6 +911,10 @@ export async function notifyMerchantStoreNewOrderPush(
   }
 ): Promise<void> {
   if (!Number.isInteger(args.storeId) || args.storeId < 1) return;
+  console.info(
+    `[ALERT_ENGINE] BACKEND_SEND_START store=${args.storeId} orderId=${args.orderIdText} ` +
+      `alertSessionId=MERCHANT_NEW_ORDER:${args.foodOrderId ?? args.orderIdText}:${args.storeId} ts=${Date.now()}`
+  );
   await notifyMerchantStore(sql, {
     storeId: args.storeId,
     type: "order",

@@ -1,12 +1,9 @@
 /**
- * Full-width horizontal slide for main tabs.
+ * Tab scene transition.
  *
- * Bottom-tabs `current.progress` is **0 when focused** and ±1 when neighboring
- * (same convention as RN `forShift`). Inactive scenes must leave the viewport
- * by a full screen width AND must not paint (opacity 0) — otherwise Home stays
- * visible while Food “activates” and the user reads Food → Main Home → Food.
- *
- * Opacity is a hard cut (not a theatrical fade / delay). No setTimeout.
+ * Instant cut (duration 0). A 220ms slide left Food at zIndex 0 under Home
+ * whenever native progress stalled on first layout — the previous page flashed
+ * for seconds. Neighbors stay opacity 0 so Home never composites over Food.
  */
 
 import { Dimensions } from "react-native";
@@ -28,7 +25,6 @@ export function forCustomerTabSlide({
     outputRange: [-width, 0, width],
     extrapolate: "clamp",
   });
-  // Hard exclusive visibility — neighbor never composites under the active tab.
   const opacity = progress.interpolate({
     inputRange: [-1, -0.001, 0, 0.001, 1],
     outputRange: [0, 0, 1, 0, 0],
@@ -43,11 +39,10 @@ export function forCustomerTabSlide({
   };
 }
 
-/** Snappy press-driven slide — animation duration, not a navigation delay. */
 export const CUSTOMER_TAB_TRANSITION_SPEC = {
   animation: "timing" as const,
   config: {
-    duration: 220,
+    duration: 0,
     useNativeDriver: true,
   },
 };

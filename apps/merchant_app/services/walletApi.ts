@@ -23,16 +23,29 @@ export interface LedgerResponse {
 
 export type PayoutSettlementSummary = MerchantPayoutSettlementClient;
 
+const walletSummaryInFlight = new Map<string, Promise<WalletSummary>>();
+
 export async function fetchWalletSummary(storeId: number, token: string): Promise<WalletSummary> {
-  const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/wallet`, token, {
-    timeoutMs: 20_000,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as any).error || "Failed to load wallet");
+  const key = `${storeId}:${token.slice(-24)}`;
+  const existing = walletSummaryInFlight.get(key);
+  if (existing) return existing;
+  const run = (async () => {
+    const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/wallet`, token, {
+      timeoutMs: 12_000,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any).error || "Failed to load wallet");
+    }
+    const data = await res.json();
+    return data as WalletSummary;
+  })();
+  walletSummaryInFlight.set(key, run);
+  try {
+    return await run;
+  } finally {
+    if (walletSummaryInFlight.get(key) === run) walletSummaryInFlight.delete(key);
   }
-  const data = await res.json();
-  return data as WalletSummary;
 }
 
 export async function fetchWalletFreezeStatus(

@@ -39,6 +39,8 @@ import BackgroundOrderPermissionsGate from "../components/BackgroundOrderPermiss
 import NewOrderAutoOpenHandler from "../components/NewOrderAutoOpenHandler";
 import { AppAssetsPrefetch } from "@/components/AppAssetsPrefetch";
 import { ensureMerchantAppAssetsLoaded } from "@/store/appAssetsStore";
+import { hydrateMenuImageDiskCache } from "@/lib/menuImageDiskCache";
+import { hydrateMenuCatalogCache } from "@/lib/menuCatalogCache";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
 import BackgroundNewOrderLocalAlert from "../components/BackgroundNewOrderLocalAlert";
 import StoreStatusPushHandler from "../components/StoreStatusPushHandler";
@@ -252,6 +254,8 @@ export default function RootLayout() {
   useEffect(() => {
     // CMS assets must never block first paint — AppAssetsPrefetch dedupes the fetch.
     void ensureMerchantAppAssetsLoaded();
+    void hydrateMenuImageDiskCache();
+    void hydrateMenuCatalogCache();
   }, []);
 
   // Prefer real font registration; only soft-timeout so login is never blocked forever.

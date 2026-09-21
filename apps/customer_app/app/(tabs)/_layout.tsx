@@ -1,22 +1,27 @@
 import { Tabs, useRouter } from "expo-router";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { CustomerTabBar, customerTabBarOffset } from "@/components/CustomerTabBar";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
-import {
-  CUSTOMER_TAB_TRANSITION_SPEC,
-  forCustomerTabSlide,
-} from "@/lib/customerTabTransition";
 import { hasCompletedProfileSync } from "@/lib/profileCache";
 import { useAuthStore } from "@/store/authStore";
+import { tabDbg } from "@/lib/tabNavDebug";
 
 /**
  * Tab navigator owns ONE floating CustomerTabBar.
  * Position comes from shared locked safe-area insets — never from page layout height.
- * Screens slide horizontally; the tab bar stays fixed outside the scene animation.
+ * Tab scenes cut instantly (no slide interpolator) so Food never sits behind Home.
  */
 export default function TabsLayout() {
+  const tabsUnlockedRef = useRef(false);
+  useEffect(() => {
+    tabDbg("INTERPOLATOR_ACTIVE", {
+      file: "(tabs)/_layout.tsx",
+      durationMs: 0,
+      animation: "none",
+    });
+  }, []);
   const insets = useAppSafeAreaInsets();
   const router = useRouter();
   const hydrated = useAuthStore((s) => s.hydrated);
@@ -31,12 +36,24 @@ export default function TabsLayout() {
       router.replace("/(auth)/login");
       return;
     }
-    if (!hasCompletedProfileSync()) {
+    // After tabs have painted, a cache miss must not yank the user to onboarding
+    // (that remounts tabs at Home and bounces Food).
+    if (!hasCompletedProfileSync() && !tabsUnlockedRef.current) {
       router.replace("/(onboarding)");
     }
   }, [hydrated, accessToken, router]);
 
-  if (!hydrated || !accessToken || !hasCompletedProfileSync()) {
+  const tabsReady = hydrated && Boolean(accessToken) && hasCompletedProfileSync();
+  if (tabsReady) tabsUnlockedRef.current = true;
+
+  // Never unmount the tab navigator after it has painted — a brief profile-cache
+  // miss remounted tabs at Home and bounced Food → previous page → Food.
+  if (!tabsUnlockedRef.current) {
+    tabDbg("TABS_LAYOUT_NULL", {
+      hydrated,
+      hasToken: Boolean(accessToken),
+      profileSync: hasCompletedProfileSync(),
+    });
     return null;
   }
 
@@ -46,6 +63,10 @@ export default function TabsLayout() {
       <Tabs
         tabBar={(props) => <CustomerTabBar {...props} />}
         safeAreaInsets={{ bottom: 0 }}
+        // Keep Home/Food native scenes attached. Detaching Food while inactive
+        // forces a native reattach on tap, which stalls BottomTabView's slide
+        // useEffect and leaves the previous page painted for seconds.
+        detachInactiveScreens={false}
         screenOptions={{
           headerShown: true,
           headerStyle: { backgroundColor: GatiMitraColors.softBackground },
@@ -64,15 +85,12 @@ export default function TabsLayout() {
           },
           tabBarBackground: () => null,
           freezeOnBlur: true,
-          // Full-width shift — driven entirely by transitionSpec + sceneStyleInterpolator below (no
-          // named `animation` preset: bottom-tabs only uses a preset's own spec/interpolator when
-          // ours are absent, so setting one here is a no-op that just adds an unused variable).
-          // Tab switches are press-only (CustomerTabBar / EdgePeek). Scroll/pan on Home or Food
-          // content never calls navigation.navigate / jumpTo — keep that invariant.
-          transitionSpec: CUSTOMER_TAB_TRANSITION_SPEC,
-          sceneStyleInterpolator: forCustomerTabSlide,
-          // Keep Food/Home scenes in the graph so rapid tab presses don't remount mid-slide.
-          // Home↔Food authority: `lib/customerPrimaryTabNav` + `navigatePrimaryTab` (not URL flash).
+          // Instant cut. Passing transitionSpec (even duration 0) keeps BottomTabView
+          // in the animated pipeline — incoming Food stays opacity 0 at zIndex 0 while
+          // Home stays opaque, so the previous page paints for seconds.
+          animation: "none",
+          // Keep Food/Home scenes in the graph so rapid tab presses don't remount.
+          // Home↔Food authority: `lib/customerPrimaryTabNav` + `navigatePrimaryTab`.
           lazy: false,
         }}
       >

@@ -1597,6 +1597,19 @@ export interface RecordOrderCancellationInput
 /**
  * Canonical write: order_cancellation_reasons + orders_core.cancellation_reason_id + orders_food display.
  */
+function queueOrderCancelPush(orderCoreId: number, reason?: string | null): void {
+  void import("@/lib/notify-order-cancelled")
+    .then(({ notifyOrderCancelled }) =>
+      notifyOrderCancelled({
+        ordersCoreId: orderCoreId,
+        reason: reason ?? undefined,
+      })
+    )
+    .catch(() => {
+      /* notify is best-effort */
+    });
+}
+
 export async function recordOrderCancellation(
   input: RecordOrderCancellationInput
 ): Promise<{ cancellationReasonId: number | null; updated: boolean }> {
@@ -1618,6 +1631,7 @@ export async function recordOrderCancellation(
   const latestId = Number(existing[0]?.id);
   if (Number.isFinite(linkedId) && linkedId > 0) {
     if (!input.skipLedgerSync) await syncOrderCancellationLedger(input);
+    queueOrderCancelPush(input.orderId, input.displayReason);
     return { cancellationReasonId: linkedId, updated: true };
   }
   if (Number.isFinite(latestId) && latestId > 0) {
@@ -1628,6 +1642,7 @@ export async function recordOrderCancellation(
       UPDATE orders_food SET cancellation_reason_id = ${latestId} WHERE order_id = ${input.orderId}
     `;
     if (!input.skipLedgerSync) await syncOrderCancellationLedger(input);
+    queueOrderCancelPush(input.orderId, input.displayReason);
     return { cancellationReasonId: latestId, updated: true };
   }
 
@@ -1678,6 +1693,7 @@ export async function recordOrderCancellation(
         } as Record<string, unknown>),
     });
     if (!input.skipLedgerSync) await syncOrderCancellationLedger(input);
+    queueOrderCancelPush(input.orderId, input.displayReason);
     return { cancellationReasonId, updated: true };
   }
 
@@ -1691,6 +1707,7 @@ export async function recordOrderCancellation(
     cancellationDetails: input.cancellationDetails,
   });
   if (!input.skipLedgerSync) await syncOrderCancellationLedger(input);
+  queueOrderCancelPush(input.orderId, input.displayReason);
   return { cancellationReasonId, updated };
 }
 
@@ -1851,10 +1868,11 @@ export async function updateOrdersCoreCancellation(
 
   // Best-effort: restore platform offer usage when admin cancels (idempotent).
   try {
-    const [core] = await sql<{ order_id: string | null }[]>`
-      SELECT order_id FROM orders_core WHERE id = ${orderId} LIMIT 1
+    const [core] = await sql<{ order_id: string | null; formatted_order_id: string | null }[]>`
+      SELECT order_id, formatted_order_id FROM orders_core WHERE id = ${orderId} LIMIT 1
     `;
     const orderKey = core?.order_id ?? String(orderId);
+    const formattedKey = core?.formatted_order_id ?? orderKey;
     const rows = await sql<
       Array<{
         id: number;
@@ -1875,7 +1893,11 @@ export async function updateOrdersCoreCancellation(
       FROM platform_offer_usages u
       INNER JOIN billing_platform_offers o ON o.id = u.platform_offer_id
       WHERE u.status IN ('reserved', 'consumed')
-        AND (u.order_id = ${orderId} OR u.order_id_text = ${orderKey})
+        AND (
+          u.order_id = ${orderId}
+          OR u.order_id_text = ${orderKey}
+          OR u.order_id_text = ${formattedKey}
+        )
     `;
     for (const row of rows) {
       if (row.restore_on_cancel === false) continue;
@@ -1901,6 +1923,28 @@ export async function updateOrdersCoreCancellation(
           WHERE id = ${row.platform_offer_id}
         `;
       }
+    }
+
+    try {
+      await sql`
+        UPDATE flash_sale_redemptions r
+        SET
+          status = 'cancelled',
+          cancelled_at = COALESCE(r.cancelled_at, now()),
+          consumed_budget = 0,
+          updated_at = now()
+        FROM billing_platform_offers o
+        WHERE o.id = r.platform_offer_id
+          AND COALESCE(o.restore_on_cancel, TRUE) = TRUE
+          AND r.status IN ('reserved', 'consumed')
+          AND (
+            r.order_id = ${orderId}
+            OR r.order_id_text = ${orderKey}
+            OR r.order_id_text = ${formattedKey}
+          )
+      `;
+    } catch (flashErr) {
+      console.warn("[updateOrdersCoreCancellation] flash sale restore failed", flashErr);
     }
   } catch (err) {
     console.warn("[updateOrdersCoreCancellation] platform offer usage restore failed", err);

@@ -470,6 +470,7 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
         platformOfferId: flashOfferId,
         customerId: input.customerPk,
         orderId: orderIdText,
+        orderPk: orderCorePk,
         serviceType: "PARCEL",
         storeId: Number.isFinite(partnerStoreId) && partnerStoreId > 0 ? partnerStoreId : null,
         originalItemPrice: fare,

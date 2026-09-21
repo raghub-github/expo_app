@@ -634,6 +634,7 @@ async function persistOfferSnapshots(
           platformOfferId,
           customerId,
           orderId,
+          orderPk,
           discountAmount: amount,
           orderSaleAmount: asNumber(pending.grandTotal ?? 0),
           ...(snapConsume ? { consumeMode: snapConsume } : {}),

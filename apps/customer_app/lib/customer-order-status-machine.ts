@@ -134,22 +134,31 @@ export function orderRefsMatch(
   return false;
 }
 
-/** Push / WS template codes that mean the order reached a terminal state. */
-export function isCustomerOrderCompletionPush(data: Record<string, unknown> | null | undefined): boolean {
-  if (!data) return false;
-  const code = String(
-    data.gmType ?? data.template_code ?? data.templateCode ?? data.type ?? ""
+function lifecyclePushCode(data: Record<string, unknown> | null | undefined): string {
+  return String(
+    data?.gmType ?? data?.template_code ?? data?.templateCode ?? data?.type ?? ""
   )
     .trim()
     .toUpperCase();
+}
+
+/** Push / WS template codes that mean the order reached a terminal state. */
+export function isCustomerOrderCompletionPush(data: Record<string, unknown> | null | undefined): boolean {
+  if (!data) return false;
+  const code = lifecyclePushCode(data);
   if (!code) return false;
+  if (code.includes("OUT_FOR_DELIVERY") || code.includes("FOOD_READY")) return false;
   return (
     code === "ORDER_DELIVERED" ||
     code === "RIDE_COMPLETED" ||
     code === "PARCEL_DELIVERED" ||
+    code === "DELIVERED" ||
+    code === "COMPLETED" ||
     code.includes("ORDER_DELIVERED") ||
     code.includes("RIDE_COMPLETED") ||
-    code.includes("PARCEL_DELIVERED")
+    code.includes("PARCEL_DELIVERED") ||
+    code.endsWith("_DELIVERED") ||
+    code.endsWith("_COMPLETED")
   );
 }
 
@@ -157,16 +166,22 @@ export function statusFromCustomerLifecyclePush(
   data: Record<string, unknown> | null | undefined
 ): string | null {
   if (!data) return null;
-  const rawStatus = String(data.status ?? data.orderStatus ?? "").trim();
-  if (rawStatus) return normalizeCustomerOrderStatus(rawStatus) || null;
-  if (isCustomerOrderCompletionPush(data)) return "DELIVERED";
-  const code = String(
-    data.gmType ?? data.template_code ?? data.templateCode ?? data.type ?? ""
-  )
-    .trim()
-    .toUpperCase();
-  if (!code) return null;
+  const code = lifecyclePushCode(data);
+  const rawStatus = normalizeCustomerOrderStatus(
+    String(data.status ?? data.orderStatus ?? "").trim() || null
+  );
+
+  // Completion / cancel templates win over a stale `status` field on the payload
+  // (FCM often still carries ACCEPTED / CONFIRMED after the order is delivered).
+  if (isCustomerOrderCompletionPush(data)) {
+    if (rawStatus === "CANCELLED" || rawStatus === "FAILED" || rawStatus === "PAYMENT_FAILED" || rawStatus === "RTO") {
+      return rawStatus;
+    }
+    return "DELIVERED";
+  }
   if (code.includes("CANCELLED") || code.includes("CANCELED")) return "CANCELLED";
+  if (rawStatus) return rawStatus;
+  if (!code) return null;
   if (code === "ORDER_CREATED" || code === "ORDER_PLACED") return "ORDER_PLACED";
   if (code === "ORDER_ACCEPTED") return "ACCEPTED";
   if (code === "ORDER_PREPARING") return "PREPARING";

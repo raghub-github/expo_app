@@ -1004,6 +1004,15 @@ export async function stopNewOrderAlert(
   await persistSession();
 }
 
+export function peekNewOrderAlertSessionId(orderId: string | null | undefined): string {
+  const id = String(orderId ?? "").trim();
+  if (!id) return "";
+  const parked = parkedSessions.get(id);
+  if (parked?.alertSessionId) return String(parked.alertSessionId);
+  if (session?.orderId === id && session.alertSessionId) return String(session.alertSessionId);
+  return merchantAlertSessionId(id);
+}
+
 export function isNewOrderPushPayload(data: Record<string, unknown> | null | undefined): boolean {
   if (!data) return false;
   return isMerchantNewOrderPushData(data);

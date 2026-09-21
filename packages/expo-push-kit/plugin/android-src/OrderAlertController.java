@@ -41,6 +41,9 @@ public final class OrderAlertController {
   static final String EXTRA_SOUND_TYPE = "soundType";
   static final String EXTRA_TITLE = "alertTitle";
   static final String EXTRA_BODY = "alertBody";
+  static final String EXTRA_PICKUP = "alertPickup";
+  static final String EXTRA_DROP = "alertDrop";
+  static final String EXTRA_ORDER_TYPE = "alertOrderType";
 
   private static final Object LOCK = new Object();
   private static MediaPlayer player;
@@ -54,6 +57,26 @@ public final class OrderAlertController {
     if (context == null || message == null) return false;
     Map<String, String> data = message.getData();
     if (data == null) data = java.util.Collections.emptyMap();
+
+    String previewSession = resolveSessionId(data);
+    String previewOrder = first(data, "orderId", "order_id", "foodOrderId", "offerId", "offer_id");
+    OrderAlertOverlay.debug(
+        context,
+        "FCM_RECEIVED",
+        previewSession,
+        previewOrder,
+        "control=" + first(data, "gmAlertControl", "alertControl")
+            + " action=" + first(data, "gmAlertAction", "alertAction")
+            + " type=" + first(data, "type", "event", "gmType")
+    );
+    AlertEngineLog.log(
+        context,
+        "FCM_RECEIVED",
+        previewSession,
+        previewOrder,
+        "control=" + first(data, "gmAlertControl", "alertControl")
+            + " type=" + first(data, "type", "event", "gmType")
+    );
 
     String action = first(data, "gmAlertAction", "alertAction");
     boolean controlOnly = "1".equals(first(data, "gmAlertControl", "alertControl"));
@@ -75,6 +98,15 @@ public final class OrderAlertController {
     }
 
     String sessionId = resolveSessionId(data);
+    OrderAlertOverlay.debug(context, "CRITICAL_ORDER_DETECTED", sessionId, previewOrder, "role=" + APP_ROLE);
+    AlertEngineLog.log(context, "CRITICAL_EVENT_DETECTED", sessionId, previewOrder, "role=" + APP_ROLE);
+    OrderAlertOverlay.debug(
+        context,
+        "DRAW_OVERLAYS_PERMISSION=" + OrderAlertOverlay.canDraw(context),
+        sessionId,
+        previewOrder,
+        null
+    );
     if (sessionId.length() == 0) return controlOnly;
 
     String orderId = first(data, "orderId", "order_id", "foodOrderId", "food_order_id");
@@ -96,7 +128,10 @@ public final class OrderAlertController {
         offerId,
         soundType,
         title,
-        body
+        body,
+        resolvePickup(data),
+        resolveDrop(data),
+        resolveOrderType(data)
     );
     return controlOnly;
   }
@@ -110,6 +145,21 @@ public final class OrderAlertController {
       String title,
       String body
   ) {
+    start(context, sessionId, orderId, offerId, soundType, title, body, "", "", "");
+  }
+
+  public static void start(
+      Context context,
+      String sessionId,
+      String orderId,
+      String offerId,
+      String soundType,
+      String title,
+      String body,
+      String pickup,
+      String drop,
+      String orderType
+  ) {
     if (context == null) return;
     String sid = sessionId == null ? "" : sessionId.trim();
     if (sid.length() == 0) return;
@@ -118,13 +168,36 @@ public final class OrderAlertController {
     String sound = soundType == null || soundType.trim().length() == 0
         ? defaultSound()
         : soundType.trim();
+    String pickupText = pickup == null ? "" : pickup.trim();
+    String dropText = drop == null ? "" : drop.trim();
+    String typeText = orderType == null ? "" : orderType.trim();
 
     synchronized (LOCK) {
       JSONObject existing = findSession(context, sid, oid, offer);
       if (existing != null) {
         String existingId = existing.optString("sessionId", sid);
+        try {
+          if (pickupText.length() > 0) existing.put("pickup", pickupText);
+          if (dropText.length() > 0) existing.put("drop", dropText);
+          if (typeText.length() > 0) existing.put("orderType", typeText);
+          if (title != null && title.trim().length() > 0) existing.put("title", title.trim());
+          if (body != null && body.trim().length() > 0) existing.put("body", body.trim());
+          upsertSession(context, existing);
+        } catch (Exception ignored) {
+        }
         putPrimary(context, existingId);
-        ensureService(context, existingId, oid, offer, sound, title, body);
+        ensureService(
+            context,
+            existingId,
+            oid,
+            offer,
+            sound,
+            title,
+            body,
+            existing.optString("pickup", pickupText),
+            existing.optString("drop", dropText),
+            existing.optString("orderType", typeText)
+        );
         Log.i(TAG, "start idempotent sessionId=" + existingId);
         return;
       }
@@ -138,13 +211,17 @@ public final class OrderAlertController {
         row.put("startedAt", System.currentTimeMillis());
         if (title != null) row.put("title", title);
         if (body != null) row.put("body", body);
+        row.put("pickup", pickupText);
+        row.put("drop", dropText);
+        row.put("orderType", typeText);
       } catch (Exception ignored) {
       }
       addSession(context, row);
       putPrimary(context, sid);
     }
 
-    ensureService(context, sid, oid, offer, sound, title, body);
+    ensureService(context, sid, oid, offer, sound, title, body, pickupText, dropText, typeText);
+    AlertEngineLog.log(context, "ALERT_SESSION_CREATED", sid, oid, "sound=" + sound + " type=" + typeText);
     Log.i(TAG, "start sessionId=" + sid + " orderId=" + oid + " sound=" + sound);
   }
 
@@ -153,6 +230,7 @@ public final class OrderAlertController {
     String sid = sessionId == null ? "" : sessionId.trim();
     // Empty id from JS must not wipe every session. Watchdog / FGS stop use stopAll().
     if (sid.length() == 0) return;
+    AlertEngineLog.log(context, "ALERT_STOP", sid, "", null);
     boolean empty;
     synchronized (LOCK) {
       removeSession(context, sid);
@@ -168,11 +246,14 @@ public final class OrderAlertController {
       }
     }
     if (empty) {
+      OrderAlertOverlay.hide(context, sid);
       stopAudio();
       stopService(context);
+      AlertEngineLog.log(context, "ALERT_STOPPED", sid, "", "remaining=0");
       Log.i(TAG, "stop sessionId=" + sid);
       return;
     }
+    OrderAlertOverlay.hide(context, sid);
     JSONObject next = getActive(context);
     if (next != null) {
       ensureService(
@@ -182,7 +263,10 @@ public final class OrderAlertController {
           next.optString("offerId", ""),
           next.optString("soundType", defaultSound()),
           next.optString("title", ""),
-          next.optString("body", "")
+          next.optString("body", ""),
+          next.optString("pickup", ""),
+          next.optString("drop", ""),
+          next.optString("orderType", "")
       );
     }
     Log.i(TAG, "stop sessionId=" + sid + " remaining=" + listSessions(context).length());
@@ -195,6 +279,7 @@ public final class OrderAlertController {
       clearSessions(context);
       putPrimary(context, "");
     }
+    OrderAlertOverlay.hideAll(context);
     stopAudio();
     stopService(context);
     Log.i(TAG, "stop all");
@@ -272,7 +357,10 @@ public final class OrderAlertController {
       String offerId,
       String soundType,
       String title,
-      String body
+      String body,
+      String pickup,
+      String drop,
+      String orderType
   ) {
     try {
       Intent intent = new Intent(context, OrderAlertForegroundService.class);
@@ -283,6 +371,10 @@ public final class OrderAlertController {
       intent.putExtra(EXTRA_SOUND_TYPE, soundType);
       if (title != null) intent.putExtra(EXTRA_TITLE, title);
       if (body != null) intent.putExtra(EXTRA_BODY, body);
+      if (pickup != null) intent.putExtra(EXTRA_PICKUP, pickup);
+      if (drop != null) intent.putExtra(EXTRA_DROP, drop);
+      if (orderType != null) intent.putExtra(EXTRA_ORDER_TYPE, orderType);
+      AlertEngineLog.log(context, "FGS_START", sessionId, orderId, "soundType=" + soundType);
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         context.getApplicationContext().startForegroundService(intent);
       } else {
@@ -290,6 +382,7 @@ public final class OrderAlertController {
       }
     } catch (Throwable t) {
       Log.w(TAG, "startForegroundService failed: " + t.getMessage());
+      AlertEngineLog.log(context, "FGS_START", sessionId, orderId, "failed=" + t.getMessage());
     }
   }
 
@@ -304,12 +397,31 @@ public final class OrderAlertController {
 
   private static void ensureAudio(Context context, String sessionId, String soundType) {
     synchronized (LOCK) {
+      boolean enabled = OrderAlertSoundStore.isBuzzerEnabled(context);
+      AlertEngineLog.log(
+          context,
+          "SOUND_SETTING_READ",
+          sessionId,
+          "",
+          "enabled=" + enabled
+              + " slot=" + OrderAlertSoundStore.slot(context)
+              + " ringInSilent=" + OrderAlertSoundStore.ringInSilent(context)
+      );
+      if (!enabled) {
+        AlertEngineLog.log(context, "BUZZER_START", sessionId, "", "skipped=sound_alerts_off");
+        return;
+      }
       if (player != null && player.isPlaying() && sessionId.equals(playingSessionId)) {
+        AlertEngineLog.log(context, "BUZZER_STARTED", sessionId, "", "idempotent=1");
         return;
       }
       stopAudioLocked();
-      MediaPlayer next = createPlayer(context, soundType);
-      if (next == null) return;
+      AlertEngineLog.log(context, "BUZZER_START", sessionId, "", "soundType=" + soundType);
+      MediaPlayer next = createPlayer(context, sessionId, soundType);
+      if (next == null) {
+        AlertEngineLog.log(context, "BUZZER_START", sessionId, "", "failed=createPlayer_null");
+        return;
+      }
       try {
         requestFocus(context);
         next.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK);
@@ -317,8 +429,11 @@ public final class OrderAlertController {
         next.start();
         player = next;
         playingSessionId = sessionId;
+        OrderAlertOverlay.debug(context, "BUZZER_STARTED", sessionId, "", "sound=" + soundType);
+        AlertEngineLog.log(context, "BUZZER_STARTED", sessionId, "", "soundType=" + soundType);
       } catch (Throwable t) {
         Log.w(TAG, "audio start failed: " + t.getMessage());
+        AlertEngineLog.log(context, "BUZZER_START", sessionId, "", "failed=" + t.getMessage());
         try {
           next.release();
         } catch (Throwable ignored) {
@@ -360,37 +475,123 @@ public final class OrderAlertController {
         .build();
   }
 
-  private static MediaPlayer createPlayer(Context context, String soundType) {
-    String raw = soundType == null ? defaultSound() : soundType.trim().replaceAll("\\.(wav|mp3|ogg)$", "");
-    if (raw.length() == 0) raw = defaultSound();
-    int resId = context.getResources().getIdentifier(raw, "raw", context.getPackageName());
-    MediaPlayer mp = null;
+  /**
+   * Native-safe waterfall. Never requires JS / Manage Communication:
+   *   selected cached file → bundled res/raw → system ringtone.
+   * A missing or corrupt selected file must not produce a silent buzzer.
+   */
+  private static MediaPlayer createPlayer(Context context, String sessionId, String soundType) {
     AudioAttributes attrs = alertAudioAttributes();
+
+    java.io.File selected = OrderAlertSoundStore.selectedFile(context);
+    if (selected != null) {
+      MediaPlayer fromFile = playerFromFile(context, selected, attrs);
+      if (fromFile != null) {
+        AlertEngineLog.log(
+            context,
+            "SOUND_RESOLVED",
+            sessionId,
+            "",
+            "source=selected_file path=" + selected.getName()
+                + " slot=" + OrderAlertSoundStore.slot(context)
+        );
+        return fromFile;
+      }
+      AlertEngineLog.log(
+          context,
+          "SOUND_RESOLVED",
+          sessionId,
+          "",
+          "source=selected_file_failed fallback=bundled path=" + selected.getName()
+      );
+    } else {
+      AlertEngineLog.log(
+          context,
+          "SOUND_RESOLVED",
+          sessionId,
+          "",
+          "source=no_selected_file fallback=bundled (first-install / never cached)"
+      );
+    }
+
+    String[] rawNames = new String[] {
+        soundType == null ? "" : soundType.trim().replaceAll("\\.(wav|mp3|ogg)$", ""),
+        defaultSound(),
+        "notification",
+        "food_order",
+        "parcel_order",
+        "ride_order"
+    };
+    for (String raw : rawNames) {
+      if (raw == null || raw.trim().length() == 0) continue;
+      MediaPlayer fromRaw = playerFromRaw(context, raw.trim(), attrs);
+      if (fromRaw != null) {
+        AlertEngineLog.log(context, "SOUND_RESOLVED", sessionId, "", "source=bundled_raw name=" + raw.trim());
+        return fromRaw;
+      }
+    }
+
+    MediaPlayer fromSystem = playerFromSystem(context, attrs);
+    if (fromSystem != null) {
+      AlertEngineLog.log(context, "SOUND_RESOLVED", sessionId, "", "source=system_ringtone");
+      return fromSystem;
+    }
+
+    AlertEngineLog.log(context, "SOUND_RESOLVED", sessionId, "", "failed=no_sound_source");
+    return null;
+  }
+
+  private static MediaPlayer playerFromFile(Context context, java.io.File file, AudioAttributes attrs) {
+    MediaPlayer mp = null;
     try {
-      if (resId != 0) {
-        // create(..., attrs, session) applies attributes before prepare. Do not
-        // call setAudioAttributes on an already-prepared player from MediaPlayer.create().
-        mp = MediaPlayer.create(context, resId, attrs, 0);
-      }
-      if (mp == null) {
-        Uri uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
-        if (uri == null) uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
-        mp = new MediaPlayer();
-        mp.setAudioAttributes(attrs);
-        mp.setDataSource(context, uri);
-        mp.prepare();
-      }
+      mp = new MediaPlayer();
+      mp.setAudioAttributes(attrs);
+      mp.setDataSource(file.getAbsolutePath());
+      mp.prepare();
       mp.setLooping(true);
       return mp;
     } catch (Throwable t) {
-      Log.w(TAG, "createPlayer failed: " + t.getMessage());
-      if (mp != null) {
-        try {
-          mp.release();
-        } catch (Throwable ignored) {
-        }
-      }
+      releaseQuietly(mp);
       return null;
+    }
+  }
+
+  private static MediaPlayer playerFromRaw(Context context, String rawName, AudioAttributes attrs) {
+    try {
+      int resId = context.getResources().getIdentifier(rawName, "raw", context.getPackageName());
+      if (resId == 0) return null;
+      MediaPlayer mp = MediaPlayer.create(context, resId, attrs, 0);
+      if (mp == null) return null;
+      mp.setLooping(true);
+      return mp;
+    } catch (Throwable t) {
+      return null;
+    }
+  }
+
+  private static MediaPlayer playerFromSystem(Context context, AudioAttributes attrs) {
+    MediaPlayer mp = null;
+    try {
+      Uri uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+      if (uri == null) uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+      if (uri == null) return null;
+      mp = new MediaPlayer();
+      mp.setAudioAttributes(attrs);
+      mp.setDataSource(context, uri);
+      mp.prepare();
+      mp.setLooping(true);
+      return mp;
+    } catch (Throwable t) {
+      releaseQuietly(mp);
+      return null;
+    }
+  }
+
+  private static void releaseQuietly(MediaPlayer mp) {
+    if (mp == null) return;
+    try {
+      mp.release();
+    } catch (Throwable ignored) {
     }
   }
 
@@ -489,6 +690,22 @@ public final class OrderAlertController {
     if ("parcel".equals(service)) return "parcel_order";
     if ("ride".equals(service) || "person_ride".equals(service)) return "ride_order";
     return "notification";
+  }
+
+  private static String resolvePickup(Map<String, String> data) {
+    String labeled = first(data, "pickupDistance", "pickup", "pickupAddress", "merchantName");
+    if (labeled.length() > 0) return labeled;
+    String meters = first(data, "pickupDistanceMeters");
+    if (meters.length() > 0) return meters;
+    return "";
+  }
+
+  private static String resolveDrop(Map<String, String> data) {
+    return first(data, "dropArea", "drop", "dropAddress");
+  }
+
+  private static String resolveOrderType(Map<String, String> data) {
+    return first(data, "serviceType", "category", "orderType");
   }
 
   private static String defaultSound() {
