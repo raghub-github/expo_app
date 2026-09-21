@@ -233,6 +233,39 @@ export async function createMerchantSubscriptionPaymentOrder(args: {
     },
   });
 
+  // Durable payment-attempt record BEFORE money moves. Merchant subscription
+  // does not persist a pending subscription_payments row (that is created only
+  // on success), so this MERCHANT_SUB_PAYMENT_INITIATED event in the append-only
+  // payment_events spine is the sole pre-payment trace: it lets support find the
+  // attempt by Razorpay order id, and lets reconcileMerchantSubscriptionPayments
+  // recover a captured-but-unconfirmed payment when both the client callback and
+  // the webhook are lost. Best-effort — never block checkout on the audit write.
+  try {
+    await sql`
+      INSERT INTO payment_events (
+        razorpay_order_id, event_type, source, amount_paise, currency, payload
+      ) VALUES (
+        ${order.id}, 'MERCHANT_SUB_PAYMENT_INITIATED', 'client', ${totalPaise}, 'INR',
+        ${JSON.stringify({
+          flow: "merchant_subscription",
+          merchant_store_pk: store.id,
+          plan_id: plan.id,
+          plan_name: plan.plan_name,
+          store_id: store.store_id,
+          parent_id: store.parent_id,
+          is_upgrade: isUpgrade,
+          subtotal_paise: subtotalPaise,
+          gst_percent: gstPercent,
+          gst_amount_paise: gstAmountPaise,
+          total_paise: totalPaise,
+          receipt,
+        })}::text::jsonb
+      )
+    `;
+  } catch {
+    /* audit best-effort — subscription checkout must not fail on the event write */
+  }
+
   return {
     ok: true as const,
     skipPayment: false,
