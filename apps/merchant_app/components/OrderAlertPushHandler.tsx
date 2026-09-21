@@ -1,9 +1,12 @@
 /**
- * NEW_ORDER sound wiring for production Partner builds.
+ * NEW_ORDER wiring for production Partner builds.
+ *
+ * Native FCM → OrderAlertForegroundService owns notification + buzzer + overlay
+ * in background/killed, including first install (bundled raw; no Manage Communication).
  *
  *   OPEN       — mute OS; JS Incoming Order modal chime only
- *   BACKGROUND — OS `merchant_new_orders_alert` only (no JS until open/tap)
- *   KILLED     — FCM + channel sound (this handler never runs)
+ *   BACKGROUND — native FGS (this handler may not run)
+ *   KILLED     — native FGS from FCM (this handler never runs)
  *   TAP / open — dismiss tray/OS sound, then start remaining JS / modal chime
  */
 import { useEffect, useRef } from "react";
@@ -45,20 +48,41 @@ export default function OrderAlertPushHandler() {
 
   useEffect(() => {
     const sid = storeIdRef.current;
-    if (!sid) return;
     void (async () => {
-      const dev = await readDeviceOrderAlertsAsync(sid);
-      rememberIncomingOrderAlertConfig(settingsRef.current, dev);
       try {
-        const { cacheMerchantAlertSound } = await import("@/lib/merchantAlertSoundCache");
+        const { persistNativeAlertSound } = await import("@gatimitra/expo-push-kit");
+        if (!sid) {
+          // Login / first process: arm native without Manage Communication or a store.
+          await persistNativeAlertSound({ enabled: true, ringInSilent: true, volume01: 1 });
+          return;
+        }
+        const dev = await readDeviceOrderAlertsAsync(sid);
+        rememberIncomingOrderAlertConfig(settingsRef.current, dev);
+        const { cacheMerchantAlertSound, getCachedMerchantAlertSoundUri } = await import(
+          "@/lib/merchantAlertSoundCache"
+        );
         const { resolveIncomingOrderChimeUrl } = await import("@/lib/playOrderAlertSound");
+        const enabled = dev.orderAlertsEnabled !== false && dev.soundAlertsEnabled !== false;
+        const ringInSilent = dev.ringInSilent !== false;
+        const volume01 = Math.min(1, Math.max(0, (dev.volumeStep ?? 5) / 10));
+        const slot = dev.alertSoundSlot ?? settingsRef.current.alert_sound_slot_choice ?? 0;
+        await persistNativeAlertSound({
+          enabled,
+          fileUri: await getCachedMerchantAlertSoundUri(),
+          slot,
+          ringInSilent,
+          volume01,
+        });
         const url = resolveIncomingOrderChimeUrl(settingsRef.current, dev);
         await cacheMerchantAlertSound({
           url,
-          slot: dev.alertSoundSlot ?? settingsRef.current.alert_sound_slot_choice ?? 0,
+          slot,
+          enabled,
+          ringInSilent,
+          volume01,
         });
       } catch {
-        /* cache is best-effort */
+        /* cache is best-effort; native bundled fallback still rings */
       }
     })();
   }, [storeId, acceptanceSettings]);

@@ -21,6 +21,8 @@ import {
   readCachedProfile,
   readSyncCachedProfile,
 } from "@/lib/profileCache";
+import { foodNavDbg } from "@/lib/tabNavDebug";
+import { hrefForRequestedPrimaryTab } from "@/lib/customerPrimaryTabNav";
 
 function isPublicUnauthedRoute(segments: readonly string[]): boolean {
   const root = segments[0] ?? "";
@@ -77,7 +79,14 @@ async function replaceAuthedDestination(
 
   const complete = await resolveProfileCompleted();
   if (complete) {
-    router.replace("/(tabs)/");
+    const target = hrefForRequestedPrimaryTab();
+    foodNavDbg("LEAVE", {
+      source: "AuthNavigationGate.replaceAuthedDestination",
+      method: "router.replace",
+      to: target,
+      reason: "authed-destination-requested-tab",
+    });
+    router.replace(target as never);
     return;
   }
   router.replace("/(onboarding)");

@@ -4,7 +4,6 @@ import {
   isOrderSpeechActive,
   speakOrderItems,
   stopOrderSpeech,
-  warmupOrderSpeech,
 } from "@/lib/orderCardActions";
 
 export function useOrderSpeech() {
@@ -13,7 +12,6 @@ export function useOrderSpeech() {
 
   useEffect(() => {
     mounted.current = true;
-    warmupOrderSpeech();
     return () => {
       mounted.current = false;
     };

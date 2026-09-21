@@ -1,10 +1,13 @@
 /**
- * Cache the merchant's selected Super Admin alert sound on disk so push /
- * background / modal playback can use a local file:// URI (reliable) instead of
- * a remote proxy URL that native players often fail on.
+ * Optional disk cache of the Super Admin slot sound + copy into native filesDir.
+ *
+ * Killed/background FCM does NOT depend on this. If the URL was never downloaded,
+ * the cached file was deleted, or the URL is unavailable, native plays bundled
+ * res/raw (then the system ringtone). Opening Manage Communication is never required.
  */
 import * as FileSystem from "expo-file-system/legacy";
 import * as SecureStore from "expo-secure-store";
+import { persistNativeAlertSound } from "@gatimitra/expo-push-kit";
 import { resolvePlayableAlertSoundUrl, resolveAlertSoundUrl } from "@/lib/resolveAlertSoundUrl";
 
 const META_KEY = "merchant_alert_sound_cache_v1";
@@ -68,6 +71,9 @@ export async function getCachedMerchantAlertSoundUri(): Promise<string | null> {
 export async function cacheMerchantAlertSound(args: {
   url: string | null | undefined;
   slot: number;
+  enabled?: boolean;
+  ringInSilent?: boolean;
+  volume01?: number;
 }): Promise<string | null> {
   const remote =
     (await resolvePlayableAlertSoundUrl(args.url)) ?? resolveAlertSoundUrl(args.url);
@@ -80,7 +86,10 @@ export async function cacheMerchantAlertSound(args: {
   if (existing?.url === remote && existing.localUri) {
     try {
       const info = await FileSystem.getInfoAsync(existing.localUri);
-      if (info.exists) return existing.localUri;
+      if (info.exists) {
+        await persistNativeSelected(existing.localUri, slot, args);
+        return existing.localUri;
+      }
     } catch {
       /* re-download */
     }
@@ -97,6 +106,11 @@ export async function cacheMerchantAlertSound(args: {
         slot,
         updatedAt: Date.now(),
       });
+      try {
+        await persistNativeSelected(result.uri, slot, args);
+      } catch {
+        /* native optional */
+      }
       return result.uri;
     }
   } catch {
@@ -108,4 +122,22 @@ export async function cacheMerchantAlertSound(args: {
 /** True when a local custom alert file is ready (used to mute OS channel sound). */
 export async function hasCachedMerchantAlertSound(): Promise<boolean> {
   return (await getCachedMerchantAlertSoundUri()) != null;
+}
+
+async function persistNativeSelected(
+  fileUri: string,
+  slot: number,
+  args: { enabled?: boolean; ringInSilent?: boolean; volume01?: number }
+): Promise<void> {
+  try {
+    await persistNativeAlertSound({
+      enabled: args.enabled !== false,
+      fileUri,
+      slot,
+      ringInSilent: args.ringInSilent !== false,
+      volume01: args.volume01 ?? 1,
+    });
+  } catch {
+    /* native optional */
+  }
 }

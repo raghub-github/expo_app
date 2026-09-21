@@ -208,7 +208,7 @@ export async function cancelFoodOrderForCustomer(
     const { releasePlatformOfferUsagesOnCancel } = await import(
       "../billing/platformOfferUsage.service.js"
     );
-    await releasePlatformOfferUsagesOnCancel(getDb(), orderIdText);
+    await releasePlatformOfferUsagesOnCancel(getDb(), orderIdText, row.coreId);
   } catch {
     /* non-fatal — usage restore must not block cancel */
   }

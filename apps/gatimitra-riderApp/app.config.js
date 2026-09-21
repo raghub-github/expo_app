@@ -95,7 +95,9 @@ module.exports = {
         "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
-        "FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+        "FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "SYSTEM_ALERT_WINDOW",
+        "USE_FULL_SCREEN_INTENT",
       ],
       queries: {
         schemes: ["google.navigation", "geo", "comgooglemaps", "https"],

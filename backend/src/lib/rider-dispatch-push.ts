@@ -118,6 +118,10 @@ export async function sendRiderDispatchDirectPush(args: {
       nativeTokens.length > 0 ? [] : await loadRiderExpoTokens(candidates);
 
     console.info(
+      `[ALERT_ENGINE] BACKEND_SEND_START role=rider riderId=${args.riderId} orderId=${args.orderId} ` +
+        `serviceType=${args.serviceType} ts=${push_dispatch_started_at}`
+    );
+    console.info(
       "[dispatch] push_dispatch_started_at",
       JSON.stringify({
         push_dispatch_started_at,
@@ -132,15 +136,7 @@ export async function sendRiderDispatchDirectPush(args: {
 
     if (nativeTokens.length === 0 && expoTokens.length === 0) {
       console.error(
-        "[dispatch] push_failure",
-        JSON.stringify({
-          reason: "no_push_tokens",
-          mode: "direct_fcm_fallback",
-          riderId: args.riderId,
-          orderId: args.orderId,
-          push_provider_response_at: Date.now(),
-          push_dispatch_started_at,
-        })
+        `[ALERT_ENGINE] TOKEN_MISSING role=rider riderId=${args.riderId} orderId=${args.orderId} ts=${Date.now()}`
       );
       return { ok: false, reason: "no_push_tokens" };
     }

@@ -87,7 +87,9 @@ import {
   RIDE_HOME_FALLBACK,
   FOOD_HOME_FALLBACK,
   PARCEL_HOME_FALLBACK,
+  applySafeBackFallback,
 } from "@/lib/safeRouterBack";
+import { navigateToFoodHome } from "@/lib/navigateToFoodHome";
 import { buildRideSearchingResumeParams } from "@/lib/person-ride-orders";
 import { getRideOrderStatus, isRideCaptainAssigned } from "@/services/rideBooking.service";
 
@@ -147,7 +149,7 @@ function LiveTrackingBackGuard({ fallback }: { fallback: typeof FOOD_HOME_FALLBA
       const type = e.data.action.type;
       if (type !== "GO_BACK" && type !== "POP") return;
       e.preventDefault();
-      router.replace(fallback);
+      applySafeBackFallback(router, fallback, "LiveTrackingBackGuard");
     });
     return unsub;
   }, [navigation, router, fallback]);
@@ -164,7 +166,7 @@ export default function OrderDetailsScreen() {
   }, [router]);
   /** After placing a food order, never pop back into checkout/cart — always food home. */
   const handleFoodTrackingBack = useCallback(() => {
-    router.replace(FOOD_HOME_FALLBACK);
+    navigateToFoodHome(router, { fromOverlay: true });
   }, [router]);
   const handleParcelTrackingBack = useCallback(() => {
     router.replace(PARCEL_HOME_FALLBACK);

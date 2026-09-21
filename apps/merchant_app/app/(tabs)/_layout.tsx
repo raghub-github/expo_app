@@ -103,7 +103,6 @@ function MerchantTabsShell() {
         name="menu"
         options={{
           title: "Catalog",
-          lazy: false,
           tabBarIcon: ({ color, focused, size }) => (
             <TabIcon name={focused ? "cube" : "cube-outline"} color={color} size={size} />
           ),
@@ -163,7 +162,6 @@ function MerchantTabsShell() {
         name="profile"
         options={{
           title: "Profile",
-          lazy: false,
           tabBarIcon: ({ color, focused, size }) => (
             <TabIcon name={focused ? "person" : "person-outline"} color={color} size={size} />
           ),

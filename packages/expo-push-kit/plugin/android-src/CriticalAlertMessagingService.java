@@ -18,6 +18,17 @@ public class CriticalAlertMessagingService extends ExpoFirebaseMessagingService 
   public void onMessageReceived(RemoteMessage remoteMessage) {
     boolean controlOnly = false;
     try {
+      OrderAlertOverlay.debug(
+          this,
+          "FCM_RECEIVED",
+          remoteMessage != null && remoteMessage.getData() != null
+              ? String.valueOf(remoteMessage.getData().get("alertSessionId"))
+              : "",
+          remoteMessage != null && remoteMessage.getData() != null
+              ? String.valueOf(remoteMessage.getData().get("orderId"))
+              : "",
+          "from=" + (remoteMessage != null ? remoteMessage.getFrom() : "")
+      );
       controlOnly = OrderAlertController.handleRemoteMessage(this, remoteMessage);
     } catch (Throwable t) {
       Log.w(TAG, "handleRemoteMessage failed: " + t.getMessage());

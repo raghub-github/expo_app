@@ -6,7 +6,7 @@ import { View, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator } fro
 import { AppText } from "@/components/AppText";
 
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { HomePopularRestaurantCard } from "./HomePopularRestaurantCard";
@@ -25,8 +25,6 @@ export function HomePopularRestaurants({
   loading = false,
   weatherDelayMinutes = 0,
 }: Props) {
-  const router = useRouter();
-
   if (!loading && merchants.length === 0) return null;
 
   return (
@@ -36,7 +34,7 @@ export function HomePopularRestaurants({
         <TouchableOpacity
           style={styles.seeAllBtn}
           activeOpacity={0.8}
-          onPress={() => router.push("/home" as never)}
+          onPress={() => navigatePrimaryTab("food", "HomePopularRestaurants.seeAll")}
         >
           <AppText style={styles.seeAllText}>See all</AppText>
           <Ionicons name="chevron-forward" size={14} color={GatiMitraColors.splashMint} />

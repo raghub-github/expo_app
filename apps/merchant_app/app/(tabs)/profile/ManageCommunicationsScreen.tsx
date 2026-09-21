@@ -84,15 +84,21 @@ export default function ManageCommunicationsScreen() {
       setSoundSaving(true);
       try {
         await patchOrderAcceptanceSoundSlot(storeId, token, slot);
-        await updateDeviceAlerts({ alertSoundSlot: slot });
         const slots = acceptanceSettings.alert_sound_urls_by_slot ?? [null, null, null];
-        const { cacheMerchantAlertSound } = await import("@/lib/merchantAlertSoundCache");
-        await cacheMerchantAlertSound({ url: slots[slot] ?? acceptanceSettings.alert_sound_url, slot });
-        await queryClient.invalidateQueries({ queryKey: ["orderAcceptanceSettings", storeId] });
         const volume01 = Math.min(
           1,
           Math.max(0, settings.order_notifications.ring_volume ?? ringVolumePercent / 100)
         );
+        const { cacheMerchantAlertSound } = await import("@/lib/merchantAlertSoundCache");
+        await cacheMerchantAlertSound({
+          url: slots[slot] ?? acceptanceSettings.alert_sound_url,
+          slot,
+          enabled: deviceAlerts?.orderAlertsEnabled !== false && deviceAlerts?.soundAlertsEnabled !== false,
+          ringInSilent: deviceAlerts?.ringInSilent !== false,
+          volume01,
+        });
+        await updateDeviceAlerts({ alertSoundSlot: slot });
+        await queryClient.invalidateQueries({ queryKey: ["orderAcceptanceSettings", storeId] });
         await previewOrderAlertSound({
           settings: acceptanceSettings,
           selectedSlot: slot,
@@ -116,6 +122,7 @@ export default function ManageCommunicationsScreen() {
       settings.order_notifications.ring_volume,
       ringVolumePercent,
       acceptanceSettings,
+      deviceAlerts,
     ]
   );
 

@@ -8,7 +8,6 @@ import { AppText } from "@/components/AppText";
 import { View, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, Dimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
-import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocationStore } from "@/store/locationStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
@@ -16,6 +15,7 @@ import { offersService } from "@/services/offers.service";
 import { HomeFeaturedOfferCard } from "@/components/home/HomeFeaturedOfferCard";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
+import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -23,7 +23,6 @@ const CARD_W = SCREEN_W - PAD * 2;
 
 export default function OffersTabScreen() {
   const insets = useSafeAreaInsets();
-  const router = useRouter();
   const coords = useLocationStore((s) => s.coords);
   const address = useLocationStore((s) => s.address);
   const debouncedCoords = useDebouncedCoords(coords);
@@ -81,7 +80,7 @@ export default function OffersTabScreen() {
             <TouchableOpacity
               key={offer.id}
               activeOpacity={0.92}
-              onPress={() => router.push("/home" as never)}
+              onPress={() => navigatePrimaryTab("food", "OffersTab.offerCard")}
               style={styles.cardWrap}
             >
               <HomeFeaturedOfferCard

@@ -1,9 +1,11 @@
 /**
- * Native continuous-buzzer stack for Merchant + Rider critical alerts.
+ * Native continuous-buzzer + TYPE_APPLICATION_OVERLAY stack for Merchant + Rider
+ * critical alerts.
  *
  * Injects (survives expo prebuild / EAS):
  *   - CriticalAlertMessagingService (subclasses ExpoFirebaseMessagingService)
  *   - OrderAlertForegroundService (mediaPlayback FGS + looping MediaPlayer)
+ *   - OrderAlertOverlay (WindowManager TYPE_APPLICATION_OVERLAY card)
  *   - JS bridge GatimitraOrderAlert
  *   - permissions + silent ongoing channel
  *
@@ -28,9 +30,11 @@ const PERMISSIONS = [
   "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
   "android.permission.WAKE_LOCK",
   "android.permission.VIBRATE",
-  // Required for the call-style full-screen order/dispatch popup to launch over the
-  // lock screen / while the app is killed (setFullScreenIntent). Without this the
-  // alert can only appear as a heads-up notification, never the full acceptance page.
+  // Required for WindowManager TYPE_APPLICATION_OVERLAY (Appear on top).
+  // The toggle in Settings does nothing unless native code actually addView()s.
+  "android.permission.SYSTEM_ALERT_WINDOW",
+  // Kept for lock-screen / heads-up fallback on the ongoing FGS notification.
+  // Overlay is the primary "appear over other apps" path — not FSI.
   "android.permission.USE_FULL_SCREEN_INTENT",
 ];
 

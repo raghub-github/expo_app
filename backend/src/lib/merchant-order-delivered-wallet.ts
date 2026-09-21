@@ -144,7 +144,8 @@ export async function finalizeMerchantOrderDelivered(input: {
     );
     await consumePlatformOfferUsagesOnDelivery(
       getDb(),
-      String(core.order_id ?? core.id)
+      String(core.order_id ?? core.id),
+      Number(core.id)
     );
   } catch {
     /* non-fatal */

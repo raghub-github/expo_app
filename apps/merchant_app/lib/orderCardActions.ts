@@ -1,4 +1,5 @@
 import { Alert, Linking, Platform, Share } from "react-native";
+import Constants from "expo-constants";
 import type { OrderRecord } from "@/hooks/useOrders";
 import type { KotPrintContext } from "@/lib/printKot";
 import type { MerchantPrintStoreContext } from "@/lib/printContext";
@@ -55,6 +56,11 @@ export async function printOrderKot(
 
 type SpeechModule = typeof import("expo-speech");
 
+/** Expo Go's expo-speech native module can crash the runtime on Android. */
+function isExpoGoRuntime(): boolean {
+  return Constants.appOwnership === "expo";
+}
+
 /** How long an engine may take to start talking before we treat it as failed. */
 const SPEECH_START_GRACE_MS = 500;
 
@@ -74,8 +80,14 @@ let cachedSpeechVoice: { voice: string; language: string } | null | undefined;
 let speechModulePromise: Promise<SpeechModule> | null = null;
 
 function loadSpeechModule(): Promise<SpeechModule> {
+  if (Platform.OS === "web" || isExpoGoRuntime()) {
+    return Promise.reject(new Error("speech unavailable"));
+  }
   if (!speechModulePromise) {
-    speechModulePromise = import("expo-speech");
+    speechModulePromise = import("expo-speech").catch((err) => {
+      speechModulePromise = null;
+      throw err;
+    });
   }
   return speechModulePromise;
 }
@@ -103,7 +115,7 @@ async function resolveEnglishVoice(
 
 /** Prefetch TTS module + English voice so the first card tap starts immediately. */
 export function warmupOrderSpeech(): void {
-  if (Platform.OS === "web") return;
+  if (Platform.OS === "web" || isExpoGoRuntime()) return;
   void loadSpeechModule()
     .then((Speech) => resolveEnglishVoice(Speech))
     .catch(() => {
@@ -129,6 +141,7 @@ export async function stopOrderSpeech(): Promise<void> {
     if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
     return;
   }
+  if (isExpoGoRuntime()) return;
   try {
     const Speech = await loadSpeechModule();
     await Speech.stop();
@@ -142,6 +155,7 @@ export async function isOrderSpeechActive(): Promise<boolean> {
   if (Platform.OS === "web") {
     return typeof window !== "undefined" ? Boolean(window.speechSynthesis?.speaking) : false;
   }
+  if (isExpoGoRuntime()) return false;
   try {
     const Speech = await loadSpeechModule();
     return await speechIsActive(Speech);
@@ -212,7 +226,13 @@ export async function speakOrderItems(
   } catch {
     /* nothing queued */
   }
-  Speech.speak(text, { ...(voice ?? {}), rate: SPEECH_RATE, ...callbacks });
+  try {
+    Speech.speak(text, { ...(voice ?? {}), rate: SPEECH_RATE, ...callbacks });
+  } catch {
+    finish();
+    Alert.alert("Order items", text);
+    return;
+  }
 
   await wait(SPEECH_START_GRACE_MS);
   if (started || (await speechIsActive(Speech))) return;
@@ -225,7 +245,13 @@ export async function speakOrderItems(
   } catch {
     /* nothing queued */
   }
-  Speech.speak(text, { rate: SPEECH_RATE, ...callbacks });
+  try {
+    Speech.speak(text, { rate: SPEECH_RATE, ...callbacks });
+  } catch {
+    finish();
+    Alert.alert("Order items", text);
+    return;
+  }
 
   await wait(SPEECH_START_GRACE_MS);
   if (started || (await speechIsActive(Speech))) return;

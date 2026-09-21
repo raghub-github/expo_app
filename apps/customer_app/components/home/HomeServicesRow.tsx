@@ -17,6 +17,7 @@ import { FrozenServiceIconCircle } from "@/components/FrozenServiceIconCircle";
 import type { CustomerHomeServiceId } from "@/lib/customerHomeServiceMeta";
 import { prefetchCriticalHomeAssetImagesSync, HOME_CRITICAL_ASSET_KEYS } from "@/lib/homeCriticalAssets";
 import { navigateToFoodHome } from "@/lib/navigateToFoodHome";
+import { foodFixDbg } from "@/lib/tabNavDebug";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
 import { useServiceCardOfferPills } from "@/hooks/useServiceCardOfferPills";
 import { InstantPressable } from "@/components/InstantPressable";
@@ -131,7 +132,8 @@ const FOOD: ServiceItem = {
   pill: "Fresh & Fast Delivery",
   accentColor: "#7C3AED",
   assetKey: CX.home.serviceFood,
-  route: "/home",
+  /** Unused for navigation — Food uses navigateToFoodHome → tab `food`. */
+  route: "",
 };
 const RIDE: ServiceItem = {
   id: "ride",
@@ -284,8 +286,6 @@ function ServiceTile({
   const router = useRouter();
   const isAccountBlocked = Boolean(accountBlockReason);
   const overlayIconSize = Math.round(cardHeight * 0.26);
-  /** True after pressIn already started Food nav — blocks onPress from a second navigate. */
-  const foodNavStartedRef = useRef(false);
   const [pressed, setPressed] = useState(false);
   const canPress = enabled || isAccountBlocked;
 
@@ -311,14 +311,6 @@ function ServiceTile({
         disabled={!canPress}
         onPressIn={() => {
           if (canPress) setPressed(true);
-          foodNavStartedRef.current = false;
-          if (isAccountBlocked) return;
-          if (!enabled) return;
-          // Same instant entry as Ride: start navigation on press-in.
-          if (item.id === "food") {
-            foodNavStartedRef.current = true;
-            navigateToFoodHome(router);
-          }
         }}
         onPressOut={() => setPressed(false)}
         onPress={() => {
@@ -334,10 +326,13 @@ function ServiceTile({
           }
           if (!enabled) return;
           if (item.id === "food") {
-            // Only if press-in was skipped (e.g. accessibility activate).
-            if (!foodNavStartedRef.current) {
-              navigateToFoodHome(router);
-            }
+            foodFixDbg("ENTER food", {
+              source: "HomeServicesRow.onPress",
+              method: "navigateToFoodHome",
+              target: "food",
+              reason: "food-service-card",
+            });
+            navigateToFoodHome(router);
             return;
           }
           router.push(item.route as never);

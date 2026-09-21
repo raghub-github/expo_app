@@ -25,7 +25,7 @@ import {
 import { acceptSecondsLeft } from "@/lib/orderAcceptanceWindow";
 import { prefetchMenuItemsForOrders } from "@/lib/menuItemCache";
 import { prefetchOrderTimeline } from "@/lib/orderTimelineCache";
-import { cacheFoodOrders, getCachedFoodOrdersForStore, setCachedFoodOrder } from "@/lib/foodOrderCache";
+import { cacheFoodOrders, getCachedFoodOrdersForStore, patchCachedFoodOrderStatus, setCachedFoodOrder } from "@/lib/foodOrderCache";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { useMerchantOrdersRealtime } from "@/hooks/useMerchantOrdersRealtime";
 import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
@@ -33,6 +33,7 @@ import {
   mapApiOrder,
   attachStoreRatingsFromReviews,
   mergeOrderRecordPreferringMerchantLinePricing,
+  preferProgressedOrderRecord,
   stageTransitionToApi,
   type OrderCounts,
   type OrderRecord,
@@ -41,6 +42,11 @@ import {
 import { fetchStoreReviews } from "@/services/ratingsApi";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 import { shortLocalityFromAddress } from "@/lib/selectedStoreStorage";
+import {
+  isIncomingOrderResolved,
+  markIncomingOrderResolved,
+} from "@/lib/incomingOrderDismissed";
+import { presentLocalLifecycleAlert } from "@/lib/presentLocalNewOrderAlert";
 
 const POLL_FAST_MS = 12_000;
 const POLL_NORMAL_MS = 35_000;
@@ -85,6 +91,8 @@ type OrdersContextValue = {
   extendPrepDelay: (orderId: string, additionalMinutes: number) => Promise<void>;
   /** Self-pickup only: verify customer OTP and mark order completed. */
   completeSelfPickup: (orderId: string, otp: string) => Promise<void>;
+  /** Sync board snapshot — Incoming reject spinner waits on this, not a timeout. */
+  getOrdersSnapshot: () => OrderRecord[];
   counts: OrderCounts;
   formatRelativeTime: (iso: string) => string;
   acceptanceWindowMinutes: number;
@@ -99,6 +107,39 @@ function canTransition(order: OrderRecord, next: OrderStage): boolean {
     }
   }
   return true;
+}
+
+function notifyRejectedOrder(order: OrderRecord, reason?: string | null): void {
+  if (order.id.startsWith("core-")) return;
+  void presentLocalLifecycleAlert({
+    orderId: order.id,
+    displayId: order.formattedOrderId ?? order.orderNumber ?? order.id,
+    stage: "CANCELLED",
+    storeId: order.merchantStoreId,
+    reason: reason ?? order.rejectedReason,
+  });
+}
+
+/** Stale CREATED after local/remote reject must not reopen the incoming sheet. */
+function applyResolvedCreatedGuard(
+  incoming: OrderRecord,
+  existing?: OrderRecord
+): OrderRecord {
+  const merged = preferProgressedOrderRecord(
+    mergeOrderRecordPreferringMerchantLinePricing(incoming, existing),
+    existing
+  );
+  if (merged.status !== "created") return merged;
+  if (!isIncomingOrderResolved(merged.ordersCoreId, merged.id)) return merged;
+  return {
+    ...merged,
+    status: existing && existing.status !== "created" ? existing.status : "rejected",
+    pipelineStatus:
+      existing && existing.status !== "created"
+        ? existing.pipelineStatus
+        : "CANCELLED",
+    rejectedReason: existing?.rejectedReason ?? merged.rejectedReason,
+  };
 }
 
 function formatRelativeTime(iso: string): string {
@@ -149,6 +190,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   const ordersCountRef = useRef(0);
   ordersCountRef.current = orders.length;
   const refetchInFlightRef = useRef<Promise<void> | null>(null);
+  const refetchStartedAtRef = useRef(0);
   const transitionInFlightRef = useRef<Set<string>>(new Set());
   const fastFetchInFlightRef = useRef<Set<number>>(new Set());
   /** Consecutive food-orders failures — slow the poll so we don't stampede a recovering API. */
@@ -214,7 +256,8 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
-    if (refetchInFlightRef.current) {
+    const inFlightAge = Date.now() - refetchStartedAtRef.current;
+    if (refetchInFlightRef.current && inFlightAge < 16_000) {
       await refetchInFlightRef.current;
       return;
     }
@@ -288,23 +331,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
             const local = current.find(
               (o) => o.id === serverRow.id || o.ordersCoreId === serverRow.ordersCoreId
             );
-            const mergedRow = mergeOrderRecordPreferringMerchantLinePricing(serverRow, local);
-            // Stale list poll can still return CREATED after a local accept/reject —
-            // keep the local stage so New tab does not flash the card back.
-            if (
-              local &&
-              local.status !== "created" &&
-              mergedRow.status === "created" &&
-              !local.id.startsWith("core-")
-            ) {
-              return {
-                ...mergedRow,
-                status: local.status,
-                pipelineStatus: local.pipelineStatus,
-                rejectedReason: local.rejectedReason ?? mergedRow.rejectedReason,
-              };
-            }
-            return mergedRow;
+            return applyResolvedCreatedGuard(serverRow, local);
           });
           const next = mergePendingOptimistic(withPricing);
           if (transitionInFlightRef.current.size === 0) return next;
@@ -362,11 +389,14 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       }
     })();
 
+    refetchStartedAtRef.current = Date.now();
     refetchInFlightRef.current = run;
     try {
       await run;
     } finally {
-      refetchInFlightRef.current = null;
+      if (refetchInFlightRef.current === run) {
+        refetchInFlightRef.current = null;
+      }
     }
   }, [token, orderStoreIds, mergePendingOptimistic, mapWithStore]);
 
@@ -399,18 +429,31 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         }
         if (!mapped) return;
         if (transitionInFlightRef.current.has(String(foodId))) return;
-        if (mapped.status === "created" && !mapped.id.startsWith("core-")) {
-          pendingOptimisticRef.current.set(mapped.ordersCoreId, { order: mapped, at: Date.now() });
-        } else {
-          pendingOptimisticRef.current.delete(mapped.ordersCoreId);
-        }
         setOrders((list) => {
           const idx = list.findIndex(
             (o) => o.id === mapped!.id || o.ordersCoreId === mapped!.ordersCoreId
           );
-          if (idx < 0) return [mapped!, ...list];
+          const existing = idx >= 0 ? list[idx] : undefined;
+          const resolved = applyResolvedCreatedGuard(mapped!, existing);
+          if (existing?.status === "created" && resolved.status === "rejected") {
+            markIncomingOrderResolved({
+              orderCoreId: resolved.ordersCoreId,
+              foodId: resolved.id,
+            });
+            notifyRejectedOrder(resolved, resolved.rejectedReason);
+          }
+          if (resolved.status === "created" && !resolved.id.startsWith("core-")) {
+            pendingOptimisticRef.current.set(resolved.ordersCoreId, {
+              order: resolved,
+              at: Date.now(),
+            });
+          } else {
+            pendingOptimisticRef.current.delete(resolved.ordersCoreId);
+          }
+          if (idx < 0) return [resolved, ...list];
           const next = list.slice();
-          next[idx] = mapped!;
+          next[idx] = resolved;
+          ordersRef.current = next;
           return next;
         });
       } catch {
@@ -423,24 +466,31 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   );
 
   const upsertOrder = useCallback((order: OrderRecord) => {
-    if (order.status === "created" && !order.id.startsWith("core-")) {
-      pendingOptimisticRef.current.set(order.ordersCoreId, {
-        order,
-        at: Date.now(),
-      });
-    } else {
-      // Leaving CREATED (accept / reject / advance) — drop the insert-protection entry
-      // so a concurrent full refetch cannot resurrect the order on the New tab.
-      pendingOptimisticRef.current.delete(order.ordersCoreId);
-    }
     setOrders((list) => {
       const idx = list.findIndex(
         (o) => o.id === order.id || o.ordersCoreId === order.ordersCoreId
       );
-      const next = idx < 0 ? [order, ...list] : list.slice();
-      if (idx >= 0) {
-        next[idx] = mergeOrderRecordPreferringMerchantLinePricing(order, list[idx]);
+      const existing = idx >= 0 ? list[idx] : undefined;
+      const resolved = applyResolvedCreatedGuard(order, existing);
+      if (existing?.status === "created" && resolved.status === "rejected") {
+        markIncomingOrderResolved({
+          orderCoreId: resolved.ordersCoreId,
+          foodId: resolved.id,
+        });
+        notifyRejectedOrder(resolved, resolved.rejectedReason);
       }
+      if (resolved.status === "created" && !resolved.id.startsWith("core-")) {
+        pendingOptimisticRef.current.set(resolved.ordersCoreId, {
+          order: resolved,
+          at: Date.now(),
+        });
+      } else {
+        // Leaving CREATED (accept / reject / advance) — drop the insert-protection entry
+        // so a concurrent full refetch cannot resurrect the order on the New tab.
+        pendingOptimisticRef.current.delete(resolved.ordersCoreId);
+      }
+      const next = idx < 0 ? [resolved, ...list] : list.slice();
+      if (idx >= 0) next[idx] = resolved;
       ordersRef.current = next;
       return next;
     });
@@ -465,6 +515,10 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     }
     if (ordersCountRef.current === 0) setLoading(true);
     void refetch();
+    const watchdog = setTimeout(() => {
+      if (ordersCountRef.current === 0) setLoading(false);
+    }, 18_000);
+    return () => clearTimeout(watchdog);
   }, [refetch, token, orderStoreIds.length]);
 
   const pollIntervalMs =
@@ -654,13 +708,39 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       transitionInFlightRef.current.add(orderId);
       // Drop CREATED insert-protection immediately so poll/refetch cannot revive New-tab cards.
       pendingOptimisticRef.current.delete(order.ordersCoreId);
+      markIncomingOrderResolved({ orderCoreId: order.ordersCoreId, foodId: orderId });
+      const cancelledAt =
+        nextStatus === "rejected" ? new Date().toISOString() : undefined;
       setOrders((list) => {
         const next = list.map((o) =>
-          o.id === orderId ? { ...o, status: nextStatus, pipelineStatus: apiStatus } : o
+          o.id === orderId
+            ? {
+                ...o,
+                status: nextStatus,
+                pipelineStatus: apiStatus,
+                ...(rejectedReason ? { rejectedReason } : {}),
+                ...(cancelledAt ? { cancelledAt } : {}),
+              }
+            : o
         );
         ordersRef.current = next;
         return next;
       });
+      patchCachedFoodOrderStatus(storeId, Number(orderId), apiStatus, {
+        rejected_reason: rejectedReason,
+        cancelled_at: cancelledAt,
+      });
+      if (nextStatus === "rejected") {
+        notifyRejectedOrder(
+          {
+            ...order,
+            status: "rejected",
+            pipelineStatus: apiStatus,
+            rejectedReason: rejectedReason ?? order.rejectedReason,
+          },
+          rejectedReason
+        );
+      }
 
       const patchOpts = {
         action_source: "app" as const,
@@ -690,7 +770,15 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         );
         setCachedFoodOrder(storeId, Number(orderId), updated);
         setOrders((list) =>
-          list.map((o) => (o.id === orderId ? mapWithStore(updated, storeId) : o))
+          list.map((o) => {
+            if (o.id !== orderId) return o;
+            return preferProgressedOrderRecord(mapWithStore(updated, storeId), {
+              ...o,
+              status: nextStatus,
+              pipelineStatus: apiStatus,
+              ...(rejectedReason ? { rejectedReason } : {}),
+            });
+          })
         );
         setError(null);
         requestMerchantDashboardStatsRefresh();
@@ -705,7 +793,11 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
             const updated = await fetchFoodOrder(storeId, Number(orderId), token);
             setCachedFoodOrder(storeId, Number(orderId), updated);
             setOrders((list) =>
-              list.map((o) => (o.id === orderId ? mapWithStore(updated, storeId) : o))
+              list.map((o) =>
+                o.id === orderId
+                  ? preferProgressedOrderRecord(mapWithStore(updated, storeId), o)
+                  : o
+              )
             );
             setError(null);
             requestMerchantDashboardStatsRefresh();
@@ -788,6 +880,8 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     [token, orderStoreIds, resolveOrderStoreId, mapWithStore]
   );
 
+  const getOrdersSnapshot = useCallback(() => ordersRef.current, []);
+
   const counts: OrderCounts = useMemo(() => {
     const base: OrderCounts = {
       all: orders.length,
@@ -815,6 +909,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       transitionOrder,
       extendPrepDelay,
       completeSelfPickup,
+      getOrdersSnapshot,
       counts,
       formatRelativeTime,
       acceptanceWindowMinutes,
@@ -828,6 +923,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       transitionOrder,
       extendPrepDelay,
       completeSelfPickup,
+      getOrdersSnapshot,
       counts,
       acceptanceWindowMinutes,
     ]

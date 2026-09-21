@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Platform,
   Text,
+  InteractionManager,
   useWindowDimensions,
   type LayoutChangeEvent,
 } from "react-native";
@@ -37,10 +38,17 @@ import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   acknowledgeNavigatorPrimaryTab,
+  getCustomerPrimaryTabNavState,
   primaryTabFromRouteName,
   resolveOptimisticPrimaryTabIndex,
 } from "@/lib/customerPrimaryTabNav";
-import { navigatePrimaryTab, setCustomerTabsNavigation } from "@/lib/navigatePrimaryTab";
+import {
+  navigatePrimaryTab,
+  preloadCustomerFoodTab,
+  reassertFoodIfNavigatorOnHome,
+  setCustomerTabsNavigation,
+} from "@/lib/navigatePrimaryTab";
+import { foodNavDbg, tabDbg } from "@/lib/tabNavDebug";
 import {
   CustomerTabBarCurvedSheet,
   TAB_SHEET_CURVE_RISE,
@@ -264,16 +272,58 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
   const capsuleTabs = TABS;
   const capsuleTabCount = capsuleTabs.length;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setCustomerTabsNavigation(
       navigation as unknown as Parameters<typeof setCustomerTabsNavigation>[0]
+    );
+    preloadCustomerFoodTab(
+      navigation as unknown as Parameters<typeof preloadCustomerFoodTab>[0]
     );
     return () => setCustomerTabsNavigation(null);
   }, [navigation]);
 
   useEffect(() => {
+    if (activeRouteName !== "food") {
+      preloadCustomerFoodTab(
+        navigation as unknown as Parameters<typeof preloadCustomerFoodTab>[0]
+      );
+    }
+  }, [navigation, activeRouteName]);
+
+  useEffect(() => {
     acknowledgeNavigatorPrimaryTab(activeRouteName, "CustomerTabBar.state");
-  }, [activeRouteName]);
+    tabDbg("NAV_STATE", {
+      index: state.index,
+      route: activeRouteName,
+      pillIndex: activeIndex,
+      routes: state.routes.map((r) => r.name),
+    });
+    if (activeRouteName === "food" || activeRouteName === "index") {
+      foodNavDbg("NAV_STATE", {
+        source: "CustomerTabBar.state",
+        method: "acknowledgeNavigatorPrimaryTab",
+        to: activeRouteName,
+        reason: "navigator-index-changed",
+        navIndex: state.index,
+      });
+    }
+    if (getCustomerPrimaryTabNavState().requestedTab === "food" && activeRouteName === "index") {
+      reassertFoodIfNavigatorOnHome("CustomerTabBar.reassert-food", activeRouteName);
+    }
+  }, [activeRouteName, state.index, activeIndex, state.routes]);
+
+  useEffect(() => {
+    const start = navigation.addListener("transitionStart", (e) => {
+      tabDbg("TRANSITION_START", { target: e.target, data: e.data });
+    });
+    const end = navigation.addListener("transitionEnd", (e) => {
+      tabDbg("TRANSITION_END", { target: e.target, data: e.data });
+    });
+    return () => {
+      start();
+      end();
+    };
+  }, [navigation]);
 
   useLayoutEffect(() => {
     setPillIndex(resolveOptimisticPrimaryTabIndex(activeRouteName, tabIndexForRoute));
@@ -303,8 +353,24 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
 
   const onPressTab = useCallback(
     (route: { key: string; name: string; params?: object }, focused: boolean) => {
-      if (route.name === "food" && !foodEnabled) return;
+      const pressT0 = Date.now();
+      tabDbg("TAB_PRESS", {
+        route: route.name,
+        focused,
+        pillIndex: activeIndex,
+        navIndex: state.index,
+        navRoute: activeRouteName,
+        foodEnabled,
+        foodBlocked,
+        discoveryFiltersOwnFooting,
+        classicFoodEdgeOnly,
+      });
+      if (route.name === "food" && !foodEnabled) {
+        tabDbg("TAB_PRESS_BLOCKED", { route: route.name, reason: "food-disabled" });
+        return;
+      }
       if (route.name === "food" && foodBlocked) {
+        tabDbg("TAB_PRESS_BLOCKED", { route: route.name, reason: "food-blocked-sheet" });
         openBlockSheet({
           serviceLabel: CUSTOMER_HOME_SERVICE_META.food.label,
           reason: accountBlocks.food!,
@@ -321,10 +387,28 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
         target: route.key,
         canPreventDefault: true,
       });
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented) {
+        tabDbg("TAB_PRESS_BLOCKED", { route: route.name, reason: "tabPress-preventDefault" });
+        return;
+      }
       // Same tab: still allow scroll-to-top via default tabPress; no second navigate.
-      if (focused) return;
+      if (focused) {
+        tabDbg("TAB_PRESS_BLOCKED", {
+          route: route.name,
+          reason: "already-focused-optimistic",
+          focusedProp: focused,
+        });
+        return;
+      }
       navigatePrimaryTab(nextTab, `CustomerTabBar.${route.name}`);
+      InteractionManager.runAfterInteractions(() => {
+        tabDbg("AFTER_INTERACTIONS", {
+          route: route.name,
+          dtMs: Date.now() - pressT0,
+          navIndex: state.index,
+          navRoute: state.routes[state.index]?.name,
+        });
+      });
     },
     [
       foodEnabled,
@@ -332,6 +416,11 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
       openBlockSheet,
       accountBlocks.food,
       navigation,
+      activeIndex,
+      state,
+      activeRouteName,
+      discoveryFiltersOwnFooting,
+      classicFoodEdgeOnly,
     ]
   );
 

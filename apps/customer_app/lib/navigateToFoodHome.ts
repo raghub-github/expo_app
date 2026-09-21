@@ -1,6 +1,6 @@
 import type { Router } from "expo-router";
 import { InteractionManager } from "react-native";
-import { resetFoodHomeListScrollGuard } from "@/lib/foodHomeScrollGuard";
+import { resetFoodHomeListScrollGuard, scrollFoodHomeListToTop } from "@/lib/foodHomeScrollGuard";
 import { useLocationStore } from "@/store/locationStore";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 import {
@@ -21,6 +21,7 @@ import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroM
 import { prioritizeVisibleMerchantBanners, prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
 import { prefetchMerchantCardImages } from "@/lib/imageEngine";
 import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
+import { foodFixDbg, foodNavDbg } from "@/lib/tabNavDebug";
 
 /** True while a Food listing instance (tab or /home) is mounted. */
 let foodHomeRouteMounted = false;
@@ -31,6 +32,43 @@ export function markFoodHomeRouteMounted(mounted: boolean): void {
 
 export function isFoodHomeRouteMounted(): boolean {
   return foodHomeRouteMounted;
+}
+
+/** Href that means "open the Food listing" (legacy stack `/home` or Food tab). */
+export function isFoodListingHref(href: string | null | undefined): boolean {
+  if (!href) return false;
+  const p = String(href).split("?")[0].replace(/\/+$/, "") || "/";
+  return p === "/home" || p === "/(tabs)/food" || p === "/food";
+}
+
+/** Canonical Food entry — tab navigator only, never stack `/home`. */
+export function openFoodTab(source: string) {
+  foodFixDbg("ENTER food", {
+    source,
+    method: "navigatePrimaryTab",
+    target: "food",
+  });
+  return navigatePrimaryTab("food", source);
+}
+
+/** Push any in-app href, routing Food listing hrefs through the Food tab. */
+export function navigateCustomerAppHref(
+  router: Router,
+  href: string,
+  source: string
+): void {
+  if (isFoodListingHref(href)) {
+    foodFixDbg("ENTER food", {
+      source,
+      method: "navigateToFoodHome",
+      target: "food",
+      pathname: href,
+      reason: "food-listing-href",
+    });
+    navigateToFoodHome(router, { fromOverlay: true });
+    return;
+  }
+  router.push(href as never);
 }
 
 /** Cheap MMKV → React Query only (no imagery). Safe after navigation is scheduled. */
@@ -102,21 +140,41 @@ export function navigateToFoodHome(
   opts?: { fromOverlay?: boolean }
 ): void {
   resetFoodHomeListScrollGuard();
+  scrollFoodHomeListToTop();
 
-  // Collapse ONLY an overlay stack that sits ABOVE the tabs (e.g. /home/merchant,
-  // /checkout) so a Food tap from there lands on the Food TAB. Strictly gate every
-  // dismiss on canDismiss():
-  //   - On a bare primary tab (Home) canDismiss() is false → we do NOT dismiss.
-  //     Dismissing there re-anchored Expo Router to the root "index" screen, whose
-  //     redirect to "/(tabs)/" then bounced the user off Food back to Home ~1s
-  //     later (the "tap Food → shows restaurants → kicked to Home → tap again" bug).
-  //   - NEVER call router.back() — it walks arbitrary history below the tabs and
-  //     was the other way this bounced.
+  const canDismissFn = (router as { canDismiss?: () => boolean }).canDismiss;
+  const canDismissNow =
+    typeof canDismissFn === "function" ? Boolean(canDismissFn.call(router)) : null;
+  foodFixDbg("ENTER food", {
+    source: "navigateToFoodHome",
+    method: "navigatePrimaryTab(food)",
+    target: "food",
+    fromOverlay: opts?.fromOverlay === true,
+    canDismiss: canDismissNow,
+    reason: "open-food-tab",
+  });
+  foodNavDbg("ENTER", {
+    source: "navigateToFoodHome",
+    method: "navigatePrimaryTab(food)",
+    to: "/(tabs)/food",
+    fromOverlay: opts?.fromOverlay === true,
+    canDismiss: canDismissNow,
+    reason: "open-food-tab",
+  });
+
+  // Switch the tab FIRST, then collapse any overlay stack (merchant/checkout).
+  // Dismiss-first revealed the tab sitting under the overlay (usually Home) for
+  // a beat before Food jumped — "enter Food → last page → Food".
+  navigatePrimaryTab("food", "navigateToFoodHome");
+
   try {
     const canDismiss = (router as { canDismiss?: () => boolean }).canDismiss;
-    // Two independent guards: the caller must say it is on an overlay above the
-    // tabs, AND the router must agree it can dismiss. Either being false = no-op.
     if (opts?.fromOverlay === true && typeof canDismiss === "function" && canDismiss.call(router)) {
+      foodNavDbg("LEAVE", {
+        source: "navigateToFoodHome",
+        method: "dismissAll",
+        reason: "fromOverlay-collapse-after-food-tab",
+      });
       const dismissAll = (router as { dismissAll?: () => void }).dismissAll;
       const dismiss = (router as { dismiss?: () => void }).dismiss;
       if (typeof dismissAll === "function") {
@@ -129,10 +187,8 @@ export function navigateToFoodHome(
       }
     }
   } catch {
-    /* ignore — still jump to Food tab below */
+    /* ignore — Food tab is already selected */
   }
-
-  navigatePrimaryTab("food", "navigateToFoodHome", router);
 
   InteractionManager.runAfterInteractions(() => {
     try {

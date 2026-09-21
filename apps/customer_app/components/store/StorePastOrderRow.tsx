@@ -212,27 +212,31 @@ export const StorePastOrderRow = React.memo(function StorePastOrderRow({
           </View>
 
           <View style={styles.actionCol} pointerEvents="auto" collapsable={false}>
-            <StoreMenuInstantCartControl
-              itemKey={itemKey}
-              merchantId={merchantId}
-              quantity={cartQty}
-              disabled={controlsDisabled}
-              allowOptimisticAdd={!isCustomisable}
-              accent="zomato"
-              darkSurface={dark}
-              onAdd={handleAdd}
-              onIncrement={handleIncrement}
-              onDecrement={handleDecrement}
-              accessibilityLabel={`${menuItem.name} quantity`}
-            />
-            {isCustomisable ? (
-              <AppText
-                style={[styles.customisable, dark && styles.metaDark]}
-                numberOfLines={1}
-              >
-                customisable
-              </AppText>
-            ) : null}
+            <View style={styles.addStack} collapsable={false}>
+              <View style={styles.addControlHost} collapsable={false}>
+                <StoreMenuInstantCartControl
+                  itemKey={itemKey}
+                  merchantId={merchantId}
+                  quantity={cartQty}
+                  disabled={controlsDisabled}
+                  allowOptimisticAdd={!isCustomisable}
+                  accent="zomato"
+                  darkSurface={dark}
+                  onAdd={handleAdd}
+                  onIncrement={handleIncrement}
+                  onDecrement={handleDecrement}
+                  accessibilityLabel={`${menuItem.name} quantity`}
+                />
+              </View>
+              {isCustomisable ? (
+                <AppText
+                  style={[styles.customisable, dark && styles.metaDark]}
+                  numberOfLines={1}
+                >
+                  customisable
+                </AppText>
+              ) : null}
+            </View>
           </View>
         </View>
       </Pressable>
@@ -255,7 +259,7 @@ const styles = StyleSheet.create({
   row: {
     width: "100%",
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     paddingVertical: 12,
   },
   rowPressed: {
@@ -387,13 +391,26 @@ const styles = StyleSheet.create({
     width: ACTION_W,
     flexShrink: 0,
     alignItems: "stretch",
-    justifyContent: "center",
+    justifyContent: "flex-start",
+    paddingTop: 2,
+  },
+  addStack: {
+    width: ACTION_W,
+    flexDirection: "column",
+    alignItems: "stretch",
+  },
+  addControlHost: {
+    width: ACTION_W,
+    alignSelf: "stretch",
   },
   customisable: {
     fontSize: 9,
     color: StoreTheme.textMuted,
-    marginTop: 3,
+    marginTop: 4,
+    lineHeight: 12,
     textAlign: "center",
+    alignSelf: "center",
     textTransform: "lowercase",
+    includeFontPadding: false,
   },
 });

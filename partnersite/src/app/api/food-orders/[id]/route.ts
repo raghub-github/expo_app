@@ -40,6 +40,7 @@ import {
 import { triggerOrderEtaRecalcAfterAccept } from '@/lib/trigger-order-eta-recalc';
 import { broadcastMerchantIncomingResolved } from '@/lib/merchant-incoming-resolved-broadcast';
 import { notifyCustomerMerchantAccepted } from '@/lib/notify-customer-merchant-accepted';
+import { notifyOrderCancelled } from '@/lib/notify-order-cancelled';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -431,6 +432,11 @@ export async function PATCH(
           })
         );
       }
+      void notifyOrderCancelled({
+        ordersCoreId: existing.order_id as number,
+        fromStatus: currentStatus,
+        reason: displayReason,
+      });
     }
 
     if (newStatus === 'RTO') {

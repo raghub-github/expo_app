@@ -37,6 +37,7 @@ import {
   resolveMerchantWalletCreditAmount,
 } from "@/lib/merchant-order-ctm";
 import { broadcastMerchantIncomingResolved } from "@/lib/merchant-incoming-resolved-broadcast";
+import { notifyOrderCancelled } from "@/lib/notify-order-cancelled";
 
 export const runtime = "nodejs";
 
@@ -386,6 +387,11 @@ export async function PATCH(
       } catch (cancelRowErr) {
         console.warn("[orders PATCH] order_cancellation_reasons failed:", cancelRowErr);
       }
+      void notifyOrderCancelled({
+        ordersCoreId: existing.order_id as number,
+        fromStatus: currentStatus,
+        reason: displayReason,
+      });
     }
 
     if (newStatus === "RTO") {

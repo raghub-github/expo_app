@@ -667,6 +667,7 @@ export async function placeRideOrder(input: PlaceRideOrderInput): Promise<PlaceR
         platformOfferId,
         customerId: input.customerPk,
         orderId: orderIdText,
+        orderPk: orderCorePk,
         serviceType: "RIDE",
         originalItemPrice: estimatedFare,
         flashSalePrice: Math.max(0, Math.round((estimatedFare - subsidyAmount) * 100) / 100),

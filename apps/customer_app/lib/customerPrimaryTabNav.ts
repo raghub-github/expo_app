@@ -85,6 +85,14 @@ export function hrefForPrimaryTab(tab: CustomerPrimaryTab): string {
   return HREF_BY_TAB[tab];
 }
 
+/**
+ * Bootstrap / auth redirects must land on the tab the user already asked for.
+ * Always sending `/(tabs)/` (Home) after a Food tap is the Food → Home → Food bounce.
+ */
+export function hrefForRequestedPrimaryTab(): string {
+  return hrefForPrimaryTab(state.requestedTab);
+}
+
 export function primaryTabFromRouteName(routeName: string | undefined | null): CustomerPrimaryTab {
   if (routeName === "food") return "food";
   if (routeName === "orders") return "orders";
@@ -210,7 +218,10 @@ export function isStalePrimaryTabEpoch(epoch: number): boolean {
 /**
  * Sync committed tab from the live navigator when it matches the requested tab
  * (catch-up). Never invents a new user intent from a transient wrong index while
- * an explicit intent is inflight. When idle, follow the navigator (deep links).
+ * an explicit intent is inflight.
+ *
+ * When idle, follow the navigator (deep links) EXCEPT a Home (index) flash
+ * while Food is the requested tab — that is the Food-tap bounce, not a deep link.
  */
 export function acknowledgeNavigatorPrimaryTab(
   routeName: string,
@@ -229,6 +240,22 @@ export function acknowledgeNavigatorPrimaryTab(
     return;
   }
   if (tab === state.committedTab && tab === state.requestedTab && state.inflightEpoch == null) {
+    return;
+  }
+  if (
+    state.inflightEpoch == null &&
+    tab !== state.requestedTab &&
+    state.requestedTab === "food" &&
+    tab === "index"
+  ) {
+    logNav("NAV_IGNORED_STALE", {
+      reason: "stale_epoch",
+      epoch: state.epoch,
+      tab,
+      source,
+      requestedTab: state.requestedTab,
+      note: "do-not-adopt-home-while-food-requested",
+    });
     return;
   }
   state.committedTab = tab;

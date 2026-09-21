@@ -10,7 +10,7 @@ import { View, StyleSheet, TouchableOpacity, Animated, Platform } from "react-na
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
+import { HOME_TAB_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
 import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 
 const CONTAINER_MAX_WIDTH = 420;
@@ -74,7 +74,7 @@ export function EmptyRestaurantsNearby({
       onPress();
       return;
     }
-    safeRouterBack(router, FOOD_HOME_FALLBACK);
+    safeRouterBack(router, HOME_TAB_FALLBACK);
   };
 
   return (

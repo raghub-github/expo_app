@@ -97,5 +97,32 @@ test("ORDER_DELIVERED push maps to DELIVERED without trusting local state", () =
     "DELIVERED"
   );
   assert.equal(isCustomerOrderCompletionPush({ gmType: "RIDE_COMPLETED" }), true);
-  assert.equal(statusFromCustomerLifecyclePush({ gmType: "ORDER_PREPARING" }), null);
+  assert.equal(statusFromCustomerLifecyclePush({ gmType: "ORDER_PREPARING" }), "PREPARING");
+});
+
+test("ORDER_DELIVERED wins over a stale ACCEPTED/CONFIRMED status on the payload", () => {
+  assert.equal(
+    statusFromCustomerLifecyclePush({
+      gmType: "ORDER_DELIVERED",
+      orderId: "GMF100050",
+      status: "ACCEPTED",
+    }),
+    "DELIVERED"
+  );
+  assert.equal(
+    statusFromCustomerLifecyclePush({
+      template_code: "FOOD_ORDER_DELIVERED",
+      orderId: "GMF100050",
+      orderStatus: "CONFIRMED",
+    }),
+    "DELIVERED"
+  );
+  assert.equal(isCustomerOrderCompletionPush({ gmType: "ORDER_OUT_FOR_DELIVERY" }), false);
+  assert.equal(
+    statusFromCustomerLifecyclePush({
+      gmType: "ORDER_OUT_FOR_DELIVERY",
+      status: "OUT_FOR_DELIVERY",
+    }),
+    "OUT_FOR_DELIVERY"
+  );
 });

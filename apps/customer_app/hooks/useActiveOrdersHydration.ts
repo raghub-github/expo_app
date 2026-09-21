@@ -5,7 +5,8 @@
  */
 
 import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { AppState, type AppStateStatus } from "react-native";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { orderService } from "@/services/order.service";
 import type { OrderSummary } from "@/services/order.service";
 import { useAuthStore } from "@/store/authStore";
@@ -20,6 +21,8 @@ import { orderRefsMatch } from "@/lib/customer-order-status-machine";
 import { isActivePersonRideOrder, isPersonRideOrderSummary } from "@/lib/person-ride-orders";
 import { resolveDockVehicleImageKey } from "@/lib/dock-vehicle-image";
 import { isSelfPickupOrder } from "@/lib/self-pickup-order";
+import { catchUpActiveCustomerOrders } from "@/lib/catchUpActiveCustomerOrders";
+import { mergeIncomingMyOrdersList } from "@/lib/apply-customer-order-status";
 import {
   getMyOrdersCachedAt,
   readSyncMyOrders,
@@ -73,6 +76,7 @@ function isTrackableActiveOrder(order: OrderSummary): boolean {
 }
 
 export function useActiveOrdersHydration() {
+  const queryClient = useQueryClient();
   const hydrated = useAuthStore((s) => s.hydrated);
   const hasSession = useAuthStore((s) => !!s.session);
   const hasTrackableOrders = useOrderStore((s) => s.activeOrders.length > 0);
@@ -84,20 +88,36 @@ export function useActiveOrdersHydration() {
     queryKey: ["my-orders"],
     queryFn: async () => {
       const list = await orderService.getMyOrders({ limit: 50 });
-      void writeCachedMyOrders(list);
-      return list;
+      const prev =
+        queryClient.getQueryData<OrderSummary[]>(["my-orders"]) ??
+        (readSyncMyOrders() as OrderSummary[] | undefined);
+      const merged = mergeIncomingMyOrdersList(list, prev);
+      void writeCachedMyOrders(merged);
+      return merged;
     },
     enabled: hydrated && hasSession,
     staleTime: 0,
     refetchOnMount: "always",
     refetchOnReconnect: true,
+    refetchOnWindowFocus: "always",
     refetchInterval:
-      hydrated && hasSession && hasTrackableOrders ? 12_000 : false,
+      hydrated && hasSession && hasTrackableOrders ? 8_000 : false,
     refetchIntervalInBackground: false,
     initialData: cachedOrders,
     initialDataUpdatedAt: getMyOrdersCachedAt(),
     placeholderData: (previous) => previous ?? cachedOrders,
   });
+
+  useEffect(() => {
+    if (!hydrated || !hasSession) return;
+    void catchUpActiveCustomerOrders(queryClient);
+    const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
+      if (state !== "active") return;
+      void catchUpActiveCustomerOrders(queryClient);
+      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+    });
+    return () => sub.remove();
+  }, [hydrated, hasSession, queryClient]);
 
   useEffect(() => {
     if (!orders) return;

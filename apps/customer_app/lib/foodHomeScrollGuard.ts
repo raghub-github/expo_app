@@ -78,6 +78,22 @@ export function resetFoodHomeListScrollGuard(): void {
   listScrolling = false;
 }
 
+let scrollFoodHomeListToTopImpl: (() => void) | null = null;
+
+/** Food listing registers its FlashList so tab/service-card entry can pin to y=0. */
+export function registerFoodHomeListScroller(fn: (() => void) | null): void {
+  scrollFoodHomeListToTopImpl = fn;
+}
+
+/**
+ * Put Food Home back at the real top (filters + Recommended visible).
+ * The Food tab stays mounted, so a previous scroll offset otherwise looks
+ * like the page “slid up” on the next Food tap.
+ */
+export function scrollFoodHomeListToTop(): void {
+  scrollFoodHomeListToTopImpl?.();
+}
+
 export function isFoodHomeListScrollActive(): boolean {
   return listScrolling;
 }

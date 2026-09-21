@@ -29,7 +29,15 @@ export async function sendCriticalAlertControlFcm(args: {
   data?: Record<string, unknown>;
 }): Promise<void> {
   const sessionId = String(args.alertSessionId ?? "").trim();
-  if (!sessionId || args.tokens.length === 0) return;
+  if (!sessionId || args.tokens.length === 0) {
+    if (args.tokens.length === 0) {
+      console.warn(
+        `[ALERT_ENGINE] TOKEN_MISSING role=${args.appRole} action=${args.action} ` +
+          `alertSessionId=${sessionId} ts=${Date.now()}`
+      );
+    }
+    return;
+  }
   const data = flatten({
     ...(args.data ?? {}),
     gmAlertAction: args.action,
@@ -42,7 +50,7 @@ export async function sendCriticalAlertControlFcm(args: {
       const t = String(token ?? "").trim();
       if (!t || isExpoPushTokenString(t)) return;
       try {
-        await sendFcmV1({
+        const res = await sendFcmV1({
           notificationId: randomUUID(),
           token: t,
           title: "",
@@ -54,6 +62,21 @@ export async function sendCriticalAlertControlFcm(args: {
           collapseKey: `gm_alert_${args.action}_${sessionId}`,
           data,
         });
+        const tail = t.length > 6 ? t.slice(-6) : "******";
+        const orderId = String(args.data?.orderId ?? args.data?.foodOrderId ?? "");
+        if (res.ok) {
+          console.info(
+            `[ALERT_ENGINE] FCM_SEND_SUCCESS role=${args.appRole} action=${args.action} ` +
+              `token_tail=${tail} messageId=${res.messageId ?? ""} orderId=${orderId} ` +
+              `alertSessionId=${sessionId} silent=1 priority=critical ts=${Date.now()}`
+          );
+        } else {
+          console.warn(
+            `[ALERT_ENGINE] FCM_SEND_FAILED role=${args.appRole} action=${args.action} ` +
+              `token_tail=${tail} code=${res.errorCode ?? ""} orderId=${orderId} ` +
+              `alertSessionId=${sessionId} ts=${Date.now()}`
+          );
+        }
       } catch {
         /* best-effort control path */
       }

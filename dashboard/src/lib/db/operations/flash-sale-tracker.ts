@@ -84,6 +84,56 @@ export async function getFlashSaleTracker(range?: Partial<DateRange> | null): Pr
   const sql = getSql();
   const { from, to, fromIso, toIso } = parseRange(range);
 
+  try {
+    await sql`
+      UPDATE flash_sale_redemptions r
+      SET
+        status = 'cancelled',
+        cancelled_at = COALESCE(r.cancelled_at, now()),
+        consumed_budget = 0,
+        updated_at = now()
+      FROM billing_platform_offers o, orders_core oc
+      WHERE o.id = r.platform_offer_id
+        AND r.status IN ('reserved', 'consumed')
+        AND COALESCE(o.restore_on_cancel, TRUE) = TRUE
+        AND r.applied_at >= ${fromIso}::timestamptz
+        AND r.applied_at <= ${toIso}::timestamptz
+        AND (
+          oc.id = r.order_id
+          OR (r.order_id_text IS NOT NULL AND oc.order_id = r.order_id_text)
+          OR (r.order_id_text IS NOT NULL AND oc.formatted_order_id = r.order_id_text)
+        )
+        AND (
+          oc.cancelled_at IS NOT NULL
+          OR LOWER(BTRIM(COALESCE(oc.current_status, oc.status::text)))
+            IN ('cancelled', 'canceled')
+        )
+    `;
+    await sql`
+      UPDATE flash_sale_redemptions r
+      SET
+        status = 'refunded',
+        refunded_at = COALESCE(r.refunded_at, now()),
+        consumed_budget = 0,
+        updated_at = now()
+      FROM billing_platform_offers o, orders_core oc
+      WHERE o.id = r.platform_offer_id
+        AND r.status IN ('reserved', 'consumed')
+        AND COALESCE(o.restore_on_refund, TRUE) = TRUE
+        AND r.applied_at >= ${fromIso}::timestamptz
+        AND r.applied_at <= ${toIso}::timestamptz
+        AND (
+          oc.id = r.order_id
+          OR (r.order_id_text IS NOT NULL AND oc.order_id = r.order_id_text)
+          OR (r.order_id_text IS NOT NULL AND oc.formatted_order_id = r.order_id_text)
+        )
+        AND LOWER(COALESCE(oc.payment_status::text, ''))
+          IN ('refunded', 'partially_refunded')
+    `;
+  } catch {
+    /* tracker read must still work if restore columns/tables lag */
+  }
+
   const [summaryRow] = await sql<
     Array<{
       total_redemptions: number;

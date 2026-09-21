@@ -51,6 +51,8 @@ import { setNotificationPushAllowHandler } from "@/lib/notificationPushAllow";
 import { useNotificationPushPromptStore } from "@/store/notificationPushPromptStore";
 import { CampaignAnnouncementCard } from "@/components/campaign/CampaignAnnouncementCard";
 import { applyServerCustomerOrderStatus } from "@/lib/apply-customer-order-status";
+import { navigateCustomerAppHref } from "@/lib/navigateToFoodHome";
+import { resolveNotificationDeepLink } from "@/lib/notificationDeepLinkResolver";
 import {
   isCustomerOrderCompletionPush,
   statusFromCustomerLifecyclePush,
@@ -120,12 +122,22 @@ function PushNotificationBootstrapInner() {
           ? data.orderId
           : typeof data.order_id === "string"
             ? data.order_id
-            : "";
+            : typeof data.orderIdText === "string"
+              ? data.orderIdText
+              : typeof data.formattedOrderId === "string"
+                ? data.formattedOrderId
+                : typeof data.formatted_order_id === "string"
+                  ? data.formatted_order_id
+                  : "";
       const status = statusFromCustomerLifecyclePush(data);
       if (!orderId || !status) return;
       applyServerCustomerOrderStatus({
         queryClient,
-        orderIds: [orderId],
+        orderIds: [
+          orderId,
+          typeof data.formattedOrderId === "string" ? data.formattedOrderId : null,
+          typeof data.formatted_order_id === "string" ? data.formatted_order_id : null,
+        ],
         status,
       });
       void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
@@ -208,11 +220,15 @@ function PushNotificationBootstrapInner() {
             };
             if (j.expired) {
               Alert.alert("Offer expired", j.message || OFFER_EXPIRED_MESSAGE);
-              router.push((j.fallbackDeepLink || "/home") as never);
+              navigateCustomerAppHref(
+                router,
+                j.fallbackDeepLink || "/(tabs)/",
+                "PushNotificationBootstrap.expiredOffer"
+              );
               return;
             }
             if (typeof j.deepLink === "string" && j.deepLink.startsWith("/")) {
-              router.push(j.deepLink as never);
+              navigateCustomerAppHref(router, j.deepLink, "PushNotificationBootstrap.campaign");
               return;
             }
           }
@@ -220,7 +236,21 @@ function PushNotificationBootstrapInner() {
           /* offline — still try local resolve */
         }
       }
-      navigateFromPushData(router, data);
+      const customerHref = resolveNotificationDeepLink(data);
+      if (customerHref) {
+        navigateCustomerAppHref(router, customerHref, "PushNotificationBootstrap.resolver");
+        return;
+      }
+      navigateFromPushData(
+        {
+          push: (href: unknown) => {
+            const path = typeof href === "string" ? href : String(href ?? "");
+            if (!path) return;
+            navigateCustomerAppHref(router, path, "PushNotificationBootstrap.kit");
+          },
+        },
+        data
+      );
     },
     [apiBaseUrl, router],
   );
@@ -417,6 +447,7 @@ function PushNotificationBootstrapInner() {
   useEffect(() => {
     if (expoGo) return;
     let cancelled = false;
+    let receivedSub: { remove: () => void } | null = null;
     void (async () => {
       try {
         const Notifications = await import("expo-notifications");
@@ -424,6 +455,7 @@ function PushNotificationBootstrapInner() {
         Notifications.setNotificationHandler({
           handleNotification: async (notification) => {
             const data = (notification.request.content.data ?? {}) as Record<string, unknown>;
+            handleOrderLifecyclePush(data);
             const result = liveProgressHandlerResult(data);
             // Keep sticky live bar in sync whenever a lifecycle push arrives.
             if (result.updateSticky || result.suppress) {
@@ -439,14 +471,24 @@ function PushNotificationBootstrapInner() {
             };
           },
         });
+        if (cancelled) return;
+        receivedSub = Notifications.addNotificationReceivedListener((notification) => {
+          const data = (notification.request.content.data ?? {}) as Record<string, unknown>;
+          handleOrderLifecyclePush(data);
+        });
+        if (cancelled) {
+          receivedSub.remove();
+          receivedSub = null;
+        }
       } catch {
         /* ignore */
       }
     })();
     return () => {
       cancelled = true;
+      receivedSub?.remove();
     };
-  }, [expoGo]);
+  }, [expoGo, handleOrderLifecyclePush]);
 
   // Sync tokens when auth is ready. Permission OS dialog is owned by the
   // notification sheet (Skip = 7-day cooldown) — do not auto-prompt here.

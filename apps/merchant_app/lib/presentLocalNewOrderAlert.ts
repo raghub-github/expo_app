@@ -223,8 +223,9 @@ export async function presentLocalLifecycleAlert(args: {
   displayId?: string | null;
   stage: string;
   storeId?: number | null;
+  reason?: string | null;
 }): Promise<boolean> {
-  if (Platform.OS !== "android") return false;
+  if (Platform.OS === "web") return false;
   const orderId = String(args.orderId ?? "").trim();
   const stage = String(args.stage ?? "").trim().toUpperCase();
   if (!orderId || !stage) return false;
@@ -240,12 +241,15 @@ export async function presentLocalLifecycleAlert(args: {
     await ensureLifecycleChannel(Notifications);
     const display = String(args.displayId ?? orderId).trim() || orderId;
     const copy = lifecycleCopy(stage, display);
+    const why = (args.reason ?? "").trim();
+    const body =
+      stage === "CANCELLED" && why ? why : copy.body;
     const url = `/order/${orderId}`;
     await Notifications.scheduleNotificationAsync({
       identifier: `merchant-lifecycle-${orderId}-${stage}`,
       content: {
         title: copy.title,
-        body: copy.body,
+        body,
         sound: "default",
         color: GatiMitraMerchant.primary,
         priority: Notifications.AndroidNotificationPriority.HIGH,

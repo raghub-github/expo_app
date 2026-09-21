@@ -11,19 +11,13 @@ import {
   platformOfferUsages,
 } from "../../db/schema.js";
 import type { PlatformOfferRow } from "./types.js";
+import {
+  offerLedgerOrderPredicate,
+  parseOfferOrderNumericPk,
+  resolveOfferOrderKeys,
+} from "./offerOrderKeys.js";
 
 const ACTIVE_USAGE_STATUSES = ["reserved", "consumed"] as const;
-
-function asOrderPk(orderId: string | number | null | undefined): number | null {
-  if (orderId == null) return null;
-  if (typeof orderId === "number" && Number.isFinite(orderId) && orderId > 0) {
-    return Math.floor(orderId);
-  }
-  const digits = String(orderId).replace(/\D/g, "");
-  if (!digits) return null;
-  const n = Number(digits);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
 
 export type PlatformOfferUsageCounts = {
   lifetime: number;
@@ -141,6 +135,8 @@ export type RecordPlatformOfferUsageInput = {
   platformOfferId: number;
   customerId: number;
   orderId: string | number;
+  /** Prefer orders_core.id; never derive this by stripping GM/GMF public ids. */
+  orderPk?: number | null;
   discountAmount: number;
   consumeMode?: string | null;
   /** Order payable / grand total at placement — frozen for sales analytics. */
@@ -159,7 +155,10 @@ export async function recordPlatformOfferUsageAtPlacement(
   const customerId = input.customerId;
   if (!(offerId > 0) || !(customerId > 0)) return { ok: false, status: "invalid" };
 
-  const orderPk = asOrderPk(input.orderId);
+  const orderPk =
+    input.orderPk != null && Number.isFinite(input.orderPk) && input.orderPk > 0
+      ? Math.floor(input.orderPk)
+      : parseOfferOrderNumericPk(input.orderId);
   const orderIdText = String(input.orderId ?? "").trim() || null;
   const discount = Math.max(0, Number(input.discountAmount) || 0);
   const saleRaw = input.orderSaleAmount;
@@ -327,11 +326,11 @@ export async function recordPlatformOfferUsageAtPlacement(
 /** Finalize reserved → consumed on delivery (ON_DELIVERED). */
 export async function consumePlatformOfferUsagesOnDelivery(
   db: PostgresJsDatabase<Record<string, unknown>>,
-  orderId: string | number
+  orderId: string | number,
+  orderPkHint?: number | null
 ): Promise<void> {
-  const orderPk = asOrderPk(orderId);
-  const orderIdText = String(orderId ?? "").trim();
-  if (!orderPk && !orderIdText) return;
+  const keys = await resolveOfferOrderKeys(db, orderId, orderPkHint);
+  if (keys.pks.length === 0 && keys.texts.length === 0) return;
   const now = new Date();
 
   const rows = await db
@@ -340,9 +339,11 @@ export async function consumePlatformOfferUsagesOnDelivery(
     .where(
       and(
         eq(platformOfferUsages.status, "reserved"),
-        orderPk
-          ? eq(platformOfferUsages.orderId, orderPk)
-          : eq(platformOfferUsages.orderIdText, orderIdText)
+        offerLedgerOrderPredicate(
+          platformOfferUsages.orderId,
+          platformOfferUsages.orderIdText,
+          keys
+        )
       )
     );
 
@@ -398,11 +399,11 @@ async function releaseUsages(
   db: PostgresJsDatabase<Record<string, unknown>>,
   orderId: string | number,
   nextStatus: "cancelled" | "refunded",
-  restoreFlag: "restoreOnCancel" | "restoreOnRefund"
+  restoreFlag: "restoreOnCancel" | "restoreOnRefund",
+  orderPkHint?: number | null
 ): Promise<void> {
-  const orderPk = asOrderPk(orderId);
-  const orderIdText = String(orderId ?? "").trim();
-  if (!orderPk && !orderIdText) return;
+  const keys = await resolveOfferOrderKeys(db, orderId, orderPkHint);
+  if (keys.pks.length === 0 && keys.texts.length === 0) return;
   const now = new Date();
 
   const rows = await db
@@ -419,9 +420,11 @@ async function releaseUsages(
     .where(
       and(
         inArray(platformOfferUsages.status, ["reserved", "consumed"]),
-        orderPk
-          ? eq(platformOfferUsages.orderId, orderPk)
-          : eq(platformOfferUsages.orderIdText, orderIdText)
+        offerLedgerOrderPredicate(
+          platformOfferUsages.orderId,
+          platformOfferUsages.orderIdText,
+          keys
+        )
       )
     );
 
@@ -473,18 +476,20 @@ async function releaseUsages(
 
 export async function releasePlatformOfferUsagesOnCancel(
   db: PostgresJsDatabase<Record<string, unknown>>,
-  orderId: string | number
+  orderId: string | number,
+  orderPkHint?: number | null
 ): Promise<void> {
-  await releaseUsages(db, orderId, "cancelled", "restoreOnCancel");
+  await releaseUsages(db, orderId, "cancelled", "restoreOnCancel", orderPkHint);
   const { releaseFlashSaleRedemptionsOnCancelOrRefund } = await import("./flashSaleRedemption.service.js");
-  await releaseFlashSaleRedemptionsOnCancelOrRefund(db, orderId, "cancelled");
+  await releaseFlashSaleRedemptionsOnCancelOrRefund(db, orderId, "cancelled", orderPkHint);
 }
 
 export async function releasePlatformOfferUsagesOnRefund(
   db: PostgresJsDatabase<Record<string, unknown>>,
-  orderId: string | number
+  orderId: string | number,
+  orderPkHint?: number | null
 ): Promise<void> {
-  await releaseUsages(db, orderId, "refunded", "restoreOnRefund");
+  await releaseUsages(db, orderId, "refunded", "restoreOnRefund", orderPkHint);
   const { releaseFlashSaleRedemptionsOnCancelOrRefund } = await import("./flashSaleRedemption.service.js");
-  await releaseFlashSaleRedemptionsOnCancelOrRefund(db, orderId, "refunded");
+  await releaseFlashSaleRedemptionsOnCancelOrRefund(db, orderId, "refunded", orderPkHint);
 }
