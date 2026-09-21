@@ -167,15 +167,24 @@ export async function createRiderSubscriptionDuesPaymentOrder(riderId: number) {
   const hasRazorpayKeys = Boolean(env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET);
 
   if (hasRazorpayKeys) {
+    const duesNotes = {
+      type: "rider_subscription_dues_payment",
+      rider_id: String(riderId),
+      amount_rupees: String(round2(amountPaise / 100)),
+    };
     const order = await createRazorpayOrder({
       amount: amountPaise,
       currency: "INR",
       receipt: `rider_sub_dues_${riderId}_${Date.now()}`,
-      notes: {
-        type: "rider_subscription_dues_payment",
-        rider_id: String(riderId),
-        amount_rupees: String(round2(amountPaise / 100)),
-      },
+      notes: duesNotes,
+    });
+    // Durable anchor for webhook/reconciler recovery on a lost client callback.
+    const { logAnchoredPaymentInitiated } = await import("./payment/anchored-payment-recovery.js");
+    await logAnchoredPaymentInitiated({
+      flow: "rider_subscription_dues_payment",
+      razorpayOrderId: order.id,
+      amountPaise,
+      notes: duesNotes,
     });
 
     return {

@@ -22,6 +22,7 @@ import { reconcilePendingPayments } from "../orders/order.placement.service.js";
 import { reconcileOnboardingPayments } from "../../lib/rider-onboarding-payment.service.js";
 import { reconcileMerchantSubscriptionPayments } from "../../lib/merchant-subscription-payment-reconcile.service.js";
 import { reconcileRideFarePayments } from "../../lib/ride-fare-payment-reconcile.service.js";
+import { reconcileAnchoredPayments } from "../../lib/payment/anchored-payment-recovery.js";
 
 const reconcileBody = z.object({
   scheduled: z.boolean().optional().default(true),
@@ -67,6 +68,9 @@ export async function paymentInternalRoutes(app: FastifyInstance) {
         );
         await reconcileRideFarePayments().catch((err) =>
           req.log.error({ err }, "reconcile_ride_fare")
+        );
+        await reconcileAnchoredPayments().catch((err) =>
+          req.log.error({ err }, "reconcile_anchored_payments")
         );
         return reply.send({ ok: true, checked: 0, finalized: 0 });
       } catch (err) {

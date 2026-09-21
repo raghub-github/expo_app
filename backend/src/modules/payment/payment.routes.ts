@@ -329,6 +329,43 @@ export async function paymentRoutes(app: FastifyInstance) {
             return reply.send({ ok: ob.ok, handler: "rider_onboarding" });
           }
 
+          // Notes-anchored flows (customer subscription, rider subscription,
+          // rider subscription dues) — previously client-verify-only. One generic
+          // dispatch validates the captured amount against the anchor, then calls
+          // the flow's own idempotent verify. Covers "app died before verify".
+          {
+            const anchoredType = String(notes?.type ?? "");
+            const { isAnchoredPaymentType, handleAnchoredPaymentCaptured } = await import(
+              "../../lib/payment/anchored-payment-recovery.js"
+            );
+            if (isAnchoredPaymentType(anchoredType)) {
+              const ap = await handleAnchoredPaymentCaptured({
+                notesType: anchoredType,
+                razorpayOrderId,
+                razorpayPaymentId,
+                capturedPaise: Number(paymentEntity?.amount ?? 0) || undefined,
+                notes: (notes ?? {}) as Record<string, unknown>,
+                source: "webhook",
+              });
+              await markWebhookProcessed(db, eventId);
+              await logPaymentEvent(db, {
+                eventType: ap.ok ? "WEBHOOK_HANDLED_OK" : "WEBHOOK_HANDLER_FAILED",
+                source: "webhook",
+                razorpayOrderId,
+                razorpayPaymentId,
+                payload: {
+                  event,
+                  eventId,
+                  handler: anchoredType,
+                  ok: ap.ok,
+                  errorCode: ap.ok ? null : ap.code,
+                  durationMs: Date.now() - startedAtMs,
+                },
+              });
+              return reply.send({ ok: ap.ok, handler: anchoredType });
+            }
+          }
+
           // Direct-online person-ride fare safety net — orders created with
           // notes.purpose = "ride_fare". Covers "app died between capture and the
           // ride-fare-payment callback". Idempotent with the client callback +

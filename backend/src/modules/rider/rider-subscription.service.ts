@@ -759,19 +759,28 @@ export async function createRiderSubscriptionPaymentOrder(args: {
 
   const receipt = `rider_sub_${args.riderId}_${loaded.plan.id}_${cycle}_${Date.now()}`;
 
+  const riderSubNotes = {
+    type: "rider_subscription",
+    rider_id: String(args.riderId),
+    plan_id: String(loaded.plan.id),
+    price_id: String(loaded.id),
+    billing_cycle: cycle,
+    auto_wallet: useAutoWallet ? "true" : "false",
+    gst_percent: String(loaded.gst.gstPercent),
+  };
   const order = await createRazorpayOrder({
     amount: loaded.gst.totalPaise,
     currency: "INR",
     receipt,
-    notes: {
-      type: "rider_subscription",
-      rider_id: String(args.riderId),
-      plan_id: String(loaded.plan.id),
-      price_id: String(loaded.id),
-      billing_cycle: cycle,
-      auto_wallet: useAutoWallet ? "true" : "false",
-      gst_percent: String(loaded.gst.gstPercent),
-    },
+    notes: riderSubNotes,
+  });
+  // Durable anchor for webhook/reconciler recovery on a lost client callback.
+  const { logAnchoredPaymentInitiated } = await import("../../lib/payment/anchored-payment-recovery.js");
+  await logAnchoredPaymentInitiated({
+    flow: "rider_subscription",
+    razorpayOrderId: order.id,
+    amountPaise: loaded.gst.totalPaise,
+    notes: riderSubNotes,
   });
 
   return {
