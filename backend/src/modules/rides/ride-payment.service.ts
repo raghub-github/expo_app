@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql as dsql } from "drizzle-orm";
 import { getDb, getSql } from "../../db/client.js";
 import {
   debitCustomerGatiCashForRideFare,
@@ -7,7 +7,13 @@ import {
 import { customers, ordersCore, ordersCorePayments, ordersRide } from "../../db/schema.js";
 import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 import { normalizeCustomerOrderStatus } from "../../lib/customer-order-status-resolve.js";
-import { verifyRazorpaySignature, verifyRazorpayPaymentDetails } from "../../services/payment/razorpayService.js";
+import {
+  verifyRazorpaySignature,
+  verifyRazorpayPaymentDetails,
+  createRazorpayOrder,
+} from "../../services/payment/razorpayService.js";
+import { getEnv } from "../../config/env.js";
+import { createHmac } from "node:crypto";
 import { isRideFarePaymentPending } from "../../lib/ride-rider-payout-snapshot.js";
 import { assertRideCustomerPaymentCollectable } from "../../lib/settle-zero-payable-person-ride.js";
 import { computeRideBillForCustomerOrder } from "./ride-bill.service.js";
@@ -176,7 +182,20 @@ export async function confirmRideFarePaymentForCustomer(input: {
     });
   }
 
-  await db.transaction(async (tx) => {
+  const alreadySettled = await db.transaction(async (tx) => {
+    // Exactly-once guard: lock the order row and re-check inside the tx so that
+    // concurrent callback + webhook + reconciler finalizers serialize — only the
+    // first settles; the rest observe paymentStatus already terminal and skip.
+    const locked = await tx.execute<{ payment_status: string | null }>(dsql`
+      SELECT payment_status FROM orders_core WHERE id = ${orderRow.id} FOR UPDATE
+    `);
+    const lockedRows = Array.isArray(locked)
+      ? (locked as Array<{ payment_status: string | null }>)
+      : ((locked as { rows?: Array<{ payment_status: string | null }> })?.rows ?? []);
+    if (!isRideFarePaymentPending(lockedRows[0]?.payment_status)) {
+      return true; // another finalizer already settled — idempotent no-op
+    }
+
     await tx
       .update(ordersCore)
       .set({
@@ -230,7 +249,15 @@ export async function confirmRideFarePaymentForCustomer(input: {
       },
       paidAt: now,
     });
+
+    return false; // we are the settler
   });
+
+  // Another concurrent finalizer already settled this ride — idempotent success,
+  // skip the (non-idempotent) snapshot + settlement engine to avoid duplication.
+  if (alreadySettled) {
+    return { ok: true, amountPaid: fareDue };
+  }
 
   const snapshotId = await insertRideCustomerPaymentSnapshot(db, {
     orderCoreId: orderRow.id,
@@ -330,6 +357,195 @@ export async function confirmRideFarePaymentForCustomer(input: {
   }
 
   return { ok: true, amountPaid: fareDue };
+}
+
+/**
+ * Create the Razorpay order for a DIRECT-ONLINE person-ride fare and durably
+ * anchor it in payment_events (RIDE_FARE_PAYMENT_INITIATED). This is the
+ * pre-payment record that lets the webhook + reconciler recover a captured fare
+ * when the client callback is lost. The payable is computed server-side — the
+ * client-supplied amount is never trusted.
+ */
+export async function createRideFarePaymentOrder(input: {
+  customerSub: string;
+  orderRef: string;
+}): Promise<
+  | { ok: true; orderId: string; keyId: string; amount: number; currency: string; dummy: boolean }
+  | { ok: false; statusCode: number; code: string; message: string }
+> {
+  const db = getDb();
+  const env = getEnv();
+
+  const [customerRow] = await db
+    .select({ id: customers.id })
+    .from(customers)
+    .where(eq(customers.customerId, input.customerSub))
+    .limit(1);
+  const customerPk = customerRow?.id ?? null;
+  if (customerPk == null) {
+    return { ok: false, statusCode: 403, code: "CUSTOMER_REQUIRED", message: "Customer not found" };
+  }
+
+  const [orderRow] = await db
+    .select({
+      id: ordersCore.id,
+      orderId: ordersCore.orderId,
+      orderType: ordersCore.orderType,
+      status: ordersCore.status,
+      currentStatus: ordersCore.currentStatus,
+      paymentStatus: ordersCore.paymentStatus,
+    })
+    .from(ordersCore)
+    .where(customerOrderRefWhere(customerPk, input.orderRef))
+    .limit(1);
+
+  if (!orderRow?.id) return { ok: false, statusCode: 404, code: "ORDER_NOT_FOUND", message: "Order not found" };
+  if (String(orderRow.orderType ?? "") !== "person_ride") {
+    return { ok: false, statusCode: 400, code: "NOT_A_RIDE", message: "Not a ride order" };
+  }
+  const statusUpper = normalizeCustomerOrderStatus(orderRow.currentStatus, orderRow.status);
+  if (statusUpper !== "DELIVERED") {
+    return { ok: false, statusCode: 409, code: "RIDE_NOT_COMPLETED", message: "Ride not completed" };
+  }
+  if (!isRideFarePaymentPending(orderRow.paymentStatus)) {
+    return { ok: false, statusCode: 409, code: "ALREADY_PAID", message: "Ride fare already paid" };
+  }
+
+  const settledPayable = await assertRideCustomerPaymentCollectable(orderRow.id);
+  const billRes = await computeRideBillForCustomerOrder(db, {
+    customerPk,
+    orderRef: input.orderRef,
+  });
+  if (!billRes.ok) {
+    return {
+      ok: false,
+      statusCode: billRes.statusCode ?? 400,
+      code: billRes.code ?? "BILL_FAILED",
+      message: billRes.message,
+    };
+  }
+  const fareDue = roundInr(Math.min(billRes.billing.final_amount, settledPayable) || settledPayable);
+  if (fareDue <= 0.005) {
+    return { ok: false, statusCode: 409, code: "ZERO_PAYABLE", message: "No online fare payable" };
+  }
+  const amountPaise = Math.round(fareDue * 100);
+  const orderIdText = orderRow.orderId?.trim() || String(orderRow.id);
+
+  const dummyModeActive = env.PAYMENT_DUMMY_MODE || !env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET;
+
+  let razorpayOrderId: string;
+  let currency = "INR";
+  if (dummyModeActive) {
+    if (!env.PAYMENT_DUMMY_MODE && env.NODE_ENV !== "development") {
+      return { ok: false, statusCode: 503, code: "GATEWAY_NOT_CONFIGURED", message: "Razorpay not configured" };
+    }
+    razorpayOrderId = `dummy_ride_${orderIdText}_${Date.now()}`;
+  } else {
+    const order = await createRazorpayOrder({
+      amount: amountPaise,
+      currency: "INR",
+      receipt: `ride_${orderIdText}_${Date.now()}`,
+      notes: {
+        purpose: "ride_fare",
+        business_order_id: orderIdText,
+        customer_id: input.customerSub,
+      },
+    });
+    razorpayOrderId = order.id;
+    currency = order.currency;
+  }
+
+  // Durable anchor. Each create-order mints a new Razorpay order = a distinct
+  // attempt; all attempts are retained in the append-only spine.
+  try {
+    const sqlc = getSql();
+    await sqlc`
+      INSERT INTO payment_events (
+        razorpay_order_id, order_id, event_type, source, amount_paise, currency, payload
+      ) VALUES (
+        ${razorpayOrderId}, ${orderIdText}, 'RIDE_FARE_PAYMENT_INITIATED', 'client', ${amountPaise}, ${currency},
+        ${JSON.stringify({
+          flow: "ride_fare",
+          business_order_id: orderIdText,
+          order_core_id: orderRow.id,
+          customer_sub: input.customerSub,
+          customer_pk: customerPk,
+          amount_inr: fareDue,
+        })}::text::jsonb
+      )
+    `;
+  } catch {
+    /* anchor best-effort — webhook notes still enable recovery */
+  }
+
+  return {
+    ok: true,
+    orderId: razorpayOrderId,
+    keyId: env.RAZORPAY_KEY_ID || "dummy_key",
+    amount: amountPaise,
+    currency,
+    dummy: dummyModeActive,
+  };
+}
+
+/**
+ * Server-authoritative finalization for a direct-online ride fare, called by the
+ * Razorpay webhook and the reconciler. Reuses the SAME canonical finalizer
+ * (confirmRideFarePaymentForCustomer) via a synthesized signature — no second
+ * settlement algorithm. Idempotent: an already-paid ride returns idempotent ok;
+ * a gateway amount/verification failure never settles.
+ */
+export async function finalizeRideFarePaymentFromWebhook(args: {
+  razorpayOrderId: string;
+  razorpayPaymentId: string;
+  amountPaise?: number;
+  notes?: Record<string, unknown> | null;
+  source?: string;
+}): Promise<{ ok: boolean; idempotent?: boolean; code?: string; amountPaid?: number }> {
+  const razorpayOrderId = args.razorpayOrderId?.trim() ?? "";
+  const razorpayPaymentId = args.razorpayPaymentId?.trim() ?? "";
+  const source = args.source ?? "webhook";
+  if (!razorpayOrderId || !razorpayPaymentId) return { ok: false, code: "INVALID_PAYLOAD" };
+
+  // Resolve the ride + customer from webhook notes, else from the durable anchor.
+  let orderRef = args.notes ? String(args.notes.business_order_id ?? args.notes.businessOrderId ?? "") : "";
+  let customerSub = args.notes ? String(args.notes.customer_id ?? args.notes.customerId ?? "") : "";
+  if (!orderRef || !customerSub) {
+    const sqlc = getSql();
+    const rows = await sqlc<Array<{ order_id: string | null; payload: Record<string, unknown> | null }>>`
+      SELECT order_id, payload FROM payment_events
+      WHERE razorpay_order_id = ${razorpayOrderId} AND event_type = 'RIDE_FARE_PAYMENT_INITIATED'
+      ORDER BY created_at DESC LIMIT 1
+    `;
+    const p = (rows[0]?.payload ?? {}) as Record<string, unknown>;
+    if (!orderRef) orderRef = String(rows[0]?.order_id ?? p.business_order_id ?? "");
+    if (!customerSub) customerSub = String(p.customer_sub ?? "");
+  }
+  if (!orderRef || !customerSub) return { ok: false, code: "ANCHOR_NOT_FOUND" };
+
+  const synthesizedSignature = createHmac("sha256", getEnv().RAZORPAY_KEY_SECRET ?? "")
+    .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+    .digest("hex");
+
+  try {
+    const res = await confirmRideFarePaymentForCustomer({
+      customerSub,
+      orderRef,
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature: synthesizedSignature,
+    });
+    return { ok: true, idempotent: false, amountPaid: res.amountPaid, code: source };
+  } catch (err) {
+    const statusCode = (err as { statusCode?: number }).statusCode;
+    const message = (err as Error)?.message ?? "";
+    if (statusCode === 409 && /already paid/i.test(message)) {
+      return { ok: true, idempotent: true };
+    }
+    // Amount / gateway verification failure — never settle; caller escalates.
+    if (statusCode === 400) return { ok: false, code: "AMOUNT_OR_VERIFY_FAILED" };
+    return { ok: false, code: "SETTLE_FAILED" };
+  }
 }
 
 export async function adminClearRiderPaymentHoldForOrder(input: {

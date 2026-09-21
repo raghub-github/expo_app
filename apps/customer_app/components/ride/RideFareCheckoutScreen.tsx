@@ -408,9 +408,15 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
     }
     setPayingFare(true);
     try {
+      // purpose + businessOrderId let the backend compute the authoritative fare
+      // and durably anchor this attempt (RIDE_FARE_PAYMENT_INITIATED), so a
+      // captured fare is recovered by the webhook/reconciler even if this app is
+      // killed before finalizeRidePayment() runs. amountPaise stays as a hint.
       const rz = await paymentService.createRazorpayOrder({
         amountPaise: Math.round(payable * 100),
         receipt: `ride_${order.orderId}`,
+        purpose: "ride_fare",
+        businessOrderId: order.orderId,
       });
       setRazorpayParams({
         orderId: rz.orderId,

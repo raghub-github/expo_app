@@ -329,6 +329,41 @@ export async function paymentRoutes(app: FastifyInstance) {
             return reply.send({ ok: ob.ok, handler: "rider_onboarding" });
           }
 
+          // Direct-online person-ride fare safety net — orders created with
+          // notes.purpose = "ride_fare". Covers "app died between capture and the
+          // ride-fare-payment callback". Idempotent with the client callback +
+          // reconciler (shared canonical finalizer, order row-locked).
+          if (notes && String(notes.purpose ?? "") === "ride_fare") {
+            const { finalizeRideFarePaymentFromWebhook } = await import(
+              "../rides/ride-payment.service.js"
+            );
+            const rf = await finalizeRideFarePaymentFromWebhook({
+              razorpayOrderId,
+              razorpayPaymentId,
+              amountPaise: Number(paymentEntity?.amount ?? 0) || undefined,
+              notes,
+              source: "webhook",
+            });
+            await markWebhookProcessed(db, eventId);
+            await logPaymentEvent(db, {
+              eventType: rf.ok ? "WEBHOOK_HANDLED_OK" : "WEBHOOK_HANDLER_FAILED",
+              source: "webhook",
+              razorpayOrderId,
+              razorpayPaymentId,
+              payload: {
+                event,
+                eventId,
+                handler: "ride_fare",
+                ok: rf.ok,
+                idempotent: rf.ok ? rf.idempotent : null,
+                errorCode: rf.ok ? null : rf.code,
+                durationMs: Date.now() - startedAtMs,
+              },
+            });
+            // ALWAYS 200 so Razorpay stops retrying — errors are logged for ops.
+            return reply.send({ ok: rf.ok, handler: "ride_fare" });
+          }
+
           const result = await finalizePendingOrderFromWebhook(db, {
             razorpayOrderId,
             razorpayPaymentId,
@@ -563,6 +598,11 @@ export async function paymentRoutes(app: FastifyInstance) {
           currency: z.string().max(4).optional().default("INR"),
           receipt: z.string().max(64).optional(),
           pendingId: z.string().max(100).optional(),
+          // Direct-online person-ride fare: the backend computes the authoritative
+          // amount + durably anchors the attempt (RIDE_FARE_PAYMENT_INITIATED) so a
+          // captured fare is recoverable if the client callback is lost.
+          purpose: z.enum(["ride_fare"]).optional(),
+          businessOrderId: z.string().max(64).optional(),
         }),
         response: {
           200: z.object({
@@ -576,13 +616,34 @@ export async function paymentRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { amount, currency, receipt, pendingId } = req.body as {
+      const { amount, currency, receipt, pendingId, purpose, businessOrderId } = req.body as {
         amount: number;
         currency?: string;
         receipt?: string;
         pendingId?: string;
+        purpose?: "ride_fare";
+        businessOrderId?: string;
       };
       const env = getEnv();
+
+      // Direct-online person-ride fare: delegate to the ride service, which
+      // computes the authoritative payable, mints the gateway order with
+      // deterministic notes, and writes the RIDE_FARE_PAYMENT_INITIATED anchor.
+      if (purpose === "ride_fare") {
+        const customerSub = req.auth?.sub;
+        if (!customerSub || req.auth?.role !== "customer") {
+          return reply.status(400).send({ error: "CUSTOMER_REQUIRED", message: "Customer account required." });
+        }
+        if (!businessOrderId) {
+          return reply.status(400).send({ error: "ORDER_REQUIRED", message: "businessOrderId is required for ride_fare." });
+        }
+        const { createRideFarePaymentOrder } = await import("../rides/ride-payment.service.js");
+        const res = await createRideFarePaymentOrder({ customerSub, orderRef: businessOrderId });
+        if (!res.ok) {
+          return reply.status((res.statusCode as 400) ?? 400).send({ error: res.code, message: res.message });
+        }
+        return { orderId: res.orderId, keyId: res.keyId, amount: res.amount, currency: res.currency };
+      }
 
       // Nothing to charge — there is no gateway order to mint. The client should place this
       // order through POST /v1/orders/finalize-wallet, which settles it off the wallet ledger.

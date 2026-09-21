@@ -31,6 +31,13 @@ export const paymentService = {
     currency?: string;
     receipt?: string;
     pendingId?: string;
+    /**
+     * Direct-online person-ride fare: the backend computes the authoritative
+     * amount and durably anchors the attempt so a captured fare is recoverable
+     * (webhook/reconciler) even if this app is killed before confirmation.
+     */
+    purpose?: "ride_fare";
+    businessOrderId?: string;
   }): Promise<CreateRazorpayOrderResponse> {
     const { data } = await api.post<CreateRazorpayOrderResponse>(
       `${PAYMENT_PREFIX}/create-order`,
@@ -39,6 +46,8 @@ export const paymentService = {
         currency: params.currency ?? "INR",
         receipt: params.receipt,
         pendingId: params.pendingId,
+        ...(params.purpose ? { purpose: params.purpose } : {}),
+        ...(params.businessOrderId ? { businessOrderId: params.businessOrderId } : {}),
       },
       { timeout: ORDER_PLACEMENT_TIMEOUT_MS }
     );
