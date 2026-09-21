@@ -70,6 +70,7 @@ import { reconcileOnboardingPayments } from "./lib/rider-onboarding-payment.serv
 import { reconcileMerchantSubscriptionPayments } from "./lib/merchant-subscription-payment-reconcile.service.js";
 import { reconcileRideFarePayments } from "./lib/ride-fare-payment-reconcile.service.js";
 import { reconcileAnchoredPayments } from "./lib/payment/anchored-payment-recovery.js";
+import { reconcileWalletTopups } from "./lib/wallet-topup-payment.service.js";
 import { runCompetitorSnapshotsTick } from "./services/merchant-competitor-snapshots-tick.js";
 import { runMerchantRankingMetricsRefresh } from "./modules/store-ranking/metrics-refresh.js";
 import { runOrderSideEffectsReconcile } from "./lib/order-side-effects-reconciler.js";
@@ -1671,6 +1672,9 @@ try {
           );
           await reconcileAnchoredPayments().catch((err) =>
             app.log.error({ err }, "reconcile_anchored_payments")
+          );
+          await reconcileWalletTopups().catch((err) =>
+            app.log.error({ err }, "reconcile_wallet_topups")
           );
         })
           .catch((err) => app.log.error({ err }, "pending_payment_reconciler"));

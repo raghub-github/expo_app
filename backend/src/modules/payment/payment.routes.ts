@@ -329,6 +329,37 @@ export async function paymentRoutes(app: FastifyInstance) {
             return reply.send({ ok: ob.ok, handler: "rider_onboarding" });
           }
 
+          // GatiCash wallet top-up safety net — notes.purpose = "wallet_topup".
+          // Credits the wallet server-side via the same idempotent RPC the client
+          // /wallet/topup/confirm uses, when that callback was lost.
+          if (notes && String(notes.purpose ?? "") === "wallet_topup") {
+            const { settleWalletTopupFromGateway } = await import(
+              "../../lib/wallet-topup-payment.service.js"
+            );
+            const wt = await settleWalletTopupFromGateway({
+              razorpayOrderId,
+              razorpayPaymentId,
+              source: "webhook",
+            });
+            await markWebhookProcessed(db, eventId);
+            await logPaymentEvent(db, {
+              eventType: wt.ok ? "WEBHOOK_HANDLED_OK" : "WEBHOOK_HANDLER_FAILED",
+              source: "webhook",
+              razorpayOrderId,
+              razorpayPaymentId,
+              payload: {
+                event,
+                eventId,
+                handler: "wallet_topup",
+                ok: wt.ok,
+                idempotent: wt.ok ? wt.idempotent : null,
+                errorCode: wt.ok ? null : wt.code,
+                durationMs: Date.now() - startedAtMs,
+              },
+            });
+            return reply.send({ ok: wt.ok, handler: "wallet_topup" });
+          }
+
           // Notes-anchored flows (customer subscription, rider subscription,
           // rider subscription dues) — previously client-verify-only. One generic
           // dispatch validates the captured amount against the anchor, then calls
