@@ -66,6 +66,7 @@ import { dbSlotRequest } from "./plugins/db-slot-request.js";
 import { requestLogger } from "./plugins/requestLogger.js";
 import { getDb } from "./db/client.js";
 import { reconcilePendingPayments } from "./modules/orders/order.placement.service.js";
+import { reconcileOnboardingPayments } from "./lib/rider-onboarding-payment.service.js";
 import { runCompetitorSnapshotsTick } from "./services/merchant-competitor-snapshots-tick.js";
 import { runMerchantRankingMetricsRefresh } from "./modules/store-ranking/metrics-refresh.js";
 import { runOrderSideEffectsReconcile } from "./lib/order-side-effects-reconciler.js";
@@ -1651,7 +1652,10 @@ try {
       const paymentReconcilerIntervalMs = env.PAYMENT_RECONCILER_INTERVAL_SEC * 1000;
       const paymentLockTtlMs = Math.max(paymentReconcilerIntervalMs * 2, 60_000);
       const runPaymentReconcilerLocked = () =>
-        withLock("tick:payment-reconciler", paymentLockTtlMs, () => reconcilePendingPayments(getDb()))
+        withLock("tick:payment-reconciler", paymentLockTtlMs, async () => {
+          await reconcilePendingPayments(getDb());
+          await reconcileOnboardingPayments(getDb());
+        })
           .catch((err) => app.log.error({ err }, "pending_payment_reconciler"));
       void runPaymentReconcilerLocked();
       pendingPaymentReconcilerInterval = setInterval(() => { void runPaymentReconcilerLocked(); }, paymentReconcilerIntervalMs);

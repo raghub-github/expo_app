@@ -19,6 +19,7 @@ import { z } from "zod";
 import { getDb } from "../../db/client.js";
 import { getEnv } from "../../config/env.js";
 import { reconcilePendingPayments } from "../orders/order.placement.service.js";
+import { reconcileOnboardingPayments } from "../../lib/rider-onboarding-payment.service.js";
 
 const reconcileBody = z.object({
   scheduled: z.boolean().optional().default(true),
@@ -53,6 +54,7 @@ export async function paymentInternalRoutes(app: FastifyInstance) {
       // from logs and return 0/0 to keep the API contract typed.
       try {
         await reconcilePendingPayments(db);
+        await reconcileOnboardingPayments(db);
         return reply.send({ ok: true, checked: 0, finalized: 0 });
       } catch (err) {
         req.log.error({ err }, "internal_reconcile_failed");

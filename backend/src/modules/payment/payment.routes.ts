@@ -292,6 +292,43 @@ export async function paymentRoutes(app: FastifyInstance) {
             return reply.send({ ok: settle.ok, handler: "rider_negative_wallet" });
           }
 
+          // Rider onboarding-fee safety net — orders created with
+          // notes.type = "onboarding_fee". Covers "app died / lost network
+          // between capture and /onboarding/verify": the fee is captured but the
+          // client never confirmed. Idempotent with the client verify path
+          // (shared status='completed' guard keyed on the onboarding row).
+          if (notes && String(notes.type ?? "") === "onboarding_fee") {
+            const { finalizeOnboardingPaymentFromWebhook } = await import(
+              "../../lib/rider-onboarding-payment.service.js"
+            );
+            const ob = await finalizeOnboardingPaymentFromWebhook({
+              razorpayOrderId,
+              razorpayPaymentId,
+              amountPaise: Number(paymentEntity?.amount ?? 0) || undefined,
+              notes: { ...notes, method: paymentEntity?.method },
+              source: "webhook",
+            });
+            await markWebhookProcessed(db, eventId);
+            await logPaymentEvent(db, {
+              eventType: ob.ok ? "WEBHOOK_HANDLED_OK" : "WEBHOOK_HANDLER_FAILED",
+              source: "webhook",
+              razorpayOrderId,
+              razorpayPaymentId,
+              payload: {
+                event,
+                eventId,
+                handler: "rider_onboarding",
+                ok: ob.ok,
+                idempotent: ob.ok ? ob.idempotent : null,
+                activated: ob.ok ? ob.activated : null,
+                errorCode: ob.ok ? null : ob.code,
+                durationMs: Date.now() - startedAtMs,
+              },
+            });
+            // ALWAYS 200 so Razorpay stops retrying — the error is logged for ops.
+            return reply.send({ ok: ob.ok, handler: "rider_onboarding" });
+          }
+
           const result = await finalizePendingOrderFromWebhook(db, {
             razorpayOrderId,
             razorpayPaymentId,
