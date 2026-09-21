@@ -15,8 +15,17 @@ const {
   withAndroidManifest,
   withDangerousMod,
   withMainApplication,
+  withAppBuildGradle,
   AndroidConfig,
 } = require("@expo/config-plugins");
+
+// Must match expo-notifications' own firebase-messaging version to avoid version drift.
+// expo-notifications pulls firebase-messaging in as a TRANSITIVE `implementation`, so our
+// app-module Java (CriticalAlertMessagingService extends ExpoFirebaseMessagingService,
+// OrderAlertController uses RemoteMessage) cannot resolve com.google.firebase.messaging.*
+// at compile time. Declaring it directly on the app module puts those classes on the
+// compile classpath. Same version => Gradle dedupes, no conflict with expo-notifications.
+const FIREBASE_MESSAGING_DEP = "com.google.firebase:firebase-messaging:24.0.1";
 
 const EXPO_FCM_SERVICE =
   "expo.modules.notifications.service.ExpoFirebaseMessagingService";
@@ -168,9 +177,28 @@ function patchMainApplication(src, packageName) {
   return src;
 }
 
+function patchAppBuildGradle(contents) {
+  if (contents.includes("com.google.firebase:firebase-messaging")) return contents;
+  const dep = `    implementation("${FIREBASE_MESSAGING_DEP}")`;
+  // Insert into the app module's first (and only) top-level dependencies { } block.
+  const m = contents.match(/\ndependencies\s*\{/);
+  if (!m || m.index == null) return contents;
+  const at = m.index + m[0].length;
+  return `${contents.slice(0, at)}\n${dep}${contents.slice(at)}`;
+}
+
 function withCriticalOrderAlertFgs(config, props = {}) {
   const role = props.role === "rider" ? "rider" : "merchant";
   const packageFromConfig = config.android?.package;
+
+  // Ensure firebase-messaging is on the app compile classpath so the injected native
+  // FCM service/controller can extend ExpoFirebaseMessagingService + use RemoteMessage.
+  config = withAppBuildGradle(config, (mod) => {
+    if (mod.modResults.language === "groovy") {
+      mod.modResults.contents = patchAppBuildGradle(mod.modResults.contents);
+    }
+    return mod;
+  });
 
   config = withDangerousMod(config, [
     "android",
