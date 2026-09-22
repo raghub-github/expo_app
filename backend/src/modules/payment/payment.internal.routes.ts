@@ -24,6 +24,7 @@ import { reconcileMerchantSubscriptionPayments } from "../../lib/merchant-subscr
 import { reconcileRideFarePayments } from "../../lib/ride-fare-payment-reconcile.service.js";
 import { reconcileAnchoredPayments } from "../../lib/payment/anchored-payment-recovery.js";
 import { reconcileWalletTopups } from "../../lib/wallet-topup-payment.service.js";
+import { reconcileMerchantOnboardingPayments } from "../../lib/merchant-onboarding-payment-reconcile.service.js";
 
 const reconcileBody = z.object({
   scheduled: z.boolean().optional().default(true),
@@ -75,6 +76,9 @@ export async function paymentInternalRoutes(app: FastifyInstance) {
         );
         await reconcileWalletTopups().catch((err) =>
           req.log.error({ err }, "reconcile_wallet_topups")
+        );
+        await reconcileMerchantOnboardingPayments().catch((err) =>
+          req.log.error({ err }, "reconcile_merchant_onboarding")
         );
         return reply.send({ ok: true, checked: 0, finalized: 0 });
       } catch (err) {
