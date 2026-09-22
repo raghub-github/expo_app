@@ -66,6 +66,11 @@ import { dbSlotRequest } from "./plugins/db-slot-request.js";
 import { requestLogger } from "./plugins/requestLogger.js";
 import { getDb } from "./db/client.js";
 import { reconcilePendingPayments } from "./modules/orders/order.placement.service.js";
+import { reconcileOnboardingPayments } from "./lib/rider-onboarding-payment.service.js";
+import { reconcileMerchantSubscriptionPayments } from "./lib/merchant-subscription-payment-reconcile.service.js";
+import { reconcileRideFarePayments } from "./lib/ride-fare-payment-reconcile.service.js";
+import { reconcileAnchoredPayments } from "./lib/payment/anchored-payment-recovery.js";
+import { reconcileWalletTopups } from "./lib/wallet-topup-payment.service.js";
 import { runCompetitorSnapshotsTick } from "./services/merchant-competitor-snapshots-tick.js";
 import { runMerchantRankingMetricsRefresh } from "./modules/store-ranking/metrics-refresh.js";
 import { runOrderSideEffectsReconcile } from "./lib/order-side-effects-reconciler.js";
@@ -1651,7 +1656,27 @@ try {
       const paymentReconcilerIntervalMs = env.PAYMENT_RECONCILER_INTERVAL_SEC * 1000;
       const paymentLockTtlMs = Math.max(paymentReconcilerIntervalMs * 2, 60_000);
       const runPaymentReconcilerLocked = () =>
-        withLock("tick:payment-reconciler", paymentLockTtlMs, () => reconcilePendingPayments(getDb()))
+        withLock("tick:payment-reconciler", paymentLockTtlMs, async () => {
+          // Each sweep is isolated so one flow's failure never blocks the others.
+          await reconcilePendingPayments(getDb()).catch((err) =>
+            app.log.error({ err }, "reconcile_customer_pending")
+          );
+          await reconcileOnboardingPayments(getDb()).catch((err) =>
+            app.log.error({ err }, "reconcile_onboarding")
+          );
+          await reconcileMerchantSubscriptionPayments().catch((err) =>
+            app.log.error({ err }, "reconcile_merchant_subscription")
+          );
+          await reconcileRideFarePayments().catch((err) =>
+            app.log.error({ err }, "reconcile_ride_fare")
+          );
+          await reconcileAnchoredPayments().catch((err) =>
+            app.log.error({ err }, "reconcile_anchored_payments")
+          );
+          await reconcileWalletTopups().catch((err) =>
+            app.log.error({ err }, "reconcile_wallet_topups")
+          );
+        })
           .catch((err) => app.log.error({ err }, "pending_payment_reconciler"));
       void runPaymentReconcilerLocked();
       pendingPaymentReconcilerInterval = setInterval(() => { void runPaymentReconcilerLocked(); }, paymentReconcilerIntervalMs);

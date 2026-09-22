@@ -19,6 +19,11 @@ import { z } from "zod";
 import { getDb } from "../../db/client.js";
 import { getEnv } from "../../config/env.js";
 import { reconcilePendingPayments } from "../orders/order.placement.service.js";
+import { reconcileOnboardingPayments } from "../../lib/rider-onboarding-payment.service.js";
+import { reconcileMerchantSubscriptionPayments } from "../../lib/merchant-subscription-payment-reconcile.service.js";
+import { reconcileRideFarePayments } from "../../lib/ride-fare-payment-reconcile.service.js";
+import { reconcileAnchoredPayments } from "../../lib/payment/anchored-payment-recovery.js";
+import { reconcileWalletTopups } from "../../lib/wallet-topup-payment.service.js";
 
 const reconcileBody = z.object({
   scheduled: z.boolean().optional().default(true),
@@ -52,7 +57,25 @@ export async function paymentInternalRoutes(app: FastifyInstance) {
       // per-call counters, plumb them through. For now we infer "checked"
       // from logs and return 0/0 to keep the API contract typed.
       try {
-        await reconcilePendingPayments(db);
+        // Failure isolation: one flow's sweep must not abort the others.
+        await reconcilePendingPayments(db).catch((err) =>
+          req.log.error({ err }, "reconcile_customer_pending")
+        );
+        await reconcileOnboardingPayments(db).catch((err) =>
+          req.log.error({ err }, "reconcile_onboarding")
+        );
+        await reconcileMerchantSubscriptionPayments().catch((err) =>
+          req.log.error({ err }, "reconcile_merchant_subscription")
+        );
+        await reconcileRideFarePayments().catch((err) =>
+          req.log.error({ err }, "reconcile_ride_fare")
+        );
+        await reconcileAnchoredPayments().catch((err) =>
+          req.log.error({ err }, "reconcile_anchored_payments")
+        );
+        await reconcileWalletTopups().catch((err) =>
+          req.log.error({ err }, "reconcile_wallet_topups")
+        );
         return reply.send({ ok: true, checked: 0, finalized: 0 });
       } catch (err) {
         req.log.error({ err }, "internal_reconcile_failed");

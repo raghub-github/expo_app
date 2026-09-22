@@ -754,18 +754,28 @@ export async function createCustomerSubscriptionPaymentOrder(args: {
   }
 
   const receipt = `cust_sub_${args.customerId}_${args.planId}_${args.billingCycle}_${Date.now()}`;
+  const subNotes = {
+    type: "customer_subscription",
+    customer_id: String(args.customerId),
+    plan_id: String(args.planId),
+    price_id: String(price.priceId),
+    billing_cycle: args.billingCycle,
+    gst_percent: String(price.gstPercent),
+  };
   const order = await createRazorpayOrder({
     amount: Math.round(price.total * 100),
     currency: "INR",
     receipt,
-    notes: {
-      type: "customer_subscription",
-      customer_id: String(args.customerId),
-      plan_id: String(args.planId),
-      price_id: String(price.priceId),
-      billing_cycle: args.billingCycle,
-      gst_percent: String(price.gstPercent),
-    },
+    notes: subNotes,
+  });
+  // Durable anchor so a captured subscription payment is recoverable by the
+  // webhook/reconciler if the client verify callback is lost.
+  const { logAnchoredPaymentInitiated } = await import("../../lib/payment/anchored-payment-recovery.js");
+  await logAnchoredPaymentInitiated({
+    flow: "customer_subscription",
+    razorpayOrderId: order.id,
+    amountPaise: Math.round(price.total * 100),
+    notes: subNotes,
   });
 
   return {

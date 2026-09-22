@@ -61,6 +61,7 @@ import type { NormalizedOrderItem } from "./orderNormalizer.js";
 import { freezeEtaForPlacedOrder } from "../eta/eta.placement.js";
 import { vegNonvegForPlacementItem } from "../../lib/order-item-veg.js";
 import { insertPlacedOrderCoreWithTimelines, runInSavepoint } from "../../lib/order-placement-persist.js";
+import { resolveGatewayTruth } from "../../lib/payment/gateway-truth.js";
 import { jsonForSql } from "../../lib/sql-timestamps.js";
 import { getSql } from "../../db/client.js";
 import { notifyMerchantStoreNewOrder } from "../../lib/merchant-new-order-notify.js";
@@ -2074,6 +2075,18 @@ export const PENDING_PAYMENT_STATES = {
   REFUND_PENDING: "refund_pending",
   REFUNDED: "refunded",
   REFUND_FAILED: "refund_failed",
+  /**
+   * Gateway CAPTURED the money but business finalization has not completed yet.
+   * Reserved for the webhook/finalizer paths so a capture is never invisible.
+   */
+  CAPTURED_UNFINALIZED: "captured_unfinalized",
+  /**
+   * The payment could not be safely resolved automatically — a captured amount
+   * mismatch, a missing gateway order id, or an anomaly needing human review.
+   * NEVER used for a merely-unreachable gateway (that stays retryable), and
+   * NEVER a substitute for FAILED when the gateway confirms no capture.
+   */
+  RECONCILIATION_REQUIRED: "reconciliation_required",
 } as const;
 
 /** Append a row to payment_events (audit log). Never throws — errors are swallowed. */
@@ -2997,16 +3010,104 @@ export async function reconcilePendingPayments(
     return; // DB unavailable; retry next tick
   }
 
+  // How long to wait before re-checking a row whose gateway state is still
+  // unknown (gateway unreachable) or still live (user may complete). We push
+  // payment_confirm_by forward by this much so the row leaves the sweep window
+  // and is retried later, instead of being hammered every tick — or wrongly failed.
+  const RECONCILE_RETRY_MS = 5 * 60 * 1000;
+
+  /** Escalate a row that can't be auto-resolved to a VISIBLE, non-lossy state. */
+  const escalateReconciliationRequired = async (
+    row: (typeof pendingOrders.$inferSelect),
+    code: string,
+    message: string,
+    extra?: { razorpayPaymentId?: string | null }
+  ) => {
+    await db
+      .update(pendingOrders)
+      .set({
+        paymentState: PENDING_PAYMENT_STATES.RECONCILIATION_REQUIRED,
+        paymentFailureCode: code,
+        paymentFailureMessage: message,
+        ...(extra?.razorpayPaymentId ? { razorpayPaymentId: extra.razorpayPaymentId } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(pendingOrders.pendingId, row.pendingId));
+    await logPaymentEvent(db, {
+      eventType: "RECONCILIATION_REQUIRED",
+      source: "reconciler",
+      pendingId: row.pendingId,
+      razorpayOrderId: row.razorpayOrderId ?? null,
+      razorpayPaymentId: extra?.razorpayPaymentId ?? row.razorpayPaymentId ?? null,
+      prevState: row.paymentState,
+      newState: PENDING_PAYMENT_STATES.RECONCILIATION_REQUIRED,
+      failureCode: code,
+      failureMessage: message,
+      payload: { via: "reconciler", policy: env.PAYMENT_LATE_CAPTURE_POLICY },
+    });
+  };
+
+  /** Keep a row retryable (do NOT fail) by pushing its confirm window forward. */
+  const deferForRetry = async (
+    row: (typeof pendingOrders.$inferSelect),
+    eventType: string,
+    detail: Record<string, unknown>
+  ) => {
+    await db
+      .update(pendingOrders)
+      .set({ paymentConfirmBy: new Date(Date.now() + RECONCILE_RETRY_MS), updatedAt: new Date() })
+      .where(eq(pendingOrders.pendingId, row.pendingId));
+    await logPaymentEvent(db, {
+      eventType,
+      source: "reconciler",
+      pendingId: row.pendingId,
+      razorpayOrderId: row.razorpayOrderId ?? null,
+      razorpayPaymentId: row.razorpayPaymentId ?? null,
+      prevState: row.paymentState,
+      newState: row.paymentState,
+      payload: { via: "reconciler", retryInMs: RECONCILE_RETRY_MS, ...detail },
+    });
+  };
+
   for (const row of stalePending) {
     try {
       if (row.finalizedOrderId) continue; // already finalized
 
-      if (
-        env.PAYMENT_LATE_CAPTURE_POLICY === "finalize" &&
-        row.razorpayPaymentId
-      ) {
+      const orderId = row.razorpayOrderId ?? "";
+      const expectedPaise = Math.round(Number(row.grandTotal ?? 0) * 100);
+
+      // Dummy-mode orders never reach a real gateway — preserve the timeout-fail
+      // behavior so local/dev sweeps don't hang forever.
+      if (orderId.startsWith("dummy_")) {
+        await db
+          .update(pendingOrders)
+          .set({
+            paymentState: PENDING_PAYMENT_STATES.FAILED,
+            paymentFailureCode: "PAYMENT_TIMEOUT",
+            paymentFailureMessage: "Payment confirmation window expired.",
+            updatedAt: now,
+          })
+          .where(eq(pendingOrders.pendingId, row.pendingId));
+        await logPaymentEvent(db, {
+          eventType: "RECONCILER_TIMEOUT_FAILED",
+          source: "reconciler",
+          pendingId: row.pendingId,
+          razorpayOrderId: orderId,
+          prevState: row.paymentState,
+          newState: PENDING_PAYMENT_STATES.FAILED,
+          failureCode: "PAYMENT_TIMEOUT",
+          failureMessage: "Payment confirmation window expired.",
+          payload: { via: "reconciler", dummy: true },
+        });
+        continue;
+      }
+
+      // Fast path: we already hold a captured payment id (client/webhook partially
+      // ran). Under the "finalize" policy this becomes an order; the finalizer is
+      // idempotent + row-locked, so racing with a webhook is safe.
+      if (env.PAYMENT_LATE_CAPTURE_POLICY === "finalize" && row.razorpayPaymentId && orderId) {
         await finalizePendingOrderFromWebhook(db, {
-          razorpayOrderId: row.razorpayOrderId ?? "",
+          razorpayOrderId: orderId,
           razorpayPaymentId: row.razorpayPaymentId,
           paymentMethod: row.paymentMethod ?? "online",
           gatewayPayload: { via: "reconciler", policy: "finalize" },
@@ -3014,27 +3115,107 @@ export async function reconcilePendingPayments(
         continue;
       }
 
+      // No gateway order id was ever persisted → we cannot prove the money's
+      // fate. A capture may exist under an order we failed to stamp. NEVER fail;
+      // escalate so support can look it up in the Razorpay dashboard.
+      if (!orderId) {
+        await escalateReconciliationRequired(
+          row,
+          "NO_GATEWAY_ORDER_ID",
+          "No Razorpay order id on this checkout; gateway state cannot be verified."
+        );
+        continue;
+      }
+
+      // Authoritative check: ask Razorpay what actually happened to this order.
+      await logPaymentEvent(db, {
+        eventType: "GATEWAY_RECONCILIATION_STARTED",
+        source: "reconciler",
+        pendingId: row.pendingId,
+        razorpayOrderId: orderId,
+        amountPaise: expectedPaise,
+        payload: { via: "reconciler" },
+      });
+      const truth = await resolveGatewayTruth({ orderId, expectedPaise });
+
+      if (truth.state === "UNREACHABLE") {
+        // Temporary gateway/network error — the ONE thing we must never turn into
+        // a payment failure. Keep it retryable.
+        await deferForRetry(row, "GATEWAY_UNREACHABLE", { reason: truth.reason });
+        continue;
+      }
+
+      if (truth.state === "CAPTURED") {
+        await logPaymentEvent(db, {
+          eventType: "GATEWAY_RECONCILIATION_FOUND_PAYMENT",
+          source: "reconciler",
+          pendingId: row.pendingId,
+          razorpayOrderId: orderId,
+          razorpayPaymentId: truth.paymentId,
+          amountPaise: truth.paidPaise,
+          payload: { via: "reconciler", policy: env.PAYMENT_LATE_CAPTURE_POLICY },
+        });
+        if (env.PAYMENT_LATE_CAPTURE_POLICY === "finalize") {
+          // Recover the order from the captured payment (idempotent, row-locked).
+          await finalizePendingOrderFromWebhook(db, {
+            razorpayOrderId: orderId,
+            razorpayPaymentId: truth.paymentId,
+            paymentMethod: row.paymentMethod ?? "online",
+            gatewayPayload: { via: "reconciler", verifiedBy: "gateway_truth" },
+          });
+        } else {
+          // Policy = refund: the money is real and must be RETURNED, not silently
+          // failed. Flag it as captured-and-refund-required so the refund flow /
+          // ops can act. Money stays visible and traceable — never lost.
+          await escalateReconciliationRequired(
+            row,
+            "CAPTURED_LATE_REFUND_REQUIRED",
+            "Payment captured after the checkout window; a refund is required per policy.",
+            { razorpayPaymentId: truth.paymentId }
+          );
+        }
+        continue;
+      }
+
+      if (truth.state === "AMOUNT_MISMATCH") {
+        await escalateReconciliationRequired(
+          row,
+          "PAYMENT_AMOUNT_MISMATCH",
+          `Gateway captured ${truth.paidPaise} paise but this order expects ${truth.expectedPaise} paise.`,
+          { razorpayPaymentId: truth.paymentId }
+        );
+        continue;
+      }
+
+      if (truth.state === "PENDING") {
+        // A live authorized/created attempt still exists at the gateway — the user
+        // may yet complete it. Do NOT fail; re-check after the retry window.
+        await deferForRetry(row, "GATEWAY_RECONCILIATION_PENDING", {});
+        continue;
+      }
+
+      // truth.state === "NONE": gateway is reachable and confirms NO captured or
+      // live payment. This is the only safe path to FAILED — the customer was
+      // never charged.
       await db
         .update(pendingOrders)
         .set({
           paymentState: PENDING_PAYMENT_STATES.FAILED,
           paymentFailureCode: "PAYMENT_TIMEOUT",
-          paymentFailureMessage: "Payment confirmation window expired.",
+          paymentFailureMessage: "No payment was captured at the gateway before the window expired.",
           updatedAt: now,
         })
         .where(eq(pendingOrders.pendingId, row.pendingId));
-
       await logPaymentEvent(db, {
-        eventType: "RECONCILER_TIMEOUT_FAILED",
+        eventType: "GATEWAY_RECONCILIATION_FOUND_NO_PAYMENT",
         source: "reconciler",
         pendingId: row.pendingId,
-        razorpayOrderId: row.razorpayOrderId ?? null,
-        razorpayPaymentId: row.razorpayPaymentId ?? null,
+        razorpayOrderId: orderId,
         prevState: row.paymentState,
         newState: PENDING_PAYMENT_STATES.FAILED,
         failureCode: "PAYMENT_TIMEOUT",
-        failureMessage: "Payment confirmation window expired.",
-        payload: { policy: env.PAYMENT_LATE_CAPTURE_POLICY },
+        failureMessage: "No payment captured at gateway.",
+        payload: { via: "reconciler" },
       });
     } catch {
       // non-fatal: skip this row, retry next sweep
