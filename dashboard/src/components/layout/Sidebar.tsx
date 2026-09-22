@@ -39,6 +39,7 @@ const navigation: NavItem[] = [
   { name: "Riders", href: "/dashboard/riders", icon: Bike, dashboardType: "RIDER" },
   { name: "Merchants", href: "/dashboard/merchants", icon: Store, dashboardType: "MERCHANT" },
   { name: "Orders", href: "/dashboard/orders", icon: ShoppingCart, dashboardType: "ORDER_FOOD" }, // Check for any order type access
+  { name: "Transactions", href: "/dashboard/transactions", icon: CreditCard, requiresSuperAdmin: true },
   { name: "Area Managers", href: "/dashboard/area-managers", icon: MapPin, dashboardType: "AREA_MANAGER" },
   { name: "Tickets", href: "/dashboard/tickets", icon: Ticket, dashboardType: "TICKET" },
   { name: "Geo Rx Availability", href: "/dashboard/rx", icon: Radar },
