@@ -23,6 +23,8 @@ interface TransactionRow {
   businessOrderId: string | null;
   entityType: string;
   entityId: string | null;
+  entityName: string | null;
+  entityDisplayId: string | null;
   createdAt: string;
   updatedAt: string | null;
 }
@@ -200,7 +202,7 @@ export function TransactionsClient() {
             <tr>
               <th className="px-3 py-2.5 font-medium">When</th>
               <th className="px-3 py-2.5 font-medium">App</th>
-              <th className="px-3 py-2.5 font-medium">Service</th>
+              <th className="px-3 py-2.5 font-medium">Service / Order</th>
               <th className="px-3 py-2.5 font-medium">Status</th>
               <th className="px-3 py-2.5 text-right font-medium">Amount</th>
               <th className="px-3 py-2.5 text-right font-medium">Paid</th>
@@ -221,13 +223,19 @@ export function TransactionsClient() {
                 <tr key={r.uid} onClick={() => setSelectedUid(r.uid)} className="cursor-pointer hover:bg-gray-50">
                   <td className="whitespace-nowrap px-3 py-2.5 text-gray-600">{fmtTime(r.createdAt)}</td>
                   <td className="px-3 py-2.5 capitalize text-gray-800">{r.app}</td>
-                  <td className="px-3 py-2.5 capitalize text-gray-800">{r.service.replace(/_/g, " ")}</td>
+                  <td className="px-3 py-2.5">
+                    <div className="capitalize text-gray-800">{r.service.replace(/_/g, " ")}</div>
+                    {r.businessOrderId && <div className="font-mono text-xs text-gray-400">{r.businessOrderId}</div>}
+                  </td>
                   <td className="px-3 py-2.5"><StatusBadge status={r.normStatus} raw={r.status} /></td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-right font-medium text-gray-900">{inr(r.grossPaise)}</td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-right text-gray-600">{inr(r.paidPaise)}</td>
-                  <td className="px-3 py-2.5 capitalize text-gray-500">{r.paymentMode ?? "—"}</td>
+                  <td className="px-3 py-2.5 capitalize text-gray-500">{(r.paymentMode ?? "—").replace(/_/g, " ")}</td>
                   <td className="px-3 py-2.5 font-mono text-xs text-gray-500">{r.razorpayOrderId ?? "—"}</td>
-                  <td className="px-3 py-2.5 text-gray-500">{r.entityType} #{r.entityId ?? "—"}</td>
+                  <td className="px-3 py-2.5">
+                    <div className="text-gray-800">{r.entityName ?? "—"}</div>
+                    <div className="text-xs text-gray-400">{r.entityDisplayId ?? `${r.entityType} #${r.entityId ?? "—"}`}</div>
+                  </td>
                 </tr>
               ))
             )}
@@ -306,12 +314,17 @@ function DetailDrawer({ uid, onClose }: { uid: string; onClose: () => void }) {
               <KV k="Created">{fmtTime(row.createdAt)}</KV>
             </Section>
 
+            <Section title={row.app === "customer" ? "Customer" : row.app === "rider" ? "Rider" : "Merchant"}>
+              <KV k="Name">{row.entityName ?? "—"}</KV>
+              <KV k={row.app === "customer" ? "Mobile" : row.app === "rider" ? "Rider ID" : "Store ID"} mono>{row.entityDisplayId ?? "—"}</KV>
+              <KV k="Internal id" mono>{row.entityType} #{row.entityId ?? "—"}</KV>
+            </Section>
+
             <Section title="Identifiers">
+              <KV k="Order ID" mono>{row.businessOrderId ?? "—"}</KV>
               <KV k="Internal ref" mono>{row.internalRef ?? "—"}</KV>
-              <KV k="Business order" mono>{row.businessOrderId ?? "—"}</KV>
               <KV k="Razorpay order" mono>{row.razorpayOrderId ?? "—"}</KV>
               <KV k="Razorpay payment" mono>{row.razorpayPaymentId ?? "—"}</KV>
-              <KV k="Entity" mono>{row.entityType} #{row.entityId ?? "—"}</KV>
             </Section>
 
             {data!.breakdown.length > 0 && (
