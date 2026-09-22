@@ -528,6 +528,7 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/riders": "Riders",
   "/dashboard/merchants": "Merchants",
   "/dashboard/orders": "Orders",
+  "/dashboard/transactions": "Transactions",
   "/dashboard/tickets": "Tickets",
   "/dashboard/area-managers": "Area Managers",
   "/dashboard/system": "System",

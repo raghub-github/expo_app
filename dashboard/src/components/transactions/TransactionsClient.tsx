@@ -66,7 +66,7 @@ const STATUS_OPTIONS = [
 
 const STATUS_STYLE: Record<string, string> = {
   paid: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
-  created: "bg-slate-50 text-slate-600 ring-slate-500/20",
+  created: "bg-gray-100 text-gray-600 ring-gray-500/20",
   pending: "bg-amber-50 text-amber-700 ring-amber-600/20",
   captured_unfinalized: "bg-indigo-50 text-indigo-700 ring-indigo-600/20",
   reconciliation_required: "bg-orange-50 text-orange-700 ring-orange-600/20",
@@ -74,9 +74,11 @@ const STATUS_STYLE: Record<string, string> = {
   refund_pending: "bg-sky-50 text-sky-700 ring-sky-600/20",
   refunded: "bg-violet-50 text-violet-700 ring-violet-600/20",
   refund_failed: "bg-rose-50 text-rose-700 ring-rose-600/20",
-  cancelled: "bg-slate-100 text-slate-500 ring-slate-400/20",
-  unknown: "bg-slate-50 text-slate-500 ring-slate-400/20",
+  cancelled: "bg-gray-100 text-gray-500 ring-gray-400/20",
+  unknown: "bg-gray-50 text-gray-500 ring-gray-400/20",
 };
+
+const INPUT_CLS = "h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200";
 
 /* ----------------------------- helpers ----------------------------- */
 const inr = (paise: number): string =>
@@ -105,7 +107,6 @@ export function TransactionsClient() {
   const q = useDebounced(searchInput);
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
 
-  // Reset service when the app tab changes (service list is app-specific).
   useEffect(() => { setService(""); }, [app]);
 
   const filters = useMemo(() => ({
@@ -144,20 +145,20 @@ export function TransactionsClient() {
   return (
     <div className="flex flex-col gap-4">
       <header className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Transactions</h1>
-        <p className="text-sm text-slate-500">
+        <h1 className="text-xl font-semibold text-gray-900">Transactions</h1>
+        <p className="text-sm text-gray-500">
           Every payment across Customer, Merchant and Rider apps — search, filter and trace any transaction end-to-end.
         </p>
       </header>
 
       {/* App tabs */}
-      <div className="flex gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-800 w-fit">
+      <div className="flex w-fit gap-1 rounded-lg border border-gray-200 bg-gray-100 p-1">
         {APP_TABS.map((t) => (
           <button
             key={t.key}
             onClick={() => setApp(t.key)}
             className={`rounded-md px-4 py-1.5 text-sm font-medium transition ${
-              app === t.key ? "bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white" : "text-slate-500 hover:text-slate-700"
+              app === t.key ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
             }`}
           >
             {t.label}
@@ -166,14 +167,14 @@ export function TransactionsClient() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
-        <div className="flex flex-col gap-1 grow min-w-[220px]">
-          <label className="text-xs text-slate-500">Search (Razorpay order/payment id, order id, ref, entity id)</label>
+      <div className="flex flex-wrap items-end gap-2 rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+        <div className="flex min-w-[220px] grow flex-col gap-1">
+          <label className="text-xs text-gray-500">Search (Razorpay order/payment id, order id, ref, entity id)</label>
           <input
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder="Exact id lookup…"
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-800"
+            className={INPUT_CLS}
           />
         </div>
         {(SERVICE_OPTIONS[app] ?? []).length > 0 && (
@@ -184,49 +185,49 @@ export function TransactionsClient() {
           { value: "razorpay", label: "Razorpay" }, { value: "wallet", label: "Wallet" },
           { value: "gati_cash", label: "GatiCash" }, { value: "cash", label: "Cash" }, { value: "online", label: "Online" },
         ]} placeholder="All modes" />
-        <Field label="From"><input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="rounded-md border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-800" /></Field>
-        <Field label="To"><input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="rounded-md border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-800" /></Field>
-        <Field label="Min ₹"><input type="number" value={amountMin} onChange={(e) => setAmountMin(e.target.value)} className="w-20 rounded-md border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-800" /></Field>
-        <Field label="Max ₹"><input type="number" value={amountMax} onChange={(e) => setAmountMax(e.target.value)} className="w-20 rounded-md border border-slate-300 px-2 py-1.5 text-sm dark:border-slate-600 dark:bg-slate-800" /></Field>
-        <button onClick={resetFilters} className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-600">Reset</button>
-        <button onClick={() => query.refetch()} className="rounded-md bg-slate-900 px-3 py-1.5 text-sm text-white hover:bg-slate-700 dark:bg-slate-100 dark:text-slate-900">Refresh</button>
+        <Field label="From"><input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className={INPUT_CLS} /></Field>
+        <Field label="To"><input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className={INPUT_CLS} /></Field>
+        <Field label="Min ₹"><input type="number" value={amountMin} onChange={(e) => setAmountMin(e.target.value)} className={`${INPUT_CLS} w-20`} /></Field>
+        <Field label="Max ₹"><input type="number" value={amountMax} onChange={(e) => setAmountMax(e.target.value)} className={`${INPUT_CLS} w-20`} /></Field>
+        <button onClick={resetFilters} className="inline-flex h-9 items-center rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-600 hover:bg-gray-50">Reset</button>
+        <button onClick={() => query.refetch()} className="inline-flex h-9 items-center rounded-lg bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700">Refresh</button>
       </div>
 
       {/* Table */}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
-        <table className="min-w-full divide-y divide-slate-200 text-sm dark:divide-slate-700">
-          <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500 dark:bg-slate-800">
+      <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+        <table className="min-w-full divide-y divide-gray-200 text-sm">
+          <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
             <tr>
-              <th className="px-3 py-2 font-medium">When</th>
-              <th className="px-3 py-2 font-medium">App</th>
-              <th className="px-3 py-2 font-medium">Service</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 font-medium text-right">Amount</th>
-              <th className="px-3 py-2 font-medium text-right">Paid</th>
-              <th className="px-3 py-2 font-medium">Mode</th>
-              <th className="px-3 py-2 font-medium">Razorpay Order</th>
-              <th className="px-3 py-2 font-medium">Entity</th>
+              <th className="px-3 py-2.5 font-medium">When</th>
+              <th className="px-3 py-2.5 font-medium">App</th>
+              <th className="px-3 py-2.5 font-medium">Service</th>
+              <th className="px-3 py-2.5 font-medium">Status</th>
+              <th className="px-3 py-2.5 text-right font-medium">Amount</th>
+              <th className="px-3 py-2.5 text-right font-medium">Paid</th>
+              <th className="px-3 py-2.5 font-medium">Mode</th>
+              <th className="px-3 py-2.5 font-medium">Razorpay Order</th>
+              <th className="px-3 py-2.5 font-medium">Entity</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+          <tbody className="divide-y divide-gray-100">
             {query.isLoading ? (
-              <tr><td colSpan={9} className="px-3 py-10 text-center text-slate-400">Loading…</td></tr>
+              <tr><td colSpan={9} className="px-3 py-10 text-center text-gray-400">Loading…</td></tr>
             ) : query.isError ? (
               <tr><td colSpan={9} className="px-3 py-10 text-center text-rose-500">{(query.error as Error)?.message ?? "Error loading transactions"}</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="px-3 py-10 text-center text-slate-400">No transactions match these filters.</td></tr>
+              <tr><td colSpan={9} className="px-3 py-10 text-center text-gray-400">No transactions match these filters.</td></tr>
             ) : (
               rows.map((r) => (
-                <tr key={r.uid} onClick={() => setSelectedUid(r.uid)} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60">
-                  <td className="whitespace-nowrap px-3 py-2 text-slate-600 dark:text-slate-300">{fmtTime(r.createdAt)}</td>
-                  <td className="px-3 py-2 capitalize">{r.app}</td>
-                  <td className="px-3 py-2 capitalize">{r.service.replace(/_/g, " ")}</td>
-                  <td className="px-3 py-2"><StatusBadge status={r.normStatus} raw={r.status} /></td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right font-medium">{inr(r.grossPaise)}</td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right text-slate-600">{inr(r.paidPaise)}</td>
-                  <td className="px-3 py-2 capitalize text-slate-500">{r.paymentMode ?? "—"}</td>
-                  <td className="px-3 py-2 font-mono text-xs text-slate-500">{r.razorpayOrderId ?? "—"}</td>
-                  <td className="px-3 py-2 text-slate-500">{r.entityType} #{r.entityId ?? "—"}</td>
+                <tr key={r.uid} onClick={() => setSelectedUid(r.uid)} className="cursor-pointer hover:bg-gray-50">
+                  <td className="whitespace-nowrap px-3 py-2.5 text-gray-600">{fmtTime(r.createdAt)}</td>
+                  <td className="px-3 py-2.5 capitalize text-gray-800">{r.app}</td>
+                  <td className="px-3 py-2.5 capitalize text-gray-800">{r.service.replace(/_/g, " ")}</td>
+                  <td className="px-3 py-2.5"><StatusBadge status={r.normStatus} raw={r.status} /></td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-right font-medium text-gray-900">{inr(r.grossPaise)}</td>
+                  <td className="whitespace-nowrap px-3 py-2.5 text-right text-gray-600">{inr(r.paidPaise)}</td>
+                  <td className="px-3 py-2.5 capitalize text-gray-500">{r.paymentMode ?? "—"}</td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-gray-500">{r.razorpayOrderId ?? "—"}</td>
+                  <td className="px-3 py-2.5 text-gray-500">{r.entityType} #{r.entityId ?? "—"}</td>
                 </tr>
               ))
             )}
@@ -234,13 +235,13 @@ export function TransactionsClient() {
         </table>
       </div>
 
-      <div className="flex items-center justify-between text-sm text-slate-500">
+      <div className="flex items-center justify-between text-sm text-gray-500">
         <span>Showing {total} transaction{total === 1 ? "" : "s"}</span>
         {query.hasNextPage && (
           <button
             onClick={() => query.fetchNextPage()}
             disabled={query.isFetchingNextPage}
-            className="rounded-md border border-slate-300 px-4 py-1.5 text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:text-slate-200"
+            className="rounded-lg border border-gray-200 bg-white px-4 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
           >
             {query.isFetchingNextPage ? "Loading…" : "Load more"}
           </button>
@@ -254,12 +255,12 @@ export function TransactionsClient() {
 
 /* ----------------------------- sub-components ----------------------------- */
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <div className="flex flex-col gap-1"><label className="text-xs text-slate-500">{label}</label>{children}</div>;
+  return <div className="flex flex-col gap-1"><label className="text-xs text-gray-500">{label}</label>{children}</div>;
 }
 function Select({ label, value, onChange, options, placeholder }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; placeholder: string }) {
   return (
     <Field label={label}>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="rounded-md border border-slate-300 px-2 py-1.5 text-sm capitalize dark:border-slate-600 dark:bg-slate-800">
+      <select value={value} onChange={(e) => onChange(e.target.value)} className={`${INPUT_CLS} capitalize`}>
         <option value="">{placeholder}</option>
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
@@ -285,13 +286,13 @@ function DetailDrawer({ uid, onClose }: { uid: string; onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={onClose}>
-      <div className="h-full w-full max-w-xl overflow-y-auto bg-white p-5 shadow-xl dark:bg-slate-900" onClick={(e) => e.stopPropagation()}>
+      <div className="h-full w-full max-w-xl overflow-y-auto bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-4 flex items-start justify-between">
-          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Transaction detail</h2>
-          <button onClick={onClose} className="rounded-md px-2 py-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800">✕</button>
+          <h2 className="text-lg font-semibold text-gray-900">Transaction detail</h2>
+          <button onClick={onClose} className="rounded-md px-2 py-1 text-gray-400 hover:bg-gray-100">✕</button>
         </div>
 
-        {isLoading ? <p className="text-slate-400">Loading…</p>
+        {isLoading ? <p className="text-gray-400">Loading…</p>
         : isError ? <p className="text-rose-500">{(error as Error)?.message}</p>
         : row ? (
           <div className="flex flex-col gap-5">
@@ -317,9 +318,9 @@ function DetailDrawer({ uid, onClose }: { uid: string; onClose: () => void }) {
               <Section title="Financial breakdown">
                 <div className="flex flex-col gap-1">
                   {data!.breakdown.map((b, i) => (
-                    <div key={i} className={`flex justify-between text-sm ${b.kind === "total" ? "border-t border-slate-200 pt-1 font-semibold dark:border-slate-700" : ""}`}>
-                      <span className={b.amountPaise < 0 ? "text-emerald-600" : "text-slate-600 dark:text-slate-300"}>{b.label}</span>
-                      <span className={b.amountPaise < 0 ? "text-emerald-600" : ""}>{inr(b.amountPaise)}</span>
+                    <div key={i} className={`flex justify-between text-sm ${b.kind === "total" ? "border-t border-gray-200 pt-1 font-semibold" : ""}`}>
+                      <span className={b.amountPaise < 0 ? "text-emerald-600" : "text-gray-600"}>{b.label}</span>
+                      <span className={b.amountPaise < 0 ? "text-emerald-600" : "text-gray-900"}>{inr(b.amountPaise)}</span>
                     </div>
                   ))}
                 </div>
@@ -328,14 +329,14 @@ function DetailDrawer({ uid, onClose }: { uid: string; onClose: () => void }) {
 
             <Section title="Lifecycle">
               {data!.lifecycle.length === 0 ? (
-                <p className="text-sm text-slate-400">No lifecycle events recorded.</p>
+                <p className="text-sm text-gray-400">No lifecycle events recorded.</p>
               ) : (
-                <ol className="flex flex-col gap-2 border-l border-slate-200 pl-4 dark:border-slate-700">
+                <ol className="flex flex-col gap-2 border-l border-gray-200 pl-4">
                   {data!.lifecycle.map((e, i) => (
                     <li key={i} className="relative text-sm">
-                      <span className="absolute -left-[21px] top-1 h-2 w-2 rounded-full bg-slate-400" />
-                      <div className="font-medium text-slate-700 dark:text-slate-200">{e.eventType}</div>
-                      <div className="text-xs text-slate-400">
+                      <span className="absolute -left-[21px] top-1 h-2 w-2 rounded-full bg-gray-400" />
+                      <div className="font-medium text-gray-700">{e.eventType}</div>
+                      <div className="text-xs text-gray-400">
                         {fmtTime(e.createdAt)} · {e.source}
                         {e.failureCode ? ` · ${e.failureCode}` : ""}
                         {e.amountPaise != null ? ` · ${inr(e.amountPaise)}` : ""}
@@ -346,7 +347,7 @@ function DetailDrawer({ uid, onClose }: { uid: string; onClose: () => void }) {
               )}
             </Section>
           </div>
-        ) : <p className="text-slate-400">Not found.</p>}
+        ) : <p className="text-gray-400">Not found.</p>}
       </div>
     </div>
   );
@@ -355,7 +356,7 @@ function DetailDrawer({ uid, onClose }: { uid: string; onClose: () => void }) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section>
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</h3>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">{title}</h3>
       <div className="flex flex-col gap-1">{children}</div>
     </section>
   );
@@ -363,8 +364,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function KV({ k, children, mono }: { k: string; children: React.ReactNode; mono?: boolean }) {
   return (
     <div className="flex justify-between gap-4 text-sm">
-      <span className="text-slate-500">{k}</span>
-      <span className={`text-right text-slate-800 dark:text-slate-200 ${mono ? "font-mono text-xs" : "capitalize"}`}>{children}</span>
+      <span className="text-gray-500">{k}</span>
+      <span className={`text-right text-gray-800 ${mono ? "font-mono text-xs" : "capitalize"}`}>{children}</span>
     </div>
   );
 }
