@@ -262,6 +262,36 @@ const UNION_CTE = sql`
     FROM merchant_wallet_dues_payments mwd
 
     UNION ALL
+    -- Merchant onboarding fee (partner-site store registration payment)
+    SELECT
+      'merchant_onboarding:' || mop.id::text AS uid,
+      'merchant_onboarding' AS source,
+      'merchant' AS app,
+      'onboarding' AS service,
+      'onboarding_fee' AS purpose,
+      mop.status AS status,
+      CASE mop.status
+        WHEN 'pending' THEN 'pending'
+        WHEN 'created' THEN 'pending'
+        WHEN 'captured' THEN 'paid'
+        WHEN 'paid' THEN 'paid'
+        WHEN 'failed' THEN 'failed'
+        WHEN 'refunded' THEN 'refunded'
+        ELSE 'unknown'
+      END AS norm_status,
+      'razorpay' AS payment_mode,
+      mop.amount_paise::bigint AS gross_paise,
+      CASE WHEN mop.status IN ('captured','paid') THEN mop.amount_paise::bigint ELSE 0 END AS paid_paise,
+      COALESCE(mop.currency,'INR') AS currency,
+      mop.razorpay_order_id, mop.razorpay_payment_id,
+      NULL AS internal_ref,
+      mop.plan_id AS business_order_id,
+      'merchant' AS entity_type,
+      COALESCE(mop.merchant_store_id::text, mop.merchant_parent_id::text) AS entity_id,
+      mop.created_at, mop.updated_at
+    FROM merchant_onboarding_payments mop
+
+    UNION ALL
     -- Customer GatiCash wallet top-up
     SELECT
       'wallet_topup:' || wti.id::text AS uid,
@@ -554,6 +584,14 @@ export async function getTransactionDetail(uid: string): Promise<TransactionDeta
       if (rr) {
         breakdown.push({ label: "Amount", amountPaise: Number(rr.amount_paise ?? 0), kind: "total" });
         if (rr.refund_amount_paise != null && Number(rr.refund_amount_paise) > 0) breakdown.push({ label: "Refunded", amountPaise: -Number(rr.refund_amount_paise), kind: "refund" });
+      }
+    } else if (source === "merchant_onboarding" && Number.isFinite(id)) {
+      const r = await db.execute(sql`SELECT amount_paise, subtotal_paise, gst_amount_paise FROM merchant_onboarding_payments WHERE id = ${id} LIMIT 1`);
+      const rr = ((Array.isArray(r) ? r : (r as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>)[0];
+      if (rr) {
+        if (rr.subtotal_paise != null) breakdown.push({ label: "Onboarding fee", amountPaise: Number(rr.subtotal_paise), kind: "base" });
+        if (rr.gst_amount_paise != null) breakdown.push({ label: "GST", amountPaise: Number(rr.gst_amount_paise), kind: "tax" });
+        breakdown.push({ label: "Total", amountPaise: Number(rr.amount_paise ?? row?.grossPaise ?? 0), kind: "total" });
       }
     } else if (row) {
       // Wallet top-up / other: single amount.

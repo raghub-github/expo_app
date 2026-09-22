@@ -51,6 +51,7 @@ const SERVICE_OPTIONS: Record<string, { value: string; label: string }[]> = {
   merchant: [
     { value: "subscription", label: "Subscription" },
     { value: "wallet_dues", label: "Wallet Dues" },
+    { value: "onboarding", label: "Onboarding" },
   ],
   rider: [
     { value: "onboarding", label: "Onboarding Fee" },

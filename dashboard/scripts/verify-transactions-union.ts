@@ -22,6 +22,7 @@ const SOURCE_PROBES: Array<{ name: string; sql: string }> = [
   { name: "rider_wallet_payments (rider wallet)", sql: `SELECT count(*)::int AS c FROM rider_wallet_payments` },
   { name: "subscription_payments (merchant subscription)", sql: `SELECT count(*)::int AS c FROM subscription_payments` },
   { name: "merchant_wallet_dues_payments (merchant dues)", sql: `SELECT count(*)::int AS c FROM merchant_wallet_dues_payments` },
+  { name: "merchant_onboarding_payments (merchant onboarding)", sql: `SELECT count(*)::int AS c FROM merchant_onboarding_payments` },
   { name: "customer_wallet_topup_intents (wallet top-up)", sql: `SELECT count(*)::int AS c FROM customer_wallet_topup_intents` },
 ];
 
