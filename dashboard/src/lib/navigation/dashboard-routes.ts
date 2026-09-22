@@ -579,6 +579,12 @@ export const mainNavigation: MainNavItem[] = [
     subRoutes: orderDashboardRoutes,
   },
   {
+    name: "Transactions",
+    href: "/dashboard/transactions",
+    icon: CreditCard,
+    requiresSuperAdmin: true,
+  },
+  {
     name: "Area Managers",
     href: "/dashboard/area-managers",
     icon: MapPin,
