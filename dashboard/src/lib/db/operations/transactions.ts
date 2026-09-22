@@ -52,9 +52,15 @@ export interface TransactionRow {
   razorpayOrderId: string | null;
   razorpayPaymentId: string | null;
   internalRef: string | null;
+  /** Customer-facing order id (GMF/GMP/GMR…) for customer orders; null for non-order flows. */
   businessOrderId: string | null;
   entityType: string;
+  /** Internal pk (customers.id / riders.id / merchant_stores.id). */
   entityId: string | null;
+  /** Human name — customer/rider name or store name. */
+  entityName: string | null;
+  /** Display identifier — store GMMC id, rider GMR id, or customer mobile. */
+  entityDisplayId: string | null;
   createdAt: string;
   updatedAt: string | null;
 }
@@ -86,7 +92,8 @@ export interface ListTransactionsResult {
  */
 const UNION_CTE = sql`
   WITH all_txn AS (
-    -- Customer food/grocery (authoritative customer-order payment lifecycle)
+    -- Customer food/grocery (authoritative customer-order payment lifecycle).
+    -- gross = the full bill (grand_total = payable AFTER GatiCash, so add it back).
     SELECT
       'pending_orders:' || po.id::text AS uid,
       'pending_orders' AS source,
@@ -107,16 +114,25 @@ const UNION_CTE = sql`
         WHEN 'refund_failed' THEN 'refund_failed'
         ELSE 'unknown'
       END AS norm_status,
-      po.payment_method AS payment_mode,
-      ROUND(COALESCE(po.grand_total,0) * 100)::bigint AS gross_paise,
-      CASE WHEN po.payment_state IN ('finalized','paid') THEN ROUND(COALESCE(po.grand_total,0) * 100)::bigint ELSE 0 END AS paid_paise,
+      CASE
+        WHEN COALESCE(po.gati_cash_applied,0) > 0.005 AND COALESCE(po.grand_total,0) <= 0.005 THEN 'gaticash'
+        WHEN COALESCE(po.gati_cash_applied,0) > 0.005 THEN 'mixed'
+        ELSE po.payment_method
+      END AS payment_mode,
+      ROUND((COALESCE(po.grand_total,0) + COALESCE(po.gati_cash_applied,0)) * 100)::bigint AS gross_paise,
+      CASE WHEN po.payment_state IN ('finalized','paid')
+        THEN ROUND((COALESCE(po.grand_total,0) + COALESCE(po.gati_cash_applied,0)) * 100)::bigint ELSE 0 END AS paid_paise,
       COALESCE(po.currency,'INR') AS currency,
       po.razorpay_order_id, po.razorpay_payment_id,
       po.pending_id AS internal_ref,
-      po.finalized_order_id AS business_order_id,
+      COALESCE(oc.formatted_order_id, po.finalized_order_id) AS business_order_id,
       'customer' AS entity_type, po.customer_id::text AS entity_id,
+      c.full_name AS entity_name,
+      COALESCE(c.primary_mobile, po.customer_id::text) AS entity_display_id,
       po.created_at, po.updated_at
     FROM pending_orders po
+    LEFT JOIN customers c ON c.id = po.customer_id
+    LEFT JOIN orders_core oc ON oc.order_id = po.finalized_order_id
 
     UNION ALL
     -- Customer parcel + person-ride captures (order-type partitioned to avoid overlap)
@@ -140,11 +156,14 @@ const UNION_CTE = sql`
       (ocp.gateway_response->>'razorpayOrderId') AS razorpay_order_id,
       COALESCE(ocp.gateway_response->>'razorpayPaymentId', ocp.transaction_id) AS razorpay_payment_id,
       ocp.transaction_id AS internal_ref,
-      ocp.order_id AS business_order_id,
+      oc.formatted_order_id AS business_order_id,
       'customer' AS entity_type, oc.customer_id::text AS entity_id,
+      c.full_name AS entity_name,
+      COALESCE(c.primary_mobile, oc.customer_id::text) AS entity_display_id,
       COALESCE(ocp.paid_at, ocp.created_at) AS created_at, ocp.created_at AS updated_at
     FROM orders_core_payments ocp
     JOIN orders_core oc ON oc.order_id = ocp.order_id
+    LEFT JOIN customers c ON c.id = oc.customer_id
     WHERE oc.order_type IN ('parcel','person_ride')
 
     UNION ALL
@@ -172,8 +191,11 @@ const UNION_CTE = sql`
       op.ref_id AS internal_ref,
       NULL AS business_order_id,
       'rider' AS entity_type, op.rider_id::text AS entity_id,
+      r.name AS entity_name,
+      'GMR' || op.rider_id::text AS entity_display_id,
       op.created_at, op.updated_at
     FROM onboarding_payments op
+    LEFT JOIN riders r ON r.id = op.rider_id
 
     UNION ALL
     -- Rider negative-wallet recovery / top-up
@@ -202,8 +224,11 @@ const UNION_CTE = sql`
       NULL AS internal_ref,
       NULL AS business_order_id,
       'rider' AS entity_type, rwp.rider_id::text AS entity_id,
+      r.name AS entity_name,
+      'GMR' || rwp.rider_id::text AS entity_display_id,
       rwp.created_at, rwp.updated_at
     FROM rider_wallet_payments rwp
+    LEFT JOIN riders r ON r.id = rwp.rider_id
 
     UNION ALL
     -- Merchant subscription
@@ -228,10 +253,13 @@ const UNION_CTE = sql`
       (spmt.payment_gateway_response->>'razorpay_order_id') AS razorpay_order_id,
       spmt.payment_gateway_id AS razorpay_payment_id,
       spmt.id::text AS internal_ref,
-      spmt.subscription_id::text AS business_order_id,
+      NULL AS business_order_id,
       'merchant' AS entity_type, spmt.store_id::text AS entity_id,
+      COALESCE(s.store_display_name, s.store_name) AS entity_name,
+      s.store_id AS entity_display_id,
       COALESCE(spmt.payment_date, spmt.created_at) AS created_at, spmt.updated_at
     FROM subscription_payments spmt
+    LEFT JOIN merchant_stores s ON s.id = spmt.store_id
 
     UNION ALL
     -- Merchant wallet dues (partner-site / merchant-app collection)
@@ -258,8 +286,11 @@ const UNION_CTE = sql`
       NULL AS internal_ref,
       NULL AS business_order_id,
       'merchant' AS entity_type, mwd.merchant_store_id::text AS entity_id,
+      COALESCE(s.store_display_name, s.store_name) AS entity_name,
+      s.store_id AS entity_display_id,
       mwd.created_at, mwd.updated_at
     FROM merchant_wallet_dues_payments mwd
+    LEFT JOIN merchant_stores s ON s.id = mwd.merchant_store_id
 
     UNION ALL
     -- Merchant onboarding fee (partner-site store registration payment)
@@ -285,11 +316,14 @@ const UNION_CTE = sql`
       COALESCE(mop.currency,'INR') AS currency,
       mop.razorpay_order_id, mop.razorpay_payment_id,
       NULL AS internal_ref,
-      mop.plan_id AS business_order_id,
+      NULL AS business_order_id,
       'merchant' AS entity_type,
       COALESCE(mop.merchant_store_id::text, mop.merchant_parent_id::text) AS entity_id,
+      COALESCE(s.store_display_name, s.store_name, mop.plan_name) AS entity_name,
+      COALESCE(s.store_id, 'parent:' || mop.merchant_parent_id::text) AS entity_display_id,
       mop.created_at, mop.updated_at
     FROM merchant_onboarding_payments mop
+    LEFT JOIN merchant_stores s ON s.id = mop.merchant_store_id
 
     UNION ALL
     -- Customer GatiCash wallet top-up
@@ -316,10 +350,13 @@ const UNION_CTE = sql`
       wti.pg_order_id AS razorpay_order_id,
       wti.pg_payment_id AS razorpay_payment_id,
       wti.intent_id AS internal_ref,
-      wti.wallet_transaction_id::text AS business_order_id,
+      NULL AS business_order_id,
       'customer' AS entity_type, wti.customer_id::text AS entity_id,
+      c.full_name AS entity_name,
+      COALESCE(c.primary_mobile, wti.customer_id::text) AS entity_display_id,
       wti.created_at, wti.updated_at
     FROM customer_wallet_topup_intents wti
+    LEFT JOIN customers c ON c.id = wti.customer_id
   )
 `;
 
@@ -336,6 +373,33 @@ function decodeCursor(cursor: string): { createdAt: string; uid: string } | null
 
 function encodeCursor(createdAt: string, uid: string): string {
   return Buffer.from(`${createdAt}|${uid}`, "utf8").toString("base64");
+}
+
+/** Map one raw union row → normalized TransactionRow. Shared by list + detail. */
+function mapTxnRow(r: Record<string, unknown>): TransactionRow {
+  return {
+    uid: String(r.uid),
+    source: String(r.source),
+    app: String(r.app) as TxnApp,
+    service: String(r.service ?? ""),
+    purpose: String(r.purpose ?? ""),
+    status: String(r.status ?? ""),
+    normStatus: String(r.norm_status ?? "unknown") as TxnNormStatus,
+    paymentMode: r.payment_mode != null ? String(r.payment_mode) : null,
+    grossPaise: Number(r.gross_paise ?? 0),
+    paidPaise: Number(r.paid_paise ?? 0),
+    currency: String(r.currency ?? "INR"),
+    razorpayOrderId: r.razorpay_order_id != null ? String(r.razorpay_order_id) : null,
+    razorpayPaymentId: r.razorpay_payment_id != null ? String(r.razorpay_payment_id) : null,
+    internalRef: r.internal_ref != null ? String(r.internal_ref) : null,
+    businessOrderId: r.business_order_id != null ? String(r.business_order_id) : null,
+    entityType: String(r.entity_type ?? ""),
+    entityId: r.entity_id != null ? String(r.entity_id) : null,
+    entityName: r.entity_name != null ? String(r.entity_name) : null,
+    entityDisplayId: r.entity_display_id != null ? String(r.entity_display_id) : null,
+    createdAt: new Date(String(r.created_at)).toISOString(),
+    updatedAt: r.updated_at != null ? new Date(String(r.updated_at)).toISOString() : null,
+  };
 }
 
 export async function listTransactions(params: ListTransactionsParams): Promise<ListTransactionsResult> {
@@ -360,6 +424,7 @@ export async function listTransactions(params: ListTransactionsParams): Promise<
       OR t.business_order_id = ${q}
       OR t.internal_ref = ${q}
       OR t.entity_id = ${q}
+      OR t.entity_display_id = ${q}
     )`);
   }
 
@@ -385,30 +450,7 @@ export async function listTransactions(params: ListTransactionsParams): Promise<
   const hasMore = raw.length > limit;
   const page = hasMore ? raw.slice(0, limit) : raw;
 
-  const rows: TransactionRow[] = page.map((r) => {
-    const createdAt = new Date(String(r.created_at)).toISOString();
-    return {
-      uid: String(r.uid),
-      source: String(r.source),
-      app: String(r.app) as TxnApp,
-      service: String(r.service ?? ""),
-      purpose: String(r.purpose ?? ""),
-      status: String(r.status ?? ""),
-      normStatus: String(r.norm_status ?? "unknown") as TxnNormStatus,
-      paymentMode: r.payment_mode != null ? String(r.payment_mode) : null,
-      grossPaise: Number(r.gross_paise ?? 0),
-      paidPaise: Number(r.paid_paise ?? 0),
-      currency: String(r.currency ?? "INR"),
-      razorpayOrderId: r.razorpay_order_id != null ? String(r.razorpay_order_id) : null,
-      razorpayPaymentId: r.razorpay_payment_id != null ? String(r.razorpay_payment_id) : null,
-      internalRef: r.internal_ref != null ? String(r.internal_ref) : null,
-      businessOrderId: r.business_order_id != null ? String(r.business_order_id) : null,
-      entityType: String(r.entity_type ?? ""),
-      entityId: r.entity_id != null ? String(r.entity_id) : null,
-      createdAt,
-      updatedAt: r.updated_at != null ? new Date(String(r.updated_at)).toISOString() : null,
-    };
-  });
+  const rows: TransactionRow[] = page.map(mapTxnRow);
 
   const last = rows[rows.length - 1];
   const nextCursor = hasMore && last ? encodeCursor(last.createdAt, last.uid) : null;
@@ -527,29 +569,7 @@ export async function getTransactionDetail(uid: string): Promise<TransactionDeta
   // Summary row: re-select this uid through the same normalized union (one row).
   const summaryRes = await db.execute(sql`${UNION_CTE} SELECT t.* FROM all_txn t WHERE t.uid = ${uid} LIMIT 1`);
   const sRaw = (Array.isArray(summaryRes) ? summaryRes : (summaryRes as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>;
-  const row: TransactionRow | null = sRaw[0]
-    ? {
-        uid: String(sRaw[0].uid),
-        source: String(sRaw[0].source),
-        app: String(sRaw[0].app) as TxnApp,
-        service: String(sRaw[0].service ?? ""),
-        purpose: String(sRaw[0].purpose ?? ""),
-        status: String(sRaw[0].status ?? ""),
-        normStatus: String(sRaw[0].norm_status ?? "unknown") as TxnNormStatus,
-        paymentMode: sRaw[0].payment_mode != null ? String(sRaw[0].payment_mode) : null,
-        grossPaise: Number(sRaw[0].gross_paise ?? 0),
-        paidPaise: Number(sRaw[0].paid_paise ?? 0),
-        currency: String(sRaw[0].currency ?? "INR"),
-        razorpayOrderId: sRaw[0].razorpay_order_id != null ? String(sRaw[0].razorpay_order_id) : null,
-        razorpayPaymentId: sRaw[0].razorpay_payment_id != null ? String(sRaw[0].razorpay_payment_id) : null,
-        internalRef: sRaw[0].internal_ref != null ? String(sRaw[0].internal_ref) : null,
-        businessOrderId: sRaw[0].business_order_id != null ? String(sRaw[0].business_order_id) : null,
-        entityType: String(sRaw[0].entity_type ?? ""),
-        entityId: sRaw[0].entity_id != null ? String(sRaw[0].entity_id) : null,
-        createdAt: new Date(String(sRaw[0].created_at)).toISOString(),
-        updatedAt: sRaw[0].updated_at != null ? new Date(String(sRaw[0].updated_at)).toISOString() : null,
-      }
-    : null;
+  const row: TransactionRow | null = sRaw[0] ? mapTxnRow(sRaw[0]) : null;
 
   const breakdown: BreakdownComponent[] = [];
   try {
