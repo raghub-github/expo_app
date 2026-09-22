@@ -223,7 +223,7 @@ const UNION_CTE = sql`
       END AS norm_status,
       COALESCE(spmt.payment_gateway,'razorpay') AS payment_mode,
       COALESCE(spmt.total_paise, ROUND(COALESCE(spmt.amount,0) * 100))::bigint AS gross_paise,
-      CASE WHEN lower(COALESCE(spmt.payment_status,''))='paid' THEN COALESCE(spmt.total_paise, ROUND(COALESCE(spmt.amount,0) * 100))::bigint ELSE 0 END AS paid_paise,
+      CASE WHEN lower(COALESCE(spmt.payment_status,'')) IN ('paid','refunded','refund_pending') THEN COALESCE(spmt.total_paise, ROUND(COALESCE(spmt.amount,0) * 100))::bigint ELSE 0 END AS paid_paise,
       'INR' AS currency,
       (spmt.payment_gateway_response->>'razorpay_order_id') AS razorpay_order_id,
       spmt.payment_gateway_id AS razorpay_payment_id,
@@ -232,6 +232,34 @@ const UNION_CTE = sql`
       'merchant' AS entity_type, spmt.store_id::text AS entity_id,
       COALESCE(spmt.payment_date, spmt.created_at) AS created_at, spmt.updated_at
     FROM subscription_payments spmt
+
+    UNION ALL
+    -- Merchant wallet dues (partner-site / merchant-app collection)
+    SELECT
+      'merchant_dues:' || mwd.id::text AS uid,
+      'merchant_dues' AS source,
+      'merchant' AS app,
+      'wallet_dues' AS service,
+      'wallet_dues' AS purpose,
+      mwd.status AS status,
+      CASE mwd.status
+        WHEN 'initiated' THEN 'pending'
+        WHEN 'pending' THEN 'pending'
+        WHEN 'success' THEN 'paid'
+        WHEN 'completed' THEN 'paid'
+        WHEN 'failed' THEN 'failed'
+        ELSE 'unknown'
+      END AS norm_status,
+      COALESCE(mwd.method,'razorpay') AS payment_mode,
+      mwd.amount_paise::bigint AS gross_paise,
+      CASE WHEN mwd.status IN ('success','completed') THEN mwd.amount_paise::bigint ELSE 0 END AS paid_paise,
+      'INR' AS currency,
+      mwd.razorpay_order_id, mwd.razorpay_payment_id,
+      NULL AS internal_ref,
+      NULL AS business_order_id,
+      'merchant' AS entity_type, mwd.merchant_store_id::text AS entity_id,
+      mwd.created_at, mwd.updated_at
+    FROM merchant_wallet_dues_payments mwd
 
     UNION ALL
     -- Customer GatiCash wallet top-up
@@ -248,6 +276,7 @@ const UNION_CTE = sql`
         WHEN 'PAID' THEN 'paid'
         WHEN 'FAILED' THEN 'failed'
         WHEN 'EXPIRED' THEN 'failed'
+        WHEN 'CANCELLED' THEN 'cancelled'
         ELSE 'unknown'
       END AS norm_status,
       'razorpay' AS payment_mode,
@@ -511,15 +540,23 @@ export async function getTransactionDetail(uid: string): Promise<TransactionDeta
         breakdown.push({ label: "Total", amountPaise: rupeesToPaise(rr.amount), kind: "total" });
       }
     } else if (source === "subscription_payment" && Number.isFinite(id)) {
-      const r = await db.execute(sql`SELECT amount, subtotal_paise, gst_amount_paise, total_paise FROM subscription_payments WHERE id = ${id} LIMIT 1`);
+      const r = await db.execute(sql`SELECT amount, subtotal_paise, gst_amount_paise, total_paise, refund_amount FROM subscription_payments WHERE id = ${id} LIMIT 1`);
       const rr = ((Array.isArray(r) ? r : (r as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>)[0];
       if (rr) {
         if (rr.subtotal_paise != null) breakdown.push({ label: "Plan fee", amountPaise: Number(rr.subtotal_paise), kind: "subscription" });
         if (rr.gst_amount_paise != null) breakdown.push({ label: "GST", amountPaise: Number(rr.gst_amount_paise), kind: "tax" });
         breakdown.push({ label: "Total", amountPaise: Number(rr.total_paise ?? rupeesToPaise(rr.amount)), kind: "total" });
+        if (rr.refund_amount != null && asNum(rr.refund_amount) > 0) breakdown.push({ label: "Refunded", amountPaise: -rupeesToPaise(rr.refund_amount), kind: "refund" });
+      }
+    } else if (source === "rider_wallet_payment" && Number.isFinite(id)) {
+      const r = await db.execute(sql`SELECT amount_paise, refund_amount_paise FROM rider_wallet_payments WHERE id = ${id} LIMIT 1`);
+      const rr = ((Array.isArray(r) ? r : (r as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>)[0];
+      if (rr) {
+        breakdown.push({ label: "Amount", amountPaise: Number(rr.amount_paise ?? 0), kind: "total" });
+        if (rr.refund_amount_paise != null && Number(rr.refund_amount_paise) > 0) breakdown.push({ label: "Refunded", amountPaise: -Number(rr.refund_amount_paise), kind: "refund" });
       }
     } else if (row) {
-      // Wallet top-up / rider wallet: single amount.
+      // Wallet top-up / other: single amount.
       breakdown.push({ label: row.service === "wallet_topup" ? "Top-up amount" : "Amount", amountPaise: row.grossPaise, kind: "total" });
     }
   } catch {
