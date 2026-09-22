@@ -213,8 +213,8 @@ const UNION_CTE = sql`
       'merchant' AS app,
       'subscription' AS service,
       'subscription' AS purpose,
-      spmt.payment_status AS status,
-      CASE lower(COALESCE(spmt.payment_status,''))
+      spmt.payment_status::text AS status,
+      CASE lower(COALESCE(spmt.payment_status::text,''))
         WHEN 'paid' THEN 'paid'
         WHEN 'refunded' THEN 'refunded'
         WHEN 'refund_pending' THEN 'refund_pending'
@@ -223,7 +223,7 @@ const UNION_CTE = sql`
       END AS norm_status,
       COALESCE(spmt.payment_gateway,'razorpay') AS payment_mode,
       COALESCE(spmt.total_paise, ROUND(COALESCE(spmt.amount,0) * 100))::bigint AS gross_paise,
-      CASE WHEN lower(COALESCE(spmt.payment_status,'')) IN ('paid','refunded','refund_pending') THEN COALESCE(spmt.total_paise, ROUND(COALESCE(spmt.amount,0) * 100))::bigint ELSE 0 END AS paid_paise,
+      CASE WHEN lower(COALESCE(spmt.payment_status::text,'')) IN ('paid','refunded','refund_pending') THEN COALESCE(spmt.total_paise, ROUND(COALESCE(spmt.amount,0) * 100))::bigint ELSE 0 END AS paid_paise,
       'INR' AS currency,
       (spmt.payment_gateway_response->>'razorpay_order_id') AS razorpay_order_id,
       spmt.payment_gateway_id AS razorpay_payment_id,
