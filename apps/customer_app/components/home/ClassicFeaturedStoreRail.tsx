@@ -16,6 +16,7 @@ import type { StoreFoodItemsUnderPrice } from "@/services/foodHomeItemsUnderPric
 import type { MerchantSummary } from "@/services/merchant.service";
 import { formatMerchantDeliveryTime } from "@/lib/merchantDeliveryTime";
 import { resolveMerchantBannerUri } from "@/lib/merchantBanner";
+import { sizedImageUrl } from "@/lib/imageSizing";
 import { isClassicPopularRatedStore } from "@/lib/classicStoreRating";
 import { useMerchantLiveStatus } from "@/hooks/useMerchantLiveStatus";
 
@@ -96,10 +97,12 @@ function FeaturedStoreCard({
   );
   const storeOpen = liveStatus === "OPEN";
 
-  const banner =
+  const bannerBase =
     (merchant ? resolveMerchantBannerUri(merchant) : null) ||
     toAbsoluteImageUrl(cover.imageUrl) ||
     cover.imageUrl;
+  // Featured cover paints at CARD_W wide — request a matching WebP derivative.
+  const banner = sizedImageUrl(bannerBase, CARD_W) ?? bannerBase;
   const rating =
     store.avgRating != null && store.avgRating > 0
       ? store.avgRating.toFixed(1)

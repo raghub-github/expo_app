@@ -17,6 +17,7 @@ import { prefetchImagesNow } from "@/lib/prefetchQueue";
 import { useCardAnimationsEnabled } from "@/hooks/useCardAnimationsEnabled";
 import { markFoodHomeListScrollEnded } from "@/lib/foodHomeScrollGuard";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { sizedImageUrl } from "@/lib/imageSizing";
 import {
   isHeroMediaSessionReady,
   markHeroMediaSessionReady,
@@ -102,16 +103,18 @@ const BannerImage = React.memo(function BannerImage({
   onLoadOk?: (uri: string) => void;
   onLoadFail?: (uri: string) => void;
 }) {
-  const lastGoodRef = useRef(uri);
-  const [paintUri, setPaintUri] = useState(uri);
+  // Hero paints at `width` — request a matching WebP derivative (no-op for non-proxy URLs).
+  const sized = useMemo(() => sizedImageUrl(uri, width) ?? uri, [uri, width]);
+  const lastGoodRef = useRef(sized);
+  const [paintUri, setPaintUri] = useState(sized);
 
   useEffect(() => {
-    if (!uri) return;
-    setPaintUri(uri);
-    if (isHeroMediaSessionReady(uri)) {
-      lastGoodRef.current = uri;
+    if (!sized) return;
+    setPaintUri(sized);
+    if (isHeroMediaSessionReady(sized)) {
+      lastGoodRef.current = sized;
     }
-  }, [uri]);
+  }, [sized]);
 
   return (
     <View
@@ -153,7 +156,7 @@ const BannerImage = React.memo(function BannerImage({
           if (lastGoodRef.current && lastGoodRef.current !== paintUri) {
             setPaintUri(lastGoodRef.current);
           }
-          onLoadFail?.(uri);
+          onLoadFail?.(sized);
         }}
       />
     </View>

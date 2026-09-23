@@ -21,6 +21,7 @@ import { StoreTheme } from "@/constants/storeTheme";
 import { ClassicCornerRatingPill } from "@/components/home/ClassicCornerRatingPill";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { sizedImageUrl } from "@/lib/imageSizing";
 import type { MenuListRow } from "@/features/merchant-detail/types";
 import type { MenuItem } from "@/services/merchant.service";
 
@@ -58,7 +59,8 @@ function FeaturedRailCard({
   onItemPress: (item: MenuItem) => void;
   isStoreClosed: boolean;
 }) {
-  const uri = toAbsoluteImageUrl(item.imageUrl);
+  // Featured dish image paints at cardW wide — request a matching WebP derivative.
+  const uri = sizedImageUrl(toAbsoluteImageUrl(item.imageUrl), cardW);
   const sell = getSellingPrice(item);
   const base = getBasePrice(item);
   const showStrike = base != null && base > sell;

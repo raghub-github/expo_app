@@ -24,6 +24,7 @@ import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { ensureMenuItemImageWarm } from "@/lib/prefetchMenuItemImages";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { sizedImageUrl } from "@/lib/imageSizing";
 import { formatOfferRupee, computeCatalogDiscountPercent, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { MENU_MASONRY_CARD_RADIUS } from "@/features/merchant-detail/constants/layout";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
@@ -80,8 +81,12 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
   const dark = useMerchantUiDark();
   const cartQty = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
   const imageUri = useMemo(
-    () => (item.imageUrl?.trim() ? (toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl) : null),
-    [item.imageUrl]
+    // Masonry photo paints at imageSize wide — request a matching WebP derivative.
+    () =>
+      item.imageUrl?.trim()
+        ? sizedImageUrl(toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl, imageSize)
+        : null,
+    [item.imageUrl, imageSize]
   );
   const skipRemoteImage = !imageUri;
   const [imageFailed, setImageFailed] = useState(false);
