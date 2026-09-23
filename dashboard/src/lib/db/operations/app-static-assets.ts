@@ -1,9 +1,10 @@
 import { getSql } from "@/lib/db/client";
-import type { AppStaticAssetApp } from "@/lib/app-static-assets/shared";
+import type { AppStaticAssetStorageApp } from "@/lib/app-static-assets/shared";
+import { HOME_MAP_STATIC_ASSET_ID } from "@/lib/home-map/shared";
 
 export type AppStaticAssetRow = {
   id: string;
-  app: AppStaticAssetApp;
+  app: AppStaticAssetStorageApp;
   section: string;
   label: string;
   description: string;
@@ -15,7 +16,7 @@ export type AppStaticAssetRow = {
 function mapRow(r: Record<string, unknown>): AppStaticAssetRow {
   return {
     id: String(r.id),
-    app: String(r.app) as AppStaticAssetApp,
+    app: String(r.app) as AppStaticAssetStorageApp,
     section: String(r.section ?? ""),
     label: String(r.label ?? ""),
     description: String(r.description ?? ""),
@@ -25,7 +26,7 @@ function mapRow(r: Record<string, unknown>): AppStaticAssetRow {
   };
 }
 
-export async function listAppStaticAssets(app: AppStaticAssetApp): Promise<AppStaticAssetRow[]> {
+export async function listAppStaticAssets(app: AppStaticAssetStorageApp): Promise<AppStaticAssetRow[]> {
   const sql = getSql();
   // Ensure new Branding / App icon slots exist even before migration is applied.
   try {
@@ -215,6 +216,18 @@ export async function listAppStaticAssets(app: AppStaticAssetApp): Promise<AppSt
           'Ride home offer carousel slot 6 of 6',
           15
         )
+      ON CONFLICT (id) DO NOTHING
+    `;
+    await sql`
+      INSERT INTO app_static_assets (id, app, section, label, description, sort_order)
+      VALUES (
+        ${HOME_MAP_STATIC_ASSET_ID},
+        'dashboard',
+        'Home Map',
+        'Static home map',
+        'Control Dashboard Home — shown when Home Map mode is Static Map Image. Fully responsive; aspect ratio preserved.',
+        10
+      )
       ON CONFLICT (id) DO NOTHING
     `;
   } catch {

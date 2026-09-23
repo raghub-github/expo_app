@@ -288,6 +288,25 @@ export async function GET(
   }
 }
 
+function pgErrorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const e = err as { code?: unknown; cause?: unknown };
+  if (typeof e.code === "string") return e.code;
+  if (e.cause && typeof e.cause === "object" && typeof (e.cause as { code?: unknown }).code === "string") {
+    return (e.cause as { code: string }).code;
+  }
+  return undefined;
+}
+
+function pgErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    const cause = (err as { cause?: unknown }).cause;
+    if (cause instanceof Error && cause.message) return cause.message;
+    return err.message;
+  }
+  return "Internal error";
+}
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; itemId: string }> }
@@ -325,7 +344,7 @@ export async function PUT(
         LIMIT 1
       `;
     } catch (err: unknown) {
-      if ((err as { code?: string })?.code !== "42703") throw err;
+      if (pgErrorCode(err) !== "42703") throw err;
       [existing] = await sql`
         SELECT item_name, item_description, category_id, food_type, spice_level, cuisine_type,
                base_price, selling_price, discount_percentage, tax_percentage,
@@ -349,11 +368,17 @@ export async function PUT(
 
     const item_description = mergeOptionalStr(body.item_description, e.item_description);
     const category_id = mergeNum(body.category_id, e.category_id);
+    if (!Number.isFinite(category_id) || category_id <= 0) {
+      return NextResponse.json({ success: false, error: "Valid category is required" }, { status: 400 });
+    }
     const food_type = mergeOptionalStr(body.food_type, e.food_type);
     const spice_level = mergeOptionalStr(body.spice_level, e.spice_level);
     const cuisine_type = mergeOptionalStr(body.cuisine_type, e.cuisine_type);
     const base_price = mergeNum(body.base_price, e.base_price);
     const selling_price = mergeNum(body.selling_price, e.selling_price);
+    if (base_price < 0 || selling_price < 0) {
+      return NextResponse.json({ success: false, error: "Prices cannot be negative" }, { status: 400 });
+    }
     const discount_percentage = mergeNum(body.discount_percentage, e.discount_percentage);
     const tax_percentage = mergeNum(body.tax_percentage, e.tax_percentage);
     const preparation_time_minutes = mergeNumNullable(body.preparation_time_minutes, e.preparation_time_minutes);
@@ -369,13 +394,20 @@ export async function PUT(
     });
     const item_size_value = numericSizeOrNull(itemSize.size_value);
     const item_size_unit = itemSize.size_unit;
-    const size_preset = itemSize.size_preset;
+    // Enforce DB check constraint: NULL | REGULAR | STANDARD | PREMIUM only.
+    const size_preset =
+      itemSize.size_preset === "REGULAR" ||
+      itemSize.size_preset === "STANDARD" ||
+      itemSize.size_preset === "PREMIUM"
+        ? itemSize.size_preset
+        : null;
     const available_for_delivery = mergeBool(body.available_for_delivery, e.available_for_delivery);
     const in_stock = mergeBool(body.in_stock, e.in_stock);
     const is_active = mergeBool(body.is_active, e.is_active);
     const is_popular = mergeBool(body.is_popular, e.is_popular);
     const is_recommended = mergeBool(body.is_recommended, e.is_recommended);
-    const allergens = mergeStringArray(body.allergens, e.allergens);
+    const allergensRaw = mergeStringArray(body.allergens, e.allergens);
+    const allergens = allergensRaw.length ? allergensRaw : null;
     const weight_per_serving = mergeNumNullable(body.weight_per_serving, e.weight_per_serving);
     const weight_per_serving_unit = mergeOptionalStr(body.weight_per_serving_unit, e.weight_per_serving_unit);
     const calories_kcal = mergeNumNullable(body.calories_kcal, e.calories_kcal);
@@ -450,7 +482,7 @@ export async function PUT(
         WHERE id = ${menuItemId} AND store_id = ${storeId}
       `;
     } catch (err: unknown) {
-      if ((err as { code?: string })?.code !== "42703") throw err;
+      if (pgErrorCode(err) !== "42703") throw err;
       await sql`
         UPDATE merchant_menu_items
         SET item_name = ${item_name},
@@ -517,7 +549,20 @@ export async function PUT(
     return NextResponse.json({ success: true, ok: true });
   } catch (e) {
     console.error("[PUT /api/merchant/stores/[id]/menu/items/[itemId]]", e);
-    return NextResponse.json({ success: false, error: "Internal error" }, { status: 500 });
+    const code = pgErrorCode(e);
+    const detail = pgErrorMessage(e);
+    // Surface actionable DB messages (constraints / missing columns) instead of opaque "Internal error".
+    const friendly =
+      code === "23514"
+        ? "Invalid value for one of the item fields (check size preset / prices)."
+        : code === "23503"
+          ? "Related record missing (category or store)."
+          : code === "22P02"
+            ? "Invalid number or date format in one of the fields."
+            : detail && detail !== "Internal error"
+              ? detail
+              : "Internal error";
+    return NextResponse.json({ success: false, error: friendly }, { status: 500 });
   }
 }
 

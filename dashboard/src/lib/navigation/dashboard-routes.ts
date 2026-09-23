@@ -605,12 +605,6 @@ export const mainNavigation: MainNavItem[] = [
     // No dashboardType — visible to every authenticated agent (like Home).
   },
   {
-    name: "System",
-    href: "/dashboard/system",
-    icon: Settings,
-    dashboardType: "SYSTEM",
-  },
-  {
     name: "Analytics",
     href: "/dashboard/analytics",
     icon: BarChart3,

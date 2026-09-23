@@ -53,6 +53,7 @@ export async function GET(request: NextRequest) {
       amountMinPaise: num(sp.get("amountMin")),
       amountMaxPaise: num(sp.get("amountMax")),
       cursor: sp.get("cursor") || null,
+      page: num(sp.get("page")),
       limit: num(sp.get("limit")) ?? 20,
     };
 

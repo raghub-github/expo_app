@@ -1,9 +1,18 @@
 export const APP_STATIC_ASSET_APPS = ["customer", "rider", "merchant"] as const;
 export type AppStaticAssetApp = (typeof APP_STATIC_ASSET_APPS)[number];
 
-export function parseAppStaticAssetApp(value: string): AppStaticAssetApp | null {
+/** Storage apps include dashboard (Home Map static image), not shown in mobile-app tabs. */
+export const APP_STATIC_ASSET_STORAGE_APPS = [
+  ...APP_STATIC_ASSET_APPS,
+  "dashboard",
+] as const;
+export type AppStaticAssetStorageApp = (typeof APP_STATIC_ASSET_STORAGE_APPS)[number];
+
+export function parseAppStaticAssetApp(value: string): AppStaticAssetStorageApp | null {
   const v = value.trim().toLowerCase();
-  return APP_STATIC_ASSET_APPS.includes(v as AppStaticAssetApp) ? (v as AppStaticAssetApp) : null;
+  return APP_STATIC_ASSET_STORAGE_APPS.includes(v as AppStaticAssetStorageApp)
+    ? (v as AppStaticAssetStorageApp)
+    : null;
 }
 
 export function appStaticAssetAppLabel(app: AppStaticAssetApp): string {

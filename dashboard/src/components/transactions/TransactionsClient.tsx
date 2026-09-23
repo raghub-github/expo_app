@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
+import { Download } from "lucide-react";
+import { ExportTransactionsSheet } from "@/components/transactions/ExportTransactionsSheet";
+import { TablePagination } from "@/components/riders/TablePagination";
+import { usePermissions } from "@/hooks/usePermissions";
 
 /* ----------------------------- types ----------------------------- */
 type TxnApp = "customer" | "merchant" | "rider";
@@ -28,12 +32,23 @@ interface TransactionRow {
   createdAt: string;
   updatedAt: string | null;
 }
-interface ListResp { success: boolean; rows: TransactionRow[]; nextCursor: string | null; hasMore: boolean; error?: string }
+interface ListResp {
+  success: boolean;
+  rows: TransactionRow[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  total: number | null;
+  page: number;
+  pageSize: number;
+  error?: string;
+}
 interface BreakdownComponent { label: string; amountPaise: number; kind: string }
 interface LifecycleEvent { eventType: string; source: string; prevState: string | null; newState: string | null; amountPaise: number | null; failureCode: string | null; failureMessage: string | null; createdAt: string }
 interface DetailResp { success: boolean; row: TransactionRow | null; breakdown: BreakdownComponent[]; lifecycle: LifecycleEvent[]; error?: string }
 
 /* ----------------------------- constants ----------------------------- */
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
+type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
 const APP_TABS: { key: TxnApp | "all"; label: string }[] = [
   { key: "all", label: "All" },
   { key: "customer", label: "Customer" },
@@ -85,6 +100,15 @@ const INPUT_CLS = "h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm t
 /* ----------------------------- helpers ----------------------------- */
 const inr = (paise: number): string =>
   `₹${(paise / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+/** Formatted public order id only — never a numeric pk or internal uuid. */
+function displayOrderId(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const t = value.trim().replace(/^#/, "");
+  if (!t || /^\d+$/.test(t)) return null;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t)) return null;
+  return t;
+}
 const fmtTime = (iso: string): string => {
   try { return new Date(iso).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }); }
   catch { return iso; }
@@ -97,6 +121,7 @@ function useDebounced<T>(value: T, ms = 400): T {
 
 /* ----------------------------- component ----------------------------- */
 export function TransactionsClient() {
+  const { isSuperAdmin } = usePermissions();
   const [app, setApp] = useState<TxnApp | "all">("all");
   const [service, setService] = useState("");
   const [status, setStatus] = useState("");
@@ -108,8 +133,12 @@ export function TransactionsClient() {
   const [searchInput, setSearchInput] = useState("");
   const q = useDebounced(searchInput);
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<PageSize>(20);
 
   useEffect(() => { setService(""); }, [app]);
+  useEffect(() => { setPage(1); }, [app, service, status, mode, dateFrom, dateTo, amountMin, amountMax, q, pageSize]);
 
   const filters = useMemo(() => ({
     app: app === "all" ? "" : app,
@@ -119,80 +148,93 @@ export function TransactionsClient() {
     q,
   }), [app, service, status, mode, dateFrom, dateTo, amountMin, amountMax, q]);
 
-  const query = useInfiniteQuery({
-    queryKey: ["transactions", filters],
-    initialPageParam: "",
-    queryFn: async ({ pageParam }): Promise<ListResp> => {
+  const query = useQuery({
+    queryKey: ["transactions", filters, page, pageSize],
+    queryFn: async (): Promise<ListResp> => {
       const sp = new URLSearchParams();
       Object.entries(filters).forEach(([k, v]) => { if (v) sp.set(k, String(v)); });
-      if (pageParam) sp.set("cursor", String(pageParam));
-      sp.set("limit", "20");
+      sp.set("page", String(page));
+      sp.set("limit", String(pageSize));
       const res = await fetch(`/api/transactions?${sp.toString()}`, { credentials: "include" });
       const json = (await res.json()) as ListResp;
       if (!res.ok || !json.success) throw new Error(json.error || "Failed to load transactions");
       return json;
     },
-    getNextPageParam: (last) => last.nextCursor ?? undefined,
     staleTime: 15_000,
+    placeholderData: (prev) => prev,
   });
 
-  const rows = useMemo(() => query.data?.pages.flatMap((p) => p.rows) ?? [], [query.data]);
-  const total = rows.length;
+  const rows = query.data?.rows ?? [];
+  const total = query.data?.total ?? rows.length;
 
   const resetFilters = () => {
     setService(""); setStatus(""); setMode(""); setDateFrom(""); setDateTo("");
     setAmountMin(""); setAmountMax(""); setSearchInput("");
+    setPage(1);
   };
+
+  const exportSeed = useMemo(() => ({
+    app, service, status, mode, dateFrom, dateTo,
+  }), [app, service, status, mode, dateFrom, dateTo]);
 
   return (
     <div className="flex flex-col gap-4">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold text-gray-900">Transactions</h1>
-        <p className="text-sm text-gray-500">
-          Every payment across Customer, Merchant and Rider apps — search, filter and trace any transaction end-to-end.
-        </p>
-      </header>
-
-      {/* App tabs */}
-      <div className="flex w-fit gap-1 rounded-lg border border-gray-200 bg-gray-100 p-1">
-        {APP_TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setApp(t.key)}
-            className={`rounded-md px-4 py-1.5 text-sm font-medium transition ${
-              app === t.key ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Filters */}
-      <div className="flex flex-wrap items-end gap-2 rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
-        <div className="flex min-w-[220px] grow flex-col gap-1">
-          <label className="text-xs text-gray-500">Search (Razorpay order/payment id, order id, ref, entity id)</label>
-          <input
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Exact id lookup…"
-            className={INPUT_CLS}
-          />
+      <div className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex w-fit gap-1 rounded-lg border border-gray-200 bg-gray-100 p-1">
+            {APP_TABS.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setApp(t.key)}
+                className={`rounded-md px-4 py-1.5 text-sm font-medium transition ${
+                  app === t.key ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={resetFilters} className="inline-flex h-9 items-center rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-600 hover:bg-gray-50">Reset</button>
+            {isSuperAdmin ? (
+              <button
+                type="button"
+                onClick={() => setExportOpen(true)}
+                className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                <Download className="h-3.5 w-3.5" aria-hidden />
+                Export
+              </button>
+            ) : null}
+            <button type="button" onClick={() => query.refetch()} className="inline-flex h-9 items-center rounded-lg bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700">Refresh</button>
+          </div>
         </div>
-        {(SERVICE_OPTIONS[app] ?? []).length > 0 && (
-          <Select label="Service" value={service} onChange={setService} options={SERVICE_OPTIONS[app]} placeholder="All services" />
-        )}
-        <Select label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS.map((s) => ({ value: s, label: s.replace(/_/g, " ") }))} placeholder="All statuses" />
-        <Select label="Mode" value={mode} onChange={setMode} options={[
-          { value: "razorpay", label: "Razorpay" }, { value: "wallet", label: "Wallet" },
-          { value: "gati_cash", label: "GatiCash" }, { value: "cash", label: "Cash" }, { value: "online", label: "Online" },
-        ]} placeholder="All modes" />
-        <Field label="From"><input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className={INPUT_CLS} /></Field>
-        <Field label="To"><input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className={INPUT_CLS} /></Field>
-        <Field label="Min ₹"><input type="number" value={amountMin} onChange={(e) => setAmountMin(e.target.value)} className={`${INPUT_CLS} w-20`} /></Field>
-        <Field label="Max ₹"><input type="number" value={amountMax} onChange={(e) => setAmountMax(e.target.value)} className={`${INPUT_CLS} w-20`} /></Field>
-        <button onClick={resetFilters} className="inline-flex h-9 items-center rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-600 hover:bg-gray-50">Reset</button>
-        <button onClick={() => query.refetch()} className="inline-flex h-9 items-center rounded-lg bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700">Refresh</button>
+
+        <div className="flex flex-nowrap items-end gap-2 overflow-x-auto pb-0.5">
+          <div className="flex w-[200px] shrink-0 flex-col gap-1">
+            <label className="text-xs text-gray-500">Search</label>
+            <input
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="GMF… / payment id"
+              className={INPUT_CLS}
+              title="Search formatted order id, Razorpay id, ref, entity id"
+            />
+          </div>
+          {(SERVICE_OPTIONS[app] ?? []).length > 0 && (
+            <Select label="Service" value={service} onChange={setService} options={SERVICE_OPTIONS[app]} placeholder="All services" />
+          )}
+          <Select label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS.map((s) => ({ value: s, label: s.replace(/_/g, " ") }))} placeholder="All statuses" />
+          <Select label="Mode" value={mode} onChange={setMode} options={[
+            { value: "razorpay", label: "Razorpay" }, { value: "wallet", label: "Wallet" },
+            { value: "gati_cash", label: "GatiCash" }, { value: "cash", label: "Cash" }, { value: "online", label: "Online" },
+          ]} placeholder="All modes" />
+          <Field label="From"><input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className={`${INPUT_CLS} w-[9.5rem] shrink-0`} /></Field>
+          <Field label="To"><input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className={`${INPUT_CLS} w-[9.5rem] shrink-0`} /></Field>
+          <Field label="Min ₹"><input type="number" value={amountMin} onChange={(e) => setAmountMin(e.target.value)} className={`${INPUT_CLS} w-20 shrink-0`} /></Field>
+          <Field label="Max ₹"><input type="number" value={amountMax} onChange={(e) => setAmountMax(e.target.value)} className={`${INPUT_CLS} w-20 shrink-0`} /></Field>
+        </div>
       </div>
 
       {/* Table */}
@@ -202,12 +244,12 @@ export function TransactionsClient() {
             <tr>
               <th className="px-3 py-2.5 font-medium">When</th>
               <th className="px-3 py-2.5 font-medium">App</th>
-              <th className="px-3 py-2.5 font-medium">Service / Order</th>
+              <th className="px-3 py-2.5 font-medium">Service</th>
               <th className="px-3 py-2.5 font-medium">Status</th>
               <th className="px-3 py-2.5 text-right font-medium">Amount</th>
               <th className="px-3 py-2.5 text-right font-medium">Paid</th>
               <th className="px-3 py-2.5 font-medium">Mode</th>
-              <th className="px-3 py-2.5 font-medium">Razorpay Order</th>
+              <th className="px-3 py-2.5 font-medium">Order ID</th>
               <th className="px-3 py-2.5 font-medium">Entity</th>
             </tr>
           </thead>
@@ -223,15 +265,14 @@ export function TransactionsClient() {
                 <tr key={r.uid} onClick={() => setSelectedUid(r.uid)} className="cursor-pointer hover:bg-gray-50">
                   <td className="whitespace-nowrap px-3 py-2.5 text-gray-600">{fmtTime(r.createdAt)}</td>
                   <td className="px-3 py-2.5 capitalize text-gray-800">{r.app}</td>
-                  <td className="px-3 py-2.5">
-                    <div className="capitalize text-gray-800">{r.service.replace(/_/g, " ")}</div>
-                    {r.businessOrderId && <div className="font-mono text-xs text-gray-400">{r.businessOrderId}</div>}
-                  </td>
+                  <td className="px-3 py-2.5 capitalize text-gray-800">{r.service.replace(/_/g, " ")}</td>
                   <td className="px-3 py-2.5"><StatusBadge status={r.normStatus} raw={r.status} /></td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-right font-medium text-gray-900">{inr(r.grossPaise)}</td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-right text-gray-600">{inr(r.paidPaise)}</td>
                   <td className="px-3 py-2.5 capitalize text-gray-500">{(r.paymentMode ?? "—").replace(/_/g, " ")}</td>
-                  <td className="px-3 py-2.5 font-mono text-xs text-gray-500">{r.razorpayOrderId ?? "—"}</td>
+                  <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs text-gray-800">
+                    {displayOrderId(r.businessOrderId) ?? "—"}
+                  </td>
                   <td className="px-3 py-2.5">
                     <div className="text-gray-800">{r.entityName ?? "—"}</div>
                     <div className="text-xs text-gray-400">{r.entityDisplayId ?? `${r.entityType} #${r.entityId ?? "—"}`}</div>
@@ -243,27 +284,42 @@ export function TransactionsClient() {
         </table>
       </div>
 
-      <div className="flex items-center justify-between text-sm text-gray-500">
-        <span>Showing {total} transaction{total === 1 ? "" : "s"}</span>
-        {query.hasNextPage && (
-          <button
-            onClick={() => query.fetchNextPage()}
-            disabled={query.isFetchingNextPage}
-            className="rounded-lg border border-gray-200 bg-white px-4 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <label className="inline-flex items-center gap-2 text-sm text-gray-600">
+          <span>Rows</span>
+          <select
+            value={pageSize}
+            disabled={query.isFetching}
+            onChange={(e) => setPageSize(Number(e.target.value) as PageSize)}
+            className="h-8 rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200 disabled:opacity-50"
+            aria-label="Rows per page"
           >
-            {query.isFetchingNextPage ? "Loading…" : "Load more"}
-          </button>
-        )}
+            {PAGE_SIZE_OPTIONS.map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+        </label>
+        <TablePagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={setPage}
+          disabled={query.isFetching}
+          ariaLabel="Transactions"
+        />
       </div>
 
       {selectedUid && <DetailDrawer uid={selectedUid} onClose={() => setSelectedUid(null)} />}
+      {isSuperAdmin ? (
+        <ExportTransactionsSheet isOpen={exportOpen} onClose={() => setExportOpen(false)} seed={exportSeed} />
+      ) : null}
     </div>
   );
 }
 
 /* ----------------------------- sub-components ----------------------------- */
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <div className="flex flex-col gap-1"><label className="text-xs text-gray-500">{label}</label>{children}</div>;
+  return <div className="flex shrink-0 flex-col gap-1"><label className="text-xs text-gray-500">{label}</label>{children}</div>;
 }
 function Select({ label, value, onChange, options, placeholder }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; placeholder: string }) {
   return (
@@ -321,7 +377,7 @@ function DetailDrawer({ uid, onClose }: { uid: string; onClose: () => void }) {
             </Section>
 
             <Section title="Identifiers">
-              <KV k="Order ID" mono>{row.businessOrderId ?? "—"}</KV>
+              <KV k="Order ID" mono>{displayOrderId(row.businessOrderId) ?? "—"}</KV>
               <KV k="Internal ref" mono>{row.internalRef ?? "—"}</KV>
               <KV k="Razorpay order" mono>{row.razorpayOrderId ?? "—"}</KV>
               <KV k="Razorpay payment" mono>{row.razorpayPaymentId ?? "—"}</KV>

@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ImageIcon, Loader2, Trash2, Upload, RefreshCw, Plus } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
+import type { AppStaticAssetRow } from "@/lib/db/operations/app-static-assets";
+import { LearningCentreAdminPanel } from "@/components/super-admin/LearningCentreAdminPanel";
+import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
+import { cn } from "@/lib/utils";
 import {
   APP_STATIC_ASSET_APPS,
   appStaticAssetAppLabel,
@@ -12,12 +16,9 @@ import {
   RIDE_HOME_BANNER_SLOT_IDS,
   type AppStaticAssetApp,
 } from "@/lib/app-static-assets/shared";
-import type { AppStaticAssetRow } from "@/lib/db/operations/app-static-assets";
-import { LearningCentreAdminPanel } from "@/components/super-admin/LearningCentreAdminPanel";
-import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
-import { cn } from "@/lib/utils";
+import { HOME_MAP_STATIC_ASSET_ID } from "@/lib/home-map/shared";
 
-type PageTab = AppStaticAssetApp | "learning";
+type PageTab = AppStaticAssetApp | "learning" | "home_map";
 
 function previewUrl(proxyUrl: string | null): string | null {
   if (!proxyUrl) return null;
@@ -47,7 +48,7 @@ export default function AppImagesPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingUploadIds = useRef<string[]>([]);
-  const app = tab === "learning" ? "merchant" : tab;
+  const app = tab === "learning" || tab === "home_map" ? (tab === "home_map" ? "dashboard" : "merchant") : tab;
 
   useEffect(() => {
     if (!permLoading && !isSuperAdmin) {
@@ -203,12 +204,18 @@ export default function AppImagesPage() {
     <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
       <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <h1 className="text-lg font-semibold tracking-tight text-slate-900 sm:text-xl">
-          {tab === "learning" ? "Learning Centre" : "App images"}
+          {tab === "learning"
+            ? "Learning Centre"
+            : tab === "home_map"
+              ? "Home Map"
+              : "App images"}
         </h1>
         <p className="mt-1 max-w-3xl text-xs text-slate-500 sm:text-sm">
           {tab === "learning"
             ? "Add section title, video title, thumbnail, and a YouTube link. Select Rider, Merchant, or Customer for each video. Tapping a card in the app opens YouTube."
-            : "Upload images and videos to R2 for Customer, Rider & Merchant apps. Files are served via signed URLs — no bundled assets in app code. Branding → App icon updates in-app after the next app open; the Expo bundling / phone home-screen icon is native and needs a store rebuild. Packaging tips video: MP4, max 80 MB."}
+            : tab === "home_map"
+              ? "Upload the static map image shown on Control Dashboard Home when Home Map mode is set to Static Map Image. Image is stored in R2 and served via proxy — no hardcoded URL. Fully responsive across desktop, laptop, tablet, and mobile."
+              : "Upload images and videos to R2 for Customer, Rider & Merchant apps. Files are served via signed URLs — no bundled assets in app code. Branding → App icon updates in-app after the next app open; the Expo bundling / phone home-screen icon is native and needs a store rebuild. Packaging tips video: MP4, max 80 MB."}
         </p>
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -238,6 +245,18 @@ export default function AppImagesPage() {
           )}
         >
           Learning
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("home_map")}
+          className={cn(
+            "rounded-full px-4 py-2 text-sm font-medium transition-colors",
+            tab === "home_map"
+              ? "bg-teal-600 text-white shadow-sm"
+              : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+          )}
+        >
+          Home Map
         </button>
         <button
           type="button"
@@ -400,10 +419,16 @@ export default function AppImagesPage() {
                       const url = previewUrl(item.proxy_url);
                       const isBusy = busyId === item.id;
                       const isVideo = isAppStaticVideoAsset(item.id);
+                      const isHomeMap = item.id === HOME_MAP_STATIC_ASSET_ID;
                       return (
                         <tr key={item.id} className="hover:bg-slate-50/80">
                           <td className="px-4 py-3">
-                            <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+                            <div
+                              className={cn(
+                                "flex items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50",
+                                isHomeMap ? "h-24 w-40" : "h-14 w-14"
+                              )}
+                            >
                               {url && isVideo ? (
                                 <video
                                   src={url}
@@ -417,7 +442,10 @@ export default function AppImagesPage() {
                                 <img
                                   src={url}
                                   alt={item.label}
-                                  className="h-full w-full object-contain"
+                                  className={cn(
+                                    "h-full w-full",
+                                    isHomeMap ? "object-contain" : "object-contain"
+                                  )}
                                 />
                               ) : (
                                 <ImageIcon className="h-6 w-6 text-slate-300" />

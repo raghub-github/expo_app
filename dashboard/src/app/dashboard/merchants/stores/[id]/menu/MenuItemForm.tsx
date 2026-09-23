@@ -415,7 +415,7 @@ export function MenuItemForm({
       : cuisineAtLimit
         ? selectedCuisines
         : Array.from(new Set([...selectedCuisines, cuisine]));
-    setFormData({ ...formData, cuisine_type: next.length ? next.join(", ") : "" });
+    setFormData((prev) => ({ ...prev, cuisine_type: next.length ? next.join(", ") : "" }));
   };
 
   /** Prefer live preview (blob/new upload); fall back to stored URL on form data. */
@@ -787,7 +787,7 @@ export function MenuItemForm({
                   placeholder="Name"
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                   value={formData.item_name}
-                  onChange={(e) => setFormData({ ...formData, item_name: e.target.value })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, item_name: e.target.value }))}
                   required
                 />
               </div>
@@ -849,7 +849,7 @@ export function MenuItemForm({
                                     : "text-gray-900 hover:bg-gray-50"
                                 }`}
                                 onClick={() => {
-                                  setFormData({ ...formData, category_id: row.id });
+                                  setFormData((prev) => ({ ...prev, category_id: row.id }));
                                   setCategoryPickerOpen(false);
                                   setCategoryPickerQuery("");
                                 }}
@@ -881,7 +881,7 @@ export function MenuItemForm({
                 <select
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                   value={formData.food_type || ""}
-                  onChange={(e) => setFormData({ ...formData, food_type: e.target.value })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, food_type: e.target.value }))}
                 >
                   <option value="">—</option>
                   {FOOD_TYPES.map((t) => (
@@ -896,7 +896,7 @@ export function MenuItemForm({
                 <select
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                   value={normalizeSpiceLevelForForm(formData.spice_level)}
-                  onChange={(e) => setFormData({ ...formData, spice_level: e.target.value })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, spice_level: e.target.value }))}
                 >
                   <option value="">—</option>
                   {SPICE_LEVELS.map((l) => (
@@ -988,7 +988,7 @@ export function MenuItemForm({
                       const value = cuisineSearch.trim();
                       if (!value) return;
                       if (!selectedCuisines.includes(value)) {
-                        setFormData({ ...formData, cuisine_type: [...selectedCuisines, value].join(", ") });
+                        setFormData((prev) => ({ ...prev, cuisine_type: [...selectedCuisines, value].join(", ") }));
                       }
                       setCuisineSearch("");
                     }}
@@ -1129,7 +1129,7 @@ export function MenuItemForm({
                   rows={2}
                   placeholder="Optional"
                   value={formData.item_description || ""}
-                  onChange={(e) => setFormData({ ...formData, item_description: e.target.value })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, item_description: e.target.value }))}
                 />
                 {showFoodAttrs ? (
                   <>
@@ -1139,7 +1139,7 @@ export function MenuItemForm({
                   placeholder="e.g. Nuts, Dairy"
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                   value={formData.allergens || ""}
-                  onChange={(e) => setFormData({ ...formData, allergens: e.target.value })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, allergens: e.target.value }))}
                 />
                   </>
                 ) : null}
@@ -1154,7 +1154,7 @@ export function MenuItemForm({
                   step={0.01}
                   className={`w-full px-2.5 py-1.5 border rounded text-sm ${isBaseInvalid ? "border-red-300" : "border-gray-200"}`}
                   value={formData.base_price}
-                  onChange={(e) => setFormData({ ...formData, base_price: e.target.value })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, base_price: e.target.value }))}
                   required
                 />
                 {isBaseInvalid && <span className="text-xs text-red-500">&gt; 0</span>}
@@ -1167,7 +1167,7 @@ export function MenuItemForm({
                   step={0.01}
                   className={`w-full px-2.5 py-1.5 border rounded text-sm ${isSellInvalid ? "border-red-300" : "border-gray-200"}`}
                   value={formData.selling_price}
-                  onChange={(e) => setFormData({ ...formData, selling_price: e.target.value })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, selling_price: e.target.value }))}
                   required
                 />
                 {isSellInvalid && <span className="text-xs text-red-500">&gt; 0</span>}
@@ -1178,7 +1178,7 @@ export function MenuItemForm({
                 <input
                   type="checkbox"
                   checked={formData.in_stock}
-                  onChange={(e) => setFormData({ ...formData, in_stock: e.target.checked })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, in_stock: e.target.checked }))}
                   className="h-4 w-4 text-orange-500 rounded"
                 />
                 <span className="text-xs font-medium text-gray-700">In stock</span>
@@ -1190,7 +1190,7 @@ export function MenuItemForm({
                   min={0}
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                   value={formData.available_quantity || ""}
-                  onChange={(e) => setFormData({ ...formData, available_quantity: e.target.value || "" })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, available_quantity: e.target.value || "" }))}
                   placeholder="—"
                 />
               </div>
@@ -1201,7 +1201,7 @@ export function MenuItemForm({
                   min={0}
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                   value={formData.low_stock_threshold || ""}
-                  onChange={(e) => setFormData({ ...formData, low_stock_threshold: e.target.value || "" })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, low_stock_threshold: e.target.value || "" }))}
                   placeholder="—"
                 />
               </div>
@@ -1213,10 +1213,10 @@ export function MenuItemForm({
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                   value={numberInputValue(formData.preparation_time_minutes)}
                   onChange={(e) =>
-                    setFormData({
-                      ...formData,
+                    setFormData((prev) => ({
+                      ...prev,
                       preparation_time_minutes: parseNumberInputAllowEmpty(e.target.value),
-                    })
+                    }))
                   }
                 />
                 {storeDefaults?.avg_preparation_time_minutes != null && (
@@ -1232,7 +1232,7 @@ export function MenuItemForm({
                   type="date"
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                   value={formData.expiry_date || ""}
-                  onChange={(e) => setFormData({ ...formData, expiry_date: e.target.value })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, expiry_date: e.target.value }))}
                 />
                 <p className="text-[10px] text-gray-500 mt-0.5">Optional — product best-before / expiry</p>
               </div>
@@ -1262,11 +1262,11 @@ export function MenuItemForm({
                     className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                     value={formData.serves_label || ""}
                     onChange={(e) =>
-                      setFormData({
-                        ...formData,
+                      setFormData((prev) => ({
+                        ...prev,
                         serves_label: e.target.value,
-                        serves: e.target.value ? Number((e.target.value.match(/\d+/) || ["1"])[0]) : formData.serves,
-                      })
+                        serves: e.target.value ? Number((e.target.value.match(/\d+/) || ["1"])[0]) : prev.serves,
+                      }))
                     }
                   >
                     <option value="">Select serves</option>
@@ -1309,20 +1309,22 @@ export function MenuItemForm({
                     role="switch"
                     aria-checked={formData.packaging_enabled}
                     onClick={() => {
-                      const on = !formData.packaging_enabled;
                       const defAmt = storeDefaults?.packaging_charge_amount;
                       const fromStore =
                         defAmt != null && Number.isFinite(Number(defAmt))
                           ? String(Number(defAmt))
                           : "";
-                      setFormData({
-                        ...formData,
-                        packaging_enabled: on,
-                        packaging_charges: on
-                          ? fromStore !== ""
-                            ? fromStore
-                            : formData.packaging_charges?.trim() || ""
-                          : "",
+                      setFormData((prev) => {
+                        const on = !prev.packaging_enabled;
+                        return {
+                          ...prev,
+                          packaging_enabled: on,
+                          packaging_charges: on
+                            ? fromStore !== ""
+                              ? fromStore
+                              : prev.packaging_charges?.trim() || ""
+                            : "",
+                        };
                       });
                     }}
                     className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-1 ${
@@ -1350,7 +1352,7 @@ export function MenuItemForm({
                           : "Amount (₹)"
                       }
                       value={formData.packaging_charges}
-                      onChange={(e) => setFormData({ ...formData, packaging_charges: e.target.value })}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, packaging_charges: e.target.value }))}
                     />
                     {storeDefaults?.packaging_charge_amount != null && (
                       <p className="text-[10px] text-gray-500">
@@ -1372,8 +1374,10 @@ export function MenuItemForm({
                   role="switch"
                   aria-checked={formData.available_for_delivery}
                   onClick={() => {
-                    const cur = formData.available_for_delivery !== false;
-                    setFormData({ ...formData, available_for_delivery: !cur });
+                    setFormData((prev) => {
+                      const cur = prev.available_for_delivery !== false;
+                      return { ...prev, available_for_delivery: !cur };
+                    });
                   }}
                   className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-1 ${
                     formData.available_for_delivery ? "bg-orange-500" : "bg-gray-200"
@@ -1398,12 +1402,12 @@ export function MenuItemForm({
                       className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                       placeholder="e.g. 500"
                       value={formData.weight_per_serving}
-                      onChange={(e) => setFormData({ ...formData, weight_per_serving: e.target.value })}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, weight_per_serving: e.target.value }))}
                     />
                     <select
                       className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                       value={formData.weight_per_serving_unit}
-                      onChange={(e) => setFormData({ ...formData, weight_per_serving_unit: e.target.value })}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, weight_per_serving_unit: e.target.value }))}
                     >
                       {WEIGHT_PER_SERVING_UNITS.map((u) => (
                         <option key={u} value={u}>
@@ -1422,7 +1426,7 @@ export function MenuItemForm({
                     className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm mt-0.5"
                     placeholder="e.g. 300"
                     value={formData.calories_kcal}
-                    onChange={(e) => setFormData({ ...formData, calories_kcal: e.target.value })}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, calories_kcal: e.target.value }))}
                   />
                 </div>
                 <div>
@@ -1435,12 +1439,12 @@ export function MenuItemForm({
                       className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                       placeholder="e.g. 50"
                       value={formData.protein}
-                      onChange={(e) => setFormData({ ...formData, protein: e.target.value })}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, protein: e.target.value }))}
                     />
                     <select
                       className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                       value={formData.protein_unit}
-                      onChange={(e) => setFormData({ ...formData, protein_unit: e.target.value })}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, protein_unit: e.target.value }))}
                     >
                       {NUTRIENT_UNITS.map((u) => (
                         <option key={u} value={u}>
@@ -1462,12 +1466,12 @@ export function MenuItemForm({
                         step="any"
                         className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                         value={formData.carbohydrates}
-                        onChange={(e) => setFormData({ ...formData, carbohydrates: e.target.value })}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, carbohydrates: e.target.value }))}
                       />
                       <select
                         className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                         value={formData.carbohydrates_unit}
-                        onChange={(e) => setFormData({ ...formData, carbohydrates_unit: e.target.value })}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, carbohydrates_unit: e.target.value }))}
                       >
                         {NUTRIENT_UNITS.map((u) => (
                           <option key={u} value={u}>
@@ -1486,12 +1490,12 @@ export function MenuItemForm({
                         step="any"
                         className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                         value={formData.fat}
-                        onChange={(e) => setFormData({ ...formData, fat: e.target.value })}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, fat: e.target.value }))}
                       />
                       <select
                         className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                         value={formData.fat_unit}
-                        onChange={(e) => setFormData({ ...formData, fat_unit: e.target.value })}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, fat_unit: e.target.value }))}
                       >
                         {NUTRIENT_UNITS.map((u) => (
                           <option key={u} value={u}>
@@ -1510,12 +1514,12 @@ export function MenuItemForm({
                         step="any"
                         className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                         value={formData.fibre}
-                        onChange={(e) => setFormData({ ...formData, fibre: e.target.value })}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, fibre: e.target.value }))}
                       />
                       <select
                         className="w-1/2 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
                         value={formData.fibre_unit}
-                        onChange={(e) => setFormData({ ...formData, fibre_unit: e.target.value })}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, fibre_unit: e.target.value }))}
                       >
                         {NUTRIENT_UNITS.map((u) => (
                           <option key={u} value={u}>
@@ -1544,7 +1548,7 @@ export function MenuItemForm({
                   className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm mt-0.5"
                   placeholder="e.g. High protein, Chef special"
                   value={formData.item_tags}
-                  onChange={(e) => setFormData({ ...formData, item_tags: e.target.value })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, item_tags: e.target.value }))}
                 />
               </div>
               ) : null}
@@ -1557,7 +1561,7 @@ export function MenuItemForm({
                 <input
                   type="checkbox"
                   checked={formData.is_popular}
-                  onChange={(e) => setFormData({ ...formData, is_popular: e.target.checked })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, is_popular: e.target.checked }))}
                   className="h-3.5 w-3.5 text-orange-500 rounded"
                 />
                 <span className="text-xs text-gray-700">Popular</span>
@@ -1566,7 +1570,7 @@ export function MenuItemForm({
                 <input
                   type="checkbox"
                   checked={formData.is_recommended}
-                  onChange={(e) => setFormData({ ...formData, is_recommended: e.target.checked })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, is_recommended: e.target.checked }))}
                   className="h-3.5 w-3.5 text-orange-500 rounded"
                 />
                 <span className="text-xs text-gray-700">Recommended</span>
@@ -1575,7 +1579,7 @@ export function MenuItemForm({
                 <input
                   type="checkbox"
                   checked={formData.is_active}
-                  onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, is_active: e.target.checked }))}
                   className="h-3.5 w-3.5 text-orange-500 rounded"
                 />
                 <span className="text-xs text-gray-700">Active</span>

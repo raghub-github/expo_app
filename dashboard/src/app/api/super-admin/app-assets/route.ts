@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
   const app = parseAppStaticAssetApp(new URL(request.url).searchParams.get("app") ?? "");
   if (!app) {
     return NextResponse.json(
-      { error: "app query required (customer | rider | merchant)" },
+      { error: "app query required (customer | rider | merchant | dashboard)" },
       { status: 400 }
     );
   }
