@@ -412,24 +412,34 @@ function PushNotificationBootstrapInner() {
       const store = useNotificationPushPromptStore.getState();
       store.beginAllow();
       try {
+        // Wait ONLY for the OS permission dialog — that's the sole thing the
+        // user is waiting on. Everything after (token registration + backend
+        // sync) runs in the background so the sheet closes with zero delay.
         const result = await controller.requestOrOpenSettings();
-        let snap = result.snapshot;
-        if (result.granted || snap.osStatus === "granted") {
-          snap = await controller.syncTokens();
-          if (!expoGo && !snap.nativePushToken) {
-            await new Promise((r) => setTimeout(r, 1200));
-            snap = await controller.syncTokens();
-          }
-        }
-        const hasPushToken = Boolean(
-          (snap.expoPushToken && snap.expoPushToken.length > 8) ||
-            (snap.nativePushToken && snap.nativePushToken.length > 8)
-        );
-        if (hasPushToken && snap.lastBackendSyncOk !== false) {
-          await store.markTokenRegistered();
+        const granted = result.granted || result.snapshot?.osStatus === "granted";
+
+        if (granted) {
+          // Close the sheet INSTANTLY — do not block on syncTokens()/backend.
+          store.markGrantedInstant();
+          // Register Expo/native tokens + backend sync off the UI path. The
+          // post-login and resume self-heal effects also cover this, so a miss
+          // here is retried automatically and never stalls the modal.
+          void (async () => {
+            try {
+              let snap = await controller.syncTokens();
+              if (!expoGo && !snap.nativePushToken) {
+                await new Promise((r) => setTimeout(r, 1200));
+                snap = await controller.syncTokens();
+              }
+            } catch {
+              /* background best-effort — resume/foreground sync will retry */
+            }
+          })();
           return true;
         }
-        // Technical register failure — leave sheet dismissible; background sync continues.
+
+        // Denied / opened Settings — close immediately; resume sync will
+        // pick up a later grant from the Settings screen.
         store.setShowSheet(false);
         return false;
       } finally {
