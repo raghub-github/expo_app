@@ -8,6 +8,7 @@ import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import {
   createSubscriptionPaymentOrder,
+  fetchMerchantSubscriptionDetails,
   payMerchantSubscriptionWithWallet,
   verifySubscriptionPayment,
   type CreateSubscriptionOrderResponse,
@@ -385,6 +386,18 @@ export function SubscriptionCheckoutModal({
         prefill={prefill}
         themeColor={GREEN}
         onSuccess={handleRazorpaySuccess}
+        checkServerStatus={async () => {
+          try {
+            const details = await fetchMerchantSubscriptionDetails(storeId, token);
+            return details.active === true && details.plan?.id === planId;
+          } catch {
+            return false;
+          }
+        }}
+        onServerConfirmed={() => {
+          setRazorpayVisible(false);
+          onSuccess({ via: "razorpay" });
+        }}
         onCancel={() => {
           setRazorpayVisible(false);
         }}
