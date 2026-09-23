@@ -190,6 +190,54 @@ export async function openRazorpayCheckout(args: {
   }
 }
 
+/**
+ * Fast-confirm poll: while the native Razorpay sheet is open, ask the backend
+ * whether the payment has already been confirmed (webhook / reconciler), so the
+ * app can finish as soon as the money is settled server-side instead of waiting
+ * on the native SDK promise — which, for UPI-intent, only resolves after Razorpay
+ * itself confirms the collect (can take ~40s).
+ *
+ * `check` returns true once the backend confirms. `onConfirmed` fires at most
+ * once. The caller MUST call the returned stop() when the native promise settles
+ * (success / cancel / failure) so polling ends. Errors from `check` are swallowed
+ * (a transient failure just retries on the next tick).
+ */
+export function startServerConfirmPoll(
+  check: () => Promise<boolean>,
+  onConfirmed: () => void,
+  opts?: { firstDelayMs?: number; intervalMs?: number },
+): () => void {
+  const firstDelayMs = opts?.firstDelayMs ?? 3000;
+  const intervalMs = opts?.intervalMs ?? 2500;
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const runOnce = async () => {
+    if (stopped) return;
+    let confirmed = false;
+    try {
+      confirmed = await check();
+    } catch {
+      confirmed = false;
+    }
+    if (stopped) return;
+    if (confirmed) {
+      stopped = true;
+      onConfirmed();
+      return;
+    }
+    timer = setTimeout(() => void runOnce(), intervalMs);
+  };
+
+  timer = setTimeout(() => void runOnce(), firstDelayMs);
+
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
+}
+
 /** Normalise a Razorpay rejection into `{ code, description }`. */
 export function extractRazorpayError(err: unknown): { code: string; description: string } {
   const obj = (err ?? {}) as {
