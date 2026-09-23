@@ -12,7 +12,15 @@ import {
 import { resolveMerchantFoodHeroPrimaryUri } from "@/lib/merchantHeroMedia";
 import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 import { enqueueImagePrefetch } from "@/lib/prefetchQueue";
+import { sizedImageUrl } from "@/lib/imageSizing";
 import type { MerchantSummary } from "@/services/merchant.service";
+
+/**
+ * Default width (layout points) to warm list-card banners at. Matches the
+ * full-width food card; smaller cards (grid/discovery thumbs) request their own
+ * derivative on first paint. Callers can override per surface.
+ */
+export const DEFAULT_CARD_PREFETCH_WIDTH = 400;
 
 export const IMAGE_CACHE_POLICY = "memory-disk" as const;
 
@@ -80,18 +88,20 @@ export function prefetchImages(
  */
 export function prefetchMerchantPrimaryBanners(
   merchants: Array<MerchantSummary | { banner_url?: string | null; displayImage?: string | null; galleryImages?: string[]; imageUrl?: string | null }>,
-  opts?: { limit?: number }
+  opts?: { limit?: number; width?: number }
 ): void {
   const limit = opts?.limit ?? 16;
+  const width = opts?.width ?? DEFAULT_CARD_PREFETCH_WIDTH;
   const urls: string[] = [];
   const seen = new Set<string>();
   for (const m of merchants) {
     if (urls.length >= limit * 2) break;
     const merchant = m as MerchantSummary;
     // Classic/grid card banner + discovery hero (may differ when logo is filtered).
+    // Warm the SAME sized WebP derivative the cards request — never the raw original.
     for (const candidate of [
-      resolveMerchantBannerUri(merchant),
-      resolveMerchantFoodHeroPrimaryUri(merchant),
+      sizedImageUrl(resolveMerchantBannerUri(merchant), width),
+      sizedImageUrl(resolveMerchantFoodHeroPrimaryUri(merchant), width),
     ]) {
       if (!candidate || seen.has(candidate)) continue;
       seen.add(candidate);
@@ -118,10 +128,12 @@ export function prefetchMerchantCardImages(
     banner_url?: string | null;
     galleryImages?: string[];
     imageUrl?: string | null;
-  }>
+  }>,
+  opts?: { width?: number }
 ): void {
   const list = merchants as MerchantSummary[];
-  prefetchMerchantPrimaryBanners(list, { limit: 24 });
+  const width = opts?.width ?? DEFAULT_CARD_PREFETCH_WIDTH;
+  prefetchMerchantPrimaryBanners(list, { limit: 24, width });
 
   // Gallery second-class — never steal bandwidth from banners on first paint.
   if (typeof requestAnimationFrame === "function") {
@@ -130,8 +142,8 @@ export function prefetchMerchantCardImages(
         const galleryUrls: Array<string | null | undefined> = [];
         for (const m of list.slice(0, 24)) {
           const collected = collectMerchantBannerUris(m);
-          // Skip index 0 (primary banner) — already warmed above.
-          for (let i = 1; i < collected.length; i++) galleryUrls.push(collected[i]);
+          // Skip index 0 (primary banner) — already warmed above. Size the rest.
+          for (let i = 1; i < collected.length; i++) galleryUrls.push(sizedImageUrl(collected[i], width));
         }
         prefetchImages(galleryUrls, { priority: "low", limit: 48 });
       }, 350);

@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Image, type ImageStyle } from "expo-image";
 import { View, type StyleProp, type ViewStyle } from "react-native";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { sizedImageUrl } from "@/lib/imageSizing";
 import { getAppAssetUrl } from "@/store/appAssetsStore";
 import { CX } from "@/lib/appAssetKeys";
 import {
@@ -36,6 +37,8 @@ type Props = {
   fallback?: "soft" | "ndf";
   /** Soft fallback fill. Pass transparent on dark discovery so no grey circle shows. */
   fallbackColor?: string;
+  /** Painted size in points — used to request a matching WebP derivative (chips ≈ 64pt). */
+  widthPt?: number;
 };
 
 function UserAppCategoryImageInner({
@@ -45,10 +48,14 @@ function UserAppCategoryImageInner({
   cacheKey,
   fallback = "soft",
   fallbackColor,
+  widthPt = 96,
 }: Props) {
   const uri = useMemo(
-    () => (imageUrl?.trim() ? (toAbsoluteImageUrl(imageUrl) ?? imageUrl.trim()) : null),
-    [imageUrl]
+    () =>
+      imageUrl?.trim()
+        ? sizedImageUrl(toAbsoluteImageUrl(imageUrl) ?? imageUrl.trim(), widthPt)
+        : null,
+    [imageUrl, widthPt]
   );
   const persisted = getCategoryImageLastGood(cacheKey);
   const localFile = getLocalCategoryImageUri(cacheKey, uri);

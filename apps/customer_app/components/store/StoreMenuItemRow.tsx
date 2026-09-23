@@ -25,6 +25,7 @@ import { formatMenuPortionLabel } from "@/lib/format-menu-portion-label";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { isMenuItemImagePrefetched, isMenuItemImageReady, ensureMenuItemImageWarm } from "@/lib/prefetchMenuItemImages";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { sizedImageUrl } from "@/lib/imageSizing";
 import { isHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 import { formatOfferRupee, computeCatalogDiscountPercent, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { MENU_ITEM_ROW_HEIGHT } from "@/features/merchant-detail/constants/layout";
@@ -92,7 +93,11 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
 }: StoreMenuItemRowProps) {
   const cartQty = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
   const imageUri = useMemo(
-    () => (item.imageUrl?.trim() ? (toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl) : null),
+    // Row thumbnail paints at IMAGE_SIZE(128)pt — request a matching WebP derivative.
+    () =>
+      item.imageUrl?.trim()
+        ? sizedImageUrl(toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl, IMAGE_SIZE)
+        : null,
     [item.imageUrl]
   );
   const [imageFailed, setImageFailed] = useState(false);

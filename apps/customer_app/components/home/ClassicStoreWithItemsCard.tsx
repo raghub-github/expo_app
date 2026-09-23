@@ -19,6 +19,7 @@ import { resolveItemDiet } from "@/lib/itemDiet";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { sizedImageUrl } from "@/lib/imageSizing";
 import type { FoodItemUnderPrice, StoreFoodItemsUnderPrice } from "@/services/foodHomeItemsUnderPrice.service";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { formatMerchantDeliveryTime } from "@/lib/merchantDeliveryTime";
@@ -89,7 +90,8 @@ function ClassicHomeItemCard({
   onIncrement?: (item: FoodItemUnderPrice) => void;
   onDecrement?: (item: FoodItemUnderPrice) => void;
 }) {
-  const uri = toAbsoluteImageUrl(item.imageUrl);
+  // Dish thumbnail paints at ITEM_IMG(140)pt — request a matching WebP derivative.
+  const uri = sizedImageUrl(toAbsoluteImageUrl(item.imageUrl), ITEM_IMG);
   const showStrike =
     item.basePrice != null && Number.isFinite(item.basePrice) && item.basePrice > item.price;
   const cartQty = useMenuItemCartQty(item.itemId, item.menuItemPk, store.storePublicId);
