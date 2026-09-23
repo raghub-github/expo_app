@@ -12,6 +12,7 @@ import Animated from "react-native-reanimated";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import type { MerchantSummary } from "@/services/merchant.service";
 import { resolveMerchantBannerUri } from "@/lib/merchantBanner";
+import { sizedImageUrl } from "@/lib/imageSizing";
 import {
   warmMerchantHeroImage,
   getWarmMerchantHeroUri,
@@ -72,11 +73,10 @@ function MerchantGridCardInner({
   const bannerUri = useMemo(() => {
     const warm = getWarmMerchantHeroUri(merchant.id);
     const resolved = resolveMerchantBannerUri(merchant);
-    if (warm) return warm;
-    if (resolved) return resolved;
-    const raw = merchant.displayImage?.trim() || merchant.banner_url?.trim();
-    return raw || null;
-  }, [merchant]);
+    const base = warm || resolved || merchant.displayImage?.trim() || merchant.banner_url?.trim() || null;
+    // Tile paints at `width`pt — fetch a matching WebP derivative, not the full banner.
+    return sizedImageUrl(base, width);
+  }, [merchant, width]);
   const [imageReady, setImageReady] = useState(() =>
     bannerUri ? isHeroMediaSessionReady(bannerUri) : false,
   );

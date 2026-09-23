@@ -29,6 +29,13 @@ type NotificationPushPromptState = {
   handleSkip: () => Promise<void>;
   beginAllow: () => void;
   endAllow: () => void;
+  /**
+   * Close the sheet INSTANTLY the moment the OS permission dialog is answered
+   * (granted). State is set synchronously so the modal disappears with zero
+   * delay; the "satisfied" flag persists in the background. Token registration /
+   * backend sync happen after this, off the UI path.
+   */
+  markGrantedInstant: () => void;
   /** Call when Expo and/or native token registered successfully. */
   markTokenRegistered: () => Promise<void>;
   /** Permission/token lost — allow future prompts (still respects cooldown). */
@@ -93,6 +100,17 @@ export const useNotificationPushPromptStore = create<NotificationPushPromptState
     beginAllow: () => set({ allowInFlight: true }),
 
     endAllow: () => set({ allowInFlight: false }),
+
+    markGrantedInstant: () => {
+      // Synchronous close — no await, so the sheet vanishes immediately.
+      set({
+        showSheet: false,
+        allowInFlight: false,
+        promptedThisSession: true,
+      });
+      // Persist "satisfied" off the UI path so it never re-nags after a kill.
+      void writePushPromptSatisfied(true);
+    },
 
     markTokenRegistered: async () => {
       await writePushPromptSatisfied(true);

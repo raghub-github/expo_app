@@ -400,31 +400,31 @@ export default function OnboardingPermissionsScreen() {
           useSmsPermissionStore.getState().endSmsAllowRequest();
         }
       } else if (id === "notifications") {
+        // Wait ONLY for the OS dialog response, then advance immediately.
         const result = await pushControllerRef.current?.requestOrOpenSettings();
-        if (result?.granted) {
-          // Wait for token sync success before advancing.
-          let snap = result.snapshot;
-          if (snap.syncStatus === "syncing" || snap.lastBackendSyncOk == null) {
-            snap = (await pushControllerRef.current?.syncTokens()) ?? snap;
-          }
-          if (snap.osStatus === "granted") {
-            next = { ...status, notifications: "granted" };
-            setStatus(next);
-            const hasPushToken = Boolean(
-              (snap.expoPushToken && snap.expoPushToken.length > 8) ||
-                (snap.nativePushToken && snap.nativePushToken.length > 8)
-            );
-            if (hasPushToken || snap.lastBackendSyncOk) {
+        const granted = result?.granted || result?.snapshot?.osStatus === "granted";
+        if (granted) {
+          next = { ...status, notifications: "granted" };
+          setStatus(next);
+          goNext();
+          // Token registration + backend sync + satisfied-flag run in the
+          // background so onboarding never stalls on the network. The post-login
+          // and resume self-heal syncs retry anything that misses here.
+          void (async () => {
+            try {
+              await pushControllerRef.current?.syncTokens();
+            } catch {
+              /* best-effort — retried by resume/post-login sync */
+            }
+            try {
               const { useNotificationPushPromptStore } = await import(
                 "@/store/notificationPushPromptStore"
               );
-              await useNotificationPushPromptStore.getState().markTokenRegistered();
+              useNotificationPushPromptStore.getState().markGrantedInstant();
+            } catch {
+              /* best-effort */
             }
-            goNext();
-          } else {
-            next = { ...status, notifications: "denied" };
-            setStatus(next);
-          }
+          })();
         } else {
           next = { ...status, notifications: "denied" };
           setStatus(next);

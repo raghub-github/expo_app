@@ -18,6 +18,7 @@ import { useInstantPressScale } from "@/components/InstantPressable";
 import { useMerchantLiveStatus } from "@/hooks/useMerchantLiveStatus";
 import { usePreventServicesAtPin } from "@/hooks/usePreventServicesAtPin";
 import { resolveMerchantFoodHeroPrimaryUri } from "@/lib/merchantHeroMedia";
+import { sizedImageUrl } from "@/lib/imageSizing";
 import { StoreOpenStatusBadge } from "@/components/home/StoreOpenStatusBadge";
 import { formatMerchantDeliveryTime } from "@/lib/merchantDeliveryTime";
 import { formatMerchantDistanceKm } from "@/lib/merchantDistance";
@@ -69,7 +70,11 @@ function DiscoveryRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: Pro
   const { width } = useWindowDimensions();
   const cardW = width - DISCOVERY_PAGE_PAD * 2;
 
-  const bannerUri = useMemo(() => resolveMerchantFoodHeroPrimaryUri(merchant), [merchant]);
+  const bannerUri = useMemo(
+    // Card paints a 96pt square — request a matching WebP derivative, not the full banner.
+    () => sizedImageUrl(resolveMerchantFoodHeroPrimaryUri(merchant), IMG),
+    [merchant]
+  );
   const [imageFailed, setImageFailed] = useState(false);
   const showImage = !!bannerUri && !imageFailed;
   const offerBadge = useMemo(() => formatOfferBadge(merchant.offerText), [merchant.offerText]);

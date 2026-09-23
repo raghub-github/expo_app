@@ -50,6 +50,14 @@ type Props = {
   onSuccess: (result: RazorpayPaymentResult) => void;
   onCancel: () => void;
   onFailure?: (info: { message: string; rawError?: unknown }) => void;
+  /**
+   * Fast-confirm: polled while the native sheet is open. Return true once the
+   * backend confirms the payment (webhook/reconciler) so we can finish without
+   * waiting on the slow UPI SDK promise. `onServerConfirmed` then runs instead
+   * of the token-based `onSuccess`.
+   */
+  checkServerStatus?: () => Promise<boolean>;
+  onServerConfirmed?: () => void;
 };
 
 const DEFAULT_THEME = "#16a34a";
@@ -145,6 +153,7 @@ async function openNativeSdk(args: {
   orderParams: RazorpayOrderParams;
   prefill: RazorpayPrefill | undefined;
   themeColor: string;
+  onSheetOpening?: () => void;
 }): Promise<RazorpayPaymentResult> {
   const RazorpayCheckout = loadRazorpayCheckout();
   const options: Record<string, unknown> = {
@@ -164,6 +173,10 @@ async function openNativeSdk(args: {
     retry: { enabled: true, max_count: 2 },
   };
 
+  // Fired the instant the sheet is handed to Razorpay — the promise below only
+  // settles after the payment fully completes (slow for UPI intent), so this is
+  // what lets the overlay relabel to "Confirming…" during the wait.
+  args.onSheetOpening?.();
   const data = await RazorpayCheckout.open(options);
   return {
     razorpayPaymentId: String(data.razorpay_payment_id ?? ""),
@@ -298,20 +311,31 @@ export function RazorpayCheckoutModal({
   onSuccess,
   onCancel,
   onFailure,
+  checkServerStatus,
+  onServerConfirmed,
 }: Props): React.ReactElement | null {
   const theme = themeColor ?? DEFAULT_THEME;
   const [tier, setTier] = useState<Tier | null>(null);
+  const [nativeSheetOpen, setNativeSheetOpen] = useState(false);
   const [webviewError, setWebviewError] = useState<string | null>(null);
   const inFlightRef = useRef(false);
   const completedRef = useRef(false);
   const orderKey = orderParams?.orderId ?? null;
   const launchGenRef = useRef(0);
+  // Latest callbacks without retriggering the launch effect (keyed on order only).
+  const checkServerStatusRef = useRef(checkServerStatus);
+  const onServerConfirmedRef = useRef(onServerConfirmed);
+  useEffect(() => {
+    checkServerStatusRef.current = checkServerStatus;
+    onServerConfirmedRef.current = onServerConfirmed;
+  }, [checkServerStatus, onServerConfirmed]);
 
   useEffect(() => {
     if (!visible) {
       inFlightRef.current = false;
       completedRef.current = false;
       setTier(null);
+      setNativeSheetOpen(false);
       setWebviewError(null);
       return;
     }
@@ -321,7 +345,38 @@ export function RazorpayCheckoutModal({
 
     const launchGen = ++launchGenRef.current;
     let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
     const isExpoGo = Constants.appOwnership === "expo";
+
+    const stopPoll = () => {
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = null;
+    };
+
+    // Fast-confirm: while the native sheet resolves the slow UPI collect, poll
+    // the backend; finish the moment it confirms instead of waiting on the SDK.
+    const startServerConfirmPoll = () => {
+      const check = checkServerStatusRef.current;
+      if (!check) return;
+      const tick = async () => {
+        if (cancelled || completedRef.current || launchGen !== launchGenRef.current) return;
+        let confirmed = false;
+        try {
+          confirmed = await check();
+        } catch {
+          confirmed = false;
+        }
+        if (cancelled || completedRef.current || launchGen !== launchGenRef.current) return;
+        if (confirmed) {
+          completedRef.current = true;
+          stopPoll();
+          onServerConfirmedRef.current?.();
+          return;
+        }
+        pollTimer = setTimeout(() => void tick(), 2500);
+      };
+      pollTimer = setTimeout(() => void tick(), 3000);
+    };
 
     const goWebview = () => {
       inFlightRef.current = false;
@@ -338,7 +393,17 @@ export function RazorpayCheckoutModal({
       }
 
       try {
-        const result = await openNativeSdk({ orderParams, prefill, themeColor: theme });
+        const result = await openNativeSdk({
+          orderParams,
+          prefill,
+          themeColor: theme,
+          onSheetOpening: () => {
+            if (cancelled || launchGen !== launchGenRef.current) return;
+            setNativeSheetOpen(true);
+            startServerConfirmPoll();
+          },
+        });
+        stopPoll();
         if (cancelled || completedRef.current || launchGen !== launchGenRef.current) return;
         if (!result.razorpayPaymentId || !result.razorpayOrderId || !result.razorpaySignature) {
           goWebview();
@@ -347,7 +412,8 @@ export function RazorpayCheckoutModal({
         completedRef.current = true;
         onSuccess(result);
       } catch (e) {
-        if (cancelled || launchGen !== launchGenRef.current) return;
+        stopPoll();
+        if (cancelled || completedRef.current || launchGen !== launchGenRef.current) return;
         if (isExplicitUserCancel(e)) {
           completedRef.current = true;
           onCancel();
@@ -369,6 +435,7 @@ export function RazorpayCheckoutModal({
 
     return () => {
       cancelled = true;
+      stopPoll();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, orderKey]);
@@ -402,7 +469,12 @@ export function RazorpayCheckoutModal({
       <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
         <View style={styles.opening}>
           <ActivityIndicator size="large" color={theme} />
-          <AppText style={styles.openingText}>Opening payment…</AppText>
+          <AppText style={styles.openingText}>
+            {nativeSheetOpen ? "Confirming your payment…" : "Opening payment…"}
+          </AppText>
+          {nativeSheetOpen ? (
+            <AppText style={styles.openingSub}>This can take a few seconds.</AppText>
+          ) : null}
         </View>
       </Modal>
     );
@@ -527,6 +599,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   openingText: { color: "#fff", fontSize: 14, fontWeight: "600" },
+  openingSub: { color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: "500" },
   safe: { flex: 1, backgroundColor: "#fff" },
   header: {
     flexDirection: "row",

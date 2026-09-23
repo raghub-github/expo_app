@@ -24,7 +24,11 @@ import {
   isNativeRazorpayAvailable,
   extractRazorpayError,
   isRazorpayUserCancel,
+  startServerConfirmPoll,
 } from "@/src/lib/razorpay-native";
+import { getJson } from "@/src/services/http";
+import { getRiderAppConfig } from "@/src/config/env";
+import type { OnboardingPaymentDetails } from "@/src/hooks/usePayment";
 import { openHostedRazorpayCheckout } from "@/src/components/payment/RazorpayCheckoutModal";
 import { PaymentFailedBottomSheet } from "@/src/components/payment/PaymentFailedBottomSheet";
 import Constants from "expo-constants";
@@ -165,6 +169,9 @@ export default function PaymentScreen() {
   const footerHeightRef = useRef(120);
   const mountedRef = useRef(true);
   const gateBounceRef = useRef<string | null>(null);
+  // Guards the success path so the native SDK resolve and the fast-confirm poll
+  // never both finalise the same payment.
+  const paymentCompletedRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -510,6 +517,19 @@ export default function PaymentScreen() {
   const nativeCheckoutAvailable = isNativeRazorpayAvailable();
   const isExpoGo = Constants.appOwnership === "expo";
 
+  const finalizeServerConfirmedOnboarding = useCallback(async () => {
+    // Webhook/reconciler already finalised the onboarding fee — skip verify
+    // (we have no signature here) and just refresh gate caches + show success.
+    try {
+      await queryClient.invalidateQueries({ queryKey: ["rider", data.riderId] });
+      await queryClient.invalidateQueries({ queryKey: ["rider", "eligibility"] });
+    } catch {
+      /* best-effort */
+    }
+    setLoading(false);
+    handlePaymentSuccess();
+  }, [queryClient, data.riderId, handlePaymentSuccess]);
+
   const openNativeCheckout = useCallback(
     async (order: {
       orderId: string;
@@ -517,6 +537,32 @@ export default function PaymentScreen() {
       currency: string;
       key: string;
     }) => {
+      paymentCompletedRef.current = false;
+      // Fast-confirm: poll the onboarding payment status while the native sheet is
+      // open; if the webhook confirms before the slow UPI SDK promise resolves, we
+      // finish immediately instead of waiting ~40s.
+      const stopPoll = startServerConfirmPoll(
+        async () => {
+          if (!data.riderId || !session?.accessToken) return false;
+          const details = await getJson<OnboardingPaymentDetails>(
+            `${getRiderAppConfig().apiBaseUrl}/v1/payment/onboarding/${data.riderId}/details`,
+            { headers: { authorization: `Bearer ${session.accessToken}` } }
+          );
+          const status = String(details?.status ?? "").toLowerCase();
+          return (
+            details?.hasPayment === true &&
+            (status === "completed" ||
+              status === "captured" ||
+              status === "paid" ||
+              status === "finalized")
+          );
+        },
+        () => {
+          if (paymentCompletedRef.current) return;
+          paymentCompletedRef.current = true;
+          void finalizeServerConfirmedOnboarding();
+        }
+      );
       try {
         const result = await openRazorpayCheckout({
           order: {
@@ -530,12 +576,19 @@ export default function PaymentScreen() {
           description: "Rider onboarding fee",
           themeColor: ACCENT,
         });
+        stopPoll();
+        // Poll already finalised via webhook — don't double-run verify.
+        if (paymentCompletedRef.current) return;
+        paymentCompletedRef.current = true;
         await handleVerifyPayment(
           result.razorpayOrderId,
           result.razorpayPaymentId,
           result.razorpaySignature
         );
       } catch (rzpErr: unknown) {
+        stopPoll();
+        // Server already confirmed (webhook) — ignore a late SDK cancel/failure.
+        if (paymentCompletedRef.current) return;
         const reason = isRazorpayUserCancel(rzpErr)
           ? "cancelled"
           : extractRazorpayError(rzpErr).description ||
@@ -561,7 +614,9 @@ export default function PaymentScreen() {
       data.fullName,
       data.riderId,
       session?.phoneE164,
+      session?.accessToken,
       handleVerifyPayment,
+      finalizeServerConfirmedOnboarding,
       recordPaymentAttempt,
       showPaymentFailedSheet,
     ]

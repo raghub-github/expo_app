@@ -15,6 +15,7 @@ import {
   isNativeRazorpayAvailable,
   extractRazorpayError,
   isRazorpayUserCancel,
+  startServerConfirmPoll,
 } from "@/src/lib/razorpay-native";
 import { extractApiErrorMessage } from "@/src/services/http";
 import { colors } from "@/src/theme";
@@ -153,8 +154,32 @@ export function NegativeWalletPayCard() {
           );
           return;
         }
+        // Fast-confirm: if the webhook clears the dues before the slow UPI SDK
+        // promise resolves, finish as soon as dues hit zero server-side.
+        let duesConfirmed = false;
+        const stopDuesPoll = startServerConfirmPoll(
+          async () => {
+            const res = await refetchSub();
+            return (res.data?.dues?.totalDue ?? 1) <= 0;
+          },
+          () => {
+            if (duesConfirmed) return;
+            duesConfirmed = true;
+            void (async () => {
+              await refreshAll();
+              showRiderPaymentSuccess(
+                t("subscription.duesPaidTitle", "Payment successful"),
+                t("subscription.duesPaidMessage", "Subscription dues cleared.")
+              );
+              setPaying(false);
+            })();
+          }
+        );
         try {
           const r = await runNative(order, "Subscription dues");
+          stopDuesPoll();
+          if (duesConfirmed) return;
+          duesConfirmed = true;
           await subDuesPayment.verifyPayment.mutateAsync({
             razorpayOrderId: r.razorpayOrderId,
             razorpayPaymentId: r.razorpayPaymentId,
@@ -166,6 +191,9 @@ export function NegativeWalletPayCard() {
             t("subscription.duesPaidMessage", "Subscription dues cleared.")
           );
         } catch (rzpErr) {
+          stopDuesPoll();
+          // Server already cleared the dues (webhook) — ignore a late SDK error.
+          if (duesConfirmed) return;
           if (!isRazorpayUserCancel(rzpErr)) {
             const { description, code } = extractRazorpayError(rzpErr);
             Alert.alert(
@@ -207,8 +235,33 @@ export function NegativeWalletPayCard() {
         );
         return;
       }
+      // Fast-confirm: reconcile settles a captured-but-unconfirmed payment
+      // against the gateway; poll it while the native sheet is open so we finish
+      // the moment the money is captured instead of waiting on the SDK promise.
+      let penaltyConfirmed = false;
+      const stopPenaltyPoll = startServerConfirmPoll(
+        async () => {
+          const res = await penaltyPayment.reconcile.mutateAsync();
+          return (res?.settled ?? 0) > 0;
+        },
+        () => {
+          if (penaltyConfirmed) return;
+          penaltyConfirmed = true;
+          void (async () => {
+            await refreshAll();
+            showRiderPaymentSuccess(
+              t("earnings.paySuccessTitle", "Payment successful"),
+              t("earnings.paySuccessBody", "Your wallet balance has been updated.")
+            );
+            setPaying(false);
+          })();
+        }
+      );
       try {
         const r = await runNative(order, "Negative wallet settlement");
+        stopPenaltyPoll();
+        if (penaltyConfirmed) return;
+        penaltyConfirmed = true;
         await penaltyPayment.verifyPayment.mutateAsync({
           razorpayOrderId: r.razorpayOrderId,
           razorpayPaymentId: r.razorpayPaymentId,
@@ -220,6 +273,9 @@ export function NegativeWalletPayCard() {
           t("earnings.paySuccessBody", "Your wallet balance has been updated.")
         );
       } catch (rzpErr) {
+        stopPenaltyPoll();
+        // Server already settled it (reconcile/webhook) — ignore a late SDK error.
+        if (penaltyConfirmed) return;
         void penaltyPayment.recordAttempt
           .mutateAsync({
             razorpayOrderId: order.orderId,
