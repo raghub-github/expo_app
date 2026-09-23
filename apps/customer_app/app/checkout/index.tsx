@@ -7530,6 +7530,22 @@ function CheckoutScreen() {
         onCancel={handleRazorpayCancel}
         onFailure={() => showPaymentFailedSheet(typeof toPayAmount === "number" ? toPayAmount : null)}
         onUpiAppOpened={handleUpiAppOpened}
+        checkServerStatus={async () => {
+          const pid = razorpayOrderParams?.pendingId;
+          if (!pid) return { finalized: false };
+          const s = await orderService.getPendingOrderStatus(pid);
+          return {
+            finalized: Boolean(s.finalized && s.orderId),
+            orderId: s.orderId ?? null,
+            failed: s.paymentState === "failed" || s.paymentState === "refunded" || s.paymentState === "refund_pending",
+          };
+        }}
+        onServerConfirmed={(orderId) => {
+          setRazorpayModalVisible(false);
+          setRazorpayOrderParams(null);
+          setPaymentReturnBusy(false);
+          goToOrderPlacedSuccess(orderId);
+        }}
       />
 
       <CheckoutPaymentReturnOverlay visible={paymentReturnBusy} />

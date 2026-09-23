@@ -128,6 +128,14 @@ type Props = {
   onFailure?: () => void;
   /** UPI app was opened — parent should wait for webhook (payment-confirming). */
   onUpiAppOpened?: () => void;
+  /**
+   * Optional fast-confirm: poll the backend for this checkout while the native
+   * SDK is still resolving a UPI collect (which can take tens of seconds). If the
+   * server confirms first (webhook/reconciler), we finish immediately via
+   * onServerConfirmed instead of waiting for the SDK.
+   */
+  checkServerStatus?: () => Promise<{ finalized: boolean; orderId?: string | null; failed?: boolean }>;
+  onServerConfirmed?: (orderId: string) => void;
 };
 
 /* -------------------------------------------------------------------- */
@@ -266,6 +274,8 @@ async function openNativeSdk(args: {
   prefill: RazorpayPrefill | undefined;
   themeColor: string;
   checkoutMethod?: RazorpayCheckoutMethod | null;
+  /** Called right before the native sheet is presented, so the RN overlay behind it can update. */
+  onSheetOpening?: () => void;
 }): Promise<RazorpayPaymentResult> {
   // Dynamic import — see file header for the "why lazy" rationale.
   // Wrap in try/catch because require() inside catch is ugly with TS; use a
@@ -325,6 +335,7 @@ async function openNativeSdk(args: {
   }
 
   try {
+    args.onSheetOpening?.();
     const data = await RazorpayCheckoutModule.open(options);
     return {
       razorpayPaymentId: String(data.razorpay_payment_id ?? ""),
@@ -653,11 +664,14 @@ export function RazorpayCheckoutModal({
   onCancel,
   onFailure,
   onUpiAppOpened,
+  checkServerStatus,
+  onServerConfirmed,
 }: Props): React.ReactElement | null {
   const theme = themeColor ?? DEFAULT_THEME;
   const [tier, setTier] = useState<Tier | null>(null);
   const [webviewError, setWebviewError] = useState<string | null>(null);
   const [waitingUpiLaunch, setWaitingUpiLaunch] = useState(false);
+  const [nativeSheetOpen, setNativeSheetOpen] = useState(false);
   const inFlightRef = useRef(false);
   const completedRef = useRef(false);
   const upiOpenedRef = useRef(false);
@@ -695,6 +709,7 @@ export function RazorpayCheckoutModal({
       setTier(null);
       setWebviewError(null);
       setWaitingUpiLaunch(false);
+      setNativeSheetOpen(false);
       return;
     }
     if (!orderParams) return;
@@ -706,6 +721,7 @@ export function RazorpayCheckoutModal({
     upiOpenedRef.current = false;
     setTier(null);
     setWebviewError(null);
+    setNativeSheetOpen(false);
 
     const isExpoGo = Constants.appOwnership === "expo";
 
@@ -724,12 +740,42 @@ export function RazorpayCheckoutModal({
         return;
       }
 
+      // Fast-confirm race: while the native SDK resolves a UPI collect (can take
+      // tens of seconds), poll the backend. Our webhook/reconciler usually confirm
+      // first, so we finish immediately instead of waiting for the SDK.
+      const startServerConfirmPoll = () => {
+        if (!checkServerStatus || !onServerConfirmed) return;
+        void (async () => {
+          // Give the gateway a moment before the first check.
+          await new Promise((r) => setTimeout(r, 3000));
+          while (!cancelled && !completedRef.current && launchGen === launchGenRef.current) {
+            try {
+              const s = await checkServerStatus();
+              if (cancelled || completedRef.current) return;
+              if (s.finalized && s.orderId) {
+                completedRef.current = true;
+                onServerConfirmed(String(s.orderId));
+                return;
+              }
+              // A gateway-confirmed failure is handled by the SDK's own reject; keep polling otherwise.
+            } catch {
+              /* transient — keep polling */
+            }
+            await new Promise((r) => setTimeout(r, 2500));
+          }
+        })();
+      };
+
       try {
         const result = await openNativeSdk({
           orderParams,
           prefill,
           themeColor: theme,
           checkoutMethod,
+          onSheetOpening: () => {
+            setNativeSheetOpen(true);
+            startServerConfirmPoll();
+          },
         });
         if (cancelled || completedRef.current || launchGen !== launchGenRef.current) return;
         if (!result.razorpayPaymentId || !result.razorpayOrderId || !result.razorpaySignature) {
@@ -936,7 +982,12 @@ export function RazorpayCheckoutModal({
           <View style={styles.upiLaunchDim}>
             <View style={styles.upiLaunchCard}>
               <ActivityIndicator color={theme} />
-              <AppText style={styles.upiLaunchText}>Opening secure payment…</AppText>
+              <AppText style={styles.upiLaunchText}>
+                {nativeSheetOpen ? "Confirming your payment…" : "Opening secure payment…"}
+              </AppText>
+              {nativeSheetOpen ? (
+                <AppText style={styles.upiLaunchSub}>This can take a few seconds.</AppText>
+              ) : null}
               <Pressable
                 onPress={() => {
                   if (!completedRef.current) {
@@ -1069,6 +1120,12 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#FFFFFF",
     marginTop: 12,
+    textAlign: "center",
+  },
+  upiLaunchSub: {
+    fontSize: 12,
+    color: "#CBD5E1",
+    marginTop: 6,
     textAlign: "center",
   },
   upiLaunchCancelHit: {

@@ -37,7 +37,7 @@ export default function PaymentConfirmingScreen() {
     queryKey: ["pending-order-status", pendingId],
     queryFn: () => orderService.getPendingOrderStatus(pendingId!),
     enabled: Boolean(pendingId),
-    refetchInterval: 4000,
+    refetchInterval: 2500,
     retry: true,
   });
   const handledTerminalRef = useRef(false);
