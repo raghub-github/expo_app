@@ -23,6 +23,7 @@ import {
   isCustomerOrderTerminalStatus,
 } from "@/lib/customer-order-status-machine";
 import { normalizeCustomerOrderStatus } from "@/lib/customer-order-status-display";
+import { LIVE_ORDER_MAX_AGE_MS } from "@/hooks/useActiveOrdersHydration";
 import {
   applyLiveProgressFromPush as applyLiveProgressNative,
   dismissLiveOrderProgressForOrder as dismissLiveOrderProgressNative,
@@ -248,11 +249,19 @@ export function LiveOrderProgressNotification() {
   useEffect(() => {
     if (Platform.OS !== "android" || isExpoGo()) return undefined;
 
-    const sync = () => {
+    const sync = (force = false) => {
       const nextIds = new Set<string>();
       const dismissIds = new Set<string>();
       for (const order of activeOrders) {
         if (!order.orderId) continue;
+        // Stale-aged tracker (its cancel/deliver update was missed while the app
+        // was closed) — never (re)post its sticky and clear any leftover one, so
+        // yesterday's order can't re-notify on open. Real live orders are recent.
+        if (order.placedAt && Date.now() - order.placedAt > LIVE_ORDER_MAX_AGE_MS) {
+          void dismissLiveOrderProgressForOrder(order.orderId);
+          delete lastSigRef.current[order.orderId];
+          continue;
+        }
         nextIds.add(order.orderId);
         for (const alias of collectOrderAliases(order.orderId, order.formattedOrderId)) {
           dismissIds.add(alias);
@@ -284,10 +293,15 @@ export function LiveOrderProgressNotification() {
         }
       }
       knownIdsRef.current = nextIds;
-      void dismissStaleLiveOrderTrayNotifications(dismissIds);
+      void dismissStaleLiveOrderTrayNotifications(dismissIds, force ? { force: true } : undefined);
     };
 
-    const t = setTimeout(sync, 400);
+    // Cold start: force the orphan sweep. A sticky left by a previous session
+    // (order cancelled/delivered while the app was closed) must be cleared even
+    // when there are now zero active orders — the non-forced sweep early-returns
+    // on an empty id set, and the AppState "active" force only fires on a state
+    // CHANGE, which never happens on a launch that starts already-active.
+    const t = setTimeout(() => sync(true), 400);
     const sub = AppState.addEventListener("change", (state) => {
       if (state === "active") {
         // Resume: drop leftover FCM shade rows. Do not convert current
