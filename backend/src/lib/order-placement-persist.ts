@@ -173,7 +173,7 @@ export type InsertPlacedOrderCoreInput = {
 export async function insertPlacedOrderCoreWithTimelines(
   tx: PostgresJsDatabase<Record<string, unknown>>,
   input: InsertPlacedOrderCoreInput
-): Promise<{ orderCorePk: number }> {
+): Promise<{ orderCorePk: number; formattedOrderId: string | null }> {
   const { pending, orderIdText, items } = input;
   const finalizedAt = input.finalizedAt ?? new Date();
 
@@ -274,12 +274,16 @@ export async function insertPlacedOrderCoreWithTimelines(
       checkoutMetadata: checkoutEnriched,
       items: foodPayload as unknown as Record<string, unknown>[],
     })
-    .returning({ id: ordersCore.id });
+    .returning({ id: ordersCore.id, formattedOrderId: ordersCore.formattedOrderId });
 
   const orderCorePk = inserted?.id;
   if (orderCorePk == null || !Number.isFinite(orderCorePk)) {
     throw new Error("orders_core insert did not return id");
   }
+  const formattedOrderId =
+    inserted?.formattedOrderId != null && String(inserted.formattedOrderId).trim()
+      ? String(inserted.formattedOrderId).trim()
+      : null;
 
   // Capture merchant precision/cart discount immediately (does not fail placement if col missing).
   if (precisionDiscountCustomer > 0.005) {
@@ -349,5 +353,5 @@ export async function insertPlacedOrderCoreWithTimelines(
 
   await persistOrderOtps(tx, orderCorePk, orderIdText);
 
-  return { orderCorePk };
+  return { orderCorePk, formattedOrderId };
 }

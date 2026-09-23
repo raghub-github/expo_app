@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { getQueryClient } from "@/lib/react-query";
 import { useStoreMenuQuery } from "@/hooks/queries/useMerchantStoreQueries";
@@ -664,6 +664,12 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
   const editModalItemIdRef = useRef<number | null>(null);
   /** Ignores stale GET /menu/items/[id] responses that can overwrite fresher cache after save. */
   const editItemReloadSeqRef = useRef(0);
+  /** True once the user edits the open edit form — blocks in-flight open-reload from clobbering typed fields (e.g. item name). */
+  const editFormDirtyRef = useRef(false);
+  const setEditFormTracked = useCallback((update: SetStateAction<ItemFormData>) => {
+    editFormDirtyRef.current = true;
+    setEditForm(update);
+  }, []);
   const [addError, setAddError] = useState("");
   const [editError, setEditError] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -1235,7 +1241,7 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
 
   /** Reload full edit form + menu list cache from GET /menu/items/[id] after any save. */
   const reloadEditItemFromServer = useCallback(
-    async (menuItemId: number): Promise<ItemFormData> => {
+    async (menuItemId: number, opts?: { force?: boolean }): Promise<ItemFormData> => {
       const seq = ++editItemReloadSeqRef.current;
       const res = await fetch(`/api/merchant/stores/${storeId}/menu/items/${menuItemId}`, {
         credentials: "include",
@@ -1258,8 +1264,12 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
       );
       const cacheBustedImageUrl = imageUrl ? withAttachmentCacheBust(imageUrl, seq) : "";
       if (editModalItemIdRef.current === menuItemId) {
-        setEditForm({ ...deduped, item_image_url: imageUrl || deduped.item_image_url });
-        setEditImagePreview(cacheBustedImageUrl || imageUrl);
+        // Don't wipe in-progress edits when the open-modal fetch finishes late.
+        if (opts?.force || !editFormDirtyRef.current) {
+          setEditForm({ ...deduped, item_image_url: imageUrl || deduped.item_image_url });
+          setEditImagePreview(cacheBustedImageUrl || imageUrl);
+          if (opts?.force) editFormDirtyRef.current = false;
+        }
       }
       if (seq !== editItemReloadSeqRef.current) {
         return deduped;
@@ -1298,6 +1308,7 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
   const handleOpenEditModal = (item: MenuItem) => {
     const latest = menuItems.find((m) => Number(m.id) === Number(item.id)) ?? item;
     editModalItemIdRef.current = latest.id;
+    editFormDirtyRef.current = false;
     setEditingId(latest.id);
     setEditError("");
     setEditImageFile(null);
@@ -1917,7 +1928,7 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
           requestMethod: "POST",
         });
       }
-      await reloadEditItemFromServer(editingId);
+      await reloadEditItemFromServer(editingId, { force: true });
       await refreshMenu();
       try {
         if (categoryUiConfig?.cuisine_field.visible) {
@@ -2074,7 +2085,7 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
       }
 
       await syncItemOptionFlags(editingId, editForm);
-      await reloadEditItemFromServer(editingId);
+      await reloadEditItemFromServer(editingId, { force: true });
       closeEditModalAfterSuccess();
     } catch (e) {
       setEditError(e instanceof Error ? e.message : "Failed to save options.");
@@ -4004,7 +4015,7 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
               <MenuItemForm
                 isEdit
                 formData={editForm}
-                setFormData={setEditForm}
+                setFormData={setEditFormTracked}
                 imagePreview={editImagePreview}
                 setImagePreview={setEditImagePreview}
                 onProcessImage={handleProcessImage}

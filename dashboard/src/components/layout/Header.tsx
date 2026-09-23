@@ -1195,7 +1195,9 @@ function HeaderComponent() {
     <>
     <header
       className={`flex shrink-0 items-center justify-between bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4 ${
-        cleanPathname === GEO_LIST_PATH ? "min-h-14 py-1.5" : "h-14"
+        cleanPathname === GEO_LIST_PATH || cleanPathname === "/dashboard/transactions"
+          ? "min-h-14 py-1.5"
+          : "h-14"
       }`}
     >
       {/* Mobile: Hamburger (left) + Logo + Page name. Desktop: no hamburger. */}
@@ -1476,6 +1478,13 @@ function HeaderComponent() {
             <h2 className="min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg">
               {pageName}
             </h2>
+          </div>
+        ) : cleanPathname === "/dashboard/transactions" ? (
+          <div className="min-w-0 leading-tight">
+            <h2 className="truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
+            <p className="mt-0.5 hidden max-w-3xl truncate text-[11px] text-gray-500 sm:block">
+              Every payment across Customer, Merchant and Rider apps — search, filter and trace any transaction end-to-end.
+            </p>
           </div>
         ) : isGeoRiderAvailabilityPage ? (
           <div className="min-w-0 flex flex-col justify-center">

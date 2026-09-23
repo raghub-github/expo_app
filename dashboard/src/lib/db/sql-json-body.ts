@@ -43,14 +43,16 @@ export function bodyTextArrayOrNull(v: unknown): string[] | null {
   return null;
 }
 
-/** PATCH/PUT: optional string column */
+/** PATCH/PUT: optional string column — blank strings become null */
 export function mergeOptionalStr(bodyVal: unknown, existing: unknown): string | null {
   if (bodyVal !== undefined) {
     if (bodyVal === null) return null;
-    return String(bodyVal);
+    const s = String(bodyVal).trim();
+    return s ? s : null;
   }
   if (existing === undefined || existing === null) return null;
-  return String(existing);
+  const s = String(existing).trim();
+  return s ? s : null;
 }
 
 /** PATCH/PUT: required numeric column */

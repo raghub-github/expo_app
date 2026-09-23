@@ -13,7 +13,6 @@ import {
   Ticket,
   CreditCard,
   Gift,
-  Settings,
   BarChart3,
   Shield,
   MapPin,
@@ -43,7 +42,6 @@ const navigation: NavItem[] = [
   { name: "Area Managers", href: "/dashboard/area-managers", icon: MapPin, dashboardType: "AREA_MANAGER" },
   { name: "Tickets", href: "/dashboard/tickets", icon: Ticket, dashboardType: "TICKET" },
   { name: "Geo Rx Availability", href: "/dashboard/rx", icon: Radar },
-  { name: "System", href: "/dashboard/system", icon: Settings, dashboardType: "SYSTEM" },
   { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3, dashboardType: "ANALYTICS" },
 ];
 

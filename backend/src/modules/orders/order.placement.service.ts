@@ -1574,7 +1574,7 @@ export async function finalizeOrder(
         throw new Error(`Failed to generate order_id: got ${JSON.stringify(seqResult)}`);
       }
 
-      const { orderCorePk } = await insertPlacedOrderCoreWithTimelines(tx, {
+      const { orderCorePk, formattedOrderId } = await insertPlacedOrderCoreWithTimelines(tx, {
         pending: {
           pendingId: pending.pendingId,
           customerId: pending.customerId,
@@ -1827,7 +1827,13 @@ export async function finalizeOrder(
           updatedAt: new Date(),
           paymentState: PENDING_PAYMENT_STATES.FINALIZED,
           paymentVerifiedAt: new Date(),
-          ...(checkoutMetadataForTxn ? { checkoutMetadata: checkoutMetadataForTxn } : {}),
+          checkoutMetadata: {
+            ...(checkoutMetadataForTxn ??
+              (pending.checkoutMetadata && typeof pending.checkoutMetadata === "object"
+                ? (pending.checkoutMetadata as Record<string, unknown>)
+                : {})),
+            ...(formattedOrderId ? { formatted_order_id: formattedOrderId } : {}),
+          },
           ...(razorpayOrderId ? { razorpayOrderId } : {}),
           ...(razorpayPaymentId ? { razorpayPaymentId } : {}),
         })
@@ -1865,10 +1871,21 @@ export async function finalizeOrder(
           finalizedOrderId: orderIdText,
           finalizedAt: new Date(),
           updatedAt: new Date(),
+          ...(formattedOrderId
+            ? {
+                checkoutMetadata: {
+                  ...(checkoutMetadataForTxn ??
+                    (pending.checkoutMetadata && typeof pending.checkoutMetadata === "object"
+                      ? (pending.checkoutMetadata as Record<string, unknown>)
+                      : {})),
+                  formatted_order_id: formattedOrderId,
+                },
+              }
+            : {}),
         })
         .where(eq(pendingOrders.pendingId, pendingId));
 
-      return { orderIdText, orderCorePk };
+      return { orderIdText, orderCorePk, formattedOrderId };
     });
 
     // NOTE: order_notifications outbox is intentionally NOT written here.
@@ -2335,7 +2352,7 @@ export async function finalizePendingOrderFromWebhook(
         throw new Error(`order_id generation failed: ${JSON.stringify(seqResult)}`);
       }
 
-      const { orderCorePk } = await insertPlacedOrderCoreWithTimelines(tx, {
+      const { orderCorePk, formattedOrderId } = await insertPlacedOrderCoreWithTimelines(tx, {
         pending: {
           pendingId: pending.pending_id,
           customerId: Number(pending.customer_id),
@@ -2568,6 +2585,16 @@ export async function finalizePendingOrderFromWebhook(
           paymentVerifiedAt: new Date(),
           lastGatewayPayload: gatewayPayload ?? null,
           updatedAt: new Date(),
+          ...(formattedOrderId
+            ? {
+                checkoutMetadata: {
+                  ...(pending.checkout_metadata && typeof pending.checkout_metadata === "object"
+                    ? (pending.checkout_metadata as Record<string, unknown>)
+                    : {}),
+                  formatted_order_id: formattedOrderId,
+                },
+              }
+            : {}),
         })
         .where(eq(pendingOrders.pendingId, pending.pending_id));
 
