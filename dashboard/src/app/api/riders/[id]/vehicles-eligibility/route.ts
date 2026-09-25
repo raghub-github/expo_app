@@ -30,10 +30,24 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       method: "POST",
       actorRole: sa ? "super_admin" : "rider_admin",
       body: JSON.stringify({ riderId }),
+      // Heal + eligibility can be slow under load; default 45s was aborting as 502.
+      timeoutMs: 60_000,
     });
     return NextResponse.json(data, { status: response.status });
   } catch (e) {
     console.error("[GET riders/[id]/vehicles-eligibility]", e);
-    return NextResponse.json({ error: "backend_unreachable" }, { status: 502 });
+    // Soft degrade so the onboarding desk still loads (empty vehicles) instead of hard 502.
+    return NextResponse.json(
+      {
+        vehicles: [],
+        activeVehicleId: null,
+        resolvedGeo: null,
+        verificationHistory: [],
+        dutyOn: false,
+        error: "backend_unreachable",
+        degraded: true,
+      },
+      { status: 200 },
+    );
   }
 }

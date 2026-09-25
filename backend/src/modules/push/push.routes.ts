@@ -350,7 +350,7 @@ export async function pushRoutes(app: FastifyInstance) {
                   role,
                   platform: device_type,
                   tokenType,
-                  storeId: validatedStoreId,
+                  ...(validatedStoreId != null ? { storeId: validatedStoreId } : {}),
                   subscribedTopics: topics,
                   source: "app",
                   updatedAt: now,
@@ -365,30 +365,8 @@ export async function pushRoutes(app: FastifyInstance) {
                 },
               });
 
-            // Drop stale tokens for this same physical device so reinstall /
-            // token rotation cannot twin-deliver the same customer push.
-            const model = device_model?.trim() || null;
-            if (model) {
-              await getSql()`
-                DELETE FROM public.native_device_push_tokens
-                WHERE user_id = ${userId}
-                  AND lower(role) = ${role}
-                  AND platform = ${device_type}
-                  AND source = 'app'
-                  AND device_model = ${model}
-                  AND native_token <> ${nativeToken}
-              `;
-              if (expoToken) {
-                await getSql()`
-                  DELETE FROM public.expo_push_tokens
-                  WHERE user_id = ${userId}
-                    AND lower(role) = ${role}
-                    AND device_type = ${device_type}
-                    AND device_model = ${model}
-                    AND expo_push_token <> ${expoToken}
-                `;
-              }
-            }
+            // Do not delete other devices that share a model name.
+            // Token rotation for this installation is the ON CONFLICT update above.
           }
         }
 

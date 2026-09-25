@@ -111,6 +111,10 @@ const nextConfig: NextConfig = {
   // Mapbox is loaded from CDN, no webpack config needed
 
   webpack: (config, { dev, isServer }) => {
+    config.resolve.extensionAlias = {
+      ...config.resolve.extensionAlias,
+      ".js": [".ts", ".tsx", ".js"],
+    };
     if (dev) {
       // OneDrive + concurrent /login + _not-found compiles corrupt memory packs.
       // Disable cache entirely on synced Windows paths; memory cache elsewhere.

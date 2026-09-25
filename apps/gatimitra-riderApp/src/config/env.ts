@@ -131,7 +131,6 @@ function preferredDevLanHost(): string | null {
   return null;
 }
 
-const loggedLanHeals = new Set<string>();
 let loggedResolvedApiUrl: string | null = null;
 
 /** Backend HTTP port — must match `PORT` in backend/.env (default 3000). */
@@ -156,6 +155,7 @@ function normalizeLegacyBackendPort(url: string): string {
 /**
  * Wi‑Fi IPs change often. In __DEV__, if a configured URL points at a different
  * private LAN IP than this PC's current Metro host, rewrite to the live IP.
+ * Silent — do not log the stale IP (avoids noise / "still triggering" after Wi‑Fi hops).
  */
 function healStaleLanApiUrl(url: string): string {
   if (!__DEV__) return url;
@@ -163,16 +163,7 @@ function healStaleLanApiUrl(url: string): string {
   if (!lan) return url;
   const host = hostFromApiUrl(url);
   if (!host || host === lan || !isPrivateLanIpv4(host)) return url;
-  const healed = `http://${lan}:${portFromApiUrl(url)}`;
-  const healKey = `${url}→${healed}`;
-  if (!loggedLanHeals.has(healKey)) {
-    loggedLanHeals.add(healKey);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[RiderEnv] healed stale LAN API URL ${url} → ${healed} (set EXPO_PUBLIC_API_BASE_URL=${healed} to silence)`
-    );
-  }
-  return healed;
+  return `http://${lan}:${portFromApiUrl(url)}`;
 }
 
 /**
@@ -239,8 +230,14 @@ export function getRiderAppConfig(): RiderAppConfig {
   const fallback = __DEV__ ? `http://localhost:${port}` : "https://api.gatimitra.com";
 
   let rawUrl: string;
-  // Explicit LAN URL in .env.local wins over DEV_HOST (avoids stale/wrong DEV_HOST in .env).
-  if (fromEnv && !isLocalhostApiUrl(fromEnv)) {
+  // In __DEV__, always prefer the live Metro LAN IP over a baked EXPO_PUBLIC_* LAN URL
+  // (Metro embeds env at start; Wi‑Fi hops leave stale IPs until a full restart).
+  const liveLan = __DEV__ ? preferredDevLanHost() : null;
+  const fromEnvHost = fromEnv ? hostFromApiUrl(fromEnv) : null;
+  if (liveLan && fromEnvHost && isPrivateLanIpv4(fromEnvHost) && fromEnvHost !== liveLan) {
+    rawUrl = `http://${liveLan}:${port}`;
+  } else if (fromEnv && !isLocalhostApiUrl(fromEnv)) {
+    // Explicit LAN / public URL in .env wins over DEV_HOST.
     rawUrl = fromEnv.replace(/\/+$/, "");
   } else if (devHost) {
     rawUrl = `http://${devHost}:${port}`;

@@ -15,6 +15,11 @@ import * as Location from "expo-location";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import { createForegroundLocationTracker, getSharedLocationEngine, LOCATION_ENGINE_PROFILES, type LocationTrackerState } from "@/src/services/location/locationTracker";
+import {
+  reconcileForegroundLocationPermission,
+  openForegroundLocationSettings,
+} from "@/src/lib/riderForegroundLocationGate";
+import { useForegroundLocationPermissionStore } from "@/src/stores/foregroundLocationPermissionStore";
 import { useAvailableOrders, useActiveOrders, useRidePaymentHolds, RIDER_ACTIVE_ORDERS_QUERY_KEY } from "@/src/hooks/useOrders";
 import { useFocusEffect } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
@@ -267,7 +272,11 @@ export default function OrdersScreen() {
   const subscriptionDispatchBlocked = subscriptionStatus?.dues?.dispatchBlocked ?? false;
   // Avoid stacking two yellow Pay banners for the same ₹ dues (subscription + wallet).
   // Pager dots under Pay looked like a second/duplicate banner.
-  const showPenaltyBanner = negativeWalletDue > 0 && !subscriptionBannerVisible;
+  const penaltyDueAmount = restrictions?.penaltyDue ?? 0;
+  const penaltyDutyStopped = restrictions?.penaltyDutyStopped === true;
+  const showPenaltyBanner =
+    (penaltyDutyStopped || penaltyDueAmount > 0) && !subscriptionBannerVisible;
+  const penaltyBannerAmount = penaltyDueAmount > 0 ? penaltyDueAmount : negativeWalletDue;
   const primaryPaymentHold = ridePaymentHolds[0] ?? null;
   const networkOnline = useRiderNetworkStore((s) => s.online);
 
@@ -316,8 +325,11 @@ export default function OrdersScreen() {
         durationMs: homeBannerDuration("penalty"),
         element: (
           <PenaltyBanner
-            amount={negativeWalletDue}
+            amount={penaltyBannerAmount}
             paying={penaltyPaying}
+            reason={restrictions?.penaltyTitle}
+            dutyStopped={penaltyDutyStopped}
+            formattedOrderId={restrictions?.penaltyFormattedOrderId}
             onPay={() => void handlePayPenalty()}
           />
         ),
@@ -341,7 +353,10 @@ export default function OrdersScreen() {
     allServicesBlacklisted,
     restrictions?.globalWalletBlock,
     showPenaltyBanner,
-    negativeWalletDue,
+    penaltyBannerAmount,
+    penaltyDutyStopped,
+    restrictions?.penaltyTitle,
+    restrictions?.penaltyFormattedOrderId,
     penaltyPaying,
     handlePayPenalty,
     primaryPaymentHold,
@@ -407,20 +422,9 @@ export default function OrdersScreen() {
     }, [queryClient])
   );
 
-  useEffect(() => {
-    if (!subscriptionDispatchBlocked && !dutyGoOnBlocked && !onboardingReviewBlocksDuty) {
-      return;
-    }
-    if (!isOnDuty) return;
-    void useDutyStore.getState().setDutyStatus(false);
-    void queryClient.invalidateQueries({ queryKey: RIDER_DUTY_STATUS_QUERY_KEY });
-  }, [
-    subscriptionDispatchBlocked,
-    dutyGoOnBlocked,
-    onboardingReviewBlocksDuty,
-    isOnDuty,
-    queryClient,
-  ]);
+  // Duty ON/OFF comes from the duty status API. A local block (subscription, review,
+  // penalty) must not flip the toggle off by itself — the server already records
+  // a real duty stop when a business rule requires it.
 
   const lastEmittedFixRef = useRef<CoalesceFixSnapshot | null>(null);
   const lastScreenFixRef = useRef<CoalesceFixSnapshot | null>(null);
@@ -532,35 +536,18 @@ export default function OrdersScreen() {
   }, []);
 
   useEffect(() => {
-    let alertShown = false;
     const checkLocationStatus = async () => {
       try {
-        const { status } = await Location.getForegroundPermissionsAsync();
+        const phase = await reconcileForegroundLocationPermission();
         const enabled = await Location.hasServicesEnabledAsync();
-        if (status !== "granted") {
-          // Only nag for permission while on duty; off-duty still paints last-known / seed pin.
-          if (isOnDuty && !alertShown) {
-            alertShown = true;
-            Alert.alert(
-              t("location.required"),
-              t("location.permissionDenied"),
-              [
-                {
-                  text: t("location.openSettings"),
-                  onPress: async () => {
-                    await permissionManager.openSettings("location_foreground");
-                    alertShown = false;
-                  },
-                },
-              ],
-              { cancelable: false }
-            );
-          }
-        } else if (!enabled) {
-          alertShown = false;
-        } else {
-          alertShown = false;
-          if (tracker.getState().status !== "tracking") void tracker.start();
+        if (
+          phase === "GRANTED" &&
+          enabled &&
+          tracker.getState().status !== "tracking"
+        ) {
+          void tracker.start();
+        } else if (phase !== "GRANTED") {
+          void tracker.stop();
         }
       } catch (error) {
         console.warn("Location check error:", error);
@@ -596,20 +583,28 @@ export default function OrdersScreen() {
     }
   }, []);
 
-  // Keep GPS watch for the home "You" pin whether on or off duty.
+  // Keep GPS watch for the home "You" pin whether on or off duty — only after OS grant.
   // Duty server pings stay gated in useRiderDutyLocationPing (on-duty / active order only).
+  const fgLocationPhase = useForegroundLocationPermissionStore((s) => s.phase);
   useEffect(() => {
+    if (fgLocationPhase !== "GRANTED") {
+      void tracker.stop();
+      return;
+    }
     void tracker.start();
     return () => {
       void tracker.stop();
     };
-  }, [tracker]);
+  }, [tracker, fgLocationPhase]);
 
   // Foreground resume: refresh without tearing down the shared watch (keeps last fix).
   useEffect(() => {
     const sub = AppState.addEventListener("change", (nextAppState) => {
       if (nextAppState !== "active") return;
-      void tracker.start();
+      void (async () => {
+        const phase = await reconcileForegroundLocationPermission();
+        if (phase === "GRANTED") void tracker.start();
+      })();
     });
     return () => sub.remove();
   }, [tracker]);
@@ -617,12 +612,12 @@ export default function OrdersScreen() {
   const handleEnableLocation = useCallback(async () => {
     setCheckingLocation(true);
     try {
-      if (Platform.OS === "ios") await Linking.openURL("app-settings:");
-      else await Linking.openSettings();
+      await openForegroundLocationSettings();
     } catch (error) {
       console.error("Failed to open settings:", error);
     } finally {
       setCheckingLocation(false);
+      void reconcileForegroundLocationPermission();
     }
   }, []);
 
@@ -639,7 +634,8 @@ export default function OrdersScreen() {
       } else {
         await Linking.openURL("app-settings:");
       }
-      await tracker.start();
+      const phase = await reconcileForegroundLocationPermission();
+      if (phase === "GRANTED") await tracker.start();
     } catch {
       /* rider dismissed the dialog, or it is unavailable — keep the gate UI */
     } finally {
@@ -777,55 +773,26 @@ export default function OrdersScreen() {
           showSearching={showSearching}
         />
 
-        {gpsBlocked ? (
+        {state.status === "services_disabled" ? (
           <View style={styles.gpsOverlay} pointerEvents="box-none">
             <View style={styles.gpsCard}>
-              <Text style={styles.permissionTitle}>
-                {state.status === "permission_denied"
-                  ? t("location.required")
-                  : t("location.gpsDisabled")}
-              </Text>
-              <Text style={styles.permissionSub}>
-                {state.status === "permission_denied"
-                  ? t("location.permissionDenied")
-                  : t("location.gpsDisabledMessage")}
-              </Text>
-              {state.status === "permission_denied" ? (
-                <>
-                  <Button
-                    onPress={handleEnableLocation}
-                    style={{ marginTop: 16 }}
-                    disabled={checkingLocation}
-                  >
-                    {t("location.enableLocation")}
-                  </Button>
-                  <Button
-                    onPress={() => void tracker.start()}
-                    variant="outline"
-                    style={{ marginTop: 12 }}
-                  >
-                    {t("location.turnedOn", "I allowed location — retry")}
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button
-                    onPress={() => void handleTurnOnGps()}
-                    style={{ marginTop: 16 }}
-                    disabled={checkingLocation}
-                  >
-                    {t("location.turnOnGps", "Turn On Location")}
-                  </Button>
-                  <Button
-                    onPress={handleEnableLocation}
-                    variant="outline"
-                    style={{ marginTop: 12 }}
-                    disabled={checkingLocation}
-                  >
-                    {t("location.openSettings")}
-                  </Button>
-                </>
-              )}
+              <Text style={styles.permissionTitle}>{t("location.gpsDisabled")}</Text>
+              <Text style={styles.permissionSub}>{t("location.gpsDisabledMessage")}</Text>
+              <Button
+                onPress={() => void handleTurnOnGps()}
+                style={{ marginTop: 16 }}
+                disabled={checkingLocation}
+              >
+                {t("location.turnOnGps", "Turn On Location")}
+              </Button>
+              <Button
+                onPress={handleEnableLocation}
+                variant="outline"
+                style={{ marginTop: 12 }}
+                disabled={checkingLocation}
+              >
+                {t("location.openSettings")}
+              </Button>
             </View>
           </View>
         ) : null}

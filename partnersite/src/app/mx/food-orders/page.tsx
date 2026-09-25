@@ -64,8 +64,10 @@ import { isPartnerOrderClosedForContact } from '@/lib/partner-orders-unify';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import {
   PARTNER_MANAGED_STORES_CHANGED,
+  PARTNER_SELECTED_STORE_CHANGED,
   persistPartnerManagedStoreIds,
   readPartnerManagedStoreIds,
+  readPartnerSelectedStoreId,
 } from '@/lib/partner-selected-store';
 import { fetchStoreById } from '@/lib/database';
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord';
@@ -522,10 +524,14 @@ function OrdersPageContent() {
   );
 
   useEffect(() => {
-    let id = searchParams?.get('storeId') || searchParams?.get('store_id');
-    if (!id && typeof window !== 'undefined') id = localStorage.getItem('selectedStoreId');
-    const trimmed = (id || '').trim();
-    setStoreId(isValidPartnerStoreId(trimmed) ? trimmed : null);
+    const apply = () => {
+      const fromUrl = searchParams?.get('storeId') || searchParams?.get('store_id');
+      const id = readPartnerSelectedStoreId(fromUrl ?? undefined);
+      setStoreId(isValidPartnerStoreId(id) ? id : null);
+    };
+    apply();
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, apply);
+    return () => window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, apply);
   }, [searchParams]);
 
   useEffect(() => {

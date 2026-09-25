@@ -25,9 +25,6 @@ module.exports = ({ config }) => ({
     // Partner launcher: assets/mxappicon.png is the single canonical icon.
     icon: "./assets/mxappicon.png",
     splash: {
-      ...(appJson.expo.splash || {}),
-      image: "./assets/images/splash-logo.png",
-      resizeMode: "contain",
       backgroundColor: MERCHANT_SPLASH_BG,
     },
     // Light app chrome — dark status icons so time/battery stay readable on every screen.

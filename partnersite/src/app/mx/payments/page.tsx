@@ -9,8 +9,8 @@ import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext'
 import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers'
 import { Restaurant } from '@/lib/types'
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
-import { DEMO_RESTAURANT_ID } from '@/lib/constants'
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared'
+import { PARTNER_SELECTED_STORE_CHANGED, readPartnerSelectedStoreId } from '@/lib/partner-selected-store'
 import {
   useMerchantWallet,
   useMerchantLedger,
@@ -409,16 +409,14 @@ function PaymentsContent() {
   const [payoutDetailsLoading, setPayoutDetailsLoading] = useState<number | null>(null)
 
   useEffect(() => {
-    const id =
-      searchParams?.get('restaurantId') ??
-      searchParams?.get('storeId') ??
-      (typeof window !== 'undefined'
-        ? localStorage.getItem('selectedStoreId') ?? localStorage.getItem('selectedRestaurantId')
-        : null)
-    // Never fall back to DEMO GMM0001 for live wallet/payout APIs — it is blocked
-    // by isValidPartnerStoreId and is not a real merchant_stores row.
-    const trimmed = (id ?? '').trim()
-    setStoreId(isValidPartnerStoreId(trimmed) ? trimmed : null)
+    const apply = () => {
+      const fromUrl = searchParams?.get('restaurantId') ?? searchParams?.get('storeId')
+      const id = readPartnerSelectedStoreId(fromUrl ?? undefined)
+      setStoreId(isValidPartnerStoreId(id) ? id : null)
+    }
+    apply()
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, apply)
+    return () => window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, apply)
   }, [searchParams])
 
   useEffect(() => {
@@ -898,7 +896,7 @@ function PaymentsContent() {
 
   return (
     <>
-      <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || DEMO_RESTAURANT_ID}>
+      <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || ''}>
         <PartnerPageHeader {...PARTNER_PAGE_HEADERS.payments} />
         <div className="mx-payments-page flex flex-1 flex-col min-h-0 h-0 w-full bg-[#f8fafc]">
           <div className="flex-1 min-h-0 h-0 overflow-y-auto overflow-x-hidden overscroll-contain hide-scrollbar bg-[#f8fafc]">

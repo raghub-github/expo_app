@@ -1,4 +1,5 @@
 import type { Sql } from "postgres";
+import { scoreAreaStoresHomeFood } from "./home-food-area-affinity.js";
 
 export type MarketMatchScope = "city" | "locality";
 
@@ -77,6 +78,31 @@ function localityNameFromAddress(
   }
   const cityTrim = city?.trim() || null;
   return cityTrim;
+}
+
+function localityMatchKey(
+  fullAddress: string | null | undefined,
+  city: string | null | undefined,
+  state: string | null | undefined,
+  postalCode: string | null | undefined
+): string {
+  const cityN = (city ?? "").trim().toLowerCase();
+  const stateN = (state ?? "").trim().toLowerCase();
+  const pin = (postalCode ?? "").replace(/\D/g, "");
+  const parts = (fullAddress ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => p.replace(/^\d{5,6}\s+/, "").replace(/\s+\d{5,6}$/, "").trim())
+    .filter((p) => {
+      const l = p.toLowerCase();
+      if (!l || /^\d{5,6}$/.test(l)) return false;
+      if (pin && l.replace(/\D/g, "") === pin) return false;
+      if (cityN && l === cityN) return false;
+      if (stateN && (l === stateN || l === `${stateN} state`)) return false;
+      return true;
+    });
+  return (parts.length > 0 ? parts[parts.length - 1]! : "").toLowerCase();
 }
 
 async function snapshotsAreFresh(
@@ -307,6 +333,8 @@ async function loadAreaOrderBoard(
     state: string | null;
     postal_code: string | null;
     full_address?: string | null;
+    latitude?: number | string | null;
+    longitude?: number | string | null;
   },
   scope: MarketMatchScope,
   limit = 50
@@ -329,32 +357,59 @@ async function loadAreaOrderBoard(
   const boardLimit = Math.min(Math.max(1, limit), 50);
 
   if (scope === "locality") {
-    if (!pincodeNorm) return { locality: base, board: [] };
-    const [areaStats] = await sql`
-      SELECT COUNT(*)::int AS stores_in_area
-      FROM merchant_stores ms
-      WHERE ms.deleted_at IS NULL
-        AND NULLIF(regexp_replace(TRIM(COALESCE(ms.postal_code, '')), '[^0-9]', '', 'g'), '') = ${pincodeNorm}
-    `;
-    const rankRows = await sql`
-      SELECT ms.id,
-             ms.store_id,
-             COALESCE(NULLIF(TRIM(ms.store_display_name), ''), ms.store_name) AS name,
-             ms.banner_url,
-             mp.store_logo AS parent_logo_url,
-             COUNT(oc.id)::int AS order_count
-      FROM merchant_stores ms
-      LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
-      LEFT JOIN orders_core oc
-        ON oc.merchant_store_id = ms.id
-       AND oc.placed_at >= now() - interval '90 days'
-       AND COALESCE(oc.current_status, '') NOT IN ('CANCELLED', 'CANCELED', 'REJECTED')
-      WHERE ms.deleted_at IS NULL
-        AND NULLIF(regexp_replace(TRIM(COALESCE(ms.postal_code, '')), '[^0-9]', '', 'g'), '') = ${pincodeNorm}
-      GROUP BY ms.id, ms.store_id, ms.store_display_name, ms.store_name, ms.banner_url, mp.store_logo
-      ORDER BY order_count DESC, ms.id ASC
-      LIMIT ${boardLimit}
-    `;
+    const ownLat = Number(store.latitude);
+    const ownLng = Number(store.longitude);
+    const hasGeo = Number.isFinite(ownLat) && Number.isFinite(ownLng) && !(ownLat === 0 && ownLng === 0);
+    if (!hasGeo && !pincodeNorm) return { locality: base, board: [] };
+    const localityRadiusKm = 3;
+    const rankRows = hasGeo
+      ? await sql`
+          SELECT ms.id,
+                 ms.store_id,
+                 COALESCE(NULLIF(TRIM(ms.store_display_name), ''), ms.store_name) AS name,
+                 ms.banner_url,
+                 mp.store_logo AS parent_logo_url,
+                 COUNT(oc.id)::int AS order_count
+          FROM merchant_stores ms
+          LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
+          LEFT JOIN orders_core oc
+            ON oc.merchant_store_id = ms.id
+           AND oc.placed_at >= now() - interval '90 days'
+           AND COALESCE(oc.current_status, '') NOT IN ('CANCELLED', 'CANCELED', 'REJECTED')
+          WHERE ms.deleted_at IS NULL
+            AND ms.latitude IS NOT NULL
+            AND ms.longitude IS NOT NULL
+            AND (
+              6371 * acos(LEAST(1::float8, GREATEST(-1::float8,
+                cos(radians(${ownLat})) * cos(radians(ms.latitude::float8))
+                * cos(radians(ms.longitude::float8) - radians(${ownLng}))
+                + sin(radians(${ownLat})) * sin(radians(ms.latitude::float8))
+              )))
+            ) <= ${localityRadiusKm}
+          GROUP BY ms.id, ms.store_id, ms.store_display_name, ms.store_name, ms.banner_url, mp.store_logo
+          ORDER BY order_count DESC, ms.id ASC
+          LIMIT ${boardLimit}
+        `
+      : await sql`
+          SELECT ms.id,
+                 ms.store_id,
+                 COALESCE(NULLIF(TRIM(ms.store_display_name), ''), ms.store_name) AS name,
+                 ms.banner_url,
+                 mp.store_logo AS parent_logo_url,
+                 COUNT(oc.id)::int AS order_count
+          FROM merchant_stores ms
+          LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
+          LEFT JOIN orders_core oc
+            ON oc.merchant_store_id = ms.id
+           AND oc.placed_at >= now() - interval '90 days'
+           AND COALESCE(oc.current_status, '') NOT IN ('CANCELLED', 'CANCELED', 'REJECTED')
+          WHERE ms.deleted_at IS NULL
+            AND NULLIF(regexp_replace(TRIM(COALESCE(ms.postal_code, '')), '[^0-9]', '', 'g'), '') = ${pincodeNorm}
+            AND (${cityNorm} = '' OR LOWER(TRIM(ms.city)) = ${cityNorm})
+          GROUP BY ms.id, ms.store_id, ms.store_display_name, ms.store_name, ms.banner_url, mp.store_logo
+          ORDER BY order_count DESC, ms.id ASC
+          LIMIT ${boardLimit}
+        `;
     const ranked = rankRows as unknown as Array<{
       id: number;
       store_id: string;
@@ -375,7 +430,7 @@ async function loadAreaOrderBoard(
     return {
       locality: {
         ...base,
-        stores_in_area: Number((areaStats as { stores_in_area?: number })?.stores_in_area) || 0,
+        stores_in_area: ranked.length,
         your_orders_90d: idx >= 0 ? board[idx]!.orders_90d : 0,
         your_area_rank: idx >= 0 ? idx + 1 : null,
         area_leader_name: board[0]?.name ?? null,
@@ -457,6 +512,8 @@ export async function loadMerchantMarketInsights(
            ms.state,
            ms.postal_code,
            ms.full_address,
+           ms.latitude,
+           ms.longitude,
            mp.store_logo AS parent_logo_url
     FROM merchant_stores ms
     LEFT JOIN merchant_parents mp ON mp.id = ms.parent_id
@@ -474,6 +531,8 @@ export async function loadMerchantMarketInsights(
         state: string | null;
         postal_code: string | null;
         full_address: string | null;
+        latitude: number | string | null;
+        longitude: number | string | null;
       }
     | undefined;
   if (!store) return null;
@@ -527,14 +586,22 @@ export async function loadMerchantMarketInsights(
   const peers = board.filter((e) => e.store_pk !== storePk).slice(0, cap);
   const areaOrderTotal = board.reduce((sum, e) => sum + e.orders_90d, 0);
 
+  let homeFood: Awaited<ReturnType<typeof scoreAreaStoresHomeFood>> = null;
+  try {
+    homeFood = await scoreAreaStoresHomeFood(sql, board.map((e) => e.store_pk));
+  } catch (e) {
+    console.warn("[merchant-store-competitors] HOME_FOOD area score failed:", (e as Error).message);
+  }
+
   const competitors: CompetitorRow[] = peers.map((p) => {
     const aff = affinityById.get(p.store_id);
-    let affinityPct = aff?.affinity_pct ?? 0;
-    if (!(affinityPct > 0) && (aff?.shared_customers ?? 0) <= 0 && areaOrderTotal > 0) {
+    const engine = homeFood?.get(p.store_pk);
+    let affinityPct = engine?.affinityPct ?? aff?.affinity_pct ?? 0;
+    if (engine == null && !(affinityPct > 0) && (aff?.shared_customers ?? 0) <= 0 && areaOrderTotal > 0) {
       affinityPct = Math.round((1000 * p.orders_90d) / areaOrderTotal) / 10;
     }
     return {
-      rank: p.area_rank,
+      rank: engine?.rank ?? p.area_rank,
       competitor_store_id: p.store_id,
       name: p.name,
       logo_url: p.logo_url,
@@ -545,15 +612,24 @@ export async function loadMerchantMarketInsights(
     };
   });
 
-  // Keep list ordered by absolute area rank (90d orders) — same as trophy.
-  competitors.sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
+  competitors.sort((a, b) => a.rank - b.rank || b.affinity_pct - a.affinity_pct || a.name.localeCompare(b.name));
+
+  const ownEngine = homeFood?.get(storePk);
+  if (ownEngine && homeFood) {
+    locality.your_area_rank = ownEngine.rank;
+    const leaderId = [...homeFood.entries()].find(([, v]) => v.rank === 1)?.[0];
+    const leader = board.find((e) => e.store_pk === leaderId);
+    if (leader?.name) locality.area_leader_name = leader.name;
+  }
 
   const yourAffinityPct =
-    overlapAffinity > 0
-      ? overlapAffinity
-      : areaOrderTotal > 0
-        ? Math.round((1000 * yourOrders) / areaOrderTotal) / 10
-        : 0;
+    ownEngine != null
+      ? ownEngine.affinityPct
+      : overlapAffinity > 0
+        ? overlapAffinity
+        : areaOrderTotal > 0
+          ? Math.round((1000 * yourOrders) / areaOrderTotal) / 10
+          : 0;
 
   return {
     store_id: String(store.store_id),

@@ -51,6 +51,8 @@ import {
 } from "@/src/theme/riderAuthTheme";
 import { keyboardInsetFromEvent } from "@/src/hooks/useKeyboardBottomInset";
 import { sanitizeRiderAuthError } from "@/src/lib/sanitizeRiderAuthError";
+import { usePermissionStore } from "@/src/stores/permissionStore";
+import PermissionRequestScreen from "@/app/(permissions)/request";
 
 const OTP_LENGTH = 6;
 const RIDER_TERMS_URL = "https://rider.gatimitra.com/terms";
@@ -231,6 +233,8 @@ export default function LoginScreen() {
   const sessionHydrated = useSessionStore((s) => s.hydrated);
   const existingSession = useSessionStore((s) => s.session);
   const setOnboardingData = useOnboardingStore((s) => s.setData);
+  const permissionHydrated = usePermissionStore((s) => s.hydrated);
+  const hasRequestedPermissions = usePermissionStore((s) => s.hasRequestedPermissions);
 
   const [phoneE164, setPhoneE164] = useState("");
   const [otp, setOtp] = useState("");
@@ -253,12 +257,20 @@ export default function LoginScreen() {
   const otpValid = otp.trim().length === OTP_LENGTH;
   const showSignupHero = step === "phone" && !keyboardVisible;
 
-  // Already authenticated (e.g. navigated here during restore race) → leave login.
+  // Already signed in → leave login. Location is asked on the home screen.
   useEffect(() => {
     if (!sessionHydrated || !existingSession?.accessToken) return;
     if (busy || takeoverBusy || sessionConflict) return;
+    if (!hasRequestedPermissions) return;
     router.replace("/");
-  }, [sessionHydrated, existingSession?.accessToken, busy, takeoverBusy, sessionConflict]);
+  }, [
+    sessionHydrated,
+    existingSession?.accessToken,
+    busy,
+    takeoverBusy,
+    sessionConflict,
+    hasRequestedPermissions,
+  ]);
 
   useEffect(() => {
     const onShow = (event: KeyboardEvent) => {
@@ -369,12 +381,30 @@ export default function LoginScreen() {
     }
 
     if (status.onboardingStatus === "approved") {
+      // Resolve OS location before Home mounts location-dependent work.
+      // If denied/blocked, tabs still open under the FG location gate host.
+      try {
+        const { ensureForegroundLocationForAuthenticatedEntry } = await import(
+          "@/src/lib/riderForegroundLocationGate"
+        );
+        await ensureForegroundLocationForAuthenticatedEntry();
+      } catch (err) {
+        console.warn("[Login] foreground location gate failed:", err);
+      }
       router.replace("/(tabs)/orders");
     } else if (
       status.onboardingStatus === "pending_approval" &&
       status.paymentCompleted === true
     ) {
       // Home + Waiting for Review sheet (no full pending page).
+      try {
+        const { ensureForegroundLocationForAuthenticatedEntry } = await import(
+          "@/src/lib/riderForegroundLocationGate"
+        );
+        await ensureForegroundLocationForAuthenticatedEntry();
+      } catch (err) {
+        console.warn("[Login] foreground location gate failed:", err);
+      }
       router.replace("/(tabs)/orders");
     } else if (
       !status.exists ||
@@ -765,6 +795,9 @@ export default function LoginScreen() {
         onMarkLogout={onMarkLogout}
         onCancel={onCancelConflict}
       />
+      {permissionHydrated && !hasRequestedPermissions && step !== "otp" ? (
+        <PermissionRequestScreen embedded />
+      ) : null}
       </View>
     </KeyboardAvoidingView>
   );

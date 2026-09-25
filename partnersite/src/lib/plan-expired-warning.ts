@@ -1,33 +1,76 @@
-/** Session-scoped dismiss for plan-expired warning modal. */
-export function planExpiredWarningStorageKey(storeId: string, subscriptionId?: number | string | null) {
-  // Prefer store-only key so subscription id jitter cannot re-show every navigation.
-  return `mx_plan_expired_warn_v2:${storeId}`;
+/** UI-only reminder cooldown for the plan-expired modal. Does not change plan status. */
+export const PLAN_EXPIRED_WARNING_DISMISSED = 'mx-plan-expired-warning-dismissed';
+
+const COOLDOWN_MS = 48 * 60 * 60 * 1000;
+const STORAGE_PREFIX = 'mx_plan_expired_warn_v3:';
+
+type DismissStamp = { dismissedAt: number };
+
+const memoryDismissedAt = new Map<string, number>();
+
+function storageKey(storeId: string) {
+  return `${STORAGE_PREFIX}${storeId.trim()}`;
 }
 
-export function wasPlanExpiredWarningShown(storeId: string, subscriptionId?: number | string | null): boolean {
-  if (typeof window === 'undefined') return false;
+function readStoredDismissedAt(storeId: string): number | null {
+  if (typeof window === 'undefined') return null;
+  const id = storeId.trim();
+  if (!id) return null;
+  const mem = memoryDismissedAt.get(id);
   try {
-    if (sessionStorage.getItem(planExpiredWarningStorageKey(storeId, subscriptionId)) === '1') {
-      return true;
+    const raw = localStorage.getItem(storageKey(id));
+    if (raw) {
+      const parsed = JSON.parse(raw) as DismissStamp;
+      if (parsed && Number.isFinite(parsed.dismissedAt)) {
+        if (mem == null || parsed.dismissedAt > mem) return parsed.dismissedAt;
+      }
     }
-    // Legacy keys (store + subscription) from earlier builds.
-    const legacy = `mx_plan_expired_warn:${storeId}:${subscriptionId ?? 'latest'}`;
-    return sessionStorage.getItem(legacy) === '1';
-  } catch {
-    return false;
-  }
-}
-
-export function markPlanExpiredWarningShown(storeId: string, subscriptionId?: number | string | null) {
-  if (typeof window === 'undefined') return;
-  try {
-    sessionStorage.setItem(planExpiredWarningStorageKey(storeId, subscriptionId), '1');
-    // Also stamp legacy key so mixed tab versions stay quiet.
-    sessionStorage.setItem(`mx_plan_expired_warn:${storeId}:${subscriptionId ?? 'latest'}`, '1');
-    sessionStorage.setItem(`mx_plan_expired_warn:${storeId}:latest`, '1');
   } catch {
     /* ignore */
   }
+  if (mem != null) return mem;
+  try {
+    // Older builds stored a session flag with no timestamp. Treat it as dismissed now
+    // and copy it into localStorage so a refresh in this tab does not reopen immediately.
+    const legacySession =
+      sessionStorage.getItem(`mx_plan_expired_warn_v2:${id}`) === '1' ||
+      sessionStorage.getItem(`mx_plan_expired_warn:${id}:latest`) === '1';
+    if (legacySession) {
+      const now = Date.now();
+      memoryDismissedAt.set(id, now);
+      localStorage.setItem(storageKey(id), JSON.stringify({ dismissedAt: now } satisfies DismissStamp));
+      return now;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+export function planExpiredWarningStorageKey(storeId: string, _subscriptionId?: number | string | null) {
+  return storageKey(storeId);
+}
+
+export function wasPlanExpiredWarningShown(storeId: string, _subscriptionId?: number | string | null): boolean {
+  const dismissedAt = readStoredDismissedAt(storeId);
+  if (dismissedAt == null) return false;
+  return Date.now() - dismissedAt < COOLDOWN_MS;
+}
+
+export function markPlanExpiredWarningShown(storeId: string, _subscriptionId?: number | string | null) {
+  if (typeof window === 'undefined') return;
+  const id = storeId.trim();
+  if (!id) return;
+  const dismissedAt = Date.now();
+  memoryDismissedAt.set(id, dismissedAt);
+  try {
+    localStorage.setItem(storageKey(id), JSON.stringify({ dismissedAt } satisfies DismissStamp));
+  } catch {
+    /* ignore quota */
+  }
+  window.dispatchEvent(
+    new CustomEvent(PLAN_EXPIRED_WARNING_DISMISSED, { detail: { storeId: id, dismissedAt } })
+  );
 }
 
 export type PlanExpiredCheckInput = {

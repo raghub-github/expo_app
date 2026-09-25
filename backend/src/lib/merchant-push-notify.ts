@@ -122,7 +122,19 @@ async function sendMerchantNativeFcm(
   payload: PushPayload
 ): Promise<{ ok: boolean; deadTokens: string[] }> {
   if (!tokens.length) return { ok: false, deadTokens: [] };
+  const isNewOrderAlert =
+    payload.channelId === "merchant_new_orders_alert" ||
+    payload.channelId === "merchant_new_orders_alert_v2" ||
+    String(payload.data?.type ?? "").toLowerCase() === "merchant_new_order" ||
+    String(payload.data?.template_code ?? "").toUpperCase() === "MERCHANT_NEW_ORDER";
   const data = flattenPushData(payload.data);
+  if (isNewOrderAlert) {
+    if (!data.title && payload.title) data.title = payload.title;
+    if (!data.body && payload.body) data.body = payload.body;
+    if (!data.displayOrderId && data.orderShortId) data.displayOrderId = data.orderShortId;
+    data.type = "NEW_ORDER";
+    data.gmType = data.gmType || "MERCHANT_NEW_ORDER";
+  }
   const deepLink =
     typeof payload.data?.url === "string"
       ? String(payload.data.url)
@@ -131,9 +143,6 @@ async function sendMerchantNativeFcm(
         : typeof payload.data?.deep_link === "string"
           ? String(payload.data.deep_link)
           : null;
-  const isNewOrderAlert =
-    payload.channelId === "merchant_new_orders_alert" ||
-    payload.channelId === "merchant_new_orders_alert_v2";
   const playSound = payload.playSound !== false;
   const results = await Promise.all(
     tokens.map(async (token) => {
@@ -146,8 +155,7 @@ async function sendMerchantNativeFcm(
           channelId: payload.channelId ?? "merchant_default",
           sound: isNewOrderAlert ? "notification" : playSound ? "default" : null,
           playSound,
-          // Killed / background: always include Android notification block.
-          silent: false,
+          silent: isNewOrderAlert ? true : false,
           sticky: payload.sticky === true,
           appRole: "merchant",
           priority: isNewOrderAlert ? "critical" : "high",
@@ -936,12 +944,15 @@ export async function notifyMerchantStoreNewOrderPush(
       template_code: "MERCHANT_NEW_ORDER",
       gmType: "MERCHANT_NEW_ORDER",
       orderId: args.orderIdText,
-      foodOrderId: args.foodOrderId,
+      foodOrderId: args.foodOrderId != null ? String(args.foodOrderId) : "",
+      displayOrderId: args.displayId,
       orderShortId: args.displayId,
-      itemCount: args.itemCount,
-      amount: args.amount,
+      title: args.title,
+      body: args.body,
+      itemCount: String(args.itemCount),
+      amount: args.amount > 0 ? String(args.amount) : "",
       customerName: args.customerName,
-      storeId: args.storeId,
+      storeId: String(args.storeId),
       url: args.href,
       screen: "new_order",
       skip_in_app_banner: true,
@@ -951,6 +962,33 @@ export async function notifyMerchantStoreNewOrderPush(
       alertSessionId: `MERCHANT_NEW_ORDER:${args.foodOrderId ?? args.orderIdText}:${args.storeId}`,
       gmAlertAction: "start",
       soundType: "notification",
+    },
+  });
+}
+
+/** Tell every other logged-in Partner device to drop this order alert. */
+export async function notifyMerchantOrderAlertStop(
+  sql: Sql,
+  args: { storeId: number; foodOrderId: number }
+): Promise<void> {
+  if (!Number.isInteger(args.storeId) || args.storeId < 1) return;
+  if (!Number.isInteger(args.foodOrderId) || args.foodOrderId < 1) return;
+  const tokens = await getMerchantStoreNativeFcmTokens(sql, args.storeId, {
+    ignoreStaleness: true,
+  });
+  if (tokens.length === 0) return;
+  const { sendCriticalAlertControlFcm } = await import("./critical-alert-control.js");
+  await sendCriticalAlertControlFcm({
+    tokens,
+    action: "stop",
+    alertSessionId: `MERCHANT_NEW_ORDER:${args.foodOrderId}:${args.storeId}`,
+    appRole: "merchant",
+    data: {
+      type: "NEW_ORDER",
+      gmType: "MERCHANT_NEW_ORDER",
+      foodOrderId: String(args.foodOrderId),
+      storeId: String(args.storeId),
+      orderId: String(args.foodOrderId),
     },
   });
 }

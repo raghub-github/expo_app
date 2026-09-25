@@ -65,9 +65,7 @@ export function inferLanHostFromExpoBundler(): string | null {
   return null;
 }
 
-const loggedLanHeals = new Set<string>();
-
-/** Rewrite stale private LAN IPs to Metro's current host (Wi‑Fi DHCP churn). */
+/** Rewrite stale private LAN IPs to Metro's current host (Wi‑Fi DHCP churn). Silent. */
 function healStaleLanApiUrl(url: string): string {
   if (!__DEV__) return url;
   const lan = inferLanHostFromExpoBundler();
@@ -81,15 +79,7 @@ function healStaleLanApiUrl(url: string): string {
   } catch {
     /* keep apiDevPort() */
   }
-  const healed = `http://${lan}:${port}`;
-  const healKey = `${url}→${healed}`;
-  if (!loggedLanHeals.has(healKey)) {
-    loggedLanHeals.add(healKey);
-    if (__DEV__) {
-      console.info(`[merchant-config] healed stale API URL ${url} → ${healed}`);
-    }
-  }
-  return healed;
+  return `http://${lan}:${port}`;
 }
 
 function normalizeLegacyBackendPort(url: string): string {

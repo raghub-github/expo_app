@@ -64,7 +64,7 @@ export {
   type NotificationPreference,
   type NotificationApiConfig,
 } from "./inbox";
-export { InboxScreen, type InboxScreenProps } from "./InboxScreen";
+export { InboxScreen, formatInboxTime, type InboxScreenProps } from "./InboxScreen";
 
 export {
   enqueueInAppBanner,
@@ -96,6 +96,8 @@ export {
   releaseNativeOrderAlert,
   canDrawNativeOverlays,
   persistNativeAlertSound,
+  setPersistentOrderPill,
+  consumePersistentPillLaunch,
   extractAlertSessionId,
   merchantAlertSessionId,
   riderAlertSessionId,

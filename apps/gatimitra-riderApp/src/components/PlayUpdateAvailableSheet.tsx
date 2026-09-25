@@ -14,6 +14,7 @@ import {
   type ImageSourcePropType,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 import { Ionicons } from "@expo/vector-icons";
 
 export type PlayUpdateAvailableSheetProps = {
@@ -41,7 +42,7 @@ export function PlayUpdateAvailableSheet({
   const { height: screenHeight } = useWindowDimensions();
   // Insets inside an Android RN Modal are frequently 0, so floor the bottom padding to clear
   // the system navigation/gesture bar; otherwise the pinned action row hides behind it.
-  const bottomPad = Math.max(insets.bottom, 24);
+  const bottomPad = resolveRiderBottomInset(insets.bottom);
 
   return (
     <Modal

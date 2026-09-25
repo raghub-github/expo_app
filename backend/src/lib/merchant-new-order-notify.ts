@@ -76,10 +76,9 @@ export async function notifyMerchantStoreNewOrder(
   const food = foodRows[0] as { formatted_order_id?: string } | undefined;
   const displayId = (food?.formatted_order_id as string | undefined) ?? orderIdText;
 
-  const title = "🔔 New Order Received";
-  const body = `Order #${displayId} is waiting for your acceptance.`;
+  const title = "New order";
+  const body = displayId ? `${displayId} is waiting for acceptance.` : "A new order is waiting for acceptance.";
 
-  // Pricing in parallel with push — never block the critical tray on CTM/pricing.
   const pricingPromise = resolveMerchantVisibleOrderNotify(sql, {
     merchantStoreId,
     orderIdText,
@@ -96,20 +95,24 @@ export async function notifyMerchantStoreNewOrder(
     })
     .catch(() => null);
 
-  // Fire tray push immediately (amount 0). Pricing enriches inbox / v2 only.
-  let total: number | null = null;
-  let itemCount = 1;
-  let customerName = "Customer";
+  const priced = await Promise.race([
+    pricingPromise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 700)),
+  ]);
+  let total: number | null = priced?.total ?? null;
+  let itemCount = priced?.itemCount ?? 1;
+  let customerName = priced?.customerName ?? "Customer";
 
   const push_dispatch_started_at = Date.now();
   console.info(
-    "[merchant-new-order] push_dispatch_started_at",
+    "[merchant-new-order] ORDER_PUSH_CREATED",
     JSON.stringify({
       push_dispatch_started_at,
       orderId: orderIdText,
       storeId: merchantStoreId,
       foodId,
       displayId,
+      amount: total,
     })
   );
 
@@ -117,7 +120,6 @@ export async function notifyMerchantStoreNewOrder(
     "./merchant-push-notify.js"
   );
 
-  // Primary tray delivery FIRST — same direct Expo + native FCM path as store-status.
   const pushPromise = notifyMerchantStoreNewOrderPush(sql, {
     storeId: merchantStoreId,
     title,
@@ -127,7 +129,7 @@ export async function notifyMerchantStoreNewOrder(
     displayId,
     href,
     itemCount,
-    amount: 0,
+    amount: total ?? 0,
     customerName,
   })
     .then(() => {

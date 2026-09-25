@@ -297,17 +297,22 @@ export function useRiderStatus(
         bankAccountOnboardingSkipped?: boolean;
       }>(`${API_BASE()}/v1/rider/${riderId}/status`, {
         headers: { authorization: `Bearer ${session.accessToken}` },
+        timeout: 12_000,
       });
     },
     enabled: !!riderId && !!session?.accessToken,
-    staleTime: 5_000,
+    staleTime: 30_000,
     refetchInterval: opts?.refetchInterval,
     refetchIntervalInBackground: false,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: true,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    // Cold-start splash must not wait through multi-minute timeout×retry chains when
+    // the API/DB is wedged — fail fast and let the gate use cached onboarding status.
     retry: (failureCount, error) => {
       if (isRiderNotFoundError(error) || isUnauthorizedError(error)) return false;
-      return failureCount < 2;
+      const msg = String((error as Error)?.message ?? "").toLowerCase();
+      if (msg.includes("timeout") || msg.includes("network")) return false;
+      return failureCount < 1;
     },
   });
 }

@@ -207,7 +207,9 @@ class SharedLocationEngine {
     }
     this.restarting = true;
     try {
-      const perm = await Location.requestForegroundPermissionsAsync();
+      // Get-only: never request here. Apps own the OS permission dialog via a
+      // single coordinator so Home/watch start cannot race a native prompt.
+      const perm = await Location.getForegroundPermissionsAsync();
       if (perm.status !== "granted") {
         this.emit({ status: "permission_denied" });
         return;

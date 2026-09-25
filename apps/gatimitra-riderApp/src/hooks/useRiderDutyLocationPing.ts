@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import * as Location from "expo-location";
+import Constants from "expo-constants";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import { useActiveOrders } from "@/src/hooks/useOrders";
@@ -64,6 +65,7 @@ export function useRiderDutyLocationPing(): void {
   const recommendedIntervalRef = useRef(PING_INTERVAL_IDLE_MS);
 
   useEffect(() => {
+    if (Constants.appOwnership === "expo") return;
     // Cold start: active orders may still be loading — never stop BG until we know.
     if (!activeOrdersFetched && !isOnDuty) {
       void import("@/src/services/location/riderBackgroundLocationTask").then((m) =>
@@ -89,6 +91,7 @@ export function useRiderDutyLocationPing(): void {
 
   // Process recreation / cold start: restore BG updates from persisted mode flag.
   useEffect(() => {
+    if (Constants.appOwnership === "expo") return;
     void import("@/src/services/location/riderBackgroundLocationTask").then((m) =>
       m.ensureRiderBackgroundLocationRunning()
     );

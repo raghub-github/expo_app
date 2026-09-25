@@ -22,6 +22,9 @@ const CREDIT_ENTRY_TYPES = new Set([
   "refund",
   "referral_bonus",
   "penalty_reversal",
+  // Rider paid money in (Razorpay negative-wallet settlement, manual credit).
+  "manual_add",
+  "cancellation_payout",
 ]);
 
 /** Credits that are not earnings (must not inflate totals / graphs). */
@@ -299,11 +302,24 @@ async function fetchPendingWithdrawalTotal(
   }
 }
 
-function segmentMatchesRow(segment: RiderLedgerSegment, row: LedgerRow): boolean {
+function serviceBucket(
+  service: string | null | undefined,
+): "food" | "parcel" | "ride" | null {
+  const s = String(service ?? "").trim().toLowerCase();
+  if (s === "food") return "food";
+  if (s === "parcel") return "parcel";
+  if (s === "ride" || s === "person_ride") return "ride";
+  return null;
+}
+
+function segmentMatchesRow(
+  segment: RiderLedgerSegment,
+  row: LedgerRow,
+  orderTypeByCoreId?: Map<number, string | null>,
+): boolean {
   if (segment === "all") return true;
 
   const entryType = row.entry_type.toLowerCase();
-  const category = categoryForRow(row);
 
   if (segment === "incentives") return INCENTIVE_ENTRY_TYPES.has(entryType);
   if (segment === "penalties") {
@@ -312,10 +328,20 @@ function segmentMatchesRow(segment: RiderLedgerSegment, row: LedgerRow): boolean
   if (segment === "adjustments") return ADJUSTMENT_ENTRY_TYPES.has(entryType);
   if (segment === "withdrawals") return isWithdrawalRow(row);
   if (segment === "subscriptions") return entryType === "subscription_fee";
-  if (segment === "food") return category === "food";
-  if (segment === "parcel") return category === "parcel";
-  if (segment === "ride") return category === "ride";
+  if (segment === "food" || segment === "parcel" || segment === "ride") {
+    return serviceBucket(resolveServiceType(row, orderTypeByCoreId)) === segment;
+  }
   return true;
+}
+
+async function orderTypeMapForRows(rows: LedgerRow[]): Promise<Map<number, string | null>> {
+  const ids = rows
+    .map((row) => extractOrderCoreIdFromRow(row))
+    .filter((id): id is number => id != null);
+  const details = await resolveOrderCoreDetails(ids);
+  const map = new Map<number, string | null>();
+  for (const [id, detail] of details) map.set(id, detail.orderType);
+  return map;
 }
 
 function extractOrderCoreIdFromRow(row: LedgerRow): number | null {
@@ -727,9 +753,9 @@ export async function getRiderLedgerGraphForApp(args: {
   const from = startOfDay(args.from);
   const to = endOfDay(args.to);
 
-  const rows = (await fetchLedgerRows(args.riderId, from, to)).filter((row) =>
-    segmentMatchesRow(segment, row),
-  );
+  const fetched = await fetchLedgerRows(args.riderId, from, to);
+  const graphOrderTypes = await orderTypeMapForRows(fetched);
+  const rows = fetched.filter((row) => segmentMatchesRow(segment, row, graphOrderTypes));
 
   const coreIds = [
     ...new Set(
@@ -866,8 +892,10 @@ export async function getRiderLedgerForApp(args: {
 
   const rows = await fetchLedgerRows(args.riderId, from, to);
   const pendingSettlement = await fetchPendingWithdrawalTotal(args.riderId, from, to);
+  // Summary stays account-level for the period. Service chips filter the list only.
   const summary = computeSummary(rows, monthLabel, pendingSettlement);
-  const filtered = rows.filter((row) => segmentMatchesRow(segment, row));
+  const orderTypeByCoreId = await orderTypeMapForRows(rows);
+  const filtered = rows.filter((row) => segmentMatchesRow(segment, row, orderTypeByCoreId));
   const total = filtered.length;
   const slice = filtered.slice(offset, offset + limit);
   const hasMore = offset + limit < total;
@@ -883,5 +911,113 @@ export async function getRiderLedgerForApp(args: {
     hasMore,
     periodLabel: label,
     summary,
+  };
+}
+
+export type RiderLedgerEntryDetailDto = RiderLedgerEntryDto & {
+  purpose: string | null;
+  paymentStatus: string | null;
+  paymentMethod: string | null;
+  razorpayPaymentId: string | null;
+  razorpayOrderId: string | null;
+  paymentRecordId: number | null;
+  currency: string;
+  processedAt: string | null;
+  refundStatus: string | null;
+  refundId: string | null;
+};
+
+function metaString(meta: Record<string, unknown>, key: string): string | null {
+  const value = meta[key];
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return null;
+}
+
+export async function getRiderLedgerEntryDetail(
+  riderId: number,
+  entryId: number,
+): Promise<RiderLedgerEntryDetailDto | null> {
+  const sql = getSql();
+  let rows: LedgerRow[];
+  try {
+    rows = (await sql`
+      SELECT id, entry_type, amount, balance, ref, ref_type, description, metadata, created_at,
+             service_type
+      FROM wallet_ledger
+      WHERE rider_id = ${riderId} AND id = ${entryId}
+      LIMIT 1
+    `) as LedgerRow[];
+  } catch {
+    rows = (await sql`
+      SELECT id, entry_type, amount, balance, ref, ref_type, description, metadata, created_at
+      FROM wallet_ledger
+      WHERE rider_id = ${riderId} AND id = ${entryId}
+      LIMIT 1
+    `) as LedgerRow[];
+  }
+  const row = rows[0];
+  if (!row) return null;
+
+  const details = await resolveOrderCoreDetails(
+    [extractOrderCoreIdFromRow(row)].filter((id): id is number => id != null),
+  );
+  const mapped = mapRow(row, details);
+  const meta = row.metadata ?? {};
+  const razorpayPaymentId =
+    metaString(meta, "razorpayPaymentId") ||
+    (row.ref_type === "negative_wallet_recovery" ? row.ref?.trim() || null : null);
+  const razorpayOrderId = metaString(meta, "razorpayOrderId");
+
+  type RiderWalletPaymentRow = {
+    id: number;
+    purpose: string | null;
+    status: string | null;
+    method: string | null;
+    razorpay_payment_id: string | null;
+    razorpay_order_id: string | null;
+    updated_at: Date | string | null;
+    refund_status: string | null;
+    refund_id: string | null;
+  };
+  let payment: RiderWalletPaymentRow | null = null;
+
+  if (razorpayPaymentId) {
+    const payRows = (await sql`
+      SELECT id, purpose, status, method, razorpay_payment_id, razorpay_order_id,
+             updated_at, refund_status, refund_id
+      FROM rider_wallet_payments
+      WHERE rider_id = ${riderId} AND razorpay_payment_id = ${razorpayPaymentId}
+      LIMIT 1
+    `) as RiderWalletPaymentRow[];
+    payment = payRows[0] ?? null;
+  } else if (razorpayOrderId) {
+    const payRows = (await sql`
+      SELECT id, purpose, status, method, razorpay_payment_id, razorpay_order_id,
+             updated_at, refund_status, refund_id
+      FROM rider_wallet_payments
+      WHERE rider_id = ${riderId} AND razorpay_order_id = ${razorpayOrderId}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `) as RiderWalletPaymentRow[];
+    payment = payRows[0] ?? null;
+  }
+
+  const purpose =
+    payment?.purpose?.trim() ||
+    (row.ref_type === "negative_wallet_recovery" ? "negative_wallet_recovery" : null) ||
+    (mapped.entryType === "penalty" ? "penalty" : null);
+
+  return {
+    ...mapped,
+    purpose,
+    paymentStatus: payment?.status?.trim() || null,
+    paymentMethod: payment?.method?.trim() || (razorpayPaymentId ? "razorpay" : null),
+    razorpayPaymentId: payment?.razorpay_payment_id?.trim() || razorpayPaymentId,
+    razorpayOrderId: payment?.razorpay_order_id?.trim() || razorpayOrderId,
+    paymentRecordId: payment?.id ?? null,
+    currency: "INR",
+    processedAt: payment?.updated_at ? new Date(payment.updated_at).toISOString() : null,
+    refundStatus: payment?.refund_status?.trim() || null,
+    refundId: payment?.refund_id?.trim() || null,
   };
 }

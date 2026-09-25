@@ -23,9 +23,9 @@ const FAULT_LABELS: Record<keyof FaultBreakdown, string> = {
   UNKNOWN: "Unknown",
 };
 
-/** Rate | null (accepted = 0). N/A is the one consistent zero-denominator display (spec §14). */
+/** Rate | null (accepted = 0). Show 0% for empty denominators. */
 function pct(value: number | null): string {
-  return value == null ? "N/A" : `${value.toFixed(2)}%`;
+  return value == null ? "0%" : `${value.toFixed(2)}%`;
 }
 
 function Metric({

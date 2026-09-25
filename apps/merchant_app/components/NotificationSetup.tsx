@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { AppState, Platform, Pressable, StyleSheet, View, type AppStateStatus } from "react-native";
+import { AppState, NativeModules, Platform, Pressable, StyleSheet, View, type AppStateStatus } from "react-native";
 import { useRouter, usePathname } from "expo-router";
 import Constants from "expo-constants";
 import { Ionicons } from "@expo/vector-icons";
@@ -81,6 +81,18 @@ export default function NotificationSetup() {
   const { token: authToken, isAuthenticated, partner } = useAuth();
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
+  useEffect(() => {
+    if (Platform.OS !== "android" || !authToken || storeId == null) return;
+    const native = (
+      NativeModules as {
+        GatimitraOrderAlert?: {
+          persistActionCredentials?: (baseUrl: string, token: string, storeId: string) => Promise<boolean>;
+        };
+      }
+    ).GatimitraOrderAlert;
+    if (!native?.persistActionCredentials) return;
+    void native.persistActionCredentials(getConfig().apiBaseUrl, authToken, String(storeId));
+  }, [authToken, storeId]);
   useMerchantWalletFreezeLive({
     storeId,
     authToken,
@@ -496,18 +508,33 @@ export default function NotificationSetup() {
     return () => clearTimeout(restoreHandler);
   }, [authToken, storeId, partner?.childStores?.length, controller, expoGo]);
 
-  // Source of truth for the sheet: Android POST_NOTIFICATIONS / Settings toggle.
+  // Source of truth: Android POST_NOTIFICATIONS. Ask the system dialog directly.
+  // The explanation sheet is only for a blocked permission, which must be changed in Settings.
   useEffect(() => {
     if (!authToken && !isAuthenticated) {
       setAutoGateVisible(false);
       setPermReady(false);
       return;
     }
-    void refreshOsPermission().then((perm) => {
+    void refreshOsPermission().then(async (perm) => {
       if (perm.osStatus === "granted") return;
-      if (!dismissedRef.current) setAutoGateVisible(true);
+      if (perm.canAskAgain && perm.osStatus !== "blocked") {
+        const { requestMerchantNotificationPermission } = await import(
+          "@/lib/merchantNotificationPermission"
+        );
+        const next = await requestMerchantNotificationPermission();
+        if (next.osStatus === "granted") {
+          setOsStatus("granted");
+          setAutoGateVisible(false);
+          signalNotificationsGranted();
+          return;
+        }
+        if (next.osStatus !== "blocked") return;
+        setOsStatus("blocked");
+        setCanAskAgain(false);
+      }
     });
-  }, [authToken, isAuthenticated, refreshOsPermission]);
+  }, [authToken, isAuthenticated, refreshOsPermission, signalNotificationsGranted]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (s: AppStateStatus) => {
@@ -536,7 +563,6 @@ export default function NotificationSetup() {
           })();
           return;
         }
-        if (!dismissedRef.current) setAutoGateVisible(true);
       });
     });
     return () => sub.remove();
@@ -638,7 +664,7 @@ export default function NotificationSetup() {
           accessibilityRole="button"
           accessibilityLabel="Allow"
         >
-          <Text style={styles.btnText}>{busy ? "Please wait…" : "Allow"}</Text>
+            <Text style={styles.btnText}>{busy ? "Please wait…" : "Open settings"}</Text>
         </Pressable>
 
         <Pressable style={styles.later} onPress={dismiss} hitSlop={8}>

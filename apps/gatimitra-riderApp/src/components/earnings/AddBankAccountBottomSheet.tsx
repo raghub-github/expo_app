@@ -18,6 +18,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useTranslation } from "react-i18next";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 import { useCreateRiderBankPaymentMethod } from "@/src/hooks/useRiderBankAccount";
 import {
   useVerificationModes,
@@ -462,7 +463,7 @@ export function AddBankAccountBottomSheet({ visible, onDismiss, onSuccess }: Pro
           <View
             style={[
               styles.sheet,
-              { paddingBottom: insets.bottom || 12 },
+              { paddingBottom: resolveRiderBottomInset(insets.bottom) },
               keyboardUp ? { height: keyboard!.sheetHeight } : { maxHeight: closedMaxH },
             ]}
           >

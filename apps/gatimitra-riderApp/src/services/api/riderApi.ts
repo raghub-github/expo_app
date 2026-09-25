@@ -299,6 +299,9 @@ const AccountRestrictionsSchema = z
     allServicesBlacklisted: z.boolean().optional(),
     penaltyDue: z.number().optional(),
     penaltyDutyStopped: z.boolean().optional(),
+    penaltyEventId: z.string().nullable().optional(),
+    penaltyTitle: z.string().nullable().optional(),
+    penaltyFormattedOrderId: z.string().nullable().optional(),
   })
   .transform((raw) => {
     const walletBlockServices =
@@ -345,6 +348,9 @@ const AccountRestrictionsSchema = z
       allServicesBlacklisted,
       penaltyDue: raw.penaltyDue ?? 0,
       penaltyDutyStopped: raw.penaltyDutyStopped ?? false,
+      penaltyEventId: raw.penaltyEventId?.trim() || null,
+      penaltyTitle: raw.penaltyTitle?.trim() || null,
+      penaltyFormattedOrderId: raw.penaltyFormattedOrderId?.trim() || null,
     };
   });
 
@@ -396,6 +402,9 @@ const EarningsSummarySchema = z.object({
       allServicesBlacklisted: false,
       penaltyDue: 0,
       penaltyDutyStopped: false,
+      penaltyEventId: null,
+      penaltyTitle: null,
+      penaltyFormattedOrderId: null,
     }
   ),
 });
@@ -433,6 +442,34 @@ const RiderLedgerSummarySchema = z.object({
   pendingSettlement: z.number(),
   monthLabel: z.string(),
 });
+
+const RiderLedgerEntryDetailSchema = z.object({
+  id: z.number(),
+  entryType: z.string(),
+  flow: z.enum(["credit", "debit"]),
+  category: z.string(),
+  description: z.string(),
+  amount: z.number(),
+  balance: z.number().nullable(),
+  ref: z.string().nullable(),
+  refType: z.string().nullable(),
+  serviceType: z.string().nullable(),
+  orderPublicId: z.string().nullable(),
+  createdAt: z.string(),
+  rejectionReason: z.string().nullable().optional(),
+  purpose: z.string().nullable(),
+  paymentStatus: z.string().nullable(),
+  paymentMethod: z.string().nullable(),
+  razorpayPaymentId: z.string().nullable(),
+  razorpayOrderId: z.string().nullable(),
+  paymentRecordId: z.number().nullable(),
+  currency: z.string(),
+  processedAt: z.string().nullable(),
+  refundStatus: z.string().nullable(),
+  refundId: z.string().nullable(),
+});
+
+export type RiderLedgerEntryDetail = z.infer<typeof RiderLedgerEntryDetailSchema>;
 
 const RiderLedgerEntrySchema = z.object({
   id: z.number(),
@@ -666,6 +703,8 @@ async function slidePost<T>(
 }
 
 // API Service
+let eligibilityStatusInFlight: Promise<RiderEligibilityStatus> | null = null;
+
 export const riderApi = {
   /**
    * Get available orders for the rider
@@ -1009,7 +1048,13 @@ export const riderApi = {
     opts?: { actionId?: string }
   ) {
     const client = createApiClient();
-    return client.request<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }>(
+    return client.request<{
+      ok: true;
+      penaltyApplied?: boolean;
+      penaltyAmount?: number;
+      formattedOrderId?: string | null;
+      cancelledByType?: string | null;
+    }>(
       `/v1/rider/orders/${orderId}/cancel-assigned`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1358,6 +1403,14 @@ export const riderApi = {
     });
   },
 
+  async getLedgerEntry(entryId: number) {
+    const client = createApiClient();
+    return client.request<RiderLedgerEntryDetail>(
+      `/v1/rider/wallet/ledger/entries/${entryId}`,
+      { method: "GET", responseSchema: RiderLedgerEntryDetailSchema },
+    );
+  },
+
   async getLedgerGraph(args: {
     segment?: RiderLedgerSegment;
     from: string;
@@ -1503,11 +1556,13 @@ export const riderApi = {
    * decision (with reasons), it never computes eligibility itself.
    */
   async getServiceEligibilityStatus(coords?: { lat?: number; lng?: number } | null) {
+    const hasCoords = coords?.lat != null && coords?.lng != null;
+    if (!hasCoords && eligibilityStatusInFlight) return eligibilityStatusInFlight;
     const client = createApiClient();
     const body: { lat?: number; lng?: number } = {};
     if (coords?.lat != null && Number.isFinite(coords.lat)) body.lat = coords.lat;
     if (coords?.lng != null && Number.isFinite(coords.lng)) body.lng = coords.lng;
-    return client.request<z.infer<typeof RiderEligibilityStatusSchema>>(
+    const request = client.request<RiderEligibilityStatus>(
       "/v1/rider/eligibility/status",
       {
         method: "POST",
@@ -1516,6 +1571,11 @@ export const riderApi = {
         responseSchema: RiderEligibilityStatusSchema,
       }
     );
+    if (hasCoords) return request;
+    eligibilityStatusInFlight = request.finally(() => {
+      eligibilityStatusInFlight = null;
+    });
+    return eligibilityStatusInFlight;
   },
 
   /**

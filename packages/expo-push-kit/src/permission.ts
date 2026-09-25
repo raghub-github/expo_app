@@ -119,8 +119,9 @@ export async function readNotificationPermission(): Promise<NotificationPermissi
 
 export async function requestNotificationPermission(): Promise<NotificationPermissionSnapshot> {
   const native = await requestAndroidNativePermission();
-  if (native?.osStatus === "granted") return native;
-  if (native?.osStatus === "blocked") return native;
+  // Android 13+ must use the system POST_NOTIFICATIONS dialog only.
+  // expo-notifications adds a second white "Expo experience" alert.
+  if (native) return native;
 
   const Notifications = await loadNotificationsModule({ allowExpoGo: true });
   if (Notifications) {

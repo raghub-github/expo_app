@@ -2,7 +2,7 @@
  * Flow hub — Growth: My Activity (KPIs + bar charts) and Business (insights + sparklines).
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, Pressable, RefreshControl, Modal, Platform, Linking, Alert } from "react-native";
 import { useFocusEffect } from "expo-router";
@@ -336,73 +336,12 @@ export default function GrowthScreen() {
     ]
   );
 
-  // Always refresh the currently active tab whenever chip/period changes.
-  useEffect(() => {
-    void load(false);
-  }, [load]);
-
-  // Also refresh when user revisits this screen.
+  // One request for the visible tab. Prefetching every tab at once starved
+  // food-orders and made this screen time out.
   useFocusEffect(
     useCallback(() => {
-      void load(true);
+      void load(false);
     }, [load])
-  );
-
-  const prefetchMissingTabs = useCallback(async () => {
-    if (!storeId || !token) return;
-    const tasks: Promise<void>[] = [];
-    if (activityData?.period !== period) {
-      tasks.push(
-        fetchGrowthSummary(storeId, token, period)
-          .then(setActivityData)
-          .catch(() => {})
-      );
-    }
-    if (businessData?.period !== period) {
-      tasks.push(
-        fetchGrowthBusinessInsights(storeId, token, period)
-          .then((res) => {
-            setBusinessData(res);
-            setBizUpdatedAt(Date.now());
-          })
-          .catch(() => {})
-      );
-    }
-    if (quickData?.period !== period) {
-      tasks.push(
-        fetchGrowthQuickInsights(storeId, token, period).then(setQuickData).catch(() => {})
-      );
-    }
-    if (String(livePreviewData?.period ?? "") !== period) {
-      tasks.push(
-        fetchLivePreviewInsights(storeId, token, period).then(setLivePreviewData).catch(() => {})
-      );
-    }
-    if (kitchenData?.period !== period) {
-      tasks.push(
-        fetchGrowthKitchenInsights(storeId, token, period).then(setKitchenData).catch(() => {})
-      );
-    }
-    await Promise.all(tasks);
-  }, [
-    storeId,
-    token,
-    period,
-    activityData?.period,
-    businessData?.period,
-    quickData?.period,
-    kitchenData?.period,
-    livePreviewData?.period,
-  ]);
-
-  useEffect(() => {
-    void prefetchMissingTabs();
-  }, [prefetchMissingTabs]);
-
-  useFocusEffect(
-    useCallback(() => {
-      void prefetchMissingTabs();
-    }, [prefetchMissingTabs])
   );
 
   const timelyBuckets = activityData?.buckets?.length ? activityData.buckets : [];

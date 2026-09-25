@@ -8,6 +8,10 @@ import { getDeviceLocationReadiness } from "@gatimitra/expo-location-kit";
 import { getSharedLocationEngine } from "@/src/services/location/locationTracker";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { pingLocation } from "@/src/services/location/locationPinger";
+import {
+  reconcileForegroundLocationPermission,
+  wireForegroundLocationPermissionAppStateOnce,
+} from "@/src/lib/riderForegroundLocationGate";
 
 /** Drop a store marker only when it is truly stale — not on every 8s foreground. */
 const STALE_FIX_MS = 120_000;
@@ -30,10 +34,15 @@ export function RiderLocationLifecycle() {
   }, [hydrateReadiness]);
 
   useEffect(() => {
+    return wireForegroundLocationPermissionAppStateOnce();
+  }, []);
+
+  useEffect(() => {
     const refreshFreshGps = async (_reason: "mount" | "foreground") => {
       if (refreshingRef.current) return;
       refreshingRef.current = true;
       try {
+        await reconcileForegroundLocationPermission();
         const readiness = await getDeviceLocationReadiness();
         setReadiness(readiness);
         if (!readiness.isReady) {

@@ -20,7 +20,7 @@ import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers';
 import { PageSkeletonOrders } from '@/components/PageSkeleton';
 import { MerchantStore } from '@/lib/merchantStore';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
-import { readPartnerSelectedStoreId } from '@/lib/partner-selected-store';
+import { PARTNER_SELECTED_STORE_CHANGED, readPartnerSelectedStoreId } from '@/lib/partner-selected-store';
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord';
 import { getQueryClient } from '@/lib/query-client';
 import { merchantKeys } from '@/lib/query-keys';
@@ -281,10 +281,14 @@ function OrderHistoryInner() {
   const [ridersLogLoading, setRidersLogLoading] = useState(false);
 
   useEffect(() => {
-    let id = searchParams?.get('storeId') || searchParams?.get('store_id');
-    if (!id && typeof window !== 'undefined') id = localStorage.getItem('selectedStoreId');
-    const trimmed = (id || '').trim();
-    setStoreId(isValidPartnerStoreId(trimmed) ? trimmed : null);
+    const apply = () => {
+      const fromUrl = searchParams?.get('storeId') || searchParams?.get('store_id');
+      const id = readPartnerSelectedStoreId(fromUrl ?? undefined);
+      setStoreId(isValidPartnerStoreId(id) ? id : null);
+    };
+    apply();
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, apply);
+    return () => window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, apply);
   }, [searchParams]);
 
   const { data: storeRecord } = usePartnerStoreRecord(storeId);

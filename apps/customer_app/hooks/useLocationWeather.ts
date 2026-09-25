@@ -18,8 +18,9 @@ export type LocationWeatherParams = {
 
 export { weatherGridKey, isSameWeatherGrid } from "@/lib/weatherGrid";
 
-const CLEAR_STALE_MS = 7 * 24 * 60 * 60 * 1000;
-const RAIN_STALE_MS = 30 * 60 * 1000;
+/** Clear weather can sit for half an hour; rain refreshes sooner. Not 7 days. */
+const CLEAR_STALE_MS = 30 * 60 * 1000;
+const RAIN_STALE_MS = 15 * 60 * 1000;
 
 export function locationWeatherQueryKey(params: LocationWeatherParams) {
   if (
@@ -76,8 +77,8 @@ export function locationWeatherQueryOptions(params: LocationWeatherParams) {
     staleTime: CLEAR_STALE_MS,
     gcTime: 30 * 24 * 60 * 60 * 1000,
     refetchOnMount: false,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
     retry: 1,
   });
 }
@@ -174,6 +175,9 @@ export function useLocationWeather(
       const data = query.state.data;
       if (data == null) return true;
       if (data.temperatureC == null || !Number.isFinite(data.temperatureC)) return "always";
+      const updated = query.state.dataUpdatedAt;
+      const maxAge = staleTimeForWeather(data);
+      if (!updated || Date.now() - updated > maxAge) return true;
       return false;
     },
     select: (data) => {

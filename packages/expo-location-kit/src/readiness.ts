@@ -16,11 +16,14 @@ export async function getDeviceLocationReadiness(): Promise<DeviceLocationReadin
   };
 }
 
-/** Request foreground location permission when askable. */
+/**
+ * Read foreground location permission (get-only).
+ * Does NOT show the OS dialog — callers that need to prompt must use their app's
+ * single permission coordinator so watchers/Home never race a native prompt.
+ */
 export async function requestForegroundLocationPermission(): Promise<LocationPermissionStatus> {
   const current = await Location.getForegroundPermissionsAsync();
   if (current.status === "granted") return "granted";
   if (current.canAskAgain === false) return "denied";
-  const next = await Location.requestForegroundPermissionsAsync();
-  return next.status === "granted" ? "granted" : next.status === "denied" ? "denied" : "undetermined";
+  return current.status === "denied" ? "denied" : "undetermined";
 }

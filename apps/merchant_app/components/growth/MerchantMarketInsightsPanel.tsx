@@ -48,9 +48,7 @@ function MatchScopeToggle({
 }
 
 function TrendPill({ delta }: { delta: number | null }) {
-  if (delta == null || delta === 0) {
-    return <Text style={styles.trendNeutral}>—</Text>;
-  }
+  if (delta == null || delta === 0) return null;
   const up = delta > 0;
   const pct = delta * 5;
   return (
@@ -84,10 +82,12 @@ function CompetitorRowView({ c }: { c: CompetitorLeaderboardRow }) {
 
   return (
     <View style={styles.row}>
-      <Text style={styles.name} numberOfLines={2}>
-        <Text style={styles.rank}>{c.display_rank} </Text>
-        {c.name}
-      </Text>
+      <View style={styles.nameRow}>
+        <Text style={styles.rank}>{c.display_rank}</Text>
+        <Text style={styles.name} numberOfLines={2}>
+          {c.name}
+        </Text>
+      </View>
       <View style={styles.metrics}>
         <Text style={styles.affinity}>{c.affinity_pct.toFixed(1)}%</Text>
         <TrendPill delta={c.rank_delta} />
@@ -295,6 +295,7 @@ const styles = StyleSheet.create({
   ownSub: { fontSize: 10, fontWeight: "600", color: "#D1FAE5", marginTop: 1 },
   ownAffinity: { fontSize: 14, fontWeight: "800", color: "#FFFFFF" },
   rank: { fontSize: 11, fontWeight: "700", color: "#B45309" },
+  nameRow: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10, minWidth: 0 },
   name: {
     flex: 1,
     fontSize: 13,
@@ -309,13 +310,4 @@ const styles = StyleSheet.create({
   trendText: { fontSize: 11, fontWeight: "700", marginLeft: 2 },
   trendTextUp: { color: "#047857" },
   trendTextDown: { color: "#B91C1C" },
-  trendNeutral: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: GatiMitraMerchant.textSecondary,
-    backgroundColor: "#F1F5F9",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
 });

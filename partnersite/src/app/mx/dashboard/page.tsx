@@ -12,6 +12,7 @@ import { MerchantStore } from '@/lib/merchantStore'
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
 import { useApprovedPartnerStores } from '@/hooks/usePartnerResolveSession'
 import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
+import { PARTNER_SELECTED_STORE_CHANGED } from '@/lib/partner-selected-store'
 import {
   PARTNER_STORE_OPERATIONS_REFRESH_EVENT,
   type PartnerStoreOperationsRefreshDetail,
@@ -70,7 +71,7 @@ import { useMerchantWallet, useStoreOperations, useStoreSettings, useSelfDeliver
 import { merchantKeys } from '@/lib/query-keys'
 import { useQueryClient } from '@tanstack/react-query';
 import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarningModal';
-import { shouldShowPlanExpiredWarning } from '@/lib/plan-expired-warning';
+import { PLAN_EXPIRED_WARNING_DISMISSED, shouldShowPlanExpiredWarning, wasPlanExpiredWarningShown } from '@/lib/plan-expired-warning';
 import {
   deriveStoreOperationsUiPatch,
   readCachedStoreOpenFromEngine,
@@ -617,14 +618,19 @@ function DashboardContent() {
   const filterZoneOptions = [{ id: 'z1', label: 'South Chennai (1)' }] as const
   const filterSubzoneOptions = [{ id: 'sz1', label: 'Thiruporur, South Chennai (1)' }] as const
 
-  // Resolve store id before paint when possible (localStorage is client-only).
+  // Resolve store id before paint, and again when the session picks an outlet
+  // (first visit has no selectedStoreId until resolve-session returns).
   useLayoutEffect(() => {
-    const id = resolveStoreIdFromClient(searchParams?.get('storeId'))
-    setStoreId(id)
-    if (id) {
-      localStorage.setItem('selectedStoreId', id)
-      void import('@/lib/partner-selected-store').then((m) => m.notifyPartnerSelectedStoreChanged(id))
+    const apply = () => {
+      const id = resolveStoreIdFromClient(searchParams?.get('storeId'))
+      setStoreId(id)
+      if (id) {
+        localStorage.setItem('selectedStoreId', id)
+      }
     }
+    apply()
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, apply)
+    return () => window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, apply)
   }, [searchParams])
 
   useEffect(() => {
@@ -651,28 +657,48 @@ function DashboardContent() {
         const subscriptionId = expiredSub?.id as number | string | undefined
         const autoRenew = Boolean(expiredSub?.auto_renew)
         const expiredAt = String(expiredSub?.billing_end_at ?? expiredSub?.expiry_date ?? '')
-        if (
-          shouldShowPlanExpiredWarning({
-            storeId,
-            isActive: data.isActive === true,
-            isExpired: data.isExpired === true,
-            autoRenew,
-            planPrice: Number(plan?.price ?? 0),
-            subscriptionId,
-          })
-        ) {
+        const show = shouldShowPlanExpiredWarning({
+          storeId,
+          isActive: data.isActive === true,
+          isExpired: data.isExpired === true,
+          autoRenew,
+          planPrice: Number(plan?.price ?? 0),
+          subscriptionId,
+        })
+        if (show) {
           setExpiredPlanMeta({
             planName: plan?.plan_name,
             expiredAt: expiredAt || null,
             subscriptionId,
             autoRenew,
           })
-          setShowPlanExpiredWarning(true)
         }
+        // Re-check at commit time so an in-flight response cannot reopen a dismissal.
+        setShowPlanExpiredWarning(show && !wasPlanExpiredWarningShown(storeId, subscriptionId))
       })
       .catch(() => {})
     return () => {
       cancelled = true
+    }
+  }, [storeId])
+
+  useEffect(() => {
+    if (!storeId) return
+    const closeIfDismissed = () => {
+      if (wasPlanExpiredWarningShown(storeId)) setShowPlanExpiredWarning(false)
+    }
+    const onDismiss = (event: Event) => {
+      const detail = (event as CustomEvent<{ storeId?: string }>).detail
+      if (!detail?.storeId || detail.storeId === storeId) closeIfDismissed()
+    }
+    const onStorage = (event: StorageEvent) => {
+      if (event.key?.includes(storeId)) closeIfDismissed()
+    }
+    window.addEventListener(PLAN_EXPIRED_WARNING_DISMISSED, onDismiss)
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener(PLAN_EXPIRED_WARNING_DISMISSED, onDismiss)
+      window.removeEventListener('storage', onStorage)
     }
   }, [storeId])
 

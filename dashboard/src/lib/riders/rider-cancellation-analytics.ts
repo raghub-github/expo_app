@@ -13,7 +13,7 @@
  *   - Rider-Fault Pre Share   = riderFaultPre / riderFault
  *
  * Rates are computed at full precision from raw counts and rounded to 2dp ONLY on
- * output. A zero denominator yields `null` (render as "N/A"), never NaN / Infinity / 100%.
+ * output. A zero denominator yields `null` (UI renders as "0%"), never NaN / Infinity / 100%.
  * Overall figures are computed from summed counts, never by averaging service rates (§12/§13).
  */
 
@@ -110,7 +110,7 @@ function emptyFaultBreakdown(): FaultBreakdown {
   };
 }
 
-/** Safe percentage: null when denominator is 0 (renders as N/A). Full precision, rounded 2dp. */
+/** Safe percentage: null when denominator is 0 (UI shows 0%). Full precision, rounded 2dp. */
 export function percentage(numerator: number, denominator: number): number | null {
   if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
     return null;

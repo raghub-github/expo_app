@@ -219,14 +219,24 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
                 }
                 writeDeviceSessionCache(sub, deviceId, true);
               });
-              void withSqlRetry(async () => {
-                const sql = getSql();
-                await sql`
+              // Throttle last_active writes — a void UPDATE on every request doubled
+              // pool checkout under rider poll storms and wedged the API.
+              const touchKey = `${sub}:${deviceId}`;
+              const touchMap =
+                ((globalThis as { __deviceLastActiveAt?: Map<string, number> })
+                  .__deviceLastActiveAt ??= new Map());
+              const touchedAt = touchMap.get(touchKey) ?? 0;
+              if (Date.now() - touchedAt > 60_000) {
+                touchMap.set(touchKey, Date.now());
+                void withSqlRetry(async () => {
+                  const sql = getSql();
+                  await sql`
               UPDATE user_device_sessions
               SET last_active = now()
               WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
             `;
-              }).catch(() => undefined);
+                }).catch(() => undefined);
+              }
             } catch (sessionErr) {
               if (sessionErr instanceof AuthHttpError) throw sessionErr;
               if (!isDbUnavailable(sessionErr)) throw sessionErr;

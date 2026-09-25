@@ -36,10 +36,9 @@ module.exports = {
     icon: APP_ICON,
     scheme: "gatimitra-rider",
     userInterfaceStyle: "automatic",
-    // Must match splash.backgroundColor — Expo warns when these diverge at launch.
     androidStatusBar: {
       barStyle: "dark-content",
-      backgroundColor: SPLASH_BG,
+      backgroundColor: "#C4E8D1",
       translucent: false,
       hidden: false,
     },

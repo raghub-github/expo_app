@@ -268,8 +268,8 @@ public final class OrderAlertOverlay {
             | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
         PixelFormat.TRANSLUCENT
     );
-    params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-    params.y = dp(context, 8);
+    params.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+    params.y = bottomSafePx(context);
     params.format = PixelFormat.TRANSLUCENT;
     if (Build.VERSION.SDK_INT >= 28) {
       params.layoutInDisplayCutoutMode =
@@ -278,7 +278,7 @@ public final class OrderAlertOverlay {
     return params;
   }
 
-  private static View buildCard(
+  static View buildCard(
       final Context context,
       final String sessionId,
       final String orderId,
@@ -333,13 +333,52 @@ public final class OrderAlertOverlay {
       card.addView(metaRow(context, "Drop: " + dropLabel));
     }
 
+    JSONObject active = null;
+    try {
+      active = OrderAlertController.getActive(context);
+    } catch (Throwable ignored) {
+    }
+    String displayId = active != null ? active.optString("displayOrderId", "") : "";
+    if (displayId.matches("^\\d+$")) displayId = "";
+    String amount = active != null ? active.optString("amount", "") : "";
+    String customer = active != null ? active.optString("customerName", "") : "";
+
+    if (displayId.length() > 0) {
+      TextView idView = new TextView(context);
+      idView.setText(displayId);
+      idView.setTextColor(Color.WHITE);
+      idView.setTextSize(20);
+      idView.setTypeface(Typeface.DEFAULT_BOLD);
+      LinearLayout.LayoutParams idLp = new LinearLayout.LayoutParams(
+          ViewGroup.LayoutParams.MATCH_PARENT,
+          ViewGroup.LayoutParams.WRAP_CONTENT
+      );
+      idLp.topMargin = dp(context, 6);
+      idView.setLayoutParams(idLp);
+      card.addView(idView);
+    }
+
+    if (customer.length() > 0 && !"Customer".equalsIgnoreCase(customer)) {
+      card.addView(metaRow(context, customer));
+    }
+    String amountLabel = formatAmount(amount);
+    if (amountLabel.length() > 0) {
+      TextView amt = metaRow(context, amountLabel);
+      amt.setTextColor(Color.WHITE);
+      amt.setTextSize(16);
+      amt.setTypeface(Typeface.DEFAULT_BOLD);
+      card.addView(amt);
+    }
+
     String detail = firstNonEmpty(title, body);
-    if (detail.length() > 0 && !"NEW ORDER".equalsIgnoreCase(detail)) {
+    boolean genericTitle = detail.length() == 0
+        || "NEW ORDER".equalsIgnoreCase(detail)
+        || detail.toLowerCase().contains("new order")
+        || detail.matches("(?i)^order\\s*#?\\s*\\d+$");
+    if (!genericTitle) {
       TextView detailView = metaRow(context, detail);
       detailView.setMaxLines(2);
       card.addView(detailView);
-    } else if (orderId != null && orderId.trim().length() > 0) {
-      card.addView(metaRow(context, "Order " + orderId.trim()));
     }
 
     LinearLayout actions = new LinearLayout(context);
@@ -362,21 +401,12 @@ public final class OrderAlertOverlay {
     reject.setOnClickListener(v -> {
       v.setEnabled(false);
       accept.setEnabled(false);
-      try {
-        OrderAlertController.stop(context, sessionId);
-      } catch (Throwable ignored) {
-        hide(context, sessionId);
-      }
+      OrderAlertActions.handle(context, "reject", sessionId);
     });
     accept.setOnClickListener(v -> {
       v.setEnabled(false);
       reject.setEnabled(false);
-      try {
-        OrderAlertController.stop(context, sessionId);
-      } catch (Throwable ignored) {
-        hide(context, sessionId);
-      }
-      launchApp(context, "accept", sessionId, orderId, offerId);
+      OrderAlertActions.handle(context, "accept", sessionId);
     });
 
     actions.addView(reject);
@@ -384,6 +414,17 @@ public final class OrderAlertOverlay {
     card.addView(actions);
     root.addView(card);
     return root;
+  }
+
+  /** Gap above the system navigation bar so Accept/Reject stay tappable. */
+  static int bottomSafePx(Context context) {
+    int nav = 0;
+    try {
+      int resId = context.getResources().getIdentifier("navigation_bar_height", "dimen", "android");
+      if (resId > 0) nav = context.getResources().getDimensionPixelSize(resId);
+    } catch (Throwable ignored) {
+    }
+    return nav + dp(context, 16);
   }
 
   private static TextView metaRow(Context context, String text) {
@@ -476,6 +517,22 @@ public final class OrderAlertOverlay {
       return "";
     }
     return v;
+  }
+
+  private static String formatAmount(String raw) {
+    String v = safeText(raw);
+    if (v.length() == 0 || "0".equals(v) || "0.0".equals(v) || "0.00".equals(v)) return "";
+    if (v.startsWith("₹")) return v;
+    try {
+      double n = Double.parseDouble(v);
+      if (n <= 0) return "";
+      if (Math.abs(n - Math.rint(n)) < 0.001) {
+        return "₹" + String.valueOf((long) Math.rint(n));
+      }
+      return "₹" + v;
+    } catch (Throwable t) {
+      return v;
+    }
   }
 
   private static String sessionSafe(String value) {

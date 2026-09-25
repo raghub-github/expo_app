@@ -120,6 +120,19 @@ export const en = {
   location: {
     required: "Location Required",
     permissionDenied: "Location permission is required to use the app. Please enable location access in settings.",
+    permissionRequired: "Location permission required",
+    permissionDeniedMessage:
+      "Allow location access so we can show your map position and match you with nearby orders.",
+    permissionBlockedMessage:
+      "Location access is turned off for this app. Open Settings, enable Location, then return here.",
+    permissionChecking: "Checking location permission…",
+    permissionCheckingMessage:
+      "Location is required before you can use Home and go ON duty.",
+    permissionPrompting: "Waiting for location permission…",
+    permissionRetryMessage:
+      "Location access is needed to use Home and go ON duty. Tap Continue to allow location.",
+    continueAllow: "Continue",
+    allowLocation: "Allow location",
     gpsDisabled: "GPS Disabled",
     gpsDisabledMessage: "Turn on GPS/Location services to continue. Location is mandatory for receiving orders.",
     enableLocation: "Enable Location",
@@ -437,14 +450,14 @@ export const en = {
       adminCancelled: "Order cancelled by admin",
     },
     cancel: {
-      successTitle: "Cancelled by Me",
+      successTitle: "Cancelled by You",
       penaltyDebitedTitle: "Penalty applied",
       penaltyDebitedMessage: "₹{{amount}} has been debited from your wallet as a penalty.",
       penaltyHint: "This amount will be debited from your wallet as a penalty.",
     },
     adminCancelled: {
-      title: "Cancelled by Gatimitra Team",
-      titleByMe: "Cancelled by Me",
+      title: "Cancelled by GatiMitra Team",
+      titleByMe: "Cancelled by You",
       titleByUser: "Cancelled by User",
       orderId: "Order {{id}}",
       message:

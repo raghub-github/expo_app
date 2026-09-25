@@ -51,7 +51,8 @@ export async function fetchLivePreviewInsights(
   const q = new URLSearchParams({ period });
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/growth/live-preview?${q.toString()}`,
-    token
+    token,
+    { timeoutMs: 45_000 }
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

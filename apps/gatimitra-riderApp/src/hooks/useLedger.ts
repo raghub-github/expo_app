@@ -1,8 +1,4 @@
-import {
-  keepPreviousData,
-  useInfiniteQuery,
-  type QueryClient,
-} from "@tanstack/react-query";
+import { useInfiniteQuery, type QueryClient } from "@tanstack/react-query";
 import { riderApi, type RiderLedgerFilters } from "@/src/services/api/riderApi";
 
 export const DEFAULT_LEDGER_FILTERS: Required<
@@ -31,7 +27,6 @@ export function useLedger(filters: RiderLedgerFilters) {
     initialPageParam: 0,
     getNextPageParam: (lastPage, _pages, lastOffset) =>
       lastPage.hasMore ? lastOffset + (filters.limit ?? 50) : undefined,
-    placeholderData: keepPreviousData,
     staleTime: 60_000,
     gcTime: 10 * 60_000,
   });

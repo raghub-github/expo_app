@@ -325,10 +325,7 @@ export default function ProfilePage() {
   useEffect(() => {
     const syncStoreId = () => {
       const id = readPartnerSelectedStoreId();
-      if (!id) {
-        toast.error("Store ID not found");
-        return;
-      }
+      if (!id) return;
       setStoreId((prev) => {
         if (prev === id) return prev;
         const cached = readCachedMerchantProfile(id);

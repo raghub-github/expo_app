@@ -32,7 +32,7 @@ export function PlanExpiredWarningModal({
       })
     : null;
 
-  const handleClose = () => {
+  const handleRemindLater = () => {
     markPlanExpiredWarningShown(storeId, subscriptionId);
     onClose();
   };
@@ -41,7 +41,7 @@ export function PlanExpiredWarningModal({
     <>
       <div
         className="fixed inset-0 bg-black/50"
-        onClick={handleClose}
+        onClick={handleRemindLater}
         style={{
           backdropFilter: 'blur(12px)',
           WebkitBackdropFilter: 'blur(12px)',
@@ -52,7 +52,7 @@ export function PlanExpiredWarningModal({
         <div className="bg-white rounded-xl max-w-md w-full pointer-events-auto shadow-2xl">
           <div className="flex items-center justify-between p-6 border-b border-gray-200">
             <h2 className="text-lg font-bold text-gray-900">Plan expired</h2>
-            <button type="button" onClick={handleClose} className="text-gray-500 hover:text-gray-900">
+            <button type="button" onClick={handleRemindLater} className="text-gray-500 hover:text-gray-900" aria-label="Remind me later">
               <X size={20} />
             </button>
           </div>
@@ -74,14 +74,14 @@ export function PlanExpiredWarningModal({
             <div className="space-y-2">
               <Link
                 href="/partners/store-settings?tab=plans"
-                onClick={handleClose}
+                onClick={onClose}
                 className="block w-full px-4 py-2.5 bg-orange-600 text-white rounded-lg hover:bg-orange-700 font-semibold transition-colors text-center"
               >
                 Renew plan
               </Link>
               <button
                 type="button"
-                onClick={handleClose}
+                onClick={handleRemindLater}
                 className="w-full px-4 py-2.5 border border-gray-200 rounded-lg hover:bg-gray-50 font-semibold"
               >
                 Remind me later

@@ -14,10 +14,8 @@ const appJson = require("./app.json");
 const APP_ICON = "./assets/icon.png";
 const APP_ADAPTIVE_FOREGROUND = "./assets/adaptive-icon.png";
 const APP_ICON_BG = "#000000";
-/** Native launch splash — GatiMitra wordmark, not the circular logo. */
+/** Match GatiMitraBootstrapScreen so the native-to-React handoff has no second wordmark. */
 const LAUNCHER_SPLASH_BG = "#14b8a6";
-const LAUNCHER_SPLASH_IMAGE = "./assets/images/splash-brand.png";
-const LAUNCHER_SPLASH_ANDROID12 = "./assets/images/splash-android12.png";
 
 const googleServicesFile = path.resolve(__dirname, "google-services.json");
 const hasGoogleServices = fs.existsSync(googleServicesFile);
@@ -43,25 +41,7 @@ module.exports = {
     newArchEnabled: true,
     icon: APP_ICON,
     splash: {
-      ...appJson.expo.splash,
-      image: LAUNCHER_SPLASH_IMAGE,
-      // "contain" — never crop the wordmark. "cover" scaled the brand image to fill the screen and
-      // clipped the sides ("GatiMitra" → "atiMit"). The teal letterbox matches the image bg, so
-      // contain is seamless.
-      resizeMode: "contain",
       backgroundColor: LAUNCHER_SPLASH_BG,
-      android: {
-        ...(appJson.expo.splash?.android || {}),
-        image: LAUNCHER_SPLASH_ANDROID12,
-        resizeMode: "contain",
-        backgroundColor: LAUNCHER_SPLASH_BG,
-      },
-      ios: {
-        ...(appJson.expo.splash?.ios || {}),
-        image: LAUNCHER_SPLASH_IMAGE,
-        resizeMode: "contain",
-        backgroundColor: LAUNCHER_SPLASH_BG,
-      },
     },
     ios: {
       ...appJson.expo.ios,
@@ -143,25 +123,6 @@ module.exports = {
         "expo-splash-screen",
         {
           backgroundColor: LAUNCHER_SPLASH_BG,
-          image: LAUNCHER_SPLASH_ANDROID12,
-          // Keep under ~200dp so wordmark + tagline never clip on narrow phones.
-          imageWidth: 200,
-          resizeMode: "contain",
-          enableFullScreenImage_legacy: true,
-          android: {
-            image: LAUNCHER_SPLASH_ANDROID12,
-            backgroundColor: LAUNCHER_SPLASH_BG,
-            imageWidth: 200,
-          },
-          ios: {
-            image: LAUNCHER_SPLASH_IMAGE,
-            backgroundColor: LAUNCHER_SPLASH_BG,
-            enableFullScreenImage_legacy: true,
-          },
-          dark: {
-            image: LAUNCHER_SPLASH_ANDROID12,
-            backgroundColor: LAUNCHER_SPLASH_BG,
-          },
         },
       ],
       "@config-plugins/react-native-blob-util",

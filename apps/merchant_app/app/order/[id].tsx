@@ -430,7 +430,10 @@ export default function OrderDetailScreen() {
 
   const showDeliveryPartner = useMemo(() => {
     if (!order) return false;
-    if (isSelfPickupOrder) return true;
+    if (isSelfPickupOrder) {
+      const done = stage === "delivered" || stage === "rejected" || stage === "rto";
+      return !done;
+    }
     if (!isGatiMitraDelivery) return false;
     if (showPendingAssign) return true;
     const isTerminal = stage === "delivered" || stage === "rejected" || stage === "rto";
@@ -590,7 +593,7 @@ export default function OrderDetailScreen() {
     }
   };
 
-  const showAccept = stage === "created";
+  const showAccept = stage === "created" && !orderIsTerminal;
   const showMarkReady = stage === "preparing";
   const showDispatch =
     stage === "ready" && order?.delivery_type !== "GATIMITRA_RIDER";

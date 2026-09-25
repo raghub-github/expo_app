@@ -29,6 +29,8 @@ import {
   riderPaymentMethods,
   riderDocuments,
 } from "@/lib/db/schema";
+import { computePendingManualDocuments, logDocPending } from "@/lib/rider-document-verification-pipeline";
+import { healVehicleVerifiedFromRcDocuments } from "@/lib/rider-document-downstream-sync";
 import { eq, and, or, desc, gte, lte, isNull, sql } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -405,34 +407,13 @@ export async function GET(
       })(),
     ]);
 
-    const DOC_TYPE_LABELS: Record<string, string> = {
-      dl: "Driving Licence",
-      dl_front: "Driving Licence",
-      dl_back: "Driving Licence (back)",
-      rc: "Registration Certificate",
-      aadhaar: "Aadhaar",
-      aadhaar_front: "Aadhaar",
-      aadhaar_back: "Aadhaar (back)",
-      pan: "PAN",
-      selfie: "Selfie",
-      profile_photo: "Profile photo",
-      rental_proof: "Rental proof",
-      ev_proof: "EV proof",
-      insurance: "Insurance",
-      bank_proof: "Bank proof",
-      vehicle_image: "Vehicle image",
-      ev_ownership_proof: "EV ownership proof",
-    };
-    const SKIP_DOC_TYPES = new Set([
-      "onboarding_vehicle_selection",
-      "onboarding_work_location",
-      "other",
-      "upi_qr_proof",
-    ]);
+    // Heal stale vehicle.verified when RC document is already canonically verified.
+    await healVehicleVerifiedFromRcDocuments(riderId).catch(() => undefined);
 
     const pendingManualDocRows = await db
       .select({
         id: riderDocuments.id,
+        riderId: riderDocuments.riderId,
         docType: riderDocuments.docType,
         verificationMethod: riderDocuments.verificationMethod,
         verificationStatus: riderDocuments.verificationStatus,
@@ -440,12 +421,16 @@ export async function GET(
         requiresManualReview: riderDocuments.requiresManualReview,
         fileUrl: riderDocuments.fileUrl,
         r2Key: riderDocuments.r2Key,
+        docNumber: riderDocuments.docNumber,
+        vehicleId: riderDocuments.vehicleId,
+        rejectedReason: riderDocuments.rejectedReason,
         updatedAt: riderDocuments.updatedAt,
       })
       .from(riderDocuments)
       .where(eq(riderDocuments.riderId, riderId))
       .catch(() => [] as Array<{
         id: number;
+        riderId: number;
         docType: string;
         verificationMethod: string | null;
         verificationStatus: string | null;
@@ -453,67 +438,12 @@ export async function GET(
         requiresManualReview: boolean | null;
         fileUrl: string | null;
         r2Key: string | null;
+        docNumber: string | null;
+        vehicleId: number | null;
+        rejectedReason: string | null;
         updatedAt: Date | null;
       }>);
 
-    const pendingManualDocuments = pendingManualDocRows
-      .filter((row) => {
-        const type = String(row.docType || "").toLowerCase();
-        if (SKIP_DOC_TYPES.has(type)) return false;
-        if (row.verified === true) return false;
-        const fileUrl = String(row.fileUrl || "").trim();
-        const r2Key = String(row.r2Key || "").trim();
-        const hasRealFile =
-          Boolean(r2Key) ||
-          (Boolean(fileUrl) &&
-            fileUrl !== "pending" &&
-            !fileUrl.endsWith("/pending") &&
-            !fileUrl.startsWith("placeholder") &&
-            !fileUrl.startsWith("cashfree_") &&
-            !fileUrl.startsWith("digilocker_"));
-        // Admin-removed docs keep a row with fileUrl=pending — not awaiting review.
-        if (!hasRealFile) return false;
-        const status = String(row.verificationStatus || "").toLowerCase();
-        if (status === "approved" || status === "auto_verified") return false;
-        if (status === "rejected") return false;
-        const method = String(row.verificationMethod || "").toUpperCase();
-        const isManual =
-          method === "MANUAL_UPLOAD" ||
-          row.requiresManualReview === true ||
-          status === "pending";
-        return isManual && (status === "pending" || status === "" || row.requiresManualReview === true);
-      })
-      .map((row) => {
-        const type = String(row.docType || "").toLowerCase();
-        return {
-          id: row.id,
-          docType: type,
-          label: DOC_TYPE_LABELS[type] || type.replace(/_/g, " ").toUpperCase(),
-          verificationStatus: String(row.verificationStatus || "pending"),
-          updatedAt:
-            row.updatedAt instanceof Date
-              ? row.updatedAt.toISOString()
-              : row.updatedAt
-                ? String(row.updatedAt)
-                : null,
-        };
-      });
-
-    // Dedupe by base doc family (dl_front/dl_back → one DL entry).
-    const pendingByFamily = new Map<string, (typeof pendingManualDocuments)[number]>();
-    for (const doc of pendingManualDocuments) {
-      const family = doc.docType.replace(/_front$|_back$/, "");
-      if (!pendingByFamily.has(family)) {
-        pendingByFamily.set(family, {
-          ...doc,
-          docType: family,
-          label: DOC_TYPE_LABELS[family] || doc.label,
-        });
-      }
-    }
-
-    // Unverified fleet vehicles (e.g. 2nd RC under manual review) must surface the
-    // Verify CTA even when the rider is already ACTIVE / fully onboarded.
     const unverifiedVehicleRows = await db
       .select({
         id: riderVehicles.id,
@@ -532,31 +462,16 @@ export async function GET(
         updatedAt: Date | null;
       }>);
 
-    for (const v of unverifiedVehicleRows) {
-      const status = String(v.vehicleActiveStatus || "").toLowerCase();
-      if (status === "retired" || status === "replaced" || status === "deleted") continue;
-      if (v.verified === true) continue;
-      const plate = String(v.registrationNumber || "").trim().toUpperCase();
-      const key = `rc_vehicle_${v.id}`;
-      if (pendingByFamily.has("rc") || pendingByFamily.has(key)) continue;
-      pendingByFamily.set(key, {
-        id: v.id,
-        docType: "rc",
-        label: plate ? `RC (${plate})` : "Registration Certificate",
-        verificationStatus: "pending",
-        updatedAt:
-          v.updatedAt instanceof Date
-            ? v.updatedAt.toISOString()
-            : v.updatedAt
-              ? String(v.updatedAt)
-              : null,
-      });
-    }
+    const pendingManualDocumentsDeduped = computePendingManualDocuments({
+      documents: pendingManualDocRows,
+      vehicles: unverifiedVehicleRows,
+    });
 
-    // If any unverified vehicle exists and we already have a generic RC pending row,
-    // keep it — Verify CTA only needs length > 0. Prefer plate-specific labels when
-    // there was no pending RC document (handled above).
-    const pendingManualDocumentsDeduped = [...pendingByFamily.values()];
+    logDocPending({
+      riderId,
+      pendingDocuments: pendingManualDocumentsDeduped.map((d) => d.docType),
+      pendingCount: pendingManualDocumentsDeduped.length,
+    });
 
     let recentPenalties: Array<Record<string, unknown>> = [];
     try {

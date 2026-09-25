@@ -14,14 +14,14 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useLedger } from "@/src/hooks/useLedger";
 import { useLedgerGraph } from "@/src/hooks/useLedgerGraph";
 import { useEarningsSummary } from "@/src/hooks/useEarnings";
-import type { RiderLedgerPeriod, RiderLedgerSegment } from "@/src/services/api/riderApi";
+import type { RiderLedgerEntry, RiderLedgerPeriod, RiderLedgerSegment } from "@/src/services/api/riderApi";
 import { LedgerFilterPills } from "@/src/components/ledger/LedgerFilterPills";
 import { LedgerEmptyState } from "@/src/components/ledger/LedgerEmptyState";
 import { LedgerMonthlySummaryCard } from "@/src/components/ledger/LedgerMonthlySummaryCard";
 import { LedgerGroupedTransactionList } from "@/src/components/ledger/LedgerGroupedTransactionList";
 import { LedgerPeriodDropdown } from "@/src/components/ledger/LedgerPeriodDropdown";
 import { LedgerGraphView } from "@/src/components/ledger/LedgerGraphView";
-import { groupLedgerEntriesByDay } from "@/src/components/ledger/ledgerDisplay";
+import { groupLedgerEntriesByDay, isRiderUpiPaymentLedgerEntry } from "@/src/components/ledger/ledgerDisplay";
 import {
   OrderHistoryDateRangeSheet,
 } from "@/src/components/profile/OrderHistoryDateRangeSheet";
@@ -30,6 +30,7 @@ import {
   resolveLedgerGraphRange,
 } from "@/src/components/ledger/ledgerGraphRange";
 import { LEDGER_PAGE_BG, LEDGER_TEAL } from "@/src/components/ledger/ledgerUiTokens";
+import { LedgerPaymentDetailSheet } from "@/src/components/ledger/LedgerPaymentDetailSheet";
 import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 
@@ -53,6 +54,7 @@ export function LedgerScreen() {
   const [graphToDate, setGraphToDate] = useState<Date | null>(null);
   const [rangeSheetVisible, setRangeSheetVisible] = useState(false);
   const [liveWeekKey, setLiveWeekKey] = useState(() => new Date().toDateString());
+  const [detailEntryId, setDetailEntryId] = useState<number | null>(null);
 
   const {
     data,
@@ -75,10 +77,18 @@ export function LedgerScreen() {
     }, [refetchEarnings]),
   );
 
-  const entries = useMemo(
-    () => data?.pages.flatMap((page) => page.entries) ?? [],
-    [data],
-  );
+  const entries = useMemo(() => {
+    const seen = new Set<number>();
+    const out: RiderLedgerEntry[] = [];
+    for (const page of data?.pages ?? []) {
+      for (const entry of page.entries) {
+        if (seen.has(entry.id)) continue;
+        seen.add(entry.id);
+        out.push(entry);
+      }
+    }
+    return out;
+  }, [data]);
 
   const summary = data?.pages[0]?.summary ?? DEFAULT_SUMMARY;
 
@@ -234,6 +244,11 @@ export function LedgerScreen() {
                 <LedgerGroupedTransactionList
                   groups={groupedEntries}
                   firstHeaderControl={toggleWithPeriodControl}
+                  onEntryPress={(entry) => {
+                    if (isRiderUpiPaymentLedgerEntry(entry)) {
+                      setDetailEntryId(entry.id);
+                    }
+                  }}
                 />
                 {hasNextPage ? (
                   <Pressable
@@ -288,6 +303,7 @@ export function LedgerScreen() {
           setGraphToDate(to);
         }}
       />
+      <LedgerPaymentDetailSheet entryId={detailEntryId} onClose={() => setDetailEntryId(null)} />
     </SafeAreaView>
   );
 }

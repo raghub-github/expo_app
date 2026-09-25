@@ -8,7 +8,6 @@ import { MXLayoutWhite } from '@/components/MXLayoutWhite';
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { PageSkeletonGeneric } from '@/components/PageSkeleton';
-import { DEMO_RESTAURANT_ID } from '@/lib/constants';
 import { isValidPartnerStoreId } from '@/lib/partner-store-id-shared';
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord';
 import { useMerchantLedger, useMerchantWallet, usePayoutSettlement, usePayoutCycles, useMerchantPayoutRequests } from '@/hooks/useMerchantApi';
@@ -128,14 +127,14 @@ function PayoutHistoryContent() {
 
   if (isLoading && !ledgerData) {
     return (
-      <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || DEMO_RESTAURANT_ID}>
+      <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || ''}>
         <PageSkeletonGeneric />
       </MXLayoutWhite>
     );
   }
 
   return (
-    <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || DEMO_RESTAURANT_ID}>
+    <MXLayoutWhite restaurantName={displayName} restaurantId={storeId || ''}>
       <PartnerPageHeader
         title="Payout History"
         subtitle="Weekly payout cycles and settlement status"
@@ -379,7 +378,7 @@ export default function PayoutHistoryPage() {
   return (
     <Suspense
       fallback={
-        <MXLayoutWhite restaurantName="Payout History" restaurantId={DEMO_RESTAURANT_ID}>
+        <MXLayoutWhite restaurantName="Payout History" restaurantId="">
           <PartnerPageHeader title="Payout History" subtitle="Loading payout history…" />
           <PageSkeletonGeneric />
         </MXLayoutWhite>

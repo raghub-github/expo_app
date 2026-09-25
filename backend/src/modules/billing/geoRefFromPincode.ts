@@ -185,15 +185,9 @@ export async function resolveDropGeoRefsFromPincode(
         // best-effort — try next variant (including after transient DB blips)
       }
     }
-    // eslint-disable-next-line no-console
-    console.log("[geo] pincode-prefix lookup", {
-      pincode: pc,
-      prefix: pc.slice(0, 2),
-      candidate_state: pincodePrefixState,
-      variants_tried: variants,
-      matched_by: stateMatchedBy,
-      state_uuid: stateIdFromPrefix,
-    });
+    void stateMatchedBy;
+    void pincodePrefixState;
+    void variants;
   }
 
   // IMPORTANT: do not require the full hierarchy to be present.

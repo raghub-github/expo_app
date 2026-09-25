@@ -70,6 +70,36 @@ export function localityNameFromAddress(
   return null;
 }
 
+/**
+ * Neighborhood token from an address, ignoring city, state, and PIN.
+ * Used to keep the locality competitor list to stores in the same area.
+ */
+export function localityMatchKey(
+  fullAddress: string | null | undefined,
+  city: string | null | undefined,
+  state: string | null | undefined,
+  postalCode: string | null | undefined
+): string {
+  const cityN = (city ?? "").trim().toLowerCase();
+  const stateN = (state ?? "").trim().toLowerCase();
+  const pin = (postalCode ?? "").replace(/\D/g, "");
+  const parts = (fullAddress ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => p.replace(/^\d{5,6}\s+/, "").replace(/\s+\d{5,6}$/, "").trim())
+    .filter((p) => {
+      const l = p.toLowerCase();
+      if (!l || /^\d{5,6}$/.test(l)) return false;
+      if (pin && l.replace(/\D/g, "") === pin) return false;
+      if (cityN && l === cityN) return false;
+      if (stateN && (l === stateN || l === `${stateN} state`)) return false;
+      return true;
+    });
+  const locality = parts.length > 0 ? parts[parts.length - 1]! : "";
+  return locality.toLowerCase();
+}
+
 export function displayPlaceLabel(scope: MarketMatchScope): string {
   return scope === "locality" ? "your locality" : "your city";
 }
@@ -87,8 +117,8 @@ export type CompetitorLeaderboardRow = {
 };
 
 /**
- * Merge own store into competitors, sort by absolute area rank (90d orders).
- * Rank numbers match locality.your_area_rank / competitor.rank from the shared engine.
+ * Merge own store into the list and rank by the affinity % shown on each row.
+ * Order-count area rank is only a tiebreak so a higher % is never listed below a lower one.
  */
 export function buildCompetitorLeaderboard(args: {
   competitors: CompetitorRow[];
@@ -137,6 +167,7 @@ export function buildCompetitorLeaderboard(args: {
   }
 
   rows.sort((a, b) => {
+    if (b.affinity_pct !== a.affinity_pct) return b.affinity_pct - a.affinity_pct;
     if (a.area_rank !== b.area_rank) return a.area_rank - b.area_rank;
     if (b.orders_90d !== a.orders_90d) return b.orders_90d - a.orders_90d;
     if (a.is_own !== b.is_own) return a.is_own ? -1 : 1;
@@ -150,8 +181,6 @@ export function buildCompetitorLeaderboard(args: {
     affinity_pct: r.affinity_pct,
     rank_delta: r.rank_delta,
     is_own: r.is_own,
-    display_rank: String(
-      r.area_rank < Number.MAX_SAFE_INTEGER ? r.area_rank : idx + 1
-    ),
+    display_rank: String(idx + 1),
   }));
 }

@@ -139,7 +139,7 @@ export type PushPermissionController = {
   }>;
   openSettings: () => Promise<void>;
   /** Force token obtain + backend register when permission already granted. */
-  syncTokens: () => Promise<PushControllerSnapshot>;
+  syncTokens: (opts?: { force?: boolean }) => Promise<PushControllerSnapshot>;
   /** Start AppState / token-refresh / cold-start listeners. */
   startLifecycle: () => void;
   stopLifecycle: () => void;
@@ -178,6 +178,13 @@ export function createPushPermissionController(
   const refreshPermissionOnly = async (): Promise<PushControllerSnapshot> => {
     emit({ loading: true, error: null });
     const perm = await readNotificationPermission();
+    if (
+      snapshot.osStatus === perm.osStatus &&
+      snapshot.canAskAgain === perm.canAskAgain
+    ) {
+      emit({ loading: false });
+      return snapshot;
+    }
     log(`Notification permission: ${perm.osStatus}`, {
       canAskAgain: perm.canAskAgain,
       expoGo: isExpoGoRuntime(),
@@ -191,7 +198,7 @@ export function createPushPermissionController(
     return snapshot;
   };
 
-  const syncTokens = async (): Promise<PushControllerSnapshot> => {
+  const syncTokens = async (opts?: { force?: boolean }): Promise<PushControllerSnapshot> => {
     if (syncInFlight) return syncInFlight;
     syncInFlight = (async () => {
       const auth = options.getAuth();
@@ -211,12 +218,6 @@ export function createPushPermissionController(
       }
 
       if (isExpoGoRuntime()) {
-        // Expo Go cannot register remote FCM/Expo push tokens — soft-skip, never error.
-        if (__DEV__) {
-          console.info(
-            "[push] Expo Go detected — skipping remote FCM/Expo token registration",
-          );
-        }
         emit({
           expoGoUnsupported: true,
           syncStatus: "idle",
@@ -280,7 +281,12 @@ export function createPushPermissionController(
         snapshot.lastBackendSyncOk &&
         !snapshot.nativePushToken &&
         !!native?.token;
-      if (key === lastSyncedKey && snapshot.lastBackendSyncOk && !previouslyMissingNative) {
+      if (
+        !opts?.force &&
+        key === lastSyncedKey &&
+        snapshot.lastBackendSyncOk &&
+        !previouslyMissingNative
+      ) {
         emit({ syncStatus: "ok" });
         return snapshot;
       }
@@ -353,12 +359,27 @@ export function createPushPermissionController(
     return syncInFlight;
   };
 
+  let lastGrantedRefreshAt = 0;
+  let refreshInFlight: Promise<PushControllerSnapshot> | null = null;
   const refresh = async (opts?: { syncIfGranted?: boolean }): Promise<PushControllerSnapshot> => {
-    await refreshPermissionOnly();
-    if (opts?.syncIfGranted !== false && snapshot.osStatus === "granted") {
-      return syncTokens();
+    if (refreshInFlight) return refreshInFlight;
+    if (
+      snapshot.osStatus === "granted" &&
+      Date.now() - lastGrantedRefreshAt < 8000
+    ) {
+      return snapshot;
     }
-    return snapshot;
+    refreshInFlight = (async () => {
+      await refreshPermissionOnly();
+      if (opts?.syncIfGranted !== false && snapshot.osStatus === "granted") {
+        lastGrantedRefreshAt = Date.now();
+        return syncTokens();
+      }
+      return snapshot;
+    })().finally(() => {
+      refreshInFlight = null;
+    });
+    return refreshInFlight;
   };
 
   const requestOrOpenSettings = async () => {

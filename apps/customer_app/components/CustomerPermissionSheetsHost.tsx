@@ -12,7 +12,6 @@ import { useSegments } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { LocationPermissionModal } from "@/components/LocationPermissionModal";
 import { SmsPermissionBottomSheet } from "@/components/SmsPermissionBottomSheet";
-import { PermissionPromptBottomSheet } from "@/components/permissions/PermissionPromptBottomSheet";
 import { useLocationStore } from "@/store/locationStore";
 import { useSmsPermissionStore } from "@/store/smsPermissionStore";
 import { useNotificationPushPromptStore } from "@/store/notificationPushPromptStore";
@@ -44,7 +43,6 @@ export function CustomerPermissionSheetsHost() {
 
   const showNotificationSheet = useNotificationPushPromptStore((s) => s.showSheet);
   const notificationAllowInFlight = useNotificationPushPromptStore((s) => s.allowInFlight);
-  const handleSkipNotification = useNotificationPushPromptStore((s) => s.handleSkip);
 
   const accessToken = useAuthStore((s) => s.session?.accessToken ?? null);
   const isAuth = segments[0] === "(auth)";
@@ -131,15 +129,21 @@ export function CustomerPermissionSheetsHost() {
     await handleAllowSmsPermission();
   }, [handleAllowSmsPermission]);
 
-  const onAllowNotifications = useCallback(async () => {
-    await runNotificationPushAllow();
-  }, []);
-
-  const onSkipNotifications = useCallback(() => {
-    void handleSkipNotification().then(() => {
+  // System POST_NOTIFICATIONS dialog — no custom explanation sheet.
+  useEffect(() => {
+    if (!canShow || !showNotificationSheet || notificationAllowInFlight) return;
+    if (showSmsSheet || allowInFlight) return;
+    void runNotificationPushAllow().finally(() => {
       void finishActiveLocationBootstrap();
     });
-  }, [handleSkipNotification, finishActiveLocationBootstrap]);
+  }, [
+    canShow,
+    showNotificationSheet,
+    notificationAllowInFlight,
+    showSmsSheet,
+    allowInFlight,
+    finishActiveLocationBootstrap,
+  ]);
 
   const smsVisible = canShow && showSmsSheet && !allowInFlight;
   const notificationVisible =
@@ -162,19 +166,6 @@ export function CustomerPermissionSheetsHost() {
           onSkip={dismissSmsPermissionSheet}
         />
       ) : null}
-      <PermissionPromptBottomSheet
-        visible={notificationVisible}
-        icon="notifications-outline"
-        title="Turn on notifications"
-        message="Get order updates, delivery alerts, and important offers as system notifications — even when the app is closed."
-        note="You can change this anytime in your phone Settings. Skipping won't limit browsing or ordering."
-        noteTitle="Why we ask"
-        allowLabel="Allow notifications"
-        skipLabel="Skip for now"
-        loading={notificationAllowInFlight}
-        onAllow={() => void onAllowNotifications()}
-        onSkip={onSkipNotifications}
-      />
       <LocationPermissionModal
         visible={locationVisible}
         onDismiss={() => setShowLocationModal(false)}

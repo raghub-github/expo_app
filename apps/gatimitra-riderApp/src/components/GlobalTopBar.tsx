@@ -6,15 +6,13 @@ import { router } from "expo-router";
 import { HeaderTrailingActions } from "@/src/components/header/HeaderTrailingActions";
 import { TabHeaderBrand } from "@/src/components/header/TabHeaderBrand";
 import { LanguageSelectionSheet } from "@/src/components/language/LanguageSelectionSheet";
-import { useNotificationInboxStore } from "@/src/stores/notificationInboxStore";
+import { useRiderInboxUnreadStore } from "@/src/stores/riderInboxUnreadStore";
 import { useTabHeaderConfig } from "@/src/hooks/useTabHeaderTitle";
 
 export function GlobalTopBar() {
   const [showLangSheet, setShowLangSheet] = useState(false);
   const tabConfig = useTabHeaderConfig();
-  const unreadNotifications = useNotificationInboxStore((s) =>
-    s.items.filter((n) => !n.read).length,
-  );
+  const unreadNotifications = useRiderInboxUnreadStore((s) => s.unread);
 
   return (
     <SafeAreaView edges={["top"]} style={styles.safe}>

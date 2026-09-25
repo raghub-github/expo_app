@@ -67,6 +67,36 @@ export function localityNameFromAddress(
   return null;
 }
 
+/**
+ * Neighborhood token from an address, ignoring city, state, and PIN.
+ * Used to keep the locality competitor list to stores in the same area.
+ */
+export function localityMatchKey(
+  fullAddress: string | null | undefined,
+  city: string | null | undefined,
+  state: string | null | undefined,
+  postalCode: string | null | undefined
+): string {
+  const cityN = (city ?? "").trim().toLowerCase();
+  const stateN = (state ?? "").trim().toLowerCase();
+  const pin = (postalCode ?? "").replace(/\D/g, "");
+  const parts = (fullAddress ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => p.replace(/^\d{5,6}\s+/, "").replace(/\s+\d{5,6}$/, "").trim())
+    .filter((p) => {
+      const l = p.toLowerCase();
+      if (!l || /^\d{5,6}$/.test(l)) return false;
+      if (pin && l.replace(/\D/g, "") === pin) return false;
+      if (cityN && l === cityN) return false;
+      if (stateN && (l === stateN || l === `${stateN} state`)) return false;
+      return true;
+    });
+  const locality = parts.length > 0 ? parts[parts.length - 1]! : "";
+  return locality.toLowerCase();
+}
+
 export function displayPlaceLabel(scope: MarketMatchScope): string {
   return scope === "locality" ? "your locality" : "your city";
 }

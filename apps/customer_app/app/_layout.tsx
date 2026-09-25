@@ -46,6 +46,7 @@ import { useRiderOnlineCheckRealtime } from "@/hooks/useRiderOnlineCheckRealtime
 import { useOrderRealtime } from "@/hooks/useOrderRealtime";
 import { useActiveOrdersHydration } from "@/hooks/useActiveOrdersHydration";
 import { LocationWatchSync } from "@/components/LocationWatchSync";
+import { CustomerResumeReconcile } from "@/components/CustomerResumeReconcile";
 import { CustomerPermissionSheetsHost } from "@/components/CustomerPermissionSheetsHost";
 import { ServiceBlockedGateHost } from "@/components/ServiceBlockedGateHost";
 import { CustomerAccountBlockedGateHost } from "@/components/CustomerAccountBlockedGateHost";
@@ -230,9 +231,9 @@ LogBox.ignoreLogs([
   "Push notifications (remote notifications) functionality provided by expo-notifications was removed from Expo Go",
 ]);
 
-SplashScreen.preventAutoHideAsync().catch(() => {
-  // Ignore keep-awake related failures so app still loads
-});
+void SplashScreen.preventAutoHideAsync()
+  .then(() => SplashScreen.hideAsync())
+  .catch(() => {});
 
 // Singleton lives in @/lib/queryClient so logout/customer-scope teardown can
 // clear it from outside the React tree.
@@ -438,6 +439,7 @@ export default function RootLayout() {
                   <CustomerPermissionsRealtimeSync />
                   <LocationPermissionResumeCheck />
                   <LocationWatchSync />
+                  <CustomerResumeReconcile />
                   <LanguageSync />
                 </AppErrorBoundary>
                 <AuthNavigationGate />

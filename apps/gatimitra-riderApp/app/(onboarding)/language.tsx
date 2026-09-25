@@ -81,14 +81,14 @@ export default function LanguageScreen() {
 
       await setSelectedLanguage(langToSave);
       await new Promise((resolve) => setTimeout(resolve, 100));
-      router.replace("/(permissions)/request");
+      router.replace("/(auth)/login");
     } catch (error) {
       console.error("[LanguageScreen] Error saving language:", error);
       try {
-        router.replace("/(permissions)/request");
+        router.replace("/(auth)/login");
       } catch (navError) {
         console.error("[LanguageScreen] Navigation error:", navError);
-        router.push("/(permissions)/request");
+        router.push("/(auth)/login");
       }
     } finally {
       setLoading(false);

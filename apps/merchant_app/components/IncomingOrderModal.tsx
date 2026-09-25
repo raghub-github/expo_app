@@ -1082,7 +1082,6 @@ export default function IncomingOrderModal() {
       return;
     }
 
-    void addDismissed(current.ordersCoreId);
     shownCoreIdsRef.current.add(`c:${current.ordersCoreId}`);
     seenFoodIdsRef.current.add(current.id);
 

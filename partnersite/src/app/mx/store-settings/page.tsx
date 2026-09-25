@@ -14,7 +14,7 @@ import { RefundPolicyContent } from '@/components/RefundPolicyContent'
 import { supabase } from '@/lib/supabase';
 import { fetchRestaurantById as fetchStoreById, fetchRestaurantByName as fetchStoreByName } from '@/lib/database'
 import { MerchantStore } from '@/lib/merchantStore'
-import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants'
+import { PARTNER_SELECTED_STORE_CHANGED, readPartnerSelectedStoreId } from '@/lib/partner-selected-store'
 import { Clock, Phone, Save, AlertCircle, CheckCircle2, X, Zap, Shield, BarChart3, Bell, Crown, Star, Check, MapPin, Calendar, Copy, Power, Plus, Trash2, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Gift, Target, Globe, Users, Package, CreditCard, Sparkles, Smartphone, Lock, Unlock, Activity, FileText, Mail, MessageSquare, Radio, TrendingUp, Database, Eye, EyeOff, ShoppingBag, ChefHat, CheckCircle, XCircle, Image, Layers, BarChart2, Headphones, UserCheck, Filter } from 'lucide-react'
 import { PageSkeletonGeneric, StoreSettingsPageSkeleton } from '@/components/PageSkeleton'
 import { toast } from 'sonner'
@@ -31,7 +31,7 @@ import { PlanExpiredWarningModal } from '@/components/merchant/PlanExpiredWarnin
 import { PartnerBrowserNotificationSettings } from '@/components/PartnerBrowserNotificationSettings'
 import { StoreOperationsPanel } from '@/components/merchant/StoreOperationsPanel'
 import { MenuCapacityPanel } from '@/components/merchant/MenuCapacityPanel'
-import { shouldShowPlanExpiredWarning } from '@/lib/plan-expired-warning'
+import { PLAN_EXPIRED_WARNING_DISMISSED, shouldShowPlanExpiredWarning, wasPlanExpiredWarningShown } from '@/lib/plan-expired-warning'
 import {
   buildGatimitraCustomerStoreUrl,
 } from '@/lib/store-settings-tabs'
@@ -743,12 +743,17 @@ function StoreSettingsContent() {
     updateDurations()
   }, [])
 
-  // Resolve store id immediately (sync) so timings can load without waiting on profile fetch
+  // Resolve a real outlet only. Never fall back to the GMM0001 placeholder —
+  // those requests 400 and leave the page blank until a manual reload.
   useEffect(() => {
-    let id = searchParams?.get('storeId') ?? null
-    if (!id && typeof window !== 'undefined') id = localStorage.getItem('selectedStoreId')
-    if (!id) id = DEMO_STORE_ID
-    setStoreId(id)
+    const apply = () => {
+      const fromUrl = searchParams?.get('storeId') ?? searchParams?.get('store_id')
+      const id = readPartnerSelectedStoreId(fromUrl ?? undefined)
+      setStoreId(id || null)
+    }
+    apply()
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, apply)
+    return () => window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, apply)
   }, [searchParams])
 
   // Load store data
@@ -1339,7 +1344,9 @@ function StoreSettingsContent() {
           setAutoRenew(sub.data.subscription?.auto_renew === true ? true : false)
           const expiredSub = sub.data.expiredSubscription
           const planForWarning = sub.data.plan ?? expiredSub?.merchant_plans
-          if (
+          const onRenewalTab = (searchParams?.get('tab') || 'plans') === 'plans'
+          const show =
+            !onRenewalTab &&
             shouldShowPlanExpiredWarning({
               storeId,
               isActive: sub.data.isActive === true,
@@ -1348,14 +1355,14 @@ function StoreSettingsContent() {
               planPrice: Number(planForWarning?.price ?? 0),
               subscriptionId: expiredSub?.id,
             })
-          ) {
+          if (show) {
             setExpiredPlanMeta({
               planName: planForWarning?.plan_name,
               expiredAt: expiredSub?.billing_end_at ?? expiredSub?.expiry_date ?? null,
               subscriptionId: expiredSub?.id,
             })
-            setShowPlanExpiredWarning(true)
           }
+          setShowPlanExpiredWarning(show && !wasPlanExpiredWarningShown(storeId, expiredSub?.id))
           if (sub.data.plan?.plan_code) {
             setSubscriptionPlan(sub.data.plan.plan_code.toLowerCase() as 'free' | 'pro' | 'enterprise')
             setMaxMenuItems(sub.data.plan.max_menu_items)
@@ -1388,6 +1395,26 @@ function StoreSettingsContent() {
     loadPlansAndSubscription()
     return () => {
       cancelled = true
+    }
+  }, [storeId])
+
+  useEffect(() => {
+    if (!storeId) return
+    const closeIfDismissed = () => {
+      if (wasPlanExpiredWarningShown(storeId)) setShowPlanExpiredWarning(false)
+    }
+    const onDismiss = (event: Event) => {
+      const detail = (event as CustomEvent<{ storeId?: string }>).detail
+      if (!detail?.storeId || detail.storeId === storeId) closeIfDismissed()
+    }
+    const onStorage = (event: StorageEvent) => {
+      if (event.key?.includes(storeId)) closeIfDismissed()
+    }
+    window.addEventListener(PLAN_EXPIRED_WARNING_DISMISSED, onDismiss)
+    window.addEventListener('storage', onStorage)
+    return () => {
+      window.removeEventListener(PLAN_EXPIRED_WARNING_DISMISSED, onDismiss)
+      window.removeEventListener('storage', onStorage)
     }
   }, [storeId])
 
@@ -3542,7 +3569,7 @@ function StoreSettingsContent() {
     <>
       <MXLayoutWhite
         restaurantName={store?.store_name ?? 'Store'}
-        restaurantId={storeId || DEMO_STORE_ID}
+        restaurantId={storeId || ''}
         {...storeSettingsShellProps}
       >
         <PartnerPageHeader

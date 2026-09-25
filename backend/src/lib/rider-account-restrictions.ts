@@ -36,6 +36,10 @@ export type RiderAccountRestrictions = {
   allServicesBlacklisted: boolean;
   penaltyDue: number;
   penaltyDutyStopped: boolean;
+  /** Latest active penalty copy. Sound/UI only — does not create a penalty. */
+  penaltyEventId: string | null;
+  penaltyTitle: string | null;
+  penaltyFormattedOrderId: string | null;
 };
 
 function normServiceType(s: string): string {
@@ -393,6 +397,8 @@ export async function getRiderAccountRestrictions(
     penaltyBlockedServiceTypes: servicePenaltyBlocks.map((b) => b.serviceType),
   });
 
+  const penaltyNotice = await readLatestPenaltyNotice(riderId);
+
   return {
     accountRestricted,
     accountRestrictedReason,
@@ -402,7 +408,54 @@ export async function getRiderAccountRestrictions(
     allServicesBlacklisted,
     penaltyDue: payablePenaltyDue,
     penaltyDutyStopped,
+    penaltyEventId: penaltyNotice.penaltyEventId,
+    penaltyTitle: penaltyNotice.penaltyTitle,
+    penaltyFormattedOrderId: penaltyNotice.penaltyFormattedOrderId,
   };
+}
+
+async function readLatestPenaltyNotice(riderId: number): Promise<{
+  penaltyEventId: string | null;
+  penaltyTitle: string | null;
+  penaltyFormattedOrderId: string | null;
+}> {
+  const empty = {
+    penaltyEventId: null,
+    penaltyTitle: null,
+    penaltyFormattedOrderId: null,
+  };
+  if (!Number.isFinite(riderId) || riderId <= 0) return empty;
+  try {
+    const pg = getSql();
+    const rows = await pg`
+      SELECT wl.id::text AS id,
+             NULLIF(BTRIM(wl.description), '') AS title,
+             NULLIF(BTRIM(oc.formatted_order_id), '') AS formatted_order_id
+      FROM wallet_ledger wl
+      LEFT JOIN orders_core oc
+        ON split_part(COALESCE(wl.ref, ''), ':', 1) = 'rider_cancel_pen'
+       AND oc.id = CASE
+         WHEN split_part(COALESCE(wl.ref, ''), ':', 2) ~ '^[0-9]+$'
+         THEN split_part(COALESCE(wl.ref, ''), ':', 2)::bigint
+         ELSE NULL
+       END
+      WHERE wl.rider_id = ${riderId}
+        AND wl.entry_type::text = 'penalty'
+      ORDER BY wl.created_at DESC
+      LIMIT 1
+    `;
+    const row = (rows as { id?: string; title?: string | null; formatted_order_id?: string | null }[])[0];
+    if (row?.id) {
+      return {
+        penaltyEventId: `ledger:${row.id}`,
+        penaltyTitle: row.title?.trim() || null,
+        penaltyFormattedOrderId: row.formatted_order_id?.trim() || null,
+      };
+    }
+  } catch (err) {
+    console.warn("[rider-account-restrictions] penalty notice read failed", err);
+  }
+  return empty;
 }
 
 export type RiderDispatchService = "food" | "parcel" | "person_ride";

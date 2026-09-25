@@ -78,13 +78,15 @@ export async function resolveRiderOnboardingSummary(riderId: number): Promise<Ri
   if (!rider) return null;
 
   // Self-heal: Cashfree RC may be verified on rider_documents while rider_vehicles
-  // was never projected (onboarding verify-document deferProjection). Without a
-  // vehicle row, payment "Service access" shows NO_VEHICLE for every service.
+  // was never projected. Cap wait so dashboard eligibility cards never 502 on heal.
   try {
     const { ensureRiderVehicleFromStoredRc } = await import(
       "../../lib/rider-vehicle-from-rc.js"
     );
-    await ensureRiderVehicleFromStoredRc(riderId);
+    await Promise.race([
+      ensureRiderVehicleFromStoredRc(riderId),
+      new Promise<void>((resolve) => setTimeout(resolve, 2_500)),
+    ]);
   } catch (e) {
     console.warn(
       "[onboarding-summary] ensureRiderVehicleFromStoredRc failed:",

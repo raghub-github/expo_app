@@ -2,6 +2,7 @@ import React from "react";
 import { View, Text, StyleSheet } from "react-native";
 import type { RiderLedgerEntry } from "@/src/services/api/riderApi";
 import { LedgerTransactionRow } from "@/src/components/ledger/LedgerTransactionRow";
+import { isRiderUpiPaymentLedgerEntry } from "@/src/components/ledger/ledgerDisplay";
 import { LEDGER_CARD_RADIUS } from "@/src/components/ledger/ledgerUiTokens";
 
 type DayGroup = {
@@ -13,9 +14,10 @@ type DayGroup = {
 type Props = {
   groups: DayGroup[];
   firstHeaderControl?: React.ReactNode;
+  onEntryPress?: (entry: RiderLedgerEntry) => void;
 };
 
-export function LedgerGroupedTransactionList({ groups, firstHeaderControl }: Props) {
+export function LedgerGroupedTransactionList({ groups, firstHeaderControl, onEntryPress }: Props) {
   return (
     <View style={styles.root}>
       {groups.map((group, groupIndex) => (
@@ -27,9 +29,14 @@ export function LedgerGroupedTransactionList({ groups, firstHeaderControl }: Pro
           <View style={styles.card}>
             {group.entries.map((entry, index) => (
               <LedgerTransactionRow
-                key={`${entry.id}-${entry.createdAt}`}
+                key={String(entry.id)}
                 entry={entry}
                 showDivider={index > 0}
+                onPress={
+                  onEntryPress && isRiderUpiPaymentLedgerEntry(entry)
+                    ? onEntryPress
+                    : undefined
+                }
               />
             ))}
           </View>

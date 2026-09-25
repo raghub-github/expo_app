@@ -8,7 +8,7 @@ import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
 import { RefundPolicyContent } from '@/components/RefundPolicyContent';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 import { ArrowLeft } from 'lucide-react';
-import { DEMO_RESTAURANT_ID } from '@/lib/constants';
+import { PARTNER_SELECTED_STORE_CHANGED, readPartnerSelectedStoreId } from '@/lib/partner-selected-store';
 
 function RefundPolicyPageContent() {
   const router = useRouter();
@@ -16,16 +16,19 @@ function RefundPolicyPageContent() {
   const [storeId, setStoreId] = useState<string | null>(null);
 
   useEffect(() => {
-    const id =
-      searchParams?.get('storeId') ??
-      (typeof window !== 'undefined' ? localStorage.getItem('selectedStoreId') : null);
-    setStoreId(id || DEMO_RESTAURANT_ID);
+    const apply = () => {
+      const fromUrl = searchParams?.get('storeId');
+      setStoreId(readPartnerSelectedStoreId(fromUrl ?? undefined) || null);
+    };
+    apply();
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, apply);
+    return () => window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, apply);
   }, [searchParams]);
 
   return (
     <MXLayoutWhite
       restaurantName="Refund & Cancellation Policy"
-      restaurantId={storeId || DEMO_RESTAURANT_ID}
+      restaurantId={storeId || ''}
     >
       <PartnerPageHeader title="Refund & Cancellation Policy" subtitle="Payments, refunds, and order cancellation terms" />
       <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-orange-50/30">
@@ -56,7 +59,7 @@ function RefundPolicyPageContent() {
 
 function RefundPolicyFallback() {
   return (
-    <MXLayoutWhite restaurantName="Refund & Cancellation Policy" restaurantId={DEMO_RESTAURANT_ID}>
+    <MXLayoutWhite restaurantName="Refund & Cancellation Policy" restaurantId="">
       <PartnerPageHeader title="Refund & Cancellation Policy" subtitle="Payments, refunds, and order cancellation terms" />
       <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-orange-50/30">
         <div className="sticky top-0 z-[100] bg-white shadow-sm mx-shell-header !px-0">

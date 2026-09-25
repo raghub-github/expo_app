@@ -10,6 +10,7 @@ import { PARTNER_PAGE_HEADERS } from '@/lib/partner-page-headers'
 import type { Offer as DbOffer, OfferType, ApplicabilityType } from '@/lib/database'
 import { fetchStoreById, fetchStoreByName, fetchMenuCategories } from '@/lib/database'
 import { usePartnerStoreRecord } from '@/hooks/usePartnerStoreRecord'
+import { PARTNER_SELECTED_STORE_CHANGED, readPartnerSelectedStoreId } from '@/lib/partner-selected-store'
 import { Plus, Edit2, Trash2, Zap, X, Calendar, Percent, DollarSign, Tag, Gift, User, Clock, ChevronDown, ChevronLeft, ChevronRight, Copy, Search, Check, Sparkles, Truck, Layers, Package, RotateCcw, Minus } from 'lucide-react'
 import { toast } from 'sonner'
 import { ConfirmModal } from '@/components/ConfirmModal'
@@ -377,23 +378,13 @@ function OffersContent() {
 
   useEffect(() => {
     const getStoreId = () => {
-      let id = searchParams?.get('storeId') ?? searchParams?.get('store_id')
-      if (!id && typeof window !== 'undefined') {
-        id =
-          localStorage.getItem('selectedStoreId') ??
-          localStorage.getItem('selectedRestaurantId')
-      }
-      setStoreId(id ?? null)
+      const fromUrl = searchParams?.get('storeId') ?? searchParams?.get('store_id')
+      const id = readPartnerSelectedStoreId(fromUrl ?? undefined)
+      setStoreId(id || null)
     }
     getStoreId()
-
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'selectedStoreId' || e.key === 'selectedRestaurantId') {
-        getStoreId()
-      }
-    }
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, getStoreId)
+    return () => window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, getStoreId)
   }, [searchParams])
 
   useEffect(() => {

@@ -72,22 +72,34 @@ async function loadNotifications() {
   return import("expo-notifications");
 }
 
+function stageBlocks(emoji: string, count: number, total: number): string {
+  if (count <= 0 || total <= 0) return "";
+  return emoji.repeat(Math.max(2, Math.round((count / total) * 12)));
+}
+
 export function formatKitchenStickyBody(
   breakdown: ActiveOrdersBreakdown,
   _opts?: { eventSubtitle?: string | null }
 ): string {
-  // Zomato-style: only non-zero stages show; zero stages auto-hide.
-  // 0 live work → "Waiting for orders".
-  const parts: string[] = [];
-  if (breakdown.preparing > 0) parts.push(`🍳 ${breakdown.preparing} preparing`);
-  if (breakdown.ready > 0) parts.push(`✅ ${breakdown.ready} ready`);
-  if (breakdown.out_for_delivery > 0) {
-    parts.push(`🛵 ${breakdown.out_for_delivery} out for delivery`);
-  }
-  if (breakdown.pending_accept > 0) {
-    parts.push(`🔔 ${breakdown.pending_accept} new`);
-  }
-  return parts.length > 0 ? parts.join("\n") : "Waiting for orders";
+  const preparing = Math.max(0, breakdown.preparing);
+  const ready = Math.max(0, breakdown.ready);
+  const out = Math.max(0, breakdown.out_for_delivery);
+  const pending = Math.max(0, breakdown.pending_accept);
+  const kitchen = preparing + ready + out;
+  if (kitchen === 0 && pending === 0) return "Waiting for orders";
+
+  const lines: string[] = [];
+  if (pending > 0) lines.push(`🔔 ${pending} new`);
+  if (preparing > 0) lines.push(`🍳 ${preparing} preparing`);
+  if (ready > 0) lines.push(`✅ ${ready} ready`);
+  if (out > 0) lines.push(`🛵 ${out} out`);
+  const bar = [
+    stageBlocks("🟧", preparing, kitchen),
+    stageBlocks("🟩", ready, kitchen),
+    stageBlocks("🟦", out, kitchen),
+  ].join("");
+  if (bar) lines.push(bar);
+  return lines.join("\n");
 }
 
 export function formatKitchenStickyTitle(storeName: string): string {

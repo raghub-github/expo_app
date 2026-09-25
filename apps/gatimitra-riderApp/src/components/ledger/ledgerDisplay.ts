@@ -61,6 +61,24 @@ export function isRejectedWithdrawalLedgerEntry(entry: RiderLedgerEntry): boolea
   );
 }
 
+/**
+ * Rider paid via UPI/Razorpay (penalty recovery, subscription dues, etc.).
+ * Only these rows open the payment-detail bottom sheet — not earnings / auto fees.
+ */
+export function isRiderUpiPaymentLedgerEntry(entry: RiderLedgerEntry): boolean {
+  const entryType = entry.entryType.toLowerCase();
+  const refType = entry.refType?.toLowerCase() ?? "";
+  const desc = entry.description ?? "";
+
+  if (refType === "negative_wallet_recovery") return true;
+  if (refType === "subscription_dues_payment") return true;
+  if (entryType === "manual_add" && /via\s+razorpay/i.test(desc)) return true;
+  if (entryType === "manual_add" && /^pay_[A-Za-z0-9]+$/i.test(String(entry.ref ?? "").trim())) {
+    return true;
+  }
+  return false;
+}
+
 export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): string {
   const entryType = entry.entryType.toLowerCase();
   const category = ledgerCategoryLabel(entry, t);
@@ -76,6 +94,9 @@ export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): s
   }
   if (entryType === "withdrawal" || entry.refType?.toLowerCase() === "withdrawal") {
     return t("ledger.titleWithdrawal", "Withdrawal to Bank");
+  }
+  if (entryType === "manual_add" || entry.refType?.toLowerCase() === "negative_wallet_recovery") {
+    return t("ledger.titleWalletSettlement", "Negative wallet settlement");
   }
   if (entry.flow === "debit") {
     if (entry.category === "penalties") return t("ledger.titlePenalty", "Penalty Deduction");
@@ -97,10 +118,7 @@ export function ledgerStatusLabel(entry: RiderLedgerEntry, t: TFunction): string
   const entryType = entry.entryType.toLowerCase();
   if (entryType === "withdrawal") return t("ledger.statusDebited", "Debited");
   if (entry.flow === "debit") return t("ledger.statusDebited", "Debited");
-  if (entryType === "bonus" || entryType === "referral_bonus") {
-    return t("ledger.statusCredited", "Credited");
-  }
-  return t("ledger.created", "Created");
+  return t("ledger.statusCredited", "Credited");
 }
 
 export type LedgerVisualKind = "food" | "ride" | "incentive" | "parcel" | "withdrawal" | "adjustment";

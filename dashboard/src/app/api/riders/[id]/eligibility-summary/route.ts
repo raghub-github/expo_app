@@ -40,10 +40,31 @@ export async function GET(
       method: "POST",
       actorRole: userIsSuperAdmin ? "super_admin" : "rider_admin",
       body: JSON.stringify({ riderId }),
+      timeoutMs: 60_000,
     });
     return NextResponse.json(data, { status: response.status });
   } catch (e) {
     console.error("[GET riders/[id]/eligibility-summary proxy]", e);
-    return NextResponse.json({ error: "backend_unreachable" }, { status: 502 });
+    return NextResponse.json(
+      {
+        riderId,
+        vehicle: null,
+        documents: [],
+        services: {},
+        resolvedGeo: null,
+        onboarding: {
+          status: "UNAVAILABLE",
+          paymentEligible: false,
+          eligibleServices: [],
+          blockedServices: [],
+          allEligible: false,
+          nextAction: "Retry — eligibility backend timed out",
+        },
+        enforced: false,
+        error: "backend_unreachable",
+        degraded: true,
+      },
+      { status: 200 },
+    );
   }
 }

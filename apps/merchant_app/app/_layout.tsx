@@ -56,7 +56,9 @@ import {
 } from "@/components/MerchantBootstrapScreen";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 
-void SplashScreen.preventAutoHideAsync().catch(() => {});
+void SplashScreen.preventAutoHideAsync()
+  .then(() => SplashScreen.hideAsync())
+  .catch(() => {});
 
 // Expo Go (SDK 53+) cannot do remote push — suppress the package's console.error
 // if anything still touches expo-notifications during local development.
@@ -193,17 +195,13 @@ function MerchantNavigator() {
         >
           <Stack.Screen name="index" />
           <Stack.Screen name="(auth)" />
-          {signedIn ? (
-            <>
-              <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
-              <Stack.Screen name="order-review/[id]" options={{ headerShown: false }} />
-              <Stack.Screen name="feedback-reply/[id]" options={{ headerShown: false }} />
-              <Stack.Screen name="order-history" options={{ headerShown: false }} />
-              <Stack.Screen name="restaurant-status" options={{ headerShown: false }} />
-              <Stack.Screen name="support/chat/[ticketId]" options={{ headerShown: false }} />
-            </>
-          ) : null}
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="order/[id]" options={{ headerShown: false }} />
+          <Stack.Screen name="order-review/[id]" options={{ headerShown: false }} />
+          <Stack.Screen name="feedback-reply/[id]" options={{ headerShown: false }} />
+          <Stack.Screen name="order-history" options={{ headerShown: false }} />
+          <Stack.Screen name="restaurant-status" options={{ headerShown: false }} />
+          <Stack.Screen name="support/chat/[ticketId]" options={{ headerShown: false }} />
         </Stack>
       </MerchantStackRecovery>
       {signedIn ? <OfflineNetworkChrome /> : null}

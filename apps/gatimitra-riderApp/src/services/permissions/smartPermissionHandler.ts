@@ -269,7 +269,10 @@ export class SmartPermissionHandler {
 
     const foreground = await Location.getForegroundPermissionsAsync();
     if (foreground.status !== "granted" && foreground.canAskAgain !== false) {
-      await Location.requestForegroundPermissionsAsync();
+      const { requestForegroundLocationFromCoordinator } = await import(
+        "@/src/lib/riderForegroundLocationGate"
+      );
+      await requestForegroundLocationFromCoordinator({ force: true });
     }
     const foregroundAfter = await Location.getForegroundPermissionsAsync();
     if (foregroundAfter.status !== "granted") {
@@ -364,6 +367,13 @@ export class SmartPermissionHandler {
   private async checkLocationPermission(): Promise<PermissionCheckResult> {
     try {
       const foreground = await Location.getForegroundPermissionsAsync();
+      if (isExpoGo()) {
+        return {
+          status: foreground.status === "granted" ? "granted" : foreground.status === "denied" ? "denied" : "undetermined",
+          canAskAgain: foreground.canAskAgain !== false,
+          requiresSettings: foreground.status === "denied" && foreground.canAskAgain === false,
+        };
+      }
       const background = await Location.getBackgroundPermissionsAsync();
 
       if (
@@ -492,6 +502,11 @@ export class SmartPermissionHandler {
       }
 
       const foreground = await Location.getForegroundPermissionsAsync();
+      if (isExpoGo()) {
+        return foreground.status === "granted"
+          ? { enabled: true }
+          : { enabled: false, reason: "denied" };
+      }
       const background = await Location.getBackgroundPermissionsAsync();
 
       if (foreground.status !== "granted") {

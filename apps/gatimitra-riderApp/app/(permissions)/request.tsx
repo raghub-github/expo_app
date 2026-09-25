@@ -15,6 +15,7 @@ import { usePermissionStore } from "@/src/stores/permissionStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useOnboardingGate } from "@/src/hooks/useOnboardingGate";
 import { Logo } from "@/src/components/Logo";
+import { RiderBootstrapScreen } from "@/src/components/RiderBootstrapScreen";
 import { colors } from "@/src/theme";
 import { PremiumAllowButton } from "@/src/components/permissions/PremiumAllowButton";
 import {
@@ -28,7 +29,25 @@ import {
 } from "@/src/constants/permissionOnboardingSteps";
 import { acquireAndCommitRiderLocation } from "@/src/services/location/riderLocationController";
 import { useRiderLocationStore } from "@/src/stores/riderLocationStore";
-export default function PermissionRequestScreen() {
+
+let notificationAsk: Promise<boolean> | null = null;
+
+function askNotificationOnce(
+  check: () => Promise<{ status: string }>,
+  request: () => Promise<{ status: string }>
+): Promise<boolean> {
+  if (!notificationAsk) {
+    notificationAsk = (async () => {
+      const current = await check();
+      if (current.status === "granted") return true;
+      const asked = await request();
+      return asked.status === "granted";
+    })();
+  }
+  return notificationAsk;
+}
+
+export default function PermissionRequestScreen({ embedded = false }: { embedded?: boolean } = {}) {
   const setPermissions = usePermissionStore((s) => s.setPermissions);
   const setHasRequestedPermissions = usePermissionStore((s) => s.setHasRequestedPermissions);
   const hasRequestedPermissions = usePermissionStore((s) => s.hasRequestedPermissions);
@@ -54,14 +73,23 @@ export default function PermissionRequestScreen() {
   );
 
   const [currentStep, setCurrentStep] = useState(0);
+  const [systemAttempt, setSystemAttempt] = useState(0);
   const [loading, setLoading] = useState(false);
   const [locationIssue, setLocationIssue] = useState<LocationBlockingReason | null>(null);
   const progressAnim = useRef(new Animated.Value(0)).current;
   const pendingSettingsReturnRef = useRef(false);
   /** Prevents Allow + AppState recheck from advancing the same step twice. */
   const advancingStepRef = useRef(false);
+  /** One native system prompt per step. Do not reopen on every render. */
+  const nativePromptedStepRef = useRef(-1);
 
   useEffect(() => {
+    if (embedded) return;
+    router.replace("/(auth)/login");
+  }, [embedded]);
+
+  useEffect(() => {
+    if (embedded) return;
     if (!hasRequestedPermissions || !permissionHydrated) return;
     if (session) {
       if (!onboardingGateReady) return;
@@ -91,20 +119,28 @@ export default function PermissionRequestScreen() {
       console.warn("Error saving permission states:", error);
     }
 
+    // Sticky "wizard finished" only — never means OS location is granted.
+    // Live FG location is owned by riderForegroundLocationGate.
     await setHasRequestedPermissions(true);
+
+    if (embedded) return;
 
     if (session) {
       router.replace("/");
     } else {
       router.replace("/(auth)/login");
     }
-  }, [session, setPermissions, setHasRequestedPermissions]);
+  }, [embedded, session, setPermissions, setHasRequestedPermissions]);
 
+  const lastAdvancedStepRef = useRef(-1);
   const handleNextStep = useCallback(() => {
+    const from = currentStep;
+    if (lastAdvancedStepRef.current >= from) return;
+    lastAdvancedStepRef.current = from;
     advancingStepRef.current = false;
     pendingSettingsReturnRef.current = false;
-    if (currentStep < onboardingSteps.length - 1) {
-      setCurrentStep((prev) => prev + 1);
+    if (from < onboardingSteps.length - 1) {
+      setCurrentStep(from + 1);
     } else {
       void handleComplete();
     }
@@ -113,11 +149,7 @@ export default function PermissionRequestScreen() {
   const handleSkip = useCallback(() => {
     const step = onboardingSteps[currentStep];
     // Required system-gated steps — no skip (must open Settings / OS dialog).
-    if (
-      step?.key === "location" ||
-      step?.key === "background_running" ||
-      step?.key === "battery_optimization"
-    ) {
+    if (step?.key === "location") {
       return;
     }
     if (advancingStepRef.current) return;
@@ -280,55 +312,82 @@ export default function PermissionRequestScreen() {
     }
   }, [currentStep, onboardingSteps, handleNextStep, setPermissionStepGranted]);
 
-  useEffect(() => {
-    setLocationIssue(null);
-    let cancelled = false;
-    // When landing on a step, auto-advance if the OS is already configured.
-    void (async () => {
-      const step = onboardingSteps[currentStep];
-      if (!step || !permissionHydrated || hasRequestedPermissions) return;
+  const advanceRef = useRef(handleNextStep);
+  advanceRef.current = handleNextStep;
 
-      if (step.key === "location") {
-        const ok = await smartPermissionHandler.isLocationFullyEnabled();
-        if (cancelled || !ok.enabled) return;
-        if (advancingStepRef.current) return;
-        advancingStepRef.current = true;
-        setPermissionStepGranted("location", true);
-        setTimeout(() => {
-          if (!cancelled) handleNextStep();
-        }, 300);
+  const systemStep = onboardingSteps[currentStep]?.key;
+  const isNativeDialogStep =
+    systemStep === "location" || systemStep === "notifications";
+
+  const promptedSystemStepRef = useRef(-1);
+
+  useEffect(() => {
+    if (!embedded || !permissionHydrated || hasRequestedPermissions) return;
+    const step = onboardingSteps[currentStep];
+    if (!step) return;
+    if (step.key !== "location" && step.key !== "notifications") {
+      return;
+    }
+    const stepIndex = currentStep;
+    const stepKey = step.key;
+    const batteryIndex = onboardingSteps.findIndex((item) => item.key === "battery_optimization");
+    if (promptedSystemStepRef.current === currentStep && stepKey !== "notifications") return;
+    promptedSystemStepRef.current = currentStep;
+
+    void (async () => {
+      let granted = false;
+      try {
+        if (stepKey === "location") {
+          const { presentLocationPermissionDialog } = await import(
+            "@/src/lib/riderForegroundLocationGate"
+          );
+          granted = await presentLocationPermissionDialog();
+        } else {
+          let sawDialog = false;
+          let movedOn = false;
+          const showBatterySheet = () => {
+            if (movedOn || batteryIndex < 0) return;
+            movedOn = true;
+            setCurrentStep(batteryIndex);
+          };
+          const watch = AppState.addEventListener("change", (next) => {
+            if (next === "inactive" || next === "background") sawDialog = true;
+            if (next === "active" && sawDialog) showBatterySheet();
+          });
+          try {
+            granted = await askNotificationOnce(
+              () => smartPermissionHandler.checkPermission("notifications"),
+              () => permissionManager.requestNotifications()
+            );
+          } finally {
+            watch.remove();
+          }
+          showBatterySheet();
+        }
+      } catch (error) {
+        console.warn("Error opening system permission:", error);
+      }
+      setPermissionStepGranted(stepKey, granted);
+      if (stepKey === "notifications") return;
+      // Location denied: do not advance the carousel into a blank native step.
+      // Mark the soft wizard done and let RiderForegroundLocationGateHost own OS re-prompt.
+      if (stepKey === "location" && !granted) {
+        void handleComplete();
         return;
       }
-
-      // Only auto-advance steps we can read RELIABLY from the OS. Notifications
-      // (and location, handled above) have trustworthy OS APIs. Battery,
-      // background-running and display-over-apps rely on OEM-specific signals
-      // that are unreliable — especially on MIUI, where expo-battery can report
-      // "unrestricted" incorrectly and make battery + background (which share
-      // that signal) both auto-skip. Never silently skip those: always show the
-      // step and require an explicit Allow tap.
-      if (step.key !== "notifications") return;
-
-      const check = await smartPermissionHandler.checkPermission(step.key);
-      if (cancelled || check.status !== "granted") return;
-      if (advancingStepRef.current) return;
-      advancingStepRef.current = true;
-      setPermissionStepGranted(step.key, true);
-      await smartPermissionHandler.markPermissionGranted(step.key);
-      setTimeout(() => {
-        if (!cancelled) handleNextStep();
-      }, 300);
+      setCurrentStep((prev) => {
+        if (prev !== stepIndex) return prev;
+        return Math.min(stepIndex + 1, onboardingSteps.length - 1);
+      });
     })();
-    return () => {
-      cancelled = true;
-    };
   }, [
     currentStep,
     permissionHydrated,
     hasRequestedPermissions,
     onboardingSteps,
     setPermissionStepGranted,
-    handleNextStep,
+    embedded,
+    handleComplete,
   ]);
 
   useEffect(() => {
@@ -340,19 +399,19 @@ export default function PermissionRequestScreen() {
   }, [currentStep, onboardingSteps.length, progressAnim]);
 
   useEffect(() => {
+    const step = onboardingSteps[currentStep];
+    if (!step || step.key === "location" || step.key === "notifications") return;
     const subscription = AppState.addEventListener("change", async (nextAppState) => {
-      if (nextAppState === "active" && currentStep < onboardingSteps.length) {
-        await new Promise((resolve) => setTimeout(resolve, 800));
-        try {
-          await recheckCurrentStep();
-        } catch (error) {
-          console.warn("Error re-checking permission:", error);
-        }
+      if (nextAppState !== "active") return;
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      try {
+        await recheckCurrentStep();
+      } catch (error) {
+        console.warn("Error re-checking permission:", error);
       }
     });
-
     return () => subscription.remove();
-  }, [currentStep, onboardingSteps.length, recheckCurrentStep]);
+  }, [currentStep, onboardingSteps, recheckCurrentStep]);
 
   const handleAllow = async () => {
     const step = onboardingSteps[currentStep];
@@ -386,6 +445,8 @@ export default function PermissionRequestScreen() {
       setLoading(false);
     }
   };
+
+  if (!embedded) return null;
 
   if (!permissionHydrated) {
     return (
@@ -431,65 +492,20 @@ export default function PermissionRequestScreen() {
     );
   }
 
-  if (currentStep >= onboardingSteps.length) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.centerContent}>
-          <Logo size="large" vertical style={{ marginBottom: 24 }} />
-          <Text style={styles.title}>All Set!</Text>
-          <PremiumAllowButton onPress={() => void handleComplete()} />
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   const step = onboardingSteps[currentStep];
-  const progressWidth = progressAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0%", "100%"],
-  });
+  if (!step || isNativeDialogStep) return null;
 
   return (
-    <View style={styles.screen}>
-      <SafeAreaView style={styles.backdrop} edges={["top"]}>
-        <View style={styles.header}>
-          <Logo size="medium" />
-        </View>
-
-        <View style={styles.progressContainer}>
-          <View style={styles.progressBarBackground}>
-            <Animated.View
-              style={[
-                styles.progressBarFill,
-                {
-                  width: progressWidth,
-                  backgroundColor: step.gradient[0],
-                },
-              ]}
-            />
-          </View>
-        </View>
-
-        <Text style={styles.backdropHint}>Set up permissions to start delivering</Text>
-      </SafeAreaView>
-
-      <PermissionStepSheet
-        visible
-        step={step}
-        stepIndex={currentStep}
-        totalSteps={onboardingSteps.length}
-        loading={loading}
-        locationIssue={locationIssue}
-        onAllow={step.key === "location" ? runLocationAllowFlow : handleAllow}
-        onSkip={
-          step.key === "location" ||
-          step.key === "background_running" ||
-          step.key === "battery_optimization"
-            ? undefined
-            : handleSkip
-        }
-      />
-    </View>
+    <PermissionStepSheet
+      visible
+      step={step}
+      stepIndex={currentStep}
+      totalSteps={onboardingSteps.length}
+      loading={loading}
+      locationIssue={locationIssue}
+      onAllow={handleAllow}
+      onSkip={step.key === "location" ? undefined : handleSkip}
+    />
   );
 }
 

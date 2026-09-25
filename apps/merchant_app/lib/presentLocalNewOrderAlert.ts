@@ -13,11 +13,6 @@ import {
   wasPushPresented,
   pushPresentationKey,
 } from "@gatimitra/expo-push-kit";
-import {
-  MERCHANT_NEW_ORDER_CHANNEL_ID,
-  MERCHANT_NEW_ORDER_SOUND,
-} from "@/lib/merchantNewOrderChannel";
-import { merchantHomeNewOrdersHref } from "@/lib/merchantNavigation";
 import { GatiMitraMerchant } from "@/constants/theme";
 
 const presentedKeys = new Set<string>();
@@ -112,83 +107,13 @@ async function ensureLifecycleChannel(
  * Expo Go: default OS sound (no bundled Partner wav / FCM).
  * Native builds: MAX channel + bundled `notification` sound + DND bypass.
  */
-export async function presentLocalNewOrderAlert(args: {
+export async function presentLocalNewOrderAlert(_args: {
   orderId: string;
   displayId?: string | null;
   storeId?: number | null;
 }): Promise<boolean> {
-  if (Platform.OS !== "android") return false;
-  const orderId = String(args.orderId ?? "").trim();
-  if (!orderId) return false;
-
-  await syncPresentedAlertsFromOsTray();
-
-  const localKey = `new:${orderId}`;
-  const evtKey = pushPresentationKey({
-    templateCode: "MERCHANT_NEW_ORDER",
-    orderId,
-  });
-  if (wasPushPresented(localKey) || wasPushPresented(evtKey) || presentedKeys.has(localKey)) {
-    return false;
-  }
-  if (!claimPushPresented(localKey)) return false;
-  rememberPushPresented(evtKey);
-  presentedKeys.add(localKey);
-
-  const expoGo = isExpoGoRuntime();
-  const channelId = expoGo ? "merchant_new_orders_expo_go" : MERCHANT_NEW_ORDER_CHANNEL_ID;
-  const sound = expoGo ? "default" : MERCHANT_NEW_ORDER_SOUND;
-
-  try {
-    const Notifications = await import("expo-notifications");
-    await Notifications.setNotificationChannelAsync(channelId, {
-      name: "New order alerts",
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 400, 200, 400],
-      lightColor: "#3EB489",
-      sound,
-      bypassDnd: !expoGo,
-      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-      enableVibrate: true,
-    });
-
-    const display = String(args.displayId ?? orderId).trim() || orderId;
-    const href = merchantHomeNewOrdersHref();
-    await Notifications.scheduleNotificationAsync({
-      identifier: `merchant-new-order-${orderId}`,
-      content: {
-        title: "🔔 New Order Received",
-        body: `Order #${display} is waiting for your acceptance.`,
-        sound,
-        color: GatiMitraMerchant.primary,
-        priority: Notifications.AndroidNotificationPriority.MAX,
-        data: {
-          type: "merchant_new_order",
-          event: "NEW_ORDER",
-          template_code: "MERCHANT_NEW_ORDER",
-          gmType: "MERCHANT_NEW_ORDER",
-          foodOrderId: orderId,
-          orderId,
-          orderShortId: display,
-          storeId: args.storeId ?? "",
-          url: href,
-          screen: "new_order",
-          skip_in_app_banner: true,
-          refreshLiveOrders: true,
-          alertStartedAt: String(Date.now()),
-          alertSessionId: `MERCHANT_NEW_ORDER:${orderId}:${args.storeId ?? ""}`,
-          localFallback: true,
-          expoGo: expoGo ? true : undefined,
-        },
-        ...(Platform.OS === "android" ? { channelId } : {}),
-      },
-      trigger: null,
-    });
-    return true;
-  } catch {
-    presentedKeys.delete(`new:${orderId}`);
-    return false;
-  }
+  // The store-status row ("N new") is the only new-order tray alert.
+  return false;
 }
 
 function lifecycleCopy(

@@ -7,7 +7,7 @@ import { DutyToggle } from "@/src/components/DutyToggle";
 import { RiderServiceTypeDropdown } from "@/src/components/header/RiderServiceTypeDropdown";
 import { HeaderTrailingActions } from "@/src/components/header/HeaderTrailingActions";
 import { LanguageSelectionSheet } from "@/src/components/language/LanguageSelectionSheet";
-import { useNotificationInboxStore } from "@/src/stores/notificationInboxStore";
+import { useRiderInboxUnreadStore } from "@/src/stores/riderInboxUnreadStore";
 import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
 export const ORDERS_HEADER_BG = "#F5F7FA";
@@ -15,9 +15,7 @@ export const ORDERS_HEADER_BG = "#F5F7FA";
 export function HomeMapHeaderInner() {
   const headerRef = useRef<View>(null);
   const [showLangSheet, setShowLangSheet] = useState(false);
-  const unreadNotifications = useNotificationInboxStore((s) =>
-    s.items.filter((n) => !n.read).length,
-  );
+  const unreadNotifications = useRiderInboxUnreadStore((s) => s.unread);
   const { rs, width, layoutFontScale, isCompactWidth } = useResponsiveLayout();
   /** High display zoom / narrow width — header chips must shrink and not collide. */
   const tightHeader = isCompactWidth || width < 380 || layoutFontScale > 1.12;

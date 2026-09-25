@@ -1904,10 +1904,16 @@ async function attachRiderOrderCancellationPenalty(
 
     if (!cancelledByType) {
       const actorRows = await db.execute<{ cancelled_by_type: string | null }>(sql`
-        SELECT COALESCE(r.cancelled_by_type, p.cancelled_by_type) AS cancelled_by_type
+        SELECT COALESCE(
+          NULLIF(BTRIM(r.cancelled_by_type), ''),
+          NULLIF(BTRIM(p.cancelled_by_type), ''),
+          NULLIF(BTRIM(c.cancelled_by), ''),
+          NULLIF(BTRIM(f.cancelled_by_label), '')
+        ) AS cancelled_by_type
         FROM orders_core c
         LEFT JOIN orders_ride r ON r.order_id = c.id
         LEFT JOIN orders_parcel p ON p.order_id = c.id
+        LEFT JOIN orders_food f ON f.order_id = c.id
         WHERE c.id = ${orderCorePk}
         LIMIT 1
       `);
@@ -6944,7 +6950,13 @@ export async function cancelAssignedRideForRider(
   riderId: number,
   orderRef: string,
   input: { reasonCode: string; reasonText?: string | null }
-): Promise<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }> {
+): Promise<{
+  ok: true;
+  penaltyApplied?: boolean;
+  penaltyAmount?: number;
+  formattedOrderId?: string | null;
+  cancelledByType?: "rider";
+}> {
   const db = getDb();
   const now = new Date();
   const reasonCode = input.reasonCode?.trim();
@@ -6957,6 +6969,7 @@ export async function cancelAssignedRideForRider(
       .select({
         id: ordersCore.id,
         orderId: ordersCore.orderId,
+        formattedOrderId: ordersCore.formattedOrderId,
         status: ordersCore.status,
         currentStatus: ordersCore.currentStatus,
       })
@@ -6989,7 +7002,14 @@ export async function cancelAssignedRideForRider(
     const orderIdText = existing.orderId.trim();
     const reasonText = input.reasonText?.trim() || null;
 
-    return { orderCoreId: existing.id, orderIdText, reasonText, status: st, currentStatus: existing.currentStatus };
+    return {
+      orderCoreId: existing.id,
+      orderIdText,
+      formattedOrderId: existing.formattedOrderId,
+      reasonText,
+      status: st,
+      currentStatus: existing.currentStatus,
+    };
   });
 
   let penalty: { penaltyApplied: boolean; penaltyAmount: number } = {
@@ -7095,6 +7115,8 @@ export async function cancelAssignedRideForRider(
     ok: true as const,
     penaltyApplied: penalty.penaltyApplied,
     penaltyAmount: penalty.penaltyAmount,
+    formattedOrderId: cancelled.formattedOrderId?.trim() || null,
+    cancelledByType: "rider" as const,
   };
 }
 
@@ -7102,7 +7124,13 @@ export async function cancelAssignedFoodForRider(
   riderId: number,
   orderRef: string,
   input: { reasonCode: string; reasonText?: string | null }
-): Promise<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }> {
+): Promise<{
+  ok: true;
+  penaltyApplied?: boolean;
+  penaltyAmount?: number;
+  formattedOrderId?: string | null;
+  cancelledByType?: "rider";
+}> {
   const db = getDb();
   const reasonCode = input.reasonCode?.trim();
   if (!reasonCode) {
@@ -7113,6 +7141,7 @@ export async function cancelAssignedFoodForRider(
     .select({
       id: ordersCore.id,
       orderId: ordersCore.orderId,
+      formattedOrderId: ordersCore.formattedOrderId,
       foodStatus: ordersFood.orderStatus,
     })
     .from(ordersCore)
@@ -7172,6 +7201,8 @@ export async function cancelAssignedFoodForRider(
           Number(penalty.penaltyAmount ?? 0) > 0
             ? Number(penalty.penaltyAmount)
             : replay.penaltyAmount,
+        formattedOrderId: existing.formattedOrderId?.trim() || null,
+        cancelledByType: "rider" as const,
       };
     }
     throw err;
@@ -7181,6 +7212,8 @@ export async function cancelAssignedFoodForRider(
     ok: true as const,
     penaltyApplied: penalty.penaltyApplied,
     penaltyAmount: penalty.penaltyAmount,
+    formattedOrderId: existing.formattedOrderId?.trim() || null,
+    cancelledByType: "rider" as const,
   };
 }
 
@@ -7258,7 +7291,13 @@ export async function cancelAssignedOrderForRider(
   riderId: number,
   orderRef: string,
   input: { reasonCode: string; reasonText?: string | null }
-): Promise<{ ok: true; penaltyApplied?: boolean; penaltyAmount?: number }> {
+): Promise<{
+  ok: true;
+  penaltyApplied?: boolean;
+  penaltyAmount?: number;
+  formattedOrderId?: string | null;
+  cancelledByType?: "rider";
+}> {
   const db = getDb();
   const [existing] = await db
     .select({

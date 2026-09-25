@@ -49,6 +49,8 @@ type NativeOrderAlertModule = {
     ringInSilent: boolean,
     volume01: number
   ) => Promise<string | null>;
+  setPersistentPill?: (enabled: boolean, count: number, orderId: string | null) => Promise<boolean>;
+  consumePillLaunch?: () => Promise<{ kind?: string; count?: number; orderId?: string | null } | null>;
 };
 
 const Native = NativeModules.GatimitraOrderAlert as NativeOrderAlertModule | undefined;
@@ -152,6 +154,34 @@ export async function persistNativeAlertSound(args: {
       args.ringInSilent !== false,
       Math.min(1, Math.max(0, args.volume01 ?? 1))
     );
+  } catch {
+    return null;
+  }
+}
+
+/** Compact Orders N pill. No-ops on a build that does not include OrderAlertPill yet. */
+export async function setPersistentOrderPill(
+  enabled: boolean,
+  count: number,
+  orderId?: string | null
+): Promise<void> {
+  if (!Native?.setPersistentPill || Platform.OS !== "android") return;
+  try {
+    await Native.setPersistentPill(enabled, Math.max(0, Math.floor(count)), orderId ?? "");
+  } catch {
+    /* installed APK may predate this method */
+  }
+}
+
+export async function consumePersistentPillLaunch(): Promise<{
+  count: number;
+  orderId: string;
+} | null> {
+  if (!Native?.consumePillLaunch || Platform.OS !== "android") return null;
+  try {
+    const row = await Native.consumePillLaunch();
+    if (!row || row.kind !== "orders") return null;
+    return { count: Number(row.count ?? 0), orderId: String(row.orderId ?? "") };
   } catch {
     return null;
   }

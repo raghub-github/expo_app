@@ -46,8 +46,28 @@ public class OrderAlertForegroundService extends Service {
 
   @Override
   public int onStartCommand(Intent intent, int flags, int startId) {
+    OrderAlertVisibility.register(this);
+    if (intent == null) {
+      return holdPillOrStop();
+    }
+    if (OrderAlertPill.ACTION_PILL.equals(intent.getAction())) {
+      if (OrderAlertVisibility.shouldHideBecausePartnerIsOpen(this)) {
+        OrderAlertPill.setPartnerForeground(this, true);
+      }
+      OrderAlertPill.apply(this);
+      if (OrderAlertController.getActive(this) != null) {
+        return START_STICKY;
+      }
+      try {
+        startAsForeground(buildPillNotification(OrderAlertPill.count(this)));
+      } catch (Throwable ignored) {
+      }
+      return START_STICKY;
+    }
+
     if (intent != null && OrderAlertController.ACTION_STOP.equals(intent.getAction())) {
       stopInternal();
+      if (OrderAlertPill.isEnabled(this) && OrderAlertOverlay.canDraw(this)) return START_STICKY;
       return START_NOT_STICKY;
     }
 
@@ -75,8 +95,7 @@ public class OrderAlertForegroundService extends Service {
     }
 
     if (sessionId == null || sessionId.trim().length() == 0) {
-      stopInternal();
-      return START_NOT_STICKY;
+      return holdPillOrStop();
     }
 
     Notification notification = buildNotification(sessionId, orderId, title, body);
@@ -96,6 +115,7 @@ public class OrderAlertForegroundService extends Service {
     // Independent of JS / Manage Communication / selected-sound cache.
     // startForeground() already ran so Android allows the overlay window.
     OrderAlertOverlay.show(this, sessionId, orderId, offerId, title, body, pickup, drop, orderType);
+    OrderAlertPill.apply(this);
     handler.removeCallbacks(watchdog);
     handler.postDelayed(watchdog, MAX_ALERT_MS);
     Log.i(TAG, "started sessionId=" + sessionId + " orderId=" + orderId);
@@ -106,6 +126,7 @@ public class OrderAlertForegroundService extends Service {
   public void onDestroy() {
     handler.removeCallbacks(watchdog);
     OrderAlertOverlay.hideAll(this);
+    OrderAlertPill.hide(this);
     OrderAlertController.onServiceDestroy();
     releaseWakeLock();
     try {
@@ -120,15 +141,77 @@ public class OrderAlertForegroundService extends Service {
     return null;
   }
 
+  private int holdPillOrStop() {
+    if (OrderAlertPill.isEnabled(this) && OrderAlertOverlay.canDraw(this)) {
+      if (OrderAlertVisibility.shouldHideBecausePartnerIsOpen(this)) {
+        OrderAlertPill.setPartnerForeground(this, true);
+      }
+      OrderAlertPill.apply(this);
+      try {
+        startAsForeground(buildPillNotification(OrderAlertPill.count(this)));
+      } catch (Throwable ignored) {
+      }
+      return START_STICKY;
+    }
+    stopInternal();
+    return START_NOT_STICKY;
+  }
+
   private void stopInternal() {
     handler.removeCallbacks(watchdog);
     OrderAlertOverlay.hideAll(this);
     OrderAlertController.onServiceDestroy();
+    if (OrderAlertPill.isEnabled(this) && OrderAlertOverlay.canDraw(this)) {
+      OrderAlertPill.apply(this);
+      try {
+        startAsForeground(buildPillNotification(OrderAlertPill.count(this)));
+      } catch (Throwable ignored) {
+      }
+      return;
+    }
+    OrderAlertPill.hide(this);
     try {
       stopForeground(true);
     } catch (Throwable ignored) {
     }
     stopSelf();
+  }
+
+  private Notification buildPillNotification(int count) {
+    ensurePillChannel();
+    Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
+    if (launch == null) launch = new Intent();
+    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+    launch.putExtra("gmPill", "orders");
+    int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
+    PendingIntent content = PendingIntent.getActivity(this, 94011, launch, flags);
+    return new NotificationCompat.Builder(this, "order_pill_v1")
+        .setSmallIcon(smallIcon())
+        .setContentTitle("Orders " + Math.max(0, count))
+        .setContentText("Tap to open GatiMitra Partner")
+        .setOngoing(true)
+        .setOnlyAlertOnce(true)
+        .setSilent(true)
+        .setPriority(NotificationCompat.PRIORITY_MIN)
+        .setContentIntent(content)
+        .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+        .build();
+  }
+
+  private void ensurePillChannel() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+    NotificationManager nm = getSystemService(NotificationManager.class);
+    if (nm == null || nm.getNotificationChannel("order_pill_v1") != null) return;
+    NotificationChannel channel = new NotificationChannel(
+        "order_pill_v1",
+        "Order count",
+        NotificationManager.IMPORTANCE_MIN
+    );
+    channel.setSound(null, null);
+    channel.enableVibration(false);
+    channel.setShowBadge(false);
+    nm.createNotificationChannel(channel);
   }
 
   private void startAsForeground(Notification notification) {
@@ -159,10 +242,19 @@ public class OrderAlertForegroundService extends Service {
 
   private Notification buildNotification(String sessionId, String orderId, String title, String body) {
     ensureChannel();
-    String safeTitle = (title != null && title.trim().length() > 0) ? title.trim() : defaultTitle();
-    String safeBody = (body != null && body.trim().length() > 0)
-        ? body.trim()
-        : (orderId != null && orderId.length() > 0 ? ("Order " + orderId) : "Open the app to respond");
+    String safeTitle = "NEW ORDER";
+    JSONObject active = OrderAlertController.getActive(this);
+    String display = active != null ? active.optString("displayOrderId", "") : "";
+    if (display.matches("^\\d+$")) display = "";
+    String amount = active != null ? active.optString("amount", "") : "";
+    String safeBody;
+    if (display.length() > 0) {
+      safeBody = amount.length() > 0 && !"0".equals(amount) ? (display + " · ₹" + amount.replace("₹", "")) : display;
+    } else if (body != null && body.trim().length() > 0) {
+      safeBody = body.trim();
+    } else {
+      safeBody = "Open the app to respond";
+    }
 
     Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
     if (launch == null) {
@@ -182,12 +274,16 @@ public class OrderAlertForegroundService extends Service {
     }
     PendingIntent content = PendingIntent.getActivity(this, NOTIFICATION_ID, launch, flags);
 
-    Intent stopIntent = new Intent(this, OrderAlertStopReceiver.class);
-    stopIntent.setAction(OrderAlertController.ACTION_STOP);
-    stopIntent.putExtra(OrderAlertController.EXTRA_SESSION_ID, sessionId);
-    PendingIntent stopPi = PendingIntent.getBroadcast(this, NOTIFICATION_ID + 1, stopIntent, flags);
+    Intent acceptIntent = new Intent(this, OrderAlertActionReceiver.class);
+    acceptIntent.setAction(OrderAlertHeadsUp.ACTION_ACCEPT);
+    acceptIntent.putExtra(OrderAlertController.EXTRA_SESSION_ID, sessionId);
+    Intent rejectIntent = new Intent(this, OrderAlertActionReceiver.class);
+    rejectIntent.setAction(OrderAlertHeadsUp.ACTION_REJECT);
+    rejectIntent.putExtra(OrderAlertController.EXTRA_SESSION_ID, sessionId);
+    PendingIntent acceptPi = PendingIntent.getBroadcast(this, NOTIFICATION_ID + 2, acceptIntent, flags);
+    PendingIntent rejectPi = PendingIntent.getBroadcast(this, NOTIFICATION_ID + 3, rejectIntent, flags);
 
-    return new NotificationCompat.Builder(this, CHANNEL_ID)
+    NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(smallIcon())
         .setContentTitle(safeTitle)
         .setContentText(safeBody)
@@ -201,12 +297,28 @@ public class OrderAlertForegroundService extends Service {
         .setPriority(NotificationCompat.PRIORITY_MAX)
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setContentIntent(content)
-        // Do NOT setFullScreenIntent. That launches MainActivity (React) and
-        // steals the foreground from Chrome/Zomato. Appear-on-top is only
-        // OrderAlertOverlay TYPE_APPLICATION_OVERLAY after startForeground().
-        .addAction(0, "Stop alert", stopPi)
-        .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-        .build();
+        .addAction(0, "REJECT", rejectPi)
+        .addAction(0, "ACCEPT", acceptPi)
+        .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE);
+
+    if (isLocked()) {
+      Intent lock = new Intent(this, OrderAlertLockActivity.class);
+      lock.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
+      lock.putExtra(OrderAlertController.EXTRA_SESSION_ID, sessionId);
+      PendingIntent full = PendingIntent.getActivity(this, NOTIFICATION_ID + 4, lock, flags);
+      builder.setFullScreenIntent(full, true);
+    }
+    return builder.build();
+  }
+
+  private boolean isLocked() {
+    try {
+      android.app.KeyguardManager km =
+          (android.app.KeyguardManager) getSystemService(android.content.Context.KEYGUARD_SERVICE);
+      return km != null && km.isKeyguardLocked();
+    } catch (Throwable t) {
+      return false;
+    }
   }
 
   private void ensureChannel() {
