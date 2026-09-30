@@ -1,5 +1,4 @@
 import type { Sql } from "postgres";
-import { scoreAreaStoresHomeFood } from "../../../backend/src/lib/home-food-area-affinity";
 import {
   localityNameFromAddress,
   normalizeMatchScope,
@@ -512,12 +511,12 @@ export async function loadMerchantMarketInsights(
   const peers = board.filter((e) => e.store_pk !== storePk).slice(0, cap);
   const areaOrderTotal = board.reduce((sum, e) => sum + e.orders_90d, 0);
 
-  let homeFood: Awaited<ReturnType<typeof scoreAreaStoresHomeFood>> = null;
-  try {
-    homeFood = await scoreAreaStoresHomeFood(sql, board.map((e) => e.store_pk));
-  } catch (e) {
-    console.warn("[merchant-store-competitors] HOME_FOOD area score failed:", (e as Error).message);
-  }
+  // Home-food affinity overlay is backend-only: it pulls the store-ranking engine
+  // (backend/src/modules/store-ranking), which cannot be bundled into the isolated
+  // dashboard Docker/webpack build. Admin market insights fall back to order-board
+  // ranking + snapshot affinity — the exact path this file already handles when the
+  // engine is unavailable. The full overlay stays active in the backend service.
+  const homeFood = null as Map<number, { rank: number; affinityPct: number }> | null;
 
   const competitors: CompetitorRow[] = peers.map((p) => {
     const aff = affinityById.get(p.store_id);
