@@ -56,6 +56,11 @@ const nextConfig = {
     ];
   },
   webpack: (config, { dev, isServer }) => {
+    // Backend ranking modules use Node ESM ".js" specifiers for ".ts" sources.
+    config.resolve.extensionAlias = {
+      ...config.resolve.extensionAlias,
+      '.js': ['.ts', '.tsx', '.js'],
+    };
     const onOneDrive = process.platform === 'win32' && __dirname.includes('OneDrive');
     if (dev || onOneDrive) {
       // Disk pack cache + OneDrive file locking causes ENOENT on *.pack.gz — use memory cache.

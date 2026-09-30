@@ -93,6 +93,9 @@ config.resolver.disableHierarchicalLookup = true;
     /[/\\]apps[/\\]gatimitra-riderApp[/\\].*/,
     // Optional @unrs native bindings (incl. wasm32-wasi) — OneDrive often leaves broken nested paths → Metro ENOENT.
     /[/\\]node_modules[/\\]@unrs[/\\]resolver-binding-(?!win32-x64-msvc)[^/\\]+([/\\].*)?$/,
+    // Optional @next/swc platform packages. Only the Windows binary is installed; watching
+    // swc-linux-* makes Metro fs.watch throw ENOENT and exit.
+    /[/\\]@next[/\\]swc-(?!win32-x64-msvc)[^/\\]+([/\\].*)?$/,
     blockAbsDir(path.resolve(workspaceRoot, "dashboard")),
     blockAbsDir(path.resolve(workspaceRoot, "backend")),
     blockAbsDir(path.resolve(workspaceRoot, "partnersite")),

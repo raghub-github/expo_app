@@ -86,7 +86,8 @@ async function finalizeFcmDelivery(
   opts?: { maxRetries?: number },
 ): Promise<boolean> {
   if (res.ok) {
-    await updateLogStatus(notificationId, "delivered");
+    // FCM accepted the send. That is not evidence the device displayed it.
+    await updateLogStatus(notificationId, "sent");
     return true;
   }
   const { markFailedWithRetrySchedule } = await import("./retryEngine.js");

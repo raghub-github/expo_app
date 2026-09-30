@@ -145,6 +145,48 @@ function patchManifest(androidManifest, packageName) {
     "android:exported": "false",
   });
 
+  ensureReceiver(app, {
+    "android:name": `${packageName}.OrderAlertActionReceiver`,
+    "android:exported": "false",
+  });
+
+  if (!app.activity) app.activity = [];
+  const lockName = `${packageName}.OrderAlertLockActivity`;
+  if (!app.activity.some((a) => a?.$?.["android:name"] === lockName)) {
+    app.activity.push({
+      $: {
+        "android:name": lockName,
+        "android:exported": "false",
+        "android:excludeFromRecents": "true",
+        "android:showWhenLocked": "true",
+        "android:turnScreenOn": "true",
+        "android:launchMode": "singleTask",
+        "android:theme": "@android:style/Theme.Translucent.NoTitleBar",
+      },
+    });
+  }
+
+  const providerAuth = `${packageName}.orderalert.fileprovider`;
+  if (!app.provider) app.provider = [];
+  if (!app.provider.some((p) => p?.$?.["android:authorities"] === providerAuth)) {
+    app.provider.push({
+      $: {
+        "android:name": "androidx.core.content.FileProvider",
+        "android:authorities": providerAuth,
+        "android:exported": "false",
+        "android:grantUriPermissions": "true",
+      },
+      "meta-data": [
+        {
+          $: {
+            "android:name": "android.support.FILE_PROVIDER_PATHS",
+            "android:resource": "@xml/order_alert_file_paths",
+          },
+        },
+      ],
+    });
+  }
+
   patchMessagingService(androidManifest, packageName);
   return androidManifest;
 }
@@ -214,6 +256,24 @@ function withCriticalOrderAlertFgs(config, props = {}) {
       const packageName = mod.android?.package || config.android?.package || packageFromConfig;
       if (!packageName) return mod;
       copyJavaSources(mod.modRequest.platformProjectRoot, packageName, role);
+      const xmlDir = path.join(
+        mod.modRequest.platformProjectRoot,
+        "app",
+        "src",
+        "main",
+        "res",
+        "xml"
+      );
+      fs.mkdirSync(xmlDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(xmlDir, "order_alert_file_paths.xml"),
+        `<?xml version="1.0" encoding="utf-8"?>
+<paths>
+  <files-path name="alerts" path="." />
+</paths>
+`,
+        "utf8"
+      );
       return mod;
     },
   ]);

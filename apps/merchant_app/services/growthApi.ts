@@ -49,7 +49,8 @@ export async function fetchGrowthSummary(
   const q = new URLSearchParams({ period });
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/growth/summary?${q.toString()}`,
-    token
+    token,
+    { timeoutMs: 45_000 }
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -78,7 +79,8 @@ export async function fetchGrowthBusinessInsights(
   const q = new URLSearchParams({ period });
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/growth/business-insights?${q.toString()}`,
-    token
+    token,
+    { timeoutMs: 45_000 }
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -180,7 +182,8 @@ export async function fetchGrowthQuickInsights(
   const q = new URLSearchParams({ period });
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/growth/quick-insights?${q.toString()}`,
-    token
+    token,
+    { timeoutMs: 45_000 }
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -216,7 +219,8 @@ export async function fetchGrowthKitchenInsights(
   const q = new URLSearchParams({ period });
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/growth/kitchen-insights?${q.toString()}`,
-    token
+    token,
+    { timeoutMs: 45_000 }
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

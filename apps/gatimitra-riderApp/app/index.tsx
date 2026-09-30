@@ -52,7 +52,7 @@ export default function Index() {
     } else if (!languageSelected) {
       target = "/(onboarding)/language";
     } else if (!hasRequestedPermissions) {
-      target = "/(permissions)/request";
+      target = "/(auth)/login";
     } else {
       target = "/(auth)/login";
     }

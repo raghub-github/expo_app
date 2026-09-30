@@ -6,9 +6,17 @@ export function normalizeRiderCancellationActor(
   const t = String(raw ?? "")
     .trim()
     .toLowerCase();
-  if (t === "customer") return "customer";
-  if (t === "rider") return "rider";
-  if (t === "admin") return "admin";
+  if (t === "customer" || t === "user" || t.includes("customer")) return "customer";
+  if (
+    t === "rider" ||
+    t === "you" ||
+    t === "self" ||
+    t === "driver" ||
+    t.includes("rider")
+  ) {
+    return "rider";
+  }
+  if (t === "admin" || t === "agent" || t === "support" || t.includes("gatimitra")) return "admin";
   if (t === "system") return "system";
   return null;
 }
@@ -19,11 +27,23 @@ export function riderCancellationTitle(actor: RiderCancellationActor): string {
     case "customer":
       return "Cancelled by User";
     case "rider":
-      return "Cancelled by Me";
+      return "Cancelled by You";
     case "admin":
     case "system":
-      return "Cancelled by Gatimitra Team";
+      return "Cancelled by GatiMitra Team";
     default:
-      return "Cancelled by Gatimitra Team";
+      return "Order cancelled";
   }
+}
+
+/** User-facing id is formatted_order_id (GMF…), never the GM order_id or a numeric PK. */
+export function riderFacingOrderId(
+  formattedOrderId: string | null | undefined,
+  routeOrderId?: string | null
+): string | null {
+  const formatted = String(formattedOrderId ?? "").trim();
+  if (formatted && !/^\d+$/.test(formatted) && !/^GM\d+$/i.test(formatted)) return formatted;
+  const route = String(routeOrderId ?? "").trim();
+  if (/^GM[A-Z]/i.test(route)) return route;
+  return null;
 }

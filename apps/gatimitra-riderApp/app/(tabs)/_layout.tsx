@@ -16,6 +16,8 @@ import { prefetchRiderVehicles } from '@/src/hooks/useRiderVehicles';
 import { TabAppChrome } from '@/src/components/header/TabAppChrome';
 import { RiderBootstrapScreen } from '@/src/components/RiderBootstrapScreen';
 import { RiderHomeLocationPrompt } from '@/src/components/home/RiderHomeLocationPrompt';
+import { RiderForegroundLocationGateHost } from '@/src/components/RiderForegroundLocationGateHost';
+import { RiderInboxUnreadBootstrap } from '@/src/components/header/NotificationsScreen';
 import { RiderSubscriptionPrompt } from '@/src/components/subscription/RiderSubscriptionPrompt';
 import { RiderVehiclePrompt } from '@/src/components/vehicle/RiderVehiclePrompt';
 import { RiderVehicleVerificationHost } from '@/src/components/vehicle/RiderVehicleVerificationHost';
@@ -32,7 +34,7 @@ export default function TabLayout() {
   const hydrated = useSessionStore((s) => s.hydrated);
   const hasSession = useSessionStore((s) => Boolean(s.session));
   const accessToken = useSessionStore((s) => s.session?.accessToken);
-  const { ready: onboardingGateReady, canAccessTabs } = useOnboardingGate();
+  const { canAccessTabs } = useOnboardingGate();
 
   const onOrdersHome =
     pathname === "/orders" ||
@@ -62,7 +64,8 @@ export default function TabLayout() {
 
   // Incomplete KYC: do NOT Redirect/replace from tabs — Index owns that hop.
   // Dual navigators fighting over onboarding caused Maximum update depth.
-  if (hasSession && (!onboardingGateReady || !canAccessTabs)) {
+  // If cache already grants home tabs, never trap behind a wedged status fetch.
+  if (hasSession && !canAccessTabs) {
     return <RiderBootstrapScreen />;
   }
 
@@ -99,6 +102,8 @@ export default function TabLayout() {
       >
         <ActiveOrderTabOverlay />
       </View>
+      <RiderForegroundLocationGateHost />
+      <RiderInboxUnreadBootstrap />
     </View>
   );
 }

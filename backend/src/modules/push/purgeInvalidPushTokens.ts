@@ -30,30 +30,14 @@ export async function purgeInvalidPushTokens(tokens: string[]): Promise<void> {
     const sql = getSql();
     await sql`DELETE FROM public.expo_push_tokens WHERE expo_push_token = ANY(${unique}::text[])`;
     await sql`DELETE FROM public.merchant_store_push_tokens WHERE token = ANY(${unique}::text[])`;
-    // Keep partnersite / dashboard web FCM tokens. Local Firebase misconfig often
-    // returns NOT_FOUND once; wiping them leaves the browser panel with no push
-    // channel until the next hard refresh — while phone Expo tokens still work.
+    // Permanent FCM unregistration applies to Android and web rows. Leaving
+    // unregistered web tokens in place made every later campaign retry them.
     const native = await sql`
       DELETE FROM public.native_device_push_tokens
       WHERE native_token = ANY(${unique}::text[])
-        AND lower(coalesce(platform, '')) <> 'web'
-        AND lower(coalesce(source, '')) NOT IN ('partnersite', 'browser', 'dashboard')
-      RETURNING id
+      RETURNING id, platform
     `;
-    const kept = await sql`
-      SELECT count(*)::int AS c
-      FROM public.native_device_push_tokens
-      WHERE native_token = ANY(${unique}::text[])
-        AND (
-          lower(coalesce(platform, '')) = 'web'
-          OR lower(coalesce(source, '')) IN ('partnersite', 'browser', 'dashboard')
-        )
-    `;
-    const keptN = Number((kept[0] as { c?: number } | undefined)?.c ?? 0);
-    console.warn(
-      `[push] purged ${native.length} invalid native token(s)` +
-        (keptN > 0 ? ` (kept ${keptN} web/partnersite token(s))` : ""),
-    );
+    console.warn(`[push] purged ${native.length} invalid native token(s)`);
   } catch (e) {
     console.warn("[push] dead token purge failed:", (e as Error).message);
   }

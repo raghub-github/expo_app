@@ -1279,7 +1279,15 @@ export default function RiderOnboardingClient() {
                 ? {
                     ...d,
                     verified: true,
-                    verificationMethod: pendingEv ? "CASHFREE_AUTO" : d.verificationMethod,
+                    verificationStatus: pendingEv
+                      ? "auto_verified"
+                      : "approved",
+                    verificationMethod: pendingEv
+                      ? "CASHFREE_AUTO"
+                      : "MANUAL_UPLOAD",
+                    verifiedAt:
+                      data.document?.verifiedAt ?? new Date().toISOString(),
+                    requiresManualReview: false,
                     docNumber: pendingEv?.numberUsed || d.docNumber,
                     extractedDataSummary: pendingEv
                       ? {
@@ -1302,6 +1310,8 @@ export default function RiderOnboardingClient() {
           status: data.status ?? riderData.rider.status,
         });
         invalidateRiderSummary(queryClient, riderId);
+        // Always refetch so vehicle / payment / aggregates match backend (all doc types).
+        void refetchRiderDataInBackground();
       }
       if (pendingEv) {
         setPendingEvByDocId((prev) => {
@@ -1312,10 +1322,6 @@ export default function RiderOnboardingClient() {
         setEvReviewDocId(null);
       }
       setApproveDoc(null);
-      // Bank EV also upserts payment methods — refresh so the card shows details.
-      if (doc.docType === "bank_proof") {
-        void refetchRiderDataInBackground();
-      }
     } catch (err) {
       console.error("Error approving document:", err);
       alert(err instanceof Error ? err.message : "Failed to approve document");
@@ -1477,7 +1483,14 @@ export default function RiderOnboardingClient() {
             ...prev,
             documents: prev.documents.map((d) =>
               d.id === rejectingDoc.id && d.docType === rejectingDoc.docType
-                ? { ...d, verified: false, rejectedReason: rejectReason.trim() }
+                ? {
+                    ...d,
+                    verified: false,
+                    verificationStatus: "rejected",
+                    rejectedReason: rejectReason.trim(),
+                    requiresManualReview: true,
+                    verifiedAt: null,
+                  }
                 : d
             ),
           };

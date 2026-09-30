@@ -106,6 +106,30 @@ export function persistPartnerSelectedStoreId(storeId: string): void {
   notifyPartnerSelectedStoreChanged(storeId.trim());
 }
 
+/**
+ * Pick the logged-in merchant's outlet as soon as resolve-session returns.
+ * Pages that mounted before localStorage had an id then update in the same tab
+ * instead of waiting for a manual reload.
+ */
+export function selectPartnerStoreFromSession(
+  stores: Array<{ store_id?: string | null; approval_status?: string | null }> | null | undefined
+): string {
+  const list = stores ?? [];
+  const owned = list
+    .map((s) => String(s.store_id ?? '').trim())
+    .filter((id) => isValidPartnerStoreId(id));
+  const current = readPartnerSelectedStoreId();
+  if (current && owned.includes(current)) return current;
+  const approved = list.find(
+    (s) =>
+      isValidPartnerStoreId(String(s.store_id ?? '')) &&
+      String(s.approval_status || '').toUpperCase() === 'APPROVED'
+  );
+  const pick = String(approved?.store_id ?? owned[0] ?? '').trim();
+  if (pick) persistPartnerSelectedStoreId(pick);
+  return pick;
+}
+
 export function clearPartnerSelectedStoreId(): void {
   if (typeof window === 'undefined') return;
   try {

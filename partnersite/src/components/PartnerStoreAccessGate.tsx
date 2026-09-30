@@ -6,6 +6,7 @@ import {
   clearPartnerStoreSelection,
   readPartnerLastParentId,
   readPartnerSelectedStoreId,
+  selectPartnerStoreFromSession,
 } from '@/lib/partner-selected-store';
 import { allStoresPickerHref } from '@/lib/partner-all-stores-href';
 import { PartnerContentSkeleton } from '@/components/PageSkeleton';
@@ -93,6 +94,7 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
           }
           return;
         }
+        if (!selected) selectPartnerStoreFromSession(stores);
         if (!cancelled) {
           setAllowed(true);
           setPendingGate(false);
@@ -151,6 +153,7 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
           }
           return;
         }
+        if (!selected) selectPartnerStoreFromSession(stores);
 
         if (!cancelled) {
           setAllowed(true);

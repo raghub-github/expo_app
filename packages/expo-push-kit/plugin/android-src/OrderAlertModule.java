@@ -1,5 +1,8 @@
 package {{PACKAGE}};
 
+import android.os.Build;
+import android.content.Intent;
+import android.content.Context;
 import androidx.annotation.NonNull;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Promise;
@@ -12,6 +15,7 @@ import org.json.JSONObject;
 public class OrderAlertModule extends ReactContextBaseJavaModule {
   public OrderAlertModule(ReactApplicationContext context) {
     super(context);
+    OrderAlertVisibility.register(context);
   }
 
   @NonNull
@@ -75,6 +79,70 @@ public class OrderAlertModule extends ReactContextBaseJavaModule {
       promise.resolve(OrderAlertOverlay.canDraw(getReactApplicationContext()));
     } catch (Throwable t) {
       promise.reject("E_OVERLAY_PERM", t);
+    }
+  }
+
+  @ReactMethod
+  public void persistActionCredentials(String baseUrl, String token, String storeId, Promise promise) {
+    try {
+      OrderAlertActions.saveCredentials(getReactApplicationContext(), baseUrl, token, storeId);
+      promise.resolve(true);
+    } catch (Throwable t) {
+      promise.reject("E_ALERT_AUTH", t);
+    }
+  }
+
+  @ReactMethod
+  public void consumePendingAction(Promise promise) {
+    try {
+      promise.resolve(OrderAlertActions.consumePending(getReactApplicationContext()));
+    } catch (Throwable t) {
+      promise.reject("E_ALERT_PENDING", t);
+    }
+  }
+
+  @ReactMethod
+  public void setPersistentPill(boolean enabled, int count, String orderId, Promise promise) {
+    try {
+      Context ctx = getReactApplicationContext();
+      OrderAlertVisibility.register(ctx);
+      if (OrderAlertVisibility.shouldHideBecausePartnerIsOpen(ctx)) {
+        OrderAlertPill.setPartnerForeground(ctx, true);
+      }
+      OrderAlertPill.setState(ctx, enabled, count, orderId);
+      if (enabled && OrderAlertOverlay.canDraw(ctx)) {
+        Intent intent = new Intent(ctx, OrderAlertForegroundService.class);
+        intent.setAction(OrderAlertPill.ACTION_PILL);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          ctx.startForegroundService(intent);
+        } else {
+          ctx.startService(intent);
+        }
+      }
+      promise.resolve(true);
+    } catch (Throwable t) {
+      promise.reject("E_PILL", t);
+    }
+  }
+
+  @ReactMethod
+  public void consumePillLaunch(Promise promise) {
+    try {
+      WritableMap map = Arguments.createMap();
+      android.app.Activity activity = getCurrentActivity();
+      Intent intent = activity != null ? activity.getIntent() : null;
+      String kind = intent != null ? intent.getStringExtra("gmPill") : null;
+      if (!"orders".equals(kind)) {
+        promise.resolve(null);
+        return;
+      }
+      map.putString("kind", "orders");
+      map.putInt("count", intent.getIntExtra("gmPillCount", 0));
+      map.putString("orderId", intent.getStringExtra("gmPillOrderId"));
+      intent.removeExtra("gmPill");
+      promise.resolve(map);
+    } catch (Throwable t) {
+      promise.reject("E_PILL_LAUNCH", t);
     }
   }
 

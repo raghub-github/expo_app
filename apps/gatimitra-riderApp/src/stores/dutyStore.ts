@@ -8,6 +8,9 @@ const DUTY_STORE_KEY = "rider_duty_status";
 interface DutyStoreState {
   isOnDuty: boolean;
   hydrated: boolean;
+  /** Shared across header pill + bottom Turn On — any duty action in flight. */
+  actionBusy: boolean;
+  setActionBusy: (busy: boolean) => void;
   setDutyStatus: (status: boolean) => Promise<void>;
   toggleDuty: () => Promise<void>;
   hydrate: () => Promise<void>;
@@ -18,6 +21,9 @@ interface DutyStoreState {
 export const useDutyStore = create<DutyStoreState>((set, get) => ({
   isOnDuty: false,
   hydrated: false,
+  actionBusy: false,
+
+  setActionBusy: (busy) => set({ actionBusy: busy }),
 
   setDutyStatus: async (status: boolean) => {
     set({ isOnDuty: status });
@@ -49,8 +55,14 @@ export const useDutyStore = create<DutyStoreState>((set, get) => ({
     try {
       const status = await riderApi.getDutyStatus();
       await get().setDutyStatus(status.isOnDuty);
-    } catch (error) {
-      console.warn("[DutyStore] Server duty sync failed (using local state):", error);
+    } catch {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const status = await riderApi.getDutyStatus();
+        await get().setDutyStatus(status.isOnDuty);
+      } catch (error) {
+        console.warn("[DutyStore] Server duty sync failed (using local state):", error);
+      }
     }
   },
 }));

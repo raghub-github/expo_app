@@ -12,7 +12,6 @@ import { useOrdersContext } from "@/context/OrdersContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { readDeviceOrderAlertsAsync } from "@/lib/deviceOrderAlerts";
-import { presentLocalNewOrderAlert } from "@/lib/presentLocalNewOrderAlert";
 import {
   continueOrStartNewOrderAlert,
   extractNewOrderEventId,
@@ -78,21 +77,11 @@ export default function BackgroundNewOrderLocalAlert() {
       seenRef.current.add(order.id);
 
       const orderId = String(order.id);
-      const displayId = order.formattedOrderId ?? orderId;
       const sid = storeIdRef.current;
 
       void (async () => {
-        try {
-          await presentLocalNewOrderAlert({
-            orderId,
-            displayId,
-            storeId: sid,
-          });
-        } catch {
-          /* local schedule best-effort */
-        }
-
-        // JS chime works in phone silent mode; OS default may still be muted.
+        // The store-status row ("1 new") is the only tray alert.
+        // Do not also post "New Order Received" with the order id.
         try {
           const device = sid ? await readDeviceOrderAlertsAsync(sid) : null;
           if (sid && device) {

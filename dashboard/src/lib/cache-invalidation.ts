@@ -1,10 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { logDocCache } from "@/lib/rider-document-verification-pipeline";
 
 /**
- * Invalidates all rider summary queries for a given rider so that any screen
- * (riders home, penalties, pending actions) shows fresh data after mutations
- * like penalty add/revert, wallet credit approve/reject/delete, add amount, etc.
- * Call this after every rider-affecting mutation so the UI updates without refresh.
+ * Invalidates all rider-related queries after document / KYC mutations so that
+ * riders home banners, onboarding desk, and detail pages refresh without a
+ * manual browser reload.
  */
 export function invalidateRiderSummary(
   queryClient: QueryClient,
@@ -13,7 +13,22 @@ export function invalidateRiderSummary(
   queryClient.invalidateQueries({
     predicate: (query) =>
       query.queryKey[0] === "rider" &&
-      query.queryKey[1] === "summary" &&
+      (query.queryKey[1] === "summary" || query.queryKey[1] === "details") &&
       query.queryKey[2] === riderId,
+  });
+  // Also match RTK / custom keys that store rider id first.
+  queryClient.invalidateQueries({
+    predicate: (query) => {
+      const key = query.queryKey;
+      if (!Array.isArray(key)) return false;
+      return (
+        (key[0] === "getRiderDetails" || key[0] === "riderDetails") &&
+        (key[1] === riderId || key.includes(riderId))
+      );
+    },
+  });
+  logDocCache({
+    event: "invalidate_client",
+    riderId,
   });
 }

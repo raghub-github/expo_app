@@ -67,8 +67,14 @@ export function useOnboardingGate() {
   const { data: vehicleTypes = [] } = useOnboardingVehicleTypes();
   const { data: documentCatalog = [] } = useOnboardingDocumentTypes();
   const { summary: onboardingSummary } = useRiderOnboardingSummary();
-  const { data: riderStatus, isError, error, isFetched } = useRiderStatus(riderId);
+  const { data: riderStatus, isError, error, isFetched, isFetching, failureReason } =
+    useRiderStatus(riderId);
   const riderNotFound = isError && isRiderNotFoundError(error);
+  const statusTimedOut =
+    isError &&
+    /timeout|network/i.test(
+      String((error as Error)?.message ?? failureReason?.message ?? "")
+    );
 
   const serverStep = (riderStatus?.nextOnboardingStep ?? null) as ServerOnboardingStep | null;
 
@@ -281,6 +287,10 @@ export function useOnboardingGate() {
     ) {
       return true;
     }
+    // API/DB wedged: do not hold the branded splash forever — proceed with cache.
+    if (statusTimedOut || (isError && !isFetching)) {
+      return true;
+    }
     // Wait for first status fetch so we never flash Aadhaar for approved riders.
     if (!isFetched) return false;
     return true;
@@ -295,6 +305,9 @@ export function useOnboardingGate() {
     effectiveAccountStatus,
     effectiveApprovalStatus,
     isFetched,
+    isError,
+    isFetching,
+    statusTimedOut,
     riderStatus?.paymentCompleted,
     serverStep,
   ]);

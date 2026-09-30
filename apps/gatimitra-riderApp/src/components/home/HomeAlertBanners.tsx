@@ -93,7 +93,33 @@ type PenaltyBannerProps = {
   amount: number;
   onPay?: () => void;
   paying?: boolean;
+  /** Authoritative penalty reason from the backend. */
+  reason?: string | null;
+  /** True only when the backend stopped duty for this penalty. */
+  dutyStopped?: boolean;
+  formattedOrderId?: string | null;
 };
+
+function penaltyBannerCopy(
+  dutyStopped: boolean,
+  reason: string | null | undefined,
+  formattedOrderId: string | null | undefined
+): { title: string; sub: string } {
+  const why = reason?.trim() || "";
+  const order = formattedOrderId?.trim() || "";
+  const orderBit = order ? ` · Order ${order}` : "";
+  if (dutyStopped) {
+    const title = why ? `Duty stopped — ${why}` : "Duty stopped due to penalty";
+    return {
+      title,
+      sub: `Pay the penalty amount to start receiving orders${orderBit}`,
+    };
+  }
+  return {
+    title: why || "Penalty due",
+    sub: `Pay the penalty amount to clear this hold${orderBit}`,
+  };
+}
 
 export function NetworkStatusBanner() {
   const { t } = useTranslation();
@@ -124,9 +150,17 @@ export function NetworkStatusBanner() {
   );
 }
 
-export function PenaltyBanner({ amount, onPay, paying = false }: PenaltyBannerProps) {
+export function PenaltyBanner({
+  amount,
+  onPay,
+  paying = false,
+  reason = null,
+  dutyStopped = false,
+  formattedOrderId = null,
+}: PenaltyBannerProps) {
   const { t } = useTranslation();
   if (amount <= 0) return null;
+  const copy = penaltyBannerCopy(dutyStopped, reason, formattedOrderId);
 
   return (
     <View style={styles.penaltyWrap}>
@@ -134,12 +168,8 @@ export function PenaltyBanner({ amount, onPay, paying = false }: PenaltyBannerPr
         <Ionicons name="warning" size={16} color="#ffffff" />
       </View>
       <View style={styles.bannerTextCol}>
-        <Text style={styles.penaltyTitle}>
-          {t("home.penaltyTitle", "Duty stopped due to penalty !")}
-        </Text>
-        <Text style={styles.penaltySub}>
-          {t("home.penaltySub", "Pay penalty amount to start receiving orders")}
-        </Text>
+        <Text style={styles.penaltyTitle}>{copy.title}</Text>
+        <Text style={styles.penaltySub}>{copy.sub}</Text>
       </View>
       <View style={styles.ctaCol}>
         <TouchableOpacity

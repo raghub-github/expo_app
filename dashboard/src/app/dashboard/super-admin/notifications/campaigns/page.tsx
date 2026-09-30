@@ -629,14 +629,19 @@ function CampaignDetail({
             <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
               <div>
-                <div className="font-medium">No devices received this notification</div>
+                <div className="font-medium">
+                  {items.some((r) => (r.recipient_role || "").toLowerCase() === "customer" && r.error_code === "NO_PUSH_TOKEN")
+                    ? "No registered push token found for this Customer."
+                    : "No devices received this notification"}
+                </div>
                 <div className="mt-1 text-xs text-amber-800/90">
-                  Target: {targetLabel}. Registered push tokens in the system:{" "}
+                  Target: {targetLabel}. This send did not find an eligible device token for the
+                  selected recipient. Other tokens in the system (
                   {campaignCount(meta?.token_stats?.merchant_store_tokens)} merchant store,{" "}
                   {campaignCount(meta?.token_stats?.expo_tokens)} expo,{" "}
                   {campaignCount((meta?.token_stats as { native_fcm_tokens?: number } | undefined)?.native_fcm_tokens)}{" "}
-                  native/web FCM.
-                  Open the merchant app on a phone (logged into the target store) with notifications enabled, then Resend.
+                  native/web FCM) belong to other accounts. Open the matching app, allow notifications,
+                  then Resend.
                 </div>
               </div>
             </div>

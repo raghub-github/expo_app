@@ -1,6 +1,7 @@
 import * as Location from "expo-location";
 import { Platform, Linking, Alert } from "react-native";
 import * as ImagePicker from "expo-image-picker";
+import Constants from "expo-constants";
 import {
   openLocationPermissionSettings,
   openNotificationPermissionSettings,
@@ -55,10 +56,17 @@ class PermissionManager {
         }
         return { status: "denied", canAskAgain: false };
       }
-      
-      const { status, canAskAgain } = await Location.requestForegroundPermissionsAsync();
+
+      const { requestForegroundLocationFromCoordinator } = await import(
+        "@/src/lib/riderForegroundLocationGate"
+      );
+      const { useForegroundLocationPermissionStore } = await import(
+        "@/src/stores/foregroundLocationPermissionStore"
+      );
+      const granted = await requestForegroundLocationFromCoordinator({ force: true });
+      const { canAskAgain } = useForegroundLocationPermissionStore.getState();
       return {
-        status: this.normalizeStatus(status),
+        status: granted ? "granted" : canAskAgain === false ? "blocked" : "denied",
         canAskAgain: canAskAgain ?? true,
       };
     } catch (error) {
@@ -72,6 +80,9 @@ class PermissionManager {
    * This requests both foreground and background permissions in sequence
    */
   async requestLocationBackground(): Promise<PermissionResult> {
+    if (Constants.appOwnership === "expo") {
+      return { status: "undetermined", canAskAgain: false };
+    }
     try {
       // First ensure foreground is granted
       const foreground = await this.requestLocationForeground();
@@ -224,11 +235,12 @@ class PermissionManager {
     // Get location and camera permissions (always available)
     let locationForeground, locationBackground, camera;
     try {
-      [locationForeground, locationBackground, camera] = await Promise.all([
-        Location.getForegroundPermissionsAsync(),
-        Location.getBackgroundPermissionsAsync(),
-        ImagePicker.getCameraPermissionsAsync(),
-      ]);
+      locationForeground = await Location.getForegroundPermissionsAsync();
+      camera = await ImagePicker.getCameraPermissionsAsync();
+      locationBackground =
+        Constants.appOwnership === "expo"
+          ? { status: "undetermined", canAskAgain: false }
+          : await Location.getBackgroundPermissionsAsync();
     } catch (error) {
       console.warn("Error getting location/camera permissions:", error);
       // Set defaults if error

@@ -112,12 +112,13 @@ async function tryStartAndroidActivity(
  * Completion is never assumed — callers must re-read OS state.
  */
 export async function openBatteryOptimizationSettings(
-  mode: "request" | "guide" = "request"
-): Promise<void> {
+  mode: "request" | "guide" = "request",
+  dialogOnly = false
+): Promise<boolean> {
   if (Platform.OS !== "android") {
     // iOS has no per-app battery-optimization toggle — open app Settings for guidance.
     await Linking.openURL("app-settings:");
-    return;
+    return true;
   }
 
   const packageName = getAndroidPackageName();
@@ -126,11 +127,17 @@ export async function openBatteryOptimizationSettings(
     // Official system permission dialog (ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).
     // This is the exact "Allow / Don't optimize" screen for THIS package.
     const opened = await tryStartAndroidActivity(
-      IntentLauncher.ActivityAction.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+      "android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
       { data: `package:${packageName}` }
     );
-    if (opened) return;
-    // Dialog unavailable — fall through to guide screens.
+    if (opened) return true;
+    if (dialogOnly) {
+      // Expo Go cannot show the Allow dialog (missing manifest permission).
+      // Open the system battery-optimization list and wait until the user leaves it.
+      return tryStartAndroidActivity(
+        IntentLauncher.ActivityAction.IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+      );
+    }
   }
 
   // Per-app battery details when available (Android 6+ RequestIgnore path failed).
@@ -141,7 +148,7 @@ export async function openBatteryOptimizationSettings(
       IntentLauncher.ActivityAction.IGNORE_BATTERY_OPTIMIZATION_SETTINGS
     )
   ) {
-    return;
+    return true;
   }
 
   // OEM battery / power-manager screens (MIUI, ColorOS, OneUI, Vivo, Realme, Huawei…).
@@ -167,7 +174,7 @@ export async function openBatteryOptimizationSettings(
         extra: attempt.extras,
       })
     ) {
-      return;
+      return true;
     }
   }
 
@@ -177,6 +184,7 @@ export async function openBatteryOptimizationSettings(
   } catch {
     await Linking.openSettings();
   }
+  return true;
 }
 
 /**

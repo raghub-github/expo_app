@@ -25,6 +25,9 @@ export const DEFAULT_EARNINGS_SUMMARY: EarningsSummary = {
     allServicesBlacklisted: false,
     penaltyDue: 0,
     penaltyDutyStopped: false,
+    penaltyEventId: null,
+    penaltyTitle: null,
+    penaltyFormattedOrderId: null,
   },
 };
 

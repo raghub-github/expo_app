@@ -365,13 +365,24 @@ function mapTimelineStatusToKey(status: string): string | null {
     .replace(/[\s-]+/g, "_");
 
   if (!u) return null;
+  // Checkout rows such as "Bill Ready" are not the kitchen Ready milestone.
+  if (
+    u.includes("bill_ready") ||
+    u.includes("payment") ||
+    u.includes("pymt") ||
+    u.includes("checkout")
+  ) {
+    return null;
+  }
+  if (u.includes("timeout") || u.includes("auto_cancel")) return "cancelled";
   if (u.includes("placed") || u.includes("created") || u === "new" || u === "order_placed") return "placed";
   if (u.includes("accept")) return "accepted";
   if (u.includes("prepar")) return "preparing";
   if (
-    u.includes("ready_for_pickup") ||
-    u === "dispatch_ready" ||
-    (u.includes("ready") && !u.includes("prepar"))
+    u === "ready" ||
+    u === "ready_for_pickup" ||
+    u === "prepared" ||
+    u === "dispatch_ready"
   ) {
     return "ready";
   }

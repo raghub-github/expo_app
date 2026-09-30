@@ -1,5 +1,5 @@
 import React from "react";
-import { View, Text, StyleSheet } from "react-native";
+import { View, Text, StyleSheet, Pressable } from "react-native";
 import type { RiderLedgerEntry } from "@/src/services/api/riderApi";
 import {
   formatLedgerAmount,
@@ -36,9 +36,10 @@ function LedgerEntryIcon({ visual }: { visual: LedgerVisualConfig }) {
 type Props = {
   entry: RiderLedgerEntry;
   showDivider?: boolean;
+  onPress?: (entry: RiderLedgerEntry) => void;
 };
 
-export function LedgerTransactionRow({ entry, showDivider = false }: Props) {
+export function LedgerTransactionRow({ entry, showDivider = false, onPress }: Props) {
   const { t } = useTranslation();
   const isCredit = entry.flow === "credit";
   const visual = ledgerVisualConfig(entry);
@@ -48,13 +49,17 @@ export function LedgerTransactionRow({ entry, showDivider = false }: Props) {
   const status = ledgerStatusLabel(entry, t);
 
   return (
-    <View style={[styles.row, showDivider && styles.rowDivider]}>
+    <Pressable
+      style={[styles.row, showDivider && styles.rowDivider]}
+      onPress={onPress ? () => onPress(entry) : undefined}
+      disabled={!onPress}
+    >
       <View style={[styles.iconWrap, { backgroundColor: visual.iconBg }]}>
         <LedgerEntryIcon visual={visual} />
       </View>
 
       <View style={styles.mainCol}>
-        <Text style={styles.title} numberOfLines={1}>
+        <Text style={styles.title}>
           {title}
         </Text>
         {earningBanner ? (
@@ -78,7 +83,7 @@ export function LedgerTransactionRow({ entry, showDivider = false }: Props) {
         </Text>
         <Text style={styles.date}>{formatLedgerDateTime(entry.createdAt)}</Text>
       </View>
-    </View>
+    </Pressable>
   );
 }
 

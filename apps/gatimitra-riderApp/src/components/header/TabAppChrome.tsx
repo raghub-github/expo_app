@@ -3,7 +3,7 @@
  * when switching Orders ↔ other tabs (that remount was the header jump).
  */
 import React, { useRef, useState } from "react";
-import { View, StyleSheet, Platform, StatusBar as NativeStatusBar } from "react-native";
+import { View, StyleSheet } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { DutyToggle } from "@/src/components/DutyToggle";
@@ -11,7 +11,7 @@ import { RiderServiceTypeDropdown } from "@/src/components/header/RiderServiceTy
 import { HeaderTrailingActions } from "@/src/components/header/HeaderTrailingActions";
 import { TabHeaderBrand } from "@/src/components/header/TabHeaderBrand";
 import { LanguageSelectionSheet } from "@/src/components/language/LanguageSelectionSheet";
-import { useNotificationInboxStore } from "@/src/stores/notificationInboxStore";
+import { useRiderInboxUnreadStore } from "@/src/stores/riderInboxUnreadStore";
 import { useTabHeaderConfig } from "@/src/hooks/useTabHeaderTitle";
 import { ORDERS_HEADER_BG } from "@/src/components/home/HomeMapHeader";
 import { HEADER_EDGE_INSET } from "@/src/theme/headerFonts";
@@ -23,15 +23,18 @@ type Props = {
   onOrdersHome: boolean;
 };
 
+/**
+ * Android status bar is opaque (edge-to-edge off), so the window already
+ * starts below it. Adding StatusBar.currentHeight on top of that inset
+ * leaves a blank band. Use only the inset reported inside the window.
+ */
 function useStableTopInset(): number {
   const insets = useSafeAreaInsets();
-  const fallback =
-    Platform.OS === "android" ? NativeStatusBar.currentHeight ?? 24 : 47;
-  const stable = useRef(Math.max(insets.top, fallback));
+  const stable = useRef(insets.top);
   if (insets.top > stable.current) {
     stable.current = insets.top;
   }
-  return Math.max(stable.current, fallback);
+  return stable.current;
 }
 
 export function TabAppChrome({ onOrdersHome }: Props) {
@@ -39,9 +42,7 @@ export function TabAppChrome({ onOrdersHome }: Props) {
   const headerRef = useRef<View>(null);
   const [showLangSheet, setShowLangSheet] = useState(false);
   const tabConfig = useTabHeaderConfig();
-  const unreadNotifications = useNotificationInboxStore((s) =>
-    s.items.filter((n) => !n.read).length,
-  );
+  const unreadNotifications = useRiderInboxUnreadStore((s) => s.unread);
 
   return (
     <>

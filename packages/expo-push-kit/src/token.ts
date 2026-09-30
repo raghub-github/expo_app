@@ -94,7 +94,7 @@ export async function getFreshExpoPushToken(opts?: {
 
   const perm = await readNotificationPermission();
   if (perm.osStatus !== "granted") {
-    if (opts?.requestIfNeeded === false) return null;
+    if (opts?.requestIfNeeded === false || Platform.OS === "android") return null;
     const { status } = await Notifications.requestPermissionsAsync({
       ios: { allowAlert: true, allowBadge: true, allowSound: true },
     });

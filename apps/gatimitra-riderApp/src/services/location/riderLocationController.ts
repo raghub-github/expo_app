@@ -2,7 +2,6 @@ import {
   getBestEffortPosition,
   getFastPosition,
   getDeviceLocationReadiness,
-  requestForegroundLocationPermission,
   withTimeout,
   type ValidatedCoords,
 } from "@gatimitra/expo-location-kit";
@@ -117,16 +116,20 @@ export async function acquireAndCommitRiderLocation(options?: {
 /**
  * Ensure foreground permission + GPS readiness, then acquire + commit location.
  * Does not open settings — callers handle settings deep-links.
+ * Permission dialog goes through the Rider FG location coordinator only.
  */
 export async function ensureForegroundReadyAndAcquire(): Promise<RiderLocationAcquisitionResult> {
-  const permission = await requestForegroundLocationPermission();
+  const { requestForegroundLocationFromCoordinator } = await import(
+    "@/src/lib/riderForegroundLocationGate"
+  );
+  const granted = await requestForegroundLocationFromCoordinator({ force: true });
   const readiness = await getDeviceLocationReadiness();
   useRiderLocationStore.getState().setReadiness({
     ...readiness,
-    permissionStatus: permission === "granted" ? "granted" : permission,
+    permissionStatus: granted ? "granted" : readiness.permissionStatus,
   });
 
-  if (permission !== "granted") {
+  if (!granted) {
     return {
       ok: false,
       reason: "permission_denied",

@@ -13,7 +13,7 @@ import { colors } from "@/src/theme";
 import { useRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 import {
   normalizeRiderCancellationActor,
-  type RiderCancellationActor,
+  riderCancellationTitle,
 } from "@/src/lib/rider-cancellation-display";
 
 type Props = {
@@ -41,13 +41,8 @@ export function RiderAdminOrderCancelledSheet({
   const { t } = useTranslation();
   const bottomInset = useRiderBottomInset();
   const hasPenalty = penaltyAmount != null && penaltyAmount > 0;
-  const actor: RiderCancellationActor = normalizeRiderCancellationActor(cancelledByType);
-  const title =
-    actor === "rider"
-      ? t("orders.adminCancelled.titleByMe", "Cancelled by Me")
-      : actor === "customer"
-        ? t("orders.adminCancelled.titleByUser", "Cancelled by User")
-        : t("orders.adminCancelled.title", "Cancelled by Gatimitra Team");
+  const actor = normalizeRiderCancellationActor(cancelledByType);
+  const title = riderCancellationTitle(actor);
 
   return (
     <Modal

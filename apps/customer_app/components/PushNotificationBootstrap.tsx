@@ -426,10 +426,10 @@ function PushNotificationBootstrapInner() {
           // here is retried automatically and never stalls the modal.
           void (async () => {
             try {
-              let snap = await controller.syncTokens();
+              let snap = await controller.syncTokens({ force: true });
               if (!expoGo && !snap.nativePushToken) {
                 await new Promise((r) => setTimeout(r, 1200));
-                snap = await controller.syncTokens();
+                snap = await controller.syncTokens({ force: true });
               }
             } catch {
               /* background best-effort — resume/foreground sync will retry */
@@ -538,9 +538,9 @@ function PushNotificationBootstrapInner() {
           error: snap.error,
         });
       }
-      if (snap.osStatus === "granted") {
-        if (!expoGo && (!snap.nativePushToken || !snap.expoPushToken)) {
-          snap = await controller.syncTokens();
+      if (snap.osStatus === "granted" && !expoGo) {
+        snap = await controller.syncTokens({ force: true });
+        if (!snap.nativePushToken || !snap.expoPushToken) {
           console.log("[push:customer] native-retry sync", {
             syncStatus: snap.syncStatus,
             hasExpo: !!snap.expoPushToken,
@@ -575,21 +575,21 @@ function PushNotificationBootstrapInner() {
       foregroundSyncAtRef.current = now;
       void (async () => {
         let snap = await controller.refresh({ syncIfGranted: true });
+        if (snap.osStatus === "granted" && !expoGo) {
+          snap = await controller.syncTokens({ force: true });
+        }
         if (
           snap.osStatus === "granted" &&
           !expoGo &&
           !snap.expoPushToken &&
           !snap.nativePushToken
         ) {
-          snap = await controller.syncTokens();
-          if (!snap.expoPushToken && !snap.nativePushToken) {
-            console.error("[push:customer] push_token_register_failed", {
-              phase: "resume-self-heal",
-              osStatus: snap.osStatus,
-              syncStatus: snap.syncStatus,
-              error: snap.error,
-            });
-          }
+          console.error("[push:customer] push_token_register_failed", {
+            phase: "resume-self-heal",
+            osStatus: snap.osStatus,
+            syncStatus: snap.syncStatus,
+            error: snap.error,
+          });
         }
         const hasPushToken = Boolean(
           (snap.expoPushToken && snap.expoPushToken.length > 8) ||

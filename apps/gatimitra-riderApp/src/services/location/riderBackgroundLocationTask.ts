@@ -5,6 +5,7 @@
 import * as TaskManager from "expo-task-manager";
 import * as Location from "expo-location";
 import { Platform, AppState } from "react-native";
+import Constants from "expo-constants";
 import { getItem } from "@/src/utils/storage";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { getRiderAppConfig } from "@/src/config/env";
@@ -122,6 +123,10 @@ let osUpdatesMode: BgTrackingMode | "stopped" = "stopped";
 let appStateWired = false;
 
 async function stopOsLocationUpdates(): Promise<void> {
+  if (Constants.appOwnership === "expo") {
+    osUpdatesMode = "stopped";
+    return;
+  }
   const started = await Location.hasStartedLocationUpdatesAsync(RIDER_BACKGROUND_LOCATION_TASK);
   if (started) {
     await Location.stopLocationUpdatesAsync(RIDER_BACKGROUND_LOCATION_TASK);
@@ -130,6 +135,7 @@ async function stopOsLocationUpdates(): Promise<void> {
 }
 
 async function startOsLocationUpdates(mode: "duty" | "active_order"): Promise<void> {
+  if (Constants.appOwnership === "expo") return;
   const started = await Location.hasStartedLocationUpdatesAsync(RIDER_BACKGROUND_LOCATION_TASK);
   if (started && osUpdatesMode === mode) return;
 
@@ -197,6 +203,8 @@ export async function pauseRiderBackgroundLocationUpdates(): Promise<void> {
 
 export async function startRiderBackgroundLocation(mode: "duty" | "active_order"): Promise<boolean> {
   try {
+    if (Constants.appOwnership === "expo") return false;
+
     const fg = await Location.getForegroundPermissionsAsync();
     if (fg.status !== "granted") return false;
 

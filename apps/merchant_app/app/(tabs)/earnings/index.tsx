@@ -46,6 +46,7 @@ import {
   type PayoutCard,
 } from "@/lib/merchantPayoutUtils";
 import { LedgerEntryAmount } from "@/components/earnings/LedgerEntryAmount";
+import { DuesClearedDetailSheet, isDuesClearedLedgerEntry } from "@/components/earnings/DuesClearedDetailSheet";
 import { WithdrawalSuccessSheet } from "@/components/earnings/WithdrawalSuccessSheet";
 import { WithdrawProgressButton } from "@/components/earnings/WithdrawProgressButton";
 
@@ -116,6 +117,7 @@ export default function EarningsScreen() {
   const [wallet, setWallet] = useState<WalletSummary | null>(null);
   const [payoutSummary, setPayoutSummary] = useState<PayoutRequestsSummary | null>(null);
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
+  const [duesDetail, setDuesDetail] = useState<LedgerEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [txFilter, setTxFilter] = useState<TxFilter>("all");
@@ -533,6 +535,25 @@ export default function EarningsScreen() {
     const amountDisplay = resolveLedgerDisplayAmount(entry);
     const when = timeAgo(entry.created_at);
     const displayDesc = resolveLedgerDisplayDescription(entry);
+    const duesCleared = isDuesClearedLedgerEntry(entry);
+    if (duesCleared) {
+      return (
+        <Pressable
+          onPress={() => setDuesDetail(entry)}
+          style={({ pressed }) => [s.txRow, s.txRowDues, pressed && s.pressed]}
+          accessibilityRole="button"
+          accessibilityLabel="Outstanding dues Cleared"
+        >
+          <View style={s.txMain} pointerEvents="none">
+            <Text style={s.txCategory}>Outstanding dues Cleared</Text>
+            {when ? <Text style={s.txTime}>{when}</Text> : null}
+          </View>
+          <View pointerEvents="none">
+            <LedgerEntryAmount display={amountDisplay} />
+          </View>
+        </Pressable>
+      );
+    }
     return (
       <View style={s.txRow}>
         <View style={s.txMain}>
@@ -716,6 +737,8 @@ export default function EarningsScreen() {
           refreshControl={refreshControl}
         />
       )}
+
+      <DuesClearedDetailSheet entry={duesDetail} onClose={() => setDuesDetail(null)} />
 
       <Modal visible={showWithdraw} transparent animationType="slide">
         <View style={s.modalOverlay}>
@@ -1131,6 +1154,7 @@ const s = StyleSheet.create({
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
     paddingVertical: 14, paddingHorizontal: 14, borderBottomWidth: 1, borderBottomColor: "#F0F0F0",
   },
+  txRowDues: { backgroundColor: "#F0FDF4" },
   txMain: { flex: 1, marginRight: 12 },
   txCategory: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
   txDesc: { fontSize: 12, color: GatiMitraMerchant.textSecondary, marginTop: 2 },

@@ -94,6 +94,14 @@ import { RiderCancelPenaltyConfirmSheet } from "@/src/components/orders/RiderCan
 import { RiderCancelFailedSheet } from "@/src/components/orders/RiderCancelFailedSheet";
 import { RiderCancelSuccessSheet } from "@/src/components/orders/RiderCancelSuccessSheet";
 import { RiderAdminOrderCancelledSheet } from "@/src/components/orders/RiderAdminOrderCancelledSheet";
+import { riderFacingOrderId } from "@/src/lib/rider-cancellation-display";
+import {
+  acknowledgeRiderEvent,
+  cancellationEventId,
+  isRiderEventAcknowledged,
+  rememberRiderSelfCancel,
+  wasRiderSelfCancel,
+} from "@/src/lib/rider-event-ack";
 import { PickupUpdatedBanner } from "@/src/components/orders/PickupUpdatedBanner";
 import { PickupOtpBottomSheet } from "@/src/components/orders/PickupOtpBottomSheet";
 import {
@@ -385,10 +393,16 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const hadActiveOrderRef = useRef(false);
   const adminCancelHandledRef = useRef(false);
   const riderSelfCancelIntentRef = useRef(false);
+  const formattedOrderIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     setNavSheetExpanded(true);
   }, [orderId]);
+
+  useEffect(() => {
+    const formatted = order?.formattedOrderId?.trim();
+    if (formatted) formattedOrderIdRef.current = formatted;
+  }, [order?.formattedOrderId]);
 
   useEffect(() => {
     void queryClient.prefetchQuery({
@@ -444,9 +458,11 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [orderId, queryClient]);
 
   const handleAdminCancelDismiss = useCallback(() => {
+    const label = riderFacingOrderId(formattedOrderIdRef.current, orderId);
+    acknowledgeRiderEvent(cancellationEventId(label || orderId, adminCancelByType));
     setAdminCancelSheetOpen(false);
     router.replace("/(tabs)/orders");
-  }, []);
+  }, [adminCancelByType, orderId]);
 
   useEffect(() => {
     if (order) {
@@ -465,6 +481,9 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
 
     if (!unassignedByAdmin && !cancelledOnOrder) return;
 
+    const orderKeys = [orderId, order?.formattedOrderId, formattedOrderIdRef.current]
+      .map((v) => String(v ?? "").trim())
+      .filter(Boolean);
     const riderSelfCancel =
       riderSelfCancelIntentRef.current || cancelAssigned.isPending;
     if (riderSelfCancel) {
@@ -482,22 +501,39 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       return;
     }
 
+    const actorFromOrder = order?.cancelledByType?.trim() || null;
     adminCancelHandledRef.current = true;
-    void tracker.stop();
-    setCancelSheetOpen(false);
-    setPenaltySheetOpen(false);
-    setPendingCancel(null);
-    setPickOrderDetailOpen(false);
-    setDropOrderScreenOpen(false);
-    setPickupVerificationOpen(false);
-    setBarcodeScannerOpen(false);
-    setOtpSheetOpen(false);
-    setDeliveryOtpSheetOpen(false);
-    setAdminCancelPenaltyAmount(resolveRiderCancellationPenaltyAmount(order));
-    setAdminCancelByType(
-      unassignedByAdmin ? "admin" : order?.cancelledByType?.trim() || null
-    );
-    setAdminCancelSheetOpen(true);
+    void (async () => {
+      let selfCancel = false;
+      if (!actorFromOrder) {
+        for (const key of orderKeys) {
+          if (await wasRiderSelfCancel(key)) {
+            selfCancel = true;
+            break;
+          }
+        }
+      }
+      const actor = selfCancel ? "rider" : actorFromOrder;
+      const eventId = cancellationEventId(orderKeys[0] || orderId, actor);
+      if (await isRiderEventAcknowledged(eventId)) {
+        adminCancelHandledRef.current = true;
+        return;
+      }
+      adminCancelHandledRef.current = true;
+      void tracker.stop();
+      setCancelSheetOpen(false);
+      setPenaltySheetOpen(false);
+      setPendingCancel(null);
+      setPickOrderDetailOpen(false);
+      setDropOrderScreenOpen(false);
+      setPickupVerificationOpen(false);
+      setBarcodeScannerOpen(false);
+      setOtpSheetOpen(false);
+      setDeliveryOtpSheetOpen(false);
+      setAdminCancelPenaltyAmount(resolveRiderCancellationPenaltyAmount(order));
+      setAdminCancelByType(actor);
+      setAdminCancelSheetOpen(true);
+    })();
     void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
     queryClient.removeQueries({ queryKey: ["rider", "orders", "detail", orderId] });
   }, [
@@ -1899,10 +1935,17 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     setCancelFailedMessage(null);
     const reasonLabel = pendingCancel.label;
     riderSelfCancelIntentRef.current = true;
+    rememberRiderSelfCancel(orderId);
+    if (formattedOrderIdRef.current) rememberRiderSelfCancel(formattedOrderIdRef.current);
     cancelAssigned.mutate(
       { orderId, reasonCode: pendingCancel.reasonCode, reasonText: pendingCancel.label },
       {
         onSuccess: (res) => {
+          const formatted = res.formattedOrderId?.trim();
+          if (formatted) {
+            formattedOrderIdRef.current = formatted;
+            rememberRiderSelfCancel(formatted);
+          }
           setPenaltySheetOpen(false);
           setPendingCancel(null);
           setCancelFailedMessage(null);
@@ -1934,15 +1977,22 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     );
   }, [cancelAssigned, orderId, pendingCancel, t, isFoodOrder, tracker]);
 
+  const ackSelfCancel = useCallback(() => {
+    acknowledgeRiderEvent(cancellationEventId(formattedOrderIdRef.current || orderId, "rider"));
+    acknowledgeRiderEvent(cancellationEventId(orderId, "rider"));
+  }, [orderId]);
+
   const dismissCancelSuccess = useCallback(() => {
+    ackSelfCancel();
     setCancelSuccess(null);
     router.replace("/(tabs)/orders");
-  }, []);
+  }, [ackSelfCancel]);
 
   const openLedgerAfterCancel = useCallback(() => {
+    ackSelfCancel();
     setCancelSuccess(null);
     router.replace("/(tabs)/ledger");
-  }, []);
+  }, [ackSelfCancel]);
 
   const handleVerifyOtp = useCallback(
     (otp: string) => {
@@ -2327,7 +2377,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       <View style={styles.centered}>
         <RiderCancelSuccessSheet
           visible
-          orderIdLabel={order?.formattedOrderId?.trim() || orderId}
+          orderIdLabel={riderFacingOrderId(formattedOrderIdRef.current || order?.formattedOrderId, orderId)}
           reasonLabel={cancelSuccess.reasonLabel}
           penaltyApplied={cancelSuccess.penaltyApplied}
           penaltyAmount={cancelSuccess.penaltyAmount}
@@ -2347,7 +2397,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       <View style={styles.centered}>
         <RiderAdminOrderCancelledSheet
           visible
-          orderIdLabel={order?.formattedOrderId?.trim() || orderId}
+          orderIdLabel={riderFacingOrderId(formattedOrderIdRef.current || order?.formattedOrderId, orderId)}
           penaltyAmount={adminCancelPenaltyAmount}
           cancelledByType={adminCancelByType}
           onDismiss={handleAdminCancelDismiss}

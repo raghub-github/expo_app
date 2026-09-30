@@ -130,15 +130,14 @@ function applyResolvedCreatedGuard(
     existing
   );
   if (merged.status !== "created") return merged;
-  if (!isIncomingOrderResolved(merged.ordersCoreId, merged.id)) return merged;
+  // Closing the incoming sheet is not a rejection. Only keep a status that
+  // already left CREATED (real accept / reject / server cancel).
+  if (!existing || existing.status === "created") return merged;
   return {
     ...merged,
-    status: existing && existing.status !== "created" ? existing.status : "rejected",
-    pipelineStatus:
-      existing && existing.status !== "created"
-        ? existing.pipelineStatus
-        : "CANCELLED",
-    rejectedReason: existing?.rejectedReason ?? merged.rejectedReason,
+    status: existing.status,
+    pipelineStatus: existing.pipelineStatus,
+    rejectedReason: existing.rejectedReason ?? merged.rejectedReason,
   };
 }
 

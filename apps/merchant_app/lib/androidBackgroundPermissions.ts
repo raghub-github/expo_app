@@ -1,8 +1,9 @@
 /**
  * Android intents for merchant background wake (battery + display-over-apps).
  */
-import { Platform, Linking } from "react-native";
+import { PermissionsAndroid, Platform, Linking } from "react-native";
 import Constants from "expo-constants";
+import * as IntentLauncher from "expo-intent-launcher";
 
 function getAndroidPackageName(): string {
   if (Constants.appOwnership === "expo") {
@@ -15,20 +16,31 @@ function getAndroidPackageName(): string {
   );
 }
 
+const ACTION_REQUEST_IGNORE_BATTERY = "android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS";
+const ACTION_IGNORE_BATTERY_LIST = "android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS";
+const ACTION_APP_DETAILS = "android.settings.APPLICATION_DETAILS_SETTINGS";
+const ACTION_MANAGE_OVERLAY = "android.settings.action.MANAGE_OVERLAY_PERMISSION";
+
+function intentAction(mod: { ActivityAction?: Record<string, string> } | null, key: string, fallback: string): string {
+  const value = mod?.ActivityAction?.[key];
+  return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
 async function openAndroidAppDetails(): Promise<void> {
-  const IntentLauncher = await import("expo-intent-launcher");
   await IntentLauncher.startActivityAsync(
-    IntentLauncher.ActivityAction.APPLICATION_DETAILS_SETTINGS,
+    intentAction(IntentLauncher, "APPLICATION_DETAILS_SETTINGS", ACTION_APP_DETAILS) as never,
     { data: `package:${getAndroidPackageName()}` }
   );
 }
 
 async function tryStart(action: string, options?: { data?: string }): Promise<boolean> {
   try {
-    const IntentLauncher = await import("expo-intent-launcher");
+    const started = Date.now();
     await IntentLauncher.startActivityAsync(action as never, options ?? {});
-    return true;
-  } catch {
+    // A system dialog the user actually sees does not return in a few milliseconds.
+    return Date.now() - started > 400;
+  } catch (error) {
+    if (__DEV__) console.warn("[permissions] intent failed", action, error);
     return false;
   }
 }
@@ -43,24 +55,27 @@ export async function openMerchantBatteryOptimizationSettings(
   }
 
   const packageName = getAndroidPackageName();
-  const IntentLauncher = await import("expo-intent-launcher");
-
-  if (mode === "request") {
-    const opened = await tryStart(
-      IntentLauncher.ActivityAction.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-      { data: `package:${packageName}` }
-    );
-    if (opened) return;
-  }
-
-  if (await tryStart(IntentLauncher.ActivityAction.IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) {
-    return;
-  }
 
   try {
+    if (mode === "request") {
+      await tryStart(intentAction(IntentLauncher, "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS", ACTION_REQUEST_IGNORE_BATTERY), {
+        data: `package:${packageName}`,
+      });
+      return;
+    }
+
+    if (await tryStart(intentAction(IntentLauncher, "IGNORE_BATTERY_OPTIMIZATION_SETTINGS", ACTION_IGNORE_BATTERY_LIST))) {
+      return;
+    }
+
     await openAndroidAppDetails();
-  } catch {
-    await Linking.openSettings();
+  } catch (error) {
+    if (__DEV__) console.warn("[permissions] battery settings failed", error);
+    try {
+      await Linking.openSettings();
+    } catch {
+      /* leave the user in the app */
+    }
   }
 }
 
@@ -73,9 +88,8 @@ export async function openMerchantNotificationSettings(): Promise<void> {
 
   const packageName = getAndroidPackageName();
   try {
-    const IntentLauncher = await import("expo-intent-launcher");
     await IntentLauncher.startActivityAsync(
-      IntentLauncher.ActivityAction.APP_NOTIFICATION_SETTINGS,
+      intentAction(IntentLauncher, "APP_NOTIFICATION_SETTINGS", "android.settings.APP_NOTIFICATION_SETTINGS") as never,
       {
         extra: { "android.provider.extra.APP_PACKAGE": packageName },
       }
@@ -99,10 +113,9 @@ export async function openMerchantDisplayOverAppsSettings(): Promise<void> {
   }
 
   const packageName = getAndroidPackageName();
-  const IntentLauncher = await import("expo-intent-launcher");
   try {
     await IntentLauncher.startActivityAsync(
-      IntentLauncher.ActivityAction.MANAGE_OVERLAY_PERMISSION,
+      intentAction(IntentLauncher, "MANAGE_OVERLAY_PERMISSION", ACTION_MANAGE_OVERLAY) as never,
       { data: `package:${packageName}` }
     );
     return;
@@ -114,6 +127,34 @@ export async function openMerchantDisplayOverAppsSettings(): Promise<void> {
     await openAndroidAppDetails();
   } catch {
     await Linking.openSettings();
+  }
+}
+
+/** True only when Android's Settings.canDrawOverlays says this process may draw over other apps. */
+export async function readMerchantOverlayAllowed(): Promise<boolean> {
+  if (Platform.OS !== "android") return false;
+  try {
+    const { canDrawNativeOverlays } = await import("@gatimitra/expo-push-kit");
+    const native = await canDrawNativeOverlays();
+    if (native === true || native === false) return native;
+  } catch {
+    /* Expo Go has no overlay module */
+  }
+  try {
+    const { NativeModules } = await import("react-native");
+    const alert = NativeModules.GatimitraOrderAlert as
+      | { canDrawOverlays?: () => Promise<boolean> }
+      | undefined;
+    if (typeof alert?.canDrawOverlays === "function") {
+      return (await alert.canDrawOverlays()) === true;
+    }
+  } catch {
+    /* module missing */
+  }
+  try {
+    return await PermissionsAndroid.check("android.permission.SYSTEM_ALERT_WINDOW" as never);
+  } catch {
+    return false;
   }
 }
 
@@ -149,7 +190,6 @@ export async function wakeMerchantAppForOrder(path: string): Promise<void> {
   }
 
   try {
-    const IntentLauncher = await import("expo-intent-launcher");
     await IntentLauncher.startActivityAsync("android.intent.action.VIEW" as never, {
       data: url,
       flags: 268435456, // FLAG_ACTIVITY_NEW_TASK

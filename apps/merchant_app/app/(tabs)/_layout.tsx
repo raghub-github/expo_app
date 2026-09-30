@@ -6,6 +6,7 @@ import { GatiMitraMerchant, TAB_BAR_HEIGHT, TAB_BAR_FLOATING_GAP, FONT_LORA } fr
 import { MerchantCustomHeader } from "@/components/MerchantHeader";
 import { FloatingTabBar } from "@/components/FloatingTabBar";
 import { FloatingPendingOrdersBar } from "@/components/FloatingPendingOrdersBar";
+import PersistentOrderPill from "@/components/PersistentOrderPill";
 import { OfflineContentOverlay } from "@/components/OfflineContentOverlay";
 import { usePrefetchLiveOrderSupportTopics } from "@/hooks/useLiveOrderSupportTopics";
 import { usePrefetchMenuCatalog } from "@/hooks/useMenuQueries";
@@ -170,6 +171,7 @@ function MerchantTabsShell() {
     </Tabs>
       <OfflineContentOverlay />
       <FloatingPendingOrdersBar />
+      <PersistentOrderPill />
       </View>
   );
 }

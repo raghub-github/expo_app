@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { MXLayoutWhite } from '@/components/MXLayoutWhite';
 import { PartnerPageHeader } from '@/context/PartnerShellHeaderContext';
-import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from '@/lib/constants';
+import { PARTNER_SELECTED_STORE_CHANGED, readPartnerSelectedStoreId } from '@/lib/partner-selected-store';
 import { ArrowLeft, FileText, Loader2 } from 'lucide-react';
 import { MobileHamburgerButton } from '@/components/MobileHamburgerButton';
 
@@ -28,11 +28,14 @@ export default function AuditLogsClient() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fromQuery = searchParams?.get('storeId');
-    const fromStorage =
-      typeof window !== 'undefined' ? localStorage.getItem('selectedStoreId') : null;
-    const id = fromQuery ?? fromStorage;
-    setStoreId(id || DEMO_STORE_ID);
+    const apply = () => {
+      const fromQuery = searchParams?.get('storeId');
+      const id = readPartnerSelectedStoreId(fromQuery ?? undefined);
+      setStoreId(id || null);
+    };
+    apply();
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, apply);
+    return () => window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, apply);
   }, [searchParams]);
 
   useEffect(() => {
@@ -54,7 +57,7 @@ export default function AuditLogsClient() {
   };
 
   return (
-    <MXLayoutWhite restaurantName="Audit logs" restaurantId={storeId || DEMO_STORE_ID}>
+    <MXLayoutWhite restaurantName="Audit logs" restaurantId={storeId || ''}>
       <PartnerPageHeader title="Full audit logs" subtitle="Store activity and changes" />
       <div className="flex-1 flex flex-col min-h-0 bg-[#f8fafc] overflow-hidden w-full">
         <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 lg:px-8 py-5">

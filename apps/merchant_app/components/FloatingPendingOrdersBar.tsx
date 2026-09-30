@@ -27,6 +27,7 @@ import { usePathname } from "expo-router";
 const FAB_SIZE = 56;
 const DRAG_THRESHOLD = 6;
 const POS_KEY_PREFIX = "merchant_pending_orders_fab_pos_v1_";
+const FLOATING_DEVICE_KEY = "mx_floating_live_orders_device_v1";
 
 type FabPos = { x: number; y: number };
 
@@ -67,15 +68,30 @@ export function FloatingPendingOrdersBar() {
   const pathname = usePathname();
   const hideOnPackagingTips = (pathname ?? "").includes("packaging-tips");
 
+  const [deviceFloating, setDeviceFloating] = useState<boolean | null>(null);
   const pending = useMemo(
     () => orders.filter((o) => o.status === "created").length,
     [orders]
   );
 
+  useEffect(() => {
+    let cancelled = false;
+    void SecureStore.getItemAsync(FLOATING_DEVICE_KEY).then((raw) => {
+      if (cancelled) return;
+      if (raw === "1") setDeviceFloating(true);
+      else if (raw === "0") setDeviceFloating(false);
+      else setDeviceFloating(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
+
   const sheetOpen = sheet?.sheetOpen === true;
-  /** One pending order uses the full incoming sheet only — bell is for a multi-order queue. */
+  const floatingEnabled = deviceFloating ?? settings.show_floating_orders;
+  /** Show whenever this device wants the pill and at least one order is waiting. */
   const show =
-    settings.show_floating_orders && pending > 1 && !sheetOpen && !hideOnPackagingTips;
+    floatingEnabled && pending >= 1 && !sheetOpen && !hideOnPackagingTips;
 
   const minBottom = TAB_BAR_HEIGHT + TAB_BAR_FLOATING_GAP + insets.bottom + 8;
   const defaultPos = useMemo(

@@ -20,6 +20,16 @@ import {
   readRcDocumentVersion,
   resolveRcVerificationState,
 } from "@/lib/rider-rc-verification-state";
+import {
+  buildManualApproveFields,
+  buildManualRejectFields,
+  CRITICAL_IDENTITY_DOC_TYPES,
+  isCanonicallyVerified,
+  logDocAggregate,
+  logDocVerify,
+  normalizeDocType,
+} from "@/lib/rider-document-verification-pipeline";
+import { syncDownstreamAfterDocumentChange } from "@/lib/rider-document-downstream-sync";
 
 /**
  * Get rider by ID
@@ -459,6 +469,7 @@ export async function approveRiderDocument(
     // Electronic verify is a whole-document result (Aadhaar/DL EV does not need a back photo).
     const allSidesApproved =
       Boolean(ev) || areAllRequiredSidesApproved(nextMetadata, files);
+    const manualFields = buildManualApproveFields(agentId);
 
     const [updated] = await db
       .update(riderDocuments)
@@ -468,9 +479,15 @@ export async function approveRiderDocument(
         verificationStatus: allSidesApproved
           ? electronicPatch?.verificationStatus ?? "approved"
           : "pending",
-        verifiedAt: allSidesApproved ? new Date() : null,
+        verifiedAt: allSidesApproved ? manualFields.verifiedAt : null,
         verifierUserId: allSidesApproved ? agentId : current.verifierUserId,
+        verifiedBy: allSidesApproved ? agentId : current.verifiedBy,
         rejectedReason: allSidesApproved ? null : current.rejectedReason,
+        requiresManualReview: allSidesApproved ? false : current.requiresManualReview,
+        // Canonical manual method once the whole composite doc is complete (non-EV).
+        ...(allSidesApproved && !electronicPatch
+          ? { verificationMethod: "MANUAL_UPLOAD" as const }
+          : {}),
         ...(allSidesApproved && electronicPatch ? electronicPatch : {}),
         updatedAt: new Date(),
       })
@@ -479,6 +496,19 @@ export async function approveRiderDocument(
 
     if (!updated) return null;
     approved = updated;
+
+    logDocVerify({
+      event: "side_approve",
+      riderId: approved.riderId,
+      documentId: docId,
+      documentType: options?.displayDocType || current.docType,
+      oldStatus: current.verificationStatus,
+      newStatus: approved.verificationStatus,
+      verificationMethod: approved.verificationMethod,
+      verifiedBy: agentId,
+      allSidesApproved,
+      electronic: Boolean(ev),
+    });
 
     if (allSidesApproved && electronicPatch) {
       const docType = String(current.docType);
@@ -501,6 +531,15 @@ export async function approveRiderDocument(
       }
       const { maybeAutoVerifyRiderSelfie } = await import("@/lib/rider-selfie-auto-verify");
       await maybeAutoVerifyRiderSelfie(approved.riderId).catch(() => false);
+    }
+
+    if (allSidesApproved) {
+      await syncDownstreamAfterDocumentChange({
+        riderId: approved.riderId,
+        doc: approved,
+        agentId,
+        action: "approve",
+      });
     }
 
     const riderState = await recomputeRiderStateAfterDocChange(approved.riderId);
@@ -545,13 +584,19 @@ export async function approveRiderDocument(
     }
   }
 
+  const manualFields = buildManualApproveFields(agentId);
   const [wholeApproved] = await db
     .update(riderDocuments)
     .set({
       verified: true,
       verificationStatus: electronicPatch?.verificationStatus ?? "approved",
-      verifiedAt: new Date(),
+      // Manual path always stores MANUAL_UPLOAD; electronic path overrides via patch.
+      verificationMethod: electronicPatch
+        ? electronicPatch.verificationMethod
+        : "MANUAL_UPLOAD",
+      verifiedAt: manualFields.verifiedAt,
       verifierUserId: agentId,
+      verifiedBy: agentId,
       rejectedReason: null,
       requiresManualReview: false,
       ...(electronicPatch ?? {}),
@@ -563,6 +608,18 @@ export async function approveRiderDocument(
 
   if (!wholeApproved) return null;
   approved = wholeApproved;
+
+  logDocVerify({
+    event: "approve",
+    riderId: approved.riderId,
+    documentId: docId,
+    documentType: current.docType,
+    oldStatus: current.verificationStatus,
+    newStatus: approved.verificationStatus,
+    verificationMethod: approved.verificationMethod,
+    verifiedBy: agentId,
+    electronic: Boolean(ev),
+  });
 
   // Mirror PAN number / Aadhaar identity onto rider profile.
   // Name + DOB: Aadhaar only — never overwrite from PAN/DL/RC (manual or electronic).
@@ -839,6 +896,14 @@ export async function approveRiderDocument(
     await maybeAutoVerifyRiderSelfie(approved.riderId).catch(() => false);
   }
 
+  // Same downstream projection for EVERY doc type (RC→vehicle, bank→PM, others no-op).
+  await syncDownstreamAfterDocumentChange({
+    riderId: approved.riderId,
+    doc: approved,
+    agentId,
+    action: "approve",
+  });
+
   const riderState = await recomputeRiderStateAfterDocChange(approved.riderId);
   return { approved, riderState };
 }
@@ -913,6 +978,19 @@ async function recomputeRiderStateAfterDocChange(riderId: number): Promise<{
       .where(eq(riders.id, riderId));
   }
 
+  logDocAggregate({
+    riderId,
+    identityVerified,
+    vehicleVerified: vehicleDocsVerified,
+    identitySubmitted,
+    vehicleReady,
+    paymentCompleted,
+    aggregateStatus: next.kycStatus,
+    onboardingStage: next.onboardingStage,
+    status: next.status,
+    changed: next.changed,
+  });
+
   return {
     kycStatus: next.kycStatus,
     onboardingStage: next.onboardingStage,
@@ -959,13 +1037,23 @@ function checkIdentityDocsVerifiedFromList(
       isCompositeDocSideComplete(aadhaarRow, "front", filesByDocId) &&
       isCompositeDocSideComplete(aadhaarRow, "back", filesByDocId);
   } else {
-    const hasAadhaarFront = docs.some((d) => d.docType === "aadhaar_front" && d.verified);
-    const hasAadhaarBack = docs.some((d) => d.docType === "aadhaar_back" && d.verified);
-    const hasAadhaarSingle = docs.some((d) => d.docType === "aadhaar" && d.verified);
+    const hasAadhaarFront = docs.some(
+      (d) => d.docType === "aadhaar_front" && isCanonicallyVerified(d),
+    );
+    const hasAadhaarBack = docs.some(
+      (d) => d.docType === "aadhaar_back" && isCanonicallyVerified(d),
+    );
+    const hasAadhaarSingle = docs.some(
+      (d) => d.docType === "aadhaar" && isCanonicallyVerified(d),
+    );
     hasAadhaar = (hasAadhaarFront && hasAadhaarBack) || hasAadhaarSingle;
   }
 
-  const hasSelfie = docs.some((d) => d.docType === "selfie" && d.verified);
+  const hasSelfie = docs.some(
+    (d) =>
+      (d.docType === "selfie" || d.docType === "profile_photo") &&
+      isCanonicallyVerified(d),
+  );
 
   return hasAadhaar && hasSelfie && isPanIdentityRequirementMet(docs);
 }
@@ -982,7 +1070,7 @@ function isDashboardCompletedDoc(doc: {
   fileUrl?: string | null;
 } | undefined): boolean {
   if (!doc) return false;
-  if (doc.verified === true) return true;
+  if (isCanonicallyVerified(doc)) return true;
   const method = String(doc.verificationMethod || "").toUpperCase();
   if (
     method === "APP_VERIFIED" ||
@@ -991,8 +1079,6 @@ function isDashboardCompletedDoc(doc: {
   ) {
     return true;
   }
-  const status = String(doc.verificationStatus || "").toLowerCase();
-  if (status === "auto_verified" || status === "approved") return true;
   const url = String(doc.fileUrl || "").toLowerCase();
   return url.includes("electronic_verified") || url.includes("digilocker_verified");
 }
@@ -1113,11 +1199,15 @@ function checkVehicleDocsSubmittedFromList(docs: any[], _vehicleType?: string): 
 }
 
 function isPanIdentityRequirementMet(
-  docs: Array<{ docType: string; verified?: boolean | null }>
+  docs: Array<{
+    docType: string;
+    verified?: boolean | null;
+    verificationStatus?: string | null;
+  }>
 ): boolean {
   const panDoc = docs.find((d) => d.docType === "pan");
   if (!panDoc) return true;
-  return Boolean(panDoc.verified);
+  return isCanonicallyVerified(panDoc);
 }
 
 // Helper function to check vehicle docs from list
@@ -1133,15 +1223,27 @@ function checkVehicleDocsVerifiedFromList(
       isCompositeDocSideComplete(dlRow, "front", filesByDocId) &&
       isCompositeDocSideComplete(dlRow, "back", filesByDocId);
   } else {
-    const hasDLFront = docs.some((d) => d.docType === "dl_front" && d.verified);
-    const hasDLBack = docs.some((d) => d.docType === "dl_back" && d.verified);
-    const hasDLSingle = docs.some((d) => d.docType === "dl" && d.verified);
+    const hasDLFront = docs.some(
+      (d) => d.docType === "dl_front" && isCanonicallyVerified(d),
+    );
+    const hasDLBack = docs.some(
+      (d) => d.docType === "dl_back" && isCanonicallyVerified(d),
+    );
+    const hasDLSingle = docs.some(
+      (d) => d.docType === "dl" && isCanonicallyVerified(d),
+    );
     hasDL = (hasDLFront && hasDLBack) || hasDLSingle;
   }
 
-  const hasRC = docs.some((d) => d.docType === "rc" && d.verified);
-  const hasRentalProof = docs.some((d) => d.docType === "rental_proof" && d.verified);
-  const hasEVProof = docs.some((d) => d.docType === "ev_proof" && d.verified);
+  const hasRC = docs.some((d) => d.docType === "rc" && isCanonicallyVerified(d));
+  const hasRentalProof = docs.some(
+    (d) => d.docType === "rental_proof" && isCanonicallyVerified(d),
+  );
+  const hasEVProof = docs.some(
+    (d) =>
+      (d.docType === "ev_proof" || d.docType === "ev_ownership_proof") &&
+      isCanonicallyVerified(d),
+  );
 
   if (!hasDL) return false;
   if (!hasRC && !hasRentalProof) return false;
@@ -1158,14 +1260,20 @@ function checkVehicleDocsVerifiedFromList(
 }
 
 /**
- * Reject rider document (whole doc or one front/back side)
+ * Reject rider document (whole doc or one front/back side).
+ * Uses the same aggregate + downstream pipeline as approve for EVERY doc type.
  */
 export async function rejectRiderDocument(
   docId: number,
   agentId: number,
   reason: string,
   options?: { displayDocType?: string; expectedDocumentVersion?: number | null }
-) {
+): Promise<{
+  rejected: Record<string, unknown>;
+  riderState: { kycStatus: string; onboardingStage: string; status: string };
+  displayDocType?: string;
+  sideRejected?: boolean;
+} | null> {
   const db = getDb();
 
   const [current] = await db
@@ -1203,7 +1311,9 @@ export async function rejectRiderDocument(
         verificationStatus: "pending",
         verifiedAt: null,
         verifierUserId: agentId,
+        verifiedBy: agentId,
         rejectedReason: reason,
+        requiresManualReview: true,
         updatedAt: new Date(),
       })
       .where(eq(riderDocuments.id, docId))
@@ -1240,17 +1350,12 @@ export async function rejectRiderDocument(
             activeDocumentVersion: readRcDocumentVersion(currentMeta),
           };
     }
+    const rejectFields = buildManualRejectFields(agentId, reason);
     const [wholeRejected] = await db
       .update(riderDocuments)
       .set({
-        verified: false,
-        verificationStatus: "rejected",
-        verifierUserId: agentId,
-        rejectedReason: reason,
-        verifiedAt: null,
-        requiresManualReview: true,
+        ...rejectFields,
         ...(rcRejectMeta ? { metadata: rcRejectMeta } : {}),
-        updatedAt: new Date(),
       })
       .where(eq(riderDocuments.id, docId))
       .returning();
@@ -1258,40 +1363,68 @@ export async function rejectRiderDocument(
     rejected = wholeRejected!;
   }
 
-  if (rejected) {
-    const riderId = rejected.riderId;
-    const docType = rejected.docType;
-    const criticalDocs = ["aadhaar", "aadhaar_front", "pan", "selfie"];
-    const displayCritical =
-      options?.displayDocType &&
-      ["aadhaar_front", "aadhaar_back", "pan", "selfie"].includes(options.displayDocType);
-    if (criticalDocs.includes(docType) || displayCritical) {
-      await db
-        .update(riders)
-        .set({
-          kycStatus: "REJECTED" as any,
-          updatedAt: new Date(),
-        })
-        .where(eq(riders.id, riderId));
-    }
-    if (docType === "rc") {
-      try {
-        const { backendFetch } = await import("@/lib/notif-backend");
-        await backendFetch("/v1/verification/notify-rider-rc-review", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ rider_id: riderId, approved: false }),
-        });
-      } catch (notifyErr) {
-        console.warn(
-          "[rejectRiderDocument] RC notify failed:",
-          notifyErr instanceof Error ? notifyErr.message : notifyErr,
-        );
-      }
+  if (!rejected) return null;
+
+  logDocVerify({
+    event: isSideRejection ? "side_reject" : "reject",
+    riderId: rejected.riderId,
+    documentId: docId,
+    documentType: options?.displayDocType || current.docType,
+    oldStatus: current.verificationStatus,
+    newStatus: rejected.verificationStatus,
+    verificationMethod: rejected.verificationMethod,
+    verifiedBy: agentId,
+  });
+
+  await syncDownstreamAfterDocumentChange({
+    riderId: rejected.riderId,
+    doc: rejected,
+    agentId,
+    action: "reject",
+    rejectionReason: reason,
+  });
+
+  if (String(rejected.docType) === "rc") {
+    try {
+      const { backendFetch } = await import("@/lib/notif-backend");
+      await backendFetch("/v1/verification/notify-rider-rc-review", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rider_id: rejected.riderId, approved: false }),
+      });
+    } catch (notifyErr) {
+      console.warn(
+        "[rejectRiderDocument] RC notify failed:",
+        notifyErr instanceof Error ? notifyErr.message : notifyErr,
+      );
     }
   }
 
-  return rejected || null;
+  let riderState = await recomputeRiderStateAfterDocChange(rejected.riderId);
+
+  // Critical identity / DL rejects: hard-flag KYC REJECTED for non-ACTIVE riders
+  // (stage machine alone may leave PENDING when identity incomplete).
+  const displayType = normalizeDocType(options?.displayDocType || rejected.docType);
+  const isCritical =
+    CRITICAL_IDENTITY_DOC_TYPES.has(normalizeDocType(rejected.docType)) ||
+    CRITICAL_IDENTITY_DOC_TYPES.has(displayType);
+  if (isCritical && riderState.status !== "ACTIVE" && riderState.status !== "BLOCKED") {
+    await db
+      .update(riders)
+      .set({
+        kycStatus: "REJECTED" as any,
+        updatedAt: new Date(),
+      })
+      .where(eq(riders.id, rejected.riderId));
+    riderState = { ...riderState, kycStatus: "REJECTED" };
+  }
+
+  return {
+    rejected,
+    riderState,
+    displayDocType: options?.displayDocType,
+    sideRejected: Boolean(isSideRejection),
+  };
 }
 
 /**
@@ -1366,14 +1499,13 @@ export async function checkOnboardingPaymentCompleted(riderId: number): Promise<
  */
 export async function checkIdentityDocumentsVerified(riderId: number): Promise<boolean> {
   const documents = await getRiderDocuments(riderId);
-  const electronicallyVerified = documents.filter((d) => {
-    const m = String(d.verificationMethod || "").toUpperCase();
-    return m === "APP_VERIFIED" || m.startsWith("CASHFREE_") || m === "RAZORPAY_BANK";
-  });
-  const manualVerified = documents.filter((d) => d.verificationMethod === "MANUAL_UPLOAD" && d.verified);
-  const verifiedTypes = new Set([...electronicallyVerified, ...manualVerified].map((d) => d.docType));
-  const hasAadhaar = verifiedTypes.has("aadhaar");
-  const hasSelfie = verifiedTypes.has("selfie");
+  const verifiedTypes = new Set(
+    documents.filter((d) => isCanonicallyVerified(d)).map((d) => d.docType),
+  );
+  const hasAadhaar =
+    verifiedTypes.has("aadhaar") ||
+    (verifiedTypes.has("aadhaar_front") && verifiedTypes.has("aadhaar_back"));
+  const hasSelfie = verifiedTypes.has("selfie") || verifiedTypes.has("profile_photo");
   return hasAadhaar && hasSelfie;
 }
 
@@ -1391,12 +1523,7 @@ export async function checkAllRequiredDocumentsVerified(
 ): Promise<boolean> {
   const documents = await getRiderDocuments(riderId);
   const rider = await getRiderById(riderId);
-  
-  // Aadhaar is always mandatory
-  // PAN is optional
-  // Selfie is always required
-  const mandatoryTypes = ["aadhaar", "selfie"] as const;
-  
+
   // Determine vehicle choice if not provided
   let vehicleType = vehicleChoice;
 
@@ -1410,81 +1537,54 @@ export async function checkAllRequiredDocumentsVerified(
 
   // 2) If still unknown, infer from verified documents
   if (!vehicleType) {
-    // Check if rider has RC/DL (Petrol) or rental_proof/ev_proof (EV)
-    const isElectronicallyVerified = (method: string | null | undefined) => {
-      const m = String(method || "").toUpperCase();
-      return m === "APP_VERIFIED" || m.startsWith("CASHFREE_") || m === "RAZORPAY_BANK";
-    };
-    const hasRcOrDl = documents.some(doc => 
-      (doc.docType === 'rc' || doc.docType === 'dl') && 
-      (isElectronicallyVerified(doc.verificationMethod) || doc.verified)
+    const hasRcOrDl = documents.some(
+      (doc) =>
+        (doc.docType === "rc" || doc.docType === "dl") && isCanonicallyVerified(doc),
     );
-    const hasRentalOrEvProof = documents.some(doc => 
-      (doc.docType === 'rental_proof' || doc.docType === 'ev_proof') && 
-      (isElectronicallyVerified(doc.verificationMethod) || doc.verified)
+    const hasRentalOrEvProof = documents.some(
+      (doc) =>
+        (doc.docType === "rental_proof" ||
+          doc.docType === "ev_proof" ||
+          doc.docType === "ev_ownership_proof") &&
+        isCanonicallyVerified(doc),
     );
-    
+
     if (hasRentalOrEvProof && !hasRcOrDl) {
-      // Strong EV signal (rental/EV proof without petrol docs)
-      vehicleType = 'EV';
+      vehicleType = "EV";
     } else if (hasRcOrDl) {
-      // RC/DL present → treat as Petrol / ICE (bike, car, etc.)
-      vehicleType = 'Petrol';
+      vehicleType = "Petrol";
     }
-    // If we still cannot determine, we will fall back to Petrol rules below,
-    // which are the strictest (require both RC and DL).
   }
-  
-  // Get all documents (APP_VERIFIED / Cashfree dashboard electronic / agent-approved manual)
-  const isElectronicallyVerified = (method: string | null | undefined) => {
-    const m = String(method || "").toUpperCase();
-    return m === "APP_VERIFIED" || m.startsWith("CASHFREE_") || m === "RAZORPAY_BANK";
-  };
-  const appVerifiedDocs = documents.filter(
-    (doc) => isElectronicallyVerified(doc.verificationMethod)
-  );
-  
-  const manualVerifiedDocs = documents.filter(
-    (doc) => doc.verificationMethod === "MANUAL_UPLOAD" && doc.verified
-  );
-  
-  // Combine both types
-  const allVerifiedDocs = [...appVerifiedDocs, ...manualVerifiedDocs];
+
+  // Canonical verified = verified flag OR approved/auto_verified status (any method).
+  const allVerifiedDocs = documents.filter((doc) => isCanonicallyVerified(doc));
   const verifiedTypes = new Set(allVerifiedDocs.map((doc) => doc.docType));
-  
-  // Check mandatory documents
-  const hasMandatory = mandatoryTypes.every((type) => verifiedTypes.has(type));
-  if (!hasMandatory) {
+
+  const hasAadhaar =
+    verifiedTypes.has("aadhaar") ||
+    (verifiedTypes.has("aadhaar_front") && verifiedTypes.has("aadhaar_back"));
+  const hasSelfie = verifiedTypes.has("selfie") || verifiedTypes.has("profile_photo");
+  if (!hasAadhaar || !hasSelfie) {
     return false;
   }
-  
-  // Vehicle-specific requirements
-  if (vehicleType === 'EV') {
-    // EV bike: Either RC+DL OR rental_proof/ev_proof
-    const hasRcAndDl = verifiedTypes.has('rc') && verifiedTypes.has('dl');
-    const hasRentalOrEvProof = verifiedTypes.has('rental_proof') || verifiedTypes.has('ev_proof');
-    
-    if (hasRcAndDl) {
-      // Has RC and DL - all good
-      return true;
-    } else if (hasRentalOrEvProof) {
-      // Has rental/EV proof but no RC/DL - acceptable for EV
-      return true;
-    } else {
-      // EV but no RC/DL and no rental/EV proof - incomplete
-      return false;
-    }
-  } else {
-    // Petrol bike: Must have RC and DL
-    const hasRc = verifiedTypes.has('rc');
-    const hasDl = verifiedTypes.has('dl');
-    
-    if (!hasRc || !hasDl) {
-      return false;
-    }
+
+  if (vehicleType === "EV") {
+    const hasRcAndDl =
+      verifiedTypes.has("rc") &&
+      (verifiedTypes.has("dl") ||
+        (verifiedTypes.has("dl_front") && verifiedTypes.has("dl_back")));
+    const hasRentalOrEvProof =
+      verifiedTypes.has("rental_proof") ||
+      verifiedTypes.has("ev_proof") ||
+      verifiedTypes.has("ev_ownership_proof");
+    return hasRcAndDl || hasRentalOrEvProof;
   }
-  
-  return true;
+
+  const hasRc = verifiedTypes.has("rc");
+  const hasDl =
+    verifiedTypes.has("dl") ||
+    (verifiedTypes.has("dl_front") && verifiedTypes.has("dl_back"));
+  return hasRc && hasDl;
 }
 
 /**

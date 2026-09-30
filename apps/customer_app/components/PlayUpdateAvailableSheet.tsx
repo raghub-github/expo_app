@@ -12,7 +12,7 @@ import {
   View,
   type ImageSourcePropType,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useModalSheetBottomInset } from "@/hooks/useModalSheetBottomInset";
 import { Ionicons } from "@expo/vector-icons";
 
 export type PlayUpdateAvailableSheetProps = {
@@ -37,7 +37,7 @@ export function PlayUpdateAvailableSheet({
   onUpdate,
   onLearnMore,
 }: PlayUpdateAvailableSheetProps) {
-  const insets = useSafeAreaInsets();
+  const bottomInset = useModalSheetBottomInset(16);
 
   return (
     <Modal
@@ -49,7 +49,7 @@ export function PlayUpdateAvailableSheet({
     >
       <View style={styles.overlay}>
         <Pressable style={styles.backdrop} onPress={onDismiss} accessibilityLabel="Dismiss" />
-        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+        <View style={[styles.sheet, { paddingBottom: bottomInset }]}>
           <View style={styles.topRow}>
             <View style={styles.brandRow}>
               <View style={[styles.playDot, { backgroundColor: primaryColor }]} />

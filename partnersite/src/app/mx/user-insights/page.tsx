@@ -7,7 +7,7 @@ import { PARTNER_PAGE_HEADERS } from "@/lib/partner-page-headers";
 import { MXLayoutWhite } from "@/components/MXLayoutWhite";
 import { fetchRestaurantById as fetchStoreById } from "@/lib/database";
 import { MerchantStore } from "@/lib/merchantStore";
-import { DEMO_RESTAURANT_ID as DEMO_STORE_ID } from "@/lib/constants";
+import { PARTNER_SELECTED_STORE_CHANGED, readPartnerSelectedStoreId } from "@/lib/partner-selected-store";
 import {
   Star,
   MessageSquare,
@@ -907,26 +907,15 @@ const UserInsightsContent = () => {
     router.replace(`/mx/support-inbox${qs ? `?${qs}` : ""}`);
   }, [pathname, router, searchParams]);
 
-  // Get store ID
   useEffect(() => {
-    const getStoreId = async () => {
-      let id = searchParams?.get("storeId") ?? null;
-
-      if (!id) {
-        id =
-          typeof window !== "undefined"
-            ? localStorage.getItem("selectedStoreId")
-            : null;
-      }
-
-      if (!id) {
-        id = DEMO_STORE_ID;
-      }
-
-      setStoreId(id);
+    const apply = () => {
+      const fromUrl = searchParams?.get("storeId") ?? searchParams?.get("store_id");
+      const id = readPartnerSelectedStoreId(fromUrl ?? undefined);
+      setStoreId(id || null);
     };
-
-    getStoreId();
+    apply();
+    window.addEventListener(PARTNER_SELECTED_STORE_CHANGED, apply);
+    return () => window.removeEventListener(PARTNER_SELECTED_STORE_CHANGED, apply);
   }, [searchParams]);
 
   // Load store data
@@ -2279,7 +2268,7 @@ const UserInsightsContent = () => {
   return (
     <MXLayoutWhite
       restaurantName={store?.store_name}
-      restaurantId={storeId || DEMO_STORE_ID}
+      restaurantId={storeId || ""}
       sidebarFilters={ticketFilterCards}
     >
       {effectiveShowQueueView ? (

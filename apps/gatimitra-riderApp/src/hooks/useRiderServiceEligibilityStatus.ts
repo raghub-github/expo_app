@@ -8,8 +8,6 @@
  * Polls while the app is foregrounded so Super Admin Geo & coverage FOOD/PARCEL/
  * RIDE toggles lock/unlock within a few seconds without a restart.
  */
-import { useEffect } from "react";
-import { AppState, type AppStateStatus } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { riderApi } from "@/src/services/api/riderApi";
@@ -31,22 +29,14 @@ export function useRiderServiceEligibilityStatus() {
       return riderApi.getServiceEligibilityStatus(null);
     },
     enabled: authed,
-    staleTime: 0,
+    staleTime: 60_000,
     gcTime: 10 * 60_000,
-    retry: 1,
-    refetchOnWindowFocus: true,
-    refetchOnMount: "always",
+    retry: 0,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
     refetchInterval: authed ? GEO_COVERAGE_POLL_MS : false,
     refetchIntervalInBackground: false,
   });
-
-  useEffect(() => {
-    const onChange = (state: AppStateStatus) => {
-      if (state === "active") void query.refetch();
-    };
-    const sub = AppState.addEventListener("change", onChange);
-    return () => sub.remove();
-  }, [query.refetch]);
 
   const backend: BackendEligibilityByService | null = query.data
     ? {

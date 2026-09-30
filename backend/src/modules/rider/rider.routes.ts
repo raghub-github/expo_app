@@ -1148,6 +1148,9 @@ export async function riderRoutes(app: FastifyInstance) {
       allServicesBlacklisted: z.boolean(),
       penaltyDue: z.number(),
       penaltyDutyStopped: z.boolean(),
+      penaltyEventId: z.string().nullable().optional(),
+      penaltyTitle: z.string().nullable().optional(),
+      penaltyFormattedOrderId: z.string().nullable().optional(),
     }),
   });
 
@@ -1447,6 +1450,26 @@ export async function riderRoutes(app: FastifyInstance) {
 
       const { getRiderLedgerForApp } = await import("../../lib/rider-wallet-ledger-app.js");
       return getRiderLedgerForApp({ riderId, segment, period, limit, offset });
+    },
+  );
+
+  app.get(
+    "/wallet/ledger/entries/:entryId",
+    {
+      schema: {
+        params: z.object({
+          entryId: z.coerce.number().int().positive(),
+        }),
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) return reply.code(401).send({ error: "unauthorized" });
+      const { entryId } = req.params as { entryId: number };
+      const { getRiderLedgerEntryDetail } = await import("../../lib/rider-wallet-ledger-app.js");
+      const detail = await getRiderLedgerEntryDetail(riderId, entryId);
+      if (!detail) return reply.code(404).send({ error: "not_found" });
+      return detail;
     },
   );
 
@@ -2677,23 +2700,9 @@ export async function riderRoutes(app: FastifyInstance) {
       const { tryActivateRiderIfEligible } = await import(
         "../../lib/rider-onboarding-activation.js"
       );
-      // Status is polled often — do not block on heavy activation checks (many DB round-trips).
-      void tryActivateRiderIfEligible(parsedId).catch((err) => {
-        req.log.warn({ err, riderId: parsedId }, "background rider activation check failed");
-      });
-      // Backfill: paid + pending docs / not ACTIVE → ensure Onboarding Verification Pending ticket.
-      void import("../../lib/onboarding-verification-pending-ticket.js")
-        .then(({ ensureOnboardingVerificationPendingTicket }) =>
-          ensureOnboardingVerificationPendingTicket(parsedId),
-        )
-        .catch((err) => {
-          req.log.warn(
-            { err, riderId: parsedId },
-            "background onboarding verification ticket ensure failed",
-          );
-        });
-
-      // Progress heals illegal APPROVAL-without-payment before status mapping.
+      // Status is polled often — never fan out extra DB work on every hit.
+      // Background activation / ticket ensure used to steal pool connections and
+      // wedge the whole API (splash stuck, /v1/health hang) under Expo reload storms.
       const progress = await getRiderOnboardingProgress(parsedId);
 
       const resolved = await resolveRiderOnboardingStatusForApp(parsedId, {
@@ -2704,6 +2713,34 @@ export async function riderRoutes(app: FastifyInstance) {
       }
 
       const { rider, onboardingStatus, approvalStatus, paymentCompleted } = resolved;
+
+      // Rare background heal — at most once per 5 minutes per rider, and only while
+      // the rider is not yet fully live (so approved riders never pay this tax).
+      const needsBackgroundHeal =
+        String(rider.status ?? "").toUpperCase() !== "ACTIVE" ||
+        onboardingStatus !== "approved";
+      if (needsBackgroundHeal) {
+        const map =
+          ((globalThis as { __riderStatusHealAt?: Map<number, number> }).__riderStatusHealAt ??=
+            new Map());
+        const prev = map.get(parsedId) ?? 0;
+        if (Date.now() - prev > 5 * 60_000) {
+          map.set(parsedId, Date.now());
+          void tryActivateRiderIfEligible(parsedId).catch((err) => {
+            req.log.warn({ err, riderId: parsedId }, "background rider activation check failed");
+          });
+          void import("../../lib/onboarding-verification-pending-ticket.js")
+            .then(({ ensureOnboardingVerificationPendingTicket }) =>
+              ensureOnboardingVerificationPendingTicket(parsedId),
+            )
+            .catch((err) => {
+              req.log.warn(
+                { err, riderId: parsedId },
+                "background onboarding verification ticket ensure failed",
+              );
+            });
+        }
+      }
 
       const { getRiderAverageRating } = await import("../../lib/rider-average-rating.js");
       const rating = await getRiderAverageRating(rider.id);
@@ -4017,10 +4054,18 @@ export async function riderRoutes(app: FastifyInstance) {
         return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { getAvailableOrdersForRider } = await import("./rider.orders.service.js");
+      const { withDbSlot } = await import("../../db/client.js");
       const started = Date.now();
       req.log.info({ riderId }, "AVAILABLE_QUERY start");
       try {
-        const result = await getAvailableOrdersForRider(riderId);
+        const result = await withDbSlot(() =>
+          Promise.race([
+            getAvailableOrdersForRider(riderId),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("available_orders_timeout")), 12_000);
+            }),
+          ]),
+        );
         req.log.info(
           { riderId, count: result.length, ms: Date.now() - started },
           "AVAILABLE_QUERY"
@@ -4050,10 +4095,18 @@ export async function riderRoutes(app: FastifyInstance) {
         return (reply as any).status(403).send({ error: "Invalid rider session" });
       }
       const { getPendingOffersForRider } = await import("./rider.orders.service.js");
+      const { withDbSlot } = await import("../../db/client.js");
       const started = Date.now();
       req.log.info({ riderId }, "PENDING_QUERY start");
       try {
-        const result = await getPendingOffersForRider(riderId);
+        const result = await withDbSlot(() =>
+          Promise.race([
+            getPendingOffersForRider(riderId),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("pending_offers_timeout")), 12_000);
+            }),
+          ]),
+        );
         req.log.info(
           { riderId, count: result.length, ms: Date.now() - started },
           "PENDING_QUERY"

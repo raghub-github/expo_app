@@ -47,6 +47,8 @@ import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
 import { isRiderWaitingForOnboardingReview } from "@/src/lib/onboarding-routes";
 import { openWaitingForReviewSheet } from "@/src/stores/waitingForReviewSheetStore";
+import { promptForegroundLocationAgain } from "@/src/lib/riderForegroundLocationGate";
+import { useForegroundLocationPermissionStore } from "@/src/stores/foregroundLocationPermissionStore";
 
 async function loadRiderVehicleStatusForDutyGate(): Promise<RiderVehicleStatusResponse | null> {
   const token = useSessionStore.getState().session?.accessToken;
@@ -62,11 +64,22 @@ async function loadRiderVehicleStatusForDutyGate(): Promise<RiderVehicleStatusRe
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
-  return Promise.race([
-    promise,
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
-  ]);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+  });
 }
+
+/** Process-wide lock — DutyToggle + OffDuty banner + mismatch sheet share one flight. */
+let dutyToggleInFlight = false;
 
 /** Single GPS resolve for Duty ON — reused for precheck + PUT /duty. */
 async function resolveDutyToggleLocationFix(): Promise<DutyLocationFixResult> {
@@ -242,21 +255,54 @@ export function useDutyToggle() {
 
   const setDuty = async (next: boolean): Promise<SetDutyResult> => {
     if (next === isOnDuty) return { ok: true };
-    if (inFlightRef.current || updateDutyMutation.isPending) {
+    if (
+      dutyToggleInFlight ||
+      inFlightRef.current ||
+      updateDutyMutation.isPending ||
+      useDutyStore.getState().actionBusy
+    ) {
       return { ok: false, reason: "busy" };
     }
 
+    if (next) {
+      if (onboardingReviewBlocksDuty) {
+        openWaitingForReviewSheet();
+        return { ok: false, reason: "blocked" };
+      }
+      if (dutyGoOnBlocked) {
+        deferDutyQueryRefresh(queryClient);
+        return { ok: false, blockedFromGoingOn: true, reason: "blocked" };
+      }
+    }
+
+    dutyToggleInFlight = true;
     inFlightRef.current = true;
     setLocalBusy(true);
+    useDutyStore.getState().setActionBusy(true);
     try {
       if (next) {
-        if (onboardingReviewBlocksDuty) {
-          openWaitingForReviewSheet();
-          return { ok: false, reason: "blocked" };
-        }
-        if (dutyGoOnBlocked) {
-          deferDutyQueryRefresh(queryClient);
-          return { ok: false, blockedFromGoingOn: true, reason: "blocked" };
+
+        const locationPerm = await Location.getForegroundPermissionsAsync();
+        if (locationPerm.status !== "granted") {
+          // Always hits requestForegroundPermissionsAsync (native dialog) via coordinator.
+          const granted = await promptForegroundLocationAgain();
+          if (!granted) {
+            const phase =
+              useForegroundLocationPermissionStore.getState().phase;
+            if (phase === "BLOCKED_OR_SETTINGS_REQUIRED") {
+              const { openForegroundLocationSettings } = await import(
+                "@/src/lib/riderForegroundLocationGate"
+              );
+              await openForegroundLocationSettings();
+            }
+            openDutyActionError(
+              { kind: "location", locationReason: "permission" },
+              () => {
+                void setDuty(true);
+              }
+            );
+            return { ok: false, reason: "location" };
+          }
         }
 
         // Network before GPS — never show "Location needed" when offline.
@@ -518,8 +564,10 @@ export function useDutyToggle() {
         return { ok: false, reason: "network" };
       }
     } finally {
+      dutyToggleInFlight = false;
       inFlightRef.current = false;
       setLocalBusy(false);
+      useDutyStore.getState().setActionBusy(false);
     }
   };
 
@@ -527,11 +575,13 @@ export function useDutyToggle() {
     await setDuty(!isOnDuty);
   };
 
+  const actionBusy = useDutyStore((s) => s.actionBusy);
+
   return {
     isOnDuty,
     toggle,
     setDuty,
-    isPending: updateDutyMutation.isPending || localBusy,
+    isPending: actionBusy || updateDutyMutation.isPending || localBusy,
     dutyGoOnBlocked,
     onboardingReviewBlocksDuty,
   };

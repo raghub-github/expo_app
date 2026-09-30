@@ -8,6 +8,7 @@ import { useGetRiderDetailsQuery } from '@/store/api/riderApi';
 import { useDashboardAccessQuery } from '@/hooks/queries/useDashboardAccessQuery';
 import { usePermissionsQuery } from '@/hooks/queries/usePermissionsQuery';
 import { queryKeys } from '@/lib/queryKeys';
+import { invalidateRiderSummary } from '@/lib/cache-invalidation';
 import { resolveRiderDashboardReturnUrl } from '@/lib/riders/rider-dashboard-navigation';
 import { CheckCircle, ArrowLeft, User, Car, FileText, CreditCard, Receipt, DollarSign, Calendar, MapPin, Phone, Mail, IdCard, Building2, Fuel, Settings, Shield, ShieldCheck, Clock, AlertCircle } from 'lucide-react';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
@@ -416,6 +417,7 @@ export default function RiderDetailsPage() {
         throw new Error(data.error || "Failed to verify vehicle");
       }
       await refetchRiderDetails();
+      invalidateRiderSummary(queryClient, rider.id);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Could not verify vehicle / ownership");
     } finally {
@@ -437,6 +439,7 @@ export default function RiderDetailsPage() {
         throw new Error(data.error || "Failed to approve document");
       }
       await refetchRiderDetails();
+      invalidateRiderSummary(queryClient, rider.id);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Could not approve document");
     } finally {

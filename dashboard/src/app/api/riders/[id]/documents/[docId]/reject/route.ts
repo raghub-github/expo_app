@@ -9,12 +9,12 @@ import {
   getRiderDocumentById,
   rejectRiderDocument,
   getRiderById,
-  updateRiderKycStatus,
 } from "@/lib/db/operations/riders";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { canPerformActionByAuth } from "@/lib/permissions/actions";
 import { logActionFromRequest } from "@/lib/utils/action-audit";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { invalidateRiderDocumentServerCaches } from "@/lib/rider-document-cache";
 
 export const runtime = 'nodejs';
 
@@ -125,28 +125,23 @@ export async function POST(
       );
     }
 
-    // Reject document
-    const rejectedDoc = await rejectRiderDocument(documentId, agent.id, reason.trim(), {
+    // Reject document (canonical status + downstream sync + aggregate recompute)
+    const result = await rejectRiderDocument(documentId, agent.id, reason.trim(), {
       displayDocType,
       expectedDocumentVersion:
         typeof expectedDocumentVersion === "number" ? expectedDocumentVersion : null,
     });
 
-    if (!rejectedDoc) {
+    if (!result) {
       return NextResponse.json(
         { success: false, error: "Failed to reject document" },
         { status: 500 }
       );
     }
 
-    // If this is a critical document (aadhaar, pan, dl, rc), update KYC status to REJECTED
-    // Identity docs can reject KYC. RC name-mismatch photo rejection must allow re-upload.
-    const criticalDocs = ["aadhaar", "pan", "dl"];
-    const isCriticalDoc = criticalDocs.includes(currentDoc.docType);
-    
-    if (isCriticalDoc) {
-      await updateRiderKycStatus(riderId, "REJECTED");
-    }
+    const { rejected: rejectedDoc, riderState } = result;
+
+    await invalidateRiderDocumentServerCaches(riderId);
 
     // Log action
     await logActionFromRequest(
@@ -168,8 +163,8 @@ export async function POST(
           riderId,
           docType: currentDoc.docType,
           reason: reason.trim(),
-          isCriticalDocument: isCriticalDoc,
-          kycStatusUpdated: isCriticalDoc,
+          kycStatus: riderState.kycStatus,
+          onboardingStage: riderState.onboardingStage,
           documentVersion:
             currentDoc.metadata && typeof currentDoc.metadata === "object"
               ? (currentDoc.metadata as Record<string, unknown>).documentVersion ?? null
@@ -190,8 +185,11 @@ export async function POST(
       success: true,
       data: {
         document: rejectedDoc,
-        displayDocType: displayDocType ?? null,
-        kycStatus: isCriticalDoc ? "REJECTED" : rider.kycStatus,
+        displayDocType: result.displayDocType ?? displayDocType ?? null,
+        sideRejected: result.sideRejected ?? false,
+        kycStatus: riderState.kycStatus,
+        onboardingStage: riderState.onboardingStage,
+        status: riderState.status,
       },
     });
   } catch (error) {

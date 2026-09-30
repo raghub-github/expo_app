@@ -11,7 +11,6 @@ import {
 import Svg, { Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors } from "@/src/theme";
-import { resolveRiderBottomInset } from "@/src/hooks/useRiderBottomInset";
 
 /** Same central-hump wave as Customer StoreMenuItemDetailSheet. */
 const WAVE_HEIGHT = 36;
@@ -72,15 +71,15 @@ export function PermissionBottomSheetShell({
   const { height: winH, width: winW } = useWindowDimensions();
   const maxH = Math.round(winH * maxHeightRatio);
   // Extra 16dp so the last button sits above 3-button nav, not flush with it.
-  const bottomPad = resolveRiderBottomInset(insets.bottom) + 16;
+  const bottomPad = Math.max(insets.bottom, Platform.OS === "android" ? 8 : 4);
   const bodyMaxH = Math.max(160, maxH - WAVE_SIDE_Y);
 
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="slide"
-      statusBarTranslucent
+      animationType="none"
+      statusBarTranslucent={false}
       presentationStyle="overFullScreen"
       onRequestClose={dismissible ? onDismiss : undefined}
     >

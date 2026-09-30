@@ -9,7 +9,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import Svg, { Path } from "react-native-svg";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useModalSheetBottomInset } from "@/hooks/useModalSheetBottomInset";
 import { colors } from "@/theme";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
@@ -66,7 +66,7 @@ export function PermissionBottomSheetShell({
   sheetStyle,
   onClose,
 }: PermissionBottomSheetShellProps) {
-  const insets = useSafeAreaInsets();
+  const sheetBottom = useModalSheetBottomInset(16);
   const dark = useMerchantUiDark();
   const { height: winH, width: winW } = useWindowDimensions();
   const maxH = Math.round(winH * maxHeightRatio);
@@ -105,7 +105,7 @@ export function PermissionBottomSheetShell({
               style={[
                 styles.sheet,
                 dark && styles.sheetDark,
-                { paddingBottom: Math.max(insets.bottom, 16) },
+                { paddingBottom: sheetBottom },
                 sheetStyle,
               ]}
             >

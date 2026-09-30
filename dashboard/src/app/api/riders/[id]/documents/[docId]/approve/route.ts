@@ -14,6 +14,7 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { canPerformActionByAuth } from "@/lib/permissions/actions";
 import { logActionFromRequest } from "@/lib/utils/action-audit";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { invalidateRiderDocumentServerCaches } from "@/lib/rider-document-cache";
 
 export const runtime = 'nodejs';
 
@@ -174,6 +175,8 @@ export async function POST(
 
     const { approved: approvedDoc, riderState } = result;
 
+    await invalidateRiderDocumentServerCaches(riderId);
+
     // Re-fetch rider so response has current kycStatus, onboardingStage, status for optimistic UI
     const updatedRider = await getRiderById(riderId);
     const allVerified = currentDoc.verificationMethod === "MANUAL_UPLOAD" && updatedRider
@@ -227,7 +230,7 @@ export async function POST(
         kycStatus: riderState.kycStatus,
         onboardingStage: riderState.onboardingStage,
         status: riderState.status,
-        verificationMethod: currentDoc.verificationMethod,
+        verificationMethod: approvedDoc.verificationMethod,
       },
     });
   } catch (error) {

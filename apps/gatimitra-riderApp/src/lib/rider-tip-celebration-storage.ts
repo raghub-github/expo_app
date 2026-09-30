@@ -3,6 +3,7 @@ import { getItem, setItem } from "@/src/utils/storage";
 const CELEBRATED_LEDGER_IDS_KEY = "rider_celebrated_tip_ledger_v1";
 const ORDER_TIP_BASELINES_KEY = "rider_order_tip_baseline_v1";
 const MAX_BASELINE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+const sessionCelebratedTipIds = new Set<number>();
 
 type BaselineEntry = {
   orderIds: string[];
@@ -41,10 +42,13 @@ async function writeCelebratedIds(ids: number[]): Promise<void> {
 }
 
 export async function loadCelebratedTipLedgerIds(): Promise<Set<number>> {
-  return new Set(await readCelebratedIds());
+  const ids = await readCelebratedIds();
+  for (const id of sessionCelebratedTipIds) ids.push(id);
+  return new Set(ids);
 }
 
 export async function markTipLedgerEntryCelebrated(entryId: number): Promise<void> {
+  if (Number.isFinite(entryId) && entryId > 0) sessionCelebratedTipIds.add(entryId);
   const ids = await readCelebratedIds();
   if (ids.includes(entryId)) return;
   ids.push(entryId);

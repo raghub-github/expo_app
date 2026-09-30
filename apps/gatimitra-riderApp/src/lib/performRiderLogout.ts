@@ -32,6 +32,7 @@ export async function performRiderLogout(opts?: {
   // Clear local auth FIRST so UI can never stay "logged in" if the API hangs.
   try {
     await useDutyStore.getState().setDutyStatus(false);
+    useDutyStore.getState().setActionBusy(false);
   } catch {
     /* ignore */
   }
@@ -50,6 +51,15 @@ export async function performRiderLogout(opts?: {
     }
   }
   await useSessionStore.getState().setSession(null);
+
+  try {
+    const { resetForegroundLocationPermissionCoordinator } = await import(
+      "@/src/lib/riderForegroundLocationGate"
+    );
+    resetForegroundLocationPermissionCoordinator();
+  } catch {
+    /* ignore */
+  }
 
   try {
     router.replace("/(auth)/login");

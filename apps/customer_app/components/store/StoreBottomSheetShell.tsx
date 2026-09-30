@@ -11,7 +11,7 @@ import {
   useWindowDimensions,
   type ViewStyle,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useModalSheetBottomInset } from "@/hooks/useModalSheetBottomInset";
 import { Ionicons } from "@expo/vector-icons";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 
@@ -38,7 +38,7 @@ export function StoreBottomSheetShell({
   flushBottom = false,
   keyboardAvoiding = false,
 }: StoreBottomSheetShellProps) {
-  const insets = useSafeAreaInsets();
+  const sheetBottom = useModalSheetBottomInset(12);
   const dark = useMerchantUiDark();
   const { height: winH } = useWindowDimensions();
   const maxH = Math.round(winH * maxHeightRatio);
@@ -87,7 +87,7 @@ export function StoreBottomSheetShell({
             style={[
               styles.sheet,
               dark && styles.sheetDark,
-              flushBottom ? [styles.sheetFlush, { maxHeight: maxH - 54 }] : { paddingBottom: Math.max(insets.bottom, 12) },
+              flushBottom ? [styles.sheetFlush, { maxHeight: maxH - 54 }] : { paddingBottom: sheetBottom },
               sheetStyle,
             ]}
           >

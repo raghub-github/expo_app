@@ -254,6 +254,9 @@ export function OrderDetailRiderCard({
   }, [orderRecord, rider, riderReachedAt, ridersLog]);
 
   if (isSelfPickup) {
+    const pickupDone =
+      orderStage === "delivered" || orderStage === "rejected" || orderStage === "rto";
+    if (pickupDone) return null;
     return (
       <View style={styles.wrap}>
         <Text style={styles.fulfillmentHeading}>Fulfillment</Text>

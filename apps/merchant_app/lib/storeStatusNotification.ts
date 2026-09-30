@@ -211,14 +211,13 @@ async function ensureChannel(
   }
 }
 
-async function ensureNotificationPermission(
-  Notifications: typeof import("expo-notifications")
-): Promise<boolean> {
+async function ensureNotificationPermission(): Promise<boolean> {
   try {
-    const current = await Notifications.getPermissionsAsync();
-    if (current.granted) return true;
-    const next = await Notifications.requestPermissionsAsync();
-    return Boolean(next.granted);
+    const { requestMerchantNotificationPermission } = await import(
+      "@/lib/merchantNotificationPermission"
+    );
+    const next = await requestMerchantNotificationPermission();
+    return next.osStatus === "granted";
   } catch {
     return false;
   }
@@ -352,7 +351,7 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
   posting = true;
   try {
     const Notifications = await loadNotifications();
-    const permitted = await ensureNotificationPermission(Notifications);
+    const permitted = await ensureNotificationPermission();
     if (!permitted) {
       logStatus({
         storeId,
@@ -377,6 +376,21 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
         merchantId: args.merchantId,
         storeName: name,
       });
+      return;
+    }
+
+    const presented = await Notifications.getPresentedNotificationsAsync().catch(() => []);
+    const alreadyShowing = presented.some((n) => {
+      if (!looksLikeStoreStatusNotification(n)) return false;
+      const content = n.request?.content;
+      const shownTitle = String(content?.title ?? "");
+      const shownBody = String(content?.body ?? "");
+      return shownTitle === title && shownBody === body;
+    });
+    if (alreadyShowing || (signature === lastSignature && args.state === "ONLINE" && body === "Waiting for orders")) {
+      lastSignature = signature;
+      lastEventKey = eventKey;
+      if (args.state === "ONLINE") lastOnlineKitchenBody = body;
       return;
     }
 
@@ -423,43 +437,6 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
       merchantId: args.merchantId,
       storeName: name,
     });
-
-    // Verify shade row exists — Android sometimes drops the first schedule.
-    const visible = await isStoreStatusPresented(Notifications);
-    if (!visible) {
-      await Notifications.scheduleNotificationAsync({
-        identifier: STORE_STATUS_NOTIFICATION_ID,
-        content: {
-          title,
-          body,
-          data: {
-            type: "STORE_STATUS",
-            state: args.state,
-            storeId,
-            merchantId: args.merchantId ?? "",
-            storeName: name ?? "",
-            eventId: args.eventId ?? `STORE_STATUS:${args.state}:${storeId}:retry`,
-            timestamp: new Date().toISOString(),
-            url,
-            screen: args.state === "OUT_OF_TIMINGS" ? "restaurant_status" : "home",
-            kitchenBody: args.state === "ONLINE" ? body : "",
-          },
-          color: GatiMitraMerchant.primary,
-          sticky: args.state === "ONLINE",
-          autoDismiss: args.state !== "ONLINE",
-          sound: playSound ? "default" : undefined,
-          priority: Notifications.AndroidNotificationPriority.HIGH,
-          ...(Platform.OS === "android" ? { channelId } : {}),
-        },
-        trigger: null,
-      });
-      logStatus({
-        storeId,
-        action: "REPOST_AFTER_MISS",
-        source: args.source ?? "JS",
-        bodyPreview: body.slice(0, 80),
-      });
-    }
 
     logStatus({
       merchantId: args.merchantId ?? "",

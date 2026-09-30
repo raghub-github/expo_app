@@ -491,22 +491,14 @@ export default function DeliverySettingsScreen() {
             <View style={styles.left}>
               <Text style={styles.secondaryTitle}>Packaging charges</Text>
               <Text style={styles.secondarySubtitle}>
-                Add a small packaging fee per order.
+                Packaging charges cannot be changed in the app.
               </Text>
             </View>
             <Pressable
-              onPress={() => openChargeModal("packaging")}
-              disabled={chargesLoading || chargesSaving}
-              style={({ pressed }) => [
-                styles.pricingPill,
-                pressed && styles.pressed,
-              ]}
+              disabled
+              style={[styles.pricingPill, { opacity: 0.55 }]}
             >
-              <Text style={styles.pricingPillText}>
-                {charges?.packaging_charge_amount != null
-                  ? `₹${charges.packaging_charge_amount.toFixed(2)}`
-                  : "Set amount"}
-              </Text>
+              <Text style={styles.pricingPillText}>Unavailable</Text>
             </Pressable>
           </View>
           {charges && (

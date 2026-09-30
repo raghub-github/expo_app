@@ -24,7 +24,7 @@ export function useCategoryServiceAssignments() {
           `${API_BASE()}/v1/onboarding/category-service-assignments`,
           {
             // Boot path — fail fast to fallback instead of hanging 30s on a busy DB pool.
-            timeout: 8_000,
+            timeout: 20_000,
             ...(session?.accessToken
               ? { headers: { authorization: `Bearer ${session.accessToken}` } }
               : {}),
@@ -54,8 +54,7 @@ export function useCategoryServiceAssignments() {
     enabled: hydrated,
     staleTime: 10 * 60_000,
     gcTime: 30 * 60_000,
-    retry: 1,
-    retryDelay: 1_500,
+    retry: 0,
     placeholderData: { rows: [], byCategory: FALLBACK_CATEGORY_SERVICE_BY_CODE },
   });
 }

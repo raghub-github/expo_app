@@ -124,6 +124,7 @@ export default function LiveOrdersOngoingNotification() {
   const sessionLoadedRef = useRef(false);
   const sessionStoreIdRef = useRef<number | null>(null);
   const lastKitchenBodyRef = useRef<string>("");
+  const ensuredIdleStoreRef = useRef<number | null>(null);
   const evaluatingRef = useRef(false);
   const pendingEvaluateRef = useRef<{ source: string; opts?: { fetchApi?: boolean } } | null>(
     null
@@ -217,6 +218,16 @@ export default function LiveOrdersOngoingNotification() {
     async (breakdown: ActiveOrdersBreakdown, source: string) => {
       const c = ctxRef.current;
       const body = formatKitchenStickyBody(breakdown);
+      // Board snapshots lag the API and were flipping the sticky back to
+      // "Waiting for orders" while a new order was still pending.
+      const fromBoard = source.includes("BOARD") && !source.includes("API");
+      if (
+        fromBoard &&
+        breakdown.pending_accept === 0 &&
+        /new/i.test(lastKitchenBodyRef.current)
+      ) {
+        return;
+      }
       const kitchenBodyChanged = body !== lastKitchenBodyRef.current;
       const { next, action } = reduceStoreStatusSession(sessionRef.current, {
         authenticated: c.isAuthenticated,
@@ -228,6 +239,30 @@ export default function LiveOrdersOngoingNotification() {
       });
       sessionRef.current = next;
       if (c.storeId != null) saveSession(c.storeId, next);
+      if (
+        next.opState === "ONLINE_IDLE" &&
+        action.type === "NONE" &&
+        (action.reason === "RESTORE_IDLE" || action.reason === "SAME_IDLE_SESSION") &&
+        c.storeId != null &&
+        ensuredIdleStoreRef.current !== c.storeId
+      ) {
+        ensuredIdleStoreRef.current = c.storeId;
+        setKitchenStickyStoreMeta({ storeId: c.storeId, storeName: c.storeName, merchantId: c.merchantId });
+        setKitchenStickyAllowed(true);
+        lastKitchenBodyRef.current = "Waiting for orders";
+        await postStoreStatusNotification({
+          state: "ONLINE",
+          storeId: c.storeId,
+          merchantId: c.merchantId,
+          storeName: c.storeName,
+          source: `${source}_IDLE_ENSURE`,
+          bodyOverride: "Waiting for orders",
+          force: false,
+          playSound: false,
+          eventId: `IDLE_ENSURE:${c.storeId}:${next.idleSessionId ?? "restore"}`,
+        });
+        return;
+      }
       await applyAction(action, {
         storeId: c.storeId,
         storeName: c.storeName,
@@ -265,6 +300,12 @@ export default function LiveOrdersOngoingNotification() {
         if (c.loading) return;
 
         if (!c.isOnline) {
+          const lifecycle =
+            source.startsWith("APP_RESUME") ||
+            source.startsWith("SESSION_LOADED") ||
+            source.startsWith("KITCHEN_POLL") ||
+            source.startsWith("BOARD_CHANGE");
+          if (lifecycle) return;
           await runReduce({ active_orders: 0, pending_accept: 0, preparing: 0, ready: 0, out_for_delivery: 0 }, source);
           return;
         }
@@ -344,6 +385,7 @@ export default function LiveOrdersOngoingNotification() {
       void evaluateRef.current("APP_RESUME", { fetchApi: true });
     });
     const poll = setInterval(() => {
+      if (AppState.currentState !== "active") return;
       ticks += 1;
       void evaluateRef.current("KITCHEN_POLL", {
         fetchApi: ticks % KITCHEN_API_EVERY_N === 0,

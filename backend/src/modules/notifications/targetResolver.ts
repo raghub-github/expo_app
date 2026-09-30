@@ -919,6 +919,21 @@ async function recipientsForGeo(opts: {
  * tokens (last_seen/updated_at older than TOKEN_STALENESS_DAYS) are still tried;
  * invalid tokens continue to be purged on DeviceNotRegistered.
  */
+/**
+ * Customer JWTs use `GM{100000+id}`. Also match a token stored under the
+ * numeric customers.id so an older registration is not invisible to campaigns.
+ */
+async function withCustomerTokenAliases(candidates: string[]): Promise<string[]> {
+  const out = new Set(candidates);
+  for (const id of candidates) {
+    const m = /^GM(\d+)$/i.exec(id.trim());
+    if (!m || /^GMMP/i.test(id) || /^GMR/i.test(id)) continue;
+    const pk = Number(m[1]) - 100000;
+    if (Number.isFinite(pk) && pk > 0) out.add(String(pk));
+  }
+  return [...out];
+}
+
 export async function resolveTarget(
   target: TargetFilter,
   opts?: ResolveTargetOpts
@@ -956,11 +971,19 @@ async function resolveTargetRaw(
   }
 
   if ("user_id" in target && typeof target.user_id === "string") {
-    const candidates = expandCampaignUserIdCandidates(target.user_id);
-    const expo = await tokensForUserIds(candidates, undefined, opts);
+    const candidates = await withCustomerTokenAliases(
+      expandCampaignUserIdCandidates(target.user_id),
+    );
+    const customerOnly = candidates.some((id) => /^GM\d+$/i.test(id) && !/^GMMP/i.test(id));
+    const expo = await tokensForUserIds(
+      candidates,
+      customerOnly ? "customer" : undefined,
+      opts,
+    );
     const merchant = await tokensFromMerchantStorePushTokens({ parentMerchantIds: candidates });
     const native = await nativeFcmTokens({
       userIds: candidates,
+      role: customerOnly ? "customer" : undefined,
       ignoreStaleness: opts?.ignoreStaleness,
     });
     return dedupeByToken([...expo, ...merchant, ...native]);

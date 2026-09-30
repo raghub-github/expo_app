@@ -10,19 +10,7 @@
     "jsEngine": "hermes",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/images/splash-brand.png",
-      "resizeMode": "cover",
-      "backgroundColor": "#14b8a6",
-      "android": {
-        "image": "./assets/images/splash-android12.png",
-        "resizeMode": "contain",
-        "backgroundColor": "#14b8a6"
-      },
-      "ios": {
-        "image": "./assets/images/splash-brand.png",
-        "resizeMode": "cover",
-        "backgroundColor": "#14b8a6"
-      }
+      "backgroundColor": "#14b8a6"
     },
     "assetBundlePatterns": [
       "**/*"

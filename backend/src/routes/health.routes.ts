@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { getSql } from "../db/client.js";
+import { getSql, resetDbPoolAsync } from "../db/client.js";
 
 export async function healthRoutes(app: FastifyInstance) {
   app.get(
@@ -27,15 +27,22 @@ export async function healthRoutes(app: FastifyInstance) {
       const startTime = Date.now();
       const uptime = Math.floor((Date.now() - startTime) / 1000);
 
-      // Check database connectivity
+      // Check database connectivity — never hang forever if the pool is wedged.
       let dbStatus: "connected" | "disconnected" = "disconnected";
       try {
         const sql = getSql();
-        await sql`SELECT 1`;
+        await Promise.race([
+          sql`SELECT 1`,
+          new Promise((_, reject) => {
+            setTimeout(() => reject(new Error("db_health_timeout")), 3_000);
+          }),
+        ]);
         dbStatus = "connected";
       } catch (error) {
         request.log.error({ error }, "Database health check failed");
         dbStatus = "disconnected";
+        // Wedged checkout queue — drop dead sockets so the next request can recover.
+        void resetDbPoolAsync().catch(() => undefined);
       }
 
       const response = {
@@ -59,5 +66,3 @@ export async function healthRoutes(app: FastifyInstance) {
     },
   );
 }
-
-

@@ -104,6 +104,14 @@ export function reduceStoreStatusSession(
 
   // nextState === ONLINE_IDLE
   const enteringIdle = prevState !== "ONLINE_IDLE";
+  // App open/close restores with no previous state. That is not a new idle session.
+  if (enteringIdle && prevState == null) {
+    const sid = prev.idleSessionId ?? input.newIdleSessionId;
+    return {
+      next: { opState: "ONLINE_IDLE", idleSessionId: sid, idleNotifiedSessionId: sid },
+      action: { type: "NONE", reason: "RESTORE_IDLE" },
+    };
+  }
   if (enteringIdle) {
     // OFFLINE→IDLE, ORDER_ACTIVE→IDLE, or first run (prev=null): a genuinely new idle session.
     const sid = input.newIdleSessionId;

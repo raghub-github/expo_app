@@ -25,7 +25,7 @@ function RankBadge({ displayRank, own }: { displayRank: string; own?: boolean })
     return (
       <span
         className="inline-flex h-5 min-w-[1.75rem] items-center justify-center rounded-full bg-white text-[10px] font-bold text-emerald-700 tabular-nums shrink-0 ring-1 ring-white/50"
-        title={`Rank ${displayRank} by 90-day orders`}
+        title={`Rank ${displayRank} by HOME_FOOD score`}
       >
         {displayRank}
       </span>
@@ -35,7 +35,7 @@ function RankBadge({ displayRank, own }: { displayRank: string; own?: boolean })
     return (
       <span
         className="inline-flex h-5 min-w-[1.75rem] items-center justify-center rounded bg-amber-100 text-[10px] font-bold text-amber-700 tabular-nums shrink-0"
-        title={`Rank ${displayRank} by 90-day orders`}
+        title={`Rank ${displayRank} by HOME_FOOD score`}
       >
         {displayRank}
       </span>
@@ -45,7 +45,7 @@ function RankBadge({ displayRank, own }: { displayRank: string; own?: boolean })
     return (
       <span
         className="inline-flex h-5 min-w-[1.75rem] items-center justify-center rounded bg-slate-200/90 text-[10px] font-bold text-slate-600 tabular-nums shrink-0"
-        title={`Rank ${displayRank} by 90-day orders`}
+        title={`Rank ${displayRank} by HOME_FOOD score`}
       >
         {displayRank}
       </span>
@@ -55,7 +55,7 @@ function RankBadge({ displayRank, own }: { displayRank: string; own?: boolean })
     return (
       <span
         className="inline-flex h-5 min-w-[1.75rem] items-center justify-center rounded bg-orange-100 text-[10px] font-bold text-orange-800 tabular-nums shrink-0"
-        title={`Rank ${displayRank} by 90-day orders`}
+        title={`Rank ${displayRank} by HOME_FOOD score`}
       >
         {displayRank}
       </span>
@@ -240,7 +240,7 @@ export function MerchantMarketInsightsCard({
         <h2 className="text-sm font-bold text-slate-900 tracking-tight">Competitors</h2>
         <span
           className="text-slate-400"
-          title="Stores ranked by 90-day orders (same as trophy). Affinity shows customer overlap."
+          title="Affinity is this store's HOME_FOOD ranking score compared with the top store in the same city or locality."
         >
           <Info size={15} strokeWidth={2} aria-hidden />
         </span>
@@ -260,7 +260,7 @@ export function MerchantMarketInsightsCard({
             ) : null}{" "}
             in <span className="text-slate-900">{placeLabel}</span>
             <span className="block sm:inline sm:ml-1 text-[11px] font-medium text-slate-400">
-              (by orders · last 90 days)
+              (by ranking score)
             </span>
           </p>
         </div>

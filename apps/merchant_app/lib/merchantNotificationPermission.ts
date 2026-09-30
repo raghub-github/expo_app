@@ -111,7 +111,7 @@ export async function requestMerchantNotificationPermission(): Promise<MerchantN
         }
         return { osStatus: "denied", canAskAgain: true, source: "permissions-android" };
       } catch {
-        /* fall through to expo */
+        return { osStatus: "denied", canAskAgain: true, source: "permissions-android" };
       }
     }
   }

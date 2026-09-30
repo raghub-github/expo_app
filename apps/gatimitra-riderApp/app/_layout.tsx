@@ -16,7 +16,6 @@ import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState } from "react";
 import { View, Text, Platform } from "react-native";
-import { StatusBar } from "expo-status-bar";
 import "react-native-reanimated";
 
 import { AppProviders } from "@/src/providers/AppProviders";
@@ -40,6 +39,8 @@ import { RiderPaymentSuccessSheet } from "@/src/components/ui/RiderPaymentSucces
 import { ActiveOrderResumeBootstrap } from "@/src/components/orders/ActiveOrderResumeBootstrap";
 import { ActiveOrderKeepAwakeGate } from "@/src/hooks/useActiveOrderKeepAwake";
 import { RiderPostDeliveryTipHost } from "@/src/components/orders/RiderPostDeliveryTipHost";
+import { RiderPersistentDispatchPill } from "@/src/components/RiderPersistentDispatchPill";
+import { RiderSearchingNotification } from "@/src/components/RiderSearchingNotification";
 import { RiderToastHost } from "@/src/components/RiderToastHost";
 import { RiderOfflineBanner } from "@/src/components/RiderOfflineBanner";
 import { RiderDocumentUpdateSheetHost } from "@/src/components/documents/RiderDocumentUpdateSheetHost";
@@ -129,7 +130,6 @@ function RootLayoutNav() {
   try {
     return (
       <AppProviders>
-        <StatusBar style="dark" backgroundColor="#ffffff" translucent={false} animated={false} />
         <ThemeProvider value={DefaultTheme}>
           <RiderPushSetup />
           <RiderPendingReferralResume />
@@ -148,14 +148,16 @@ function RootLayoutNav() {
               contentStyle: { flex: 1, width: "100%", backgroundColor: "#ffffff" },
               statusBarStyle: "dark",
               statusBarAnimation: "none",
-              statusBarTranslucent: false,
             }}
           >
             <Stack.Screen
               name="index"
               options={{ contentStyle: { backgroundColor: "#C4E8D1" } }}
             />
-            <Stack.Screen name="(permissions)" />
+            <Stack.Screen
+              name="(permissions)"
+              options={{ contentStyle: { backgroundColor: "#C4E8D1" } }}
+            />
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="(onboarding)" />
             <Stack.Screen
@@ -233,6 +235,8 @@ function RootLayoutNav() {
           <RiderDocumentUpdateSheetHost />
           <RiderPaymentSuccessSheet />
           <RiderPostDeliveryTipHost />
+          <RiderPersistentDispatchPill />
+          <RiderSearchingNotification />
           <RiderToastHost />
           <RiderOfflineBanner />
         </ThemeProvider>

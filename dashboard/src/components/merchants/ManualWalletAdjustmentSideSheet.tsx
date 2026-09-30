@@ -142,7 +142,11 @@ export function ManualWalletAdjustmentSideSheet({
 
   const subHeaderText =
     sheetTab === "request"
-      ? "All wallet adjustment requests for this store."
+      ? lockedOrderId != null
+        ? orderDisplay
+          ? `Wallet adjustment requests for order #${orderDisplay}.`
+          : "Wallet adjustment requests for this order."
+        : "All wallet adjustment requests for this store."
       : "Submit a wallet credit or debit request.";
 
   const loadHistory = useCallback(async (opts?: { silent?: boolean }) => {
@@ -153,13 +157,15 @@ export function ManualWalletAdjustmentSideSheet({
     const gen = ++loadGenRef.current;
     const timeoutId = window.setTimeout(() => ac.abort(), 20_000);
 
-    // Only flash spinner when Request tab has nothing to show yet.
     const showSpinner = !opts?.silent && historyRef.current.length === 0;
     if (showSpinner) setHistoryLoading(true);
     setHistoryError(null);
     try {
       const q = new URLSearchParams({ limit: "50", offset: "0" });
-      // Store-wide request history (pending + approved + rejected). Order is captured on Form submit.
+      // Order page: only this order's requests — never the whole store list.
+      if (lockedOrderId != null) {
+        q.set("order_id", String(lockedOrderId));
+      }
       const res = await fetch(`/api/merchant/stores/${storeId}/wallet-requests?${q}`, {
         credentials: "include",
         cache: "no-store",
@@ -176,7 +182,10 @@ export function ManualWalletAdjustmentSideSheet({
         );
         return;
       }
-      const rows = Array.isArray(data?.requests) ? (data.requests as HistoryRow[]) : [];
+      let rows = Array.isArray(data?.requests) ? (data.requests as HistoryRow[]) : [];
+      if (lockedOrderId != null) {
+        rows = rows.filter((r) => Number(r.order_id) === lockedOrderId);
+      }
       setHistory(rows);
       setHistoryError(null);
     } catch (err) {
@@ -192,8 +201,7 @@ export function ManualWalletAdjustmentSideSheet({
         setHistoryLoading(false);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- store-scoped list; order lock only for Form
-  }, [storeId]);
+  }, [storeId, lockedOrderId]);
 
   useEffect(() => {
     if (!open) {
@@ -559,7 +567,11 @@ export function ManualWalletAdjustmentSideSheet({
               </div>
             ) : history.length === 0 ? (
               <div className="py-12 text-center">
-                <p className="wallet-adj-title text-sm font-bold text-gray-700">No Record Found</p>
+                <p className="wallet-adj-title text-sm font-bold text-gray-700">
+                  {lockedOrderId != null
+                    ? "No wallet adjustment requests for this order"
+                    : "No Record Found"}
+                </p>
                 {historyError ? (
                   <p className="mt-1 text-[11px] text-amber-700">{historyError}</p>
                 ) : null}

@@ -133,7 +133,80 @@ public final class OrderAlertController {
         resolveDrop(data),
         resolveOrderType(data)
     );
+    rememberPresentation(context, sessionId, data, title, body);
     return controlOnly;
+  }
+
+  /** Public order id, amount, and partner ids for the overlay and lock-screen notification. */
+  static void rememberPresentation(
+      Context context,
+      String sessionId,
+      Map<String, String> data,
+      String title,
+      String body
+  ) {
+    if (context == null || sessionId == null || sessionId.trim().length() == 0) return;
+    String display = publicOrderId(data);
+    String amount = first(data, "amount", "orderAmount", "grandTotal");
+    String customer = first(data, "customerName", "customerLabel", "customer");
+    String storeId = first(data, "storeId", "store_id", "merchantStoreId");
+    String foodId = first(data, "foodOrderId", "food_order_id");
+    String expires = first(data, "expiresAt", "expires_at", "acceptUntil");
+    synchronized (LOCK) {
+      JSONObject row = findSession(context, sessionId, "", "");
+      if (row == null) return;
+      try {
+        if (display.length() > 0) row.put("displayOrderId", display);
+        if (amount.length() > 0 && !"0".equals(amount) && !"0.0".equals(amount)) row.put("amount", amount);
+        if (customer.length() > 0) row.put("customerName", customer);
+        if (storeId.length() > 0) row.put("storeId", storeId);
+        if (foodId.length() > 0) row.put("foodOrderId", foodId);
+        if (expires.length() > 0) row.put("expiresAt", expires);
+        if (title != null && title.trim().length() > 0) row.put("title", title.trim());
+        if (body != null && body.trim().length() > 0) row.put("body", body.trim());
+        upsertSession(context, row);
+      } catch (Exception ignored) {
+      }
+    }
+    try {
+      JSONObject row = OrderAlertController.getActive(context);
+      if (row != null) {
+        OrderAlertOverlay.show(context, row);
+        ensureService(
+            context,
+            row.optString("sessionId", sessionId),
+            row.optString("orderId", ""),
+            row.optString("offerId", ""),
+            row.optString("soundType", defaultSound()),
+            row.optString("title", title),
+            row.optString("body", body),
+            row.optString("pickup", ""),
+            row.optString("drop", ""),
+            row.optString("orderType", "")
+        );
+      }
+    } catch (Throwable ignored) {
+    }
+  }
+
+  static String publicOrderId(Map<String, String> data) {
+    String display = first(
+        data,
+        "displayOrderId",
+        "display_order_id",
+        "orderShortId",
+        "formattedOrderId",
+        "formatted_order_id"
+    );
+    if (display.matches("^\\d+$")) display = "";
+    if (display.length() == 0) {
+      String blob = first(data, "title", "body", "message", "orderNumber", "order_number");
+      java.util.regex.Matcher m = java.util.regex.Pattern
+          .compile("GMF\\d+", java.util.regex.Pattern.CASE_INSENSITIVE)
+          .matcher(blob);
+      if (m.find()) display = m.group().toUpperCase();
+    }
+    return display;
   }
 
   public static void start(
@@ -221,6 +294,7 @@ public final class OrderAlertController {
     }
 
     ensureService(context, sid, oid, offer, sound, title, body, pickupText, dropText, typeText);
+    OrderAlertPill.onNewOrder(context, sid);
     AlertEngineLog.log(context, "ALERT_SESSION_CREATED", sid, oid, "sound=" + sound + " type=" + typeText);
     Log.i(TAG, "start sessionId=" + sid + " orderId=" + oid + " sound=" + sound);
   }
@@ -231,6 +305,7 @@ public final class OrderAlertController {
     // Empty id from JS must not wipe every session. Watchdog / FGS stop use stopAll().
     if (sid.length() == 0) return;
     AlertEngineLog.log(context, "ALERT_STOP", sid, "", null);
+    OrderAlertPill.onOrderClosed(context, sid);
     boolean empty;
     synchronized (LOCK) {
       removeSession(context, sid);
@@ -247,6 +322,7 @@ public final class OrderAlertController {
     }
     if (empty) {
       OrderAlertOverlay.hide(context, sid);
+      OrderAlertHeadsUp.cancel(context);
       stopAudio();
       stopService(context);
       AlertEngineLog.log(context, "ALERT_STOPPED", sid, "", "remaining=0");
@@ -280,6 +356,7 @@ public final class OrderAlertController {
       putPrimary(context, "");
     }
     OrderAlertOverlay.hideAll(context);
+    OrderAlertHeadsUp.cancel(context);
     stopAudio();
     stopService(context);
     Log.i(TAG, "stop all");
@@ -411,6 +488,10 @@ public final class OrderAlertController {
         AlertEngineLog.log(context, "BUZZER_START", sessionId, "", "skipped=sound_alerts_off");
         return;
       }
+      if (silentWithoutRingThrough(context)) {
+        AlertEngineLog.log(context, "BUZZER_START", sessionId, "", "skipped=ringer_silent");
+        return;
+      }
       if (player != null && player.isPlaying() && sessionId.equals(playingSessionId)) {
         AlertEngineLog.log(context, "BUZZER_STARTED", sessionId, "", "idempotent=1");
         return;
@@ -468,9 +549,26 @@ public final class OrderAlertController {
     abandonFocus();
   }
 
-  private static AudioAttributes alertAudioAttributes() {
+  private static boolean silentWithoutRingThrough(Context context) {
+    if (context == null || OrderAlertSoundStore.ringInSilent(context)) return false;
+    try {
+      AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+      if (am == null) return false;
+      int mode = am.getRingerMode();
+      return mode == AudioManager.RINGER_MODE_SILENT || mode == AudioManager.RINGER_MODE_VIBRATE;
+    } catch (Throwable ignored) {
+      return false;
+    }
+  }
+
+  private static AudioAttributes alertAudioAttributes(Context context) {
+    // Alarm usage still plays the partner-selected file when the screen is locked
+    // or the ringer is silent, if the partner left ring-in-silent enabled.
+    int usage = OrderAlertSoundStore.ringInSilent(context)
+        ? AudioAttributes.USAGE_ALARM
+        : AudioAttributes.USAGE_NOTIFICATION_RINGTONE;
     return new AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+        .setUsage(usage)
         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
         .build();
   }
@@ -481,7 +579,7 @@ public final class OrderAlertController {
    * A missing or corrupt selected file must not produce a silent buzzer.
    */
   private static MediaPlayer createPlayer(Context context, String sessionId, String soundType) {
-    AudioAttributes attrs = alertAudioAttributes();
+    AudioAttributes attrs = alertAudioAttributes(context);
 
     java.io.File selected = OrderAlertSoundStore.selectedFile(context);
     if (selected != null) {
@@ -601,7 +699,7 @@ public final class OrderAlertController {
       if (audioManager == null) return;
       if (Build.VERSION.SDK_INT >= 26) {
         focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-            .setAudioAttributes(alertAudioAttributes())
+            .setAudioAttributes(alertAudioAttributes(context))
             .build();
         audioManager.requestAudioFocus(focusRequest);
       } else {

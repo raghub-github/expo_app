@@ -23,7 +23,7 @@ test("percentage: exact and rounded to 2dp", () => {
   assert.equal(percentage(8, 12), 66.67);
 });
 
-test("percentage: zero denominator returns null (N/A), never NaN/Infinity", () => {
+test("percentage: zero denominator returns null (UI shows 0%), never NaN/Infinity", () => {
   assert.equal(percentage(0, 0), null);
   assert.equal(percentage(5, 0), null);
 });
@@ -172,7 +172,7 @@ test("overall cancellation rate uses summed counts, not averaged service rates",
 
 // --- edge cases (§28) -----------------------------------------------------
 
-test("edge: 0 accepted => rates are null (N/A), no NaN", () => {
+test("edge: 0 accepted => rates are null (UI 0%), no NaN", () => {
   const result = computeRiderCancellationAnalytics({
     services: SERVICES,
     accepted: [],

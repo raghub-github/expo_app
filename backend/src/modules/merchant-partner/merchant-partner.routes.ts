@@ -9865,6 +9865,13 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                     : undefined,
               }
             );
+            if (newStatus === "ACCEPTED" || newStatus === "CANCELLED") {
+              void import("../../lib/merchant-push-notify.js")
+                .then(({ notifyMerchantOrderAlertStop }) =>
+                  notifyMerchantOrderAlertStop(sql, { storeId, foodOrderId: ordersFoodId })
+                )
+                .catch(() => undefined);
+            }
             return reply.send({ order });
           } catch (e) {
             const msg = e instanceof Error ? e.message : "update_failed";

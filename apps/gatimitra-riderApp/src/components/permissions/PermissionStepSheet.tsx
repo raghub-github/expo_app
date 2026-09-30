@@ -331,9 +331,9 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   skipBtn: {
-    marginTop: 16,
+    marginTop: 8,
     alignItems: "center",
-    paddingVertical: 8,
+    paddingVertical: 4,
   },
   skipText: {
     fontSize: 15,

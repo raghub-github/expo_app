@@ -35,13 +35,17 @@ import {
   RIDER_DISPATCH_RIDE_SOUND,
   isRiderDispatchOfferPushData,
 } from "@/src/lib/riderDispatchOfferChannel";
-import { installRiderForegroundNotificationHandler } from "@/src/lib/riderNotificationHandler";
+import {
+  installRiderForegroundNotificationHandler,
+  startDispatchBuzzerFromPush,
+} from "@/src/lib/riderNotificationHandler";
 import {
   parseRiderNumericId,
   useRiderWalletFreezeLive,
 } from "@/src/hooks/useRiderWalletFreezeLive";
 import { useRiderBankStatusLive } from "@/src/hooks/useRiderBankStatusLive";
 import { handleRiderWalletRelatedPush } from "@/src/lib/riderWalletPushSync";
+import { refreshRiderInboxUnread } from "@/src/stores/riderInboxUnreadStore";
 
 // In-app notification pills OFF. Push / FCM / OS shade / token sync stay ON.
 setInAppBannerUiEnabled(false);
@@ -115,7 +119,6 @@ export function RiderPushSetup() {
         (typeof payload.body === "string" && payload.body) ||
         (typeof payload.data.gmMessage === "string" ? payload.data.gmMessage : "") ||
         "";
-      useNotificationInboxStore.getState().add(notificationFromPushPayload(title, body, payload.data));
 
       handleRiderWalletRelatedPush(
         queryClient,
@@ -125,6 +128,8 @@ export function RiderPushSetup() {
       );
 
       if (isRiderDispatchOfferPushData(payload.data ?? {})) {
+        // New-order offers: OS shade + accept modal only — never local inbox / bell badge.
+        void startDispatchBuzzerFromPush(payload.data ?? {});
         ingestIncomingDispatchOffer(
           queryClient,
           typeof payload.data?.orderId === "string" ? payload.data.orderId : undefined,
@@ -146,6 +151,12 @@ export function RiderPushSetup() {
         );
         return;
       }
+
+      // Cancel / penalty / admin / other lifecycle — keep a local mirror + refresh API badge.
+      useNotificationInboxStore
+        .getState()
+        .add(notificationFromPushPayload(title, body, payload.data));
+      refreshRiderInboxUnread();
 
       // No in-app pill enqueue — OS shade owns presentation.
       const type = typeof payload.data.type === "string" ? payload.data.type : "";
@@ -284,7 +295,7 @@ export function RiderPushSetup() {
       void installRiderForegroundNotificationHandler();
     }, 300);
     void (async () => {
-      let snap = await controller.refresh({ syncIfGranted: !expoGo });
+      let snap = controller.getSnapshot();
       console.log("[push:rider] post-login refresh", {
         osStatus: snap.osStatus,
         syncStatus: snap.syncStatus,
@@ -367,7 +378,7 @@ export function RiderPushSetup() {
       if (!hydrated || !session?.accessToken || session.role !== "rider") return;
       void installRiderForegroundNotificationHandler();
       void (async () => {
-        const snap = await controller.refresh({ syncIfGranted: !expoGo });
+        const snap = controller.getSnapshot();
         if (
           snap.osStatus === "granted" &&
           !expoGo &&

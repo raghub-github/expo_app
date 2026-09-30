@@ -78,10 +78,13 @@ export async function listRiderVehiclesWithEligibility(args: {
   if (!rider) return { vehicles: [], activeVehicleId: null, resolvedGeo: null };
 
   // Self-heal: onboarding may store RC on rider_documents before projecting rider_vehicles.
-  // Without this, Profile → Vehicles shows 0 vehicles while KYC already lists the RC.
+  // Cap wait — unbounded heal was stacking with rider-summary and causing dashboard 502s.
   try {
     const { ensureRiderVehicleFromStoredRc } = await import("../../lib/rider-vehicle-from-rc.js");
-    await ensureRiderVehicleFromStoredRc(args.riderId);
+    await Promise.race([
+      ensureRiderVehicleFromStoredRc(args.riderId),
+      new Promise<void>((resolve) => setTimeout(resolve, 2_500)),
+    ]);
   } catch (e) {
     console.warn(
       "[listRiderVehiclesWithEligibility] ensureRiderVehicleFromStoredRc failed:",

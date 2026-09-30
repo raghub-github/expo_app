@@ -92,16 +92,6 @@ export const usePermissionStore = create<PermissionStoreState>((set, get) => ({
 
       set({ grantedPermissionSteps: steps });
       void setItem(GRANTED_PERMISSIONS_KEY, JSON.stringify(Array.from(steps)));
-
-      // If previously completed onboarding but a required OS setting was revoked,
-      // send the rider through permissions again (matches "ask again if disabled").
-      const requiredOk =
-        steps.has("location") &&
-        steps.has("notifications") &&
-        (steps.has("battery_optimization") || steps.has("background_running"));
-      if (get().hasRequestedPermissions && !requiredOk) {
-        get().setHasRequestedPermissions(false);
-      }
     } catch (error) {
       console.warn("Error refreshing permissions (non-critical):", error);
     }
