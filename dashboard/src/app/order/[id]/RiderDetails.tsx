@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import RiderTimeline, { type RiderTimelineData } from "./RiderTimeline";
+import RiderTrackingModal from "./RiderTrackingModal";
 import { useCancellationReasonCatalog } from "@/hooks/useCancellationReasonCatalog";
 import {
   catalogReasonOptionValue,
@@ -259,6 +260,8 @@ interface RiderLogModalProps {
   refreshKey?: number;
   onClose: () => void;
   onCopy: (text: string) => void;
+  /** Open the in-app GPS trail map for this order (used when no external URL). */
+  onTrack?: () => void;
 }
 
 function readRiderActivityLogSnapshot(orderId: number | null | undefined) {
@@ -269,7 +272,7 @@ function readRiderActivityLogSnapshot(orderId: number | null | undefined) {
   };
 }
 
-export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy }: RiderLogModalProps) {
+export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy, onTrack }: RiderLogModalProps) {
   const [logs, setLogs] = useState<RiderActivityLogApiRow[]>([]);
   const [summary, setSummary] = useState<RiderActivityLogSummary>(EMPTY_RIDER_ACTIVITY_SUMMARY);
   const [error, setError] = useState<string | null>(null);
@@ -518,6 +521,16 @@ export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy
                           <i className="bi bi-box-arrow-up-right" />
                           Track
                         </a>
+                      ) : onTrack ? (
+                        <button
+                          type="button"
+                          onClick={onTrack}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-medium rounded-md transition-colors cursor-pointer"
+                          title="Replay this order's GPS trail on a map"
+                        >
+                          <i className="bi bi-geo-alt" />
+                          Track
+                        </button>
                       ) : (
                         <span className="text-gray-400 italic">No URL</span>
                       )}
@@ -665,6 +678,7 @@ export default function RiderDetails({
   className = "",
 }: RiderDetailsProps) {
   const [showLogModal, setShowLogModal] = useState(false);
+  const [showTrackingModal, setShowTrackingModal] = useState(false);
   const [selfieImgError, setSelfieImgError] = useState(false);
   const [riderPhotoOpen, setRiderPhotoOpen] = useState(false);
   const [deliveryPhotoOpen, setDeliveryPhotoOpen] = useState(false);
@@ -1340,20 +1354,33 @@ export default function RiderDetails({
             </div>
           </div>
           {!showPickupHelpMessage ? (
-            <button
-              type="button"
-              className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-full transition-colors cursor-pointer"
-              onMouseEnter={() => {
-                if (order.orderId != null) prefetchRiderActivityLog(order.orderId);
-              }}
-              onFocus={() => {
-                if (order.orderId != null) prefetchRiderActivityLog(order.orderId);
-              }}
-              onClick={() => setShowLogModal(true)}
-            >
-              <i className="bi bi-eye" />
-              View Rider&apos;s Log
-            </button>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {order.orderId != null ? (
+                <button
+                  type="button"
+                  className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded-full transition-colors cursor-pointer"
+                  onClick={() => setShowTrackingModal(true)}
+                  title="Replay the rider's minute-by-minute GPS trail on a map"
+                >
+                  <i className="bi bi-geo-alt" />
+                  Track on map
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-full transition-colors cursor-pointer"
+                onMouseEnter={() => {
+                  if (order.orderId != null) prefetchRiderActivityLog(order.orderId);
+                }}
+                onFocus={() => {
+                  if (order.orderId != null) prefetchRiderActivityLog(order.orderId);
+                }}
+                onClick={() => setShowLogModal(true)}
+              >
+                <i className="bi bi-eye" />
+                View Rider&apos;s Log
+              </button>
+            </div>
           ) : null}
         </div>
 
@@ -1843,6 +1870,16 @@ export default function RiderDetails({
         refreshKey={activityLogRefreshKey}
         onClose={() => setShowLogModal(false)}
         onCopy={onCopy}
+        onTrack={() => {
+          setShowLogModal(false);
+          setShowTrackingModal(true);
+        }}
+      />
+      <RiderTrackingModal
+        isOpen={showTrackingModal}
+        orderIdText={order.formattedOrderId?.trim() || order.trackingOrderId?.trim() || null}
+        riderName={order.riderName?.trim() || null}
+        onClose={() => setShowTrackingModal(false)}
       />
       <RiderPhotoModal
         open={riderPhotoOpen}
