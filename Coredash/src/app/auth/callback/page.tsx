@@ -32,9 +32,13 @@ function CallbackInner() {
       if (code) {
         const { error } = await supabase.auth.exchangeCodeForSession(code);
         if (error) {
-          await wipeCoredashBrowserAuth();
-          if (!cancelled) router.replace("/login?denied=1");
-          return;
+          // The browser client runs with detectSessionInUrl:true, so it may have
+          // ALREADY consumed this one-time PKCE code during initialization. In that
+          // case this manual exchange fails ("code verifier"/"flow state"/"already
+          // used") even though a valid session now exists. Don't fail hard here —
+          // fall through and trust getSession() below. Only a genuinely missing
+          // session (checked next) is treated as a failure.
+          logAuthEvent("AUTH_CHANGE", { reason: `oauth_exchange_fallthrough:${error.message}` });
         }
       }
 

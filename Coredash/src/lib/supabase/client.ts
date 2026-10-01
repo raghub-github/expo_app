@@ -18,7 +18,13 @@ export function getBrowserSupabase() {
     auth: {
       persistSession: true,
       autoRefreshToken: true,
-      detectSessionInUrl: true,
+      // FALSE on purpose: the OAuth return is handled explicitly in
+      // src/app/auth/callback/page.tsx via exchangeCodeForSession(code). With
+      // detectSessionInUrl:true the client ALSO auto-exchanged the one-time PKCE
+      // code during init, racing the manual exchange and consuming the code twice
+      // → every Google sign-in failed ("code verifier"/"flow state"). Email OTP
+      // uses verifyOtp (no URL detection), so it is unaffected either way.
+      detectSessionInUrl: false,
       flowType: "pkce",
     },
   });
