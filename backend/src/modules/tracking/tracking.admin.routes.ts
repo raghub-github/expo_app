@@ -18,10 +18,13 @@ import { getEnv } from "../../config/env.js";
 import { getDb } from "../../db/client.js";
 import {
   orderRiderTracking,
+  ordersCore,
+  deliveryAssignments,
   trackingEvents,
   trackingSessions,
   trackingViolations,
 } from "../../db/schema.js";
+import { haversineDistanceMeters } from "../../lib/order-assignment-engine.js";
 
 function isAdminLikeRole(r: string): boolean {
   return r === "admin" || r === "super_admin" || r === "manager" || r === "support";
@@ -129,6 +132,137 @@ export const trackingAdminRoutes: FastifyPluginAsync = async (app) => {
           status: v.status,
           distanceM: v.distanceM ?? null,
           durationSeconds: v.durationSeconds ?? null,
+          message: v.message ?? null,
+          at: iso(v.createdAt),
+        })),
+      };
+    });
+
+    // ── Full breadcrumb trail for the map + timeline scrubber ───────────
+    // Every stored GPS fix for one order, oldest→newest, with per-leg and
+    // cumulative distance (the "real-time distance coverage"), plus pickup/drop,
+    // the planned route polyline, and the geo-engine violations as timeline pins.
+    admin.get("/order/:orderId/track", async (req) => {
+      const { orderId } = req.params as { orderId: string };
+      const q = (req.query ?? {}) as { limit?: string };
+      const limit = Math.min(Math.max(Number(q.limit) || 5000, 1), 20000);
+      const db = getDb();
+
+      const pointsDesc = await db
+        .select({
+          id: orderRiderTracking.id,
+          riderId: orderRiderTracking.riderId,
+          sessionId: orderRiderTracking.sessionId,
+          sequenceNumber: orderRiderTracking.sequenceNumber,
+          serviceType: orderRiderTracking.serviceType,
+          source: orderRiderTracking.source,
+          latitude: orderRiderTracking.latitude,
+          longitude: orderRiderTracking.longitude,
+          headingDegrees: orderRiderTracking.headingDegrees,
+          speedKmh: orderRiderTracking.speedKmh,
+          accuracyMeters: orderRiderTracking.accuracyMeters,
+          createdAt: orderRiderTracking.createdAt,
+        })
+        .from(orderRiderTracking)
+        .where(eq(orderRiderTracking.orderId, orderId))
+        .orderBy(desc(orderRiderTracking.createdAt))
+        .limit(limit);
+      // Oldest→newest for the path + cumulative distance.
+      const points = pointsDesc.reverse();
+
+      let cumulativeM = 0;
+      let prev: { lat: number; lng: number } | null = null;
+      const breadcrumbs = points.map((p) => {
+        const lat = Number(p.latitude);
+        const lng = Number(p.longitude);
+        let legM = 0;
+        if (prev && Number.isFinite(lat) && Number.isFinite(lng)) {
+          legM = haversineDistanceMeters(prev.lat, prev.lng, lat, lng);
+          // Drop GPS jitter: a sub-5m hop between minute fixes is noise, not travel.
+          if (legM < 5) legM = 0;
+          cumulativeM += legM;
+        }
+        if (Number.isFinite(lat) && Number.isFinite(lng)) prev = { lat, lng };
+        return {
+          id: p.id,
+          riderId: p.riderId ?? null,
+          sessionId: p.sessionId ?? null,
+          sequence: p.sequenceNumber ?? null,
+          serviceType: p.serviceType ?? null,
+          source: p.source ?? null,
+          latitude: lat,
+          longitude: lng,
+          headingDegrees: nnum(p.headingDegrees),
+          speedKmh: nnum(p.speedKmh),
+          accuracyM: nnum(p.accuracyMeters),
+          legDistanceM: Math.round(legM),
+          cumulativeDistanceM: Math.round(cumulativeM),
+          at: iso(p.createdAt),
+        };
+      });
+
+      const [order] = await db
+        .select({
+          pickupLat: ordersCore.pickupLat,
+          pickupLon: ordersCore.pickupLon,
+          dropLat: ordersCore.dropLat,
+          dropLon: ordersCore.dropLon,
+          status: ordersCore.status,
+          currentStatus: ordersCore.currentStatus,
+          serviceType: ordersCore.orderType,
+        })
+        .from(ordersCore)
+        .where(eq(ordersCore.orderId, orderId))
+        .limit(1);
+
+      let routePolyline: string | null = null;
+      try {
+        const [a] = await db
+          .select({ route: deliveryAssignments.routePolyline })
+          .from(deliveryAssignments)
+          .where(eq(deliveryAssignments.orderId, orderId))
+          .limit(1);
+        routePolyline = a?.route ?? null;
+      } catch {
+        routePolyline = null;
+      }
+
+      const violations = await db
+        .select()
+        .from(trackingViolations)
+        .where(eq(trackingViolations.orderId, orderId))
+        .orderBy(desc(trackingViolations.createdAt))
+        .limit(200);
+
+      return {
+        orderId,
+        pickup:
+          order && order.pickupLat != null && order.pickupLon != null
+            ? { latitude: Number(order.pickupLat), longitude: Number(order.pickupLon) }
+            : null,
+        drop:
+          order && order.dropLat != null && order.dropLon != null
+            ? { latitude: Number(order.dropLat), longitude: Number(order.dropLon) }
+            : null,
+        routePolyline,
+        serviceType: order?.serviceType ?? null,
+        status: order?.currentStatus ?? order?.status ?? null,
+        totalDistanceM: Math.round(cumulativeM),
+        pointCount: breadcrumbs.length,
+        firstAt: breadcrumbs[0]?.at ?? null,
+        lastAt: breadcrumbs[breadcrumbs.length - 1]?.at ?? null,
+        breadcrumbs,
+        violations: violations.map((v) => ({
+          id: v.id,
+          riderId: v.riderId ?? null,
+          sessionId: v.sessionId ?? null,
+          violationType: v.violationType,
+          level: v.level,
+          status: v.status,
+          distanceM: v.distanceM ?? null,
+          durationSeconds: v.durationSeconds ?? null,
+          latitude: nnum(v.latitude),
+          longitude: nnum(v.longitude),
           message: v.message ?? null,
           at: iso(v.createdAt),
         })),
