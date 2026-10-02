@@ -11,7 +11,7 @@
  * Registered under /v1/admin/tracking in index.ts.
  */
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, or } from "drizzle-orm";
 import { z } from "zod";
 import { auth } from "../../plugins/auth.js";
 import { getEnv } from "../../config/env.js";
@@ -143,10 +143,37 @@ export const trackingAdminRoutes: FastifyPluginAsync = async (app) => {
     // cumulative distance (the "real-time distance coverage"), plus pickup/drop,
     // the planned route polyline, and the geo-engine violations as timeline pins.
     admin.get("/order/:orderId/track", async (req) => {
-      const { orderId } = req.params as { orderId: string };
+      const { orderId: orderIdParam } = req.params as { orderId: string };
       const q = (req.query ?? {}) as { limit?: string };
       const limit = Math.min(Math.max(Number(q.limit) || 5000, 1), 20000);
       const db = getDb();
+
+      // Resolve the canonical tracking id. order_rider_tracking / tracking_violations
+      // key on orders_core.order_id (GM…), but the order page passes the formatted id
+      // (GMF…) — or a numeric orders_core.id. Map whatever we're given to the GM… id;
+      // fall back to the raw param so a direct GM… id (or legacy order) still works.
+      const numericId = /^\d+$/.test(orderIdParam) ? Number(orderIdParam) : null;
+      const [resolved] = await db
+        .select({
+          orderId: ordersCore.orderId,
+          pickupLat: ordersCore.pickupLat,
+          pickupLon: ordersCore.pickupLon,
+          dropLat: ordersCore.dropLat,
+          dropLon: ordersCore.dropLon,
+          status: ordersCore.status,
+          currentStatus: ordersCore.currentStatus,
+          serviceType: ordersCore.orderType,
+        })
+        .from(ordersCore)
+        .where(
+          or(
+            eq(ordersCore.orderId, orderIdParam),
+            eq(ordersCore.formattedOrderId, orderIdParam),
+            ...(numericId != null ? [eq(ordersCore.id, numericId)] : [])
+          )
+        )
+        .limit(1);
+      const orderId = resolved?.orderId ?? orderIdParam;
 
       const pointsDesc = await db
         .select({
@@ -201,19 +228,7 @@ export const trackingAdminRoutes: FastifyPluginAsync = async (app) => {
         };
       });
 
-      const [order] = await db
-        .select({
-          pickupLat: ordersCore.pickupLat,
-          pickupLon: ordersCore.pickupLon,
-          dropLat: ordersCore.dropLat,
-          dropLon: ordersCore.dropLon,
-          status: ordersCore.status,
-          currentStatus: ordersCore.currentStatus,
-          serviceType: ordersCore.orderType,
-        })
-        .from(ordersCore)
-        .where(eq(ordersCore.orderId, orderId))
-        .limit(1);
+      const order = resolved ?? null;
 
       let routePolyline: string | null = null;
       try {
