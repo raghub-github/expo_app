@@ -19,6 +19,15 @@ type Cfg = {
   enableStationaryRule: boolean;
   enableDeviationRule: boolean;
   enableWrongDirectionRule: boolean;
+  // Auto-action policy (geo violations, migration 0642).
+  autoActionEnabled: boolean;
+  applyWalletPenalties: boolean;
+  dismissBelowMinLevel: boolean;
+  penalizeMinLevel: number;
+  penaltyLongStop: number;
+  penaltyWrongDirection: number;
+  penaltyRouteDeviation: number;
+  perOrderPenaltyCap: number;
   intervalOptions?: number[];
 };
 
@@ -171,6 +180,102 @@ export default function TrackingConfigPage() {
                 onChange={(e) => setBool(t.key, e.target.checked)}
               />
               {t.label}
+            </label>
+          ))}
+        </div>
+      </section>
+
+      {/* Auto-action (geo violations) */}
+      <section className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50/40 p-4">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-indigo-700">
+          Auto-action (geo violations)
+        </h2>
+        <p className="mt-1 text-xs text-gray-500">
+          When on, the engine resolves every violation in real time (no admin queue): minor ones
+          auto-dismiss, serious ones (level ≥ threshold) are auto-flagged. Wallet money is debited
+          only when <b>Apply wallet penalties</b> is on <i>and</i> a per-type amount is above ₹0.
+        </p>
+
+        <div className="mt-3 space-y-2">
+          <label className="flex items-center gap-3 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={cfg.autoActionEnabled}
+              onChange={(e) => setBool("autoActionEnabled", e.target.checked)}
+            />
+            Auto-resolve violations in real time (removes the admin queue)
+          </label>
+          <label className="flex items-center gap-3 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={cfg.dismissBelowMinLevel}
+              onChange={(e) => setBool("dismissBelowMinLevel", e.target.checked)}
+            />
+            Auto-dismiss minor violations (below the level threshold)
+          </label>
+          <label className="flex items-center gap-3 text-sm font-semibold text-gray-800">
+            <input
+              type="checkbox"
+              checked={cfg.applyWalletPenalties}
+              onChange={(e) => setBool("applyWalletPenalties", e.target.checked)}
+            />
+            Apply wallet penalties (debits real rider money)
+          </label>
+          {cfg.applyWalletPenalties ? (
+            <p className="rounded-md bg-amber-100 px-3 py-2 text-xs text-amber-800">
+              ⚠ Real money will be debited from riders for serious violations at the amounts below.
+            </p>
+          ) : (
+            <p className="rounded-md bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+              Money-safe: violations are flagged &amp; audited but ₹0 is debited until you turn this on.
+            </p>
+          )}
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <label className="block">
+            <span className="text-sm text-gray-700">Serious level threshold</span>
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                value={cfg.penalizeMinLevel}
+                onChange={(e) => setNum("penalizeMinLevel", e.target.value)}
+              />
+              <span className="text-xs text-gray-400">level</span>
+            </div>
+          </label>
+          <label className="block">
+            <span className="text-sm text-gray-700">Per-order penalty cap</span>
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                type="number"
+                min={0}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                value={cfg.perOrderPenaltyCap}
+                onChange={(e) => setNum("perOrderPenaltyCap", e.target.value)}
+              />
+              <span className="text-xs text-gray-400">₹ (0 = no cap)</span>
+            </div>
+          </label>
+          {([
+            { key: "penaltyLongStop", label: "No-movement penalty" },
+            { key: "penaltyWrongDirection", label: "Wrong-direction penalty" },
+            { key: "penaltyRouteDeviation", label: "Route-deviation penalty" },
+          ] as { key: keyof Cfg; label: string }[]).map((f) => (
+            <label key={String(f.key)} className="block">
+              <span className="text-sm text-gray-700">{f.label}</span>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                  value={cfg[f.key] as number}
+                  onChange={(e) => setNum(f.key, e.target.value)}
+                />
+                <span className="text-xs text-gray-400">₹ (0 = flag only)</span>
+              </div>
             </label>
           ))}
         </div>

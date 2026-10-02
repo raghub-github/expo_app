@@ -30,6 +30,7 @@ function internalSecretGrantsAdmin(req: FastifyRequest): boolean {
 }
 
 const posInt = z.number().int().positive().max(1_000_000);
+const nonNegInt = z.number().int().min(0).max(1_000_000);
 
 const configSchema = z.object({
   trackingIntervalSeconds: posInt,
@@ -43,6 +44,15 @@ const configSchema = z.object({
   enableStationaryRule: z.boolean(),
   enableDeviationRule: z.boolean(),
   enableWrongDirectionRule: z.boolean(),
+  // Geo-engine auto-action policy (migration 0642).
+  autoActionEnabled: z.boolean(),
+  applyWalletPenalties: z.boolean(),
+  dismissBelowMinLevel: z.boolean(),
+  penalizeMinLevel: posInt,
+  penaltyLongStop: nonNegInt,
+  penaltyWrongDirection: nonNegInt,
+  penaltyRouteDeviation: nonNegInt,
+  perOrderPenaltyCap: nonNegInt,
 });
 
 // Partial for updates — admin may change any subset.

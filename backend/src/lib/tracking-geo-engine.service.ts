@@ -14,11 +14,39 @@
  * state lives in tracking_sessions.geo_state (jsonb). Never throws.
  */
 import { eq } from "drizzle-orm";
-import { getDb } from "../db/client.js";
+import { getDb, getSql } from "../db/client.js";
 import { ordersCore, deliveryAssignments, trackingSessions, trackingViolations } from "../db/schema.js";
 import { haversineDistanceMeters } from "./order-assignment-engine.js";
-import { getTrackingConfig } from "./tracking-config.service.js";
+import { getTrackingConfig, type TrackingConfig } from "./tracking-config.service.js";
 import { recordTrackingEvent, type TrackingEventType } from "./tracking-event.service.js";
+import { applyAutoCancelRiderPenalty } from "./rider-auto-cancel-penalty.service.js";
+
+type ViolationType = "long_stop" | "route_deviation" | "opposite_direction";
+
+/** Configured flat ₹ penalty for a violation type (0 = mark-only). */
+function penaltyAmountFor(cfg: TrackingConfig, type: ViolationType): number {
+  if (type === "long_stop") return cfg.penaltyLongStop;
+  if (type === "opposite_direction") return cfg.penaltyWrongDirection;
+  if (type === "route_deviation") return cfg.penaltyRouteDeviation;
+  return 0;
+}
+
+/** Sum of geo-penalty ₹ already charged to this rider for this order (per-order cap). */
+async function sumGeoPenaltiesForOrder(coreId: number, riderId: number): Promise<number> {
+  try {
+    const sql = getSql();
+    const rows = await sql<{ s: string | number }[]>`
+      SELECT COALESCE(SUM(amount), 0) AS s
+      FROM wallet_ledger
+      WHERE rider_id = ${riderId}
+        AND entry_type = 'penalty'
+        AND ref LIKE ${`rider_autocancel_pen:${coreId}:${riderId}:geo:%`}
+    `;
+    return Number(rows[0]?.s ?? 0) || 0;
+  } catch {
+    return 0;
+  }
+}
 
 interface GeoState {
   lastMovedLat?: number;
@@ -35,6 +63,8 @@ interface GeoState {
 }
 
 type OrderGeoStatic = {
+  coreId: number | null;
+  orderType: string;
   status: string;
   currentStatus: string;
   pickupLat: number | null;
@@ -77,6 +107,8 @@ async function loadOrderGeo(orderId: string, riderId: number): Promise<OrderGeoS
   const db = getDb();
   const [o] = await db
     .select({
+      coreId: ordersCore.id,
+      orderType: ordersCore.orderType,
       status: ordersCore.status,
       currentStatus: ordersCore.currentStatus,
       pickupLat: ordersCore.pickupLat,
@@ -100,6 +132,8 @@ async function loadOrderGeo(orderId: string, riderId: number): Promise<OrderGeoS
     polyline = null;
   }
   const value: OrderGeoStatic = {
+    coreId: o.coreId != null ? Number(o.coreId) : null,
+    orderType: String(o.orderType ?? ""),
     status: String(o.status ?? ""),
     currentStatus: String(o.currentStatus ?? ""),
     pickupLat: num(o.pickupLat),
@@ -172,9 +206,10 @@ export interface GeoSignalInput {
 
 async function raiseSignal(
   input: GeoSignalInput,
+  cfg: TrackingConfig,
   args: {
     eventType: TrackingEventType;
-    violationType: "long_stop" | "route_deviation" | "opposite_direction";
+    violationType: ViolationType;
     level: number;
     distanceM?: number;
     durationSeconds?: number;
@@ -196,6 +231,74 @@ async function raiseSignal(
     message: args.message,
     metadata: { level: args.level },
   });
+
+  // ── Auto-action (Part 2): resolve the violation in real time ──────────
+  // No admin queue. Minor → auto-dismiss; serious (level ≥ penalizeMinLevel) →
+  // 'penalized' with an audit; wallet money is debited only when the operator has
+  // enabled applyWalletPenalties AND set a non-zero amount (money-safe default).
+  let status: "open" | "dismissed" | "reviewed" | "penalized" = "open";
+  const audit: Record<string, unknown> = { level: args.level };
+  const nowIso = new Date().toISOString();
+
+  if (cfg.autoActionEnabled) {
+    const serious = args.level >= cfg.penalizeMinLevel;
+    if (!serious) {
+      status = cfg.dismissBelowMinLevel ? "dismissed" : "reviewed";
+      Object.assign(audit, {
+        autoAction: status,
+        by: "system",
+        at: nowIso,
+        rule: `below_min_level(${cfg.penalizeMinLevel})`,
+      });
+    } else {
+      status = "penalized";
+      let amountApplied = 0;
+      let penalty = "mark_only";
+      const amount = penaltyAmountFor(cfg, args.violationType);
+      if (cfg.applyWalletPenalties && amount > 0) {
+        try {
+          const order = await loadOrderGeo(input.orderId, input.riderId);
+          if (order?.coreId) {
+            const cap = cfg.perOrderPenaltyCap;
+            const already = cap > 0 ? await sumGeoPenaltiesForOrder(order.coreId, input.riderId) : 0;
+            if (cap > 0 && already + amount > cap) {
+              penalty = "capped";
+            } else {
+              const res = await applyAutoCancelRiderPenalty({
+                orderCoreId: order.coreId,
+                riderId: input.riderId,
+                orderType: order.orderType || input.serviceType || "food",
+                amount,
+                rule: `geo:${args.violationType}`,
+                ledgerTitle: "Geo-tracking penalty",
+                ledgerDescription: args.message,
+                orderPublicId: input.orderId,
+              });
+              if (res.applied) {
+                amountApplied = res.amount ?? amount;
+                penalty = "applied";
+              } else {
+                penalty = res.skipped ?? "skipped";
+              }
+            }
+          } else {
+            penalty = "order_unresolved";
+          }
+        } catch {
+          penalty = "error";
+        }
+      }
+      Object.assign(audit, {
+        autoAction: "penalized",
+        by: "system",
+        at: nowIso,
+        rule: `level>=${cfg.penalizeMinLevel}`,
+        amountApplied,
+        penalty,
+      });
+    }
+  }
+
   try {
     await getDb().insert(trackingViolations).values({
       orderId: input.orderId,
@@ -206,13 +309,13 @@ async function raiseSignal(
       serviceType: input.serviceType ?? null,
       violationType: args.violationType,
       level: args.level,
-      status: "open",
+      status,
       distanceM: args.distanceM ?? null,
       durationSeconds: args.durationSeconds ?? null,
       latitude: input.latitude.toFixed(7),
       longitude: input.longitude.toFixed(7),
       message: args.message,
-      metadata: {},
+      metadata: audit,
     });
   } catch {
     /* best-effort — never break the ingestion path */
@@ -261,7 +364,7 @@ export async function evaluateGeoSignals(input: GeoSignalInput): Promise<void> {
           if (stationaryMs > cfg.stationaryTimeoutSeconds * 1000 && dueForSignal) {
             state.longStopLevel = (state.longStopLevel ?? 0) + 1;
             state.lastLongStopAtMs = nowMs;
-            await raiseSignal(input, {
+            await raiseSignal(input, cfg, {
               eventType: "long_stop",
               violationType: "long_stop",
               level: state.longStopLevel,
@@ -296,7 +399,7 @@ export async function evaluateGeoSignals(input: GeoSignalInput): Promise<void> {
             if (drift > cfg.wrongDirectionThresholdM && due) {
               state.wrongDirLevel = (state.wrongDirLevel ?? 0) + 1;
               state.lastWrongDirAtMs = nowMs;
-              await raiseSignal(input, {
+              await raiseSignal(input, cfg, {
                 eventType: "opposite_direction",
                 violationType: "opposite_direction",
                 level: state.wrongDirLevel,
@@ -317,7 +420,7 @@ export async function evaluateGeoSignals(input: GeoSignalInput): Promise<void> {
             if (due) {
               state.deviationLevel = (state.deviationLevel ?? 0) + 1;
               state.lastDeviationAtMs = nowMs;
-              await raiseSignal(input, {
+              await raiseSignal(input, cfg, {
                 eventType: "route_deviation",
                 violationType: "route_deviation",
                 level: state.deviationLevel,

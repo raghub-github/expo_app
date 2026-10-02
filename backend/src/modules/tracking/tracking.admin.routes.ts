@@ -303,6 +303,7 @@ export const trackingAdminRoutes: FastifyPluginAsync = async (app) => {
           distanceM: v.distanceM ?? null,
           durationSeconds: v.durationSeconds ?? null,
           message: v.message ?? null,
+          metadata: v.metadata ?? null,
           at: iso(v.createdAt),
         })),
       };
