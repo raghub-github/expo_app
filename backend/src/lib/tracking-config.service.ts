@@ -21,6 +21,15 @@ export interface TrackingConfig {
   enableStationaryRule: boolean;
   enableDeviationRule: boolean;
   enableWrongDirectionRule: boolean;
+  // Geo-engine auto-action policy (migration 0642).
+  autoActionEnabled: boolean;
+  applyWalletPenalties: boolean;
+  penalizeMinLevel: number;
+  dismissBelowMinLevel: boolean;
+  penaltyLongStop: number;
+  penaltyWrongDirection: number;
+  penaltyRouteDeviation: number;
+  perOrderPenaltyCap: number;
 }
 
 /** Spec defaults — also the DB column defaults; used when the row is missing. */
@@ -36,6 +45,14 @@ export const DEFAULT_TRACKING_CONFIG: TrackingConfig = {
   enableStationaryRule: true,
   enableDeviationRule: true,
   enableWrongDirectionRule: true,
+  autoActionEnabled: true,
+  applyWalletPenalties: false,
+  penalizeMinLevel: 2,
+  dismissBelowMinLevel: true,
+  penaltyLongStop: 0,
+  penaltyWrongDirection: 0,
+  penaltyRouteDeviation: 0,
+  perOrderPenaltyCap: 100,
 };
 
 /** Allowed collection intervals surfaced to the Super Admin UI (extensible). */
@@ -69,6 +86,14 @@ export async function getTrackingConfig(force = false): Promise<TrackingConfig> 
           enableStationaryRule: row.enableStationaryRule ?? DEFAULT_TRACKING_CONFIG.enableStationaryRule,
           enableDeviationRule: row.enableDeviationRule ?? DEFAULT_TRACKING_CONFIG.enableDeviationRule,
           enableWrongDirectionRule: row.enableWrongDirectionRule ?? DEFAULT_TRACKING_CONFIG.enableWrongDirectionRule,
+          autoActionEnabled: row.autoActionEnabled ?? DEFAULT_TRACKING_CONFIG.autoActionEnabled,
+          applyWalletPenalties: row.applyWalletPenalties ?? DEFAULT_TRACKING_CONFIG.applyWalletPenalties,
+          penalizeMinLevel: n(row.penalizeMinLevel, DEFAULT_TRACKING_CONFIG.penalizeMinLevel),
+          dismissBelowMinLevel: row.dismissBelowMinLevel ?? DEFAULT_TRACKING_CONFIG.dismissBelowMinLevel,
+          penaltyLongStop: n(row.penaltyLongStop, DEFAULT_TRACKING_CONFIG.penaltyLongStop),
+          penaltyWrongDirection: n(row.penaltyWrongDirection, DEFAULT_TRACKING_CONFIG.penaltyWrongDirection),
+          penaltyRouteDeviation: n(row.penaltyRouteDeviation, DEFAULT_TRACKING_CONFIG.penaltyRouteDeviation),
+          perOrderPenaltyCap: n(row.perOrderPenaltyCap, DEFAULT_TRACKING_CONFIG.perOrderPenaltyCap),
         }
       : DEFAULT_TRACKING_CONFIG;
     cache = { value, at: Date.now() };
@@ -88,11 +113,22 @@ const INT_FIELDS = [
   "stationaryTimeoutSeconds",
   "deviationDistanceM",
   "wrongDirectionThresholdM",
+  "penalizeMinLevel",
+] as const;
+/** Allowed to be 0 (e.g. ₹0 = mark-only; cap 0 = no cap). */
+const NONNEG_INT_FIELDS = [
+  "penaltyLongStop",
+  "penaltyWrongDirection",
+  "penaltyRouteDeviation",
+  "perOrderPenaltyCap",
 ] as const;
 const BOOL_FIELDS = [
   "enableStationaryRule",
   "enableDeviationRule",
   "enableWrongDirectionRule",
+  "autoActionEnabled",
+  "applyWalletPenalties",
+  "dismissBelowMinLevel",
 ] as const;
 
 /**
@@ -108,6 +144,14 @@ export async function updateTrackingConfig(
     if (patch[f] === undefined) continue;
     const v = Math.round(Number(patch[f]));
     if (!Number.isFinite(v) || v <= 0 || v > 1_000_000) {
+      throw new Error(`Invalid value for ${f}`);
+    }
+    set[f] = v;
+  }
+  for (const f of NONNEG_INT_FIELDS) {
+    if (patch[f] === undefined) continue;
+    const v = Math.round(Number(patch[f]));
+    if (!Number.isFinite(v) || v < 0 || v > 1_000_000) {
       throw new Error(`Invalid value for ${f}`);
     }
     set[f] = v;

@@ -2825,6 +2825,17 @@ export const trackingConfig = pgTable("tracking_config", {
   enableStationaryRule: boolean("enable_stationary_rule").notNull().default(true),
   enableDeviationRule: boolean("enable_deviation_rule").notNull().default(true),
   enableWrongDirectionRule: boolean("enable_wrong_direction_rule").notNull().default(true),
+  // Geo-engine auto-action policy (migration 0642). The engine resolves each
+  // violation in real time per these; wallet money is debited only when
+  // applyWalletPenalties is true AND the per-type amount > 0.
+  autoActionEnabled: boolean("auto_action_enabled").notNull().default(true),
+  applyWalletPenalties: boolean("apply_wallet_penalties").notNull().default(false),
+  penalizeMinLevel: integer("penalize_min_level").notNull().default(2),
+  dismissBelowMinLevel: boolean("dismiss_below_min_level").notNull().default(true),
+  penaltyLongStop: integer("penalty_long_stop").notNull().default(0),
+  penaltyWrongDirection: integer("penalty_wrong_direction").notNull().default(0),
+  penaltyRouteDeviation: integer("penalty_route_deviation").notNull().default(0),
+  perOrderPenaltyCap: integer("per_order_penalty_cap").notNull().default(100),
   updatedBy: text("updated_by"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
