@@ -1,6 +1,6 @@
 import type { MerchantSummary } from "@/services/merchant.service";
 import { enqueueImagePrefetch } from "@/lib/prefetchQueue";
-import { prefetchMerchantPrimaryBanners } from "@/lib/imageEngine";
+import { foodListCardPrefetchWidth, foodRailCardPrefetchWidth, prefetchMerchantPrimaryBanners } from "@/lib/imageEngine";
 import { resolveMerchantGalleryUris, resolveMerchantBannerUri } from "@/lib/merchantBanner";
 import { warmMerchantHeroImage, prefetchMerchantHeroImageUri } from "@/lib/merchantHeroWarmCache";
 import { readSyncMerchantsList } from "@/lib/merchantsListCache";
@@ -49,6 +49,7 @@ export function prioritizeVisibleMerchantBanners(limit = 12): void {
     const banner = resolveMerchantBannerUri(m);
     if (!banner) continue;
     warmMerchantHeroImage(m.id, banner);
-    prefetchMerchantHeroImageUri(banner);
+    prefetchMerchantHeroImageUri(banner, foodRailCardPrefetchWidth());
+    prefetchMerchantHeroImageUri(banner, foodListCardPrefetchWidth());
   }
 }

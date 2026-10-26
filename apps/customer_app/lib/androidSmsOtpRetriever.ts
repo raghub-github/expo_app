@@ -15,6 +15,39 @@ export function extractSixDigitCode(message: string): string | null {
   return /\b(\d{6})\b/.exec(String(message ?? ""))?.[1] ?? null;
 }
 
+let pendingSmsOtp: string | null = null;
+const pendingSmsOtpListeners = new Set<(code: string) => void>();
+let armedListener: AndroidSmsOtpListener | null = null;
+
+export function publishPendingSmsOtp(raw: string): void {
+  const cleaned = extractSixDigitCode(raw) ?? String(raw ?? "").replace(/\D/g, "").slice(0, 6);
+  if (cleaned.length !== 6) return;
+  pendingSmsOtp = cleaned;
+  pendingSmsOtpListeners.forEach((fn) => fn(cleaned));
+}
+
+export function takePendingSmsOtp(): string | null {
+  const code = pendingSmsOtp;
+  pendingSmsOtp = null;
+  return code;
+}
+
+export function subscribePendingSmsOtp(onCode: (code: string) => void): () => void {
+  pendingSmsOtpListeners.add(onCode);
+  if (pendingSmsOtp) onCode(pendingSmsOtp);
+  return () => {
+    pendingSmsOtpListeners.delete(onCode);
+  };
+}
+
+/** Start SMS Retriever as soon as OTP is sent (before the OTP screen mounts). */
+export async function armSmsOtpCapture(): Promise<void> {
+  armedListener?.stop();
+  armedListener = await startAndroidSmsOtpListener({
+    onCode: publishPendingSmsOtp,
+  });
+}
+
 /** True when react-native-otp-verify native module is linked (dev/prod builds, not Expo Go). */
 export function isAndroidSmsRetrieverAvailable(): boolean {
   return Platform.OS === "android" && !!NativeModules.OtpVerify;

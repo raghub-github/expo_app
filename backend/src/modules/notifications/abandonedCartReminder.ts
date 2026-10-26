@@ -6,10 +6,10 @@ import { getSql } from "../../db/client.js";
 import { readSetting } from "./db.js";
 import { send } from "./notificationService.js";
 
-function firstNameFromFull(full: string | null | undefined): string {
-  const t = (full ?? "").trim();
-  if (!t) return "there";
-  return t.split(/\s+/)[0] ?? "there";
+function usableCustomerName(raw: string | null | undefined): string | null {
+  const t = (raw ?? "").trim();
+  if (!t || /^pending$/i.test(t)) return null;
+  return t;
 }
 
 export async function scheduleAbandonedCartReminder(args: {
@@ -78,6 +78,23 @@ export async function pollAbandonedCartReminders(limit = 40): Promise<number> {
     }>;
 
     for (const row of due) {
+      let customerName: string | null = null;
+      try {
+        const names = (await sql`
+          SELECT c.full_name AS customer_name, p.full_name AS profile_name
+          FROM (SELECT ${row.user_id}::text AS uid) u
+          LEFT JOIN public.customers c ON c.customer_id = u.uid
+          LEFT JOIN public.user_profiles p ON p.user_id = u.uid
+          LIMIT 1
+        `) as unknown as Array<{ customer_name: string | null; profile_name: string | null }>;
+        customerName =
+          usableCustomerName(names[0]?.customer_name) ??
+          usableCustomerName(names[0]?.profile_name);
+      } catch {
+        customerName = null;
+      }
+      if (!customerName) continue;
+
       const claimed = (await sql`
         UPDATE public.customer_abandoned_cart_reminders
         SET status = 'sent', sent_at = now(), updated_at = now()
@@ -86,25 +103,12 @@ export async function pollAbandonedCartReminders(limit = 40): Promise<number> {
       `) as unknown as Array<{ id: number }>;
       if (!claimed.length) continue;
 
-      let firstName = "there";
-      try {
-        const names = (await sql`
-          SELECT full_name
-          FROM public.user_profiles
-          WHERE user_id = ${row.user_id}
-          LIMIT 1
-        `) as unknown as Array<{ full_name: string | null }>;
-        firstName = firstNameFromFull(names[0]?.full_name);
-      } catch {
-        /* profile optional */
-      }
-
       const deepLink = `/home/merchant/${encodeURIComponent(row.store_id)}`;
       const dayKey = new Date().toISOString().slice(0, 10);
       const result = await send({
         templateCode: "CUSTOMER_ABANDONED_CART",
         variables: {
-          firstName,
+          firstName: customerName,
           storeName: row.store_name,
           storeId: row.store_id,
         },

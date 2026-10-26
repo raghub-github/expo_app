@@ -43,6 +43,7 @@ export default function DeleteAccountScreen() {
   const [details, setDetails] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [confirmVisible, setConfirmVisible] = useState(false);
+  const [submittedVisible, setSubmittedVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const canSubmit = !!reasonCode && acknowledged && !submitting;
@@ -59,11 +60,7 @@ export default function DeleteAccountScreen() {
         },
         { headers: { "X-Deletion-Source": "app" }, timeout: 15000 },
       );
-      Alert.alert(
-        "Request submitted",
-        "Your account deletion request has been received. Our team will review it (usually within 7 days). You can keep using the app until the account is closed.",
-        [{ text: "OK", onPress: () => router.back() }],
-      );
+      setSubmittedVisible(true);
     } catch (e: unknown) {
       const ax = e as { response?: { data?: { message?: string; error?: string } } };
       const msg =
@@ -229,6 +226,54 @@ export default function DeleteAccountScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <Modal
+        visible={submittedVisible}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => {
+          setSubmittedVisible(false);
+          router.back();
+        }}
+      >
+        <View style={styles.successRoot}>
+          <Pressable
+            style={styles.successBackdrop}
+            onPress={() => {
+              setSubmittedVisible(false);
+              router.back();
+            }}
+          />
+          <View style={styles.successCard} accessibilityRole="alert">
+            <View style={styles.successGlow} />
+            <View style={styles.successIconWrap}>
+              <Ionicons name="checkmark" size={32} color="#fff" />
+            </View>
+            <AppText style={styles.successEyebrow} bold>
+              WE’VE GOT IT
+            </AppText>
+            <AppText style={styles.successTitle} bold>
+              Request submitted
+            </AppText>
+            <AppText style={styles.successMessage}>
+              Your account deletion request has been received. Our team will review it (usually within 7 days). You can keep using the app until the account is closed.
+            </AppText>
+            <TouchableOpacity
+              style={styles.successOk}
+              activeOpacity={0.88}
+              onPress={() => {
+                setSubmittedVisible(false);
+                router.back();
+              }}
+            >
+              <AppText style={styles.successOkText} bold>
+                OK, got it
+              </AppText>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -362,4 +407,79 @@ const styles = StyleSheet.create({
   modalDeleteText: { fontSize: 15, fontWeight: "800", color: "#fff" },
   modalCancelBtn: { width: "100%", paddingVertical: 13, alignItems: "center", marginTop: 6 },
   modalCancelText: { fontSize: 15, fontWeight: "700", color: MUTED },
+  successRoot: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  successBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.58)",
+  },
+  successCard: {
+    width: "100%",
+    maxWidth: 360,
+    backgroundColor: "#fff",
+    borderRadius: 24,
+    paddingHorizontal: 22,
+    paddingTop: 28,
+    paddingBottom: 20,
+    alignItems: "center",
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#D1FAE5",
+    shadowColor: "#064E3B",
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.22,
+    shadowRadius: 24,
+    elevation: 16,
+    zIndex: 2,
+  },
+  successGlow: {
+    position: "absolute",
+    top: -40,
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: "rgba(16, 185, 129, 0.16)",
+  },
+  successIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: GREEN_DARK,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+    borderWidth: 4,
+    borderColor: "#ECFDF5",
+  },
+  successEyebrow: {
+    fontSize: 11,
+    letterSpacing: 1.8,
+    color: GREEN_DARK,
+    marginBottom: 6,
+  },
+  successTitle: {
+    fontSize: 22,
+    color: TEXT,
+    marginBottom: 10,
+    textAlign: "center",
+  },
+  successMessage: {
+    fontSize: 14.5,
+    lineHeight: 21,
+    color: MUTED,
+    textAlign: "center",
+    marginBottom: 22,
+  },
+  successOk: {
+    width: "100%",
+    backgroundColor: GREEN_DARK,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  successOkText: { fontSize: 15, color: "#fff" },
 });

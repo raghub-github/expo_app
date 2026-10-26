@@ -34,7 +34,9 @@ async function fetchDashboardStats(
   if (filters.accountStatus) searchParams.set("accountStatus", filters.accountStatus);
   if (filters.riskFlag) searchParams.set("riskFlag", filters.riskFlag);
 
-  const response = await fetch(`/api/customers/stats?${searchParams.toString()}`);
+  const response = await fetch(`/api/customers/stats?${searchParams.toString()}`, {
+    credentials: "include",
+  });
   const result: DashboardStatsResponse = await response.json();
 
   if (!result.success || !result.data) {

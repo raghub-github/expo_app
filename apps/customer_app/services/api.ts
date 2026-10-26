@@ -102,7 +102,9 @@ api.interceptors.request.use(
       };
       cancelErr.code = "ERR_CANCELED";
       cancelErr.name = "CanceledError";
-      return Promise.reject(cancelErr);
+      // throw, don't Promise.reject: Hermes reports that as an uncaught rejection
+      // even when the caller handles the request.
+      throw cancelErr;
     }
     if (!shouldBypassStartupGate(config.url)) {
       cfg.__startupGate = await enterStartupApiGate(config.url);
@@ -186,7 +188,7 @@ api.interceptors.response.use(
     apiError.response = err.response;
     apiError.status = status;
     apiError.isAxiosError = true;
-    return Promise.reject(apiError);
+    throw apiError;
   }
 );
 

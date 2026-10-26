@@ -20,6 +20,11 @@ export async function purgeUserPushTokens(args: {
   role: PushRole;
   expoToken?: string | null;
   nativeToken?: string | null;
+  /**
+   * Single-device logout. An empty body must not delete every device.
+   * Account-wide purge stays the default for logout-all.
+   */
+  deviceOnly?: boolean;
   log?: PurgeLog;
 }): Promise<void> {
   const db = getDb();
@@ -63,6 +68,13 @@ export async function purgeUserPushTokens(args: {
   }
 
   if (!expo && !native) {
+    if (args.deviceOnly) {
+      log?.info?.(
+        { userId: userId.slice(0, 8), role },
+        "push_token_purge_skipped_no_device_token",
+      );
+      return;
+    }
     const expoRows = await db
       .select({ token: expoPushTokens.expoPushToken })
       .from(expoPushTokens)

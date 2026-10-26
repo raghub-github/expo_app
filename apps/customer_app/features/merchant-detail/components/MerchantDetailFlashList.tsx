@@ -45,6 +45,7 @@ import { MerchantDarkPalette, useMerchantUiDark } from "../merchantUiTheme";
 import type { MerchantCategoryChip, MerchantFlashListItem } from "../types";
 import type { ComboPair } from "@/components/store/StoreComboSection";
 import type { MenuItem, MerchantSummary } from "@/services/merchant.service";
+import { isMerchantPureVeg } from "@/lib/pureVegFilter";
 import type { ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import {
   CATEGORY_RAIL_WIDTH,
@@ -499,6 +500,7 @@ const MerchantDetailFlashListInner = forwardRef<
             offerCount={visibleOffersCount}
             reserveOfferRow={reserveOfferRow}
             isFrequentlyReordered={(merchant.completedOrderCount ?? 0) > 50}
+            isPureVeg={isMerchantPureVeg(merchant)}
             classicLayout={classicLayout}
             onInfoPress={onInfoPress}
             onOffersPress={onOffersPress}

@@ -20,6 +20,8 @@ import { usePreventServicesAtPin } from "@/hooks/usePreventServicesAtPin";
 import { resolveMerchantFoodHeroPrimaryUri } from "@/lib/merchantHeroMedia";
 import { sizedImageUrl } from "@/lib/imageSizing";
 import { StoreOpenStatusBadge } from "@/components/home/StoreOpenStatusBadge";
+import { PureVegPill } from "@/components/home/PureVegStoreTag";
+import { isMerchantPureVeg } from "@/lib/pureVegFilter";
 import { formatMerchantDeliveryTime } from "@/lib/merchantDeliveryTime";
 import { formatMerchantDistanceKm } from "@/lib/merchantDistance";
 import { formatCardOfferLine, RATING_PILL_GREEN } from "@/lib/merchantOfferBadge";
@@ -172,6 +174,7 @@ function DiscoveryRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: Pro
         <AppText style={styles.name} numberOfLines={1}>
           {merchant.name}
         </AppText>
+        {isMerchantPureVeg(merchant) ? <PureVegPill /> : null}
         {meta ? (
           <AppText style={styles.meta} numberOfLines={1}>
             {meta}

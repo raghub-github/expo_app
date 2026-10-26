@@ -128,6 +128,10 @@ export async function updateLogStatus(
       clicked_at   = CASE WHEN ${status} = 'clicked'   AND clicked_at   IS NULL THEN now() ELSE clicked_at   END,
       failed_at    = CASE WHEN ${status} = 'failed'    AND failed_at    IS NULL THEN now() ELSE failed_at    END,
       expired_at   = CASE WHEN ${status} = 'expired'   AND expired_at   IS NULL THEN now() ELSE expired_at   END,
+      next_retry_at = CASE
+        WHEN ${status} = 'sent' OR ${status} = 'delivered' OR ${status} = 'clicked' THEN NULL
+        ELSE next_retry_at
+      END,
       error_code    = COALESCE(${patch.errorCode ?? null}, error_code),
       error_message = COALESCE(${patch.errorMessage ?? null}, error_message)
     WHERE notification_id = ${notificationId}::uuid

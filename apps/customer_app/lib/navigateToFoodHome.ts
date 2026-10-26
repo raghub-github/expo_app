@@ -1,5 +1,4 @@
 import type { Router } from "expo-router";
-import { InteractionManager } from "react-native";
 import { resetFoodHomeListScrollGuard, scrollFoodHomeListToTop } from "@/lib/foodHomeScrollGuard";
 import { useLocationStore } from "@/store/locationStore";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
@@ -18,8 +17,8 @@ import {
 import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
 import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
-import { prioritizeVisibleMerchantBanners, prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
-import { prefetchMerchantCardImages } from "@/lib/imageEngine";
+import { prioritizeVisibleMerchantBanners } from "@/lib/prefetchMerchantBanners";
+import { prefetchFoodHomeVisibleImages } from "@/lib/imageEngine";
 import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 import { foodFixDbg, foodNavDbg } from "@/lib/tabNavDebug";
 
@@ -109,8 +108,7 @@ function warmNearbyMerchantImagery(): void {
 
   const list = readSyncMerchantsList(lat, lng, vegOnly) ?? readSyncMerchantsList(lat, lng, false);
   if (list?.length) {
-    prefetchMerchantCardImages(list);
-    prefetchMerchantBanners(list);
+    prefetchFoodHomeVisibleImages(list);
   }
   prioritizeVisibleMerchantBanners(12);
 
@@ -190,14 +188,12 @@ export function navigateToFoodHome(
     /* ignore — Food tab is already selected */
   }
 
-  InteractionManager.runAfterInteractions(() => {
-    try {
-      seedNearbyMerchantsListOnly();
-      warmNearbyMerchantImagery();
-    } catch {
-      /* ignore */
-    }
-  });
+  try {
+    seedNearbyMerchantsListOnly();
+    warmNearbyMerchantImagery();
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
@@ -205,19 +201,13 @@ export function navigateToFoodHome(
  * so the first Food tap only has to switch tabs.
  */
 export function warmFoodHomeEntry(): void {
-  // Light sync seed only — defer imagery so Home scroll stays smooth.
   seedNearbyMerchantsListOnly();
-  void import("@/app/home/index")
-    .then(() => {
-      InteractionManager.runAfterInteractions(() => {
-        try {
-          warmNearbyMerchantImagery();
-        } catch {
-          /* ignore */
-        }
-      });
-    })
-    .catch(() => {
-      /* route may already be in the graph; ignore */
-    });
+  try {
+    warmNearbyMerchantImagery();
+  } catch {
+    /* ignore */
+  }
+  void import("@/app/home/index").catch(() => {
+    /* route may already be in the graph; ignore */
+  });
 }

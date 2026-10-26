@@ -21,6 +21,12 @@ export const PushRegisterBodySchema = z
     app_version: z.string().max(20).optional().nullable(),
     locale: z.string().max(20).optional().nullable(),
     timezone: z.string().max(60).optional().nullable(),
+    /**
+     * Previous token from this installation. The server deletes only this
+     * value after the new token is stored, so another device is left alone.
+     */
+    previous_expo_push_token: z.string().min(10).optional().nullable(),
+    previous_native_push_token: z.string().min(8).optional().nullable(),
   })
   .refine(
     (b) =>

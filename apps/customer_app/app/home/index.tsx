@@ -28,8 +28,6 @@ import Animated, {
   useAnimatedStyle,
   useAnimatedReaction,
   runOnJS,
-  interpolate,
-  Extrapolation,
 } from "react-native-reanimated";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { StatusBar } from "expo-status-bar";
@@ -47,8 +45,7 @@ import {
   resolveFullConfigItemId,
 } from "@/lib/menu-item-config-query";
 import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
-import { prefetchMerchantBanners, prioritizeVisibleMerchantBanners } from "@/lib/prefetchMerchantBanners";
-import { prefetchVisibleMerchantBanners } from "@/lib/merchantHeroWarmCache";
+import { prioritizeVisibleMerchantBanners } from "@/lib/prefetchMerchantBanners";
 import {
   fetchAndCacheMerchantsList,
   MERCHANTS_LIST_GC_MS,
@@ -57,7 +54,7 @@ import {
   readSyncMerchantsListEntry,
   seedMerchantsListQueryIfCached,
 } from "@/lib/merchantsListCache";
-import { prefetchMerchantCardImages } from "@/lib/imageEngine";
+import { prefetchFoodHomeVisibleImages } from "@/lib/imageEngine";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
 import { seedMerchantMenuQueryIfCached } from "@/lib/merchantMenuCache";
@@ -98,7 +95,6 @@ import { BrandingFooter } from "@/components/BrandingFooter";
 import {
   CategoryRailSkeleton,
   GMSkeleton,
-  LovedMerchantsGridSkeleton,
 } from "@/components/ShimmerSkeleton";
 import { FoodOffersRibbonCarousel } from "@/components/home/FoodOffersRibbonCarousel";
 import {
@@ -113,7 +109,10 @@ import { FoodHomeListingSkeleton } from "@/components/home/FoodHomeListingSkelet
 import { ClassicExploreRestaurantsSkeleton } from "@/components/home/ClassicExploreRestaurantsSkeleton";
 import { VegModeSettingsSheet } from "@/components/home/VegModeSettingsSheet";
 import { VegModePopover, type VegPopoverAnchor } from "@/components/home/VegModePopover";
-import { VegModeTransitionOverlay } from "@/components/home/VegModeTransitionOverlay";
+import {
+  VegModeTransitionOverlay,
+  vegModeFlashMs,
+} from "@/components/home/VegModeTransitionOverlay";
 import { FoodHomeGridFirstStickyChrome } from "@/components/home/FoodHomeGridFirstStickyChrome";
 import { FoodHomeFilterRow } from "@/components/home/FoodHomeFilterRow";
 import {
@@ -455,7 +454,7 @@ export default function FoodMerchantsScreen() {
     vegFlashTimerRef.current = setTimeout(() => {
       vegFlashTimerRef.current = null;
       setVegFlash(null);
-    }, 420);
+    }, vegModeFlashMs(kind));
   }, []);
   useEffect(
     () => () => {
@@ -565,11 +564,6 @@ export default function FoodMerchantsScreen() {
     retry: 2,
   });
 
-  useEffect(() => {
-    if (merchantsData?.length) {
-      prefetchMerchantCardImages(merchantsData);
-    }
-  }, [merchantsData]);
   const offerLocationParams = useMemo(() => {
     return normalizeOfferLocationParams({
       pincode: address?.pincode?.trim() || undefined,
@@ -723,29 +717,17 @@ export default function FoodMerchantsScreen() {
   const seedStatusesFromApi = useStoreStatusStore((s) => s.seedStatusesFromApi);
   const statusMap = useStoreStatusStore((s) => s.statusMap);
 
-  // Wait for cold-start reconcile before any GPS fill — otherwise a later
-  // requestPermissionAndFetch can overwrite a restored Saved Address.
+  // GPS fill must not wait on backend reconcile — last-known + fast fix paint home.
+  // Skip only when a Saved Address is already the active pin.
   const reconcileReady = useActiveLocationReconcileReady();
   useEffect(() => {
     if (!locationHydrated) return;
-    if (!reconcileReady) return;
     if (locationSource === "selected") return;
-    if (locationSource === "current" && coords) return;
-    if (permissionStatus === "granted") {
-      if (coords) void refetchLocation();
-      else void requestPermissionAndFetch();
-    } else if (permissionStatus === "undetermined") {
-      void requestPermissionAndFetch();
-    }
-  }, [
-    locationHydrated,
-    reconcileReady,
-    locationSource,
-    coords,
-    permissionStatus,
-    refetchLocation,
-    requestPermissionAndFetch,
-  ]);
+    if (permissionStatus !== "granted" && permissionStatus !== "undetermined") return;
+    void requestPermissionAndFetch({ forceDevice: true });
+    // One kick per mount/source — not on every coords update (would loop).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locationHydrated, locationSource, permissionStatus, requestPermissionAndFetch]);
 
   useEffect(() => {
     if (!__DEV__ || !coords) return;
@@ -778,9 +760,6 @@ export default function FoodMerchantsScreen() {
     if (rows.length > 0) seedStatusesFromApi(rows);
   }, [merchants, seedStatusesFromApi]);
 
-  useEffect(() => {
-    if (merchants.length > 0) prefetchMerchantBanners(merchants);
-  }, [merchants]);
 
   useFocusEffect(
     useCallback(() => {
@@ -847,11 +826,19 @@ export default function FoodMerchantsScreen() {
     [filteredAndSortedMerchants, statusMap]
   );
 
-  // Warm Recommended-with-Deals banners before the rail mounts — avoids white tile flash.
+  // Only the cards on screen. A wider banner prefetch keeps these photos blank.
   useEffect(() => {
-    if (lovedByCustomers.length === 0) return;
-    prefetchVisibleMerchantBanners(lovedByCustomers, 8);
-  }, [lovedByCustomers]);
+    if (!merchants.length && !lovedByCustomers.length) return;
+    const seen = new Set<string>();
+    const hot: typeof merchants = [];
+    for (const m of [...lovedByCustomers, ...merchants]) {
+      if (!m?.id || seen.has(m.id)) continue;
+      seen.add(m.id);
+      hot.push(m);
+      if (hot.length >= 6) break;
+    }
+    if (hot.length) prefetchFoodHomeVisibleImages(hot);
+  }, [lovedByCustomers, merchants]);
 
   const openRestaurantCountLabel = useMemo(
     () => openRestaurantsDeliveringLabel(merchants, statusMap),
@@ -1846,26 +1833,14 @@ export default function FoodMerchantsScreen() {
   const gridFirstHeroHasSlidesRef = useRef(false);
 
   const applyGridFirstStatusBarChrome = useCallback(
-    (searchSticky: boolean) => {
+    (_searchSticky: boolean) => {
       if (!isGridFirstLayoutRef.current) return;
-      const heroImmersive =
-        gridFirstHeroHasSlidesRef.current &&
-        gridFirstHeroReadyRef.current &&
-        !searchSticky;
-      if (heroImmersive) {
-        setStatusBarBackground("transparent", "dark");
-        if (Platform.OS === "android") {
-          NativeStatusBar.setTranslucent(true);
-          NativeStatusBar.setBackgroundColor("transparent", true);
-          NativeStatusBar.setBarStyle("dark-content", true);
-        }
-      } else {
-        setStatusBarBackground(GRID_FIRST_PAGE_BG, "dark");
-        if (Platform.OS === "android") {
-          NativeStatusBar.setTranslucent(true);
-          NativeStatusBar.setBackgroundColor(GRID_FIRST_PAGE_BG, true);
-          NativeStatusBar.setBarStyle("dark-content", true);
-        }
+      setStatusBarBackground(GRID_FIRST_PAGE_BG, "dark");
+      if (Platform.OS === "android") {
+        NativeStatusBar.setHidden(false, "none");
+        NativeStatusBar.setTranslucent(true);
+        NativeStatusBar.setBackgroundColor(GRID_FIRST_PAGE_BG, true);
+        NativeStatusBar.setBarStyle("dark-content", true);
       }
     },
     [setStatusBarBackground]
@@ -1884,7 +1859,11 @@ export default function FoodMerchantsScreen() {
   // After first paint / tab slide — never block Food entry with status-bar layout work.
   useEffect(() => {
     if (!isGridFirstLayout || isNonServiceableScreen) return;
-    setImmersiveStatusBarChrome(true);
+    useScreenChromeStore.setState({
+      statusBarBackground: GRID_FIRST_PAGE_BG,
+      statusBarStyle: "dark",
+      hideStatusBarSpacer: true,
+    });
     applyGridFirstStatusBarChrome(false);
   }, [
     isGridFirstLayout,
@@ -1959,7 +1938,11 @@ export default function FoodMerchantsScreen() {
         setStatusBarBackground(NON_SERVICEABLE_STATUS_BAR_BG, "dark");
         return;
       }
-      setImmersiveStatusBarChrome(true);
+      useScreenChromeStore.setState({
+        statusBarBackground: GRID_FIRST_PAGE_BG,
+        statusBarStyle: "dark",
+        hideStatusBarSpacer: true,
+      });
       applyGridFirstStatusBarChrome(false);
       return () => {
         // Under main tabs, keep immersive soft chrome so tab-slide doesn't
@@ -2063,6 +2046,12 @@ export default function FoodMerchantsScreen() {
   const [gridFirstHeaderBlockH, setGridFirstHeaderBlockH] = useState(
     gridFirstDefaultHeaderBlockHeight
   );
+  const [stickySearchRowH, setStickySearchRowH] = useState(0);
+  const onStickySearchChromeHeight = useCallback((height: number) => {
+    const row = Math.round(height - statusBarTopInset);
+    if (row < 1) return;
+    setStickySearchRowH((prev) => (Math.abs(prev - row) < 1 ? prev : row));
+  }, [statusBarTopInset]);
   // Compact (no-hero) sky = real header height only — not the taller hero overlay reserve.
   const gridFirstCompactSkyHeight =
     statusBarTopInset + HOME_HEADER_BELOW_STATUS_GAP + gridFirstHeaderBlockH;
@@ -2219,6 +2208,8 @@ export default function FoodMerchantsScreen() {
       ...base,
       goldStripHeight,
       headerBlockHeight: gridFirstHeaderBlockH,
+      searchRowHeight:
+        stickySearchRowH > 0 ? stickySearchRowH : base.searchRowHeight,
       categoryBlockY,
       categoryBlockHeight,
       filterBlockY:
@@ -2238,6 +2229,7 @@ export default function FoodMerchantsScreen() {
     useGridFirstCategoryTabs,
     classicCategoryRailMinHeight,
     gridFirstHeaderBlockH,
+    stickySearchRowH,
   ]);
 
   const gridFirstSearchStickAt = useMemo(
@@ -2255,15 +2247,44 @@ export default function FoodMerchantsScreen() {
 
   const gridFirstScrollY = useSharedValue(0);
   const foodHomeFlashListRef = useRef<FlashListRef<MerchantSummary>>(null);
+  const foodListLaidOutRef = useRef(false);
+  const pinFoodListTopPendingRef = useRef(false);
 
-  useEffect(() => {
-    const scrollToTop = () => {
+  const scrollFoodListToTopNow = useCallback(() => {
+    // scrollToOffset(0) before the list has a content size lands on the last
+    // store. Wait until FlashList has drawn, then pin to the real top
+    // (Recommended with deals, or the first ranked store when that rail is empty).
+    if (!foodListLaidOutRef.current) {
+      pinFoodListTopPendingRef.current = true;
+      return;
+    }
+    pinFoodListTopPendingRef.current = false;
+    try {
       foodHomeFlashListRef.current?.scrollToOffset({ offset: 0, animated: false });
       gridFirstScrollY.value = 0;
-    };
-    registerFoodHomeListScroller(scrollToTop);
-    return () => registerFoodHomeListScroller(null);
+    } catch {
+      pinFoodListTopPendingRef.current = true;
+    }
   }, [gridFirstScrollY]);
+
+  const onFoodListLoad = useCallback(() => {
+    // First layout is the only safe moment to pin. A fresh Food mount must
+    // open on Recommended / the first store, even if the entry scroll ran
+    // against the previous list instance.
+    foodListLaidOutRef.current = true;
+    pinFoodListTopPendingRef.current = false;
+    try {
+      foodHomeFlashListRef.current?.scrollToOffset({ offset: 0, animated: false });
+      gridFirstScrollY.value = 0;
+    } catch {
+      pinFoodListTopPendingRef.current = true;
+    }
+  }, [gridFirstScrollY]);
+
+  useEffect(() => {
+    registerFoodHomeListScroller(scrollFoodListToTopNow);
+    return () => registerFoodHomeListScroller(null);
+  }, [scrollFoodListToTopNow]);
   const gridFirstSearchStickAtSv = useSharedValue(gridFirstSearchStickAt);
   const gridFirstCategoryStickAtSv = useSharedValue(gridFirstCategoryStickAt);
   const gridFirstFilterStickAtSv = useSharedValue(gridFirstFilterStickAt);
@@ -2281,7 +2302,6 @@ export default function FoodMerchantsScreen() {
 
   const onClassicOrGridScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      // Shared value only — no Zustand / setState on the scroll hot path.
       gridFirstScrollY.value = e.nativeEvent.contentOffset.y;
     },
     [gridFirstScrollY]
@@ -2431,21 +2451,17 @@ export default function FoodMerchantsScreen() {
     ]
   );
 
-  // While restaurants are still loading and hero media isn't ready, pin sticky
-  // chrome so location/search never vanish into a blank white body.
-  const pinChromeAtRest =
-    isGridFirstLayout &&
-    (!gridFirstHeroHasSlides || (showMerchantsSkeleton && !gridFirstHeroReady));
+  // Keep chrome inside the list. Pulling it out (and swapping when hero
+  // resolved) crashed native FlashList when opening Food.
+  const pinChromeAtRest = false;
 
   useEffect(() => {
     if (!isGridFirstLayout) return;
     if (gridFirstScrollY.value > 16) return;
-    foodHomeFlashListRef.current?.scrollToOffset({ offset: 0, animated: false });
     gridFirstScrollY.value = 0;
-  }, [gridFirstSkyHeight, pinChromeAtRest, isGridFirstLayout, gridFirstScrollY]);
+  }, [isGridFirstLayout, gridFirstScrollY]);
 
   const gridFirstCategoryFlowStyle = useAnimatedStyle(() => {
-    // No-hero: sticky chrome owns the rail from y=0 — keep in-flow as invisible spacer only.
     if (pinChromeAtRest) {
       return { opacity: 0 };
     }
@@ -2453,18 +2469,7 @@ export default function FoodMerchantsScreen() {
     if (stickAt <= 1) {
       return { opacity: 1 };
     }
-    // Crossfade with sticky chrome — same early snap, tight handoff (no jerk / double ghost).
-    const early = 8;
-    const handoff = 4;
-    const snapY = Math.max(8, stickAt - early);
-    return {
-      opacity: interpolate(
-        gridFirstScrollY.value,
-        [snapY - handoff, snapY + handoff],
-        [1, 0],
-        Extrapolation.CLAMP
-      ),
-    };
+    return { opacity: gridFirstScrollY.value >= stickAt ? 0 : 1 };
   }, [pinChromeAtRest]);
 
   const classicCategoryFlowStyle = useAnimatedStyle(() => {
@@ -2593,8 +2598,61 @@ export default function FoodMerchantsScreen() {
       ) : null}
 
       <View style={[styles.contentWrap, isDiscoveryLayout && styles.discoveryContentWrap]}>
-        {/* Always mount FlashList + chrome — never swap a boot-shell header (that
-            was the main→food entry layout shift). Loading only fills list body. */}
+        {/* Location, search, and the category row stay put. Only what is below
+            the category row lives in the list, so it scrolls under that row. */}
+        {isGridFirstLayout ? (
+          <View style={styles.gridFirstFixedTop}>
+            <View
+              style={[
+                styles.gridFirstHeaderInFlow,
+                { paddingTop: statusBarTopInset + HOME_HEADER_BELOW_STATUS_GAP },
+              ]}
+            >
+              <FoodHomeGridFirstHeader
+                topInset={0}
+                locationPrimary={gridFirstLocationLabels.primary}
+                locationSecondary={gridFirstLocationLabels.secondary}
+                onLocationPress={handleLocationPress}
+                onSearchPress={handleSearch}
+                vegOnly={vegToggleOn}
+                onVegChange={onVegChange}
+                onOpenVegPopover={onOpenVegPopover}
+                heroReady={gridFirstHeroHasSlides && gridFirstHeroReady}
+              />
+            </View>
+            {showGridFirstSubscriptionRow ? (
+              <FoodHomeGoldStrip
+                enabled={
+                  layoutReady
+                    ? gridFirstSubscriptionRowEnabled
+                    : DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.enabled
+                }
+                message={
+                  gridFirstSubscriptionRowText.trim() ||
+                  DEFAULT_GRID_FIRST_SUBSCRIPTION_ROW.text
+                }
+                backgroundColor={gridFirstSubscriptionRowBgColor}
+              />
+            ) : null}
+            {useGridFirstCategoryTabs ? (
+              <View
+                style={[
+                  styles.categoryTabsSection,
+                  {
+                    height: gridFirstCategoryBlockHeight(categoryRailLayout.circle),
+                    minHeight: gridFirstCategoryBlockHeight(categoryRailLayout.circle),
+                  },
+                ]}
+              >
+                {gridFirstCategoryTabsEl}
+              </View>
+            ) : (
+              <View style={[styles.categoryRailSection, { minHeight: classicCategoryRailMinHeight }]}>
+                {classicCategoryRailEl}
+              </View>
+            )}
+          </View>
+        ) : null}
         <FlashList
           ref={foodHomeFlashListRef}
           style={StyleSheet.flatten([styles.scroll, isDiscoveryLayout && styles.discoveryScroll])}
@@ -2608,8 +2666,12 @@ export default function FoodMerchantsScreen() {
           keyExtractor={restaurantKeyExtractor}
           renderItem={renderRestaurantItem}
           extraData={restaurantListExtraData}
+          onLoad={onFoodListLoad}
+          // FlashList 2 turns this on unless disabled. Its anchor starts at
+          // y=1_000_000, and the list clamps to the last store on entry.
+          maintainVisibleContentPosition={{ disabled: true }}
           // Off-screen buffer — keep moderate so fling stays smooth without decoding too many carousels.
-          drawDistance={Math.max(1600, Math.round(windowHeight * 2.4))}
+          drawDistance={720}
           overrideProps={{ initialDrawBatchSize: 10 }}
           contentInsetAdjustmentBehavior="never"
           decelerationRate={NATURAL_DECELERATION_RATE}
@@ -2629,7 +2691,7 @@ export default function FoodMerchantsScreen() {
           onScroll={
             isGridFirstLayout || isClassicLayout ? onClassicOrGridScroll : undefined
           }
-          scrollEventThrottle={32}
+          scrollEventThrottle={16}
           onScrollBeginDrag={onFoodHomeListScrollBegin}
           onScrollEndDrag={onFoodHomeListScrollEndDrag}
           onMomentumScrollBegin={onFoodHomeListScrollBegin}
@@ -2665,13 +2727,15 @@ export default function FoodMerchantsScreen() {
               />
             </Animated.View>
           ) : null}
-          {isGridFirstLayout ? (
+          {false ? (
             <View style={styles.gridFirstSkyBlock}>
               <View
                 style={[
                   styles.gridFirstSkyInner,
                   !gridFirstHeroHasSlides && styles.gridFirstSkyInnerCompact,
-                  { height: gridFirstSkyHeight, overflow: "hidden" },
+                  gridFirstHeroHasSlides
+                    ? { height: gridFirstSkyHeight, overflow: "hidden" }
+                    : styles.gridFirstSkyInnerFlow,
                 ]}
               >
                 {gridFirstHeroHasSlides && allowHeroMount ? (
@@ -2702,16 +2766,18 @@ export default function FoodMerchantsScreen() {
                 ) : null}
                 <View
                   style={[
-                    styles.gridFirstHeaderOverlay,
+                    gridFirstHeroHasSlides
+                      ? styles.gridFirstHeaderOverlay
+                      : styles.gridFirstHeaderInFlow,
                     { paddingTop: statusBarTopInset + HOME_HEADER_BELOW_STATUS_GAP },
                     pinChromeAtRest ? styles.gridFirstHeaderOverlayPinned : null,
                   ]}
                   pointerEvents={pinChromeAtRest ? "none" : "box-none"}
                   onLayout={(e) => {
                     const h = e.nativeEvent.layout.height;
-                    if (h > statusBarTopInset + HOME_HEADER_BELOW_STATUS_GAP) {
-                      const next =
-                        h - statusBarTopInset - HOME_HEADER_BELOW_STATUS_GAP;
+                    const pad = statusBarTopInset + HOME_HEADER_BELOW_STATUS_GAP;
+                    if (h > pad) {
+                      const next = h - pad;
                       setGridFirstHeaderBlockH((prev) =>
                         Math.abs(prev - next) < 2 ? prev : next
                       );
@@ -2768,7 +2834,7 @@ export default function FoodMerchantsScreen() {
             </View>
           )}
 
-          {isGridFirstLayout && showGridFirstSubscriptionRow ? (
+          {false ? (
             <View
               style={{ minHeight: GRID_FIRST_GOLD_STRIP_H }}
               onLayout={(e) => {
@@ -2793,7 +2859,7 @@ export default function FoodMerchantsScreen() {
             <View style={styles.sectionGap} />
           )}
 
-          {isGridFirstLayout ? (
+          {false ? (
             useGridFirstCategoryTabs ? (
               <View
                 style={[
@@ -2854,7 +2920,7 @@ export default function FoodMerchantsScreen() {
                 <DiscoveryCategoryGrid items={homeCategoryRailItems} onSelect={handleCategorySelect} />
               )}
             </View>
-          ) : (
+          ) : isGridFirstLayout ? null : (
           <>
           <View
             style={[styles.categoryRailSection, styles.classicCategoryRailSection]}
@@ -2968,7 +3034,7 @@ export default function FoodMerchantsScreen() {
 
           {/* Loved by Customers — horizontal rail: 2 full + 3rd peek */}
           {!isClassicLayout &&
-          (showMerchantsSkeleton || lovedByCustomers.length > 0) &&
+          lovedByCustomers.length > 0 &&
           (showLovedGrid || showLovedHorizontal) ? (
             <View style={styles.lovedSection}>
               <AppText
@@ -2979,15 +3045,11 @@ export default function FoodMerchantsScreen() {
               >
                 {lovedSectionTitle}
               </AppText>
-              {showMerchantsSkeleton ? (
-                <LovedMerchantsGridSkeleton count={4} dark={isDiscoveryLayout} />
-              ) : (
-                <LovedMerchantsHorizontal
+              <LovedMerchantsHorizontal
                   merchants={lovedByCustomers}
                   weatherDelayMinutes={weatherDelayMinutes}
                   onPressMerchant={openMerchantPageGuarded}
                 />
-              )}
             </View>
           ) : null}
 
@@ -3058,7 +3120,7 @@ export default function FoodMerchantsScreen() {
           }
         />
 
-        {isGridFirstLayout ? (
+        {false ? (
           <FoodHomeGridFirstStickyChrome
             scrollY={gridFirstScrollY}
             metrics={gridFirstStickyMetrics}
@@ -3077,6 +3139,7 @@ export default function FoodMerchantsScreen() {
             enableCategorySticky={useGridFirstCategoryTabs}
             enableFilterSticky={false}
             pinAtRest={pinChromeAtRest}
+            onSearchChromeHeight={onStickySearchChromeHeight}
           />
         ) : null}
 
@@ -3444,6 +3507,10 @@ const styles = StyleSheet.create({
   gridFirstSkyInnerCompact: {
     backgroundColor: GatiMitraColors.softBackground,
   },
+  gridFirstSkyInnerFlow: {
+    height: undefined,
+    overflow: "visible",
+  },
   gridFirstHeaderOverlay: {
     position: "absolute",
     top: 0,
@@ -3451,6 +3518,25 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 10,
     backgroundColor: "transparent",
+  },
+  gridFirstFixedTop: {
+    backgroundColor: GRID_FIRST_PAGE_BG,
+    zIndex: 6,
+  },
+  gridFirstHeaderInFlow: {
+    position: "relative",
+    zIndex: 10,
+    backgroundColor: GRID_FIRST_PAGE_BG,
+  },
+  gridFirstPinnedChrome: {
+    backgroundColor: GRID_FIRST_PAGE_BG,
+    zIndex: 20,
+    elevation: 8,
+  },
+  gridFirstPinnedCategories: {
+    paddingTop: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
+    paddingBottom: 6,
+    backgroundColor: GRID_FIRST_PAGE_BG,
   },
   gridFirstHeaderOverlayPinned: {
     opacity: 0,
@@ -3560,7 +3646,7 @@ const styles = StyleSheet.create({
   },
   categoryTabsSection: {
     paddingTop: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
-    paddingBottom: 0,
+    paddingBottom: 2,
     marginBottom: 0,
     marginTop: 0,
     backgroundColor: GRID_FIRST_PAGE_BG,

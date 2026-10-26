@@ -14,10 +14,10 @@ export function getDb() {
   }
 
   const sql = postgres(databaseUrl, {
-    max: process.env.NODE_ENV === "production" ? 12 : 8,
+    max: 8,
     idle_timeout: 20,
-    connect_timeout: 30,
-    max_lifetime: 60 * 30,
+    connect_timeout: 10,
+    max_lifetime: 60 * 10,
     prepare: false,
     ...({ max_pipeline: 1 } as Record<string, number>),
     types: {
@@ -30,7 +30,7 @@ export function getDb() {
       },
     },
     connection: {
-      statement_timeout: process.env.NODE_ENV === "production" ? 30_000 : 60_000,
+      statement_timeout: 45_000,
       idle_in_transaction_session_timeout: 30_000,
     },
   });
@@ -45,17 +45,34 @@ export function getSql() {
   return _sql!;
 }
 
-const RETRYABLE_PG_CODES = new Set(["08P01", "08006", "08003", "57P01"]);
+const RETRYABLE_PG_CODES = new Set([
+  "08P01",
+  "08006",
+  "08003",
+  "57P01",
+  "57P02",
+  "57P03",
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EPIPE",
+  "ETIMEDOUT",
+]);
 
 export function isRetryablePgError(error: unknown): boolean {
   if (error == null || typeof error !== "object") return false;
   const code = (error as { code?: unknown }).code;
   if (typeof code === "string" && RETRYABLE_PG_CODES.has(code)) return true;
-  const message = (error as { message?: unknown }).message;
-  return typeof message === "string" && message.includes("bind message supplies");
+  const message = String((error as { message?: unknown }).message ?? "").toLowerCase();
+  return (
+    message.includes("bind message supplies") ||
+    message.includes("econnreset") ||
+    message.includes("connection terminated") ||
+    message.includes("connection reset") ||
+    message.includes("aborted")
+  );
 }
 
-export async function withPgRetry<T>(run: () => Promise<T>, label: string, attempts = 2): Promise<T> {
+export async function withPgRetry<T>(run: () => Promise<T>, label: string, attempts = 3): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
@@ -64,7 +81,7 @@ export async function withPgRetry<T>(run: () => Promise<T>, label: string, attem
       lastError = error;
       if (attempt === attempts || !isRetryablePgError(error)) throw error;
       console.warn(`[coredash:db] ${label}: retry ${attempt}`);
-      await new Promise((r) => setTimeout(r, 50 * attempt));
+      await new Promise((r) => setTimeout(r, 400 * attempt));
     }
   }
   throw lastError;
@@ -77,6 +94,11 @@ export async function safeQuery<T>(label: string, run: () => Promise<T>, fallbac
     console.error(`[coredash:db] ${label}`, error);
     return fallback as T;
   }
+}
+
+/** List queries must not swallow errors — empty fallback looks like “users missing”. */
+export async function requiredQuery<T>(label: string, run: () => Promise<T>): Promise<T> {
+  return withPgRetry(run, label);
 }
 
 export function num(value: unknown): number {

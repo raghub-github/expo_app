@@ -234,6 +234,13 @@ export default function CampaignsPage() {
         toast.error(apiErrorMessage(j, `Resend failed (HTTP ${res.status})`), { id: toastId });
         return;
       }
+      if (j.started === true || j.status === "running") {
+        toast.success(`Resending “${campaign.name}”. Counts update as phones are reached.`, {
+          id: toastId,
+        });
+        mutate();
+        return;
+      }
       const queued = typeof j.queued === "number" ? j.queued : Number(j.queued);
       if (!Number.isFinite(queued) || queued <= 0) {
         // Soft outcome — not an API failure (quiet hours / no devices).
@@ -804,7 +811,7 @@ type TargetMode =
   | "city";
 
 const TARGET_OPTIONS: Array<{ mode: TargetMode; label: string; sub: string; Icon: typeof Users }> = [
-  { mode: "all_customers", label: "All customers", sub: "Every customer with an active app", Icon: Users },
+  { mode: "all_customers", label: "All customers", sub: "Phones that opened the app and allowed notifications", Icon: Users },
   { mode: "all_merchants", label: "All merchants", sub: "Every merchant with an active app", Icon: Store },
   { mode: "all_riders",    label: "All riders",    sub: "Every rider with an active app",    Icon: Users },
   { mode: "role",          label: "By role",       sub: "Pick a single role bucket",         Icon: Users },
@@ -1381,7 +1388,9 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   }, [templateCode, JSON.stringify(varsPayload)]);
 
   const save = async (status: "draft" | "running" | "scheduled") => {
-    setBusy(true);
+    const closeImmediately = status === "running" || status === "scheduled";
+    if (closeImmediately) onClose();
+    else setBusy(true);
     try {
       const payload: Record<string, unknown> = {
         name,
@@ -1420,14 +1429,12 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
             "No registered push devices for this target. Open the customer/rider app once with notifications allowed, then resend.",
           );
         } else {
-          toast.success(`Campaign “${name}” is sending — ${queued} queued.`);
+          toast.success(`Campaign “${name}” is sending — ${queued} phones with a push token.`);
         }
-        onClose();
         return;
       }
       if (status === "scheduled") {
         toast.success(`Campaign “${name}” scheduled.`);
-        onClose();
         return;
       }
       toast.success("Saved as draft.");
@@ -1435,7 +1442,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
-      setBusy(false);
+      if (!closeImmediately) setBusy(false);
     }
   };
 

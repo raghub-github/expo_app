@@ -192,11 +192,91 @@ export async function listActiveCustomerCoupons(
 }
 
 export async function bumpRulesetVersion(db: PostgresJsDatabase<Record<string, unknown>>): Promise<number> {
-  await db
-    .update(billingRulesetVersion)
-    .set({ version: sql`${billingRulesetVersion.version} + 1`, updatedAt: new Date() })
-    .where(eq(billingRulesetVersion.id, 1));
+  await db.execute(sql`
+    INSERT INTO billing_ruleset_version (id, version, updated_at)
+    VALUES (1, 2, now())
+    ON CONFLICT (id) DO UPDATE
+    SET version = billing_ruleset_version.version + 1,
+        updated_at = now()
+  `);
   return getRulesetVersion(db);
+}
+
+/**
+ * Super Admin engine order can deactivate the DELIVERY charge.
+ * A service-specific row wins over ALL. If that row exists and is inactive,
+ * delivery must not be charged. No row at all keeps the existing fallback.
+ */
+export async function isDeliveryFeeChargeEnabled(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  serviceType: string
+): Promise<boolean> {
+  const st = mapBillingServiceTypeForChargesAndTaxes(serviceType);
+  const rows = await db
+    .select({
+      isActive: billingPricingRules.isActive,
+      serviceType: billingPricingRules.serviceType,
+    })
+    .from(billingPricingRules)
+    .where(
+      and(
+        eq(billingPricingRules.type, "DELIVERY"),
+        inArray(sql`upper(${billingPricingRules.serviceType})`, [st, "ALL"])
+      )
+    );
+  const specific = rows.filter((r) => String(r.serviceType ?? "").trim().toUpperCase() === st);
+  const pool = specific.length > 0 ? specific : rows;
+  if (pool.length === 0) return true;
+  return pool.some((r) => r.isActive === true);
+}
+
+const INACTIVE_FEE_RULE_TYPES = [
+  "DELIVERY",
+  "PLATFORM_FEE",
+  "PACKAGING",
+  "SURGE",
+  "SMALL_ORDER_FEE",
+  "CONVENIENCE_FEE",
+  "FEE",
+] as const;
+
+/** Inactive charge rows, so checkout can strike the amount they would have added. */
+export async function loadInactiveFeeRules(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  serviceType: string
+): Promise<
+  Array<{
+    type: string;
+    serviceType: string;
+    calculationType: string;
+    valueNumeric: number | null;
+    valueJson: unknown;
+  }>
+> {
+  const st = mapBillingServiceTypeForChargesAndTaxes(serviceType);
+  const rows = await db
+    .select({
+      type: billingPricingRules.type,
+      serviceType: billingPricingRules.serviceType,
+      calculationType: billingPricingRules.calculationType,
+      valueNumeric: billingPricingRules.valueNumeric,
+      valueJson: billingPricingRules.valueJson,
+    })
+    .from(billingPricingRules)
+    .where(
+      and(
+        eq(billingPricingRules.isActive, false),
+        inArray(billingPricingRules.type, [...INACTIVE_FEE_RULE_TYPES]),
+        inArray(sql`upper(${billingPricingRules.serviceType})`, [st, "ALL"])
+      )
+    );
+  return rows.map((r) => ({
+    type: String(r.type),
+    serviceType: String(r.serviceType ?? "FOOD"),
+    calculationType: String(r.calculationType),
+    valueNumeric: n(r.valueNumeric),
+    valueJson: r.valueJson,
+  }));
 }
 
 export async function loadBillingDatasetUncached(

@@ -582,7 +582,11 @@ export const useCartStore = create<CartState>((set, get) => ({
       const fresh = pricesByMenuItemId[baseMenuId] ?? pricesByMenuItemId[i.menuItemId];
       if (fresh != null && Number.isFinite(fresh) && Math.abs(fresh - i.price) > 0.005) {
         changed = true;
-        return { ...i, price: fresh, basePrice: fresh };
+        // `basePrice` on a plain line is the menu strikethrough. Keep it when it
+        // is still above the new selling price; only the selling `price` moves.
+        const keepStrike =
+          i.basePrice != null && i.basePrice > fresh + 0.001 ? i.basePrice : fresh;
+        return { ...i, price: fresh, basePrice: keepStrike };
       }
       return i;
     });

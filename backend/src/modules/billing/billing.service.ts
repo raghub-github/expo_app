@@ -14,10 +14,13 @@ import {
 import { getSql } from "../../db/client.js";
 import {
   loadBillingDatasetUncached,
+  isDeliveryFeeChargeEnabled,
+  loadInactiveFeeRules,
   getRulesetVersion,
   listActiveCustomerCoupons,
   loadMerchantOfferUsagesByUser,
 } from "./billing.repository.js";
+import { quotesForInactiveFeeRules } from "./inactiveFeeQuotes.js";
 import {
   loadPlatformOfferLifetimeUseCounts,
   loadPlatformOfferUsageCountsForUser,
@@ -291,7 +294,9 @@ export async function computeBillForOrder(
   let dropStateName: string | null = null;
   let cityName: string | null = normalizeCity(input.cityName) || null;
 
-  if (input.addressId != null) {
+  const isSelfPickupOrder = input.deliveryType === "self_pickup";
+
+  if (input.addressId != null && !isSelfPickupOrder) {
     if (!input.customerId || input.customerId < 1) {
       return { ok: false, code: "INVALID_ADDRESS_DATA", message: "Customer required for addressId." };
     }
@@ -323,9 +328,28 @@ export async function computeBillForOrder(
     dropPostalCode = normalizePincode(sanitizePlaceholder(addrRow.postalCode));
     dropStateName = sanitizePlaceholder(addrRow.state);
     if (!cityName && addrRow.city) cityName = normalizeCity(sanitizePlaceholder(addrRow.city) ?? "");
-  } else if (input.dropLat != null && input.dropLon != null) {
+  } else if (!isSelfPickupOrder && input.dropLat != null && input.dropLon != null) {
     dropLat = input.dropLat;
     dropLon = input.dropLon;
+  } else if (isSelfPickupOrder) {
+    const storeLat = resolved.pickupLat;
+    const storeLon = resolved.pickupLon;
+    if (
+      storeLat == null ||
+      storeLon == null ||
+      !Number.isFinite(storeLat) ||
+      !Number.isFinite(storeLon) ||
+      (storeLat === 0 && storeLon === 0)
+    ) {
+      return {
+        ok: false,
+        code: "INVALID_MERCHANT",
+        message: "Store location is unavailable for pickup.",
+      };
+    }
+    // Anchor the bill on the restaurant. Do not substitute the customer's GPS as a drop.
+    dropLat = storeLat;
+    dropLon = storeLon;
   } else {
     return { ok: false, code: "INVALID_ADDRESS_DATA", message: "addressId or dropLat/dropLon required." };
   }
@@ -345,61 +369,107 @@ export async function computeBillForOrder(
     !(resolved.pickupLat === 0 && resolved.pickupLon === 0)
       ? resolved.pickupLon
       : (input.pickupLon ?? resolved.pickupLon);
-  const env = getEnv();
-  const quoteRes = await resolveStoreDeliveryQuote({
-    storeId: input.merchantId,
-    customerId: input.customerId > 0 ? input.customerId : null,
-    addressId: input.addressId ?? null,
-    drop: input.addressId == null ? { lat: dropLat, lng: dropLon, pincode: dropPostalCode, city: cityName } : null,
-    actor: "customer",
-    serviceType: (input.serviceType ?? "FOOD").toUpperCase() as any,
-    skipCache: false,
-  });
+  const serviceType = (input.serviceType ?? "FOOD").trim().toUpperCase();
+  const menuItemIdsForPack = input.items.map((i) => Number(i.menuItemId));
+  const calcMenuNumericIds = input.items
+    .map((i) => {
+      const raw = String(i.menuItemId ?? "");
+      const base = raw.includes("::")
+        ? raw.split("::")[0]!
+        : raw.includes("_")
+          ? raw.split("_")[0]!
+          : raw;
+      const n = Number(base);
+      return Number.isFinite(n) && n > 0 ? n : NaN;
+    })
+    .filter((n) => Number.isFinite(n));
+
+  // Route quote, rates, packaging, segment, ruleset, MRP, aliases, and geo do
+  // not depend on each other. Running them together is the same result as the
+  // previous sequence, without adding their latencies.
+  const [
+    quoteRes,
+    rates,
+    packDb,
+    customerCompletedOrderCount,
+    cachedDataset,
+    mrpIneligibleIds,
+    menuIdAliases,
+    calcGeo,
+    deliveryFallbackRates,
+    deliveryFeeChargeEnabled,
+    inactiveFeeRules,
+  ] = await Promise.all([
+    resolveStoreDeliveryQuote({
+      storeId: input.merchantId,
+      customerId: input.customerId > 0 ? input.customerId : null,
+      addressId: isSelfPickupOrder ? null : (input.addressId ?? null),
+      drop:
+        isSelfPickupOrder || input.addressId == null
+          ? { lat: dropLat, lng: dropLon, pincode: dropPostalCode, city: cityName }
+          : null,
+      actor: "customer",
+      serviceType: serviceType as any,
+      skipCache: false,
+      routingBudgetMs: 4000,
+    }),
+    getStoreBillingRates(resolved.merchantStoreId),
+    loadPackagingChargesFromMenuItems({
+      merchantStoreId: resolved.merchantStoreId,
+      menuItemIds: menuItemIdsForPack,
+    }),
+    input.customerId > 0 ? countDeliveredOrdersForCustomer(db, input.customerId) : Promise.resolve(null),
+    (async () => {
+      const version = await getRulesetVersion(db);
+      const cacheKey = billingDatasetCacheKey(version, resolved.merchantStoreId, couponCode, serviceType);
+      const useCache = input.useCache !== false;
+      let cached = useCache ? getCachedBillingDataset(cacheKey) : null;
+      if (!cached) {
+        cached = await loadBillingDatasetUncached(db, {
+          merchantStoreId: resolved.merchantStoreId,
+          couponCode,
+          serviceType,
+        });
+        if (useCache) setCachedBillingDataset(cacheKey, cached);
+      }
+      return cached;
+    })(),
+    loadMrpIneligibleMenuItemIds(resolved.merchantStoreId, calcMenuNumericIds),
+    loadMenuItemIdAliases(resolved.merchantStoreId, calcMenuNumericIds),
+    resolveGeoLocation({
+      savedPincode: dropPostalCode,
+      savedState: dropStateName,
+      savedCity: cityName,
+      latitude: dropLat,
+      longitude: dropLon,
+    }),
+    getDeliveryFallbackRates(),
+    isDeliveryFeeChargeEnabled(db, serviceType),
+    loadInactiveFeeRules(db, serviceType),
+  ]);
+  // Per-customer coupon and flash-sale filters clone this. The cached object stays shared.
+  let dataset = cachedDataset;
   if (!quoteRes.ok) {
     return { ok: false, code: quoteRes.code, message: quoteRes.message };
   }
   const quote = quoteRes.quote;
   const distanceKm = quote.distance_km;
 
-  const rates = await getStoreBillingRates(resolved.merchantStoreId);
   const packagingChargeAmount = rates?.packagingChargeAmount ?? 0;
   const deliveryChargePerKm = rates?.deliveryChargePerKm ?? 0; // legacy; keep for now
-  // Per-item packaging: snapshot → DB per-item → store default per-item (only when packaging applies).
-  const packDb = await loadPackagingChargesFromMenuItems({
-    merchantStoreId: resolved.merchantStoreId,
-    menuItemIds: input.items.map((i) => Number(i.menuItemId)),
-  });
   const itemPackagingTotal = computeItemPackagingTotal({
     items: input.items,
     storeDefaultPerUnit: packagingChargeAmount,
     db: { perUnitByMenuItemId: packDb.perUnitById, foundMenuItemIds: packDb.foundIds },
   });
 
-  const serviceType = (input.serviceType ?? "FOOD").trim().toUpperCase();
   const userSegRaw = input.userSegment ?? "ALL";
-  let customerCompletedOrderCount: number | null = null;
-  if (input.customerId > 0) {
-    customerCompletedOrderCount = await countDeliveredOrdersForCustomer(db, input.customerId);
-  }
   const userSegment: "NEW" | "EXISTING" | "ALL" =
     userSegRaw === "NEW" || userSegRaw === "EXISTING"
       ? userSegRaw
       : customerCompletedOrderCount != null
         ? userSegmentFromOrderCount(customerCompletedOrderCount)
         : "ALL";
-
-  const version = await getRulesetVersion(db);
-  const cacheKey = billingDatasetCacheKey(version, resolved.merchantStoreId, couponCode, serviceType);
-  const useCache = input.useCache !== false;
-  let dataset = useCache ? getCachedBillingDataset(cacheKey) : null;
-  if (!dataset) {
-    dataset = await loadBillingDatasetUncached(db, {
-      merchantStoreId: resolved.merchantStoreId,
-      couponCode,
-      serviceType,
-    });
-    if (useCache) setCachedBillingDataset(cacheKey, dataset);
-  }
 
   const orderValue = itemSubtotal + addonSubtotal;
 
@@ -433,27 +503,6 @@ export async function computeBillForOrder(
     };
   });
 
-  const calcMenuNumericIds = input.items
-    .map((i) => {
-      const raw = String(i.menuItemId ?? "");
-      const base = raw.includes("::")
-        ? raw.split("::")[0]!
-        : raw.includes("_")
-          ? raw.split("_")[0]!
-          : raw;
-      const n = Number(base);
-      return Number.isFinite(n) && n > 0 ? n : NaN;
-    })
-    .filter((n) => Number.isFinite(n));
-
-  const mrpIneligibleIds = await loadMrpIneligibleMenuItemIds(
-    resolved.merchantStoreId,
-    calcMenuNumericIds
-  );
-  const menuIdAliases = await loadMenuItemIdAliases(
-    resolved.merchantStoreId,
-    calcMenuNumericIds
-  );
   // Offer Engine v2: eligibility is server-only (MRP + item-surface). Client hints ignored.
   const orderLines = markOrderLinesDiscountEligibility(orderLinesRaw, {
     mrpIneligibleIds,
@@ -462,14 +511,6 @@ export async function computeBillForOrder(
     extraAliasesByLineId: menuIdAliases,
   });
 
-  // Master geo resolver (cascade: live → saved → reverse-geocode → state-name fallback).
-  const calcGeo = await resolveGeoLocation({
-    savedPincode: dropPostalCode,
-    savedState: dropStateName,
-    savedCity: cityName,
-    latitude: dropLat,
-    longitude: dropLon,
-  });
   const dropGeoRefByLevel = calcGeo.refs;
   const platformOfferGeoBindingEffectiveIds = calcGeo.geoBoundOfferIds;
   const checkoutCouponGeoBindingEffectiveIds = calcGeo.geoBoundCouponIds;
@@ -478,7 +519,6 @@ export async function computeBillForOrder(
   const checkoutAudience: "CUSTOMER" | "MERCHANT" | "RIDER" =
     audRaw === "MERCHANT" || audRaw === "RIDER" ? audRaw : "CUSTOMER";
 
-  const deliveryFallbackRates = await getDeliveryFallbackRates();
   const deliveryMinimumInr =
     deliveryFallbackRates.minFeeInr > 0 ? deliveryFallbackRates.minFeeInr : undefined;
   const deliveryDefaultBaseInr = deliveryFallbackRates.baseInr;
@@ -551,6 +591,10 @@ export async function computeBillForOrder(
         ? input.subscriptionPlanId
         : undefined),
     isSelfPickup: input.deliveryType === "self_pickup",
+    // GPS drop without a saved address is not a delivery quote. The fee stays out of
+    // the payable until addressId locks it. Takeaway never charges delivery.
+    deliveryFeeChargeEnabled:
+      deliveryFeeChargeEnabled && (isSelfPickupOrder || input.addressId != null),
     deliveryPricingEngine: quote.pricing_engine,
     checkoutAudience,
     couponRedemptionsByUser: input.couponRedemptionsByUser,
@@ -842,7 +886,10 @@ export async function computeBillForOrder(
     companyDynamicSubsidy = applyDynamicSurchargesToBilling(adjustedBilling, dynFood).companySubsidy;
   }
 
-  const serviceable = quote.serviceable;
+  // Pickup is collected at the store. A far saved address must not mark the bill unserviceable.
+  const serviceable = isSelfPickupOrder
+    ? quote.unserviceable_reason !== "store_inactive"
+    : quote.serviceable;
   const serviceRadiusKm = quote.service_radius_km;
 
   const rawQuotedFee = quote.delivery_fee as unknown;
@@ -890,6 +937,17 @@ export async function computeBillForOrder(
   const deliveryFeeQuotedInr =
     deliveryFeeBeforeBenefitsInr > 0.005 ? deliveryFeeBeforeBenefitsInr : routeDeliveryFeeInr;
 
+  const inactiveFeeQuotes = quotesForInactiveFeeRules({
+    rules: inactiveFeeRules,
+    activeTypes: new Set(dataset.rules.map((r) => r.type)),
+    serviceType,
+    routeDeliveryFeeInr,
+    itemPlusAddon: ctx.itemSubtotal + ctx.addonSubtotal,
+    itemPackagingTotal,
+    packagingChargeAmount,
+    isSelfPickup: isSelfPickupOrder,
+  });
+
   const subscriptionDeliveryBenefitSnapshot = (() => {
     const subDisc = adjustedBilling.discounts.find(
       (d) => d.meta?.source === "customer_subscription_free_delivery"
@@ -915,6 +973,7 @@ export async function computeBillForOrder(
   const subscriptionDeliveryBenefitEstimate = await (async () => {
     if (subscriptionDeliveryBenefitSnapshot) return null;
     if (input.deliveryType === "self_pickup") return null;
+    if (!deliveryFeeChargeEnabled) return null;
     const fullFeeForEstimate = Math.max(
       deliveryFeeBeforeBenefitsInr,
       routeDeliveryFeeInr,
@@ -984,6 +1043,8 @@ export async function computeBillForOrder(
     deliveryType: input.deliveryType ?? "delivery",
     /** Pre-benefit delivery fee from billing pipeline (matches deliveryFeeBeforeBenefitsInr). */
     deliveryFeeQuotedInr,
+    /** Struck-through ₹0 rows for fee rules Super Admin turned off. Not part of the payable. */
+    ...(Object.keys(inactiveFeeQuotes).length > 0 ? { inactiveFeeQuotes } : {}),
     ...(subscriptionDeliveryBenefitSnapshot
       ? { subscriptionDeliveryBenefit: subscriptionDeliveryBenefitSnapshot }
       : {}),
@@ -1248,7 +1309,10 @@ export async function listCheckoutBillOffers(
   input: {
     customerId: number;
     merchantId: string;
-    addressId: number;
+    /** Omitted for takeaway listing when the customer has no saved delivery address. */
+    addressId?: number | null;
+    dropLat?: number | null;
+    dropLon?: number | null;
     /** Promo-eligible item+addon subtotal (excludes Boost/BOGO lines). Min-order gates use this. */
     cartSubtotal: number;
     serviceType?: string;
@@ -1290,40 +1354,57 @@ export async function listCheckoutBillOffers(
     return { ok: false, code: "INVALID_CUSTOMER", message: "Customer required." };
   }
 
-  const [addrRow] = await db
-    .select({
-      latitude: customerAddresses.latitude,
-      longitude: customerAddresses.longitude,
-      city: customerAddresses.city,
-      state: customerAddresses.state,
-      postalCode: customerAddresses.postalCode,
-    })
-    .from(customerAddresses)
-    .where(
-      and(
-        eq(customerAddresses.id, input.addressId),
-        eq(customerAddresses.customerId, input.customerId),
-        eq(customerAddresses.isActive, true),
-        isNull(customerAddresses.deletedAt)
-      )
-    )
-    .limit(1);
+  const addressId = input.addressId != null && input.addressId > 0 ? input.addressId : null;
+  const [addrRow] = addressId
+    ? await db
+        .select({
+          latitude: customerAddresses.latitude,
+          longitude: customerAddresses.longitude,
+          city: customerAddresses.city,
+          state: customerAddresses.state,
+          postalCode: customerAddresses.postalCode,
+        })
+        .from(customerAddresses)
+        .where(
+          and(
+            eq(customerAddresses.id, addressId),
+            eq(customerAddresses.customerId, input.customerId),
+            eq(customerAddresses.isActive, true),
+            isNull(customerAddresses.deletedAt)
+          )
+        )
+        .limit(1)
+    : [undefined];
 
-  if (!addrRow) {
+  if (addressId != null && !addrRow) {
     return { ok: false, code: "INVALID_ADDRESS_DATA", message: "Address not found." };
   }
 
-  const dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
-  const dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
+  const dropLat =
+    addrRow?.latitude != null
+      ? Number(addrRow.latitude)
+      : input.dropLat != null && Number.isFinite(input.dropLat)
+        ? input.dropLat
+        : resolved.pickupLat != null
+          ? resolved.pickupLat
+          : 0;
+  const dropLon =
+    addrRow?.longitude != null
+      ? Number(addrRow.longitude)
+      : input.dropLon != null && Number.isFinite(input.dropLon)
+        ? input.dropLon
+        : resolved.pickupLon != null
+          ? resolved.pickupLon
+          : 0;
 
   // Geo: live app location → saved address → reverse-geocode coords (same cascade as calculate).
   const geo = await resolveGeoLocation({
     livePincode: input.livePincode,
     liveState: input.liveState,
     liveCity: input.liveCity,
-    savedPincode: addrRow.postalCode,
-    savedState: addrRow.state,
-    savedCity: addrRow.city,
+    savedPincode: addrRow?.postalCode,
+    savedState: addrRow?.state,
+    savedCity: addrRow?.city,
     latitude: dropLat,
     longitude: dropLon,
   });
@@ -1333,7 +1414,7 @@ export async function listCheckoutBillOffers(
 
   // Self-heal: if reverse-geocode produced new values that the saved row doesn't have,
   // persist them so future requests skip the network call.
-  if (geo.reverseGeocoded) {
+  if (geo.reverseGeocoded && addressId != null && addrRow) {
     const patch: Partial<{ postalCode: string; state: string; city: string }> = {};
     if (geo.reverseGeocoded.pincode && !sanitizePlaceholder(addrRow.postalCode)) {
       patch.postalCode = geo.reverseGeocoded.pincode;
@@ -1348,7 +1429,7 @@ export async function listCheckoutBillOffers(
       await db
         .update(customerAddresses)
         .set({ ...patch, updatedAt: new Date() })
-        .where(eq(customerAddresses.id, input.addressId))
+        .where(eq(customerAddresses.id, addressId))
         .catch(() => {});
     }
   }
@@ -1756,7 +1837,7 @@ export async function listCheckoutBillOffers(
     cartSubtotal: grossCart,
     sources: {
       live: { pincode: input.livePincode ?? null, state: input.liveState ?? null, city: input.liveCity ?? null },
-      saved: { pincode: addrRow.postalCode, state: addrRow.state, city: addrRow.city },
+      saved: { pincode: addrRow?.postalCode ?? null, state: addrRow?.state ?? null, city: addrRow?.city ?? null },
       coords: { lat: dropLat, lon: dropLon },
       reverseGeocoded: geo.reverseGeocoded,
       used: geo.source,

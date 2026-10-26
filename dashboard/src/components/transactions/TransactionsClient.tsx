@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Download } from "lucide-react";
+import { Download, Loader2 } from "lucide-react";
 import { ExportTransactionsSheet } from "@/components/transactions/ExportTransactionsSheet";
 import { TablePagination } from "@/components/riders/TablePagination";
 import { usePermissions } from "@/hooks/usePermissions";
@@ -207,7 +207,15 @@ export function TransactionsClient() {
                 Export
               </button>
             ) : null}
-            <button type="button" onClick={() => query.refetch()} className="inline-flex h-9 items-center rounded-lg bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700">Refresh</button>
+            <button
+              type="button"
+              onClick={() => void query.refetch()}
+              disabled={query.isFetching}
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-80"
+            >
+              {query.isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
+              Refresh
+            </button>
           </div>
         </div>
 

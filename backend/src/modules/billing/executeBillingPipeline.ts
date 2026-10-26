@@ -337,7 +337,7 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
   function runChargeBatch(batch: RuleRow[]): void {
     for (const rule of batch) {
       // Self-pickup waives ALL delivery-class charges (rule-driven or fallback).
-      if (rule.type === "DELIVERY" && ctx.isSelfPickup) continue;
+      if (rule.type === "DELIVERY" && (ctx.isSelfPickup || ctx.deliveryFeeChargeEnabled === false)) continue;
       if (rule.type === "DELIVERY" && state.deliveryFee > 0) continue;
       if (rule.type === "DONATION") continue;
       if (rule.type === "RIDER_TIP") continue;
@@ -364,13 +364,14 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
   runChargeBatch(chargeRules);
 
   /**
-   * When delivery_fee is still zero:
-   * slabs-v2 → geo → rate card → legacy per-km → env default max(base, per_km×km).
-   * Runs even if a DELIVERY rule "applied" with ₹0 so we never silently skip delivery.
-   * For self-pickup we short-circuit: the customer is collecting from the store,
-   * so the delivery cost has to be exactly ₹0 regardless of fallback sources.
+   * Fill a zero delivery result only when an active DELIVERY rule is in this bill.
+   * Super Admin deactivating that row removes it from the dataset. The route quote
+   * must not be charged on its own, or Inactive in the engine order still bills the fee.
    */
-  if (state.deliveryFee <= 0 && !ctx.isSelfPickup) {
+  const deliveryRuleActive = dataset.rules.some((r) => r.type === "DELIVERY");
+  const mayChargeDelivery =
+    deliveryRuleActive && !ctx.isSelfPickup && ctx.deliveryFeeChargeEnabled !== false;
+  if (state.deliveryFee <= 0 && mayChargeDelivery) {
     const fromSlabsRaw = ctx.deliveryFeeFromSlabsGeoV2;
     const fromSlabs =
       fromSlabsRaw != null && Number.isFinite(fromSlabsRaw) && fromSlabsRaw > 0 ? round2(fromSlabsRaw) : 0;
@@ -458,6 +459,7 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
 
   const minDel = ctx.deliveryMinimumInr;
   if (
+    mayChargeDelivery &&
     minDel != null &&
     minDel > 0 &&
     ctx.distanceKm != null &&
@@ -651,6 +653,8 @@ export function executeBillingPipeline(ctx: BillContext, dataset: BillingDataset
     tax_total: state.taxTotal,
     tip_amount: round2(ctx.tipAmount),
     donation_amount: round2(ctx.donationAmount),
+    tip_enabled: dataset.rules.some((r) => r.type === "RIDER_TIP" && !disabled.has(r.id)),
+    donation_enabled: dataset.rules.some((r) => r.type === "DONATION" && !disabled.has(r.id)),
     final_amount: Math.max(0, finalAmount),
     items_net_after_discounts: round2(Math.max(0, rem.items)),
     taxes_by_group: taxesByGroup,

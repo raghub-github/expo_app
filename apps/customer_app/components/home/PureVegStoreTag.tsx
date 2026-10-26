@@ -19,6 +19,18 @@ export function PureVegStoreTag({ compact = false }: Props) {
   );
 }
 
+/** Compact green pill for store cards and the store page. */
+export function PureVegPill() {
+  return (
+    <View style={styles.pill}>
+      <Ionicons name="leaf" size={11} color="#15803D" />
+      <AppText style={styles.pillText} numberOfLines={1}>
+        Pure Veg
+      </AppText>
+    </View>
+  );
+}
+
 export function PureVegCardFooter() {
   return (
     <View style={styles.footer}>
@@ -76,5 +88,22 @@ const styles = StyleSheet.create({
   textCompact: {
     fontSize: 11,
     fontWeight: "700",
+  },
+  pill: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: "#DCFCE7",
+  },
+  pillText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#15803D",
+    letterSpacing: 0.1,
   },
 });

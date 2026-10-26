@@ -4,9 +4,9 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { getCustomerDashboardStats } from "@/lib/db/operations/customer-stats";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getUserPermissions, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { logAPICall } from "@/lib/auth/activity-tracker";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 
@@ -18,32 +18,29 @@ export const runtime = 'nodejs';
  */
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
+    }
+    const { user } = auth;
 
-    if (userError || !user) {
+    const perms = await getUserPermissions(user.id, user.email ?? "");
+    if (!perms) {
       return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
+        {
+          success: false,
+          error: "Service temporarily unavailable",
+          code: "SERVICE_UNAVAILABLE",
+        },
+        { status: 503 }
       );
     }
-
-    // Customer and Analytics dashboards both consume these aggregate statistics.
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
     const [hasCustomerAccess, hasAnalyticsAccess] = await Promise.all([
-      hasDashboardAccessByAuth(
-        user.id,
-        user.email ?? "",
-        "CUSTOMER"
-      ),
-      hasDashboardAccessByAuth(
-        user.id,
-        user.email ?? "",
-        "ANALYTICS"
-      ),
+      hasDashboardAccessByAuth(user.id, user.email ?? "", "CUSTOMER"),
+      hasDashboardAccessByAuth(user.id, user.email ?? "", "ANALYTICS"),
     ]);
 
-    if (!userIsSuperAdmin && !hasCustomerAccess && !hasAnalyticsAccess) {
+    if (!perms.isSuperAdmin && !hasCustomerAccess && !hasAnalyticsAccess) {
       return NextResponse.json(
         { success: false, error: "Insufficient permissions. You need access to the Customer or Analytics dashboard." },
         { status: 403 }
@@ -62,7 +59,9 @@ export async function GET(request: NextRequest) {
     };
 
     // Get system user ID
-    const systemUser = await getSystemUserByEmail(user.email ?? "");
+    const systemUser = perms.systemUserId
+      ? { id: perms.systemUserId }
+      : await getSystemUserByEmail(user.email ?? "");
     if (!systemUser) {
       return NextResponse.json(
         { success: false, error: "User not found in system" },

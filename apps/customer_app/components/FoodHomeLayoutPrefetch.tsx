@@ -17,13 +17,13 @@ import {
 import { extractCustomerGeoHints } from "@/lib/customer-geo-hints";
 import { prefetchGridFirstHeroMedia } from "@/lib/prefetchGridFirstHeroMedia";
 import { prefetchMealsUnder250HeroMedia } from "@/lib/prefetchMealsUnder250HeroMedia";
-import { prefetchMerchantCardImages } from "@/lib/imageEngine";
+import { prefetchFoodHomeVisibleImages, prefetchMerchantCardImages } from "@/lib/imageEngine";
 import { prefetchMerchantBanners } from "@/lib/prefetchMerchantBanners";
 import { seedFeaturedOffersHomeQueryIfCached } from "@/lib/featuredOffersHomeCache";
 import { normalizeOfferLocationParams } from "@/lib/featuredOfferGeo";
 
 /** Debounce only network refresh after lastKnown → reconcile — never block sync paint. */
-const LOCATION_SETTLE_MS = 500;
+const LOCATION_SETTLE_MS = 0;
 
 /**
  * Warm food-home layout + nearby merchants AND their imagery as soon as location is
@@ -101,8 +101,7 @@ export function FoodHomeLayoutPrefetch() {
     seedMerchantsListQueryIfCached(queryClient, lat, lng, false, "GROCERY");
     const syncFood = readSyncMerchantsList(lat, lng, vegOnly) ?? readSyncMerchantsList(lat, lng, false);
     if (syncFood?.length) {
-      prefetchMerchantCardImages(syncFood);
-      prefetchMerchantBanners(syncFood);
+      prefetchFoodHomeVisibleImages(syncFood);
     }
     const syncGrocery = readSyncMerchantsList(lat, lng, false, "GROCERY");
     if (syncGrocery?.length) {
@@ -121,8 +120,7 @@ export function FoodHomeLayoutPrefetch() {
         if (cancelled) return;
         const list = readSyncMerchantsList(lat, lng, vegOnly) ?? readSyncMerchantsList(lat, lng, false);
         if (list?.length) {
-          prefetchMerchantCardImages(list);
-          prefetchMerchantBanners(list);
+          prefetchFoodHomeVisibleImages(list);
         }
         const grocery = readSyncMerchantsList(lat, lng, false, "GROCERY");
         if (grocery?.length) {

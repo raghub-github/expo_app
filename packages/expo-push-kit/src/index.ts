@@ -17,6 +17,11 @@ export {
 } from "./listeners";
 
 export {
+  previousTokenToRetire,
+  customerAnnouncementForegroundDecision,
+} from "./tokenRotation";
+
+export {
   registerExpoPushTokenOnBackend,
   unregisterPushTokenOnBackend,
   type RegisterPushBody,

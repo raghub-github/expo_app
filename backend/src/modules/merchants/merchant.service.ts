@@ -113,8 +113,8 @@ async function applyCanonicalCustomerMenuPrices<
   return items;
 }
 
-const DEFAULT_LIMIT = 20;
-const MAX_LIMIT = 50;
+const DEFAULT_LIMIT = 80;
+const MAX_LIMIT = 100;
 const SEARCH_LIMIT = 30;
 /**
  * Non-negotiable upper bound (air/straight-line km). A store is shown when the user is within

@@ -44,7 +44,9 @@ const ORIGINAL_MAX_BYTES = 15 * 1024 * 1024; // cap the original we pull into sh
 const DERIVATIVE_CACHE_CONTROL = "public, max-age=604800, immutable"; // 7d; keys change on re-upload
 // Cold (cache-miss) resizes are CPU/RAM heavy. Cap concurrency; over the cap we
 // degrade gracefully to the original instead of queueing/OOMing.
-const MAX_CONCURRENT_COLD_RESIZE = 4;
+const MAX_CONCURRENT_COLD_RESIZE = 6;
+/** Prefer a small WebP over the multi-MB original when sharp finishes quickly. */
+const FAST_DERIVATIVE_WAIT_MS = 900;
 let coldResizeInFlight = 0;
 // Collapse a burst of identical first-hits into one generate.
 const generateInFlight = new Map<string, Promise<void>>();
@@ -212,26 +214,35 @@ export async function attachmentsRoutes(app: FastifyInstance) {
           return reply.header("Cache-Control", DERIVATIVE_CACHE_CONTROL).redirect(url, 302);
         }
 
-        // 2) Cold miss — generate once (coalesced), bounded concurrency.
+        // 2) Cold miss — start sharp, but wait briefly for the small file.
+        // A ~20 KB WebP paints the card; falling straight through to the
+        // 1–4 MB original is what left banners blank for seconds.
         let gen = generateInFlight.get(derivativeKey);
-        if (!gen) {
-          if (coldResizeInFlight >= MAX_CONCURRENT_COLD_RESIZE) {
-            // Too busy to resize right now — serve the original so the user is
-            // never blocked. The derivative will be built on a later request.
-            return fallbackToOriginal();
-          }
+        if (!gen && coldResizeInFlight < MAX_CONCURRENT_COLD_RESIZE) {
           coldResizeInFlight += 1;
           gen = generateDerivative({ originalKey: decodedKey, derivativeKey, width, quality, fmt })
+            .catch((err) => {
+              req.log.warn({ err, derivativeKey }, "attachments/proxy background resize failed");
+            })
             .finally(() => {
               coldResizeInFlight -= 1;
               generateInFlight.delete(derivativeKey);
             });
           generateInFlight.set(derivativeKey, gen);
         }
-        await gen;
-
-        const url = await derivativeRedirectUrl(derivativeKey);
-        return reply.header("Cache-Control", DERIVATIVE_CACHE_CONTROL).redirect(url, 302);
+        if (gen) {
+          const ready = await Promise.race([
+            gen.then(() => true, () => false),
+            new Promise<boolean>((resolve) => {
+              setTimeout(() => resolve(false), FAST_DERIVATIVE_WAIT_MS);
+            }),
+          ]);
+          if (ready && (await objectExists(derivativeKey))) {
+            const url = await derivativeRedirectUrl(derivativeKey);
+            return reply.header("Cache-Control", DERIVATIVE_CACHE_CONTROL).redirect(url, 302);
+          }
+        }
+        return fallbackToOriginal();
       } catch (e) {
         // sharp missing / decode failure / R2 hiccup → original, never broken.
         req.log.warn({ err: e, derivativeKey }, "attachments/proxy resize fell back to original");

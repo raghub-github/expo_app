@@ -1,19 +1,35 @@
 import * as Location from "expo-location";
+import { withTimeout } from "./coords";
 import type { DeviceLocationReadiness, LocationPermissionStatus } from "./types";
+
+const READINESS_TTL_MS = 5_000;
+const SERVICES_CHECK_MS = 400;
+let readinessCache: { at: number; value: DeviceLocationReadiness } | null = null;
+
+function mapPermissionStatus(status: string): LocationPermissionStatus {
+  return status === "granted" ? "granted" : status === "denied" ? "denied" : "undetermined";
+}
 
 /** App foreground permission + device GPS/location toggle. */
 export async function getDeviceLocationReadiness(): Promise<DeviceLocationReadiness> {
-  const [{ status }, servicesEnabled] = await Promise.all([
-    Location.getForegroundPermissionsAsync(),
-    Location.hasServicesEnabledAsync(),
-  ]);
-  const permissionStatus: LocationPermissionStatus =
-    status === "granted" ? "granted" : status === "denied" ? "denied" : "undetermined";
-  return {
+  if (readinessCache && Date.now() - readinessCache.at < READINESS_TTL_MS) {
+    return readinessCache.value;
+  }
+  const perm = await withTimeout(Location.getForegroundPermissionsAsync(), 300);
+  const permissionStatus = mapPermissionStatus(perm.status);
+  let servicesEnabled = readinessCache?.value.servicesEnabled ?? permissionStatus === "granted";
+  try {
+    servicesEnabled = await withTimeout(Location.hasServicesEnabledAsync(), SERVICES_CHECK_MS);
+  } catch {
+    // Android can stall here — reuse last known / assume on if permission is granted.
+  }
+  const value: DeviceLocationReadiness = {
     permissionStatus,
     servicesEnabled,
     isReady: permissionStatus === "granted" && servicesEnabled,
   };
+  readinessCache = { at: Date.now(), value };
+  return value;
 }
 
 /**

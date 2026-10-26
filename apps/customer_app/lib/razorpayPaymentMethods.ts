@@ -13,6 +13,8 @@ export type CheckoutPayMethodItem = {
   logoKey: string;
   upiApp?: string;
   wallet?: string;
+  /** Present when Razorpay enabled QR or UPI ID (collect) on this account. */
+  upiFlow?: "qr" | "collect";
 };
 
 export type CheckoutPayMethodSection = {
@@ -61,6 +63,8 @@ export const FALLBACK_PAY_METHODS: CheckoutPayMethodsResponse = {
       items: [
         { id: "upi:bhim", label: "BHIM UPI", method: "upi", action: "pay", logoKey: "bhim", upiApp: "bhim" },
         { id: "upi:amazon_pay", label: "Amazon Pay UPI", method: "upi", action: "pay", logoKey: "amazonpay", upiApp: "amazon_pay" },
+        { id: "upi:qr", label: "Pay via QR Code", method: "upi", action: "pay", logoKey: "qr", upiFlow: "qr" },
+        { id: "upi:collect", label: "Pay via UPI ID", method: "upi", action: "pay", logoKey: "upi_id", upiFlow: "collect" },
       ],
     },
     {
@@ -92,6 +96,7 @@ export function toRazorpayCheckoutMethod(item: CheckoutPayMethodItem): {
   method: CheckoutPayGatewayMethod;
   upiApp?: string;
   wallet?: string;
+  upiFlow?: "qr" | "collect";
 } {
   const method = RAZORPAY_METHOD_MAP[item.method] ?? "upi";
   if (method === "wallet" && item.wallet) {
@@ -107,5 +112,7 @@ export function payInstrumentShortLabel(item: CheckoutPayMethodItem): string {
   const raw = item.label.replace(/\s+UPI$/i, "").trim();
   if (item.method === "card") return "Card";
   if (item.method === "netbanking") return "Netbanking";
+  if (item.upiFlow === "qr") return "QR";
+  if (item.upiFlow === "collect") return "UPI ID";
   return raw || "UPI";
 }

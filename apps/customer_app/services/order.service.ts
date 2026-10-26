@@ -253,7 +253,8 @@ export type CreateOrderPayload = {
   merchantId: string;
   merchantParentId?: string | number;
   items: CreateOrderItem[];
-  addressId: string;
+  /** Required for delivery. Omit for takeaway / self-pickup. */
+  addressId?: string | null;
   paymentMethod: string;
   tipAmount?: number;
   donationAmount?: number;

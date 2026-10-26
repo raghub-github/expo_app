@@ -225,6 +225,8 @@ export async function pushRoutes(app: FastifyInstance) {
           native_push_token,
           native_token_type,
           store_id,
+          previous_expo_push_token,
+          previous_native_push_token,
         } = parsed.data;
         const userId = req.auth!.sub;
         const db = getDb();
@@ -279,6 +281,18 @@ export async function pushRoutes(app: FastifyInstance) {
                 ...(timezone ? { timezone } : {}),
               },
             });
+          const previousExpo = previous_expo_push_token?.trim() || "";
+          if (previousExpo && previousExpo !== expoToken) {
+            await db
+              .delete(expoPushTokens)
+              .where(
+                and(
+                  eq(expoPushTokens.expoPushToken, previousExpo),
+                  eq(expoPushTokens.userId, userId),
+                  eq(expoPushTokens.role, role),
+                ),
+              );
+          }
         }
 
         let topics: string[] = [];
@@ -366,7 +380,23 @@ export async function pushRoutes(app: FastifyInstance) {
               });
 
             // Do not delete other devices that share a model name.
-            // Token rotation for this installation is the ON CONFLICT update above.
+            // This installation's previous token is retired only when the client names it.
+            const previousNative = previous_native_push_token?.trim() || "";
+            if (
+              previousNative &&
+              previousNative !== nativeToken &&
+              !isExpoPushTokenString(previousNative)
+            ) {
+              await db
+                .delete(nativeDevicePushTokens)
+                .where(
+                  and(
+                    eq(nativeDevicePushTokens.nativeToken, previousNative),
+                    eq(nativeDevicePushTokens.userId, userId),
+                    eq(nativeDevicePushTokens.role, role),
+                  ),
+                );
+            }
           }
         }
 
@@ -429,6 +459,7 @@ export async function pushRoutes(app: FastifyInstance) {
           role,
           expoToken: expo,
           nativeToken: native,
+          deviceOnly: true,
           log: req.log,
         });
 

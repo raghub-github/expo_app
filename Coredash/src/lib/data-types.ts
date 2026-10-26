@@ -187,7 +187,7 @@ export type OrdersData = {
   byStatus: Array<{ status: string; orders: number }>;
   byType: Array<{ type: string; orders: number; delivered: number; gmv: number }>;
   trend: Array<{ day: string; orders: number; delivered: number; cancelled: number; gmv: number }>;
-  hourly: Array<{ hour: number; orders: number }>;
+  hourly: Array<{ hour: number; orders: number; delivered: number; cancelled: number; gmv: number }>;
   paymentMix: Array<{ method: string; orders: number; amount: number }>;
   topStores: Array<{ name: string; orders: number; gmv: number }>;
   recent: Array<{

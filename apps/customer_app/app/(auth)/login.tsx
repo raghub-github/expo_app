@@ -1,6 +1,6 @@
 /**
  * GatiMitra OTP Login – splash-teal reference layout.
- * Compact top-left wave, 10px controls, idle Dawao nudge after valid number.
+ * Flat header (no wave), 10px controls, idle Dawao nudge after valid number.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -11,18 +11,16 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Keyboard,
+  KeyboardAvoidingView,
   Platform,
   StyleSheet,
   ScrollView,
   Modal,
   FlatList,
   Pressable,
-  Dimensions,
-  type KeyboardEvent,
+  useWindowDimensions,
 } from "react-native";
-import Svg, { Path } from "react-native-svg";
 import Animated, {
-  Easing,
   cancelAnimation,
   useAnimatedStyle,
   useSharedValue,
@@ -41,6 +39,8 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { setRuntimeApiBaseUrl, getConfig } from "@/config/env";
+import { useKeyboardBottomInset } from "@/hooks/useKeyboardBottomInset";
+import { armSmsOtpCapture } from "@/lib/androidSmsOtpRetriever";
 
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
 
@@ -50,7 +50,6 @@ const TITLE_DARK = "#111827";
 const TEXT_ON_TEAL = "#FFFFFF";
 const TEXT_MUTED_ON_DARK = "#9CA3AF";
 const DIVIDER_ON_DARK = "rgba(255,255,255,0.28)";
-const BRAND_YELLOW = "#F5C518";
 const APPLE_ORANGE = "#FF9500";
 const PLACEHOLDER_GRAY = "#9CA3AF";
 const BORDER_INPUT = "#E5E7EB";
@@ -61,45 +60,9 @@ const BTN_DEFAULT = "Aao Ji, Login Karo 🤏";
 const BTN_NUDGE = "Dawaooo jiiii 🤏";
 const IDLE_NUDGE_MS = 4000;
 
-const { width: SCREEN_W } = Dimensions.get("window");
-/** Top-left wave — tall left edge so brand + slogan stay inside. */
-const WAVE_W = Math.round(SCREEN_W * 0.64);
-const WAVE_H = 112;
 const SUBTEXT_DARK_BLUE = "#1E3A8A";
 const BTN_INACTIVE_BG = "#9CA3AF";
 const BTN_ACTIVE_TEXT = "#111827";
-const FOOTER_DARK = "#0F172A";
-
-/** Rapido-style wave: tall flush left (-3px left height), sharper right tip. */
-function ReferenceWaveHeader({ width, height }: { width: number; height: number }) {
-  const w = width;
-  const h = height;
-  const leftEdgeY = h * 0.9 - 3;
-  const d = [
-    `M0 0`,
-    `H${w}`,
-    `V${h * 0.02}`,
-    // Sharper pointed tip near top-right (status bar edge)
-    `C${w * 0.985} ${h * 0.03} ${w * 0.95} ${h * 0.05} ${w * 0.88} ${h * 0.12}`,
-    `C${w * 0.78} ${h * 0.24} ${w * 0.66} ${h * 0.42} ${w * 0.5} ${h * 0.62}`,
-    `C${w * 0.36} ${h * 0.78} ${w * 0.2} ${h * 0.92} ${w * 0.08} ${h * 0.96}`,
-    `C${w * 0.03} ${h * 0.98} ${w * 0.01} ${h * 0.96} 0 ${leftEdgeY}`,
-    `L0 0`,
-    `Z`,
-  ].join(" ");
-  return (
-    <Svg
-      width={w}
-      height={h}
-      viewBox={`0 0 ${w} ${h}`}
-      style={StyleSheet.absoluteFill}
-      pointerEvents="none"
-    >
-      <Path d={d} fill={DARK_SURFACE} />
-    </Svg>
-  );
-}
-
 function formatPhoneDisplay(digits: string): string {
   return digits;
 }
@@ -110,6 +73,9 @@ function phoneDisplayMaxLength(_countryCode: string, maxDigits: number): number 
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
+  const { width: screenW, height: screenH } = useWindowDimensions();
+  const compact = screenH < 700 || screenW < 360;
+  const padH = Math.max(20, Math.min(32, Math.round(screenW * 0.07)));
   const router = useRouter();
   const scrollRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
@@ -129,39 +95,17 @@ export default function LoginScreen() {
   const [showIdleNudge, setShowIdleNudge] = useState(false);
   const pressedBeforeNudgeRef = useRef(false);
   const nudgeScale = useSharedValue(1);
-  const formShiftY = useSharedValue(0);
-
-  const waveH = WAVE_H + Math.max(insets.top, 0);
-  const logoBlockHeight = waveH + 4;
-
+  const keyboardInset = useKeyboardBottomInset();
   useEffect(() => {
     const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const ease = Easing.bezier(0.22, 1, 0.36, 1);
-    const subShow = Keyboard.addListener(showEvt, (event: KeyboardEvent) => {
-      setKeyboardVisible(true);
-      const kbH = event.endCoordinates?.height ?? 0;
-      // Match OS keyboard timing; small lift only — no padding jumps (those feel sticky).
-      const duration =
-        Platform.OS === "ios" && typeof event.duration === "number" && event.duration > 0
-          ? event.duration
-          : 220;
-      const lift = Math.min(48, Math.max(24, Math.round(kbH * 0.08)));
-      formShiftY.value = withTiming(-lift, { duration, easing: ease });
-    });
-    const subHide = Keyboard.addListener(hideEvt, (event: KeyboardEvent) => {
-      const duration =
-        Platform.OS === "ios" && typeof event.duration === "number" && event.duration > 0
-          ? event.duration
-          : 200;
-      formShiftY.value = withTiming(0, { duration, easing: ease });
-      setKeyboardVisible(false);
-    });
+    const subShow = Keyboard.addListener(showEvt, () => setKeyboardVisible(true));
+    const subHide = Keyboard.addListener(hideEvt, () => setKeyboardVisible(false));
     return () => {
       subShow.remove();
       subHide.remove();
     };
-  }, [formShiftY]);
+  }, []);
 
   const openApiUrlModal = () => {
     setApiUrlInput(currentApiUrl);
@@ -255,14 +199,23 @@ export default function LoginScreen() {
     transform: [{ scale: nudgeScale.value }],
   }));
 
-  const formLiftStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: formShiftY.value }],
-  }));
-
   const handlePhoneChange = (raw: string) => {
     const digits = raw.replace(/\D/g, "").slice(0, maxPhoneLen);
     setPhone(digits);
     if (error) setError("");
+  };
+
+  const focusPhoneInput = () => {
+    if (loading) return;
+    const node = inputRef.current;
+    if (!node) return;
+    node.focus();
+    if (Platform.OS === "android") {
+      const State = (
+        TextInput as unknown as { State?: { focusTextInput?: (n: unknown) => void } }
+      ).State;
+      State?.focusTextInput?.(node);
+    }
   };
 
   const handleSendOtp = async () => {
@@ -285,11 +238,19 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       const phoneE164 = `${selectedCountry.dialCode}${digits}`;
-      await authService.sendOtp({ phoneE164 });
+      void armSmsOtpCapture();
+      const sendPromise = authService.sendOtp({ phoneE164 });
+      // SMS can arrive before the send HTTP call finishes. Never block the
+      // OTP screen on permission dialogs or a hung send.
+      await Promise.race([
+        sendPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, 4000)),
+      ]);
       router.replace({
         pathname: "/(auth)/otp",
         params: { phoneE164 },
       });
+      void sendPromise.catch(() => undefined);
     } catch (e: unknown) {
       const ax = e as {
         response?: { data?: { message?: string }; status?: number };
@@ -325,49 +286,49 @@ export default function LoginScreen() {
   };
 
   return (
-    <View style={styles.screen}>
-      <StatusBar style="light" translucent backgroundColor="transparent" />
+    <KeyboardAvoidingView
+      style={styles.screen}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
+      <StatusBar style="dark" translucent backgroundColor="transparent" />
 
-      <View style={[styles.logoHeader, { width: WAVE_W + 2, height: waveH + 2, left: -1, top: -1 }]} pointerEvents="none">
-        <ReferenceWaveHeader width={WAVE_W + 2} height={waveH + 2} />
-        <View style={[styles.logoRow, { paddingTop: Math.max(insets.top, 8) + 10 }]}>
-          <View style={styles.logoTextCol}>
-            <View style={styles.brandNameRow}>
-              <AppText style={styles.brandGati} bold>
-                Gati
-              </AppText>
-              <AppText style={styles.brandMitra} bold>
-                Mitra
-              </AppText>
-            </View>
-            <AppText style={styles.brandTagline} bold>
-              MOVING PEOPLE CLOSER
-            </AppText>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.flex}>
+      <View style={[styles.flex, keyboardInset > 0 ? { paddingBottom: keyboardInset } : null]}>
         <ScrollView
           ref={scrollRef}
           contentContainerStyle={[
             styles.scrollContent,
             {
-              paddingTop: logoBlockHeight + 28,
-              paddingBottom: Math.max(insets.bottom, 16) + 20,
+              paddingTop: Math.max(insets.top, 12) + (compact ? 28 : 48),
+              paddingHorizontal: padH,
+              paddingBottom: 16,
             },
           ]}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="always"
+          keyboardDismissMode="none"
           showsVerticalScrollIndicator={false}
           bounces={false}
         >
-          <Animated.View style={[styles.mainBlock, formLiftStyle]}>
-            <AppText style={styles.title} bold>
-              {"Let's Get You\nOn The Move !"}
+              <Animated.View style={[styles.mainBlock, compact && styles.mainBlockCompact]}>
+            <View style={styles.brandCenter}>
+              <AppText style={styles.brandWord} bold>
+                GatiMitra
+              </AppText>
+              <AppText style={styles.brandTagline} bold>
+                MOVING PEOPLE CLOSER
+              </AppText>
+            </View>
+
+            <AppText
+              style={styles.title}
+              bold
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.78}
+            >
+              Let's Get You On The Move !
             </AppText>
 
-            <AppText style={styles.subtitle} bold>
+            <AppText style={[styles.subtitle, compact && styles.subtitleCompact]} bold>
               {
                 "Your wallet balance will be linked to this number. Don't worry, we will never make it public."
               }
@@ -380,43 +341,54 @@ export default function LoginScreen() {
                   inputFocused && styles.inputRowFocused,
                   isPhoneValid && styles.inputRowValid,
                 ]}
-                onPress={() => {
-                  if (!loading) inputRef.current?.focus();
-                }}
+                onPress={focusPhoneInput}
+                onPressIn={focusPhoneInput}
+                delayPressIn={0}
                 disabled={loading}
                 accessibilityRole="none"
               >
-                <TouchableOpacity
-                  style={styles.countryTrigger}
-                  onPress={() => setCountryPickerVisible(true)}
-                  activeOpacity={0.8}
-                  disabled={loading}
-                >
-                  <Text style={styles.flagEmoji} allowFontScaling={false}>
-                    {selectedCountry.flag}
-                  </Text>
-                  <Text style={styles.countryCode} allowFontScaling={false}>
-                    {selectedCountry.dialCode}
-                  </Text>
-                  <Ionicons name="chevron-down" size={14} color={TEXT_MUTED_ON_DARK} />
-                </TouchableOpacity>
-                <View style={styles.inputDivider} pointerEvents="none" />
                 <TextInput
                   ref={inputRef}
                   style={[styles.input, styles.inputNoOutline]}
                   placeholder="Enter mobile no."
                   placeholderTextColor={PLACEHOLDER_GRAY}
                   keyboardType="phone-pad"
+                  showSoftInputOnFocus
                   maxLength={phoneInputMaxLen}
                   value={phoneDisplay}
                   onChangeText={handlePhoneChange}
                   onFocus={() => setInputFocused(true)}
                   onBlur={() => setInputFocused(false)}
+                  onPressIn={focusPhoneInput}
+                  returnKeyType="send"
+                  blurOnSubmit
+                  onSubmitEditing={() => {
+                    void handleSendOtp();
+                  }}
                   editable={!loading}
                   underlineColorAndroid="transparent"
                   selectionColor={BG_SPLASH}
                   allowFontScaling={false}
                 />
+                <View style={styles.countryOverlay} pointerEvents="box-none">
+                  <TouchableOpacity
+                    style={styles.countryTrigger}
+                    onPress={() => setCountryPickerVisible(true)}
+                    activeOpacity={0.8}
+                    disabled={loading}
+                    delayPressIn={0}
+                    hitSlop={4}
+                  >
+                    <Text style={styles.flagEmoji} allowFontScaling={false}>
+                      {selectedCountry.flag}
+                    </Text>
+                    <Text style={styles.countryCode} allowFontScaling={false}>
+                      {selectedCountry.dialCode}
+                    </Text>
+                    <Ionicons name="chevron-down" size={14} color={TEXT_MUTED_ON_DARK} />
+                  </TouchableOpacity>
+                  <View style={styles.inputDivider} pointerEvents="none" />
+                </View>
               </Pressable>
               {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
               {__DEV__ && showApiConfig ? (
@@ -457,25 +429,36 @@ export default function LoginScreen() {
             </Animated.View>
           </Animated.View>
 
-          <View style={[styles.footer, keyboardVisible && styles.footerKeyboard]}>
-            <View style={styles.footerRuleRow}>
-              <View style={styles.footerRule} />
-              <AppText style={styles.footerLine} bold>
-                {"By clicking 'Login', you accept our"}
-              </AppText>
-              <View style={styles.footerRule} />
-            </View>
-            <Pressable
-              onPress={() => router.push("/legal/privacy-policy" as never)}
-              hitSlop={8}
-              accessibilityRole="link"
-            >
-              <AppText style={styles.footerLink} bold>
-                Privacy policy
-              </AppText>
-            </Pressable>
-          </View>
         </ScrollView>
+
+        <View
+          style={[
+            styles.footerDock,
+            {
+              paddingBottom:
+                keyboardVisible || keyboardInset > 0
+                  ? 8
+                  : Math.max(insets.bottom, 16) + 8,
+            },
+          ]}
+        >
+          <View style={styles.footerRuleRow}>
+            <View style={styles.footerRule} />
+            <AppText style={styles.footerLine} bold>
+              {"By clicking 'Login', you accept our"}
+            </AppText>
+            <View style={styles.footerRule} />
+          </View>
+          <Pressable
+            onPress={() => router.push("/legal/privacy-policy" as never)}
+            hitSlop={8}
+            accessibilityRole="link"
+          >
+            <AppText style={styles.footerLink} bold>
+              Privacy policy
+            </AppText>
+          </Pressable>
+        </View>
       </View>
 
       <Modal
@@ -588,7 +571,7 @@ export default function LoginScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -675,51 +658,28 @@ const styles = StyleSheet.create({
     backgroundColor: BG_SPLASH,
   },
   flex: { flex: 1 },
-  logoHeader: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    zIndex: 20,
-    overflow: "hidden",
+  brandCenter: {
+    alignItems: "center",
+    marginBottom: 32,
   },
-  logoRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    paddingLeft: 16,
-    paddingRight: 28,
-    zIndex: 1,
-  },
-  logoTextCol: {
-    justifyContent: "center",
-    maxWidth: WAVE_W * 0.72,
-  },
-  brandNameRow: {
-    flexDirection: "row",
-    alignItems: "baseline",
-  },
-  brandGati: {
-    fontSize: 22,
+  brandWord: {
+    fontSize: 42,
     fontFamily: StoreFonts.loraBold,
-    color: TEXT_ON_TEAL,
-    letterSpacing: 0.2,
-  },
-  brandMitra: {
-    fontSize: 22,
-    fontFamily: StoreFonts.loraBold,
-    color: BRAND_YELLOW,
-    letterSpacing: 0.2,
+    color: "#0E2A26",
+    letterSpacing: 0.4,
+    textAlign: "center",
   },
   brandTagline: {
-    marginTop: 3,
-    fontSize: 8,
+    marginTop: 5,
+    fontSize: 9,
     fontFamily: StoreFonts.loraBold,
-    color: TEXT_ON_TEAL,
-    letterSpacing: 1.2,
+    color: "#3F5B57",
+    letterSpacing: 2.4,
+    textAlign: "center",
   },
   scrollContent: {
     flexGrow: 1,
-    justifyContent: "space-between",
+    justifyContent: "flex-start",
     paddingHorizontal: 28,
   },
   mainBlock: {
@@ -727,18 +687,21 @@ const styles = StyleSheet.create({
     maxWidth: 400,
     alignSelf: "center",
     alignItems: "center",
-    flexGrow: 1,
     justifyContent: "flex-start",
-    paddingTop: 52,
+    paddingTop: 0,
+  },
+  mainBlockCompact: {
+    paddingTop: 0,
   },
   title: {
-    fontSize: 32,
+    fontSize: 22,
     fontFamily: StoreFonts.loraBold,
     color: TITLE_DARK,
     textAlign: "center",
-    lineHeight: 40,
-    letterSpacing: 0.2,
-    marginBottom: 14,
+    lineHeight: 28,
+    letterSpacing: 0.1,
+    marginBottom: 12,
+    width: "100%",
   },
   subtitle: {
     fontSize: 14,
@@ -749,20 +712,25 @@ const styles = StyleSheet.create({
     marginBottom: 48,
     paddingHorizontal: 8,
   },
+  subtitleCompact: {
+    marginBottom: 24,
+    fontSize: 13,
+    lineHeight: 19,
+  },
   fieldWrap: {
     width: "100%",
     marginBottom: 16,
   },
   inputRow: {
+    position: "relative",
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: DARK_SURFACE,
     borderRadius: CONTROL_RADIUS,
     borderWidth: 1.5,
     borderColor: "transparent",
-    paddingHorizontal: 6,
-    paddingVertical: 4,
     minHeight: 56,
+    overflow: "hidden",
   },
   inputRowFocused: {
     borderColor: "rgba(255,255,255,0.35)",
@@ -770,11 +738,18 @@ const styles = StyleSheet.create({
   inputRowValid: {
     borderColor: "rgba(255,255,255,0.22)",
   },
+  countryOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingLeft: 6,
+    zIndex: 2,
+  },
   countryTrigger: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 14,
     gap: 6,
   },
   flagEmoji: {
@@ -798,19 +773,19 @@ const styles = StyleSheet.create({
     marginRight: 4,
   },
   input: {
-    flex: 1,
-    paddingVertical: Platform.OS === "ios" ? 14 : 10,
-    paddingLeft: 8,
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+    paddingVertical: 0,
+    paddingLeft: 118,
     paddingRight: 18,
     fontSize: 18,
     fontFamily: StoreFonts.poppinsBold,
     letterSpacing: 1.1,
     color: TEXT_ON_TEAL,
     fontVariant: ["tabular-nums"],
-    minWidth: 0,
     borderWidth: 0,
     backgroundColor: "transparent",
-    ...(Platform.OS === "android" ? { includeFontPadding: false } : null),
+    ...(Platform.OS === "android" ? { includeFontPadding: false, textAlignVertical: "center" } : null),
   },
   inputFilled: {
     // Keep identical metrics so typing never swaps weight/family.
@@ -861,14 +836,11 @@ const styles = StyleSheet.create({
   buttonTextDisabled: {
     color: "rgba(17,24,39,0.45)",
   },
-  footer: {
-    marginTop: 28,
+  footerDock: {
     alignItems: "center",
-    paddingHorizontal: 8,
-  },
-  footerKeyboard: {
-    marginTop: 16,
-    opacity: 0.7,
+    paddingHorizontal: 28,
+    paddingTop: 8,
+    backgroundColor: BG_SPLASH,
   },
   footerRuleRow: {
     flexDirection: "row",

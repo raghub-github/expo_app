@@ -78,7 +78,17 @@ export type CoreSessionResult =
   | { ok: true; user: CoreUser }
   | { ok: false; status: 401 | 403 };
 
+const SESSION_CACHE_MS = 20_000;
+const sessionCache = new Map<string, { at: number; result: CoreSessionResult }>();
+
 export async function resolveCoreSession(): Promise<CoreSessionResult> {
+  const cookieStore = await cookies();
+  const accessUid = cookieStore.get(COREDASH_ACCESS_COOKIE)?.value ?? "";
+  if (accessUid) {
+    const cached = sessionCache.get(accessUid);
+    if (cached && Date.now() - cached.at < SESSION_CACHE_MS) return cached.result;
+  }
+
   const supabase = await createServerSupabaseClient();
   const {
     data: { user },
@@ -89,8 +99,6 @@ export async function resolveCoreSession(): Promise<CoreSessionResult> {
     return { ok: false, status: 401 };
   }
 
-  const cookieStore = await cookies();
-  const accessUid = cookieStore.get(COREDASH_ACCESS_COOKIE)?.value ?? "";
   if (accessUid !== user.id) {
     logAuthEvent("ACCESS_COOKIE_MISMATCH", {
       userId: user.id,
@@ -131,7 +139,7 @@ export async function resolveCoreSession(): Promise<CoreSessionResult> {
     return { ok: false, status: 403 };
   }
 
-  return {
+  const ok: CoreSessionResult = {
     ok: true,
     user: {
       authId: user.id,
@@ -142,6 +150,8 @@ export async function resolveCoreSession(): Promise<CoreSessionResult> {
       systemUserId: Number(row.id),
     },
   };
+  if (accessUid) sessionCache.set(accessUid, { at: Date.now(), result: ok });
+  return ok;
 }
 
 export async function getCurrentCoreUser(): Promise<CoreUser | null> {

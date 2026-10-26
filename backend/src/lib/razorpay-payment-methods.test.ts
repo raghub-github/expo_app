@@ -82,6 +82,22 @@ describe("mapRazorpayMethodsPayload", () => {
     assert.ok(ids.includes("recommended"));
   });
 
+  it("adds QR and UPI ID whenever Razorpay has UPI on", () => {
+    const mapped = mapRazorpayMethodsPayload({ upi: true, card: false }, false);
+    const other = mapped.sections.find((s) => s.id === "upi_other")?.items ?? [];
+    assert.deepEqual(
+      other.map((item) => item.id),
+      ["upi:qr", "upi:collect"]
+    );
+    assert.equal(other[0]?.upiFlow, "qr");
+    assert.equal(other[1]?.upiFlow, "collect");
+  });
+
+  it("does not add QR or UPI ID when UPI is off", () => {
+    const mapped = mapRazorpayMethodsPayload({ upi: false, card: true }, false);
+    assert.equal(mapped.sections.some((s) => s.id === "upi_other"), false);
+  });
+
   it("dummy catalog is explicit dummy mode only", () => {
     const dummy = defaultCheckoutPayMethods(true);
     assert.equal(dummy.dummy, true);

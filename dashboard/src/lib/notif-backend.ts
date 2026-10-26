@@ -121,14 +121,25 @@ export async function backendFetch(
   if (requestBody != null && requestBody !== "" && !headers["Content-Type"] && !headers["content-type"]) {
     headers["Content-Type"] = "application/json";
   }
-  try {
-    const res = await fetch(`${base}${path}`, {
+  const doFetch = () =>
+    fetch(`${base}${path}`, {
       ...init,
       method,
       body: requestBody,
       headers,
       cache: "no-store",
     });
+  try {
+    let res: Response;
+    try {
+      res = await doFetch();
+    } catch (firstErr) {
+      // One quick retry for GET only. A backend restart otherwise becomes a 503
+      // while the campaigns page is polling, and POST must not be sent twice.
+      if (method !== "GET") throw firstErr;
+      await new Promise((r) => setTimeout(r, 400));
+      res = await doFetch();
+    }
     const text = await res.text();
     let body: unknown;
     try {

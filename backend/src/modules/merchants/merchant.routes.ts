@@ -205,7 +205,7 @@ function mapCustomerMenuItem(
 }
 
 const querySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(50).optional().default(20),
+  limit: z.coerce.number().int().min(1).max(100).optional().default(80),
   offset: z.coerce.number().int().min(0).optional().default(0),
   lat: z.coerce.number().optional(),
   lng: z.coerce.number().optional(),
@@ -347,10 +347,11 @@ export async function merchantRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const q = request.query as z.infer<typeof querySchema>;
       const requestedStoreType = (q.storeType ?? "FOOD").toUpperCase();
-      const pageLimit = q.limit ?? 20;
-      // Over-fetch before store_type filter so FOOD/GROCERY pages stay full.
+      const pageLimit = q.limit ?? 80;
+      // Over-fetch before store_type filter so FOOD/GROCERY pages stay full
+      // (RPC is mixed-type; slicing too early dropped nearby restaurants).
       const fetchLimit =
-        requestedStoreType === "ALL" ? pageLimit : Math.min(50, Math.max(pageLimit * 3, pageLimit));
+        requestedStoreType === "ALL" ? pageLimit : Math.min(100, Math.max(pageLimit * 3, pageLimit));
       const { items: rawItems } = await listStores({
         limit: fetchLimit,
         offset: q.offset,

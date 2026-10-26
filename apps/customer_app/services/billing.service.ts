@@ -84,6 +84,19 @@ export type CalculateBillResponse = {
    * When `deliveryType` is self_pickup, `deliveryFee` is 0 but this shows what would have applied (for UI strikethrough).
    */
   deliveryFeeQuotedInr?: number | null;
+  /**
+   * List price of a fee Super Admin turned off. Checkout strikes this and shows ₹0.
+   * These amounts are not included in finalAmount.
+   */
+  inactiveFeeQuotes?: {
+    delivery?: number;
+    platform?: number;
+    packaging?: number;
+    surge?: number;
+    smallOrder?: number;
+    convenience?: number;
+    fee?: number;
+  };
   /** Delivery fee waived by subscription free-delivery benefit (for strikethrough UI). */
   deliveryFeeWaivedInr?: number | null;
   /** Membership delivery benefit applied on this bill (full or partial). */
@@ -113,6 +126,10 @@ export type CalculateBillResponse = {
   taxTotal: number;
   tipAmount: number;
   donationAmount: number;
+  /** Super Admin RIDER_TIP rule is on for this service. */
+  tipEnabled?: boolean;
+  /** Super Admin DONATION rule is on for this service. */
+  donationEnabled?: boolean;
   finalAmount: number;
   itemsNetAfterDiscounts: number;
   taxesByGroup: Record<string, number>;
@@ -268,6 +285,15 @@ export type CheckoutOffersResponse = {
 };
 
 export const billingService = {
+  /** Super Admin bumps this when a fee or tax is enabled or disabled. */
+  async getRulesetVersion(): Promise<number> {
+    const { data } = await api.get<{ version: number }>(`${BILLING_PREFIX}/ruleset-version`, {
+      timeout: 4000,
+    });
+    const version = Number(data?.version);
+    return Number.isFinite(version) ? version : 0;
+  },
+
   async calculateBill(
     payload: CalculateBillPayload,
     options?: { signal?: AbortSignal }
@@ -281,7 +307,9 @@ export const billingService = {
 
   async getCheckoutOffers(params: {
     merchantId: string;
-    addressId: string;
+    addressId?: string | null;
+    dropLat?: number | null;
+    dropLon?: number | null;
     cartSubtotal: number;
     serviceType?: "FOOD" | "GROCERY" | "PARCEL" | "RIDE" | "ALL";
     userSegment?: "NEW" | "EXISTING" | "ALL";
@@ -295,7 +323,13 @@ export const billingService = {
     const { data } = await api.get<CheckoutOffersResponse>(`${BILLING_PREFIX}/checkout-offers`, {
       params: {
         merchantId: params.merchantId,
-        addressId: params.addressId,
+        ...(params.addressId ? { addressId: params.addressId } : {}),
+        ...(params.addressId
+          ? {}
+          : {
+              ...(params.dropLat != null ? { dropLat: params.dropLat } : {}),
+              ...(params.dropLon != null ? { dropLon: params.dropLon } : {}),
+            }),
         cartSubtotal: params.cartSubtotal,
         ...(params.serviceType != null ? { serviceType: params.serviceType } : {}),
         ...(params.userSegment != null ? { userSegment: params.userSegment } : {}),

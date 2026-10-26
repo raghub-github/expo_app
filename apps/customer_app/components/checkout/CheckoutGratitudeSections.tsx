@@ -38,6 +38,10 @@ export type CheckoutGratitudeSectionsProps = {
   donationScope?: DonationScope;
   /** Checkout: feeding first. Bill sheet: tip first. */
   sectionOrder?: "tip-first" | "feeding-first";
+  /** Super Admin RIDER_TIP rule is on. Hidden when false. */
+  showTip?: boolean;
+  /** Super Admin DONATION rule is on. Hidden when false. */
+  showDonation?: boolean;
 };
 
 function GratitudeDivider({ dark }: { dark: boolean }) {
@@ -67,6 +71,8 @@ export function CheckoutGratitudeSections({
   onDonateEveryOrderPress,
   donationScope = "every_order",
   sectionOrder = "feeding-first",
+  showTip = true,
+  showDonation = true,
 }: CheckoutGratitudeSectionsProps) {
   const dark = useMerchantUiDark();
   const rxTipImg = useAppAssetSource(CX.checkout.rxTip);
@@ -85,7 +91,7 @@ export function CheckoutGratitudeSections({
   const showTipConfirm = tipValue > 0;
 
   const tipSection = (
-    <View style={[styles.tipCard, dark && styles.cardDark, sectionOrder === "feeding-first" && styles.gratitudeSectionAfter]}>
+    <View style={[styles.tipCard, dark && styles.cardDark, showDonation && sectionOrder === "feeding-first" && styles.gratitudeSectionAfter]}>
       <LinearGradient
         colors={dark ? ["#1A2A2E", MerchantDarkPalette.card] : ["#F0F9FF", "#FFFFFF"]}
         style={StyleSheet.absoluteFill}
@@ -149,7 +155,7 @@ export function CheckoutGratitudeSections({
   );
 
   const feedingSection = (
-    <View style={[styles.feedingCard, dark && styles.cardDark, sectionOrder === "tip-first" && styles.gratitudeSectionAfter]}>
+    <View style={[styles.feedingCard, dark && styles.cardDark, showTip && sectionOrder === "tip-first" && styles.gratitudeSectionAfter]}>
       <Pressable onPress={onFeedingInfoPress} hitSlop={10} style={styles.feedingInfoTopRight}>
         <Ionicons name="information-circle-outline" size={18} color={dark ? MerchantDarkPalette.accent : "#1E3A8A"} />
       </Pressable>
@@ -249,20 +255,17 @@ export function CheckoutGratitudeSections({
     </View>
   );
 
+  if (!showTip && !showDonation) return null;
+
+  const ordered = sectionOrder === "tip-first"
+    ? [showTip ? tipSection : null, showDonation ? feedingSection : null]
+    : [showDonation ? feedingSection : null, showTip ? tipSection : null];
+
   return (
     <View>
       <GratitudeDivider dark={dark} />
-      {sectionOrder === "tip-first" ? (
-        <>
-          {tipSection}
-          {feedingSection}
-        </>
-      ) : (
-        <>
-          {feedingSection}
-          {tipSection}
-        </>
-      )}
+      {ordered[0]}
+      {ordered[1]}
     </View>
   );
 }

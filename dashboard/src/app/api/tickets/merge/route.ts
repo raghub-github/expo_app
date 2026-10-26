@@ -168,8 +168,13 @@ export async function POST(request: NextRequest) {
         UPDATE public.unified_tickets
         SET
           parent_ticket_id = ${targetTicketId}::bigint,
-          status = 'CLOSED',
+          status = 'RESOLVED'::public.unified_ticket_status,
+          resolved_at = COALESCE(resolved_at, NOW()),
+          resolved_by = COALESCE(resolved_by, ${systemUser.id}::integer),
+          resolved_by_name = COALESCE(resolved_by_name, ${actorName}),
           closed_at = COALESCE(closed_at, NOW()),
+          snoozed_until = NULL,
+          snooze_reason = NULL,
           updated_at = NOW(),
           metadata = jsonb_set(
             jsonb_set(
@@ -239,13 +244,17 @@ export async function POST(request: NextRequest) {
         ticket_id: sourceId,
         activity_type: "ticket_merged",
         activity_category: "merge",
-        activity_description: `Merged into #${targetTicketNumber}`,
+        activity_description: `Merged into #${targetTicketNumber} and marked resolved`,
         actor_user_id: systemUser.id,
         actor_name: actorName,
         actor_email: actorEmail,
         actor_type: "AGENT",
-        old_value: null,
-        new_value: { merged_into_ticket_id: targetTicketId, reason: reason.length > 0 ? reason : null },
+        old_value: { status: byId.get(sourceId)?.status ?? null },
+        new_value: {
+          status: "RESOLVED",
+          merged_into_ticket_id: targetTicketId,
+          reason: reason.length > 0 ? reason : null,
+        },
       });
     }
 

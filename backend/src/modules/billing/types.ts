@@ -123,6 +123,11 @@ export type BillContext = {
    */
   isSelfPickup?: boolean;
   /**
+   * False when Super Admin deactivated the DELIVERY engine-order row.
+   * The quote is still computed for a strikethrough, but it must not enter the payable.
+   */
+  deliveryFeeChargeEnabled?: boolean;
+  /**
    * Which engine produced `deliveryFeeFromSlabsGeoV2`. Lets the label logic
    * distinguish a real "(slabs)" fee from an env-default fallback that fired
    * because slab validation failed — without this, a fallback would lie and
@@ -287,6 +292,10 @@ export type BillingResult = {
   tax_total: number;
   tip_amount: number;
   donation_amount: number;
+  /** Active RIDER_TIP rule for this service. Checkout hides the tip picker when false. */
+  tip_enabled?: boolean;
+  /** Active DONATION rule for this service. Checkout hides Feeding India when false. */
+  donation_enabled?: boolean;
   final_amount: number;
   /** Net item line after all discounts (for GST on items). */
   items_net_after_discounts: number;

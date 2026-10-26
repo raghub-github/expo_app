@@ -563,6 +563,20 @@ export function useSuperAdminBillingPage(options?: UseSuperAdminBillingPageOptio
     [updateRuleMut, withBusy]
   );
 
+  const toggleTax = useCallback(
+    async (t: BillingAdminTaxRow) => {
+      setLocalError(null);
+      try {
+        await withBusy(`tax.toggle.${t.id}`, async () => {
+          await updateTaxMut({ id: t.id, body: { is_active: !t.is_active } }).unwrap();
+        });
+      } catch (e) {
+        setLocalError(rtkErrorMessage(e));
+      }
+    },
+    [updateTaxMut, withBusy]
+  );
+
   const moveRule = useCallback(
     async (idx: number, dir: -1 | 1, serviceScope?: "FOOD" | "PARCEL" | "RIDE") => {
       setLocalError(null);
@@ -1468,6 +1482,7 @@ export function useSuperAdminBillingPage(options?: UseSuperAdminBillingPageOptio
     hydrateRuleForEdit,
     saveRule,
     toggleRule,
+    toggleTax,
     moveRule,
     reorderRules,
     deleteRule,

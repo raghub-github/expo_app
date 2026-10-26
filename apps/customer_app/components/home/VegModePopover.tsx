@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Modal,
   Pressable,
   StyleSheet,
@@ -50,6 +51,8 @@ export function VegModePopover({
   const applyVegMode = useDietaryPreferenceStore((s) => s.applyVegMode);
   const weekdays = useDietaryPreferenceStore((s) => s.weekdays);
   const [draftScope, setDraftScope] = useState<VegModeStoreScope>("all_restaurants");
+  const [applying, setApplying] = useState(false);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appear = useSharedValue(0);
 
   useEffect(() => {
@@ -60,12 +63,20 @@ export function VegModePopover({
     // Draft only — do not turn Veg Mode on until Apply.
     const prefs = useDietaryPreferenceStore.getState();
     setDraftScope(prefs.storeScope);
+    setApplying(false);
     appear.value = 0;
     appear.value = withTiming(1, {
       duration: 160,
       easing: Easing.out(Easing.cubic),
     });
   }, [visible, appear]);
+
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    },
+    []
+  );
 
   const top = useMemo(() => {
     const a = anchor;
@@ -102,12 +113,19 @@ export function VegModePopover({
   };
 
   const apply = () => {
+    if (applying) return;
+    setApplying(true);
     applyVegMode({
       storeScope: draftScope,
       weekdays,
     });
-    onClose();
     onApplied?.();
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    // Keep the spinner on the button long enough to see the tap landed.
+    closeTimerRef.current = setTimeout(() => {
+      closeTimerRef.current = null;
+      onClose();
+    }, 450);
   };
 
   return (
@@ -151,11 +169,17 @@ export function VegModePopover({
             <TouchableOpacity
               style={styles.applyBtn}
               onPress={apply}
+              disabled={applying}
               activeOpacity={0.85}
               accessibilityRole="button"
               accessibilityLabel="Apply"
+              accessibilityState={{ busy: applying }}
             >
-              <AppText style={styles.applyText}>Apply</AppText>
+              {applying ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <AppText style={styles.applyText}>Apply</AppText>
+              )}
             </TouchableOpacity>
 
             <TouchableOpacity

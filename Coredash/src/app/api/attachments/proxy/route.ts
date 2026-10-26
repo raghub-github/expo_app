@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
     const key = keyFromRequest(request);
     if (!key) return NextResponse.json({ error: "Missing key" }, { status: 400 });
     const obj = await getR2Object(key);
-    if (!obj) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (!obj) return new NextResponse(null, { status: 404 });
     return new NextResponse(new Uint8Array(obj.buffer), {
       status: 200,
       headers: {

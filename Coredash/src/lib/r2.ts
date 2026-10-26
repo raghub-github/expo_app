@@ -54,27 +54,41 @@ export function normalizeMediaKey(raw: string): string {
 export async function getR2Object(keyRaw: string) {
   const key = normalizeMediaKey(keyRaw);
   if (!key) return null;
-  const res = await getClient().send(
-    new GetObjectCommand({ Bucket: bucket(), Key: key })
-  );
-  if (!res.Body) return null;
-  const bytes = await res.Body.transformToByteArray();
-  return {
-    buffer: Buffer.from(bytes),
-    contentType: res.ContentType || null,
-  };
+  try {
+    const res = await getClient().send(
+      new GetObjectCommand({ Bucket: bucket(), Key: key })
+    );
+    if (!res.Body) return null;
+    const bytes = await res.Body.transformToByteArray();
+    return {
+      buffer: Buffer.from(bytes),
+      contentType: res.ContentType || null,
+    };
+  } catch (error) {
+    const name = String((error as { name?: string } | null)?.name ?? "");
+    const http = Number((error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata?.httpStatusCode);
+    if (name === "NoSuchKey" || name === "NotFound" || http === 404) return null;
+    throw error;
+  }
 }
 
 export async function headR2Object(keyRaw: string) {
   const key = normalizeMediaKey(keyRaw);
   if (!key) return null;
-  const res = await getClient().send(
-    new HeadObjectCommand({ Bucket: bucket(), Key: key })
-  );
-  return {
-    contentType: res.ContentType || null,
-    contentLength: typeof res.ContentLength === "number" ? res.ContentLength : null,
-  };
+  try {
+    const res = await getClient().send(
+      new HeadObjectCommand({ Bucket: bucket(), Key: key })
+    );
+    return {
+      contentType: res.ContentType || null,
+      contentLength: typeof res.ContentLength === "number" ? res.ContentLength : null,
+    };
+  } catch (error) {
+    const name = String((error as { name?: string } | null)?.name ?? "");
+    const http = Number((error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata?.httpStatusCode);
+    if (name === "NoSuchKey" || name === "NotFound" || http === 404) return null;
+    throw error;
+  }
 }
 
 export function contentTypeFromKey(key: string, fallback: string | null) {

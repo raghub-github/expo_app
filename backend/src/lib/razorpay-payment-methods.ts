@@ -16,6 +16,8 @@ export type CheckoutPayMethodItem = {
   logoKey: string;
   upiApp?: string;
   wallet?: string;
+  /** Set only when Razorpay reports that UPI flow as enabled. */
+  upiFlow?: "qr" | "collect";
 };
 
 export type CheckoutPayMethodSection = {
@@ -113,6 +115,27 @@ function upiAllowlist(methods: Record<string, unknown>): Set<string> | null {
   return null;
 }
 
+function upiQrAndCollectItems(): CheckoutPayMethodItem[] {
+  return [
+    {
+      id: "upi:qr",
+      label: "Pay via QR Code",
+      method: "upi",
+      action: "pay",
+      logoKey: "qr",
+      upiFlow: "qr",
+    },
+    {
+      id: "upi:collect",
+      label: "Pay via UPI ID",
+      method: "upi",
+      action: "pay",
+      logoKey: "upi_id",
+      upiFlow: "collect",
+    },
+  ];
+}
+
 function upiItem(app: (typeof UPI_APPS)[number]): CheckoutPayMethodItem {
   return {
     id: `upi:${app.id}`,
@@ -150,6 +173,7 @@ export function defaultCheckoutPayMethods(dummy: boolean): CheckoutPayMethodsRes
         ],
       },
       { id: "upi", title: "PAY BY ANY UPI APP", items: extraUpi },
+      { id: "upi_other", title: "UPI", items: upiQrAndCollectItems() },
     ],
   };
 }
@@ -231,6 +255,10 @@ export function mapRazorpayMethodsPayload(raw: unknown, dummy: boolean): Checkou
     }
     if (extra.length > 0) {
       sections.push({ id: "upi", title: "PAY BY ANY UPI APP", items: extra });
+    }
+    const qrAndCollect = upiQrAndCollectItems();
+    if (qrAndCollect.length > 0) {
+      sections.push({ id: "upi_other", title: "UPI", items: qrAndCollect });
     }
   }
 

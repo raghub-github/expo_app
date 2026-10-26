@@ -2605,7 +2605,8 @@ export const pendingOrders = pgTable(
     merchantStoreId: bigint("merchant_store_id", { mode: "number" }).notNull(),
     merchantParentId: bigint("merchant_parent_id", { mode: "number" }),
     itemsSnapshot: jsonb("items_snapshot").notNull(),
-    addressIdUsed: bigint("address_id_used", { mode: "number" }).notNull(),
+    /** Null only for self-pickup / takeaway. Delivery orders always persist a customer address id. */
+    addressIdUsed: bigint("address_id_used", { mode: "number" }),
     paymentMethod: text("payment_method").notNull(),
     /** Delivery type chosen at checkout. 'delivery' = courier-fulfilled, 'self_pickup' = customer collects from store. */
     deliveryType: text("delivery_type").notNull().default("delivery"),

@@ -36,6 +36,7 @@ import {
   resolveInboxOnlyRecipients,
   resolveTarget,
 } from "./targetResolver.js";
+import { expandCustomerPushUserIds } from "./customerPushTokens.js";
 import { sendFcmV1 } from "./fcmProvider.js";
 import { isFirebaseAdminConfigured } from "../../config/firebase.js";
 import {
@@ -86,8 +87,8 @@ async function finalizeFcmDelivery(
   opts?: { maxRetries?: number },
 ): Promise<boolean> {
   if (res.ok) {
-    // FCM accepted the send. That is not evidence the device displayed it.
-    await updateLogStatus(notificationId, "sent");
+    // Same bar as an accepted Expo ticket: provider accepted the message.
+    await updateLogStatus(notificationId, "delivered");
     return true;
   }
   const { markFailedWithRetrySchedule } = await import("./retryEngine.js");
@@ -279,6 +280,39 @@ function announcementCollapseKey(row: CreateLogRow): string | null {
   return key ? key.slice(0, 64) : null;
 }
 
+function formatOfferRemaining(endsAtIso: string): string | null {
+  const ends = Date.parse(endsAtIso);
+  if (!Number.isFinite(ends)) return null;
+  const ms = ends - Date.now();
+  if (ms <= 0) return "Offer ended";
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `Offer valid for ${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+/** Android shade only shows title + body. CTA and countdown live in data unless copied here. */
+function announcementShadeBody(row: CreateLogRow): string {
+  if (!isAnnouncementTemplateCode(row.templateCode)) return row.body;
+  const data = pushDataForRow(row);
+  const cta =
+    (typeof data.cta_label === "string" && data.cta_label.trim()) ||
+    (typeof data.ctaLabel === "string" && data.ctaLabel.trim()) ||
+    "";
+  const countdownOn = data.countdown_enabled === "true" || data.countdown_enabled === true;
+  const endsAt = typeof data.ends_at === "string" ? data.ends_at : "";
+  const extra: string[] = [];
+  if (cta) extra.push(cta);
+  if (countdownOn && endsAt) {
+    const line = formatOfferRemaining(endsAt);
+    if (line) extra.push(line);
+  }
+  if (extra.length === 0) return row.body;
+  return `${row.body}\n${extra.join("\n")}`;
+}
+
 function buildFcmV1InputForRow(
   row: CreateLogRow,
   templateSilent: boolean,
@@ -302,7 +336,7 @@ function buildFcmV1InputForRow(
     ...(args.token ? { token: args.token } : {}),
     ...(args.topic ? { topic: args.topic } : {}),
     title: row.title,
-    body: row.body,
+    body: announcementShadeBody(row),
     imageUrl: row.imageUrl ?? null,
     deepLink: args.deepLink ?? resolvedDeepLinkForRow(row),
     webLink: args.webLink,
@@ -574,7 +608,7 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
           image_url: imageUrl,
         }
       : {}),
-    ...(ctaLabel ? { cta_label: ctaLabel, ctaLabel } : {}),
+    ...(ctaLabel ? { cta_label: ctaLabel, ctaLabel, categoryId: "gm_campaign_cta" } : {}),
     ...(countdownEnabled
       ? {
           countdown_enabled: "true",
@@ -663,9 +697,53 @@ async function dispatchViaNativeFcm(
   });
 }
 
+function pushLookupIds(userId: string, role: string): string[] {
+  const base = expandCampaignUserIdCandidates(userId);
+  if (role.toLowerCase() !== "customer") return base;
+  return expandCustomerPushUserIds(base);
+}
+
+async function lookupExpoPushToken(userId: string, role: string): Promise<string | null> {
+  if (!userId || userId.startsWith("__")) return null;
+  const candidates = pushLookupIds(userId, role);
+  if (candidates.length === 0) return null;
+  try {
+    const sql = getSql();
+    const roleClause =
+      role && role !== "all"
+        ? sql`AND (
+            lower(coalesce(role, ${role.toLowerCase()})) = ${role.toLowerCase()}
+            OR role IS NULL
+            OR trim(role) = ''
+          )`
+        : sql``;
+    const rows = (await sql`
+      SELECT expo_push_token
+      FROM public.expo_push_tokens
+      WHERE user_id = ANY(${candidates}::text[])
+        AND expo_push_token IS NOT NULL
+        AND length(trim(expo_push_token)) > 8
+        ${roleClause}
+      ORDER BY updated_at DESC NULLS LAST
+      LIMIT 1
+    `) as unknown as Array<{ expo_push_token: string }>;
+    const token = rows[0]?.expo_push_token?.trim() ?? "";
+    return isExpoDeviceToken(token) ? token : null;
+  } catch (e) {
+    console.warn("[notifications] expo token lookup failed:", (e as Error).message);
+    return null;
+  }
+}
+
 async function dispatchExpoRow(
   row: CreateLogRow,
-  opts?: { maxRetries?: number; attempt?: number; forceInline?: boolean; templateSilent?: boolean },
+  opts?: {
+    maxRetries?: number;
+    attempt?: number;
+    forceInline?: boolean;
+    templateSilent?: boolean;
+    skipNativePrefer?: boolean;
+  },
 ): Promise<boolean> {
   const liveDelivery = customerLiveOrderDeliveryOpts(row, opts?.templateSilent === true);
   const forceVisible = mustShowWhenKilled(row) || !liveDelivery.dataOnly;
@@ -673,6 +751,7 @@ async function dispatchExpoRow(
   // Prefer direct FCM when Admin is configured — Expo Push often returns
   // InvalidCredentials if the EAS project is missing an FCM V1 key.
   if (
+    !opts?.skipNativePrefer &&
     isFirebaseAdminConfigured() &&
     row.recipient.platform === "android" &&
     row.recipient.userId &&
@@ -684,11 +763,15 @@ async function dispatchExpoRow(
       { ignoreStaleness: isCriticalIncomingOrderTemplate(row.templateCode) },
     );
     if (nativeFirst) {
-      return dispatchViaNativeFcm(row, nativeFirst, {
+      const nativeOk = await dispatchViaNativeFcm(row, nativeFirst, {
         maxRetries: opts?.maxRetries,
         templateSilent: opts?.templateSilent,
         reason: "prefer_native_over_expo",
       });
+      if (nativeOk) return true;
+      console.warn(
+        `[notifications] native FCM failed nid=${row.notificationId} — trying Expo token`,
+      );
     }
   }
 
@@ -700,7 +783,7 @@ async function dispatchExpoRow(
     to: row.recipient.deviceToken,
     // Always attach title/body for killed-app OS tray (unless truly data-only).
     title: forceVisible ? row.title : undefined,
-    body: forceVisible ? row.body : undefined,
+    body: forceVisible ? announcementShadeBody(row) : undefined,
     data: pushDataForRow(row),
     screen: resolvedDeepLinkForRow(row) ?? undefined,
     imageUrl: row.imageUrl ?? undefined,
@@ -776,7 +859,7 @@ async function lookupNativeFcmToken(
   opts?: { ignoreStaleness?: boolean },
 ): Promise<string | null> {
   if (!userId || userId.startsWith("__")) return null;
-  const candidates = expandCampaignUserIdCandidates(userId);
+  const candidates = pushLookupIds(userId, role);
   if (candidates.length === 0) return null;
   try {
     const sql = getSql();
@@ -1438,6 +1521,29 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         if (await finalizeFcmDelivery(row.notificationId, token, res, { maxRetries })) {
           queued++;
           accepted++;
+        } else if (!isWeb) {
+          const expoTok = await lookupExpoPushToken(row.recipient.userId, row.recipient.role);
+          const recovered =
+            Boolean(expoTok) &&
+            (await dispatchExpoRow(
+              {
+                ...row,
+                recipient: { ...row.recipient, deviceToken: expoTok! },
+              },
+              {
+                maxRetries,
+                forceInline,
+                templateSilent: template.silent,
+                skipNativePrefer: true,
+              },
+            ));
+          if (recovered) {
+            queued++;
+            accepted++;
+          } else {
+            failedProvider++;
+            failedSync++;
+          }
         } else {
           failedProvider++;
           failedSync++;

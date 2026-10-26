@@ -33,22 +33,64 @@ import { metresBetween, shouldReplaceFix } from "@/lib/locationFixSelection";
 const ACCURATE_REFINE_MIN_MOVE_M = 40;
 
 async function applyCurrentGpsPin(gps: { latitude: number; longitude: number }): Promise<void> {
-  // Coord-first (section 10): paint the coordinate immediately, then resolve the address
-  // asynchronously. Keep any current address we already show as the placeholder to avoid a
-  // flash back to the generic "Current location" label.
+  // Coord-first: paint immediately. Reverse-geocode must not block Enable / home header.
   const store = useLocationStore.getState();
-  const placeholder =
-    store.locationSource === "current" && store.address
-      ? store.address
+  const existing = store.address;
+  const hasRealAddress =
+    !!existing &&
+    !((existing.primary ?? "").trim().toLowerCase() === "current location" &&
+      !existing.city &&
+      !existing.state &&
+      !existing.pincode);
+  const placeholder = hasRealAddress
+    ? existing
+    : store.locationSource === "current" && existing
+      ? existing
       : { primary: "Current location", secondary: "", fullAddress: "Current location" };
-  store.setAddressAndCoords(placeholder, gps, { source: "current" });
-  try {
-    const geo = await reverseGeocode(gps.longitude, gps.latitude);
-    if (useLocationStore.getState().locationSource !== "current") return;
-    useLocationStore.getState().setAddressAndCoords(geo, gps, { source: "current" });
-  } catch {
-    // keep the placeholder coordinate label
+  if (hasRealAddress) {
+    const sameSpot =
+      store.coords != null &&
+      Math.abs(store.coords.latitude - gps.latitude) < 1e-4 &&
+      Math.abs(store.coords.longitude - gps.longitude) < 1e-4;
+    if (sameSpot) {
+      useLocationStore.setState({ loading: false, refining: false });
+      return;
+    }
+    store.setAddressAndCoords(existing!, gps, { source: "current" });
+    useLocationStore.setState({ loading: false, refining: false });
+    return;
   }
+
+  store.setAddressAndCoords(placeholder, gps, { source: "current" });
+  useLocationStore.setState({ refining: true, loading: false });
+  void (async () => {
+    try {
+      const geo = await reverseGeocode(gps.longitude, gps.latitude);
+      if (useLocationStore.getState().locationSource !== "current") return;
+      const still = useLocationStore.getState().coords;
+      if (
+        still &&
+        (Math.abs(still.latitude - gps.latitude) > 1e-5 ||
+          Math.abs(still.longitude - gps.longitude) > 1e-5)
+      ) {
+        return;
+      }
+      const geoPrimary = (geo.primary ?? "").trim().toLowerCase();
+      const geoIsPlaceholder =
+        (geoPrimary === "" || geoPrimary === "current location") &&
+        !geo.city &&
+        !geo.state &&
+        !geo.pincode;
+      if (geoIsPlaceholder) {
+        useLocationStore.setState({ refining: false });
+        return;
+      }
+      useLocationStore.getState().setAddressAndCoords(geo, gps, { source: "current" });
+      useLocationStore.setState({ refining: false });
+    } catch {
+      useLocationStore.setState({ refining: false });
+    }
+  })();
 }
 
 async function restoreRemoteSelection(

@@ -10,6 +10,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Text,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
@@ -27,10 +28,16 @@ import {
   formatDeliveryDistanceKmLabel,
   formatDeliverySlabExplainSubtext,
 } from "@/lib/deliverySlabBreakdown";
-import { computeCheckoutToPayAmount } from "@/lib/checkoutToPayAmount";
+import {
+  computeCheckoutToPayAmount,
+  grandTotalWithoutUnconfirmedDelivery,
+  isDeliverySpecificDiscount,
+} from "@/lib/checkoutToPayAmount";
 import { formatCheckoutSavingsRupees } from "@/lib/checkoutAppliedSavings";
 
 const GM = GatiMitraColors;
+/** Handling fee list price. The waived note sits beside the strike, not as ₹0. */
+const HANDLING_FEE_LIST_INR = 10;
 const BILL_DISCOUNT_COLOR = "#2563EB";
 const SAVINGS_BANNER_BG = "#E0F2FE";
 const SAVINGS_TEXT_COLOR = "#2563EB";
@@ -328,6 +335,11 @@ export type BillSummarySheetProps = {
   showDeliveryFeeRow: boolean;
   /** When true, show Delivery Fee as pending (before address selection). */
   deliveryFeePending?: boolean;
+  /**
+   * True only when the bill on screen was calculated for the current address
+   * (or for takeaway). A placeholder from the previous address is not settled.
+   */
+  deliveryQuoteSettled?: boolean;
   deliveryFeeStrikeAmount: number | null;
   distanceKm: number | null;
   subscriptionPlanName: string;
@@ -374,6 +386,7 @@ export function BillSummarySheet({
   deliveryType,
   showDeliveryFeeRow,
   deliveryFeePending = false,
+  deliveryQuoteSettled = true,
   deliveryFeeStrikeAmount,
   distanceKm,
   subscriptionPlanName,
@@ -407,10 +420,15 @@ export function BillSummarySheet({
   onFeedingInfoPress,
   onDonateEveryOrderPress,
   donationScope = "every_order",
+  showTip = true,
+  showDonation = true,
 }: BillSummarySheetProps) {
   const dark = useMerchantUiDark();
   const [deliveryBreakdownOpen, setDeliveryBreakdownOpen] = useState(false);
   const [infoModal, setInfoModal] = useState<null | "packaging" | "platform">(null);
+  /** No saved address, or the bill still belongs to a previous address. */
+  const deliveryUnconfirmed =
+    deliveryType === "delivery" && (deliveryFeePending || !deliveryQuoteSettled);
 
   const subscriptionWaivedInr = useMemo(() => {
     if (subscriptionDeliveryBenefitLive?.waivedInr != null && subscriptionDeliveryBenefitLive.waivedInr > 0.005) {
@@ -507,24 +525,33 @@ export function BillSummarySheet({
     // BOGO excluded — it's reflected in the Item Total, not shown as a separate row.
     return visibleDiscounts
       .filter((d) => d.amount > 0.005 && !isBogoDiscountRow(d))
+      .filter((d) => !(deliveryUnconfirmed && isDeliverySpecificDiscount(d)))
       .map((d) => ({
         ...d,
         label: String(d.label ?? "").trim() || "Offer discount",
       }));
-  }, [serverBill, visibleDiscounts]);
+  }, [serverBill, visibleDiscounts, deliveryUnconfirmed]);
 
   /** Residual if listed rows don't cover discountTotal (hidden/unnamed lines). */
   const discountRowsGap = useMemo(() => {
     if (!serverBill) return 0;
     const listed = discountRows.reduce((s, d) => s + (d.amount ?? 0), 0);
+    const suppressedDeliveryDiscount =
+      deliveryUnconfirmed
+        ? (serverBill.discounts ?? []).reduce(
+            (s, d) => (d.amount > 0.005 && isDeliverySpecificDiscount(d) ? s + d.amount : s),
+            0
+          )
+        : 0;
     const gap =
       // Exclude the folded BOGO amount so it never re-surfaces as an "Other offers" row.
       serverBill.discountTotal -
       bogoDiscountTotal -
       listed -
+      suppressedDeliveryDiscount -
       (missedOfferUnlockDiscount > 0.005 ? missedOfferUnlockDiscount : 0);
     return gap > 0.05 ? Math.round(gap * 100) / 100 : 0;
-  }, [serverBill, discountRows, bogoDiscountTotal, missedOfferUnlockDiscount]);
+  }, [serverBill, discountRows, bogoDiscountTotal, missedOfferUnlockDiscount, deliveryUnconfirmed]);
 
   const showSavingsBanner = youSavedAmount > 0.005 || (serverBill != null && serverBill.discountTotal > 0.005);
   const savingsBannerTotal =
@@ -544,8 +571,10 @@ export function BillSummarySheet({
     const quoted = serverBill?.deliveryFeeQuotedInr ?? 0;
     const gstOrig = serverBill?.components?.delivery?.original ?? 0;
     const current = serverBill?.components?.delivery?.taxable_value ?? 0;
+    const inactiveDelivery =
+      current <= 0.005 ? (serverBill?.inactiveFeeQuotes?.delivery ?? 0) : 0;
     // Prefer the higher pre-discount figure so platform FREE_DELIVERY strikethrough works.
-    const gross = Math.max(quoted, gstOrig);
+    const gross = Math.max(quoted, gstOrig, inactiveDelivery);
     if (gross > current + 0.005) return gross;
     return quoted > 0.005 ? quoted : current;
   })();
@@ -570,7 +599,7 @@ export function BillSummarySheet({
   }, [distanceKm]);
 
   const membershipBenefitRow = useMemo(() => {
-    if (deliveryType !== "delivery" || deliveryFeePending) return null;
+    if (deliveryType !== "delivery" || deliveryUnconfirmed) return null;
     const benefit = subscriptionDeliveryBenefitApplied;
     const waived = subscriptionWaivedInr;
     const plan = subscriptionPlanName?.trim() || "Membership";
@@ -605,7 +634,7 @@ export function BillSummarySheet({
     return null;
   }, [
     deliveryType,
-    deliveryFeePending,
+    deliveryUnconfirmed,
     subscriptionDeliveryBenefitApplied,
     subscriptionWaivedInr,
     subscriptionPlanName,
@@ -627,15 +656,29 @@ export function BillSummarySheet({
     0,
     serverBill?.deliveryFee ?? serverBill?.components.delivery.taxable_value ?? 0
   );
+  const suppressedDeliveryDiscount =
+    deliveryUnconfirmed && serverBill
+      ? (serverBill.discounts ?? []).reduce(
+          (s, d) => (d.amount > 0.005 && isDeliverySpecificDiscount(d) ? s + d.amount : s),
+          0
+        )
+      : 0;
+  const grandTotalShown = grandTotalWithoutUnconfirmedDelivery({
+    grandTotalBeforeDiscounts,
+    deliveryFeePending: deliveryUnconfirmed,
+    deliveryType,
+    pendingDeliveryFee,
+    deliverySpecificDiscount: suppressedDeliveryDiscount,
+  });
   /** Same engine as Total Bill / Place Order — never diverge. */
   const toPayDisplay =
-    toPayAmountProp != null && Number.isFinite(toPayAmountProp)
+    toPayAmountProp != null && Number.isFinite(toPayAmountProp) && !deliveryUnconfirmed
       ? Math.max(0, Math.round(toPayAmountProp * 100) / 100)
       : serverBill != null
         ? computeCheckoutToPayAmount({
             finalAmount: serverBill.finalAmount,
             deliveryType,
-            deliveryFeePending,
+            deliveryFeePending: deliveryUnconfirmed,
             pendingDeliveryFee,
             gatiCashApplyAmount: walletDeduction,
             missedOfferUnlockDiscount: missedOfferDiscount,
@@ -643,6 +686,41 @@ export function BillSummarySheet({
           })
         : 0;
   const fullyPaidByGatiCash = toPayDisplay <= 0.005 && walletDeduction > 0.005;
+
+  const listedPayDeductions =
+    Math.round(
+      (discountRows.reduce((s, d) => s + (d.amount ?? 0), 0) +
+        discountRowsGap +
+        walletDeduction +
+        missedOfferDiscount -
+        pendingWalletCredit) *
+        100
+    ) / 100;
+  const grandToPayGap =
+    Math.round((grandTotalShown - toPayDisplay - listedPayDeductions) * 100) / 100;
+  const payGapReasons: { key: string; label: string; subtext: string; amount: number }[] = [];
+  // An address-less bill must not invent a delivery-fee deduction to explain the gap.
+  if (!deliveryUnconfirmed && grandToPayGap > 0.05) {
+    payGapReasons.push({
+      key: "grand-pay-gap",
+      label: "Not included in To pay",
+      subtext: "This is why Grand Total and To pay differ",
+      amount: Math.round(grandToPayGap * 100) / 100,
+    });
+  }
+  const packagingInr = serverBill?.components.packaging.taxable_value ?? 0;
+  const inactiveQuotes = serverBill?.inactiveFeeQuotes;
+  const packagingQuote = packagingInr <= 0.005 ? (inactiveQuotes?.packaging ?? 0) : 0;
+  const platformInr = serverBill?.components.platform.taxable_value ?? 0;
+  const platformQuote = platformInr <= 0.005 ? (inactiveQuotes?.platform ?? 0) : 0;
+  const surgeInr = serverBill?.components.surge.taxable_value ?? 0;
+  const surgeQuote = surgeInr <= 0.005 ? (inactiveQuotes?.surge ?? 0) : 0;
+  const smallOrderQuote =
+    smallOrderInr <= 0.005 ? (inactiveQuotes?.smallOrder ?? 0) : 0;
+  const convenienceInr = serverBill?.components.convenience.taxable_value ?? 0;
+  const convenienceQuote =
+    convenienceInr <= 0.005 ? (inactiveQuotes?.convenience ?? 0) : 0;
+  const miscFeeQuote = inactiveQuotes?.fee ?? 0;
 
   return (
     <>
@@ -703,21 +781,49 @@ export function BillSummarySheet({
                     <BillLineRow label="Add-ons" value={fmt(serverBill.addonTotal)} />
                   ) : null}
 
-                  {serverBill.components.packaging.taxable_value > 0.005 ? (
+                  {packagingInr > 0.005 ? (
                     <BillLineRow
                       label="Restaurant packaging charges"
-                      value={fmt(serverBill.components.packaging.taxable_value)}
+                      value={fmt(packagingInr)}
                       subtext="This is decided & charged by the restaurant"
                       dashedUnderline
                       onLabelPress={() => setInfoModal("packaging")}
                     />
-                  ) : null}
+                  ) : packagingQuote > 0.005 ? (
+                    <BillLineRow
+                      label="Restaurant packaging charges"
+                      valueNode={<DeliveryFeeValue originalInr={packagingQuote} currentInr={0} />}
+                      subtext="This is decided & charged by the restaurant"
+                      dashedUnderline
+                      onLabelPress={() => setInfoModal("packaging")}
+                    />
+                  ) : (
+                    <BillLineRow
+                      label="Restaurant packaging charges"
+                      valueNode={
+                        <CheckoutText style={[styles.lineValue, styles.noteValue, dark && styles.textDark]}>
+                          Nope, that's not fair.
+                        </CheckoutText>
+                      }
+                      dashedUnderline
+                      onLabelPress={() => setInfoModal("packaging")}
+                    />
+                  )}
 
                   {showDeliveryFeeRow ? (
-                    deliveryFeePending ? (
+                    deliveryUnconfirmed ? (
                       <BillLineRow
                         label="Delivery fee"
-                        value="Calculated after address selection"
+                        valueNode={
+                          <CheckoutText
+                            style={[styles.lineValue, styles.noteValue, dark && styles.textDark]}
+                            numberOfLines={2}
+                          >
+                            {deliveryFeePending
+                              ? "Select delivery address to calculate"
+                              : "Calculating delivery fee…"}
+                          </CheckoutText>
+                        }
                       />
                     ) : (
                     <>
@@ -750,28 +856,72 @@ export function BillSummarySheet({
                     )
                   ) : null}
 
-                  {serverBill.components.platform.taxable_value > 0.005 ? (
+                  {platformInr > 0.005 ? (
                     <BillLineRow
                       label="Platform fee"
-                      value={fmt(serverBill.components.platform.taxable_value)}
+                      value={fmt(platformInr)}
+                      dashedUnderline
+                      onLabelPress={() => setInfoModal("platform")}
+                    />
+                  ) : platformQuote > 0.005 ? (
+                    <BillLineRow
+                      label="Platform fee"
+                      valueNode={<DeliveryFeeValue originalInr={platformQuote} currentInr={0} />}
                       dashedUnderline
                       onLabelPress={() => setInfoModal("platform")}
                     />
                   ) : null}
 
-                  {serverBill.components.surge.taxable_value > 0.005 ? (
-                    <BillLineRow label="Surge fee" value={fmt(serverBill.components.surge.taxable_value)} />
-                  ) : null}
+                  <View style={styles.handlingRow}>
+                    <CheckoutText
+                      style={[styles.plainLabelText, dark && styles.textDark]}
+                      numberOfLines={1}
+                    >
+                      Handling fee
+                    </CheckoutText>
+                    <Text numberOfLines={1} style={styles.handlingValueLine}>
+                      <Text style={[styles.strikeValue, dark && styles.strikeDark]}>
+                        {fmt(HANDLING_FEE_LIST_INR)}
+                      </Text>
+                      <Text style={styles.handlingNote}>{"  seriously 🤔"}</Text>
+                    </Text>
+                  </View>
 
-                  {serverBill.components.small_order.taxable_value > 0.005 && deliveryType === "delivery" ? (
+                  {surgeInr > 0.005 ? (
+                    <BillLineRow label="Surge fee" value={fmt(surgeInr)} />
+                  ) : surgeQuote > 0.005 ? (
                     <BillLineRow
-                      label="Small order fee"
-                      value={fmt(serverBill.components.small_order.taxable_value)}
+                      label="Surge fee"
+                      valueNode={<DeliveryFeeValue originalInr={surgeQuote} currentInr={0} />}
                     />
                   ) : null}
 
-                  {serverBill.components.convenience.taxable_value > 0.005 ? (
-                    <BillLineRow label="Convenience fee" value={fmt(serverBill.components.convenience.taxable_value)} />
+                  {smallOrderInr > 0.005 && deliveryType === "delivery" ? (
+                    <BillLineRow
+                      label="Small order fee"
+                      value={fmt(smallOrderInr)}
+                    />
+                  ) : smallOrderQuote > 0.005 && deliveryType === "delivery" ? (
+                    <BillLineRow
+                      label="Small order fee"
+                      valueNode={<DeliveryFeeValue originalInr={smallOrderQuote} currentInr={0} />}
+                    />
+                  ) : null}
+
+                  {convenienceInr > 0.005 ? (
+                    <BillLineRow label="Convenience fee" value={fmt(convenienceInr)} />
+                  ) : convenienceQuote > 0.005 ? (
+                    <BillLineRow
+                      label="Convenience fee"
+                      valueNode={<DeliveryFeeValue originalInr={convenienceQuote} currentInr={0} />}
+                    />
+                  ) : null}
+
+                  {miscFeeQuote > 0.005 ? (
+                    <BillLineRow
+                      label="Fee"
+                      valueNode={<DeliveryFeeValue originalInr={miscFeeQuote} currentInr={0} />}
+                    />
                   ) : null}
 
                   {billSubscriptionCharges.map((c, idx) => (
@@ -805,7 +955,7 @@ export function BillSummarySheet({
                   <BillLineRow
                     label="Grand Total"
                     valueNode={
-                      <AnimatedBillValue value={grandTotalBeforeDiscounts} style={styles.grandTotalValue} />
+                      <AnimatedBillValue value={grandTotalShown} style={styles.grandTotalValue} />
                     }
                   />
 
@@ -870,11 +1020,34 @@ export function BillSummarySheet({
                     />
                   ) : null}
 
+                  {payGapReasons.map((reason) => (
+                    <BillLineRow
+                      key={reason.key}
+                      label={reason.label}
+                      subtext={reason.subtext}
+                      valueNode={
+                        <AnimatedBillValue
+                          value={reason.amount}
+                          prefix="- "
+                          style={[styles.discountValue, dark && styles.discountValueDark]}
+                        />
+                      }
+                      labelAccent
+                      rowStyle={styles.discountRow}
+                    />
+                  ))}
+
                   <View style={styles.toPayRow}>
                     <View style={styles.toPayLabelCol}>
                       <CheckoutText style={[styles.toPayLabel, dark && styles.textDark]}>To pay</CheckoutText>
                       {fullyPaidByGatiCash ? (
                         <CheckoutText style={styles.toPayGatiCashHint}>100% GatiCash used</CheckoutText>
+                      ) : deliveryUnconfirmed ? (
+                        <CheckoutText style={styles.toPayPendingHint}>
+                          {deliveryFeePending
+                            ? "Delivery fee not included yet"
+                            : "Updating delivery fee…"}
+                        </CheckoutText>
                       ) : null}
                     </View>
                     {walletDeduction > 0.005 && toPayDisplay + walletDeduction > toPayDisplay + 0.005 ? (
@@ -913,6 +1086,8 @@ export function BillSummarySheet({
                     onDonateEveryOrderPress={onDonateEveryOrderPress}
                     donationScope={donationScope}
                     sectionOrder="tip-first"
+                    showTip={showTip}
+                    showDonation={showDonation}
                   />
                 </>
               ) : (
@@ -1007,6 +1182,16 @@ const styles = StyleSheet.create({
   membershipBenefitRow: { paddingTop: 0, paddingBottom: 6 },
   membershipBenefitLabel: { fontSize: 12, fontWeight: "500", color: "#6B7280" },
   lineValue: { fontSize: 14, fontWeight: "600", color: "#111827", flexShrink: 0 },
+  noteValue: { flexShrink: 1, maxWidth: 168, textAlign: "right" },
+  handlingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 8,
+    gap: 8,
+  },
+  handlingValueLine: { flexShrink: 0, textAlign: "right" },
+  handlingNote: { fontSize: 13, fontWeight: "600", color: "#6B7280" },
   deliveryValueCluster: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 0 },
   strikeValue: {
     fontSize: 14,
@@ -1038,6 +1223,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
     color: GM.splashMint,
+  },
+  toPayPendingHint: {
+    marginTop: 2,
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#6B7280",
   },
   toPayValue: { fontSize: 20, fontWeight: "800", color: "#111827" },
   savingsBannerOuter: { marginTop: 16, marginHorizontal: -18 },

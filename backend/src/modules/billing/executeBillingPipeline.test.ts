@@ -89,15 +89,46 @@ describe("executeBillingPipeline", () => {
       dataset
     );
     assert.equal(r.final_amount, 105);
+    assert.equal(r.tip_enabled, false);
+    assert.equal(r.donation_enabled, false);
     assert.equal(r.ruleset_version, 1);
     assert.equal(r.items_net_after_discounts, 100);
     assert.deepEqual(r.taxes_by_group, {});
   });
 
-  it("env default delivery when no rules and zero geo/card/legacy (base + per_km×km)", () => {
+  it("active rider tip and donation rules flag the gratitude pickers", () => {
     const dataset: BillingDataset = {
       rulesetVersion: 1,
-      rules: [],
+      rules: [
+        ruleBase({ id: 14, type: "DONATION", calculationType: "FIXED", valueNumeric: 0 }),
+        ruleBase({ id: 15, type: "RIDER_TIP", calculationType: "FIXED", valueNumeric: 0 }),
+      ],
+      deliverySlabs: [],
+      packagingSlabs: [],
+      deliveryRateCards: [],
+      platformOffers: [],
+      merchantOffers: [],
+      taxConfigs: [],
+      merchantOverrides: null,
+      coupon: null,
+    };
+    const r = executeBillingPipeline(ctx(), dataset);
+    assert.equal(r.donation_enabled, true);
+    assert.equal(r.tip_enabled, true);
+  });
+
+  it("env default delivery when an active delivery rule yields zero (base + per_km×km)", () => {
+    const dataset: BillingDataset = {
+      rulesetVersion: 1,
+      rules: [
+        ruleBase({
+          id: 9,
+          type: "DELIVERY",
+          calculationType: "FIXED",
+          valueNumeric: 0,
+          appliesTo: "ORDER",
+        }),
+      ],
       deliverySlabs: [],
       packagingSlabs: [],
       deliveryRateCards: [],
@@ -129,7 +160,15 @@ describe("executeBillingPipeline", () => {
   it("delivery minimum floor raises legacy per-km fallback when distance > 0", () => {
     const dataset: BillingDataset = {
       rulesetVersion: 1,
-      rules: [],
+      rules: [
+        ruleBase({
+          id: 9,
+          type: "DELIVERY",
+          calculationType: "FIXED",
+          valueNumeric: 0,
+          appliesTo: "ORDER",
+        }),
+      ],
       deliverySlabs: [],
       packagingSlabs: [],
       deliveryRateCards: [],
@@ -156,6 +195,40 @@ describe("executeBillingPipeline", () => {
     assert.equal(r.delivery_fee, 25);
     assert.equal(r.final_amount, 130);
     assert.ok(r.breakdown_steps.some((s) => s.step === "Delivery minimum"));
+  });
+
+  it("deactivated delivery fee rule calculates nothing into the payable", () => {
+    const dataset: BillingDataset = {
+      rulesetVersion: 1,
+      rules: [],
+      deliverySlabs: [],
+      packagingSlabs: [],
+      deliveryRateCards: [],
+      platformOffers: [],
+      merchantOffers: [],
+      taxConfigs: [],
+      merchantOverrides: null,
+      coupon: null,
+    };
+    const c = ctx();
+    const r = executeBillingPipeline(
+      {
+        ...c,
+        distanceKm: 10,
+        deliveryChargePerKm: 5,
+        deliveryFeeFromSlabsGeoV2: 80,
+        deliveryFeeFromRateCard: 0,
+        deliveryFeeFromGeo: null,
+        deliveryMinimumInr: 25,
+        deliveryDefaultBaseInr: 25,
+        deliveryDefaultPerKmInr: 5,
+        tipAmount: 0,
+        donationAmount: 0,
+      },
+      dataset
+    );
+    assert.equal(r.delivery_fee, 0);
+    assert.equal(r.final_amount, 100);
   });
 
   it("GST on items and delivery after discount (Swiggy-style split)", () => {

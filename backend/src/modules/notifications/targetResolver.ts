@@ -18,6 +18,11 @@ import type {
   TargetFilter,
 } from "./types.js";
 import { expandCampaignUserIdCandidates } from "./campaignTarget.js";
+import {
+  dedupeNativeTokensForDispatch,
+  expandCustomerPushUserIds,
+  shouldKeepPushRecipient,
+} from "./customerPushTokens.js";
 
 const TOKEN_STALENESS_DAYS = 90;
 
@@ -85,6 +90,24 @@ function dedupeByToken(recipients: Recipient[]): Recipient[] {
  * Only apply when Firebase Admin is configured — otherwise dropping Expo
  * leaves zero deliverable tokens and pushes silently fail.
  */
+/** Same person can be stored as GM100386 or numeric 386. Collapse those before dedupe. */
+function canonicalRecipientKey(role: string, userId: string): string {
+  const roleKey = role.trim().toLowerCase();
+  const raw = userId.trim();
+  const gm = /^GM(\d+)$/i.exec(raw);
+  if (gm && !/^GMMP/i.test(raw) && !/^GMR/i.test(raw)) {
+    const n = Number(gm[1]);
+    const pk = n >= 100000 ? n - 100000 : n;
+    if (Number.isFinite(pk) && pk > 0) return `${roleKey}:pk:${pk}`;
+  }
+  if (/^\d+$/.test(raw)) return `${roleKey}:pk:${Number(raw)}`;
+  const aliases = expandCampaignUserIdCandidates(raw)
+    .map((id) => id.trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+  return `${roleKey}:${aliases[0] ?? raw.toLowerCase()}`;
+}
+
 function preferNativeAndroidFcm(recipients: Recipient[]): Recipient[] {
   if (!isFirebaseAdminConfigured()) return recipients;
   const usersWithAndroidFcm = new Set<string>();
@@ -92,13 +115,17 @@ function preferNativeAndroidFcm(recipients: Recipient[]): Recipient[] {
     if (r.platform !== "android") continue;
     if (!r.deviceToken || r.deviceToken === "__in_app_only__") continue;
     if (isExpoPushTokenString(r.deviceToken)) continue;
-    usersWithAndroidFcm.add(`${r.role}:${r.userId}`);
+    usersWithAndroidFcm.add(canonicalRecipientKey(r.role, r.userId));
   }
   if (usersWithAndroidFcm.size === 0) return recipients;
-  return recipients.filter((r) => {
-    if (!isExpoPushTokenString(r.deviceToken)) return true;
-    return !usersWithAndroidFcm.has(`${r.role}:${r.userId}`);
-  });
+  return recipients.filter((r) =>
+    shouldKeepPushRecipient({
+      platform: r.platform,
+      isExpoToken: isExpoPushTokenString(r.deviceToken),
+      sameUserHasAndroidFcm: usersWithAndroidFcm.has(canonicalRecipientKey(r.role, r.userId)),
+      firebaseConfigured: true,
+    }),
+  );
 }
 
 async function tokensForUserIds(
@@ -108,13 +135,15 @@ async function tokensForUserIds(
 ): Promise<Recipient[]> {
   if (userIds.length === 0) return [];
   const sql = getSql();
+  const lookupIds = role === "customer" ? expandCustomerPushUserIds(userIds) : userIds;
   const rows = (await sql`
     SELECT user_id, role, device_type, expo_push_token AS token
     FROM public.expo_push_tokens
-    WHERE user_id = ANY(${userIds}::text[])
+    WHERE user_id = ANY(${lookupIds}::text[])
       AND expo_push_token IS NOT NULL
       ${stalenessSql(sql, "updated_at", opts?.ignoreStaleness)}
       ${role && role !== "all" ? sql`AND lower(role) = ${role}` : sql``}
+    ORDER BY updated_at DESC NULLS LAST
   `) as unknown as Array<{
     user_id: string;
     role: string | null;
@@ -133,37 +162,8 @@ async function tokensForUserIds(
 
 /**
  * Native FCM (Android/web) tokens. APNs skipped for direct FCM send.
- * `includeAppFcmWithoutExpo` — add app Android FCM only when that user has no Expo token.
+ * Identical token strings are sent once. Distinct devices are all sent.
  */
-function keepLatestNativeTokenPerDevice(
-  rows: Array<{
-    user_id: string;
-    role: string;
-    platform: string | null;
-    native_token: string;
-    source: string | null;
-    device_model?: string | null;
-    last_seen_at?: Date | string | null;
-  }>
-): typeof rows {
-  const best = new Map<string, (typeof rows)[number]>();
-  const seenAt = (row: (typeof rows)[number]) => {
-    const raw = row.last_seen_at;
-    if (!raw) return 0;
-    const t = raw instanceof Date ? raw.getTime() : Date.parse(String(raw));
-    return Number.isFinite(t) ? t : 0;
-  };
-  for (const row of rows) {
-    const model = String(row.device_model ?? "").trim();
-    const key = `${row.user_id}|${row.role}|${row.platform ?? ""}|${row.source ?? "app"}|${
-      model || row.native_token
-    }`;
-    const prev = best.get(key);
-    if (!prev || seenAt(row) >= seenAt(prev)) best.set(key, row);
-  }
-  return [...best.values()];
-}
-
 async function nativeFcmTokens(opts: {
   userIds?: string[];
   role?: NotificationRole;
@@ -173,7 +173,13 @@ async function nativeFcmTokens(opts: {
   ignoreStaleness?: boolean;
 }): Promise<Recipient[]> {
   const sql = getSql();
-  const userIds = opts.userIds?.map((s) => s.trim()).filter(Boolean) ?? [];
+  const userIds = (
+    opts.role === "customer"
+      ? expandCustomerPushUserIds(opts.userIds ?? [])
+      : (opts.userIds ?? [])
+  )
+    .map((s) => s.trim())
+    .filter(Boolean);
   const storeIds = opts.storeIds?.filter((id) => Number.isFinite(id) && id > 0) ?? [];
   const role = opts.role && opts.role !== "all" ? opts.role : null;
   const stale = stalenessSql(sql, "last_seen_at", opts.ignoreStaleness);
@@ -223,7 +229,7 @@ async function nativeFcmTokens(opts: {
 
   // App Android FCM is always included; preferNativeAndroidFcm drops Expo
   // duplicates for the same user so we do not double-notify.
-  return keepLatestNativeTokenPerDevice(rows)
+  return dedupeNativeTokensForDispatch(rows)
     .filter((r) => {
       if (!r.native_token || isExpoPushTokenString(r.native_token)) return false;
       return true;

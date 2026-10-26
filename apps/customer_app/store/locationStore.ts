@@ -24,9 +24,14 @@ import {
   type LocationPermissionStatus,
   type DeviceLocationReadiness,
 } from "@gatimitra/expo-location-kit";
-import { reverseGeocode, type ReverseGeocodeResult } from "@/services/location.service";
+import {
+  reverseGeocode,
+  seedReverseGeocodeCache,
+  type ReverseGeocodeResult,
+} from "@/services/location.service";
 import {
   loadLastKnownLocation,
+  peekLastKnownLocation,
   saveLastKnownLocation,
   classifyFreshness,
   type LocationFreshness,
@@ -53,7 +58,7 @@ export {
 };
 export type { LocationPermissionStatus, DeviceLocationReadiness };
 
-const GEOCODE_MS = 2_000;
+const GEOCODE_MS = 1_200;
 const STORAGE_KEY = "@gatimitra/last_selected_location_v1";
 /** Toggle verbose location logging for field debugging (raw coords, accuracy, PIN). */
 const LOCATION_DEBUG = __DEV__;
@@ -167,10 +172,22 @@ function currentDeviceFix(): DeviceFix | null {
  * (section 10) — persist them, then reverse-geocode asynchronously and fill the address when
  * it resolves. A per-commit token guarantees only the latest coordinate's address is applied.
  */
+function isPlaceholderAddress(address: ReverseGeocodeResult | null | undefined): boolean {
+  if (!address) return true;
+  const primary = (address.primary ?? "").trim().toLowerCase();
+  return (
+    (primary === "" || primary === "current location") &&
+    !address.city &&
+    !address.state &&
+    !address.pincode
+  );
+}
+
 function commitDeviceFix(fix: DeviceFix, opts: { refining: boolean }): void {
   const addrToken = ++addressCommitSeq;
   AsyncStorage.removeItem(STORAGE_KEY).catch(() => {}); // drop any stale selected pin
   const prevAddress = useLocationStore.getState().address;
+  const keepVisibleAddress = !isPlaceholderAddress(prevAddress);
   useLocationStore.setState({
     coords: { latitude: fix.latitude, longitude: fix.longitude },
     coordsAccuracy: fix.accuracy,
@@ -181,7 +198,8 @@ function commitDeviceFix(fix: DeviceFix, opts: { refining: boolean }): void {
     sessionSelectionKind: null,
     sessionBoundAddressId: null,
     loading: false,
-    refining: opts.refining,
+    // Keep the last real label on screen while Mapbox runs — never flash "Updating…".
+    refining: keepVisibleAddress ? false : opts.refining,
     error: null,
   });
   saveLastKnownLocation({
@@ -198,15 +216,17 @@ function commitDeviceFix(fix: DeviceFix, opts: { refining: boolean }): void {
     if (addrToken !== addressCommitSeq) return; // superseded by a newer fix
     if (useLocationStore.getState().locationSource === "selected") return;
     logMetric("reverse_geocode_ms", Date.now() - geoT0);
-    // Address is the user-visible signal — stop the "Updating…" hint even if GPS refine continues.
-    useLocationStore.setState({ address, refining: false });
+    const prev = useLocationStore.getState().address;
+    // Timed-out / empty Mapbox must never replace a real street label with "Current location".
+    const nextAddress = isPlaceholderAddress(address) && !isPlaceholderAddress(prev) ? prev : address;
+    useLocationStore.setState({ address: nextAddress, refining: false });
     saveLastKnownLocation({
       lat: fix.latitude,
       lon: fix.longitude,
       accuracy: fix.accuracy,
       updatedAt: fix.timestampMs,
       source: fix.source,
-      address,
+      address: nextAddress,
     });
   })();
 }
@@ -228,6 +248,12 @@ function hasFreshUsableCurrentCoords(): boolean {
   if (s.locationFreshness !== "FRESH" && s.locationFreshness !== "RECENT") return false;
   if (s.coordsAccuracy != null && s.coordsAccuracy > ACCEPTABLE_ACCURACY_M) return false;
   return true;
+}
+
+function hasPaintableCurrentPin(): boolean {
+  const s = useLocationStore.getState();
+  if (s.locationSource === "selected") return false;
+  return s.coords != null;
 }
 
 /** Phase-2 accurate refine — never awaited by progressiveDeviceFetch callers. */
@@ -286,12 +312,40 @@ function progressiveDeviceFetch(): Promise<boolean> {
   return deviceFetchInFlight;
 }
 
+async function paintCachedDeviceLocationIfEmpty(): Promise<void> {
+  const cur = useLocationStore.getState();
+  if (cur.locationSource === "selected") return;
+  if (cur.coords) return;
+  let cached: PersistedDeviceLocation | null = null;
+  try {
+    cached = await loadLastKnownLocation();
+  } catch {
+    cached = null;
+  }
+  if (!cached) return;
+  const next = useLocationStore.getState();
+  if (next.locationSource === "selected" || next.coords) return;
+  useLocationStore.setState({
+    coords: { latitude: cached.lat, longitude: cached.lon },
+    address: cached.address,
+    coordsAccuracy: cached.accuracy,
+    coordsUpdatedAt: cached.updatedAt,
+    coordsSource: cached.source,
+    locationFreshness: classifyFreshness(cached.updatedAt),
+    locationSource: "current",
+    refining: true,
+    loading: false,
+  });
+}
+
 async function runProgressiveDeviceFetch(): Promise<boolean> {
   const seq = ++locationFetchSeq;
   const t0 = Date.now();
 
-  // Already have a fresh pin from hydrate / reconcile — optional refine only.
-  if (hasFreshUsableCurrentCoords()) {
+  await paintCachedDeviceLocationIfEmpty();
+
+  // Cached / hydrate pin is enough to unblock home — refine GPS in the background.
+  if (hasPaintableCurrentPin() || hasFreshUsableCurrentCoords()) {
     if (__DEV__) {
       // eslint-disable-next-line no-console
       console.log("[location] progressive_skip_fresh_current", {
@@ -401,26 +455,41 @@ type LocationState = {
   refetchLocation: (options?: { forceDevice?: boolean }) => Promise<void>;
 };
 
+const bootCachedLocation = peekLastKnownLocation();
+if (bootCachedLocation?.address) {
+  seedReverseGeocodeCache(bootCachedLocation.lon, bootCachedLocation.lat, bootCachedLocation.address);
+}
+
 export const useLocationStore = create<LocationState>((set, get) => ({
   permissionStatus: "undetermined",
   loading: false,
   error: null,
-  coords: null,
-  address: null,
-  coordsAccuracy: null,
-  coordsUpdatedAt: null,
-  coordsSource: null,
-  locationFreshness: "UNKNOWN",
+  coords: bootCachedLocation
+    ? { latitude: bootCachedLocation.lat, longitude: bootCachedLocation.lon }
+    : null,
+  address: bootCachedLocation?.address ?? null,
+  coordsAccuracy: bootCachedLocation?.accuracy ?? null,
+  coordsUpdatedAt: bootCachedLocation?.updatedAt ?? null,
+  coordsSource: bootCachedLocation?.source ?? null,
+  locationFreshness: classifyFreshness(bootCachedLocation?.updatedAt),
   refining: false,
-  locationSource: null,
+  locationSource: bootCachedLocation ? "current" : null,
   sessionSelectionKind: null,
   sessionBoundAddressId: null,
-  locationHydrated: false,
+  locationHydrated: !!bootCachedLocation,
   showPermissionModal: false,
   locationSheetDismissedSession: false,
 
   hydrate: async () => {
-    if (get().locationHydrated) return;
+    const already = get();
+    if (
+      already.locationHydrated &&
+      already.coords &&
+      !isPlaceholderAddress(already.address)
+    ) {
+      AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+      return;
+    }
     // Clear any previously persisted *selected* pin so cold start cannot lock onto an old city.
     // Explicit selections are session-scoped; live GPS is the default for discovery.
     AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
@@ -433,14 +502,19 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     } catch {
       cached = null;
     }
+    if (cached?.address) {
+      seedReverseGeocodeCache(cached.lon, cached.lat, cached.address);
+    }
     const cur = get();
-    const canApplyCache =
-      cached != null && cur.coords == null && cur.locationSource !== "selected";
+    const canApplyCache = cached != null && cur.locationSource !== "selected";
+    const fillMissingAddress =
+      canApplyCache && cached && isPlaceholderAddress(cur.address) && !isPlaceholderAddress(cached.address);
+    const fillMissingCoords = canApplyCache && cached && cur.coords == null;
     set({
       locationHydrated: true,
       sessionSelectionKind: null,
       sessionBoundAddressId: null,
-      ...(canApplyCache && cached
+      ...(fillMissingCoords && cached
         ? {
             coords: { latitude: cached.lat, longitude: cached.lon },
             address: cached.address,
@@ -450,7 +524,11 @@ export const useLocationStore = create<LocationState>((set, get) => ({
             locationFreshness: classifyFreshness(cached.updatedAt),
             locationSource: "current",
           }
-        : {}),
+        : fillMissingAddress && cached
+          ? { address: cached.address, locationSource: cur.locationSource ?? "current" }
+          : cur.coords
+            ? { locationSource: cur.locationSource ?? "current" }
+            : {}),
     });
   },
 
@@ -576,6 +654,13 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
     set({ loading: true, error: null });
     try {
+      // Last-known / hydrate already painted — don't block the header on a
+      // native permission round-trip; refine GPS in the background.
+      if (get().coords && get().locationSource === "current") {
+        set({ loading: false });
+        void progressiveDeviceFetch();
+        return;
+      }
       const permT0 = Date.now();
       const readiness = await getDeviceLocationReadiness();
       logMetric("location_permission_ms", Date.now() - permT0);

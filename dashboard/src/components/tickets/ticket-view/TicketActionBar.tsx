@@ -489,6 +489,12 @@ export function TicketActionBar({
       setSelectedMergeTickets([]);
       setMergeReason("");
       void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.mergeCandidates(ticketIdNum) });
+      void queryClient.invalidateQueries({
+        predicate: (q) => q.queryKey[0] === "tickets" && q.queryKey[1] === "list",
+      });
+      for (const sourceId of parsedDuplicateIds) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.tickets.detail(sourceId) });
+      }
       onMergeSuccess?.();
     } catch {
       toast("Failed to merge tickets", "error");

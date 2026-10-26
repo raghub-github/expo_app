@@ -17,6 +17,7 @@ import {
   finalizeOrder,
   orderLinePricingFieldsFromSnapshot,
 } from "./order.placement.service.js";
+import { resolveCheckoutFulfillmentAddress } from "./fulfillment-address.js";
 import { getEnv } from "../../config/env.js";
 import { getRoute, haversineDistanceKm } from "../distance/distance.service.js";
 import { resolveOrderItemsVegNonVeg } from "../../lib/order-item-veg.js";
@@ -511,7 +512,7 @@ const createOrderBodySchema = z.object({
   merchantId: z.string().min(1),
   merchantParentId: z.union([z.string(), z.number()]).optional(),
   items: z.array(createOrderItemSchema).min(1),
-  addressId: z.string().min(1),
+  addressId: z.string().min(1).optional().nullable(),
   paymentMethod: z.string(),
   tipAmount: z.number().nonnegative().optional(),
   donationAmount: z.number().nonnegative().optional(),
@@ -525,6 +526,8 @@ const createOrderBodySchema = z.object({
   subscriptionOptIn: z.boolean().optional(),
   subscriptionPlanId: z.coerce.number().int().positive().optional(),
   subscriptionBillingCycle: z.enum(["weekly", "monthly", "yearly"]).optional(),
+  /** 'delivery' (default) or 'self_pickup'. Delivery still requires addressId. */
+  deliveryType: z.enum(["delivery", "self_pickup"]).optional(),
 });
 
 const paymentMethodToEnum = (method: string): "upi" | "card" | "wallet" | "online" | "cod" | "other" => {
@@ -1108,7 +1111,7 @@ export async function orderRoutes(app: FastifyInstance) {
     merchantId: z.string().min(1),
     merchantParentId: z.union([z.string(), z.number()]).optional(),
     items: z.array(createOrderItemSchema).min(1),
-    addressId: z.string().min(1),
+    addressId: z.string().min(1).optional().nullable(),
     paymentMethod: z.string(),
     tipAmount: z.number().nonnegative().optional(),
     donationAmount: z.number().nonnegative().optional(),
@@ -1161,10 +1164,6 @@ export async function orderRoutes(app: FastifyInstance) {
         (typeof headerIdem === "string" ? headerIdem.trim() : "") ||
         body.idempotencyKey?.trim() ||
         null;
-      const addressIdNum = parseInt(body.addressId, 10);
-      if (Number.isNaN(addressIdNum)) {
-        return reply.status(400).send({ error: "INVALID_ADDRESS_DATA", message: "Invalid addressId." });
-      }
       const result = await createPendingOrder(db, {
         customerId: customerPk,
         merchantId: body.merchantId,
@@ -1175,7 +1174,7 @@ export async function orderRoutes(app: FastifyInstance) {
           ...it,
           addons: (it.addons ?? []).map((a) => ({ ...a, addonId: String(a.addonId) })),
         })),
-        addressId: addressIdNum,
+        addressId: body.addressId ?? null,
         paymentMethod: body.paymentMethod,
         tipAmount: body.tipAmount,
         donationAmount: body.donationAmount,
@@ -2398,33 +2397,43 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(403).send({ error: "Customer not found" });
       }
 
-      const addressIdNum = parseInt(addressId, 10);
-      if (Number.isNaN(addressIdNum)) {
-        return reply.status(400).send({ error: "Invalid addressId" });
+      const fulfillmentAddress = resolveCheckoutFulfillmentAddress({
+        deliveryType: body.deliveryType ?? "delivery",
+        addressId,
+      });
+      if (!fulfillmentAddress.ok) {
+        return reply.status(400).send({
+          error: fulfillmentAddress.code,
+          message: fulfillmentAddress.message,
+        });
       }
+      const isSelfPickup = fulfillmentAddress.selfPickup;
+      const addressIdNum = fulfillmentAddress.addressId;
 
-      const [addrRow] = await db
-        .select({
-          addressLine1: customerAddresses.addressLine1,
-          addressLine2: customerAddresses.addressLine2,
-          city: customerAddresses.city,
-          state: customerAddresses.state,
-          postalCode: customerAddresses.postalCode,
-          latitude: customerAddresses.latitude,
-          longitude: customerAddresses.longitude,
-        })
-        .from(customerAddresses)
-        .where(
-          and(
-            eq(customerAddresses.id, addressIdNum),
-            eq(customerAddresses.customerId, customerPk),
-            eq(customerAddresses.isActive, true),
-            isNull(customerAddresses.deletedAt)
-          )
-        )
-        .limit(1);
+      const [addrRow] = addressIdNum != null
+        ? await db
+            .select({
+              addressLine1: customerAddresses.addressLine1,
+              addressLine2: customerAddresses.addressLine2,
+              city: customerAddresses.city,
+              state: customerAddresses.state,
+              postalCode: customerAddresses.postalCode,
+              latitude: customerAddresses.latitude,
+              longitude: customerAddresses.longitude,
+            })
+            .from(customerAddresses)
+            .where(
+              and(
+                eq(customerAddresses.id, addressIdNum),
+                eq(customerAddresses.customerId, customerPk),
+                eq(customerAddresses.isActive, true),
+                isNull(customerAddresses.deletedAt)
+              )
+            )
+            .limit(1)
+        : [undefined];
 
-      if (!addrRow) {
+      if (!isSelfPickup && !addrRow) {
         return reply.status(400).send({ error: "Address not found" });
       }
 
@@ -2448,13 +2457,14 @@ export async function orderRoutes(app: FastifyInstance) {
           customerId: Number(customerPk),
           merchantId,
           items: normItems,
-          addressId: addressIdNum,
+          ...(isSelfPickup || addressIdNum == null ? {} : { addressId: addressIdNum }),
           tipAmount: tipAmount ?? 0,
           donationAmount: donationAmount ?? 0,
           couponCode: couponCode?.trim() || null,
           pickupLat,
           pickupLon,
           subscriptionOptIn: subscriptionOptIn === true,
+          deliveryType: isSelfPickup ? "self_pickup" : "delivery",
         });
         if (!billRes.ok) {
           return reply.status(400).send({ error: billRes.code, message: billRes.message });
@@ -2464,13 +2474,14 @@ export async function orderRoutes(app: FastifyInstance) {
         billingRulesetVersion = billRes.billing.ruleset_version;
       }
 
-      const dropAddressRaw =
-        [addrRow.addressLine1, addrRow.addressLine2, addrRow.city, addrRow.state, addrRow.postalCode]
-          .filter(Boolean)
-          .join(", ") || "";
-      const dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
-      const dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
-      const deliveryAddress = dropAddressRaw;
+      let dropAddressRaw = addrRow
+        ? [addrRow.addressLine1, addrRow.addressLine2, addrRow.city, addrRow.state, addrRow.postalCode]
+            .filter(Boolean)
+            .join(", ") || ""
+        : "";
+      let dropLat = addrRow?.latitude != null ? Number(addrRow.latitude) : 0;
+      let dropLon = addrRow?.longitude != null ? Number(addrRow.longitude) : 0;
+      let deliveryAddress = isSelfPickup ? "" : dropAddressRaw;
       const deliveryLat = dropLat;
       const deliveryLon = dropLon;
 
@@ -2541,6 +2552,19 @@ export async function orderRoutes(app: FastifyInstance) {
         });
       }
 
+      if (isSelfPickup && storeForOrder) {
+        dropAddressRaw = (storeForOrder.fullAddress ?? pickupAddressRaw ?? "").trim();
+        dropLat =
+          storeForOrder.latitude != null && Number.isFinite(Number(storeForOrder.latitude))
+            ? Number(storeForOrder.latitude)
+            : dropLat;
+        dropLon =
+          storeForOrder.longitude != null && Number.isFinite(Number(storeForOrder.longitude))
+            ? Number(storeForOrder.longitude)
+            : dropLon;
+        deliveryAddress = "";
+      }
+
       let routeCommissionPercent = 0;
       try {
         const resolved = await resolveStoreCommission(merchantStoreId);
@@ -2572,9 +2596,9 @@ export async function orderRoutes(app: FastifyInstance) {
           : null;
 
       // Canonical distance: route-based between store pickup and selected drop address.
-      // Use routing engine with internal fallback to Haversine when providers fail.
+      // Takeaway has no delivery leg.
       let distanceKm = 0;
-      try {
+      if (!isSelfPickup) try {
         const env = getEnv();
         const route = await getRoute({
           origin: { lat: pickupLatNum, lng: pickupLonNum },
@@ -2636,10 +2660,18 @@ export async function orderRoutes(app: FastifyInstance) {
             dropAddressRaw: dropAddressNormalized ?? " ",
             dropLat: String(dropLat),
             dropLon: String(dropLon),
-            deliveryAddress: deliveryAddressForDb ?? undefined,
-            distanceKm: String(distanceKm),
+            deliveryAddress: isSelfPickup ? undefined : deliveryAddressForDb ?? undefined,
+            deliveryType: isSelfPickup ? "self_pickup" : "delivery",
+            distanceKm: String(isSelfPickup ? 0 : distanceKm),
             paymentStatus: paymentStatus === "PAID" ? "completed" : "pending",
             paymentMethod: paymentMethodEnum,
+            checkoutMetadata: {
+              deliveryType: isSelfPickup ? "self_pickup" : "delivery",
+              fulfillmentType: isSelfPickup ? "takeaway" : "delivery",
+              ...(isSelfPickup
+                ? { pickupInstructions: "Collect this order from the restaurant." }
+                : {}),
+            },
             billingSnapshot: billingSnapshot ?? undefined,
             billingRulesetVersion: billingRulesetVersion ?? undefined,
           } as any);

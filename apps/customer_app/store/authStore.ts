@@ -57,13 +57,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await runCustomerPushUnregister(previousAccessToken);
     }
 
-    await authService.persistSession(s);
-    if (crossesAccountBoundary) {
-      await scopedClear(incomingCustomerId);
-    } else {
+    try {
+      await authService.persistSession(s);
+    } catch (e) {
+      console.warn("[AuthStore] persistSession failed", e);
+    }
+    // Publish session first so OTP → home is not blocked (or crashed) by
+    // lazily loading customer teardown stores.
+    set({ session: s });
+    try {
+      if (crossesAccountBoundary) {
+        await scopedClear(incomingCustomerId);
+      } else {
+        setActiveCustomerScopeId(incomingCustomerId);
+      }
+    } catch (e) {
+      console.warn("[AuthStore] post-login scoped clear failed", e);
       setActiveCustomerScopeId(incomingCustomerId);
     }
-    set({ session: s });
   },
 
   hydrate: async () => {

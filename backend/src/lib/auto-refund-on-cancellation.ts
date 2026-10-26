@@ -34,6 +34,7 @@ import {
   type RefundExecutionResult,
 } from "../modules/orders/order-refund-executor.js";
 import { syncOrderRefundCompletionMarkers } from "./order-refund-completion-sync.js";
+import { resolveRefundablePaidAmountFromFacts } from "./refund-captured-amount.js";
 
 export interface AutoRefundArgs {
   /** orders_core primary key. */
@@ -98,13 +99,14 @@ function resolveRefundAmount(
   paidAmount: number,
   remainingCap: number
 ): number {
+  if (paidAmount <= 0.005 || remainingCap <= 0.005) return 0;
   let amount =
     typeof args.amount === "number" && Number.isFinite(args.amount) && args.amount > 0
       ? round2(args.amount)
       : remainingCap;
   if (amount <= 0.005) return 0;
-  if (paidAmount > 0 && amount > paidAmount) amount = paidAmount;
-  if (remainingCap > 0 && amount > remainingCap) amount = remainingCap;
+  if (amount > paidAmount) amount = paidAmount;
+  if (amount > remainingCap) amount = remainingCap;
   return amount;
 }
 
@@ -374,6 +376,7 @@ async function resolvePaidAmount(sql: Sql, orderCoreId: number): Promise<number>
   const rows = await sql`
     SELECT
       c.grand_total AS grand_total,
+      c.order_type AS order_type,
       c.payment_method AS core_payment_method,
       c.payment_status AS core_payment_status,
       p.amount      AS paid_amount,
@@ -407,6 +410,7 @@ async function resolvePaidAmount(sql: Sql, orderCoreId: number): Promise<number>
   `;
   const r = rows[0] as {
     grand_total?: unknown;
+    order_type?: unknown;
     core_payment_method?: unknown;
     core_payment_status?: unknown;
     paid_amount?: unknown;
@@ -417,7 +421,6 @@ async function resolvePaidAmount(sql: Sql, orderCoreId: number): Promise<number>
   } | undefined;
   if (!r) return -1; // signal not found
 
-  const round2 = (n: number) => Math.round(n * 100) / 100;
   const num = (v: unknown) => {
     const n = typeof v === "number" ? v : Number(v);
     return Number.isFinite(n) ? n : 0;
@@ -435,66 +438,19 @@ async function resolvePaidAmount(sql: Sql, orderCoreId: number): Promise<number>
     gatiCash = Math.max(0, num(breakdown.gatiCashUsed));
     gatewayAmt = Math.max(0, num(breakdown.gatewayAmount));
   }
-  if (gatiCash <= 0.005) gatiCash = Math.max(0, num(r.pending_gati_cash));
 
-  const paidRow = num(r.paid_amount);
-  const gw = String(r.payment_gateway ?? "").toLowerCase();
-  const methodCore = String(r.core_payment_method ?? "").toLowerCase();
-  const methodPay = String(r.payment_method ?? "").toLowerCase();
-  if (gatewayAmt <= 0.005 && paidRow > 0.005 && (gw === "razorpay" || gw === "upi" || gw === "card")) {
-    gatewayAmt = paidRow;
-  }
-  if (gatiCash <= 0.005 && paidRow > 0.005 && (gw === "gati_cash" || gw === "wallet")) {
-    gatiCash = paidRow;
-  }
-  // Prepaid GatiCash often stamped payment_gateway=online / payment_method=wallet.
-  if (
-    gatiCash <= 0.005 &&
-    gatewayAmt <= 0.005 &&
-    paidRow > 0.005 &&
-    (gw === "online" ||
-      gw === "mixed" ||
-      methodCore === "wallet" ||
-      methodCore === "gati_cash" ||
-      methodCore === "online" ||
-      methodPay === "wallet" ||
-      methodPay === "gati_cash" ||
-      !gw)
-  ) {
-    gatiCash = paidRow;
-  }
-
-  const fromBreakdown = round2(gatiCash + gatewayAmt);
-  if (fromBreakdown > 0.005) return fromBreakdown;
-  if (paidRow > 0.005) return round2(paidRow);
-
-  const gross = num(r.grand_total);
-  const corePayStatus = String(r.core_payment_status ?? "").toUpperCase();
-  const coreMarkedPaid = ["PAID", "CAPTURED", "SUCCESS", "COMPLETED"].includes(corePayStatus);
-  if (coreMarkedPaid && gross > 0.005) return round2(gross);
-
-  const methodLooksPrepaid =
-    methodCore === "wallet" ||
-    methodCore === "gati_cash" ||
-    methodCore === "online" ||
-    methodCore === "upi" ||
-    methodCore === "card" ||
-    methodCore === "prepaid" ||
-    methodPay === "wallet" ||
-    methodPay === "gati_cash" ||
-    methodPay === "upi" ||
-    methodPay === "card" ||
-    gw === "razorpay" ||
-    gw === "online" ||
-    gw === "mixed" ||
-    gw === "upi" ||
-    gw === "card";
-  if (methodLooksPrepaid && gross > 0.005) return round2(gross);
-
-  // Never invent a COD/cash "paid" amount from grand_total — that forces hollow
-  // wallet credits. Prepaid wallet without a payments row still needs grand_total.
-  if (gw === "cod" || gw === "cash" || methodCore === "cod" || methodCore === "cash") return 0;
-  return gross > 0.005 ? round2(gross) : 0;
+  return resolveRefundablePaidAmountFromFacts({
+    grandTotal: num(r.grand_total),
+    corePaymentMethod: String(r.core_payment_method ?? ""),
+    corePaymentStatus: String(r.core_payment_status ?? ""),
+    capturedPaidAmount: num(r.paid_amount),
+    paymentGateway: String(r.payment_gateway ?? ""),
+    paymentMethod: String(r.payment_method ?? ""),
+    gatiCashFromBreakdown: gatiCash,
+    gatewayAmtFromBreakdown: gatewayAmt,
+    pendingGatiCash: num(r.pending_gati_cash),
+    orderType: String(r.order_type ?? ""),
+  });
 }
 
 export async function resolveOrderPaidAmountForAutoRefund(

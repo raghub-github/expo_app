@@ -209,20 +209,25 @@ export async function insertPlacedOrderCoreWithTimelines(
   });
 
   const contactless = contactlessFromCheckout(checkoutMeta);
+  const selfPickup = String(deliveryType).toLowerCase() === "self_pickup";
   const checkoutEnriched = {
     ...(checkoutMeta ?? {}),
     leaveAtDoor: contactless === true ? true : checkoutMeta?.leaveAtDoor,
     contactless: contactless ?? checkoutMeta?.contactless,
     deliveryType,
+    fulfillmentType: selfPickup ? "takeaway" : "delivery",
+    ...(selfPickup ? { pickupInstructions: "Collect this order from the restaurant." } : {}),
     deliveryInitiator: "customer",
   };
 
   const pickupRaw = sanitizeStringForDb(pending.pickupAddressNormalized ?? undefined) ?? "";
-  const dropRaw = sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? "";
-  const dropLat = pending.dropLat != null ? String(pending.dropLat) : "0";
-  const dropLon = pending.dropLon != null ? String(pending.dropLon) : "0";
+  const customerDrop = sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? "";
   const pickupLat = pending.pickupLat != null ? String(pending.pickupLat) : "0";
   const pickupLon = pending.pickupLon != null ? String(pending.pickupLon) : "0";
+  // Required drop columns keep the restaurant collection point. Customer delivery_address stays empty.
+  const dropRaw = selfPickup ? pickupRaw : customerDrop;
+  const dropLat = selfPickup ? pickupLat : pending.dropLat != null ? String(pending.dropLat) : "0";
+  const dropLon = selfPickup ? pickupLon : pending.dropLon != null ? String(pending.dropLon) : "0";
 
   const foodPayload = buildFoodOrderItemsPayload(items);
   const deliveryInstructionsArr = buildDeliveryInstructionsArray(checkoutMeta);
@@ -261,10 +266,12 @@ export async function insertPlacedOrderCoreWithTimelines(
       dropAddressRaw: dropRaw || " ",
       dropLat,
       dropLon,
-      deliveryAddress: sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? undefined,
-      deliveryLatitude: dropLat,
-      deliveryLongitude: dropLon,
-      distanceKm: pending.distanceKm ?? undefined,
+      deliveryAddress: selfPickup
+        ? undefined
+        : sanitizeStringForDb(pending.deliveryAddress ?? undefined) ?? undefined,
+      deliveryLatitude: selfPickup ? undefined : dropLat,
+      deliveryLongitude: selfPickup ? undefined : dropLon,
+      distanceKm: selfPickup ? "0" : pending.distanceKm ?? undefined,
       etaSeconds: etaSeconds ?? undefined,
       paymentStatus: "completed",
       paymentMethod: input.paymentMethodEnum,

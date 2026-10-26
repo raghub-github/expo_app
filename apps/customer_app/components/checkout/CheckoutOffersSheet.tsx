@@ -112,6 +112,7 @@ function OfferRow({
   couponCode,
   applied,
   locked,
+  notEligible,
   lockReason,
   savings,
   statusLabel,
@@ -125,6 +126,8 @@ function OfferRow({
   couponCode?: string | null;
   applied?: boolean;
   locked?: boolean;
+  /** Cart cannot take checkout coupons. Replaces APPLY and is not pressable. */
+  notEligible?: boolean;
   lockReason?: string;
   savings?: number | null;
   /** Right-side status when there is no APPLY / Remove (e.g. item Boost). */
@@ -192,6 +195,14 @@ function OfferRow({
               <CheckoutText style={styles.removeBtn}>Remove</CheckoutText>
             </TouchableOpacity>
           ) : null}
+        </View>
+      ) : notEligible ? (
+        <View
+          style={[styles.applyBtn, styles.notEligibleBtn]}
+          accessibilityRole="text"
+          accessibilityLabel="Not Eligible"
+        >
+          <CheckoutText style={styles.notEligibleBtnText}>Not Eligible</CheckoutText>
         </View>
       ) : locked && onUnlockWithGatiCash ? (
         <TouchableOpacity
@@ -666,7 +677,11 @@ export function CheckoutOffersSheet({
             autoCapitalize="characters"
           />
           <TouchableOpacity
-            style={[styles.codeApplyBtn, codeApplyDisabled && styles.codeApplyBtnDisabled]}
+            style={[
+              styles.codeApplyBtn,
+              codeApplyDisabled && styles.codeApplyBtnDisabled,
+              eligibleBaseTooLow && styles.codeNotEligibleBtn,
+            ]}
             disabled={codeApplyDisabled}
             onPress={() => {
               if (codeApplyDisabled) return;
@@ -675,9 +690,13 @@ export function CheckoutOffersSheet({
             activeOpacity={0.9}
           >
             <CheckoutText
-              style={[styles.codeApplyText, codeApplyDisabled && styles.codeApplyTextDisabled]}
+              style={[
+                styles.codeApplyText,
+                codeApplyDisabled && !eligibleBaseTooLow && styles.codeApplyTextDisabled,
+                eligibleBaseTooLow && styles.notEligibleCodeText,
+              ]}
             >
-              Apply
+              {eligibleBaseTooLow ? "Not Eligible" : "Apply"}
             </CheckoutText>
           </TouchableOpacity>
         </View>
@@ -861,13 +880,12 @@ export function CheckoutOffersSheet({
                             couponCode={o.couponCode}
                             applied={isApplied}
                             locked={locked}
+                            notEligible={eligibleBaseTooLow && !isApplied}
                             lockReason={
-                              locked
-                                ? eligibleBaseTooLow
-                                  ? "Checkout coupons is not eligible for this order"
-                                  : minAmt != null
-                                    ? formatMinOrderLockReason(liveGap, minAmt)
-                                    : "This offer is not eligible on this order yet."
+                              locked && !eligibleBaseTooLow
+                                ? minAmt != null
+                                  ? formatMinOrderLockReason(liveGap, minAmt)
+                                  : "This offer is not eligible on this order yet."
                                 : undefined
                             }
                             savings={isApplied ? savingsForPlatform(o.id) : null}
@@ -921,13 +939,12 @@ export function CheckoutOffersSheet({
                             couponCode={o.couponCode}
                             applied={isApplied}
                             locked={locked}
+                            notEligible={eligibleBaseTooLow && !isApplied}
                             lockReason={
-                              locked
-                                ? eligibleBaseTooLow
-                                  ? "Checkout coupons is not eligible for this order"
-                                  : minAmt != null
-                                    ? formatMinOrderLockReason(liveGap, minAmt)
-                                    : o.reason || "This offer is not eligible on this order yet."
+                              locked && !eligibleBaseTooLow
+                                ? minAmt != null
+                                  ? formatMinOrderLockReason(liveGap, minAmt)
+                                  : o.reason || "This offer is not eligible on this order yet."
                                 : undefined
                             }
                             savings={isApplied ? savingsForPlatform(o.id) : null}
@@ -994,7 +1011,8 @@ export function CheckoutOffersSheet({
                             subtitle={o.summary}
                             couponCode={o.couponCode}
                             locked
-                            lockReason={(() => {
+                            notEligible={eligibleBaseTooLow}
+                            lockReason={eligibleBaseTooLow ? undefined : (() => {
                               const minAmt = resolveOfferMinOrderAmount({
                                 minCartAmount: o.minCartAmount ?? knownPlatformMinRef.current.get(o.id),
                                 summary: o.summary,
@@ -1039,9 +1057,10 @@ export function CheckoutOffersSheet({
                                 subtitle={o.summary}
                                 couponCode={o.requiresCouponCode}
                                 locked
+                                notEligible={eligibleBaseTooLow}
                                 lockReason={
                                   eligibleBaseTooLow
-                                    ? "Checkout coupons is not eligible for this order"
+                                    ? undefined
                                     : formatAddMoreToUnlock(liveRelockGap)
                                 }
                                 onUnlockWithGatiCash={
@@ -1089,7 +1108,8 @@ export function CheckoutOffersSheet({
                               subtitle={o.summary}
                               couponCode={o.requiresCouponCode}
                               locked
-                              lockReason="Checkout coupons is not eligible for this order"
+                              notEligible
+                              lockReason={undefined}
                             />
                           );
                         }
@@ -1176,7 +1196,12 @@ export function CheckoutOffersSheet({
                             subtitle={o.summary}
                             couponCode={o.requiresCouponCode}
                             locked
-                            lockReason={o.liveLockReason || o.lockReason || o.reason}
+                            notEligible={eligibleBaseTooLow}
+                            lockReason={
+                              eligibleBaseTooLow
+                                ? undefined
+                                : o.liveLockReason || o.lockReason || o.reason
+                            }
                             gatiCashPending={
                               offerKey != null && pendingMissedOfferKey === offerKey
                             }
@@ -1219,13 +1244,12 @@ export function CheckoutOffersSheet({
                             subtitle={c.description}
                             applied={isApplied}
                             locked={locked}
+                            notEligible={eligibleBaseBlocked && !isApplied}
                             lockReason={
-                              locked
-                                ? eligibleBaseBlocked
-                                  ? "Checkout coupons is not eligible for this order"
-                                  : minAmt != null
-                                    ? formatMinOrderLockReason(gap, minAmt)
-                                    : "This coupon is not eligible on this order yet."
+                              locked && !eligibleBaseBlocked
+                                ? minAmt != null
+                                  ? formatMinOrderLockReason(gap, minAmt)
+                                  : "This coupon is not eligible on this order yet."
                                 : undefined
                             }
                             savings={isApplied ? savingsForLabel(c.code) : null}
@@ -1441,6 +1465,19 @@ const styles = StyleSheet.create({
   },
   applyBtnText: { fontSize: 10, fontWeight: "800", color: "#FFFFFF", letterSpacing: 0.4 },
   applyBtnTextDisabled: { color: "#94A3B8" },
+  notEligibleBtn: {
+    backgroundColor: "#FEE2E2",
+    maxWidth: 88,
+    paddingHorizontal: 8,
+  },
+  notEligibleBtnText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#B91C1C",
+    textAlign: "center",
+  },
+  notEligibleCodeText: { fontSize: 11, color: "#B91C1C" },
+  codeNotEligibleBtn: { backgroundColor: "#FEE2E2" },
   offerStatusLabel: {
     maxWidth: 72,
     fontSize: 11,

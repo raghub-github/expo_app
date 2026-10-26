@@ -32,6 +32,8 @@ export declare const PushRegisterBodySchema: z.ZodObject<{
     app_version: z.ZodNullable<z.ZodOptional<z.ZodString>>;
     locale: z.ZodNullable<z.ZodOptional<z.ZodString>>;
     timezone: z.ZodNullable<z.ZodOptional<z.ZodString>>;
+    previous_expo_push_token: z.ZodNullable<z.ZodOptional<z.ZodString>>;
+    previous_native_push_token: z.ZodNullable<z.ZodOptional<z.ZodString>>;
 }, z.core.$strip>;
 export type PushRegisterBody = z.infer<typeof PushRegisterBodySchema>;
 export declare const PushUnregisterBodySchema: z.ZodObject<{

@@ -14,6 +14,8 @@ export type RegisterPushBody = {
   app_version?: string | null;
   locale?: string | null;
   timezone?: string | null;
+  previous_expo_push_token?: string | null;
+  previous_native_push_token?: string | null;
 };
 
 export type UnregisterPushBody = {
