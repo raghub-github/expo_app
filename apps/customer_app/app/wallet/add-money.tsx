@@ -22,12 +22,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { WalletSubpageHeader } from "@/components/wallet/WalletSubpageHeader";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult } from "@/components/RazorpayCheckoutModal";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { walletService } from "@/services/wallet.service";
 import { useWalletDark } from "@/hooks/useWalletDark";
+import { fetchProfileWithCache, PROFILE_QUERY_OPTIONS } from "@/lib/profileCache";
 
 const PAGE_BG = "#F5F5F7";
 const TEXT = "#111827";
@@ -53,6 +55,10 @@ export default function WalletAddMoneyScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const dark = useWalletDark();
+  const { data: profile } = useQuery({
+    ...PROFILE_QUERY_OPTIONS,
+    queryFn: () => fetchProfileWithCache(),
+  });
   const [amount, setAmount] = useState(2000);
   const [amountInputFocused, setAmountInputFocused] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
@@ -97,7 +103,8 @@ export default function WalletAddMoneyScreen() {
   }, [amountInputFocused]);
 
   const amountDisplay = useMemo(() => formatAmount(amount), [amount]);
-  const canProceed = amount > 0 && !paying;
+  const paymentBusy = paying || razorpayVisible || simulatedPayment != null;
+  const canProceed = amount > 0 && !paymentBusy;
 
   const finalizeTopup = useCallback(
     async (result: RazorpayPaymentResult) => {
@@ -308,13 +315,28 @@ export default function WalletAddMoneyScreen() {
       <RazorpayCheckoutModal
         visible={razorpayVisible && razorpayParams != null}
         orderParams={razorpayParams}
+        nativeOnly
+        description="Add money to GatiCash"
+        prefill={{
+          contact: profile?.mobile_number ?? null,
+          email: profile?.email ?? null,
+          name: profile?.full_name ?? null,
+        }}
         themeColor={ACCENT}
         onSuccess={(result) => void finalizeTopup(result)}
+        onFailure={() => {
+          setRazorpayVisible(false);
+          setRazorpayParams(null);
+          setPendingIntentId(null);
+          Alert.alert(
+            "Payment unavailable",
+            "GatiCash top-up opens in the Android payment screen. Update the GatiMitra app and try again."
+          );
+        }}
         onCancel={() => {
           setRazorpayVisible(false);
           setRazorpayParams(null);
           setPendingIntentId(null);
-          // Match checkout: silent dismiss — user can tap Pay again.
         }}
       />
 

@@ -13,6 +13,7 @@ import {
   setNotificationHandlerDefaults,
 } from "./token";
 import { registerExpoPushTokenOnBackend, unregisterPushTokenOnBackend } from "./register";
+import { previousTokenToRetire } from "./tokenRotation";
 import { markClickedRemote } from "./inbox";
 import type {
   PushControllerOptions,
@@ -163,6 +164,39 @@ export function createPushPermissionController(
   let receivedSub: { remove: () => void } | null = null;
   let lifecycleStarted = false;
   let drainedColdStart = false;
+  let memoryExpo: string | null = null;
+  let memoryNative: string | null = null;
+
+  const loadRememberedTokens = async () => {
+    if (memoryExpo || memoryNative) return;
+    try {
+      const stored = await options.readDeviceTokens?.();
+      if (stored?.expo) memoryExpo = stored.expo;
+      if (stored?.native) memoryNative = stored.native;
+    } catch {
+      /* storage is optional */
+    }
+  };
+
+  const rememberTokens = async (expo: string | null, native: string | null) => {
+    if (expo) memoryExpo = expo;
+    if (native) memoryNative = native;
+    try {
+      await options.writeDeviceTokens?.({ expo: memoryExpo, native: memoryNative });
+    } catch {
+      /* storage is optional */
+    }
+  };
+
+  const clearRememberedTokens = async () => {
+    memoryExpo = null;
+    memoryNative = null;
+    try {
+      await options.writeDeviceTokens?.({ expo: null, native: null });
+    } catch {
+      /* storage is optional */
+    }
+  };
 
   const log = (message: string, extra?: Record<string, unknown>) => {
     if (options.log) options.log(message, extra);
@@ -233,6 +267,7 @@ export function createPushPermissionController(
         await ensureAndroidChannels(options.androidChannels);
       }
 
+      await loadRememberedTokens();
       const expoToken = await getFreshExpoPushToken({ requestIfNeeded: false });
       // FCM token can lag right after permission grant — retry a few times before giving up.
       let native = await getFreshNativePushToken();
@@ -310,9 +345,12 @@ export function createPushPermissionController(
           native_token_type: native?.type ?? null,
           store_id: auth.storeId ?? null,
           ...metadata,
+          previous_expo_push_token: previousTokenToRetire(memoryExpo, expoToken),
+          previous_native_push_token: previousTokenToRetire(memoryNative, native?.token ?? null),
         });
           if (res.ok) {
           lastSyncedKey = key;
+          await rememberTokens(expoToken, native?.token ?? null);
           if (auth.role === "merchant" && expoToken && options.registerStoreExpoToken) {
             try {
               await options.registerStoreExpoToken({
@@ -371,6 +409,27 @@ export function createPushPermissionController(
     }
     refreshInFlight = (async () => {
       await refreshPermissionOnly();
+      if (snapshot.osStatus === "denied" || snapshot.osStatus === "blocked") {
+        await loadRememberedTokens();
+        const expoToken = snapshot.expoPushToken || memoryExpo;
+        const nativeToken = snapshot.nativePushToken || memoryNative;
+        const accessToken = options.getAuth()?.accessToken;
+        if ((expoToken || nativeToken) && accessToken) {
+          await unregisterPushTokenOnBackend(options.apiBaseUrl, accessToken, {
+            expo_push_token: expoToken,
+            native_push_token: nativeToken,
+          });
+          await clearRememberedTokens();
+          emit({
+            expoPushToken: null,
+            nativePushToken: null,
+            nativeTokenType: null,
+            lastBackendSyncOk: null,
+          });
+          log("device tokens removed after permission revoke");
+        }
+        return snapshot;
+      }
       if (opts?.syncIfGranted !== false && snapshot.osStatus === "granted") {
         lastGrantedRefreshAt = Date.now();
         return syncTokens();
@@ -532,25 +591,30 @@ export function createPushPermissionController(
     const accessToken = opts?.accessToken?.trim() || auth?.accessToken;
     if (!accessToken) return;
 
-    // Prefer in-memory tokens; if logout races before first sync, re-read device tokens.
-    let expoToken = snapshot.expoPushToken;
-    let nativeToken = snapshot.nativePushToken;
+    await loadRememberedTokens();
+    // Prefer this installation's tokens. Never send an empty body — that used to
+    // delete every device for the account.
+    let expoToken = snapshot.expoPushToken || memoryExpo;
+    let nativeToken = snapshot.nativePushToken || memoryNative;
     if (!expoToken && !nativeToken) {
       try {
         expoToken = (await getFreshExpoPushToken({ requestIfNeeded: false })) ?? null;
         const native = await getFreshNativePushToken();
         nativeToken = native?.token ?? null;
       } catch {
-        /* full user purge still works with empty body */
+        /* this device stays registered until the next login reassigns the token */
       }
     }
     const role = auth?.role ?? opts?.role;
 
-    // Empty tokens → backend purges ALL push rows for this user/role (logout-safe).
-    await unregisterPushTokenOnBackend(options.apiBaseUrl, accessToken, {
-      expo_push_token: expoToken,
-      native_push_token: nativeToken,
-    });
+    if (expoToken || nativeToken) {
+      await unregisterPushTokenOnBackend(options.apiBaseUrl, accessToken, {
+        expo_push_token: expoToken,
+        native_push_token: nativeToken,
+      });
+    } else {
+      log("logout skipped token purge — this device has no stored push token");
+    }
 
     if (role === "merchant" && options.unregisterStoreExpoToken) {
       try {
@@ -569,6 +633,7 @@ export function createPushPermissionController(
 
     stopLifecycle();
     lastSyncedKey = null;
+    await clearRememberedTokens();
     emit({
       expoPushToken: null,
       nativePushToken: null,

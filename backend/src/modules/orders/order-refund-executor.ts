@@ -41,6 +41,11 @@ import {
   readStoredGatiCashTxnId,
 } from "../../lib/gaticash-txn-id.js";
 import { ensureRefundRrn } from "../../lib/refund-rrn.js";
+import {
+  customerFareWasCaptured,
+  isPostTripCollectedOrderType,
+  looksLikeWalletPaymentChannel,
+} from "../../lib/refund-captured-amount.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -144,6 +149,9 @@ interface OrderPaymentSnapshot {
   gatewayAmount: number;
   /** Original unique GatiCash payment txn id (GC-{UUID} or legacy). */
   gatiCashTxnId: string | null;
+  orderType: string;
+  paymentStatus: string;
+  capturedPaymentAmount: number;
 }
 
 function round2(n: number): number {
@@ -293,6 +301,8 @@ async function loadOrderPaymentSnapshot(
       c.order_id                        AS order_id_text,
       c.customer_id                     AS customer_id,
       c.grand_total                     AS grand_total,
+      c.order_type                      AS order_type,
+      c.payment_status                  AS payment_status,
       c.payment_method                  AS core_payment_method,
       p.id                              AS orders_core_payment_id,
       p.payment_gateway                 AS payment_gateway,
@@ -374,6 +384,9 @@ async function loadOrderPaymentSnapshot(
   const pendingGati = Math.max(0, round2(numOrZero(r.pending_gati_cash)));
   const paymentAmount = r.payment_amount != null ? round2(numOrZero(r.payment_amount)) : 0;
   const grandTotal = round2(numOrZero(r.grand_total));
+  const orderType = String(r.order_type ?? "");
+  const paymentStatus = String(r.payment_status ?? "");
+  const postTrip = isPostTripCollectedOrderType(orderType);
 
   let gatiCashUsed = fromBreakdown.gatiCashUsed;
   let gatewayAmount = fromBreakdown.gatewayAmount;
@@ -458,22 +471,24 @@ async function loadOrderPaymentSnapshot(
       effectiveGateway === "unknown" ||
       effectiveGateway === "razorpay")
   ) {
-    // Wallet / prepaid "online"/mis-stamped razorpay with no pay_* → GatiCash.
-    if (gatiCashUsed > 0.005 || paymentAmount > 0.005 || grandTotal > 0.005) {
+    // Food prepaid "online" with no pay_* was wallet. Ride/parcel Online fare
+    // is collected after the trip — do not mint GatiCash from unpaid grand_total.
+    const walletChannel = looksLikeWalletPaymentChannel({
+      gateway: gwFromPayments,
+      method: methodFromPayments,
+      coreMethod: methodFromCore,
+    });
+    const mayTreatAsWallet =
+      gatiCashUsed > 0.005 ||
+      paymentAmount > 0.005 ||
+      (!postTrip && (walletChannel || grandTotal > 0.005));
+    if (mayTreatAsWallet) {
       effectiveGateway = "gati_cash";
       if (gatiCashUsed <= 0.005) {
         gatiCashUsed = round2(paymentAmount > 0.005 ? paymentAmount : grandTotal);
       }
     }
   }
-
-  const totalPaid = round2(
-    Math.max(
-      gatiCashUsed + gatewayAmount,
-      paymentAmount,
-      grandTotal
-    )
-  );
 
   const fromResp = readStoredGatiCashTxnId(
     r.gateway_response && typeof r.gateway_response === "object"
@@ -491,6 +506,27 @@ async function loadOrderPaymentSnapshot(
     gatiCashTxnId = txn;
   }
 
+  const capturedMoney = customerFareWasCaptured({
+    razorpayPaymentId,
+    gatiCashTxnId,
+    gatiCashUsed,
+    gatewayAmount,
+    capturedPaymentAmount: paymentAmount,
+  });
+  if (postTrip && !capturedMoney) {
+    gatiCashUsed = 0;
+    gatewayAmount = 0;
+    gatiCashTxnId = null;
+  }
+
+  const totalPaid = round2(
+    Math.max(
+      gatiCashUsed + gatewayAmount,
+      paymentAmount,
+      postTrip && !capturedMoney ? 0 : grandTotal
+    )
+  );
+
   return {
     ordersCorePaymentId:
       r.orders_core_payment_id != null ? Number(r.orders_core_payment_id) : null,
@@ -504,6 +540,9 @@ async function loadOrderPaymentSnapshot(
     gatiCashUsed,
     gatewayAmount,
     gatiCashTxnId,
+    orderType,
+    paymentStatus,
+    capturedPaymentAmount: paymentAmount,
   };
 }
 
@@ -511,7 +550,18 @@ async function loadOrderPaymentSnapshot(
  * Decide the execution route from the ORIGINAL payment distribution.
  * Wallet → wallet only; gateway → Razorpay only; both → MIXED (never collapse to one pipe).
  */
-function chooseRoute(snap: OrderPaymentSnapshot): RefundExecutionRoute {
+export function chooseRoute(snap: OrderPaymentSnapshot): RefundExecutionRoute {
+  const fareCaptured = customerFareWasCaptured({
+    razorpayPaymentId: snap.razorpayPaymentId,
+    gatiCashTxnId: snap.gatiCashTxnId,
+    gatiCashUsed: snap.gatiCashUsed,
+    gatewayAmount: snap.gatewayAmount,
+    capturedPaymentAmount: snap.capturedPaymentAmount,
+  });
+  if (isPostTripCollectedOrderType(snap.orderType) && !fareCaptured) {
+    return "COD_NOOP";
+  }
+
   const looksCod =
     snap.gateway === "cod" || snap.method === "cash" || snap.method === "cod";
   // True COD with nothing paid → no money to move.
@@ -560,9 +610,15 @@ function chooseRoute(snap: OrderPaymentSnapshot): RefundExecutionRoute {
   if (walletPart) return "WALLET";
   // Paid amount exists but no Razorpay capture → treat as wallet settlement
   // (covers legacy 100% GatiCash rows that were mis-routed to COD_NOOP).
-  if (!snap.razorpayPaymentId && snap.amount > 0.005) return "WALLET";
+  if (!snap.razorpayPaymentId && snap.amount > 0.005 && snap.gatiCashUsed > 0.005) {
+    return "WALLET";
+  }
   // Mis-stamped COD/cash but money was paid (GatiCash / prepaid) → still wallet.
-  if (!snap.razorpayPaymentId && (snap.grandTotal > 0.005 || snap.amount > 0.005)) {
+  if (
+    !snap.razorpayPaymentId &&
+    snap.gatiCashUsed > 0.005 &&
+    (snap.grandTotal > 0.005 || snap.amount > 0.005)
+  ) {
     return "WALLET";
   }
   return "COD_NOOP";
@@ -821,9 +877,23 @@ export async function executeOrderRefund(
 
   try {
     if (route === "COD_NOOP") {
+      const unpaidPostTripFare =
+        isPostTripCollectedOrderType(snap.orderType) &&
+        !customerFareWasCaptured({
+          razorpayPaymentId: snap.razorpayPaymentId,
+          gatiCashTxnId: snap.gatiCashTxnId,
+          gatiCashUsed: snap.gatiCashUsed,
+          gatewayAmount: snap.gatewayAmount,
+          capturedPaymentAmount: snap.capturedPaymentAmount,
+        });
       // Never stamp Completed for a positive refund with no money moved.
       // Mis-classified prepaid/GatiCash checkouts must credit the wallet.
-      if (args.refundAmount > 0.005 && snap.customerId != null) {
+      // Unpaid ride/parcel fare must not mint GatiCash.
+      if (
+        args.refundAmount > 0.005 &&
+        snap.customerId != null &&
+        !unpaidPostTripFare
+      ) {
         const walletAmount = args.refundAmount;
         const ledgerId = await creditCustomerWallet(sql, {
           customerId: snap.customerId,
@@ -903,6 +973,41 @@ export async function executeOrderRefund(
     }
 
     if (route === "WALLET") {
+      if (
+        isPostTripCollectedOrderType(snap.orderType) &&
+        !customerFareWasCaptured({
+          razorpayPaymentId: snap.razorpayPaymentId,
+          gatiCashTxnId: snap.gatiCashTxnId,
+          gatiCashUsed: snap.gatiCashUsed,
+          gatewayAmount: snap.gatewayAmount,
+          capturedPaymentAmount: snap.capturedPaymentAmount,
+        })
+      ) {
+        await sql`
+          UPDATE order_refunds
+          SET execution_status = 'NOOP',
+              execution_route  = 'COD_NOOP',
+              completed_at     = NOW(),
+              executed_at      = NOW(),
+              refund_status    = 'completed',
+              failure_reason   = 'fare_not_captured'
+          WHERE id = ${args.refundId}
+        `;
+        await syncOrderRefundCompletionMarkers({
+          orderCoreId: args.orderCoreId,
+          refundId: args.refundId,
+          kind: "completed",
+          refundAmount: 0,
+        }, sql);
+        return {
+          ok: true,
+          refundId: args.refundId,
+          route: "COD_NOOP",
+          status: "NOOP",
+          failureReason: "fare_not_captured",
+          idempotent: false,
+        };
+      }
       // Pure wallet route: always restore the full requested amount (already capped
       // to paid by callers). Do not clamp to a possibly-incomplete gatiCashUsed
       // snapshot — that left accept-timeout refunds under-credited / stuck.

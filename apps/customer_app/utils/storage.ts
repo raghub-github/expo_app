@@ -29,6 +29,37 @@ function usesAsyncStorage(key: string): boolean {
   return !SECURE_STORE_KEYS.has(key);
 }
 
+/** Android Keystore / Expo SecureStore rejects (and can crash) blobs over ~2KB. */
+const SECURE_STORE_MAX_CHARS = 1800;
+
+async function writeSecureWithOverflowFallback(key: string, value: string): Promise<void> {
+  if (value.length > SECURE_STORE_MAX_CHARS) {
+    await AsyncStorage.setItem(key, value);
+    try {
+      await SecureStore.deleteItemAsync(key);
+    } catch {
+      /* leftover short token */
+    }
+    return;
+  }
+  await SecureStore.setItemAsync(key, value);
+  try {
+    await AsyncStorage.removeItem(key);
+  } catch {
+    /* leftover overflow copy */
+  }
+}
+
+async function readSecureWithOverflowFallback(key: string): Promise<string | null> {
+  try {
+    const secure = await SecureStore.getItemAsync(key);
+    if (secure != null) return secure;
+  } catch {
+    /* fall through */
+  }
+  return AsyncStorage.getItem(key);
+}
+
 async function readLegacySecureValue(key: string): Promise<string | null> {
   if (Platform.OS === "web" || SECURE_STORE_KEYS.has(key)) return null;
   try {
@@ -72,7 +103,7 @@ export async function getItem(key: string): Promise<string | null> {
       if (raw != null) return raw;
       return await migrateLegacySecureToAsync(key);
     }
-    return await SecureStore.getItemAsync(key);
+    return await readSecureWithOverflowFallback(key);
   } catch (e) {
     console.warn(`[Storage] getItem ${key} failed:`, e);
     return null;
@@ -92,7 +123,7 @@ export async function setItem(key: string, value: string): Promise<void> {
       await deleteLegacySecureValue(key);
       return;
     }
-    await SecureStore.setItemAsync(key, value);
+    await writeSecureWithOverflowFallback(key, value);
   } catch (e) {
     console.warn(`[Storage] setItem ${key} failed:`, e);
   }
@@ -111,7 +142,12 @@ export async function removeItem(key: string): Promise<void> {
       await deleteLegacySecureValue(key);
       return;
     }
-    await SecureStore.deleteItemAsync(key);
+    try {
+      await SecureStore.deleteItemAsync(key);
+    } catch {
+      /* ignore */
+    }
+    await AsyncStorage.removeItem(key);
   } catch (e) {
     console.warn(`[Storage] removeItem ${key} failed:`, e);
   }

@@ -8,6 +8,7 @@ import { auth } from "../../plugins/auth.js";
 import { normalizeOrderItems } from "../orders/orderNormalizer.js";
 import { normalizeOrderItemSpecialInstructions } from "../../lib/order-item-special-instructions.js";
 import { computeBillForOrder, listCheckoutBillOffers } from "./billing.service.js";
+import { getRulesetVersion } from "./billing.repository.js";
 import type { BillingResult } from "./types.js";
 
 const addonSchema = z.object({
@@ -37,7 +38,9 @@ const itemSchema = z.object({
 
 const checkoutOffersQuerySchema = z.object({
   merchantId: z.string().min(1),
-  addressId: z.coerce.number().int().positive(),
+  addressId: z.coerce.number().int().positive().optional(),
+  dropLat: z.coerce.number().optional(),
+  dropLon: z.coerce.number().optional(),
   cartSubtotal: z.coerce.number().nonnegative().optional().default(0),
   serviceType: z.enum(["FOOD", "GROCERY", "PARCEL", "RIDE", "ALL"]).optional(),
   userSegment: z.enum(["NEW", "EXISTING", "ALL"]).optional(),
@@ -194,6 +197,17 @@ function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknow
       const x = Math.max(0, v);
       return x > 0.005 ? x : null;
     })(),
+    inactiveFeeQuotes: (() => {
+      const raw = (snapshot as { inactiveFeeQuotes?: unknown } | undefined)?.inactiveFeeQuotes;
+      if (raw == null || typeof raw !== "object") return undefined;
+      const src = raw as Record<string, unknown>;
+      const out: Record<string, number> = {};
+      for (const key of ["delivery", "platform", "packaging", "surge", "smallOrder", "convenience", "fee"] as const) {
+        const v = src[key];
+        if (typeof v === "number" && Number.isFinite(v) && v > 0.005) out[key] = round2(v);
+      }
+      return Object.keys(out).length > 0 ? out : undefined;
+    })(),
     deliveryFeeWaivedInr: (() => {
       const fromSnap = snapshot?.deliveryFeeWaivedInr;
       if (typeof fromSnap === "number" && Number.isFinite(fromSnap) && fromSnap > 0.005) {
@@ -235,6 +249,8 @@ function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknow
     taxTotal: b.tax_total,
     tipAmount: b.tip_amount,
     donationAmount: b.donation_amount,
+    tipEnabled: b.tip_enabled === true,
+    donationEnabled: b.donation_enabled === true,
     finalAmount: b.final_amount,
     itemsNetAfterDiscounts: b.items_net_after_discounts,
     taxesByGroup: b.taxes_by_group,
@@ -309,6 +325,22 @@ function mapBillingToResponse(b: BillingResult, snapshot?: Record<string, unknow
 }
 
 export async function billingRoutes(app: FastifyInstance) {
+  /** Cheap poll target so an open checkout can refetch the moment Super Admin toggles a rule. */
+  app.get(
+    "/ruleset-version",
+    {
+      schema: {
+        response: {
+          200: z.object({ version: z.number() }),
+        },
+      },
+    },
+    async () => {
+      const version = await getRulesetVersion(getDb());
+      return { version };
+    }
+  );
+
   app.post(
     "/calculate",
     {
@@ -334,6 +366,17 @@ export async function billingRoutes(app: FastifyInstance) {
             deliveryFee: z.number(),
             /** Geo/slabs delivery fee before self-pickup waiver; null when unknown. */
             deliveryFeeQuotedInr: z.number().nullable().optional(),
+            inactiveFeeQuotes: z
+              .object({
+                delivery: z.number().optional(),
+                platform: z.number().optional(),
+                packaging: z.number().optional(),
+                surge: z.number().optional(),
+                smallOrder: z.number().optional(),
+                convenience: z.number().optional(),
+                fee: z.number().optional(),
+              })
+              .optional(),
             platformFee: z.number(),
             packagingFee: z.number(),
             surgeFee: z.number(),
@@ -343,6 +386,8 @@ export async function billingRoutes(app: FastifyInstance) {
             taxTotal: z.number(),
             tipAmount: z.number(),
             donationAmount: z.number(),
+            tipEnabled: z.boolean(),
+            donationEnabled: z.boolean(),
             finalAmount: z.number(),
             itemsNetAfterDiscounts: z.number(),
             taxesByGroup: z.record(z.string(), z.number()),
@@ -509,9 +554,11 @@ export async function billingRoutes(app: FastifyInstance) {
         Number.isFinite(body.dropLat) &&
         Number.isFinite(body.dropLon);
 
-      // Saved address is required for placeable bills. GPS drop is allowed only for
+      // Takeaway is priced from the restaurant, so it does not need a customer drop.
+      // Saved address is required for placeable delivery bills. GPS drop is allowed only for
       // provisional checkout totals before the customer picks a delivery address.
-      if (!hasAddressId && !hasDrop) {
+      const isSelfPickup = body.deliveryType === "self_pickup";
+      if (!isSelfPickup && !hasAddressId && !hasDrop) {
         return reply.status(400).send({
           error: "INVALID_ADDRESS_DATA",
           message: "addressId or dropLat/dropLon is required.",
@@ -646,7 +693,9 @@ export async function billingRoutes(app: FastifyInstance) {
       const result = await listCheckoutBillOffers(db, {
         customerId: Number(customerPk),
         merchantId: q.merchantId,
-        addressId: q.addressId,
+        addressId: q.addressId ?? null,
+        dropLat: q.dropLat ?? null,
+        dropLon: q.dropLon ?? null,
         cartSubtotal: q.cartSubtotal,
         serviceType: q.serviceType,
         userSegment: q.userSegment,

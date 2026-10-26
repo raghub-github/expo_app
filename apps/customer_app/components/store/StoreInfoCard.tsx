@@ -13,6 +13,7 @@ import {
 } from "@/components/home/ClassicLowestPriceStamp";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 import { formatMerchantDistanceKm } from "@/lib/merchantDistance";
+import { PureVegPill } from "@/components/home/PureVegStoreTag";
 
 export type StoreInfoCardProps = {
   name: string;
@@ -37,6 +38,8 @@ export type StoreInfoCardProps = {
   onSchedulePress?: () => void;
   onOffersPress?: () => void;
   onRatingHintPress?: () => void;
+  /** Merchant is flagged pure veg — show the pill under the name. */
+  isPureVeg?: boolean;
 };
 
 export function StoreInfoCard({
@@ -55,6 +58,7 @@ export function StoreInfoCard({
   onSchedulePress,
   onOffersPress,
   onRatingHintPress,
+  isPureVeg = false,
 }: StoreInfoCardProps) {
   const dark = useMerchantUiDark();
   const useClassic = classicLayout && !dark;
@@ -93,6 +97,8 @@ export function StoreInfoCard({
             <ClassicLowestPriceStamp />
           </View>
         </View>
+
+        {isPureVeg ? <PureVegPill /> : null}
 
         <TouchableOpacity
           style={styles.classicMetaRow}
@@ -205,6 +211,8 @@ export function StoreInfoCard({
           />
         </View>
       </View>
+
+      {isPureVeg ? <PureVegPill /> : null}
 
       {locationText ? (
         <TouchableOpacity style={styles.metaRow} onPress={onLocationPress} activeOpacity={0.7}>

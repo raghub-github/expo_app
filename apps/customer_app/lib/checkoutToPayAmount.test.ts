@@ -3,7 +3,66 @@ import assert from "node:assert/strict";
 import {
   computeCheckoutStrikethroughTotal,
   computeCheckoutToPayAmount,
+  grandTotalWithoutUnconfirmedDelivery,
+  isDeliverySpecificDiscount,
 } from "./checkoutToPayAmount";
+
+test("grand total drops an unconfirmed delivery fee and its waiver", () => {
+  const grand = grandTotalWithoutUnconfirmedDelivery({
+    grandTotalBeforeDiscounts: 416.02,
+    deliveryFeePending: true,
+    deliveryType: "delivery",
+    pendingDeliveryFee: 74.21,
+    deliverySpecificDiscount: 0,
+  });
+  assert.equal(grand, 341.81);
+});
+
+test("a locked address keeps the delivery fee inside grand total", () => {
+  const grand = grandTotalWithoutUnconfirmedDelivery({
+    grandTotalBeforeDiscounts: 416.02,
+    deliveryFeePending: false,
+    deliveryType: "delivery",
+    pendingDeliveryFee: 74.21,
+    deliverySpecificDiscount: 0,
+  });
+  assert.equal(grand, 416.02);
+});
+
+test("takeaway grand total is not rewritten as a pending delivery fee", () => {
+  const grand = grandTotalWithoutUnconfirmedDelivery({
+    grandTotalBeforeDiscounts: 341.81,
+    deliveryFeePending: false,
+    deliveryType: "self_pickup",
+    pendingDeliveryFee: 0,
+    deliverySpecificDiscount: 0,
+  });
+  assert.equal(grand, 341.81);
+});
+
+test("delivery waiver labels are recognized and other discounts are not", () => {
+  assert.equal(
+    isDeliverySpecificDiscount({
+      label: "Free delivery",
+      meta: { offerKind: "FREE_DELIVERY" },
+    }),
+    true
+  );
+  assert.equal(isDeliverySpecificDiscount({ label: "Coupon", meta: { offerKind: "CART_PERCENTAGE" } }), false);
+});
+
+test("pending delivery fee is excluded until an address locks the quote", () => {
+  const toPay = computeCheckoutToPayAmount({
+    finalAmount: 186.23,
+    deliveryType: "delivery",
+    deliveryFeePending: true,
+    pendingDeliveryFee: 34.23,
+    gatiCashApplyAmount: 0,
+    missedOfferUnlockDiscount: 0,
+    missedOfferWalletPendingAmount: 0,
+  });
+  assert.equal(toPay, 152);
+});
 
 test("computeCheckoutToPayAmount subtracts GatiCash from server final amount", () => {
   const toPay = computeCheckoutToPayAmount({

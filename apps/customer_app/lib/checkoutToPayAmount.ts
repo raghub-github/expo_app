@@ -8,6 +8,42 @@ export function roundCheckoutMoney(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Delivery-fee waivers that are not valid until a saved address locks the quote. */
+export function isDeliverySpecificDiscount(line: {
+  label?: string;
+  meta?: Record<string, unknown> | null;
+}): boolean {
+  const meta = line.meta ?? {};
+  const source = String(meta.source ?? "");
+  const kind = String(meta.offerKind ?? "").toUpperCase();
+  const applies = String(meta.appliesOn ?? meta.discountAppliesOn ?? "").toUpperCase();
+  if (source === "customer_subscription_free_delivery") return true;
+  if (kind === "FREE_DELIVERY" || kind.includes("DELIVERY")) return true;
+  if (applies === "DELIVERY_FEE" || applies === "DELIVERY") return true;
+  return /free\s*delivery|delivery\s*(fee|discount|partner)/i.test(String(line.label ?? ""));
+}
+
+/**
+ * Grand Total before an address is chosen must not contain a GPS or cached delivery fee,
+ * and must not add that fee back through a delivery waiver.
+ */
+export function grandTotalWithoutUnconfirmedDelivery(input: {
+  grandTotalBeforeDiscounts: number;
+  deliveryFeePending: boolean;
+  deliveryType: "delivery" | "self_pickup";
+  pendingDeliveryFee: number;
+  deliverySpecificDiscount: number;
+}): number {
+  if (!input.deliveryFeePending || input.deliveryType !== "delivery") {
+    return roundCheckoutMoney(input.grandTotalBeforeDiscounts);
+  }
+  return roundCheckoutMoney(
+    input.grandTotalBeforeDiscounts -
+      Math.max(0, input.pendingDeliveryFee) -
+      Math.max(0, input.deliverySpecificDiscount)
+  );
+}
+
 export type CheckoutToPayInput = {
   /** Authoritative server bill grand total (after discounts, tip, donation). */
   finalAmount: number;

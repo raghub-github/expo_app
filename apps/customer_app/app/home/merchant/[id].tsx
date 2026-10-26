@@ -705,8 +705,9 @@ export default function MerchantDetailScreen() {
     };
   }, [merchantId, hasCachedMenu, scrollY, setScrollY, userMenuScrollStarted]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!merchantId || !merchant?.menu?.length) return;
+    // Same frame as the first menu paint — photos must not wait on a later effect.
     void prefetchMenuItemImagesForMenu(merchant.menu);
     prefetchMenuItemFullConfigsForMenu(queryClient, merchantId, merchant.menu);
   }, [merchantId, merchant?.menu, queryClient]);

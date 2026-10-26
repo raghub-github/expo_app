@@ -4,8 +4,8 @@ import { GRID_FIRST_LOCATION_ROW_H } from "@/components/home/FoodHomeGridFirstHe
 /** Default search row height (pill + veg toggle). */
 export const GRID_FIRST_SEARCH_ROW_H = 44;
 
-/** Gap between pinned search and category icons — same at rest and after scroll-up. */
-export const GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP = 6;
+/** Resting gap under the in-flow search. Sticky chrome is flush — this is not added again. */
+export const GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP = 8;
 
 /**
  * Snap sticky chrome this many px early so JS scroll lag does not flash a gap.
@@ -67,10 +67,11 @@ export function gridFirstStickySnapY(stickAt: number, earlyPx?: number): number 
   // Literals only — default-arg module consts crash Reanimated ("Property doesn't exist").
   const earlyDefault = 8;
   const restPx = 8;
-  const usedEarly = earlyPx == null ? earlyDefault : earlyPx;
+  const usedEarly = earlyPx == null ? 0 : earlyPx;
   if (stickAt <= 1) return Number.MAX_SAFE_INTEGER;
-  const early = Math.min(usedEarly, Math.max(0, stickAt - restPx));
-  return stickAt - early;
+  const restPxUsed = earlyPx == null ? 0 : restPx;
+  const early = Math.min(usedEarly, Math.max(0, stickAt - restPxUsed));
+  return Math.max(1, stickAt - early);
 }
 
 export function gridFirstStickyOn(y: number, stickAt: number): boolean {
@@ -126,10 +127,13 @@ export function gridFirstSearchStickScrollY(m: GridFirstStickyMetrics): number {
   return searchRowPinsAt;
 }
 
-/** Scroll offset when the category row should pin below the sticky header. */
+/** Scroll offset when the category icons meet the pinned search (no leftover gap). */
 export function gridFirstCategoryStickScrollY(m: GridFirstStickyMetrics): number {
-  const stickyHeaderBottom = m.topInset + m.headerBlockHeight;
-  return Math.max(0, m.categoryBlockY - stickyHeaderBottom);
+  const searchBottom = m.topInset + m.searchRowHeight;
+  // Section top includes the resting padding. Stick when the icons themselves
+  // touch the search, so the pinned row does not sit a few px below it.
+  const iconY = m.categoryBlockY + GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP;
+  return Math.max(gridFirstSearchStickScrollY(m), iconY - searchBottom);
 }
 
 /** Screen Y for the sticky search bar top edge. */
@@ -137,9 +141,9 @@ export function gridFirstStickySearchTop(m: GridFirstStickyMetrics): number {
   return m.topInset;
 }
 
-/** Screen Y for the sticky category row top edge (flush below header; gap is inner padding). */
+/** Screen Y for the sticky category row — flush with the bottom of the pinned search. */
 export function gridFirstStickyCategoryTop(m: GridFirstStickyMetrics): number {
-  return m.topInset + m.headerBlockHeight;
+  return m.topInset + m.searchRowHeight;
 }
 
 /** Screen Y for the sticky filter row top edge. */

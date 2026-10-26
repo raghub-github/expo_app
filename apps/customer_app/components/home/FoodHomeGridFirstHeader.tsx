@@ -13,8 +13,6 @@ import Animated, {
   withRepeat,
   withSequence,
   withTiming,
-  interpolate,
-  Extrapolation,
   type SharedValue,
 } from "react-native-reanimated";
 import { useRouter } from "expo-router";
@@ -205,15 +203,9 @@ export function FoodHomeGridFirstHeader({
   const inFlowSearchFadeStyle = useAnimatedStyle(() => {
     if (!stickyEnabled) return { opacity: 1 };
     const stickAt = stickAtSv.value;
-    // Stay visible until sticky chrome has already snapped on (covers JS scroll lag).
-    return {
-      opacity: interpolate(
-        scrollYSv.value,
-        [stickAt + 4, stickAt + 24],
-        [1, 0],
-        Extrapolation.CLAMP
-      ),
-    };
+    // Same threshold as the pinned search. A late fade left two search bars
+    // on screen and the row jumped.
+    return { opacity: scrollYSv.value >= stickAt ? 0 : 1 };
   });
 
   const locationRow = showLocation ? (
@@ -328,9 +320,9 @@ export function FoodHomeGridFirstHeader({
         </TouchableOpacity>
 
         {showVegToggle ? (
-        <View ref={vegToggleRef} collapsable={false}>
+        <View ref={vegToggleRef} style={styles.vegSlot} collapsable={false}>
           <TouchableOpacity
-            style={[styles.vegCol, styles.vegColRow]}
+            style={styles.vegCol}
             onPress={() => {
               if (vegOnly) {
                 onVegChange(false);
@@ -518,7 +510,7 @@ const styles = StyleSheet.create({
   },
   searchRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "stretch",
     gap: 10,
   },
   searchPill: {
@@ -543,22 +535,14 @@ const styles = StyleSheet.create({
     color: "#9CA3AF",
     fontWeight: "500",
   },
-  vegCol: {
-    alignItems: "center",
-    justifyContent: "center",
-    width: 38,
-    gap: 4,
+  vegSlot: {
+    alignSelf: "stretch",
   },
-  vegColRow: {
-    flexDirection: "row",
+  vegCol: {
+    flex: 1,
     alignItems: "center",
-    justifyContent: "center",
-    width: "auto",
-    minWidth: 68,
-    maxWidth: 86,
-    gap: 5,
-    paddingHorizontal: 2,
-    flexWrap: "nowrap",
+    justifyContent: "space-between",
+    width: 44,
   },
   vegLabelBadge: {
     paddingHorizontal: 6,
@@ -583,10 +567,12 @@ const styles = StyleSheet.create({
   },
   vegLabelInline: {
     fontSize: 10,
+    lineHeight: 19,
     fontWeight: "800",
     color: "#374151",
     letterSpacing: 0.35,
     flexShrink: 0,
+    includeFontPadding: false,
   },
   vegToggle: {
     width: 34,
@@ -597,10 +583,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   vegToggleCompact: {
-    width: 30,
-    height: 16,
-    borderRadius: 8,
-    padding: 1.5,
+    width: 40,
+    height: 22,
+    borderRadius: 6,
+    padding: 2,
     flexShrink: 0,
   },
   vegToggleOn: {
@@ -613,9 +599,9 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   vegThumbCompact: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: 16,
+    height: 16,
+    borderRadius: 4,
   },
   vegThumbOn: {
     alignSelf: "flex-end",

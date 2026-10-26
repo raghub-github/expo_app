@@ -77,6 +77,8 @@ import {
   StyleSheet,
   BackHandler,
   InteractionManager,
+  NativeModules,
+  DeviceEventEmitter,
 } from "react-native";
 import { WebView } from "react-native-webview";
 import type { WebViewMessageEvent, WebViewNavigation } from "react-native-webview";
@@ -114,6 +116,8 @@ export type RazorpayCheckoutMethod = {
   method: "upi" | "card" | "wallet" | "netbanking";
   upiApp?: string;
   wallet?: string;
+  /** Razorpay UPI flow. `qr` and `collect` are used only when the account enables them. */
+  upiFlow?: "intent" | "qr" | "collect";
 };
 
 type Props = {
@@ -128,6 +132,13 @@ type Props = {
   onFailure?: () => void;
   /** UPI app was opened — parent should wait for webhook (payment-confirming). */
   onUpiAppOpened?: () => void;
+  /**
+   * Wallet top-up: open the native Android sheet only.
+   * No "Opening secure payment" cover and no in-app WebView.
+   */
+  nativeOnly?: boolean;
+  /** Shown on the native sheet. Checkout keeps the food-order line. */
+  description?: string;
   /**
    * Optional fast-confirm: poll the backend for this checkout while the native
    * SDK is still resolving a UPI collect (which can take tens of seconds). If the
@@ -170,6 +181,26 @@ function razorpayUpiAppKeys(upiApp: string): string[] {
 
 /** Lock Standard Checkout to the instrument already chosen on Pay using. */
 function buildDisplayConfig(method: RazorpayCheckoutMethod): Record<string, unknown> | null {
+  if (method.method === "upi" && (method.upiFlow === "qr" || method.upiFlow === "collect")) {
+    const qr = method.upiFlow === "qr";
+    return {
+      display: {
+        blocks: {
+          preferred: {
+            name: qr ? "Pay via QR Code" : "Pay via UPI ID",
+            instruments: [
+              {
+                method: "upi",
+                flows: [method.upiFlow],
+              },
+            ],
+          },
+        },
+        sequence: ["block.preferred"],
+        preferences: { show_default_blocks: false },
+      },
+    };
+  }
   if (method.method === "upi" && method.upiApp) {
     const apps = razorpayUpiAppKeys(method.upiApp);
     const label = upiAppDisplayName(method.upiApp);
@@ -245,6 +276,28 @@ function applyCheckoutMethod(
   }
 }
 
+/** QR and UPI ID stay on every full checkout. A locked app/card/wallet keeps its own block. */
+const UPI_QR_AND_ID_CONFIG = {
+  display: {
+    blocks: {
+      upi_qr_id: {
+        name: "UPI",
+        instruments: [
+          { method: "upi", flows: ["qr"] },
+          { method: "upi", flows: ["collect"] },
+        ],
+      },
+    },
+    sequence: ["block.upi_qr_id"],
+    preferences: { show_default_blocks: true },
+  },
+};
+
+function ensureQrAndUpiId(options: Record<string, unknown>): void {
+  if (options.config) return;
+  options.config = UPI_QR_AND_ID_CONFIG;
+}
+
 function isRazorpayNoMethodError(err: unknown): boolean {
   const errAny = err as { description?: string; error?: { description?: string } };
   const desc = String(errAny?.description ?? errAny?.error?.description ?? err ?? "").toLowerCase();
@@ -274,42 +327,17 @@ async function openNativeSdk(args: {
   prefill: RazorpayPrefill | undefined;
   themeColor: string;
   checkoutMethod?: RazorpayCheckoutMethod | null;
+  description?: string;
   /** Called right before the native sheet is presented, so the RN overlay behind it can update. */
   onSheetOpening?: () => void;
 }): Promise<RazorpayPaymentResult> {
-  // Dynamic import — see file header for the "why lazy" rationale.
-  // Wrap in try/catch because require() inside catch is ugly with TS; use a
-  // typed variable so TS doesn't infer `any`.
-  let RazorpayCheckoutModule: {
-    open: (options: Record<string, unknown>) => Promise<{
-      razorpay_payment_id: string;
-      razorpay_order_id: string;
-      razorpay_signature: string;
-    }>;
-  };
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    RazorpayCheckoutModule = require("react-native-razorpay").default ?? require("react-native-razorpay");
-  } catch (importErr) {
-    // Module missing entirely (bundler didn't resolve, package removed, etc.)
-    const err = new Error("razorpay_module_missing");
-    (err as Error & { fallback?: boolean }).fallback = true;
-    throw err;
-  }
-
-  if (!RazorpayCheckoutModule || typeof RazorpayCheckoutModule.open !== "function") {
-    const err = new Error("razorpay_module_invalid");
-    (err as Error & { fallback?: boolean }).fallback = true;
-    throw err;
-  }
-
   const options: Record<string, unknown> = {
     key: args.orderParams.keyId,
     order_id: args.orderParams.orderId,
     amount: args.orderParams.amount,
     currency: "INR",
     name: COMPANY_NAME,
-    description: COMPANY_DESCRIPTION,
+    description: args.description?.trim() || COMPANY_DESCRIPTION,
     theme: { color: args.themeColor },
     prefill: {
       contact: normalizeContact(args.prefill?.contact),
@@ -319,32 +347,113 @@ async function openNativeSdk(args: {
     notes: {
       source: "gatimitra_customer_native",
     },
-    // Retry only enables the Razorpay-side "retry" UI on soft failures — we
-    // still get the final result via the promise resolve/reject.
     retry: { enabled: true, max_count: 2 },
   };
   applyCheckoutMethod(options, args.checkoutMethod);
+  ensureQrAndUpiId(options);
   if (__DEV__ && args.checkoutMethod?.method) {
     // eslint-disable-next-line no-console
     console.log("[payment] razorpay_checkout_open", {
       method: args.checkoutMethod.method,
       upiApp: args.checkoutMethod.upiApp ?? null,
       wallet: args.checkoutMethod.wallet ?? null,
+      upiFlow: args.checkoutMethod.upiFlow ?? null,
       razorpayOrderId: args.orderParams.orderId,
     });
   }
 
-  try {
-    args.onSheetOpening?.();
-    const data = await RazorpayCheckoutModule.open(options);
-    return {
-      razorpayPaymentId: String(data.razorpay_payment_id ?? ""),
-      razorpayOrderId: String(data.razorpay_order_id ?? ""),
-      razorpaySignature: String(data.razorpay_signature ?? ""),
+  args.onSheetOpening?.();
+
+  const data =
+    Platform.OS === "android"
+      ? await openAndroidRazorpay(options)
+      : await openPackagedRazorpay(options);
+
+  return {
+    razorpayPaymentId: String(data.razorpay_payment_id ?? ""),
+    razorpayOrderId: String(data.razorpay_order_id ?? ""),
+    razorpaySignature: String(data.razorpay_signature ?? ""),
+  };
+}
+
+/**
+ * Android's react-native-razorpay entry file constructs
+ * NativeEventEmitter(NativeModules.RazorpayEventEmitter). That iOS-only module
+ * is null on Android, so the import throws and checkout used to fall through
+ * to the in-app WebView. The Android activity still emits on the device
+ * event emitter, so call the native module directly.
+ */
+function openAndroidRazorpay(options: Record<string, unknown>): Promise<{
+  razorpay_payment_id: string;
+  razorpay_order_id: string;
+  razorpay_signature: string;
+}> {
+  const native = NativeModules.RNRazorpayCheckout as { open?: (opts: Record<string, unknown>) => void } | undefined;
+  if (!native || typeof native.open !== "function") {
+    const err = new Error("razorpay_module_missing");
+    (err as Error & { fallback?: boolean }).fallback = true;
+    throw err;
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      successSub.remove();
+      errorSub.remove();
+      fn();
     };
-  } catch (rzpErr) {
-    // Native SDK rejected. Distinguish between "we can't run" (fallback) vs
-    // "user cancelled or payment failed" (real result, propagate).
+    const successSub = DeviceEventEmitter.addListener("Razorpay::PAYMENT_SUCCESS", (payload: Record<string, unknown>) => {
+      finish(() =>
+        resolve({
+          razorpay_payment_id: String(payload?.razorpay_payment_id ?? ""),
+          razorpay_order_id: String(payload?.razorpay_order_id ?? ""),
+          razorpay_signature: String(payload?.razorpay_signature ?? ""),
+        })
+      );
+    });
+    const errorSub = DeviceEventEmitter.addListener("Razorpay::PAYMENT_ERROR", (payload: unknown) => {
+      finish(() => reject(payload));
+    });
+    try {
+      native.open!(options);
+    } catch (openErr) {
+      finish(() => {
+        const err = new Error("razorpay_module_runtime");
+        (err as Error & { fallback?: boolean; cause?: unknown }).fallback = true;
+        (err as Error & { cause?: unknown }).cause = openErr;
+        reject(err);
+      });
+    }
+  });
+}
+
+function openPackagedRazorpay(options: Record<string, unknown>): Promise<{
+  razorpay_payment_id: string;
+  razorpay_order_id: string;
+  razorpay_signature: string;
+}> {
+  let RazorpayCheckoutModule: {
+    open: (opts: Record<string, unknown>) => Promise<{
+      razorpay_payment_id: string;
+      razorpay_order_id: string;
+      razorpay_signature: string;
+    }>;
+  };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    RazorpayCheckoutModule = require("react-native-razorpay").default ?? require("react-native-razorpay");
+  } catch {
+    const err = new Error("razorpay_module_missing");
+    (err as Error & { fallback?: boolean }).fallback = true;
+    throw err;
+  }
+  if (!RazorpayCheckoutModule || typeof RazorpayCheckoutModule.open !== "function") {
+    const err = new Error("razorpay_module_invalid");
+    (err as Error & { fallback?: boolean }).fallback = true;
+    throw err;
+  }
+  return RazorpayCheckoutModule.open(options).catch((rzpErr: unknown) => {
     const errAny = rzpErr as {
       code?: number | string;
       description?: string;
@@ -353,12 +462,7 @@ async function openNativeSdk(args: {
     const desc = String(errAny.description ?? errAny.error?.description ?? rzpErr ?? "").toLowerCase();
     const codeRaw = errAny.code ?? errAny.error?.code;
     const code = typeof codeRaw === "string" ? Number(codeRaw) : codeRaw;
-
-    // Real user dismiss must never be reclassified as a linker/fallback error.
-    if (code === 0 || isExplicitUserCancel(rzpErr)) {
-      throw rzpErr;
-    }
-
+    if (code === 0 || isExplicitUserCancel(rzpErr)) throw rzpErr;
     const looksLikeLinkerError =
       desc.includes("unregistered") ||
       desc.includes("undefined method") ||
@@ -374,9 +478,8 @@ async function openNativeSdk(args: {
       (err as Error & { fallback?: boolean }).fallback = true;
       throw err;
     }
-    // Genuine gateway failure — surface upward with the real code.
     throw rzpErr;
-  }
+  });
 }
 
 /** Razorpay code 0 = user dismissed the sheet. Anything else may be recoverable via WebView. */
@@ -592,6 +695,22 @@ function buildCheckoutHtml(args: {
             };
           }
           post({ type: 'log', msg: 'razorpay_checkout_open method=' + methodPick.method + ' upiApp=' + (methodPick.upiApp || '') });
+        } else {
+          opts.config = {
+            display: {
+              blocks: {
+                upi_qr_id: {
+                  name: 'UPI',
+                  instruments: [
+                    { method: 'upi', flows: ['qr'] },
+                    { method: 'upi', flows: ['collect'] }
+                  ]
+                }
+              },
+              sequence: ['block.upi_qr_id'],
+              preferences: { show_default_blocks: true }
+            }
+          };
         }
         try {
           var rzp = new Razorpay(opts);
@@ -666,6 +785,8 @@ export function RazorpayCheckoutModal({
   onUpiAppOpened,
   checkServerStatus,
   onServerConfirmed,
+  nativeOnly = false,
+  description,
 }: Props): React.ReactElement | null {
   const theme = themeColor ?? DEFAULT_THEME;
   const [tier, setTier] = useState<Tier | null>(null);
@@ -699,7 +820,7 @@ export function RazorpayCheckoutModal({
   };
 
   const orderKey = orderParams?.orderId ?? null;
-  const checkoutMethodKey = `${checkoutMethod?.method ?? ""}:${checkoutMethod?.upiApp ?? ""}:${checkoutMethod?.wallet ?? ""}`;
+  const checkoutMethodKey = `${checkoutMethod?.method ?? ""}:${checkoutMethod?.upiApp ?? ""}:${checkoutMethod?.wallet ?? ""}:${checkoutMethod?.upiFlow ?? ""}`;
   const launchGenRef = useRef(0);
   useEffect(() => {
     if (!visible) {
@@ -730,6 +851,12 @@ export function RazorpayCheckoutModal({
       if (cancelled || launchGen !== launchGenRef.current) return;
 
       const goWebview = () => {
+        if (nativeOnly) {
+          completedRef.current = true;
+          inFlightRef.current = false;
+          failOrCancel();
+          return;
+        }
         inFlightRef.current = false;
         setWaitingUpiLaunch(false);
         setTier("webview");
@@ -772,8 +899,9 @@ export function RazorpayCheckoutModal({
           prefill,
           themeColor: theme,
           checkoutMethod,
+          description,
           onSheetOpening: () => {
-            setNativeSheetOpen(true);
+            if (!nativeOnly) setNativeSheetOpen(true);
             startServerConfirmPoll();
           },
         });
@@ -849,6 +977,7 @@ export function RazorpayCheckoutModal({
   }, [visible, tier, waitingUpiLaunch]);
 
   if (!visible || !orderParams) return null;
+  if (nativeOnly) return null;
 
   const showOpeningOverlay = tier == null && !waitingUpiLaunch;
 

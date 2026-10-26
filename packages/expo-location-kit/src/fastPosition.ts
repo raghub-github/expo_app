@@ -1,12 +1,37 @@
 import * as Location from "expo-location";
 import { validateCoords, withTimeout } from "./coords";
-import type { FastPosition, FastPositionOptions } from "./types";
+import type { FastPosition, FastPositionOptions, FastPositionSource } from "./types";
+
+async function liveQuickFix(
+  accuracy: number,
+  source: FastPositionSource,
+  timeoutMs: number,
+  log: FastPositionOptions["log"],
+  event: string
+): Promise<FastPosition> {
+  const loc = await withTimeout(
+    Location.getCurrentPositionAsync({ accuracy }),
+    timeoutMs
+  );
+  const v = validateCoords(loc);
+  if (!v) throw new Error(`invalid ${event} fix`);
+  log?.(event, {
+    latitude: v.latitude,
+    longitude: v.longitude,
+    accuracyM: v.accuracy,
+  });
+  return {
+    ...v,
+    source,
+    timestampMs: typeof loc?.timestamp === "number" ? loc.timestamp : Date.now(),
+  };
+}
 
 const DEFAULTS = {
-  /** Prefer OS cache longer so cold start paints without waiting on GPS warm-up. */
-  lastKnownMaxAgeMs: 300_000,
+  /** Prefer OS cache longer so cold start / Enable paint without waiting on GPS warm-up. */
+  lastKnownMaxAgeMs: 900_000,
   /** Bound live GPS so UI never waits multi-second sequential Balanced→Low. */
-  quickTimeoutMs: 2_200,
+  quickTimeoutMs: 1_500,
 } as const;
 
 /**
@@ -34,7 +59,10 @@ export async function getFastPosition(
 
   // 1) OS last-known — usually resolves in a few ms when the device has any recent fix.
   try {
-    const loc = await Location.getLastKnownPositionAsync({ maxAge: lastKnownMaxAgeMs });
+    const loc = await withTimeout(
+      Location.getLastKnownPositionAsync({ maxAge: lastKnownMaxAgeMs }),
+      250
+    );
     const v = validateCoords(loc);
     if (v) {
       const timestampMs =
@@ -51,44 +79,11 @@ export async function getFastPosition(
     // fall through to a live quick fix
   }
 
-  // 2) Race Balanced + Low — first usable fix wins (avoids sequential 2× timeout wait).
+  // 2) Race Lowest + Low + Balanced — first usable fix wins (network/cell is often instant).
   const liveRace: Array<Promise<FastPosition>> = [
-    (async (): Promise<FastPosition> => {
-      const loc = await withTimeout(
-        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-        quickTimeoutMs
-      );
-      const v = validateCoords(loc);
-      if (!v) throw new Error("invalid balanced fix");
-      log?.("fast-balanced", {
-        latitude: v.latitude,
-        longitude: v.longitude,
-        accuracyM: v.accuracy,
-      });
-      return {
-        ...v,
-        source: "balanced",
-        timestampMs: typeof loc?.timestamp === "number" ? loc.timestamp : Date.now(),
-      };
-    })(),
-    (async (): Promise<FastPosition> => {
-      const loc = await withTimeout(
-        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }),
-        quickTimeoutMs
-      );
-      const v = validateCoords(loc);
-      if (!v) throw new Error("invalid low fix");
-      log?.("fast-low", {
-        latitude: v.latitude,
-        longitude: v.longitude,
-        accuracyM: v.accuracy,
-      });
-      return {
-        ...v,
-        source: "low",
-        timestampMs: typeof loc?.timestamp === "number" ? loc.timestamp : Date.now(),
-      };
-    })(),
+    liveQuickFix(Location.Accuracy.Lowest, "low", quickTimeoutMs, log, "fast-lowest"),
+    liveQuickFix(Location.Accuracy.Low, "low", quickTimeoutMs, log, "fast-low"),
+    liveQuickFix(Location.Accuracy.Balanced, "balanced", quickTimeoutMs, log, "fast-balanced"),
   ];
 
   try {

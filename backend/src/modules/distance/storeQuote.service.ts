@@ -97,6 +97,11 @@ export type StoreQuoteInput = {
   riderId?: number | null;
   /** Skip route cache if true. */
   skipCache?: boolean;
+  /**
+   * Checkout bill budget. One short road lookup, then straight-line distance,
+   * so a slow map provider cannot hold the bill for a minute.
+   */
+  routingBudgetMs?: number;
 };
 
 export type StoreQuoteResult =
@@ -300,6 +305,7 @@ export async function resolveStoreDeliveryQuote(
         mapboxToken: env.MAPBOX_ACCESS_TOKEN ?? undefined,
         osrmBaseUrl: env.OSRM_BASE_URL ?? undefined,
         skipCache: input.skipCache === true,
+        routingBudgetMs: input.routingBudgetMs,
       }
     )
   );

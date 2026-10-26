@@ -6,7 +6,6 @@
 import { memo, useLayoutEffect, useMemo, useState } from "react";
 import { View, Pressable, StyleSheet, Dimensions, type GestureResponderEvent } from "react-native";
 import { Image } from "expo-image";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import Animated from "react-native-reanimated";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -18,7 +17,8 @@ import {
   getWarmMerchantHeroUri,
   prefetchMerchantHeroImageUri,
 } from "@/lib/merchantHeroWarmCache";
-import { markHeroMediaSessionReady, isHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
+import { isHeroMediaSessionReady, markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
+import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { useScrollSafePress } from "@/hooks/useScrollSafePress";
 import { useInstantPressScale } from "@/components/InstantPressable";
 import { formatGridOfferBadge, gridDeliveryLabel } from "@/lib/merchantOfferBadge";
@@ -27,6 +27,8 @@ import {
   GRID_RATING_PILL,
 } from "@/components/home/GridCardRatingCutout";
 import { AppText } from "@/components/AppText";
+import { PureVegPill } from "@/components/home/PureVegStoreTag";
+import { isMerchantPureVeg } from "@/lib/pureVegFilter";
 import { usePreventServicesAtPin } from "@/hooks/usePreventServicesAtPin";
 
 const { width: SCREEN_W } = Dimensions.get("window");
@@ -74,26 +76,25 @@ function MerchantGridCardInner({
     const warm = getWarmMerchantHeroUri(merchant.id);
     const resolved = resolveMerchantBannerUri(merchant);
     const base = warm || resolved || merchant.displayImage?.trim() || merchant.banner_url?.trim() || null;
-    // Tile paints at `width`pt — fetch a matching WebP derivative, not the full banner.
-    return sizedImageUrl(base, width);
-  }, [merchant, width]);
-  const [imageReady, setImageReady] = useState(() =>
-    bannerUri ? isHeroMediaSessionReady(bannerUri) : false,
+    return base;
+  }, [merchant]);
+  const paintUri = useMemo(
+    () => (bannerUri ? sizedImageUrl(bannerUri, width) ?? bannerUri : null),
+    [bannerUri, width]
   );
-
+  const [imageUri, setImageUri] = useState(paintUri);
+  // Prefetch can mark a URL ready before this card has drawn it. Keep the
+  // skeleton up until this Image actually paints.
+  const [imagePainted, setImagePainted] = useState(false);
+  if (imageUri !== paintUri && paintUri && imageUri !== bannerUri) {
+    setImageUri(paintUri);
+    setImagePainted(false);
+  }
   useLayoutEffect(() => {
-    if (!bannerUri) {
-      setImageReady(false);
-      return;
-    }
-    if (isHeroMediaSessionReady(bannerUri)) {
-      setImageReady(true);
-      return;
-    }
-    setImageReady(false);
-    prefetchMerchantHeroImageUri(bannerUri);
+    if (!bannerUri) return;
+    prefetchMerchantHeroImageUri(bannerUri, width);
     warmMerchantHeroImage(merchant.id, bannerUri);
-  }, [merchant.id, bannerUri]);
+  }, [merchant.id, bannerUri, width]);
 
   const handlePress = () => {
     if (foodLocked) return;
@@ -132,42 +133,49 @@ function MerchantGridCardInner({
       <View style={[styles.imageStage, { width }]}>
         <View style={[styles.imageClip, { width, height: imageH }]}>
           <View style={styles.imageTap}>
-            {/* Soft shell always under the image so cold decode never flashes blank white. */}
-            <View style={styles.bannerPlaceholder} pointerEvents="none">
-              <LinearGradient
-                colors={[
-                  GatiMitraColors.softBackground,
-                  "#FFFFFF",
-                  GatiMitraColors.surfaceWarm,
-                ]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={StyleSheet.absoluteFill}
-              />
-              {!bannerUri ? (
+            {!bannerUri ? (
+              <View style={styles.bannerPlaceholder} pointerEvents="none">
                 <Ionicons name="restaurant" size={28} color="rgba(100,116,139,0.28)" />
-              ) : null}
-            </View>
-            {bannerUri ? (
+              </View>
+            ) : null}
+            {imageUri ? (
               <Image
-                source={{ uri: bannerUri }}
+                source={{ uri: imageUri }}
                 style={[
                   styles.banner,
                   foodLocked && styles.bannerDimmed,
-                  !imageReady && styles.bannerLoading,
                 ]}
                 contentFit="cover"
                 cachePolicy="memory-disk"
                 transition={0}
                 priority="high"
-                recyclingKey={`loved-${merchant.id}`}
+                recyclingKey={`loved-${merchant.id}-${imageUri}`}
                 onLoad={() => {
-                  markHeroMediaSessionReady(bannerUri);
-                  setImageReady(true);
+                  setImagePainted(true);
+                  markHeroMediaSessionReady(imageUri);
                 }}
                 onDisplay={() => {
-                  markHeroMediaSessionReady(bannerUri);
-                  setImageReady(true);
+                  setImagePainted(true);
+                  markHeroMediaSessionReady(imageUri);
+                }}
+                onError={() => {
+                  if (bannerUri && imageUri !== bannerUri) {
+                    setImageUri(bannerUri);
+                    setImagePainted(isHeroMediaSessionReady(bannerUri));
+                  }
+                }}
+              />
+            ) : null}
+            {imageUri && !imagePainted ? (
+              <GMSkeleton
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width,
+                  height: imageH,
+                  borderRadius: 0,
+                  zIndex: 2,
                 }}
               />
             ) : null}
@@ -200,6 +208,7 @@ function MerchantGridCardInner({
         <AppText style={styles.name} numberOfLines={1}>
           {merchant.name}
         </AppText>
+        {isMerchantPureVeg(merchant) ? <PureVegPill /> : null}
         <View style={styles.metaRow}>
           {foodLocked ? (
             <AppText style={[styles.metaText, styles.metaBlocked]} numberOfLines={1}>
@@ -256,9 +265,6 @@ const styles = StyleSheet.create({
   bannerDimmed: {
     opacity: 0.55,
   },
-  bannerLoading: {
-    opacity: 0,
-  },
   preventOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(15, 23, 42, 0.5)",
@@ -296,7 +302,7 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: GatiMitraColors.softBackground,
+    backgroundColor: "#ECEFF1",
     overflow: "hidden",
   },
   offerImageTag: {

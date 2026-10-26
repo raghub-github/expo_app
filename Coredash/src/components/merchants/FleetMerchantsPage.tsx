@@ -130,23 +130,57 @@ function StoreAvatar({ name, src, size = 40 }: { name: string; src?: string | nu
   );
 }
 
-function LiveBadge({ live, accepting }: { live: boolean; accepting: boolean }) {
+function StoreAvatarWithStatus({
+  name,
+  src,
+  size = 44,
+  live,
+  accepting,
+}: {
+  name: string;
+  src?: string | null;
+  size?: number;
+  live: boolean;
+  accepting: boolean;
+}) {
+  return (
+    <div className="relative shrink-0 overflow-hidden rounded-xl" style={{ width: size, height: size }}>
+      <StoreAvatar name={name} src={src} size={size} />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-black/75 via-black/35 to-transparent pb-[3px] pt-5">
+        <LiveBadge live={live} accepting={accepting} overlay />
+      </div>
+    </div>
+  );
+}
+
+function LiveBadge({
+  live,
+  accepting,
+  overlay = false,
+}: {
+  live: boolean;
+  accepting: boolean;
+  overlay?: boolean;
+}) {
+  const base = overlay
+    ? "inline-flex items-center gap-1 rounded-full px-1.5 py-px text-[8px] font-semibold tracking-wide shadow-sm"
+    : "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide";
   if (live && accepting) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-[#DCFCE7] px-2 py-0.5 text-[10px] font-semibold tracking-wide text-[#15803D]">
+      <span className={`${base} ${overlay ? "bg-white/95 text-[#15803D]" : "bg-[#DCFCE7] text-[#15803D]"}`}>
         <span className="h-1.5 w-1.5 rounded-full bg-[#22C55E]" /> LIVE
       </span>
     );
   }
   if (live) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full bg-[#DBEAFE] px-2 py-0.5 text-[10px] font-semibold tracking-wide text-[#1D4ED8]">
+      <span className={`${base} ${overlay ? "bg-white/95 text-[#1D4ED8]" : "bg-[#DBEAFE] text-[#1D4ED8]"}`}>
         OPEN
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-[#F3F4F6] px-2 py-0.5 text-[10px] font-semibold tracking-wide text-[#6B7280]">
+    <span className={`${base} ${overlay ? "bg-white/95 text-[#4B5563]" : "bg-[#F3F4F6] text-[#6B7280]"}`}>
       OFFLINE
     </span>
   );
@@ -369,6 +403,7 @@ export function FleetMerchantsPage() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [ratingsOpen, setRatingsOpen] = useState(false);
   const [payoutsOpen, setPayoutsOpen] = useState(false);
+  const [pulseOrderId, setPulseOrderId] = useState<number | null>(null);
   const statsRange = periodToRange(period);
 
   function setStatsRange(next: StatsRange) {
@@ -406,25 +441,24 @@ export function FleetMerchantsPage() {
     );
   }, [data, q, segment]);
 
-  const storeIdsKey = useMemo(() => stores.map((s) => s.storeId).join("|"), [stores]);
+  const allStores = data?.recent ?? [];
+  const allStoreIdsKey = useMemo(() => allStores.map((s) => s.storeId).join("|"), [allStores]);
 
   const firstStoreId = useMemo(() => {
-    if (!data?.recent.length) return null;
-    return data.recent[0]?.storeId ?? null;
-  }, [data]);
+    if (!allStores.length) return null;
+    return allStores[0]?.storeId ?? null;
+  }, [allStores]);
 
   useEffect(() => {
-    if (!stores.length) {
+    if (!allStores.length) {
       setSelectedId(null);
       return;
     }
-    if (urlStore && stores.some((s) => s.storeId === urlStore)) {
+    if (urlStore && allStores.some((s) => s.storeId === urlStore)) {
       setSelectedId(urlStore);
       return;
     }
-    const fallback =
-      (firstStoreId && stores.some((s) => s.storeId === firstStoreId) ? firstStoreId : null) ||
-      stores[0].storeId;
+    const fallback = firstStoreId || allStores[0].storeId;
     setSelectedId(fallback);
     const params = new URLSearchParams(searchParams.toString());
     if (params.get("store") !== fallback) {
@@ -432,7 +466,7 @@ export function FleetMerchantsPage() {
       router.replace(`/merchants?${params.toString()}`, { scroll: false });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeIdsKey, urlStore, firstStoreId]);
+  }, [allStoreIdsKey, urlStore, firstStoreId]);
 
   useEffect(() => {
     setHistoryOpen(false);
@@ -478,7 +512,10 @@ export function FleetMerchantsPage() {
   }, [selectedId, searchParams, userId, period]);
 
   const groups = useMemo(() => {
-    const selectedStore = selectedId ? stores.find((s) => s.storeId === selectedId) : null;
+    const selectedStore =
+      (selectedId ? stores.find((s) => s.storeId === selectedId) : null) ||
+      (selectedId ? allStores.find((s) => s.storeId === selectedId) : null) ||
+      null;
     const rest = selectedId ? stores.filter((s) => s.storeId !== selectedId) : stores;
     const map = new Map<string, StoreRow[]>();
     for (const s of rest) {
@@ -491,14 +528,17 @@ export function FleetMerchantsPage() {
     if (selectedStore) result.push({ key: "OPEN", items: [selectedStore] });
     for (const k of keys) result.push({ key: k, items: map.get(k)! });
     return result;
-  }, [stores, selectedId]);
+  }, [allStores, stores, selectedId]);
 
   const allOrders = detail?.orderHistory ?? [];
 
   if (loading) return <LoadingGrid />;
   if (error || !data) return <ErrorState message={error || "Failed"} onRetry={reload} />;
 
-  const selected = stores.find((s) => s.storeId === selectedId) ?? null;
+  const selected =
+    stores.find((s) => s.storeId === selectedId) ??
+    allStores.find((s) => s.storeId === selectedId) ??
+    null;
   const store = detail?.store;
   const active = detail?.activeOrder ?? null;
   const previewOrders = allOrders.slice(0, 8);
@@ -606,20 +646,18 @@ export function FleetMerchantsPage() {
             <header className="z-10 shrink-0 border-b border-[#E5E7EB] bg-white">
               <div className="flex h-[64px] items-center justify-between gap-3 px-5">
                 <div className="flex min-w-0 items-center gap-3">
-                  <StoreAvatar
+                  <StoreAvatarWithStatus
                     name={store?.displayName || selected.name}
                     src={store?.bannerUrl || selected.bannerUrl}
                     size={44}
+                    live={store?.live ?? selected.live}
+                    accepting={store?.accepting ?? selected.accepting}
                   />
                   <div className="min-w-0">
                     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
                       <h2 className="truncate text-[17px] font-semibold tracking-tight text-[#111827]">
                         {store?.displayName || selected.name}
                       </h2>
-                      <LiveBadge
-                        live={store?.live ?? selected.live}
-                        accepting={store?.accepting ?? selected.accepting}
-                      />
                       {(store?.pureVeg || selected.pureVeg) ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-[#DCFCE7] px-2 py-0.5 text-[10px] font-semibold text-[#15803D]">
                           <Leaf className="h-2.5 w-2.5" /> Pure veg
@@ -754,7 +792,7 @@ export function FleetMerchantsPage() {
                   <div className="flex items-end justify-between gap-3">
                     <div>
                       <h3 className="text-[20px] font-semibold tracking-tight text-[#1C1917]">Order pulse</h3>
-                      <p className="mt-0.5 text-[12px] text-[#78716C]">Live feed · gross vs net CTC</p>
+                      <p className="mt-0.5 text-[12px] text-[#78716C]">Live feed · gross vs net CTM</p>
                     </div>
                     <button
                       type="button"
@@ -766,24 +804,21 @@ export function FleetMerchantsPage() {
                   </div>
 
                   {active ? (
-                    <div className="mt-5 border-l-4 border-[#F59E0B] bg-[#FFFBEB] px-4 py-3.5">
+                    <button
+                      type="button"
+                      onClick={() => setPulseOrderId(active.id)}
+                      className="mt-5 w-full cursor-pointer border-l-4 border-[#F59E0B] bg-[#FFFBEB] px-4 py-3.5 text-left hover:bg-[#FEF3C7]"
+                    >
                       <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#B45309]">
                         Active ticket
                       </p>
                       <p className="mt-1 text-[14px] font-medium text-[#1C1917]">
-                        <a
-                          href={orderDetailHref(active.code)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-mono font-semibold text-[#0F766E] hover:underline"
-                        >
-                          {active.code}
-                        </a>
+                        <span className="font-mono font-semibold text-[#0F766E]">{active.code}</span>
                         {" · "}
                         {prettyType(active.type)} · {active.status.replace(/_/g, " ")} ·{" "}
                         {formatInr(active.payable)}
                       </p>
-                    </div>
+                    </button>
                   ) : null}
 
                   <div className="mt-5 space-y-3">
@@ -791,9 +826,15 @@ export function FleetMerchantsPage() {
                       <p className="py-10 text-center text-[13px] text-[#A8A29E]">No orders yet for this store.</p>
                     ) : (
                       previewOrders.map((o) => (
-                        <div
+                        <button
+                          type="button"
                           key={o.id}
-                          className="grid grid-cols-[auto_1fr_auto] gap-4 rounded-xl border border-[#E7E5E4] bg-white px-4 py-4"
+                          onClick={() => setPulseOrderId(o.id)}
+                          className={`grid w-full cursor-pointer grid-cols-[auto_1fr_auto] gap-4 rounded-xl border px-4 py-4 text-left transition-colors hover:border-[#99F6E4] ${
+                            o.status.toLowerCase() === "cancelled"
+                              ? "border-[#FECACA] bg-[#FEF2F2] hover:bg-[#FEE2E2]"
+                              : "border-[#E7E5E4] bg-white hover:bg-[#FAFAF9]"
+                          }`}
                         >
                           <div
                             className="mt-1 h-10 w-1.5 rounded-full"
@@ -801,14 +842,9 @@ export function FleetMerchantsPage() {
                           />
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                              <a
-                                href={orderDetailHref(o.code)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="font-mono text-[13px] font-semibold text-[#0F766E] hover:underline"
-                              >
+                              <span className="font-mono text-[13px] font-semibold text-[#0F766E]">
                                 {o.code}
-                              </a>
+                              </span>
                               <span className="text-[11px] capitalize text-[#78716C]">
                                 {prettyType(o.type)} · {o.status.replace(/_/g, " ")}
                               </span>
@@ -818,7 +854,7 @@ export function FleetMerchantsPage() {
                             </p>
                           </div>
                           <OrderCtcCell order={o} />
-                        </div>
+                        </button>
                       ))
                     )}
                   </div>
@@ -1022,6 +1058,10 @@ export function FleetMerchantsPage() {
         </SideSheet>
       ) : null}
 
+      {pulseOrderId != null ? (
+        <OrderPulseSheet orderId={pulseOrderId} userId={userId} onClose={() => setPulseOrderId(null)} />
+      ) : null}
+
       {payoutsOpen ? (
         <SideSheet
           title="Wallet & payouts"
@@ -1042,6 +1082,185 @@ export function FleetMerchantsPage() {
         </SideSheet>
       ) : null}
     </div>
+  );
+}
+
+type PulseDetail = {
+  id: number;
+  code: string;
+  status: string;
+  type: string;
+  createdAt: string;
+  pickup: string;
+  dropoff: string;
+  customerName: string;
+  customerPhone: string;
+  customerAddress: string;
+  items: Array<{
+    name: string;
+    variant: string;
+    qty: number;
+    unit: number;
+    total: number;
+    addons: string;
+  }>;
+  itemCount: number;
+  bill: {
+    items: number;
+    packaging: number;
+    delivery: number;
+    gst: number;
+    discount: number;
+    tip: number;
+    donation: number;
+    gatiCash: number;
+    ctc: number;
+    ctm: number;
+    netCtm: number;
+    commission: number;
+  };
+};
+
+function BillLine({ label, value, strong, muted }: { label: string; value: number; strong?: boolean; muted?: boolean }) {
+  if (!strong && Math.abs(value) < 0.005) return null;
+  return (
+    <div className={`flex justify-between gap-3 ${strong ? "text-[14px] font-semibold text-[#1C1917]" : "text-[13px] text-[#57534E]"} ${muted ? "text-[#A8A29E]" : ""}`}>
+      <span>{label}</span>
+      <span className="tabular-nums">{formatInr(value)}</span>
+    </div>
+  );
+}
+
+function OrderPulseSheet({
+  orderId,
+  userId,
+  onClose,
+}: {
+  orderId: number;
+  userId: string;
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [detail, setDetail] = useState<PulseDetail | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    (async () => {
+      try {
+        const res = await fetch(`/api/orders/${encodeURIComponent(String(orderId))}`, {
+          credentials: "include",
+          cache: "no-store",
+          headers: userId ? { "x-coredash-user": userId } : undefined,
+        });
+        const json = (await res.json()) as { success?: boolean; data?: PulseDetail; error?: string };
+        if (!res.ok || !json.success || !json.data) {
+          throw new Error(json.error || "Failed to load order");
+        }
+        if (!cancelled) setDetail(json.data);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load order");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [orderId, userId]);
+
+  return (
+    <SideSheet
+      title={detail?.code || "Order"}
+      subtitle={
+        detail
+          ? `${prettyType(detail.type)} · ${detail.status.replace(/_/g, " ")} · ${formatDateTime(detail.createdAt)}`
+          : "Loading details…"
+      }
+      onClose={onClose}
+    >
+      {loading ? (
+        <div className="space-y-3">
+          <div className="h-20 animate-pulse rounded-xl bg-[#F5F5F4]" />
+          <div className="h-40 animate-pulse rounded-xl bg-[#F5F5F4]" />
+          <div className="h-32 animate-pulse rounded-xl bg-[#F5F5F4]" />
+        </div>
+      ) : error || !detail ? (
+        <p className="text-[13px] text-[#B91C1C]">{error || "Order not found"}</p>
+      ) : (
+        <div className="space-y-5">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[#A8A29E]">Customer</p>
+            <p className="mt-1 text-[16px] font-semibold text-[#1C1917]">{detail.customerName}</p>
+            <p className="mt-0.5 text-[13px] text-[#57534E]">{detail.customerPhone}</p>
+            <p className="mt-2 text-[13px] leading-snug text-[#44403C]">{detail.customerAddress}</p>
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-baseline justify-between">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-[#A8A29E]">Items</p>
+              <p className="text-[12px] text-[#78716C]">{formatCount(detail.itemCount)} total</p>
+            </div>
+            {detail.items.length === 0 ? (
+              <p className="rounded-xl border border-[#E7E5E4] bg-[#FAFAF9] px-3 py-4 text-[13px] text-[#A8A29E]">
+                No line items on this order.
+              </p>
+            ) : (
+              <ul className="divide-y divide-[#F5F5F4] overflow-hidden rounded-xl border border-[#E7E5E4]">
+                {detail.items.map((it, i) => (
+                  <li key={`${it.name}-${i}`} className="flex items-start justify-between gap-3 px-3 py-2.5">
+                    <div className="min-w-0">
+                      <p className="text-[13px] font-medium text-[#1C1917]">
+                        <span className="tabular-nums text-[#0F766E]">{it.qty}×</span> {it.name}
+                      </p>
+                      {it.variant ? (
+                        <p className="text-[11px] text-[#78716C]">{it.variant}</p>
+                      ) : null}
+                      {it.addons ? (
+                        <p className="text-[11px] text-[#A8A29E]">{it.addons}</p>
+                      ) : null}
+                    </div>
+                    <p className="shrink-0 tabular-nums text-[13px] font-medium text-[#1C1917]">
+                      {formatInr(it.total || it.unit * it.qty)}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="rounded-xl border border-[#E7E5E4] bg-[#FAFAF9] p-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[#A8A29E]">Bill</p>
+            <div className="mt-3 space-y-2">
+              <BillLine label="Items" value={detail.bill.items} />
+              <BillLine label="Packaging" value={detail.bill.packaging} />
+              <BillLine label="Delivery" value={detail.bill.delivery} />
+              <BillLine label="GST" value={detail.bill.gst} />
+              <BillLine label="Discount" value={-Math.abs(detail.bill.discount)} />
+              <BillLine label="Tip" value={detail.bill.tip} />
+              <BillLine label="Donation" value={detail.bill.donation} />
+              <BillLine label="GatiCash" value={detail.bill.gatiCash} />
+              <div className="border-t border-[#E7E5E4] pt-2">
+                <BillLine label="CTC paid" value={detail.bill.ctc} strong />
+              </div>
+              <BillLine label="CTM net" value={detail.bill.netCtm || detail.bill.ctm} />
+              <BillLine label="Commission" value={detail.bill.commission} muted />
+            </div>
+          </div>
+
+          <a
+            href={orderDetailHref(detail.code)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex text-[13px] font-semibold text-[#0F766E] hover:underline"
+          >
+            Open in Ops →
+          </a>
+        </div>
+      )}
+    </SideSheet>
   );
 }
 
@@ -1266,25 +1485,34 @@ function MerchantWalletLedgerSheet({
 }
 
 function OrderCtcCell({ order, compact = false }: { order: OrderRow; compact?: boolean }) {
-  const gross = order.grossCtm ?? order.ctm;
-  const net = order.netCtm ?? order.ctm;
-  const compensation = order.compensation ?? 0;
-  const penalty = order.penalty ?? 0;
-  const adjusted = net + compensation - penalty;
+  const paid = Number(order.payable) || 0;
+  const gross = Number(order.grossCtm ?? order.ctm) || 0;
+  const commission = Number(order.commission) || 0;
+  const netRaw = Number(order.netCtm) || 0;
+  const net = netRaw > 0.005 ? netRaw : Math.max(0, gross - commission);
+  const compensation = Number(order.compensation) || 0;
+  const penalty = Number(order.penalty) || 0;
+  const headline = paid > 0.005 ? paid : gross;
 
   return (
     <div className={`shrink-0 text-right ${compact ? "min-w-[88px]" : "min-w-[104px]"}`}>
-      <p className="font-mono text-[13px] font-semibold tabular-nums text-[#1C1917]">
-        {formatInr(adjusted)}
-      </p>
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-[#0F766E]">
-        CTC net {formatInr(net)}
-      </p>
-      <p className="text-[10px] tabular-nums text-[#A8A29E]">gross {formatInr(gross)}</p>
-      {compensation > 0 ? (
+      {headline > 0.005 ? (
+        <p className="font-mono text-[13px] font-semibold tabular-nums text-[#1C1917]">
+          {formatInr(headline)}
+        </p>
+      ) : null}
+      {net > 0.005 ? (
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-[#0F766E]">
+          CTM net {formatInr(net)}
+        </p>
+      ) : null}
+      {gross > 0.005 && Math.abs(gross - headline) > 0.005 ? (
+        <p className="text-[10px] tabular-nums text-[#A8A29E]">gross {formatInr(gross)}</p>
+      ) : null}
+      {compensation > 0.005 ? (
         <p className="text-[10px] tabular-nums text-[#15803D]">+comp {formatInr(compensation)}</p>
       ) : null}
-      {penalty > 0 ? (
+      {penalty > 0.005 ? (
         <p className="text-[10px] tabular-nums text-[#B91C1C]">−pen {formatInr(penalty)}</p>
       ) : null}
     </div>
@@ -1296,7 +1524,12 @@ function OrderHistoryList({ items }: { items: OrderRow[] }) {
   return (
     <div className="space-y-3">
       {items.map((o) => (
-        <div key={o.id} className="flex gap-3">
+        <div
+          key={o.id}
+          className={`flex gap-3 rounded-xl px-2 py-2 ${
+            o.status.toLowerCase() === "cancelled" ? "bg-[#FEF2F2]" : ""
+          }`}
+        >
           <div className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: statusColor(o.status) }} />
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-2">

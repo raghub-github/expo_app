@@ -56,6 +56,16 @@ export async function middleware(request: NextRequest) {
     return deny(request, pathname);
   }
 
+  const accessUid = request.cookies.get(COREDASH_ACCESS_COOKIE)?.value ?? "";
+
+  // API routes already call resolveCoreSession. Skipping getUser here avoids
+  // stacking edge fetches on every dashboard poll (which was logging fetch failed
+  // and wiping cookies while Postgres was still working).
+  if (pathname.startsWith("/api/") && !pathname.startsWith("/api/auth/")) {
+    if (!accessUid) return unauthorizedApi();
+    return noStore(NextResponse.next());
+  }
+
   let response = NextResponse.next({ request });
   const supabase = createServerClient(url, anonKey, {
     cookieOptions: COREDASH_COOKIE_OPTIONS,
@@ -84,13 +94,12 @@ export async function middleware(request: NextRequest) {
     const result = await supabase.auth.getUser();
     user = result.data.user;
   } catch {
-    if (pathname === "/login" || pathname === "/auth/callback" || pathname.startsWith("/api/auth/")) {
-      return noStore(response);
-    }
-    return deny(request, pathname, true);
+    if (isPublic(pathname)) return noStore(response);
+    // Transient Supabase/network errors must not sign the user out.
+    if (accessUid) return noStore(response);
+    return deny(request, pathname, false);
   }
 
-  const accessUid = request.cookies.get(COREDASH_ACCESS_COOKIE)?.value ?? "";
   const identityOk = Boolean(user?.id && accessUid === user.id);
 
   if (user && pathname === "/login") {

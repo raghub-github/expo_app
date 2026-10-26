@@ -356,6 +356,25 @@ export function FlashSaleFoodBuilder({ stores, items, onStoresChange, onItemsCha
     setSheetOpen(false);
   };
 
+  const removeItem = (storeId: number, menuItemId: string) => {
+    const k = itemKey(storeId, menuItemId);
+    onItemsChange(
+      items.filter((it) => !(it.storeId === storeId && it.menuItemId === menuItemId))
+    );
+    setDraftPrices((p) => {
+      if (!(k in p)) return p;
+      const next = { ...p };
+      delete next[k];
+      return next;
+    });
+    setRowMsg((m) => {
+      if (!(k in m)) return m;
+      const next = { ...m };
+      delete next[k];
+      return next;
+    });
+  };
+
   const confirmDraftSelection = () => {
     if (activeStore == null) return;
     const kept = items.filter((it) => it.storeId !== activeStore.id);
@@ -827,6 +846,13 @@ export function FlashSaleFoodBuilder({ stores, items, onStoresChange, onItemsCha
                       >
                         {msg === "saved" && !dirty ? <Check className="h-3 w-3" /> : null}
                         {msg === "saved" && !dirty ? "Saved" : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-md px-2 py-1 text-[11px] font-medium text-slate-500 hover:bg-red-50 hover:text-red-600"
+                        onClick={() => removeItem(it.storeId, it.menuItemId)}
+                      >
+                        Remove
                       </button>
                       {msg && msg !== "saved" ? (
                         <p className="w-full text-[11px] text-red-600">{msg}</p>

@@ -188,6 +188,16 @@ const MARK: Record<string, (p: LogoProps) => ReactElement> = {
       <Ionicons name="wallet-outline" size={Math.round(p.size * 0.6)} color="#334155" />
     </LogoSlot>
   ),
+  qr: (p) => (
+    <LogoSlot size={p.size}>
+      <Ionicons name="qr-code-outline" size={Math.round(p.size * 0.62)} color="#111827" />
+    </LogoSlot>
+  ),
+  upi_id: (p) => (
+    <LogoSlot size={p.size}>
+      <MaterialCommunityIcons name="at" size={Math.round(p.size * 0.62)} color="#111827" />
+    </LogoSlot>
+  ),
 };
 
 export function CheckoutPaymentMethodLogo({ logoKey, size = 36 }: { logoKey: string; size?: number }) {

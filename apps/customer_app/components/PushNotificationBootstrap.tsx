@@ -9,15 +9,9 @@
  * host so campaign inbox can hydrate state; remote registration soft-skips there.
  */
 
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useCallback, useMemo } from "react";
 
-import {
-  AppState,
-  Modal,
-  Platform,
-  Alert,
-  type AppStateStatus,
-} from "react-native";
+import { AppState, Platform, type AppStateStatus } from "react-native";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
 import * as Localization from "expo-localization";
@@ -25,6 +19,7 @@ import { useRouter } from "expo-router";
 import {
   navigateFromPushData,
   usePushPermissionController,
+  customerAnnouncementForegroundDecision,
   setInAppBannerUiEnabled,
   rememberPushPresented,
   pushPresentationKey,
@@ -47,9 +42,12 @@ import {
 } from "@/lib/refreshCustomerWallet";
 import { useQueryClient } from "@tanstack/react-query";
 import { setCustomerPushUnregister } from "@/lib/customerPushUnregister";
+import {
+  readCustomerPushDeviceTokens,
+  writeCustomerPushDeviceTokens,
+} from "@/lib/customerPushTokenStore";
 import { setNotificationPushAllowHandler } from "@/lib/notificationPushAllow";
 import { useNotificationPushPromptStore } from "@/store/notificationPushPromptStore";
-import { CampaignAnnouncementCard } from "@/components/campaign/CampaignAnnouncementCard";
 import { applyServerCustomerOrderStatus } from "@/lib/apply-customer-order-status";
 import { navigateCustomerAppHref } from "@/lib/navigateToFoodHome";
 import { resolveNotificationDeepLink } from "@/lib/notificationDeepLinkResolver";
@@ -59,11 +57,9 @@ import {
 } from "@/lib/customer-order-status-machine";
 import {
   announcementDedupeKey,
+  formatRemainingHms,
   isCustomerAnnouncementData,
   parseAnnouncementCampaign,
-  shouldShowRichCampaignCard,
-  OFFER_EXPIRED_MESSAGE,
-  type AnnouncementCampaignPayload,
 } from "@/lib/announcementCampaign";
 
 // In-app notification pills OFF. Push / FCM / OS shade / token sync stay ON.
@@ -99,6 +95,46 @@ const CUSTOMER_PUSH_CHANNELS = [
 
 /** Campaign inbox has no realtime channel — poll while foregrounded. */
 const CAMPAIGN_INBOX_POLL_MS = 120_000;
+const postedCampaignTray = new Set<string>();
+
+/** Shade notification with the campaign's own button. No in-app card. */
+async function presentCampaignOnTray(
+  data: Record<string, unknown>,
+  title: string | null,
+  body: string | null,
+) {
+  const parsed = parseAnnouncementCampaign(data, title ?? "", body ?? "");
+  const key = parsed.notificationId || `${parsed.title}|${parsed.body}`;
+  if (postedCampaignTray.has(key)) return;
+  postedCampaignTray.add(key);
+  try {
+    const Notifications = await import("expo-notifications");
+    const button = (parsed.ctaLabel || "Open").slice(0, 32);
+    await Notifications.setNotificationCategoryAsync("gm_campaign_cta", [
+      {
+        identifier: "campaign_cta",
+        buttonTitle: button,
+        options: { opensAppToForeground: true },
+      },
+    ]);
+    const lines = [parsed.body];
+    if (parsed.countdownEnabled && parsed.remainingAtSyncMs > 0) {
+      lines.push(`Offer valid for ${formatRemainingHms(parsed.remainingAtSyncMs)}`);
+    }
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: parsed.title || "GatiMitra",
+        body: lines.filter((line) => line && line.trim()).join("\n"),
+        categoryIdentifier: "gm_campaign_cta",
+        data: { ...data, gm_tray: "1" },
+        sound: "default",
+      },
+      trigger: null,
+    });
+  } catch {
+    /* the original push still sits in the shade */
+  }
+}
 
 export function PushNotificationBootstrap() {
   return <PushNotificationBootstrapInner />;
@@ -111,8 +147,6 @@ function PushNotificationBootstrapInner() {
   const hydrated = useAuthStore((s) => s.hydrated);
   const showPrepDelayBanner = useOrderStore((s) => s.showPrepDelayBanner);
 
-  const [campaignCard, setCampaignCard] = useState<AnnouncementCampaignPayload | null>(null);
-  const campaignCardDataRef = useRef<Record<string, unknown> | null>(null);
   const routedKeysRef = useRef(new Set<string>());
 
   const handleOrderLifecyclePush = useCallback(
@@ -218,15 +252,7 @@ function PushNotificationBootstrapInner() {
               fallbackDeepLink?: string;
               message?: string | null;
             };
-            if (j.expired) {
-              Alert.alert("Offer expired", j.message || OFFER_EXPIRED_MESSAGE);
-              navigateCustomerAppHref(
-                router,
-                j.fallbackDeepLink || "/(tabs)/",
-                "PushNotificationBootstrap.expiredOffer"
-              );
-              return;
-            }
+            if (j.expired) return;
             if (typeof j.deepLink === "string" && j.deepLink.startsWith("/")) {
               navigateCustomerAppHref(router, j.deepLink, "PushNotificationBootstrap.campaign");
               return;
@@ -313,16 +339,6 @@ function PushNotificationBootstrapInner() {
         );
         return;
       }
-      // No in-app pill enqueue — OS shade owns presentation.
-      if (!isCustomerAnnouncementData(payload.data)) return;
-      const parsed = parseAnnouncementCampaign(
-        payload.data,
-        payload.title ?? "",
-        payload.body ?? "",
-      );
-      if (!shouldShowRichCampaignCard(parsed)) return;
-      campaignCardDataRef.current = payload.data;
-      setCampaignCard(parsed);
     },
     [handlePrepDelayPush, handleOrderLifecyclePush, queryClient]
   );
@@ -371,6 +387,8 @@ function PushNotificationBootstrapInner() {
       // Must match Firebase google-services.json + app.json package.
       androidPackageName: "com.gatimitra.customer",
       androidChannels: [...CUSTOMER_PUSH_CHANNELS],
+      readDeviceTokens: readCustomerPushDeviceTokens,
+      writeDeviceTokens: writeCustomerPushDeviceTokens,
       getAuth: () => {
         const { session: s, hydrated: h } = authRef.current;
         // Match Merchant: register as soon as we have a customer access token.
@@ -457,7 +475,6 @@ function PushNotificationBootstrapInner() {
   useEffect(() => {
     if (expoGo) return;
     let cancelled = false;
-    let receivedSub: { remove: () => void } | null = null;
     void (async () => {
       try {
         const Notifications = await import("expo-notifications");
@@ -465,7 +482,23 @@ function PushNotificationBootstrapInner() {
         Notifications.setNotificationHandler({
           handleNotification: async (notification) => {
             const data = (notification.request.content.data ?? {}) as Record<string, unknown>;
-            handleOrderLifecyclePush(data);
+            const tray = customerAnnouncementForegroundDecision({
+              isAnnouncement: isCustomerAnnouncementData(data),
+              alreadyTrayCopy: data.gm_tray === "1",
+              appIsActive: AppState.currentState === "active",
+            });
+            if (tray.postLocalTray) {
+              void presentCampaignOnTray(data, notification.request.content.title, notification.request.content.body);
+            }
+            if (tray.suppressRemoteAlert) {
+              return {
+                shouldShowAlert: false,
+                shouldPlaySound: false,
+                shouldSetBadge: true,
+                shouldShowBanner: false,
+                shouldShowList: false,
+              };
+            }
             const result = liveProgressHandlerResult(data);
             // Keep sticky live bar in sync whenever a lifecycle push arrives.
             if (result.updateSticky || result.suppress) {
@@ -481,24 +514,14 @@ function PushNotificationBootstrapInner() {
             };
           },
         });
-        if (cancelled) return;
-        receivedSub = Notifications.addNotificationReceivedListener((notification) => {
-          const data = (notification.request.content.data ?? {}) as Record<string, unknown>;
-          handleOrderLifecyclePush(data);
-        });
-        if (cancelled) {
-          receivedSub.remove();
-          receivedSub = null;
-        }
       } catch {
         /* ignore */
       }
     })();
     return () => {
       cancelled = true;
-      receivedSub?.remove();
     };
-  }, [expoGo, handleOrderLifecyclePush]);
+  }, [expoGo]);
 
   // Sync tokens when auth is ready. Permission OS dialog is owned by the
   // notification sheet (Skip = 7-day cooldown) — do not auto-prompt here.
@@ -659,26 +682,6 @@ function PushNotificationBootstrapInner() {
           ) {
             continue;
           }
-          const parsed = parseAnnouncementCampaign(
-            {
-              ...meta,
-              notification_id: id,
-              gmType: item.template_code ?? "",
-              gmTitle: item.title ?? "",
-              gmMessage: item.body ?? "",
-              deepLink: item.deep_link ?? "",
-              imageUrl: item.image_url ?? "",
-            },
-            item.title ?? "",
-            item.body ?? "",
-          );
-          if (!shouldShowRichCampaignCard(parsed)) continue;
-          campaignCardDataRef.current = {
-            ...meta,
-            notification_id: id,
-            gmType: item.template_code ?? "",
-          };
-          setCampaignCard(parsed);
         }
       } catch {
         // Best-effort — never block the app on inbox poll failures.
@@ -700,32 +703,5 @@ function PushNotificationBootstrapInner() {
     };
   }, [hydrated, session?.accessToken, session?.role, session?.userId, apiBaseUrl]);
 
-  return (
-    <>
-      {/* FloatingInAppBannerHost intentionally omitted — pills OFF, push ON. */}
-      <Modal
-        visible={!!campaignCard}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setCampaignCard(null)}
-      >
-        {campaignCard ? (
-          <CampaignAnnouncementCard
-            campaign={campaignCard}
-            onClose={() => setCampaignCard(null)}
-            onOpenTarget={() => {
-              const data = campaignCardDataRef.current;
-              setCampaignCard(null);
-              if (data) void routeCampaignOnce(data, "open");
-            }}
-            onCta={() => {
-              const data = campaignCardDataRef.current;
-              setCampaignCard(null);
-              if (data) void routeCampaignOnce(data, "cta");
-            }}
-          />
-        ) : null}
-      </Modal>
-    </>
-  );
+  return null;
 }

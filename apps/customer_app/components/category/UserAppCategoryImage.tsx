@@ -2,7 +2,6 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Image, type ImageStyle } from "expo-image";
 import { View, type StyleProp, type ViewStyle } from "react-native";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
-import { sizedImageUrl } from "@/lib/imageSizing";
 import { getAppAssetUrl } from "@/store/appAssetsStore";
 import { CX } from "@/lib/appAssetKeys";
 import {
@@ -48,15 +47,12 @@ function UserAppCategoryImageInner({
   cacheKey,
   fallback = "soft",
   fallbackColor,
-  widthPt = 96,
 }: Props) {
-  const uri = useMemo(
-    () =>
-      imageUrl?.trim()
-        ? sizedImageUrl(toAbsoluteImageUrl(imageUrl) ?? imageUrl.trim(), widthPt)
-        : null,
-    [imageUrl, widthPt]
-  );
+  const uri = useMemo(() => {
+    const raw = imageUrl?.trim();
+    if (!raw) return null;
+    return toAbsoluteImageUrl(raw) ?? raw;
+  }, [imageUrl]);
   const persisted = getCategoryImageLastGood(cacheKey);
   const localFile = getLocalCategoryImageUri(cacheKey, uri);
   const sessionHit =
@@ -102,12 +98,7 @@ function UserAppCategoryImageInner({
     }
   }, [uri, cacheKey, persisted, localFile]);
 
-  const displayUri =
-    localUri ||
-    (!failed && uri) ||
-    lastGoodRef.current ||
-    persisted ||
-    null;
+  const displayUri = uri || localUri || lastGoodRef.current || persisted || null;
 
   // Never stack a second image URI as placeholder — on Android that paints a
   // ghost/offset "duplicated layer" under category circles.
@@ -118,7 +109,7 @@ function UserAppCategoryImageInner({
         style={style}
         contentFit={contentFit}
         cachePolicy="memory-disk"
-        recyclingKey={cacheKey ?? displayUri}
+        recyclingKey={cacheKey ?? "category-img"}
         priority="high"
         transition={0}
         onLoad={() => {

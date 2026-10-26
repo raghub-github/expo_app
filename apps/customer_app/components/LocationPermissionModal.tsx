@@ -63,20 +63,13 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
       const { reconcileActiveLocationFromGps } = await import(
         "@/lib/reconcileActiveLocationFromGps"
       );
-      const { runExclusiveActiveLocationReconcile } = await import(
-        "@/lib/activeLocationReconcileGate"
-      );
       const { useAuthStore } = await import("@/store/authStore");
-      await runExclusiveActiveLocationReconcile(async () => {
-        if (useAuthStore.getState().session) {
-          await reconcileActiveLocationFromGps(queryClient, {
-            allowRemoteSessionPreserve: true,
-          });
-        } else {
-          await requestPermissionAndFetch({ forceDevice: true });
-        }
-        return "done";
-      });
+      await requestPermissionAndFetch({ forceDevice: true });
+      if (useAuthStore.getState().session) {
+        void reconcileActiveLocationFromGps(queryClient, {
+          allowRemoteSessionPreserve: true,
+        });
+      }
       if (!cancelled) handleDismiss();
     };
     void syncIfReady();
@@ -95,6 +88,20 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
     },
     [handleDismiss, router]
   );
+
+  const showCurrentLocationNow = useCallback(async () => {
+    handleDismiss();
+    await requestPermissionAndFetch({ forceDevice: true });
+    const { reconcileActiveLocationFromGps } = await import(
+      "@/lib/reconcileActiveLocationFromGps"
+    );
+    const { useAuthStore } = await import("@/store/authStore");
+    if (useAuthStore.getState().session) {
+      void reconcileActiveLocationFromGps(queryClient, {
+        allowRemoteSessionPreserve: true,
+      });
+    }
+  }, [handleDismiss, queryClient, requestPermissionAndFetch]);
 
   const handleEnableLocation = useCallback(async () => {
     setEnabling(true);
@@ -118,40 +125,33 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
         } else {
           await Linking.openURL("app-settings:");
         }
-        await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
-        const stillVisible = useLocationStore.getState().showPermissionModal;
-        if (!stillVisible) handleDismiss();
+        const after = await getDeviceLocationReadiness();
+        if (after.isReady) {
+          await showCurrentLocationNow();
+        } else {
+          await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
+          const stillVisible = useLocationStore.getState().showPermissionModal;
+          if (!stillVisible) handleDismiss();
+        }
         return;
       }
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === "granted") {
         const after = await getDeviceLocationReadiness();
         if (after.isReady) {
-          const { reconcileActiveLocationFromGps } = await import(
-            "@/lib/reconcileActiveLocationFromGps"
-          );
-          const { runExclusiveActiveLocationReconcile } = await import(
-            "@/lib/activeLocationReconcileGate"
-          );
-          const { useAuthStore } = await import("@/store/authStore");
-          await runExclusiveActiveLocationReconcile(async () => {
-            if (useAuthStore.getState().session) {
-              await reconcileActiveLocationFromGps(queryClient, {
-                allowRemoteSessionPreserve: true,
-              });
-            } else {
-              await requestPermissionAndFetch({ forceDevice: true });
-            }
-            return "done";
-          });
-          handleDismiss();
+          await showCurrentLocationNow();
         } else if (Platform.OS === "android") {
           try {
             await Location.enableNetworkProviderAsync();
           } catch {
             // ignore
           }
-          await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
+          const enabled = await getDeviceLocationReadiness();
+          if (enabled.isReady) {
+            await showCurrentLocationNow();
+          } else {
+            await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
+          }
         }
         return;
       }
@@ -163,7 +163,11 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
     } finally {
       setEnabling(false);
     }
-  }, [handleDismiss, promptLocationPermissionIfNeeded, requestPermissionAndFetch, queryClient]);
+  }, [
+    handleDismiss,
+    promptLocationPermissionIfNeeded,
+    showCurrentLocationNow,
+  ]);
 
   const handleSelectAddress = useCallback(
     async (addr: Address) => {

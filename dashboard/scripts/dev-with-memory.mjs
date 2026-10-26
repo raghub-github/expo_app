@@ -78,9 +78,13 @@ process.env.NODE_OPTIONS = nodeOptions;
 const extraArgs = process.argv.slice(2).filter((a) => a !== "--clean-cache");
 const useTurbopackExplicit =
   extraArgs.includes("--turbopack") || process.env.DASHBOARD_DEV_TURBOPACK === "1";
+// Turbopack on Windows drops compiled chunks (missing cache files and
+// routes-manifest.json) and every API route then returns 500. Webpack stays
+// the default unless `npm run dev:turbopack` is used.
 const useWebpack =
   extraArgs.includes("--webpack") ||
   process.env.DASHBOARD_DEV_WEBPACK === "1" ||
+  (process.platform === "win32" && !useTurbopackExplicit) ||
   (repoOnOneDrive() && !useTurbopackExplicit);
 const filteredArgs = extraArgs.filter(
   (a) => a !== "--webpack" && a !== "--onedrive-next" && a !== "--turbopack"

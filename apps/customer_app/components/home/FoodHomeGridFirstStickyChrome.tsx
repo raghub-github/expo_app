@@ -13,9 +13,7 @@ import {
 } from "@/components/home/FoodHomeGridFirstHeader";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
-  GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
   gridFirstStickyCategoryTop,
-  gridFirstStickyFilterTop,
   gridFirstStickySearchTop,
   gridFirstStickySnapY,
   type GridFirstStickyMetrics,
@@ -49,13 +47,14 @@ type Props = {
    */
   pinAtRest?: boolean;
   onOpenVegPopover?: (anchor: import("@/components/home/VegModePopover").VegPopoverAnchor) => void;
+  /** Laid-out height of the pinned search block, including the status-bar inset. */
+  onSearchChromeHeight?: (height: number) => void;
 };
 
 function stickyOn(y: number, stickAt: number): boolean {
   "worklet";
   if (stickAt <= 1) return false;
-  // Literals only — Reanimated cannot read JS module consts on the UI thread.
-  return y >= gridFirstStickySnapY(stickAt, 8);
+  return y >= stickAt;
 }
 
 export function FoodHomeGridFirstStickyChrome({
@@ -79,18 +78,13 @@ export function FoodHomeGridFirstStickyChrome({
   /** When true (no hero), pin search + category from y=0 — no rest→sticky gap jerk. */
   pinAtRest = false,
   onOpenVegPopover,
+  onSearchChromeHeight,
 }: Props) {
-  const pinFullHeader = Boolean(locationPrimary || locationSecondary);
   const searchTop = gridFirstStickySearchTop(metrics);
-  const stickyHeaderHeight = pinFullHeader
-    ? metrics.headerBlockHeight
-    : metrics.searchRowHeight;
-  const categoryTop = pinFullHeader
-    ? gridFirstStickyCategoryTop(metrics)
-    : metrics.topInset + stickyHeaderHeight;
-  const filterTop = pinFullHeader
-    ? categoryTop + metrics.categoryBlockHeight
-    : gridFirstStickyFilterTop(metrics);
+  // Pin the search pill only. Putting the location row back into the sticky
+  // copy made the search jump down when it locked.
+  const categoryTop = gridFirstStickyCategoryTop(metrics);
+  const filterTop = categoryTop + metrics.categoryBlockHeight;
 
   const [searchStickyOn, setSearchStickyOn] = useState(pinAtRest);
   const [categoryStickyOn, setCategoryStickyOn] = useState(
@@ -136,18 +130,11 @@ export function FoodHomeGridFirstStickyChrome({
     if (stickAt <= 1) {
       return { opacity: 0, backgroundColor: "transparent", zIndex: -1 };
     }
-    const snapY = gridFirstStickySnapY(stickAt, 8);
-    const handoff = 4;
-    const opacity = interpolate(
-      scrollY.value,
-      [snapY - handoff, snapY + handoff],
-      [0, 1],
-      Extrapolation.CLAMP
-    );
+    const on = scrollY.value >= stickAt;
     return {
-      opacity,
-      backgroundColor: opacity > 0.05 ? PAGE_BG : "transparent",
-      zIndex: opacity > 0.05 ? 32 : -1,
+      opacity: on ? 1 : 0,
+      backgroundColor: on ? PAGE_BG : "transparent",
+      zIndex: on ? 32 : -1,
     };
   }, [pinAtRest]);
 
@@ -162,18 +149,11 @@ export function FoodHomeGridFirstStickyChrome({
     if (stickAt <= 1) {
       return { opacity: 0, backgroundColor: "transparent", zIndex: -1 };
     }
-    const snapY = gridFirstStickySnapY(stickAt, 8);
-    const handoff = 4;
-    const opacity = interpolate(
-      scrollY.value,
-      [snapY - handoff, snapY + handoff],
-      [0, 1],
-      Extrapolation.CLAMP
-    );
+    const on = scrollY.value >= stickAt;
     return {
-      opacity,
-      backgroundColor: opacity > 0.05 ? PAGE_BG : "transparent",
-      zIndex: opacity > 0.05 ? 31 : -1,
+      opacity: on ? 1 : 0,
+      backgroundColor: on ? PAGE_BG : "transparent",
+      zIndex: on ? 31 : -1,
     };
   }, [enableCategorySticky, pinAtRest]);
 
@@ -215,9 +195,13 @@ export function FoodHomeGridFirstStickyChrome({
             backgroundColor: PAGE_BG,
           }}
           pointerEvents="box-none"
+          onLayout={(e) => {
+            const h = e.nativeEvent.layout.height;
+            if (h > 1) onSearchChromeHeight?.(h);
+          }}
         >
           <FoodHomeGridFirstHeader
-            variant={pinFullHeader ? "full" : "search"}
+            variant="search"
             topInset={0}
             highlightSearchPill
             heroReady={false}
@@ -280,22 +264,30 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 0,
     right: 0,
-    backgroundColor: "transparent",
+    backgroundColor: PAGE_BG,
+    // No drop shadow — Android elevation paints under the search pill and
+    // covers the category row.
+    elevation: 0,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    zIndex: 32,
   },
   categoryLayer: {
     position: "absolute",
     left: 0,
     right: 0,
-    backgroundColor: "transparent",
+    backgroundColor: PAGE_BG,
     overflow: "hidden",
+    elevation: 0,
+    shadowOpacity: 0,
+    zIndex: 31,
   },
   categoryInner: {
-    // Same search→category gap at rest and after scroll-up (pinAtRest or sticky).
-    paddingTop: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
-    paddingBottom: 2,
+    paddingTop: 0,
+    paddingBottom: 0,
   },
   categoryInnerTight: {
-    paddingTop: GRID_FIRST_STICKY_SEARCH_CATEGORY_GAP,
+    paddingTop: 0,
     paddingBottom: 0,
   },
   filterLayer: {

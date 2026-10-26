@@ -139,22 +139,10 @@ export function GatiMitraBootstrapScreen({
       <View style={styles.logoLayer} pointerEvents="none">
         {fontsReady ? (
           <>
-            <AppText
-              style={styles.title}
-              bold
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.55}
-            >
+            <AppText style={styles.title} bold numberOfLines={1}>
               GatiMitra
             </AppText>
-            <AppText
-              style={styles.subtitle}
-              bold
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.65}
-            >
+            <AppText style={styles.subtitle} bold numberOfLines={1}>
               CRAFTED FOR CONVENIENCE
             </AppText>
           </>
@@ -230,7 +218,7 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 28,
+    paddingHorizontal: 12,
     zIndex: 2,
   },
   spinner: {
@@ -268,26 +256,26 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   title: {
-    fontSize: 48,
-    lineHeight: 56,
+    fontSize: 54,
+    lineHeight: 62,
     fontFamily: "Lora_700Bold",
     fontWeight: "700",
     color: "#FFFFFF",
-    letterSpacing: -0.4,
+    letterSpacing: -0.8,
     textAlign: "center",
     width: "100%",
-    maxWidth: 360,
+    maxWidth: 380,
   },
   subtitle: {
-    marginTop: 14,
-    fontSize: 11,
+    marginTop: 12,
+    fontSize: 13,
+    lineHeight: 18,
     fontFamily: "Lora_700Bold",
     fontWeight: "700",
-    color: "rgba(255,255,255,0.9)",
-    letterSpacing: 2.2,
+    color: "#FFFFFF",
+    letterSpacing: 0.8,
     textAlign: "center",
-    width: "100%",
-    maxWidth: 360,
-    paddingHorizontal: 4,
+    alignSelf: "center",
+    maxWidth: 280,
   },
 });

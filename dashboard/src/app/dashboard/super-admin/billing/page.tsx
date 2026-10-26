@@ -34,6 +34,42 @@ const textareaCls =
 /** DataTransfer type for charge-order drag-and-drop. Payload: JSON `{ kind, id }`. */
 const BILLING_ROW_DND_MIME = "application/x-gatimitra-billing-row-ref";
 
+function ActiveToggle({
+  active,
+  busy,
+  label,
+  onToggle,
+}: {
+  active: boolean;
+  busy: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={active}
+      aria-label={label}
+      title={active ? "Active — click to turn off" : "Inactive — click to turn on"}
+      disabled={busy}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition disabled:opacity-50 ${
+        active ? "bg-emerald-500" : "bg-slate-300"
+      }`}
+    >
+      <span
+        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+          active ? "translate-x-6" : "translate-x-1"
+        }`}
+      />
+    </button>
+  );
+}
+
 type CombinedOrderKey = { kind: "rule" | "tax"; id: number };
 
 function keysEqual(a: CombinedOrderKey[], b: CombinedOrderKey[]) {
@@ -532,6 +568,7 @@ export default function SuperAdminBillingPage() {
     hydrateRuleForEdit,
     saveRule,
     toggleRule,
+    toggleTax,
     deleteRule,
     addCondition,
     deleteCondition,
@@ -1356,6 +1393,12 @@ export default function SuperAdminBillingPage() {
                       >
                         {reorderBusy ? <LoadingSpinner variant="button" size="sm" /> : "↓"}
                       </button>
+                      <ActiveToggle
+                        active={t.is_active}
+                        busy={Boolean(busy[`tax.toggle.${t.id}`])}
+                        label={`${t.is_active ? "Deactivate" : "Activate"} ${t.name}`}
+                        onToggle={() => void toggleTax(t)}
+                      />
                       <button type="button" className="text-indigo-600 text-xs" onClick={() => { hydrateTaxForEdit(t); setChargeKind("tax_config"); }}>
                         Edit
                       </button>
@@ -1450,23 +1493,12 @@ export default function SuperAdminBillingPage() {
                     >
                       {reorderBusy ? <LoadingSpinner variant="button" size="sm" /> : "↓"}
                     </button>
-                    <button
-                      type="button"
-                      disabled={busy[`rule.toggle.${r.id}`]}
-                      className="text-xs text-indigo-600 px-2"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void toggleRule(r);
-                      }}
-                    >
-                      {busy[`rule.toggle.${r.id}`] ? (
-                        <LoadingSpinner variant="button" size="sm" />
-                      ) : r.is_active ? (
-                        "Deactivate"
-                      ) : (
-                        "Activate"
-                      )}
-                    </button>
+                    <ActiveToggle
+                      active={r.is_active}
+                      busy={Boolean(busy[`rule.toggle.${r.id}`])}
+                      label={`${r.is_active ? "Deactivate" : "Activate"} ${r.name || `rule ${r.id}`}`}
+                      onToggle={() => void toggleRule(r)}
+                    />
                     <button type="button" className="text-xs font-medium text-gray-800 underline" onClick={(e) => onEditRule(r, e)}>
                       Edit
                     </button>

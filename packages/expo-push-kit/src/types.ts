@@ -81,6 +81,9 @@ export type PushControllerOptions = {
    */
   skipDefaultNotificationHandler?: boolean;
   log?: (message: string, extra?: Record<string, unknown>) => void;
+  /** This installation's last registered tokens. Used to retire a rotated token and to log out one device. */
+  readDeviceTokens?: () => Promise<{ expo: string | null; native: string | null }>;
+  writeDeviceTokens?: (tokens: { expo: string | null; native: string | null }) => Promise<void>;
 };
 
 export type UnregisterPushOptions = {

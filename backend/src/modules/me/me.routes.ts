@@ -873,6 +873,7 @@ export async function meRoutes(app: FastifyInstance) {
           role,
           expoToken: body.expo_push_token,
           nativeToken: body.native_push_token,
+          deviceOnly: true,
           log: req.log,
         });
       } catch (pushErr) {

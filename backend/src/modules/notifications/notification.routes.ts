@@ -789,7 +789,24 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       const id = Number(req.params.id);
       if (!Number.isInteger(id) || id < 1) return reply.code(400).send({ error: "invalid_id" });
       try {
-        const result = await resendCampaign(id);
+        const work = resendCampaign(id).then(
+          (result) => ({ ok: true as const, result }),
+          (e: unknown) => ({ ok: false as const, e }),
+        );
+        const raced = await Promise.race([
+          work,
+          new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 500)),
+        ]);
+        if (raced === "timeout") {
+          void work.then((out) => {
+            if (!out.ok) {
+              req.log.error({ err: out.e, campaignId: id }, "notification_campaign_resend_failed");
+            }
+          });
+          return reply.send({ campaignId: id, status: "running", started: true });
+        }
+        if (!raced.ok) throw raced.e;
+        const result = raced.result;
         if (result.skipReason === "no_recipients" || result.skipReason === "quiet_hours") {
           const campaign = await getCampaignById(id);
           req.log.warn(

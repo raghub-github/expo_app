@@ -79,6 +79,11 @@ function isPrivateLanIpv4(host: string): boolean {
   return false;
 }
 
+function isGatimitraProductionApi(url: string): boolean {
+  const host = (hostFromApiUrl(url) ?? "").toLowerCase();
+  return host === "api.gatimitra.com" || host.endsWith(".gatimitra.com");
+}
+
 function hostFromApiUrl(url: string): string | null {
   try {
     return new URL(url).hostname;
@@ -250,6 +255,19 @@ export function getConfig(): {
     rawUrl = `http://${devHost}:${port}`;
   } else {
     rawUrl = fromEnv ?? fromExtra ?? releaseFallback;
+  }
+
+  // A saved "Configure API URL" value still pointing at production would ignore
+  // .env.local and keep checkout on the public engine. In dev, a local env wins.
+  const envPointsLocal =
+    (fromEnv != null && isPrivateOrLocalApiUrl(fromEnv)) || devHost != null;
+  if (
+    __DEV__ &&
+    runtimeApiBaseUrlOverride &&
+    isGatimitraProductionApi(runtimeApiBaseUrlOverride) &&
+    envPointsLocal
+  ) {
+    runtimeApiBaseUrlOverride = null;
   }
 
   // Runtime override (from AsyncStorage, set via the in-app "Configure API URL"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Area,
@@ -20,6 +20,7 @@ import {
 import {
   ArrowUpRight,
   Bike,
+  CalendarDays,
   CheckCircle2,
   Clock3,
   ExternalLink,
@@ -111,6 +112,198 @@ const tooltipStyle = {
 
 const PAGE_SIZE = 10;
 
+function hourLabel(hour: number) {
+  const h = ((hour % 24) + 24) % 24;
+  const suffix = h < 12 ? "AM" : "PM";
+  const twelve = h % 12 === 0 ? 12 : h % 12;
+  return `${String(twelve).padStart(2, "0")}:00 ${suffix}`;
+}
+
+function istYmd(now = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+function istHour(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  return Number(parts.find((p) => p.type === "hour")?.value || 0);
+}
+
+function formatReportDate(ymd: string) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  return dt.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+}
+
+type HourlyRow = OrdersData["hourly"][number];
+
+function HourlyOrderReport() {
+  const today = istYmd();
+  const [date, setDate] = useState(today);
+  const [nowHour, setNowHour] = useState(() => istHour());
+  const [rows, setRows] = useState<HourlyRow[] | null>(null);
+  const dateRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const t = window.setInterval(() => setNowHour(istHour()), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/orders/hourly?date=${encodeURIComponent(date)}`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const json = (await res.json()) as {
+          success?: boolean;
+          data?: { hourly: HourlyRow[] };
+        };
+        if (!cancelled && res.ok && json.success && json.data) setRows(json.data.hourly);
+      } catch {
+        /* keep last rows */
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void load();
+    }, 20_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [date]);
+
+  const ordered = useMemo(() => {
+    const src = rows ?? Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      orders: 0,
+      delivered: 0,
+      cancelled: 0,
+      gmv: 0,
+    }));
+    return Array.from({ length: 24 }, (_, i) => src[(nowHour + i) % 24]!);
+  }, [rows, nowHour]);
+
+  const totalOrders = ordered.reduce((a, r) => a + r.orders, 0);
+  const peak = ordered.reduce(
+    (best, cur) => (cur.orders > best.orders ? cur : best),
+    ordered[0] ?? { hour: 0, orders: 0, delivered: 0, cancelled: 0, gmv: 0 }
+  );
+  const isToday = date === today;
+
+  function openCalendar() {
+    const el = dateRef.current;
+    if (!el) return;
+    if (typeof el.showPicker === "function") el.showPicker();
+    else el.click();
+  }
+
+  return (
+    <Panel
+      title="GATIMITRA | HOURLY ORDER REPORT"
+      subtitle="Always today · click the date to filter"
+      right={
+        <div className="flex items-center gap-2">
+          {peak.orders > 0 ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-[#EEF0FF] px-2 py-0.5 text-[10px] font-semibold text-[#4B49AC]">
+              <Radio className="h-3 w-3" />
+              Peak {hourLabel(peak.hour)}
+            </span>
+          ) : null}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={openCalendar}
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-[#E4E7F7] bg-white px-2.5 py-1 text-[11px] font-semibold text-[#4B49AC] hover:bg-[#F8F9FF]"
+              title="Pick a date"
+            >
+              <CalendarDays className="h-3.5 w-3.5" />
+              {isToday ? `Today · ${formatReportDate(date)}` : formatReportDate(date)}
+            </button>
+            <input
+              ref={dateRef}
+              type="date"
+              value={date}
+              max={today}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (/^\d{4}-\d{2}-\d{2}$/.test(next) && next <= today) setDate(next);
+              }}
+              className="absolute inset-0 cursor-pointer opacity-0"
+              aria-label="Filter hourly report by date"
+            />
+          </div>
+        </div>
+      }
+    >
+      <div className="h-[300px] overflow-auto rounded-xl border border-[#EEF0F8]">
+        <table className="min-w-full border-collapse text-left">
+          <thead className="sticky top-0 z-[1] bg-[#F8F9FF]">
+            <tr className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#8B89B3]">
+              <th className="px-3 py-2">Hour</th>
+              <th className="px-3 py-2 text-right">Orders</th>
+              <th className="px-3 py-2 text-right">Delivered</th>
+              <th className="px-3 py-2 text-right">Cancelled</th>
+              <th className="px-3 py-2 text-right">Revenue</th>
+              <th className="px-3 py-2 text-right">Share</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ordered.map((r, idx) => {
+              const isNow = r.hour === nowHour;
+              const isPeak = peak.orders > 0 && r.hour === peak.hour;
+              const share = totalOrders > 0 ? (r.orders / totalOrders) * 100 : 0;
+              return (
+                <tr
+                  key={r.hour}
+                  className={`border-t border-[#F0F2FA] text-[12px] ${
+                    idx === 0
+                      ? "bg-[#EEF0FF] font-semibold text-[#1E1C4A]"
+                      : isPeak
+                        ? "bg-[#F8F9FF] text-[#1E1C4A]"
+                        : r.orders === 0
+                          ? "text-[#B0AEC8]"
+                          : "text-[#1E1C4A]"
+                  }`}
+                >
+                  <td className="whitespace-nowrap px-3 py-1.5 font-medium">
+                    {hourLabel(r.hour)}
+                    {isNow ? (
+                      <span className="ml-1.5 rounded-full bg-[#4B49AC] px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-white">
+                        Now
+                      </span>
+                    ) : isPeak ? (
+                      <span className="ml-1.5 rounded-full bg-[#EEF0FF] px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-[#4B49AC]">
+                        Peak
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(r.orders)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(r.delivered)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{formatCount(r.cancelled)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{formatInr(r.gmv, true)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{share.toFixed(0)}%</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
 export function OrdersAnalyticsPage() {
   const searchParams = useSearchParams();
   const tab = parseOrdersTab(searchParams.get("tab"));
@@ -130,7 +323,6 @@ function AnalyticsView({ data }: { data: OrdersData }) {
   const k = data.kpis;
   const c = data.customers;
   const d = data.delivery;
-  const totalType = data.byType.reduce((a, r) => a + r.orders, 0) || 1;
   const totalStatus = data.byStatus.reduce((a, r) => a + r.orders, 0) || 1;
 
   const statusBuckets = useMemo(() => {
@@ -214,8 +406,8 @@ function AnalyticsView({ data }: { data: OrdersData }) {
         />
       </div>
 
-      {/* Main chart + category */}
-      <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
+      {/* Main chart + hourly report */}
+      <div className="grid gap-4 xl:grid-cols-2">
         <Panel
           title="Orders & Revenue Trend"
           subtitle="Daily volume with delivered GMV overlay"
@@ -309,74 +501,7 @@ function AnalyticsView({ data }: { data: OrdersData }) {
           </div>
         </Panel>
 
-        <Panel title="Orders by Category" subtitle="Share of placed orders">
-          <div className="flex h-[300px] flex-col">
-            <div className="relative min-h-0 flex-1">
-              {data.byType.length === 0 ? (
-                <EmptyChart label="No categories" />
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={data.byType.map((r) => ({
-                        name: prettyLabel(r.type),
-                        value: r.orders,
-                        type: r.type,
-                      }))}
-                      dataKey="value"
-                      nameKey="name"
-                      innerRadius={68}
-                      outerRadius={98}
-                      paddingAngle={3}
-                      stroke="#fff"
-                      strokeWidth={3}
-                    >
-                      {data.byType.map((r, i) => (
-                        <Cell
-                          key={r.type}
-                          fill={categoryColor(r.type) || chartColors[i % chartColors.length]}
-                        />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      contentStyle={tooltipStyle}
-                      formatter={(value) => formatCount(Number(value))}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-              )}
-              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <p className="text-[24px] font-semibold tabular-nums text-[#1E1C4A]">
-                  {formatCount(k.orders)}
-                </p>
-                <p className="text-[11px] font-medium text-[#8B89B3]">Total Orders</p>
-              </div>
-            </div>
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              {data.byType.slice(0, 4).map((r, i) => (
-                <div
-                  key={r.type}
-                  className="flex items-center gap-2 rounded-xl bg-[#F8F9FF] px-2.5 py-2"
-                >
-                  <span
-                    className="h-2.5 w-2.5 shrink-0 rounded-full"
-                    style={{
-                      background: categoryColor(r.type) || chartColors[i % chartColors.length],
-                    }}
-                  />
-                  <div className="min-w-0">
-                    <p className="truncate text-[11px] font-semibold text-[#1E1C4A]">
-                      {prettyLabel(r.type)}
-                    </p>
-                    <p className="text-[10px] tabular-nums text-[#8B89B3]">
-                      {((r.orders / totalType) * 100).toFixed(0)}% · {formatCount(r.orders)}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </Panel>
+        <HourlyOrderReport />
       </div>
 
       {/* Stores + status + hourly */}

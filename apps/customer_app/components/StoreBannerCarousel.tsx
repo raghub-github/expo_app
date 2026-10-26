@@ -103,18 +103,25 @@ const BannerImage = React.memo(function BannerImage({
   onLoadOk?: (uri: string) => void;
   onLoadFail?: (uri: string) => void;
 }) {
-  // Hero paints at `width` — request a matching WebP derivative (no-op for non-proxy URLs).
-  const sized = useMemo(() => sizedImageUrl(uri, width) ?? uri, [uri, width]);
-  const lastGoodRef = useRef(sized);
-  const [paintUri, setPaintUri] = useState(sized);
-
-  useEffect(() => {
-    if (!sized) return;
-    setPaintUri(sized);
-    if (isHeroMediaSessionReady(sized)) {
-      lastGoodRef.current = sized;
+  // Paint the same display-width WebP the prefetch warms. Cold misses fail-open
+  // to the original (onError strips w/q/f) so a slow resize never stays blank.
+  const paintSource = sizedImageUrl(uri, Math.max(1, width)) ?? uri;
+  const lastGoodRef = useRef(paintSource);
+  const [paintUri, setPaintUri] = useState(paintSource);
+  const [trackedSource, setTrackedSource] = useState(paintSource);
+  // Prefetch can mark a URL "ready" before this card has drawn it. Keep the
+  // skeleton up until this Image actually paints, same as the deals rail.
+  const [painted, setPainted] = useState(false);
+  // Recycled list cells keep state. Swap the URI during render so the next
+  // restaurant does not flash the previous banner or an empty shell.
+  if (paintSource !== trackedSource) {
+    setTrackedSource(paintSource);
+    setPaintUri(paintSource);
+    setPainted(false);
+    if (isHeroMediaSessionReady(paintSource)) {
+      lastGoodRef.current = paintSource;
     }
-  }, [sized]);
+  }
 
   return (
     <View
@@ -145,20 +152,51 @@ const BannerImage = React.memo(function BannerImage({
         placeholderContentFit="cover"
         onLoad={() => {
           lastGoodRef.current = paintUri;
+          setPainted(true);
           markHeroMediaSessionReady(paintUri);
           onLoadOk?.(paintUri);
         }}
         onDisplay={() => {
           lastGoodRef.current = paintUri;
+          setPainted(true);
           markHeroMediaSessionReady(paintUri);
         }}
         onError={() => {
+          try {
+            const parsed = new URL(paintUri);
+            if (parsed.searchParams.has("w") || parsed.searchParams.has("f")) {
+              parsed.searchParams.delete("w");
+              parsed.searchParams.delete("q");
+              parsed.searchParams.delete("f");
+              const fallback = parsed.toString();
+              if (fallback !== paintUri) {
+                setPaintUri(fallback);
+                setPainted(false);
+                return;
+              }
+            }
+          } catch {
+            /* keep fail path */
+          }
           if (lastGoodRef.current && lastGoodRef.current !== paintUri) {
             setPaintUri(lastGoodRef.current);
           }
-          onLoadFail?.(sized);
+          onLoadFail?.(paintSource);
         }}
       />
+      {!painted ? (
+        <GMSkeleton
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width,
+            height,
+            borderRadius: 0,
+            zIndex: 2,
+          }}
+        />
+      ) : null}
     </View>
   );
 });
@@ -354,7 +392,9 @@ export function StoreBannerCarousel({
 
   slidesRef.current = slides;
   const dataKey = slides.join("|");
-  const showCarousel = slides.length > 1;
+  // A gallery that is neither swipeable nor auto-rotating must not mount every
+  // slide — that decoded full-width images for every visible restaurant card.
+  const showCarousel = slides.length > 1 && (enableSwipe || enableAutoRotate);
   const useInfiniteLoop =
     enableInfiniteLoop ?? (showCarousel && (enableSwipe || enableAutoRotate));
   const stripSlides = useInfiniteLoop ? loopSlides : slides;

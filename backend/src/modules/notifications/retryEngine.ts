@@ -23,6 +23,24 @@ export function delaySecForAttempt(delays: number[], attemptIndex: number): numb
   return delays[attemptIndex] ?? null;
 }
 
+/** Bounded retry. Terminal provider errors are never scheduled again. */
+export function planRetryDecision(input: {
+  terminal: boolean;
+  currentAttempts: number;
+  maxRetries: number;
+  delays: number[];
+}): { scheduled: boolean; delaySec: number | null; attempt: number } {
+  const nextAttempt = input.currentAttempts + 1;
+  if (input.terminal || nextAttempt > input.maxRetries || input.delays.length === 0) {
+    return { scheduled: false, delaySec: null, attempt: nextAttempt };
+  }
+  const delaySec =
+    delaySecForAttempt(input.delays, input.currentAttempts) ??
+    input.delays[input.delays.length - 1] ??
+    null;
+  return { scheduled: delaySec != null, delaySec, attempt: nextAttempt };
+}
+
 /**
  * After a failed delivery: either schedule next_retry_at or leave as permanent failed.
  * Increments retry_attempts. Returns whether a retry was scheduled.
@@ -46,9 +64,16 @@ export async function markFailedWithRetrySchedule(opts: {
     LIMIT 1
   `) as unknown as Array<{ retry_attempts: number }>;
   const currentAttempts = Number(rows[0]?.retry_attempts ?? 0);
-  const nextAttempt = currentAttempts + 1;
+  const decision = planRetryDecision({
+    terminal,
+    currentAttempts,
+    maxRetries,
+    delays,
+  });
+  const nextAttempt = decision.attempt;
+  const delaySec = decision.delaySec;
 
-  if (terminal || nextAttempt > maxRetries) {
+  if (!decision.scheduled || delaySec == null) {
     await sql`
       UPDATE public.notification_dispatch_logs
       SET
@@ -63,7 +88,6 @@ export async function markFailedWithRetrySchedule(opts: {
     return { scheduled: false, nextRetryAt: null, attempt: nextAttempt };
   }
 
-  const delaySec = delaySecForAttempt(delays, currentAttempts) ?? delays[delays.length - 1]!;
   const nextRetryAt = new Date(Date.now() + delaySec * 1000).toISOString();
   await sql`
     UPDATE public.notification_dispatch_logs

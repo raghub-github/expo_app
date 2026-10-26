@@ -32,6 +32,7 @@ import { verifyRazorpayPaymentDetails, verifyRazorpaySignature } from "../../ser
 import { computeBillForOrder } from "../billing/billing.service.js";
 import { resolveStoreDeliveryQuote } from "../distance/storeQuote.service.js";
 import { normalizeOrderItems } from "./orderNormalizer.js";
+import { resolveCheckoutFulfillmentAddress } from "./fulfillment-address.js";
 import { getRoute } from "../distance/distance.service.js";
 import {
   parseCheckoutGatiCashAdjustments,
@@ -705,7 +706,8 @@ export type PendingOrderInput = {
     }>;
     itemSnapshot?: Record<string, unknown> | null;
   }>;
-  addressId: number;
+  /** Required for delivery. Null for self_pickup — never invent a customer drop. */
+  addressId?: string | number | null;
   paymentMethod: string;
   tipAmount?: number;
   donationAmount?: number;
@@ -902,9 +904,18 @@ export async function createPendingOrder(
   // Order delivery snapshot = checkout addressId (what the customer confirmed).
   // Never override with customer_active_location — active pin can be live GPS or a
   // different Saved Address and must not rewrite immutable order drop coords.
+  // self_pickup never keeps a customer address, even if the client sent one.
+  const fulfillmentAddress = resolveCheckoutFulfillmentAddress({
+    deliveryType: input.deliveryType ?? "delivery",
+    addressId: input.addressId,
+  });
+  if (!fulfillmentAddress.ok) {
+    return { ok: false, code: fulfillmentAddress.code, message: fulfillmentAddress.message };
+  }
+  const isSelfPickup = fulfillmentAddress.selfPickup;
+  const addressId = fulfillmentAddress.addressId;
   const active = await getActiveLocation(customerId);
-  const addressId = input.addressId;
-  if (active?.addressId != null && active.addressId !== addressId) {
+  if (!isSelfPickup && active?.addressId != null && active.addressId !== addressId) {
     console.info("[orders] pending_address_checkout_wins_over_active", {
       customerId,
       checkoutAddressId: addressId,
@@ -922,11 +933,11 @@ export async function createPendingOrder(
   // Production-critical serviceability gate. Run this before idempotency
   // lookup and independently of billing flags so even retries cannot reuse a
   // pending delivery after its address becomes unserviceable.
-  if ((input.deliveryType ?? "delivery") === "delivery") {
+  if (!isSelfPickup) {
     const deliveryQuote = await resolveStoreDeliveryQuote({
       storeId: String(input.merchantId),
       customerId,
-      addressId,
+      addressId: addressId as number,
       actor: "customer",
       serviceType: billingServiceType,
       skipCache: true,
@@ -957,23 +968,30 @@ export async function createPendingOrder(
     const { assertServiceNotPrevented, preventCodesForStoreType } = await import(
       "../prevent-services/preventServices.engine.js"
     );
-    const [addrCoords] = await db
-      .select({
-        latitude: addrTable.latitude,
-        longitude: addrTable.longitude,
-      })
-      .from(addrTable)
-      .where(
-        and(
-          eq(addrTable.id, addressId),
-          eq(addrTable.customerId, customerId),
-          eq(addrTable.isActive, true),
-          isNull(addrTable.deletedAt)
+    let dropLat: number | null = null;
+    let dropLng: number | null = null;
+    if (addressId != null) {
+      const [addrCoords] = await db
+        .select({
+          latitude: addrTable.latitude,
+          longitude: addrTable.longitude,
+        })
+        .from(addrTable)
+        .where(
+          and(
+            eq(addrTable.id, addressId),
+            eq(addrTable.customerId, customerId),
+            eq(addrTable.isActive, true),
+            isNull(addrTable.deletedAt)
+          )
         )
-      )
-      .limit(1);
-    const dropLat = addrCoords?.latitude != null ? Number(addrCoords.latitude) : null;
-    const dropLng = addrCoords?.longitude != null ? Number(addrCoords.longitude) : null;
+        .limit(1);
+      dropLat = addrCoords?.latitude != null ? Number(addrCoords.latitude) : null;
+      dropLng = addrCoords?.longitude != null ? Number(addrCoords.longitude) : null;
+    } else if (isSelfPickup) {
+      dropLat = storeForOrder?.latitude != null ? Number(storeForOrder.latitude) : null;
+      dropLng = storeForOrder?.longitude != null ? Number(storeForOrder.longitude) : null;
+    }
     for (const code of preventCodesForStoreType(storeType)) {
       const blocked = await assertServiceNotPrevented({
         lat: dropLat,
@@ -1062,33 +1080,35 @@ export async function createPendingOrder(
   }
 
   const { customerAddresses } = await import("../../db/schema.js");
-  const [addrRow] = await db
-    .select({
-      addressLine1: customerAddresses.addressLine1,
-      addressLine2: customerAddresses.addressLine2,
-      city: customerAddresses.city,
-      state: customerAddresses.state,
-      postalCode: customerAddresses.postalCode,
-      latitude: customerAddresses.latitude,
-      longitude: customerAddresses.longitude,
-      label: customerAddresses.label,
-      customLabel: customerAddresses.customLabel,
-      contactName: customerAddresses.contactName,
-      contactMobile: customerAddresses.contactMobile,
-      deliveryInstructionsList: customerAddresses.deliveryInstructionsList,
-    })
-    .from(customerAddresses)
-    .where(
-      and(
-        eq(customerAddresses.id, addressId),
-        eq(customerAddresses.customerId, customerId),
-        eq(customerAddresses.isActive, true),
-        isNull(customerAddresses.deletedAt)
-      )
-    )
-    .limit(1);
+  const [addrRow] = addressId != null
+    ? await db
+        .select({
+          addressLine1: customerAddresses.addressLine1,
+          addressLine2: customerAddresses.addressLine2,
+          city: customerAddresses.city,
+          state: customerAddresses.state,
+          postalCode: customerAddresses.postalCode,
+          latitude: customerAddresses.latitude,
+          longitude: customerAddresses.longitude,
+          label: customerAddresses.label,
+          customLabel: customerAddresses.customLabel,
+          contactName: customerAddresses.contactName,
+          contactMobile: customerAddresses.contactMobile,
+          deliveryInstructionsList: customerAddresses.deliveryInstructionsList,
+        })
+        .from(customerAddresses)
+        .where(
+          and(
+            eq(customerAddresses.id, addressId),
+            eq(customerAddresses.customerId, customerId),
+            eq(customerAddresses.isActive, true),
+            isNull(customerAddresses.deletedAt)
+          )
+        )
+        .limit(1)
+    : [undefined];
 
-  if (!addrRow) {
+  if (!isSelfPickup && !addrRow) {
     return { ok: false, code: "INVALID_ADDRESS_DATA", message: "Address not found." };
   }
 
@@ -1102,7 +1122,7 @@ export async function createPendingOrder(
       customerId,
       merchantId: input.merchantId,
       items,
-      addressId,
+      ...(isSelfPickup ? {} : { addressId: addressId as number }),
       tipAmount,
       donationAmount,
       couponCode: couponStored,
@@ -1120,7 +1140,7 @@ export async function createPendingOrder(
     if (!billRes.ok) {
       return { ok: false, code: billRes.code, message: billRes.message };
     }
-    if (billRes.snapshot?.serviceable === false) {
+    if (!isSelfPickup && billRes.snapshot?.serviceable === false) {
       const reason =
         billRes.snapshot?.unserviceableReason === "store_inactive"
           ? "This restaurant is not accepting orders right now."
@@ -1168,13 +1188,6 @@ export async function createPendingOrder(
     billingSnapshot = enrichBillingSnapshotWithCheckoutAdjustments(billingSnapshot, checkoutAdj);
   }
 
-  const dropAddressRaw = [addrRow.addressLine1, addrRow.addressLine2, addrRow.city, addrRow.state, addrRow.postalCode]
-    .filter(Boolean)
-    .join(", ");
-  // Immutable delivery snapshot from the checkout address row (never live GPS /
-  // customer_active_location lat/lng — those can diverge while addressId is bound).
-  const dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
-  const dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
   const isUsableLatLon = (lat: number | null, lon: number | null): boolean =>
     lat != null &&
     lon != null &&
@@ -1206,6 +1219,24 @@ export async function createPendingOrder(
       ? (clientPickupLon as number)
       : 0;
 
+  // Delivery keeps the confirmed customer address. Takeaway has no customer drop —
+  // collection coordinates are the restaurant, and delivery_address stays empty.
+  const dropAddressRaw = addrRow
+    ? [addrRow.addressLine1, addrRow.addressLine2, addrRow.city, addrRow.state, addrRow.postalCode]
+        .filter(Boolean)
+        .join(", ")
+    : "";
+  const dropLat = isSelfPickup
+    ? pickupLat
+    : addrRow?.latitude != null
+      ? Number(addrRow.latitude)
+      : 0;
+  const dropLon = isSelfPickup
+    ? pickupLon
+    : addrRow?.longitude != null
+      ? Number(addrRow.longitude)
+      : 0;
+
   let distanceKm = 0;
   const snapDist = Number(billingSnapshot?.distanceKm);
   const toRad = (deg: number) => (deg * Math.PI) / 180;
@@ -1229,7 +1260,9 @@ export async function createPendingOrder(
     snapDist >= 0 &&
     snapDist >= airKm * 0.75 &&
     snapDist <= Math.max(airKm * 2.2, airKm + 1.5);
-  if (snapMatchesPins) {
+  if (isSelfPickup) {
+    distanceKm = 0;
+  } else if (snapMatchesPins) {
     distanceKm = snapDist;
   } else if (isUsableLatLon(pickupLat, pickupLon) && isUsableLatLon(dropLat, dropLon)) {
     try {
@@ -1256,7 +1289,7 @@ export async function createPendingOrder(
   const { enrichBillingSnapshotForPersistence } = await import("../../lib/food-order-payload.js");
   const { storeTypeDisplayLabel } = await import("../../lib/store-type-display.js");
   billingSnapshot = enrichBillingSnapshotForPersistence(billingSnapshot, {
-    deliveryType: input.deliveryType ?? "delivery",
+    deliveryType: isSelfPickup ? "self_pickup" : "delivery",
     distanceKm,
     serviceable:
       billingSnapshot?.serviceable === false
@@ -1293,14 +1326,20 @@ export async function createPendingOrder(
           subscriptionBillingCycle: subscriptionBillingCycle ?? "monthly",
         }
       : {}),
-    addressLabel:
-      checkoutMetadataBase.addressLabel ??
-      formatAddressLabelEnum(String(addrRow.label ?? ""), addrRow.customLabel),
+    fulfillmentType: isSelfPickup ? "takeaway" : "delivery",
+    ...(isSelfPickup
+      ? { pickupInstructions: "Collect this order from the restaurant." }
+      : {}),
+    addressLabel: isSelfPickup
+      ? null
+      : checkoutMetadataBase.addressLabel ??
+        formatAddressLabelEnum(String(addrRow?.label ?? ""), addrRow?.customLabel),
     receiverContactName:
-      checkoutMetadataBase.receiverContactName ?? addrRow.contactName?.trim() ?? null,
+      checkoutMetadataBase.receiverContactName ?? addrRow?.contactName?.trim() ?? null,
     receiverContactMobile:
-      checkoutMetadataBase.receiverContactMobile ?? addrRow.contactMobile?.trim() ?? null,
-    ...(Array.isArray(addrRow.deliveryInstructionsList) &&
+      checkoutMetadataBase.receiverContactMobile ?? addrRow?.contactMobile?.trim() ?? null,
+    ...(addrRow &&
+    Array.isArray(addrRow.deliveryInstructionsList) &&
     addrRow.deliveryInstructionsList.length > 0 &&
     !Array.isArray(checkoutMetadataBase.deliveryInstructionsList)
       ? { deliveryInstructionsList: addrRow.deliveryInstructionsList }
@@ -1315,14 +1354,14 @@ export async function createPendingOrder(
     itemsSnapshot: items as unknown as Record<string, unknown>, // already normalized
     addressIdUsed: addressId,
     paymentMethod,
-    deliveryType: input.deliveryType ?? "delivery",
+    deliveryType: isSelfPickup ? "self_pickup" : "delivery",
     tipAmount: sanitizeNumeric(tipAmount),
     donationAmount: sanitizeNumeric(donationAmount),
     itemTotal: sanitizeNumeric(itemTotal),
     addonTotal: sanitizeNumeric(addonTotal),
     grandTotal: sanitizeNumeric(grandTotal),
     currency: "INR",
-    deliveryAddress: sanitizeStringForDb(dropAddressRaw) ?? undefined,
+    deliveryAddress: isSelfPickup ? undefined : sanitizeStringForDb(dropAddressRaw) ?? undefined,
     dropLat: String(dropLat),
     dropLon: String(dropLon),
     pickupAddressNormalized: pickupAddressNormalized ?? undefined,
@@ -1340,15 +1379,16 @@ export async function createPendingOrder(
     expiresAt,
   });
 
-  // MRU: bump last_used for the address that actually entered the order pipeline.
-  try {
-    await setAddressLastUsed(customerId, addressId);
-  } catch (err) {
-    console.warn("[orders] setAddressLastUsed failed", {
-      customerId,
-      addressId,
-      err: err instanceof Error ? err.message : String(err),
-    });
+  if (addressId != null) {
+    try {
+      await setAddressLastUsed(customerId, addressId);
+    } catch (err) {
+      console.warn("[orders] setAddressLastUsed failed", {
+        customerId,
+        addressId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   return {

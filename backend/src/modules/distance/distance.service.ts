@@ -25,6 +25,8 @@ export type GetRouteOptions = {
   mapboxToken?: string;
   osrmBaseUrl?: string;
   skipCache?: boolean;
+  /** When set, one road lookup is capped to this budget, then straight-line distance. */
+  routingBudgetMs?: number;
 };
 
 /**
@@ -75,7 +77,10 @@ async function getCached(key: string): Promise<RouteResult | null> {
   }
   // 2. Redis — shared across replicas.
   try {
-    const remote = await cacheGet<RouteResult>(key);
+    const remote = await Promise.race([
+      cacheGet<RouteResult>(key),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 800)),
+    ]);
     if (remote) {
       // Re-populate the local map so subsequent same-replica calls skip Redis.
       memoryCacheSet(key, remote);
@@ -188,12 +193,15 @@ function mapboxProfilesForRide(profile: RoutingProfile): string[] {
 async function fetchMapboxRoute(
   points: LatLng[],
   profile: RoutingProfile,
-  mapboxToken: string
+  mapboxToken: string,
+  limits?: { timeoutMs?: number; maxProfiles?: number }
 ): Promise<RouteResult | null> {
   const coords = points.map((p) => `${p.lng},${p.lat}`).join(";");
   let best: { distance: number; duration: number; geometry?: string } | null = null;
+  const timeoutMs = limits?.timeoutMs ?? 7000;
+  const profiles = mapboxProfilesForRide(profile).slice(0, limits?.maxProfiles ?? 99);
 
-  for (const mapboxProfile of mapboxProfilesForRide(profile)) {
+  for (const mapboxProfile of profiles) {
     const url = new URL(`https://api.mapbox.com/directions/v5/mapbox/${mapboxProfile}/${coords}`);
     url.searchParams.set("access_token", mapboxToken);
     url.searchParams.set("alternatives", "true");
@@ -201,7 +209,7 @@ async function fetchMapboxRoute(
     url.searchParams.set("geometries", "polyline");
     url.searchParams.set("steps", "false");
     try {
-      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(7000) });
+      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(timeoutMs) });
       if (!res.ok) continue;
       const data = (await res.json()) as {
         routes?: Array<{ distance?: number; duration?: number; geometry?: string }>;
@@ -375,8 +383,12 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
   }
 
   const mapboxToken = options.mapboxToken?.trim();
+  const budget = options.routingBudgetMs;
   if (mapboxToken) {
-    const mb = await fetchMapboxRoute(points, profile, mapboxToken);
+    const mb = await fetchMapboxRoute(points, profile, mapboxToken, {
+      timeoutMs: budget != null ? Math.min(3500, Math.max(1000, budget)) : 7000,
+      maxProfiles: budget != null ? 1 : undefined,
+    });
     if (mb) {
       setCached(key, mb);
       if (!options.skipCache) await setDbCached(options, mb);
@@ -384,7 +396,7 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
     }
   }
 
-  const osrmBaseUrl = options.osrmBaseUrl?.trim();
+  const osrmBaseUrl = budget != null ? "" : options.osrmBaseUrl?.trim();
   if (osrmBaseUrl) {
     const osrm = await fetchOSRMRoute(points, profile, osrmBaseUrl);
     if (osrm) {

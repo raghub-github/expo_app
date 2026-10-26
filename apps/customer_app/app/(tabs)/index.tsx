@@ -33,7 +33,6 @@ import {
 } from "@/hooks/useCustomerServiceBlocks";
 import { useCustomerServiceBlockSheetStore } from "@/store/customerServiceBlockSheetStore";
 import { useLocationStore } from "@/store/locationStore";
-import { useActiveLocationReconcileReady } from "@/hooks/useActiveLocationReconcileReady";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
 import { resolveHomeLocationPrimary, resolveHomeWeatherQueryParams } from "@/lib/weather-location";
 import { isRawCoordinateText } from "@/lib/isRawCoordinateText";
@@ -64,11 +63,9 @@ export default function HomeScreen() {
   const locationHydrated = useLocationStore((s) => s.locationHydrated);
   const locationSource = useLocationStore((s) => s.locationSource);
   const coords = useLocationStore((s) => s.coords);
-  const refining = useLocationStore((s) => s.refining);
   const address = useLocationStore((s) => s.address);
   const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
   const refetchLocation = useLocationStore((s) => s.refetchLocation);
-  const reconcileReady = useActiveLocationReconcileReady();
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -92,13 +89,14 @@ export default function HomeScreen() {
     }
   }, [queryClient, locationSource, refetchLocation]);
 
+  const gpsKickRef = useRef(false);
   useEffect(() => {
     if (!locationHydrated) return;
-    if (!reconcileReady) return;
     if (locationSource === "selected" && coords) return;
-    if (locationSource === "current" && coords) return;
-    requestPermissionAndFetch();
-  }, [locationHydrated, reconcileReady, locationSource, coords, requestPermissionAndFetch]);
+    if (gpsKickRef.current && coords) return;
+    gpsKickRef.current = true;
+    requestPermissionAndFetch({ forceDevice: true });
+  }, [locationHydrated, locationSource, coords, requestPermissionAndFetch]);
 
   useEffect(() => {
     // Warm JS bundle early; merchant seed no-ops until coords exist.
@@ -133,17 +131,19 @@ export default function HomeScreen() {
     [address, coords]
   );
   const locationPrimary = resolveHomeLocationPrimary(address);
-  // Section 19: subtle "Updating location…" only while the first address is still resolving;
-  // once we have a real address/state, show that instead of a spinner.
   // Never fall back to raw GPS text in the header secondary line.
+  const placeholderAddress =
+    !address ||
+    (address.primary === "Current location" &&
+      !address.city &&
+      !address.state &&
+      !address.pincode);
   const locationSecondary =
-    !address && refining
-      ? "Updating location…"
-      : stateCandidate && !isRawCoordinateText(stateCandidate)
-        ? stateCandidate
-        : refining
-          ? "Updating location…"
-          : "Turn on location for accurate address";
+    stateCandidate && !isRawCoordinateText(stateCandidate) && !placeholderAddress
+      ? stateCandidate
+      : coords
+        ? "Current location"
+        : "Turn on location for accurate address";
   const { data: weather, isFetching: weatherFetching } = useLocationWeather(weatherParams);
 
   const hasLiveWeather =

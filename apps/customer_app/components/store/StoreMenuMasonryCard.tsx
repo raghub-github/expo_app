@@ -80,14 +80,20 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
 }: StoreMenuMasonryCardProps) {
   const dark = useMerchantUiDark();
   const cartQty = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
-  const imageUri = useMemo(
-    // Masonry photo paints at imageSize wide — request a matching WebP derivative.
+  const originalImageUri = useMemo(
     () =>
       item.imageUrl?.trim()
-        ? sizedImageUrl(toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl, imageSize)
+        ? toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl.trim()
         : null,
-    [item.imageUrl, imageSize]
+    [item.imageUrl]
   );
+  const sizedImageUri = useMemo(
+    // Masonry photo paints at imageSize wide — request a matching WebP derivative.
+    () => (originalImageUri ? sizedImageUrl(originalImageUri, imageSize) : null),
+    [originalImageUri, imageSize]
+  );
+  const [useOriginalImage, setUseOriginalImage] = useState(false);
+  const imageUri = useOriginalImage ? originalImageUri : sizedImageUri;
   const skipRemoteImage = !imageUri;
   const [imageFailed, setImageFailed] = useState(false);
   const photoPx = Math.max(1, Math.round(imageSize));
@@ -97,9 +103,25 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
   const controlsDisabled = isStoreClosed || outOfStock;
 
   useEffect(() => {
+    setUseOriginalImage(false);
     setImageFailed(false);
-    if (imageUri) ensureMenuItemImageWarm(imageUri);
-  }, [imageUri]);
+    const first = sizedImageUri ?? originalImageUri;
+    if (first) ensureMenuItemImageWarm(first);
+  }, [sizedImageUri, originalImageUri]);
+
+  const handleImageError = useCallback(() => {
+    if (
+      !useOriginalImage &&
+      originalImageUri &&
+      sizedImageUri &&
+      originalImageUri !== sizedImageUri
+    ) {
+      setUseOriginalImage(true);
+      ensureMenuItemImageWarm(originalImageUri);
+      return;
+    }
+    setImageFailed(true);
+  }, [useOriginalImage, originalImageUri, sizedImageUri]);
 
   const handleAdd = useCallback(() => {
     if (controlsDisabled) return;
@@ -213,14 +235,14 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
                 }}
                 contentFit="cover"
                 cachePolicy="memory-disk"
-                recyclingKey={String(item.listRowKey ?? item.id)}
+                recyclingKey={`${item.listRowKey ?? item.id}:${useOriginalImage ? "raw" : "sized"}`}
                 transition={0}
-                priority="normal"
+                priority="high"
                 allowDownscaling
                 onLoad={() => {
                   if (imageUri) ensureMenuItemImageWarm(imageUri);
                 }}
-                onError={() => setImageFailed(true)}
+                onError={handleImageError}
               />
             ) : (
               <View style={[styles.placeholderFill, dark && styles.placeholderFillDark]}>

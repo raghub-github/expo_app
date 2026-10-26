@@ -35,6 +35,8 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppText } from "@/components/AppText";
 import { usePreventServicesAtPin } from "@/hooks/usePreventServicesAtPin";
 import { useStoreMembershipFreeDelivery } from "@/hooks/useStoreMembershipFreeDelivery";
+import { PureVegPill } from "@/components/home/PureVegStoreTag";
+import { isMerchantPureVeg } from "@/lib/pureVegFilter";
 
 const PAGE_PAD = 16;
 const IMAGE_HEIGHT = 220;
@@ -100,9 +102,7 @@ function GMRestaurantCardV2Inner({
 
   useEffect(() => {
     warmMerchantHeroImage(merchant.id, bannerUri);
-    const firstGallery = galleryUris[0];
-    if (firstGallery) prefetchMerchantHeroImageUri(firstGallery);
-  }, [merchant.id, bannerUri, galleryUris]);
+  }, [merchant.id, bannerUri]);
 
   const hasCarouselGallery = galleryUris.length > 0;
 
@@ -192,9 +192,9 @@ function GMRestaurantCardV2Inner({
           showDots={hasCarouselGallery && !listingBlocked}
           hidePlaceholderIcon
           enableKenBurns={false}
-          enableSwipe={!listingBlocked && hasCarouselGallery}
-          enableAutoRotate={hasCarouselGallery}
-          enableInfiniteLoop={hasCarouselGallery}
+          enableSwipe={false}
+          enableAutoRotate={false}
+          enableInfiniteLoop={false}
           deferTapToParent
           onSwipeGesture={onCarouselSwipe}
           onGestureComplete={onCarouselGestureComplete}
@@ -252,6 +252,7 @@ function GMRestaurantCardV2Inner({
             <AppText style={styles.name} numberOfLines={1}>
               {merchant.name}
             </AppText>
+            {isMerchantPureVeg(merchant) ? <PureVegPill /> : null}
             <NearFastDeliveryMeta
               deliveryTime={deliveryTimeLabel}
               distanceKm={merchant.distanceKm}
@@ -321,7 +322,8 @@ export const GMRestaurantCardV2 = React.memo(GMRestaurantCardV2Inner, (prev, nex
     a.etaMinMinutes === b.etaMinMinutes &&
     a.etaMaxMinutes === b.etaMaxMinutes &&
     a.avgPreparationTimeMinutes === b.avgPreparationTimeMinutes &&
-    a.distanceKm === b.distanceKm
+    a.distanceKm === b.distanceKm &&
+    a.isPureVeg === b.isPureVeg
   );
 });
 

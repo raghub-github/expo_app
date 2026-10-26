@@ -236,7 +236,7 @@ export default function OrderDetailsScreen() {
         return false;
       }
       if (data && !isPersonRideOrder(data) && !isParcelOrder(data)) {
-        return 20_000;
+        return 4_000;
       }
       return 5_000;
     },

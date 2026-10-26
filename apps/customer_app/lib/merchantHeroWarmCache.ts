@@ -3,6 +3,8 @@ import type { MerchantSummary } from "@/services/merchant.service";
 import { resolveMerchantCarouselBannerUri } from "@/lib/merchantBanner";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
+import { sizedImageUrl } from "@/lib/imageSizing";
+import { foodListCardPrefetchWidth } from "@/lib/imageEngine";
 
 const uriByMerchantId = new Map<string, string>();
 const prefetchedUris = new Set<string>();
@@ -18,9 +20,7 @@ export function normalizeHeroImageUri(raw: string | null | undefined): string | 
   return abs;
 }
 
-export function prefetchMerchantHeroImageUri(uri: string | null | undefined): void {
-  const abs = normalizeHeroImageUri(uri);
-  if (!abs) return;
+function prefetchOneHeroUri(abs: string): void {
   if (prefetchedUris.has(abs)) {
     markHeroMediaSessionReady(abs);
     return;
@@ -31,6 +31,17 @@ export function prefetchMerchantHeroImageUri(uri: string | null | undefined): vo
     .catch(() => {
       prefetchedUris.delete(abs);
     });
+}
+
+export function prefetchMerchantHeroImageUri(
+  uri: string | null | undefined,
+  widthPts?: number
+): void {
+  const abs = normalizeHeroImageUri(uri);
+  if (!abs) return;
+  // Same display-width WebP the card paints. The raw original is megabytes.
+  const sizedList = sizedImageUrl(abs, widthPts ?? foodListCardPrefetchWidth());
+  prefetchOneHeroUri(sizedList ?? abs);
 }
 
 /** Warm the first visible list-card banners so they paint from memory-disk cache. */

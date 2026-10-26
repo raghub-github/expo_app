@@ -258,7 +258,7 @@ export default function LoginForm() {
             />
           </div>
           <h2 className="text-2xl font-semibold text-[#1E1C4A]">Sign in</h2>
-          <p className="mt-1 text-[13px] text-[#6B6894]">Super admin access only. Same GatiMitra account.</p>
+          <p className="mt-1 text-[13px] text-[#6B6894]">Access using only GatiMitra account.</p>
 
           <button
             type="button"
@@ -276,37 +276,72 @@ export default function LoginForm() {
             <span className="h-px flex-1 bg-[#E4E7F7]" />
           </div>
 
-          <label className="text-[12px] font-medium text-[#6B6894]">Work email</label>
-          <div className="mt-1 flex items-center gap-2 rounded-xl border border-[#E4E7F7] px-3">
-            <Mail className="h-4 w-4 text-[#7DA0FA]" />
-            <input
-              className="h-11 w-full bg-transparent text-sm outline-none"
-              placeholder="you@gatimitra.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-
-          {sent && (
-            <>
-              <label className="mt-4 block text-[12px] font-medium text-[#6B6894]">OTP</label>
-              <input
-                className="mt-1 h-11 w-full rounded-xl border border-[#E4E7F7] px-3 text-sm outline-none"
-                value={otp}
-                onChange={(e) => setOtp(e.target.value)}
-                placeholder="8-digit code"
-              />
-            </>
-          )}
-
-          <button
-            type="button"
-            disabled={loading || !gateReady}
-            onClick={() => void (sent ? verify() : sendOtp())}
-            className="mt-5 flex w-full items-center justify-center rounded-xl bg-[#4B49AC] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#3A3894] disabled:opacity-60"
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (loading || !gateReady) return;
+              void (sent ? verify() : sendOtp());
+            }}
           >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : sent ? "Verify and enter" : "Send OTP"}
-          </button>
+            <label className="text-[12px] font-medium text-[#6B6894]" htmlFor="coredash-email">
+              Work email
+            </label>
+            <div className="mt-1 flex items-center gap-2 rounded-xl border border-[#E4E7F7] px-3">
+              <Mail className="h-4 w-4 text-[#7DA0FA]" />
+              <input
+                id="coredash-email"
+                name="email"
+                type="email"
+                autoComplete="username"
+                enterKeyHint="send"
+                suppressHydrationWarning
+                className="h-11 w-full bg-transparent text-sm outline-none"
+                placeholder="you@gatimitra.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  e.preventDefault();
+                  if (loading || !gateReady) return;
+                  void (sent ? verify() : sendOtp());
+                }}
+              />
+            </div>
+
+            {sent && (
+              <>
+                <label className="mt-4 block text-[12px] font-medium text-[#6B6894]" htmlFor="coredash-otp">
+                  OTP
+                </label>
+                <input
+                  id="coredash-otp"
+                  name="otp"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  enterKeyHint="done"
+                  autoFocus
+                  className="mt-1 h-11 w-full rounded-xl border border-[#E4E7F7] px-3 text-sm outline-none"
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value)}
+                  placeholder="8-digit code"
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter") return;
+                    e.preventDefault();
+                    if (loading || !gateReady) return;
+                    void verify();
+                  }}
+                />
+              </>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading || !gateReady}
+              className="mt-5 flex w-full items-center justify-center rounded-xl bg-[#4B49AC] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#3A3894] disabled:opacity-60"
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : sent ? "Verify and enter" : "Send OTP"}
+            </button>
+          </form>
         </div>
       </section>
     </div>

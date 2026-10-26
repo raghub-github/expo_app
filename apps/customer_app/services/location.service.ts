@@ -324,6 +324,20 @@ const REVERSE_GEOCODE_CACHE_TTL_MS = 30 * 60_000;
 const REVERSE_GEOCODE_CACHE_MAX = 200;
 const reverseGeocodeCache = new Map<string, { result: ReverseGeocodeResult; at: number }>();
 
+/** Paint last-known address instantly on the next GPS cell hit (no Mapbox wait). */
+export function seedReverseGeocodeCache(
+  longitude: number,
+  latitude: number,
+  result: ReverseGeocodeResult | null | undefined
+): void {
+  if (!result?.fullAddress && !result?.primary) return;
+  if ((result.primary ?? "").toLowerCase() === "current location" && !result.city && !result.state) {
+    return;
+  }
+  const cacheKey = reverseGeocodeKey(longitude, latitude);
+  reverseGeocodeCache.set(cacheKey, { result, at: Date.now() });
+}
+
 /**
  * Reverse geocode lng,lat — race Mapbox providers; first usable address wins
  * (sequential chain was adding multi-second delay when v6 was slow).

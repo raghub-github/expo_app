@@ -18,7 +18,7 @@
 import { Image } from "expo-image";
 import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 
-const MAX_IN_FLIGHT = 6;
+const MAX_IN_FLIGHT = 12;
 
 /**
  * Cap on the dedupe set. Without this, a long browsing session accumulates every

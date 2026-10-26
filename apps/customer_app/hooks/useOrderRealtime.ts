@@ -57,9 +57,9 @@ import { thermalAudit } from "@/lib/thermalAudit";
  * `eta.updated.v1`) and halve the frequency. That takes an active food order
  * from 24 req/min to 6 req/min without changing status latency materially.
  */
-const STATUS_POLL_INTERVAL_MS = 12_000;
-/** With a healthy WS, still poll often enough for accept/prep (status WS is not always emitted). */
-const STATUS_POLL_INTERVAL_WS_HEALTHY_MS = 15_000;
+const STATUS_POLL_INTERVAL_MS = 4_000;
+/** Location socket being up does not mean status events arrived — keep the same cadence. */
+const STATUS_POLL_INTERVAL_WS_HEALTHY_MS = 4_000;
 const LOCATION_FALLBACK_POLL_MS = 20_000;
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 60_000;

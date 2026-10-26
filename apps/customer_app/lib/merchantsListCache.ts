@@ -98,7 +98,7 @@ export function merchantsListCacheKey(
 
   // `:road` busts stale air-haversine buckets (3.7 km vs checkout 7.2 km).
 
-  return `${merchantsGeoBucket(lat, lng)}:veg=${vegOnly ? 1 : 0}:st=${normalizeStoreType(storeType)}:road`;
+  return `${merchantsGeoBucket(lat, lng)}:veg=${vegOnly ? 1 : 0}:st=${normalizeStoreType(storeType)}:road:n80`;
 
 }
 
@@ -200,8 +200,36 @@ export function readSyncMerchantsListEntry(
 
   if (memoryByKey.size === 0) hydrateMemoryFromFastKvSync();
 
-  return memoryByKey.get(merchantsListCacheKey(lat, lng, vegOnly, storeType));
+  const exact = memoryByKey.get(merchantsListCacheKey(lat, lng, vegOnly, storeType));
+  if (exact) return exact;
+  // GPS jitter moves the 110m bucket and would otherwise hide a list we already
+  // have until the road-distance request returns.
+  return readNearbyMerchantsListEntry(lat, lng, vegOnly, storeType);
 
+}
+
+/** Last list within ~400m, same diet and store type. */
+function readNearbyMerchantsListEntry(
+  lat: number,
+  lng: number,
+  vegOnly: boolean,
+  storeType: MerchantStoreTypeFilter
+): CachedMerchantsEntry | undefined {
+  const st = normalizeStoreType(storeType);
+  let best: CachedMerchantsEntry | undefined;
+  let bestD = 0.004;
+  for (const entry of memoryByKey.values()) {
+    if (!entry?.items?.length) continue;
+    if (entry.vegOnly !== vegOnly) continue;
+    if (normalizeStoreType(entry.storeType) !== st) continue;
+    const dLat = entry.lat - lat;
+    const dLng = entry.lng - lng;
+    const d = Math.hypot(dLat, dLng);
+    if (d >= bestD) continue;
+    bestD = d;
+    best = entry;
+  }
+  return best;
 }
 
 
@@ -374,15 +402,13 @@ export async function fetchAndCacheMerchantsList(
 
   const items = await merchantService.getMerchants({
 
-    limit: 20,
+    limit: 50,
 
     lat,
 
     lng,
 
     vegOnly,
-
-    distanceMode: "road",
 
     storeType: st,
 

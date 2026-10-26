@@ -16,10 +16,12 @@ import {
   MessageCircle,
   MoreVertical,
   Phone,
+  Power,
   Search,
   Star,
   X,
 } from "lucide-react";
+import { toast } from "sonner";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCoreData } from "@/lib/hooks/useCoreData";
 import { formatCount, formatInr } from "@/lib/format";
@@ -50,7 +52,7 @@ function periodToRange(period: Period): "W" | "M" | "6M" | "Y" {
   return "W";
 }
 
-type WheelFilter = "2W" | "3W" | "4W";
+type WheelFilter = "ALL" | "2W" | "3W" | "4W";
 type StatsRange = "W" | "M" | "6M" | "Y";
 
 function wheelClassForRider(vehicleType: string, vehicleCategory: string): WheelFilter {
@@ -194,8 +196,21 @@ function RiderAvatar({
   );
 }
 
+function formatIndianPlateParts(raw: string): string[] {
+  const p = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (!p) return [];
+  const bh = p.match(/^(\d{2})(BH)(\d{4})([A-Z]{1,2})$/);
+  if (bh) return [bh[1], bh[2], bh[3], bh[4]];
+  const std = p.match(/^([A-Z]{2})(\d{2})([A-Z]{1,3})(\d{4})$/);
+  if (std) return [std[1], std[2], std[3], std[4]];
+  const loose = p.match(/^([A-Z]{2})(\d{1,2})([A-Z]{1,3})(\d{1,4})$/);
+  if (loose) return [loose[1], loose[2].padStart(2, "0"), loose[3], loose[4]];
+  return [p];
+}
+
 function LicensePlate({ plate }: { plate: string }) {
-  if (!plate) {
+  const parts = formatIndianPlateParts(plate || "");
+  if (parts.length === 0) {
     return (
       <div className="inline-flex h-10 items-center rounded-md border-2 border-dashed border-[#C5C9D6] px-3 text-[12px] font-semibold tracking-wide text-[#9CA3AF]">
         No plate
@@ -203,12 +218,14 @@ function LicensePlate({ plate }: { plate: string }) {
     );
   }
   return (
-    <div className="inline-flex overflow-hidden rounded-md border-2 border-[#1E1C4A] bg-white shadow-sm">
+    <div className="inline-flex overflow-hidden rounded-md border-2 border-[#1E1C4A] bg-[#F4F1DE] shadow-sm">
       <div className="flex w-7 flex-col items-center justify-center bg-[#1E3A8A] px-1 text-[8px] font-bold leading-tight text-white">
-        <span>IN</span>
+        <span>IND</span>
       </div>
-      <div className="px-3 py-1.5 font-mono text-[15px] font-bold tracking-[0.18em] text-[#111827]">
-        {plate.toUpperCase()}
+      <div className="flex items-center gap-2 px-2.5 py-1.5 font-mono text-[15px] font-extrabold tracking-wide text-[#111827]">
+        {parts.map((part, i) => (
+          <span key={`${part}-${i}`}>{part}</span>
+        ))}
       </div>
     </div>
   );
@@ -323,7 +340,8 @@ export function FleetRidersPage() {
   const [docsQuery, setDocsQuery] = useState("");
   const [docsLoading, setDocsLoading] = useState(false);
   const [docsError, setDocsError] = useState<string | null>(null);
-  const [wheelFilter, setWheelFilter] = useState<WheelFilter>("2W");
+  const [wheelFilter, setWheelFilter] = useState<WheelFilter>("ALL");
+  const [dutyOffBusy, setDutyOffBusy] = useState(false);
   const [dutyById, setDutyById] = useState<Record<number, DutyLive>>({});
   const [documents, setDocuments] = useState<
     Array<{
@@ -457,9 +475,11 @@ export function FleetRidersPage() {
       const live = dutyById[r.id];
       return live ? { ...r, availability: live.availability } : r;
     });
-    list = list.filter(
-      (r) => wheelClassForRider(r.vehicleType || "", r.vehicleCategory || "") === wheelFilter
-    );
+    if (wheelFilter !== "ALL") {
+      list = list.filter(
+        (r) => wheelClassForRider(r.vehicleType || "", r.vehicleCategory || "") === wheelFilter
+      );
+    }
     if (!needle) {
       return [...list].sort((a, b) => dutyRank(a.availability) - dutyRank(b.availability));
     }
@@ -479,44 +499,51 @@ export function FleetRidersPage() {
   );
 
   // Order-independent — duty re-sort must not re-trigger selection sync
-  const riderIdsKey = useMemo(
+  const allRiders = useMemo(() => {
+    if (!data) return [];
+    return data.recent.map((r) => {
+      const live = dutyById[r.id];
+      return live ? { ...r, availability: live.availability } : r;
+    });
+  }, [data, dutyById]);
+
+  const allRiderIdsKey = useMemo(
     () =>
-      riders
+      allRiders
         .map((r) => r.id)
         .slice()
         .sort((a, b) => a - b)
         .join("|"),
-    [riders]
+    [allRiders]
   );
 
   useEffect(() => {
-    if (!riders.length) {
+    if (!allRiders.length) {
       setSelectedId(null);
       return;
     }
     const fromUrl = urlRider ? Number(urlRider) : NaN;
-    if (Number.isFinite(fromUrl) && riders.some((r) => r.id === fromUrl)) {
+    if (Number.isFinite(fromUrl) && allRiders.some((r) => r.id === fromUrl)) {
       setSelectedId(fromUrl);
       return;
     }
-    // Keep the open rider if still in the filtered list (don't jump to riders[0])
     setSelectedId((prev) => {
-      if (prev != null && riders.some((r) => r.id === prev)) return prev;
-      return riders[0]!.id;
+      if (prev != null && allRiders.some((r) => r.id === prev)) return prev;
+      return allRiders[0]!.id;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sync from URL + stable id set only
-  }, [riderIdsKey, urlRider]);
+  }, [allRiderIdsKey, urlRider]);
 
   // Sync URL after selection settles — never call router inside a setState updater.
   useEffect(() => {
     if (selectedId == null) return;
     if (urlRider === String(selectedId)) return;
-    if (!riders.some((r) => r.id === selectedId)) return;
+    if (!allRiders.some((r) => r.id === selectedId)) return;
     const params = new URLSearchParams(searchParams.toString());
     params.set("rider", String(selectedId));
     router.replace(`/riders?${params.toString()}`, { scroll: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- URL mirror only
-  }, [selectedId, urlRider, riderIdsKey]);
+  }, [selectedId, urlRider, allRiderIdsKey]);
 
   useEffect(() => {
     setHistoryOpen(false);
@@ -619,6 +646,50 @@ export function FleetRidersPage() {
     );
   }, [documents, docsQuery]);
 
+  async function markDutyOff() {
+    if (selectedId == null || dutyOffBusy) return;
+    const busy =
+      (dutyById[selectedId]?.availability ||
+        allRiders.find((r) => r.id === selectedId)?.availability) === "BUSY";
+    const ok = window.confirm(
+      busy
+        ? "This rider may have an active order. Mark duty OFF anyway?"
+        : "Mark this rider’s duty OFF? They will go offline for new assignments."
+    );
+    if (!ok) return;
+    setDutyOffBusy(true);
+    try {
+      const res = await fetch(`/api/riders/${selectedId}/duty`, {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+      });
+      const json = (await res.json()) as {
+        success?: boolean;
+        data?: { alreadyOff?: boolean };
+        error?: string;
+      };
+      if (!res.ok || !json.success) throw new Error(json.error || "Failed to mark duty off");
+      setDutyById((prev) => ({
+        ...prev,
+        [selectedId]: { availability: "OFFLINE", dutyLabel: "OFFLINE" },
+      }));
+      setDetail((prev) =>
+        prev
+          ? {
+              ...prev,
+              rider: { ...prev.rider, availability: "OFFLINE", dutyLabel: "OFFLINE" },
+            }
+          : prev
+      );
+      toast.success(json.data?.alreadyOff ? "Rider was already off duty" : "Rider marked off duty");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to mark duty off");
+    } finally {
+      setDutyOffBusy(false);
+    }
+  }
+
   const groups = useMemo(() => {
     const map = new Map<string, RiderRow[]>();
     const favorites = riders.filter((r) => favoriteSet.has(r.id));
@@ -662,7 +733,8 @@ export function FleetRidersPage() {
   if (loading) return <LoadingGrid />;
   if (error || !data) return <ErrorState message={error || "Failed"} onRetry={reload} />;
 
-  const selected = riders.find((r) => r.id === selectedId) ?? null;
+  const selected =
+    riders.find((r) => r.id === selectedId) ?? allRiders.find((r) => r.id === selectedId) ?? null;
   const rider = detail?.rider;
   const active = detail?.activeRoute ?? null;
   const liveDuty = selectedId != null ? dutyById[selectedId] : undefined;
@@ -700,10 +772,14 @@ export function FleetRidersPage() {
           </div>
           <div className="mt-3 flex items-center justify-between gap-2">
             <p className="min-w-0 truncate text-[11px] font-medium tracking-wide text-[#9CA3AF]">
-              {formatCount(riders.length)} riders · {formatCount(onDutyFiltered)} on duty
+              {formatCount(riders.length)}
+              {data.stats.total && riders.length !== data.stats.total
+                ? ` / ${formatCount(data.stats.total)}`
+                : ""}{" "}
+              riders · {formatCount(onDutyFiltered)} on duty
             </p>
             <SlidingPillToggle
-              options={["2W", "3W", "4W"] as const}
+              options={["ALL", "2W", "3W", "4W"] as const}
               value={wheelFilter}
               onChange={setWheelFilter}
               className="shrink-0"
@@ -782,6 +858,18 @@ export function FleetRidersPage() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {dutyLabel !== "OFFLINE" ? (
+                  <button
+                    type="button"
+                    onClick={() => void markDutyOff()}
+                    disabled={dutyOffBusy}
+                    className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-full bg-[#FEF2F2] px-3 text-[12px] font-semibold text-[#B91C1C] hover:bg-[#FEE2E2] disabled:opacity-60"
+                    title="Mark rider duty off"
+                  >
+                    <Power className="h-3.5 w-3.5" strokeWidth={2} />
+                    {dutyOffBusy ? "…" : "Duty off"}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => void toggleFavorite()}

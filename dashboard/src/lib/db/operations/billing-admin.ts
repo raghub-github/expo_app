@@ -19,10 +19,14 @@ export function sqlJsonb(v: unknown): string | null {
 
 export async function bumpBillingRulesetVersion(): Promise<void> {
   const sql = getSql();
+  // Insert at 2 when the singleton is missing so the value differs from the
+  // backend's default of 1 and the in-memory rules cache misses immediately.
   await sql`
-    UPDATE billing_ruleset_version
-    SET version = version + 1, updated_at = now()
-    WHERE id = 1
+    INSERT INTO billing_ruleset_version (id, version, updated_at)
+    VALUES (1, 2, now())
+    ON CONFLICT (id) DO UPDATE
+    SET version = billing_ruleset_version.version + 1,
+        updated_at = now()
   `;
 }
 

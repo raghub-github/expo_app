@@ -1,5 +1,5 @@
 /**
- * OTP verification – splash-teal layout matching login screen.
+ * OTP verification – splash-teal layout matching login screen (no wave).
  * Same dark inputs, apple-orange CTA, Lora typography.
  */
 
@@ -7,25 +7,26 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 import {
   View,
-  Text,
-  TextInput,
   TouchableOpacity,
   ActivityIndicator,
   Keyboard,
+  KeyboardAvoidingView,
   Platform,
   StyleSheet,
   ScrollView,
   Pressable,
-  Dimensions,
+  useWindowDimensions,
   AppState,
   type AppStateStatus,
 } from "react-native";
-import Svg, { Path } from "react-native-svg";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import {
   extractSixDigitCode,
+  armSmsOtpCapture,
   startAndroidSmsOtpListener,
+  subscribePendingSmsOtp,
+  takePendingSmsOtp,
 } from "@/lib/androidSmsOtpRetriever";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -39,87 +40,60 @@ import { getDeviceIdAsync } from "@/utils/deviceId";
 import { OTP_LENGTH } from "@/constants";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
+import { useKeyboardBottomInset } from "@/hooks/useKeyboardBottomInset";
+import { OtpCodeInputs } from "@/components/OtpCodeInputs";
+import {
+  OTP_BOXES,
+  emptyOtpCells,
+  otpCellsComplete,
+  otpCellsFromCode,
+  otpCellsToCode,
+} from "@/lib/otpDigitEdit";
 
 const BG_SPLASH = GatiMitraColors.splashMint;
-const DARK_SURFACE = "#1A1C1E";
 const TITLE_DARK = "#111827";
-const TEXT_ON_TEAL = "#FFFFFF";
-const BRAND_YELLOW = "#F5C518";
 const APPLE_ORANGE = "#FF9500";
-const PLACEHOLDER_GRAY = "#9CA3AF";
 const CONTROL_RADIUS = 10;
 const BTN_ACTIVE_TEXT = "#111827";
 const SUBTEXT_DARK_BLUE = "#1E3A8A";
 const FOOTER_DARK = "#020617";
 
-const { width: SCREEN_W } = Dimensions.get("window");
-const WAVE_W = Math.round(SCREEN_W * 0.64);
-const WAVE_H = 112;
-
-function ReferenceWaveHeader({ width, height }: { width: number; height: number }) {
-  const w = width;
-  const h = height;
-  const leftEdgeY = h * 0.9 - 3;
-  const d = [
-    `M0 0`,
-    `H${w}`,
-    `V${h * 0.02}`,
-    `C${w * 0.985} ${h * 0.03} ${w * 0.95} ${h * 0.05} ${w * 0.88} ${h * 0.12}`,
-    `C${w * 0.78} ${h * 0.24} ${w * 0.66} ${h * 0.42} ${w * 0.5} ${h * 0.62}`,
-    `C${w * 0.36} ${h * 0.78} ${w * 0.2} ${h * 0.92} ${w * 0.08} ${h * 0.96}`,
-    `C${w * 0.03} ${h * 0.98} ${w * 0.01} ${h * 0.96} 0 ${leftEdgeY}`,
-    `L0 0`,
-    `Z`,
-  ].join(" ");
-  return (
-    <Svg
-      width={w}
-      height={h}
-      viewBox={`0 0 ${w} ${h}`}
-      style={StyleSheet.absoluteFill}
-      pointerEvents="none"
-    >
-      <Path d={d} fill={DARK_SURFACE} />
-    </Svg>
-  );
-}
-
 export default function OtpScreen() {
   const insets = useSafeAreaInsets();
+  const { width: screenW, height: screenH } = useWindowDimensions();
+  const compact = screenH < 700 || screenW < 360;
+  const padH = Math.max(16, Math.min(32, Math.round(screenW * 0.07)));
+  const titleSize = compact ? 26 : screenW < 400 ? 28 : 32;
   const router = useRouter();
   const params = useLocalSearchParams<{ phoneE164: string }>();
   const phoneE164 = params.phoneE164 ?? "";
 
-  const [otp, setOtp] = useState("");
+  const [cells, setCells] = useState<string[]>(() => emptyOtpCells());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [focusedIndex, setFocusedIndex] = useState<number | null>(0);
-  const focusedIndexRef = useRef(0);
+  const [activeIndex, setActiveIndex] = useState(0);
   const [resendSeconds, setResendSeconds] = useState(60);
   const [resending, setResending] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
-  const inputRef = useRef<TextInput>(null);
   const scrollRef = useRef<ScrollView>(null);
-  const inputFocusedRef = useRef(false);
   const keyboardVisibleRef = useRef(false);
-  const otpRef = useRef(otp);
-  otpRef.current = otp;
-  const digits = otp.split("").concat(Array(OTP_LENGTH).fill("")).slice(0, OTP_LENGTH);
+  const cellsRef = useRef(cells);
+  cellsRef.current = cells;
   const appliedAutoCodeRef = useRef<string | null>(null);
-
-  const waveH = WAVE_H + Math.max(insets.top, 0);
-  const logoBlockHeight = waveH + 4;
+  const lastAutoSubmittedCodeRef = useRef<string | null>(null);
+  const keyboardInset = useKeyboardBottomInset();
+  const otpComplete = otpCellsComplete(cells);
+  const otpCode = otpCellsToCode(cells);
 
   const applyAutoCode = useCallback((code: string, _source?: "sms" | "clipboard" | "keyboard") => {
-    const cleaned = extractSixDigitCode(code) ?? code.replace(/\D/g, "").slice(0, OTP_LENGTH);
-    if (cleaned.length !== OTP_LENGTH) return;
+    const cleaned = extractSixDigitCode(code) ?? code.replace(/\D/g, "").slice(0, OTP_BOXES);
+    if (cleaned.length !== OTP_BOXES) return;
     if (appliedAutoCodeRef.current === cleaned) return;
-    if (otpRef.current.length === OTP_LENGTH && otpRef.current === cleaned) return;
+    if (otpCellsToCode(cellsRef.current) === cleaned && otpCellsComplete(cellsRef.current)) return;
     appliedAutoCodeRef.current = cleaned;
-    setOtp(cleaned);
+    setCells(otpCellsFromCode(cleaned));
+    setActiveIndex(OTP_BOXES - 1);
     setError("");
-    focusedIndexRef.current = OTP_LENGTH - 1;
-    setFocusedIndex(OTP_LENGTH - 1);
   }, []);
 
   const timerActive = resendSeconds > 0;
@@ -141,9 +115,6 @@ export default function OtpScreen() {
     const onHide = Keyboard.addListener(hideEvt, () => {
       keyboardVisibleRef.current = false;
       setKeyboardVisible(false);
-      if (inputFocusedRef.current) {
-        inputRef.current?.blur();
-      }
     });
     return () => {
       onShow.remove();
@@ -151,57 +122,25 @@ export default function OtpScreen() {
     };
   }, []);
 
-  /** Place caret / select digit so that box can be edited, cleared, or replaced. */
-  const selectBoxAt = useCallback((boxIndex: number) => {
-    const input = inputRef.current;
-    if (!input) return;
-    const len = otpRef.current.length;
-    const i = Math.max(0, Math.min(boxIndex, OTP_LENGTH - 1));
-    if (i < len) {
-      // Select existing digit so next key replaces it; backspace clears it.
-      input.setNativeProps({ selection: { start: i, end: i + 1 } });
-    } else {
-      input.setNativeProps({ selection: { start: len, end: len } });
-    }
-  }, []);
-
-  const focusOtpInput = useCallback(
-    (boxIndex: number) => {
-      if (loading) return;
-      const clamped = Math.max(0, Math.min(boxIndex, OTP_LENGTH - 1));
-      focusedIndexRef.current = clamped;
-      setFocusedIndex(clamped);
-
-      const input = inputRef.current;
-      if (!input) return;
-
-      const doFocus = () => {
-        input.focus();
-        requestAnimationFrame(() => selectBoxAt(clamped));
-      };
-
-      if (inputFocusedRef.current && !keyboardVisibleRef.current) {
-        input.blur();
-        requestAnimationFrame(() => {
-          requestAnimationFrame(doFocus);
-        });
-        return;
-      }
-
-      if (inputFocusedRef.current && keyboardVisibleRef.current) {
-        selectBoxAt(clamped);
-        return;
-      }
-
-      doFocus();
-    },
-    [loading, selectBoxAt]
-  );
-
   const goToLogin = () => router.replace("/(auth)/login");
+
+  useEffect(() => {
+    const pending = takePendingSmsOtp();
+    if (pending) applyAutoCode(pending, "sms");
+    const unsub = subscribePendingSmsOtp((code) => applyAutoCode(code, "sms"));
+    return () => unsub();
+  }, [applyAutoCode]);
 
   const setSession = useAuthStore((s) => s.setSession);
   const verifyInFlightRef = useRef(false);
+  const screenMountedRef = useRef(true);
+
+  useEffect(() => {
+    screenMountedRef.current = true;
+    return () => {
+      screenMountedRef.current = false;
+    };
+  }, []);
 
   const handleResend = async () => {
     if (resendSeconds > 0 || resending) return;
@@ -209,6 +148,8 @@ export default function OtpScreen() {
     setResending(true);
     try {
       await authService.sendOtp({ phoneE164 });
+      void armSmsOtpCapture();
+      lastAutoSubmittedCodeRef.current = null;
       setResendSeconds(60);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Could not resend OTP.";
@@ -219,7 +160,11 @@ export default function OtpScreen() {
   };
 
   const handleVerify = useCallback(async (otpArg?: string) => {
-    const otpToVerify = otpArg ?? otpRef.current;
+    const otpToVerify = otpArg ?? otpCellsToCode(cellsRef.current);
+    if (!otpArg && !otpCellsComplete(cellsRef.current)) {
+      setError("Enter 6-digit OTP");
+      return;
+    }
     if (otpToVerify.length !== OTP_LENGTH) {
       setError("Enter 6-digit OTP");
       return;
@@ -230,12 +175,12 @@ export default function OtpScreen() {
     setLoading(true);
     try {
       const deviceId = await getDeviceIdAsync();
-      await authService.clearSession();
       const session = await authService.verifyOtp({
         phoneE164,
         otp: otpToVerify,
         deviceId,
       });
+      Keyboard.dismiss();
       await setSession(session);
       try {
         const profile = await profileService.getProfile();
@@ -245,8 +190,6 @@ export default function OtpScreen() {
           router.replace("/(tabs)/");
           return;
         }
-        router.replace("/(onboarding)");
-        return;
       } catch (e: unknown) {
         const ax = e as { response?: { status?: number; data?: { error?: string } } };
         if (
@@ -257,8 +200,11 @@ export default function OtpScreen() {
           return;
         }
       }
-      // No usable profile yet (new user / incomplete) → create profile flow.
-      router.replace("/(onboarding)");
+      try {
+        router.replace("/(onboarding)");
+      } catch (navErr) {
+        console.warn("[otp] navigate after verify failed", navErr);
+      }
     } catch (e: unknown) {
       const msg =
         e instanceof Error
@@ -266,10 +212,14 @@ export default function OtpScreen() {
           : e && typeof e === "object" && "response" in e
             ? (e as { response?: { data?: { message?: string } } }).response?.data?.message
             : null;
-      setError(msg || "Invalid OTP. Try again.");
+      if (screenMountedRef.current) {
+        setError(msg || "Invalid OTP. Try again.");
+      }
       verifyInFlightRef.current = false;
     } finally {
-      setLoading(false);
+      if (screenMountedRef.current) {
+        setLoading(false);
+      }
     }
   }, [phoneE164, router, setSession]);
 
@@ -307,7 +257,7 @@ export default function OtpScreen() {
     const tryClipboard = async () => {
       if (cancelled) return;
       if (Date.now() - startedAt > 90_000) return;
-      if (otpRef.current.length === OTP_LENGTH) return;
+      if (otpCellsComplete(cellsRef.current)) return;
       try {
         const text = await Clipboard.getStringAsync();
         const code = extractSixDigitCode(text ?? "");
@@ -320,10 +270,11 @@ export default function OtpScreen() {
     };
 
     void tryClipboard();
-    const interval = setInterval(() => void tryClipboard(), 2000);
+    const interval = setInterval(() => void tryClipboard(), 800);
 
     const onAppState = (state: AppStateStatus) => {
-      if (state === "active") void tryClipboard();
+      if (state !== "active") return;
+      void tryClipboard();
     };
     const sub = AppState.addEventListener("change", onAppState);
 
@@ -351,61 +302,47 @@ export default function OtpScreen() {
     };
   }, [applyAutoCode]);
 
-  const autoSubmittedRef = useRef(false);
   useEffect(() => {
-    if (otp.length !== OTP_LENGTH) {
-      autoSubmittedRef.current = false;
-      return;
-    }
-    if (autoSubmittedRef.current || loading) return;
-    autoSubmittedRef.current = true;
-    void handleVerify(otp);
-  }, [otp, loading, handleVerify]);
+    if (!otpComplete) return;
+    if (lastAutoSubmittedCodeRef.current === otpCode) return;
+    lastAutoSubmittedCodeRef.current = otpCode;
+    void handleVerify(otpCode);
+  }, [otpComplete, otpCode, handleVerify]);
 
   return (
-    <View style={styles.screen}>
-      <StatusBar style="light" translucent backgroundColor="transparent" />
+    <KeyboardAvoidingView
+      style={styles.screen}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
+      <StatusBar style="dark" translucent backgroundColor="transparent" />
 
-      <View
-        style={[styles.logoHeader, { width: WAVE_W + 2, height: waveH + 2, left: -1, top: -1 }]}
-        pointerEvents="none"
-      >
-        <ReferenceWaveHeader width={WAVE_W + 2} height={waveH + 2} />
-        <View style={[styles.logoRow, { paddingTop: Math.max(insets.top, 8) + 10 }]}>
-          <View style={styles.logoTextCol}>
-            <View style={styles.brandNameRow}>
-              <AppText style={styles.brandGati} bold>
-                Gati
-              </AppText>
-              <AppText style={styles.brandMitra} bold>
-                Mitra
-              </AppText>
-            </View>
-            <AppText style={styles.brandTagline} bold>
-              MOVING PEOPLE CLOSER
-            </AppText>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.flex}>
+      <View style={[styles.flex, keyboardInset > 0 ? { paddingBottom: keyboardInset } : null]}>
         <ScrollView
           ref={scrollRef}
           contentContainerStyle={[
             styles.scrollContent,
             {
-              paddingTop: logoBlockHeight + 24,
-              paddingBottom: Math.max(insets.bottom, 16) + 88,
+              paddingTop: Math.max(insets.top, 12) + (compact ? 24 : 40),
+              paddingHorizontal: padH,
+              paddingBottom: 16,
             },
           ]}
           keyboardShouldPersistTaps="always"
           keyboardDismissMode="none"
           showsVerticalScrollIndicator={false}
           bounces={false}
-          scrollEnabled={false}
+          scrollEnabled={compact}
         >
-          <View style={styles.mainBlock}>
-            <AppText style={styles.title} bold>
+          <View style={[styles.mainBlock, compact && styles.mainBlockCompact]}>
+            <View style={styles.brandCenter}>
+              <AppText style={styles.brandWord} bold>
+                GatiMitra
+              </AppText>
+              <AppText style={styles.brandTagline} bold>
+                MOVING PEOPLE CLOSER
+              </AppText>
+            </View>
+            <AppText style={[styles.title, { fontSize: titleSize, lineHeight: titleSize + 8 }]} bold>
               Verify OTP
             </AppText>
             <AppText style={styles.subtitle} bold>
@@ -416,97 +353,16 @@ export default function OtpScreen() {
               <AppText style={styles.label} bold>
                 Enter 6-digit code
               </AppText>
-              <Pressable
-                style={styles.otpBoxesRow}
-                onPress={() =>
-                  focusOtpInput(otp.length < OTP_LENGTH ? otp.length : OTP_LENGTH - 1)
-                }
-                accessibilityLabel="OTP input"
-              >
-                {digits.map((d, i) => {
-                  const isActive = focusedIndex === i || d !== "";
-                  return (
-                    <Pressable
-                      key={i}
-                      style={[styles.otpBox, isActive && styles.otpBoxActive]}
-                      onPress={() => focusOtpInput(i)}
-                      accessibilityRole="button"
-                      accessibilityLabel={`OTP digit ${i + 1}`}
-                    >
-                      <Text
-                        style={[
-                          styles.otpBoxDigit,
-                          d === "" && styles.otpBoxDigitPlaceholder,
-                        ]}
-                        allowFontScaling={false}
-                      >
-                        {d || "0"}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-                <TextInput
-                  ref={inputRef}
-                  style={styles.otpInputHidden}
-                  pointerEvents="none"
-                  keyboardType="number-pad"
-                  maxLength={OTP_LENGTH}
-                  textContentType="oneTimeCode"
-                  autoComplete="sms-otp"
-                  importantForAutofill="yes"
-                  autoCorrect={false}
-                  showSoftInputOnFocus
-                  autoFocus
-                  value={otp}
-                  onChangeText={(t) => {
-                    const next = t.replace(/\D/g, "").slice(0, OTP_LENGTH);
-                    const prev = otpRef.current;
-                    // Full 6-digit paste / OS autofill
-                    if (next.length === OTP_LENGTH && prev.length < OTP_LENGTH) {
-                      applyAutoCode(next, "keyboard");
-                      return;
-                    }
-                    setOtp(next);
-
-                    if (next.length > prev.length) {
-                      const idx = next.length < OTP_LENGTH ? next.length : OTP_LENGTH - 1;
-                      focusedIndexRef.current = idx;
-                      setFocusedIndex(idx);
-                      requestAnimationFrame(() => selectBoxAt(idx));
-                    } else if (next.length < prev.length) {
-                      const idx = Math.max(0, next.length);
-                      focusedIndexRef.current = idx;
-                      setFocusedIndex(idx);
-                      requestAnimationFrame(() => selectBoxAt(idx));
-                    } else if (next !== prev) {
-                      const idx = Math.min(focusedIndexRef.current + 1, OTP_LENGTH - 1);
-                      focusedIndexRef.current = idx;
-                      setFocusedIndex(idx);
-                      requestAnimationFrame(() => selectBoxAt(idx));
-                    }
-                  }}
-                  onFocus={() => {
-                    inputFocusedRef.current = true;
-                    const idx =
-                      focusedIndexRef.current >= 0
-                        ? focusedIndexRef.current
-                        : otpRef.current.length < OTP_LENGTH
-                          ? otpRef.current.length
-                          : OTP_LENGTH - 1;
-                    focusedIndexRef.current = idx;
-                    setFocusedIndex(idx);
-                    requestAnimationFrame(() => selectBoxAt(idx));
-                  }}
-                  onBlur={() => {
-                    inputFocusedRef.current = false;
-                    if (!keyboardVisibleRef.current) {
-                      setFocusedIndex(null);
-                    }
-                  }}
-                  editable={!loading}
-                  contextMenuHidden={false}
-                />
-              </Pressable>
+              <OtpCodeInputs
+                cells={cells}
+                activeIndex={activeIndex}
+                editable={!loading}
+                onCellsChange={(next) => {
+                  setCells(next);
+                  if (error) setError("");
+                }}
+                onActiveIndexChange={setActiveIndex}
+              />
               {error ? <AppText style={styles.errorText}>{error}</AppText> : null}
               <View style={styles.helperRow}>
                 <TouchableOpacity
@@ -544,13 +400,11 @@ export default function OtpScreen() {
 
             <TouchableOpacity
               onPress={() => handleVerify()}
-              disabled={loading || otp.length !== OTP_LENGTH}
+              disabled={loading || !otpComplete}
               activeOpacity={0.88}
               style={[
                 styles.button,
-                otp.length === OTP_LENGTH && !loading
-                  ? styles.buttonActive
-                  : styles.buttonDisabled,
+                otpComplete && !loading ? styles.buttonActive : styles.buttonDisabled,
               ]}
             >
               {loading ? (
@@ -559,7 +413,7 @@ export default function OtpScreen() {
                 <AppText
                   style={[
                     styles.buttonText,
-                    otp.length === OTP_LENGTH ? styles.buttonTextActive : styles.buttonTextDisabled,
+                    otpComplete ? styles.buttonTextActive : styles.buttonTextDisabled,
                   ]}
                   bold
                 >
@@ -581,13 +435,15 @@ export default function OtpScreen() {
           </View>
         </ScrollView>
 
-        {/* Docked to frozen screen bottom — keypad overlays it; layout does not shrink. */}
         <View
-          pointerEvents={keyboardVisible ? "none" : "auto"}
           style={[
             styles.footerDock,
-            { paddingBottom: Math.max(insets.bottom, 16) + 8 },
-            keyboardVisible && styles.footerDockHidden,
+            {
+              paddingBottom:
+                keyboardVisible || keyboardInset > 0
+                  ? 8
+                  : Math.max(insets.bottom, 16) + 8,
+            },
           ]}
         >
           <View style={styles.footerRuleRow}>
@@ -608,7 +464,7 @@ export default function OtpScreen() {
           </Pressable>
         </View>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -618,46 +474,24 @@ const styles = StyleSheet.create({
     backgroundColor: BG_SPLASH,
   },
   flex: { flex: 1 },
-  logoHeader: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    zIndex: 20,
-    overflow: "hidden",
+  brandCenter: {
+    alignItems: "center",
+    marginBottom: 28,
   },
-  logoRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    paddingLeft: 16,
-    paddingRight: 28,
-    zIndex: 1,
-  },
-  logoTextCol: {
-    justifyContent: "center",
-    maxWidth: WAVE_W * 0.72,
-  },
-  brandNameRow: {
-    flexDirection: "row",
-    alignItems: "baseline",
-  },
-  brandGati: {
-    fontSize: 22,
-    fontWeight: "800",
-    color: TEXT_ON_TEAL,
-    letterSpacing: 0.2,
-  },
-  brandMitra: {
-    fontSize: 22,
-    fontWeight: "800",
-    color: BRAND_YELLOW,
-    letterSpacing: 0.2,
+  brandWord: {
+    fontSize: 42,
+    fontFamily: StoreFonts.loraBold,
+    color: "#0E2A26",
+    letterSpacing: 0.4,
+    textAlign: "center",
   },
   brandTagline: {
-    marginTop: 3,
-    fontSize: 8,
-    fontWeight: "700",
-    color: TEXT_ON_TEAL,
-    letterSpacing: 1.2,
+    marginTop: 5,
+    fontSize: 9,
+    fontFamily: StoreFonts.loraBold,
+    color: "#3F5B57",
+    letterSpacing: 2.4,
+    textAlign: "center",
   },
   scrollContent: {
     flexGrow: 1,
@@ -671,7 +505,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexGrow: 0,
     justifyContent: "flex-start",
-    paddingTop: 36,
+    paddingTop: 0,
+  },
+  mainBlockCompact: {
+    paddingTop: 0,
   },
   title: {
     fontSize: 32,
@@ -706,47 +543,6 @@ const styles = StyleSheet.create({
     color: TITLE_DARK,
     marginBottom: 14,
     textAlign: "center",
-  },
-  otpBoxesRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 8,
-    position: "relative",
-  },
-  otpInputHidden: {
-    ...StyleSheet.absoluteFillObject,
-    // Keep slightly visible to OS autofill (opacity 0 breaks sms-otp on some OEMs).
-    opacity: 0.02,
-    color: "transparent",
-    fontSize: 16,
-    zIndex: 0,
-    padding: 0,
-    margin: 0,
-  },
-  otpBox: {
-    flex: 1,
-    aspectRatio: 1,
-    maxWidth: 52,
-    backgroundColor: DARK_SURFACE,
-    borderWidth: 1,
-    borderColor: "transparent",
-    borderRadius: CONTROL_RADIUS,
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: 52,
-    zIndex: 1,
-  },
-  otpBoxActive: {
-    borderColor: "#FFFFFF",
-  },
-  otpBoxDigit: {
-    fontSize: 22,
-    fontFamily: StoreFonts.poppinsBold,
-    color: TEXT_ON_TEAL,
-  },
-  otpBoxDigitPlaceholder: {
-    color: PLACEHOLDER_GRAY,
-    fontFamily: StoreFonts.poppinsBold,
   },
   errorText: {
     fontSize: 14,
@@ -817,15 +613,10 @@ const styles = StyleSheet.create({
     textDecorationLine: "underline",
   },
   footerDock: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
     alignItems: "center",
     paddingHorizontal: 28,
-  },
-  footerDockHidden: {
-    opacity: 0,
+    paddingTop: 8,
+    backgroundColor: BG_SPLASH,
   },
   footerRuleRow: {
     flexDirection: "row",

@@ -196,6 +196,12 @@ void (async () => {
         await AsyncStorage.removeItem(API_URL_OVERRIDE_KEY);
         return;
       }
+      // Dev builds follow .env.local. A saved production URL was sending checkout
+      // to api.gatimitra.com, so Super Admin inactive rules never applied.
+      if (__DEV__ && /api\.gatimitra\.com/i.test(stored)) {
+        await AsyncStorage.removeItem(API_URL_OVERRIDE_KEY);
+        return;
+      }
       setRuntimeApiBaseUrl(stored);
       // eslint-disable-next-line no-console
       console.log("[env] using stored API base URL override:", stored);
@@ -359,6 +365,10 @@ export default function RootLayout() {
         // Permission only — do not push GPS as Current Location before reconcile.
         await promptLocationPermissionIfNeeded({ force: true, skipDeviceFetch: true });
         const readiness = await getDeviceLocationReadiness();
+        if (readiness.isReady) {
+          // Paint last-known + fast GPS immediately — do not wait on backend reconcile.
+          void requestPermissionAndFetch({ forceDevice: true });
+        }
         if (!readiness.isReady) {
           if (useAuthStore.getState().session) {
             const { applyActiveLocationFromBackend } = await import(
@@ -935,6 +945,9 @@ function LocationPermissionResumeCheck() {
           // Permission only — reconcile owns the pin when signed in.
           await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
           const readiness = await getDeviceLocationReadiness();
+          if (readiness.isReady && useLocationStore.getState().locationSource !== "selected") {
+            void requestPermissionAndFetch({ forceDevice: true });
+          }
           if (!readiness.isReady) {
             if (useAuthStore.getState().session) {
               const { applyActiveLocationFromBackend } = await import(
@@ -1016,14 +1029,14 @@ function LocationPermissionResumeCheck() {
     if (!showPermissionModal) return;
     if (useSmsPermissionStore.getState().blocksLocation) return;
 
-    void promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
+    void promptLocationPermissionIfNeeded({ skipDeviceFetch: false });
 
     const interval = setInterval(() => {
       if (AppState.currentState !== "active") return;
       if (useSmsPermissionStore.getState().blocksLocation) return;
       if (!useLocationStore.getState().showPermissionModal) return;
-      void promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
-    }, 2000);
+      void promptLocationPermissionIfNeeded({ skipDeviceFetch: false });
+    }, 1500);
 
     return () => clearInterval(interval);
   }, [showPermissionModal, promptLocationPermissionIfNeeded]);

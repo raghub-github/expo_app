@@ -628,7 +628,7 @@ export default function OrdersScreen() {
       if (!isScreenFocused) return false;
       const list = query.state.data as OrderSummary[] | undefined;
       if (!list?.some((o) => isActiveOrderStatus(o.status))) return false;
-      return 8_000;
+      return 4_000;
     },
     refetchIntervalInBackground: false,
     initialData: cachedOrders,

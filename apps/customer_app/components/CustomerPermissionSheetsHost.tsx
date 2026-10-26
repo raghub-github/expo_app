@@ -55,6 +55,9 @@ export function CustomerPermissionSheetsHost() {
     await runExclusiveActiveLocationReconcile(async () => {
       await promptLocationPermissionIfNeeded({ force: true, skipDeviceFetch: true });
       const readiness = await getDeviceLocationReadiness();
+      if (readiness.isReady) {
+        void requestPermissionAndFetch({ forceDevice: true });
+      }
       if (!readiness.isReady) {
         if (useAuthStore.getState().session) {
           const { applyActiveLocationFromBackend } = await import(
@@ -98,19 +101,26 @@ export function CustomerPermissionSheetsHost() {
     const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
       if (next !== "active") return;
       void (async () => {
-        await new Promise((r) => setTimeout(r, 800));
+        await new Promise((r) => setTimeout(r, 150));
         if (useSmsPermissionStore.getState().allowInFlight) return;
         if (useNotificationPushPromptStore.getState().allowInFlight) return;
         // Fresh OS revalidation after Settings / dialog — never use stale cache.
         await recheckAfterAppActive();
-        if (!useSmsPermissionStore.getState().blocksLocation) {
-          if (isActiveLocationReconcileReady()) return;
+        if (useSmsPermissionStore.getState().blocksLocation) return;
+        const readiness = await getDeviceLocationReadiness();
+        const loc = useLocationStore.getState();
+        if (readiness.isReady && loc.locationSource !== "selected") {
+          await requestPermissionAndFetch({ forceDevice: true });
+        }
+        if (!isActiveLocationReconcileReady()) {
           await finishActiveLocationBootstrap();
+        } else if (readiness.isReady && useAuthStore.getState().session) {
+          void reconcileActiveLocationFromGps(queryClient);
         }
       })();
     });
     return () => sub.remove();
-  }, [canShow, recheckAfterAppActive, finishActiveLocationBootstrap]);
+  }, [canShow, recheckAfterAppActive, finishActiveLocationBootstrap, requestPermissionAndFetch, queryClient]);
 
   useEffect(() => {
     if (!canShow || blocksLocation || allowInFlight) return;

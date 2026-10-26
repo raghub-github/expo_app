@@ -20,7 +20,7 @@ const LAUNCHER_SPLASH_BG = "#14b8a6";
 const googleServicesFile = path.resolve(__dirname, "google-services.json");
 const hasGoogleServices = fs.existsSync(googleServicesFile);
 
-const CUSTOMER_EAS_PROJECT_ID = "52247a95-93fe-4274-b7ff-47a113a2d683";
+const CUSTOMER_EAS_PROJECT_ID = "53fb1df5-d522-4e6a-bc73-04b7ad260992";
 
 /** Enable web only for `export:web` / explicit EXPO_WEB=1 — otherwise Metro
  *  web-SSR (`/_expo/loading` + expo-router/node/render.js) races the Android
@@ -205,6 +205,6 @@ module.exports = {
       },
     },
     // Required for development builds — links the runtime to your EAS project.
-    owner: "raghubhunia53s-team",
+    owner: "raghubhunia",
   },
 };

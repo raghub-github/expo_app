@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getSql, num, safeQuery, str } from "@/lib/db/client";
+import { getSql, num, requiredQuery, safeQuery, str } from "@/lib/db/client";
 import { parsePeriod, periodBounds, type Period } from "@/lib/period";
 import { resolveSelfieUrl } from "@/lib/rider-media";
 
@@ -29,6 +29,38 @@ function payableSql(alias = "") {
     NULLIF(${p}fare_amount, 0),
     NULLIF(NULLIF(${p}billing_snapshot->>'final_amount', '')::numeric, 0),
     NULLIF(NULLIF(${p}billing_snapshot->'gst_totals'->>'final_payable', '')::numeric, 0),
+    0
+  )`);
+}
+
+/** GatiCash used on the bill — payment instrument, not a discount. */
+function gatiCashAppliedExpr(alias = "") {
+  const p = alias ? `${alias}.` : "";
+  return `COALESCE(
+    NULLIF(NULLIF(${p}billing_snapshot->>'gati_cash_applied', '')::numeric, 0),
+    NULLIF(NULLIF(${p}billing_snapshot->>'gatiCashApplied', '')::numeric, 0),
+    NULLIF(NULLIF(${p}billing_snapshot->>'gati_cash_amount', '')::numeric, 0),
+    NULLIF(NULLIF(${p}billing_snapshot->>'gatiCashAmount', '')::numeric, 0),
+    NULLIF(NULLIF(${p}billing_snapshot->'checkout_adjustments'->>'gatiCashApplied', '')::numeric, 0),
+    NULLIF(NULLIF(${p}billing_snapshot->'checkout_adjustments'->>'gati_cash_applied', '')::numeric, 0),
+    NULLIF(NULLIF(${p}billing_snapshot->'checkout_metadata'->>'gatiCashAmount', '')::numeric, 0),
+    0
+  )`;
+}
+
+/**
+ * Amount the customer actually paid (CTC) = gateway/COD remainder + GatiCash.
+ * grand_total alone is post-wallet to-pay and is ₹0 on full-wallet orders.
+ */
+function customerCtcSql(alias = "") {
+  const p = alias ? `${alias}.` : "";
+  const gati = gatiCashAppliedExpr(alias);
+  return getSql().unsafe(`COALESCE(
+    NULLIF(COALESCE(${p}grand_total, 0) + (${gati}), 0),
+    NULLIF(${p}fare_amount, 0),
+    NULLIF(NULLIF(${p}billing_snapshot->>'final_amount', '')::numeric, 0),
+    NULLIF(NULLIF(${p}billing_snapshot->'gst_totals'->>'final_payable', '')::numeric, 0),
+    NULLIF(${p}item_total, 0),
     0
   )`);
 }
@@ -1223,9 +1255,13 @@ export async function fetchOrders(periodRaw: string | null) {
       safeQuery(
         "orders-hourly",
         () =>
-          sql<{ hour: number; orders: number }[]>`
-            SELECT EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::int AS hour,
-                   COUNT(*)::int AS orders
+          sql<{ hour: number; orders: number; delivered: number; cancelled: number; gmv: number }[]>`
+            SELECT
+              EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::int AS hour,
+              COUNT(*)::int AS orders,
+              COUNT(*) FILTER (WHERE status::text = 'delivered')::int AS delivered,
+              COUNT(*) FILTER (WHERE status::text = 'cancelled')::int AS cancelled,
+              COALESCE(SUM(${payableSql()}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gmv
             FROM orders_core
             WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz
             GROUP BY 1
@@ -1513,10 +1549,16 @@ export async function fetchOrders(periodRaw: string | null) {
       cancelled: num(r.cancelled),
       gmv: num(r.gmv),
     })),
-    hourly: Array.from({ length: 24 }, (_, hour) => ({
-      hour,
-      orders: num(hourly.find((r) => Number(r.hour) === hour)?.orders),
-    })),
+    hourly: Array.from({ length: 24 }, (_, hour) => {
+      const row = hourly.find((r) => Number(r.hour) === hour);
+      return {
+        hour,
+        orders: num(row?.orders),
+        delivered: num(row?.delivered),
+        cancelled: num(row?.cancelled),
+        gmv: num(row?.gmv),
+      };
+    }),
     paymentMix: paymentMix.map((r) => ({
       method: str(r.method),
       orders: num(r.orders),
@@ -1573,12 +1615,8 @@ export async function fetchCustomers(periodRaw: string | null) {
             COUNT(*) FILTER (WHERE deleted_at IS NULL AND COALESCE(gmitra_plus_active, false) = true)::int AS plus,
             COUNT(*) FILTER (
               WHERE deleted_at IS NULL
-                AND EXISTS (
-                  SELECT 1 FROM orders_core o
-                  WHERE o.customer_id = customers.id
-                    AND COALESCE(o.actual_delivery_time, o.created_at) >= ${from}::timestamptz
-                    AND COALESCE(o.actual_delivery_time, o.created_at) < ${to}::timestamptz
-                )
+                AND last_order_at >= ${from}::timestamptz
+                AND last_order_at < ${to}::timestamptz
             )::int AS ordered
           FROM customers
         `,
@@ -1610,7 +1648,7 @@ export async function fetchCustomers(periodRaw: string | null) {
         `,
       []
     ),
-    safeQuery(
+    requiredQuery(
       "customers-recent",
       () =>
         sql<
@@ -1655,45 +1693,35 @@ export async function fetchCustomers(periodRaw: string | null) {
             c.gmitra_plus_active,
             c.profile_image_url,
             COALESCE(c.wallet_balance, 0)::float AS wallet,
-            COALESCE((
-              SELECT COUNT(*)::int FROM orders_core o WHERE o.customer_id = c.id
-            ), 0) AS orders,
-            COALESCE((
-              SELECT SUM(${payableSql("o")})
-              FROM orders_core o
-              WHERE o.customer_id = c.id AND o.status::text = 'delivered'
-            ), 0)::float AS gmv,
-            COALESCE((
-              SELECT COUNT(*)::int FROM orders_core o
-              WHERE o.customer_id = c.id
-                AND o.order_type::text IN ('food', 'grocery', 'mart', 'pharmacy')
-            ), 0) AS food_orders,
-            COALESCE((
-              SELECT COUNT(*)::int FROM orders_core o
-              WHERE o.customer_id = c.id AND o.order_type::text = 'parcel'
-            ), 0) AS parcel_orders,
-            COALESCE((
-              SELECT COUNT(*)::int FROM orders_core o
-              WHERE o.customer_id = c.id
-                AND o.order_type::text IN ('person_ride', 'ride', 'cab')
-            ), 0) AS ride_orders,
-            COALESCE(
-              c.last_order_at,
-              (
-                SELECT MAX(COALESCE(o.actual_delivery_time, o.created_at))
-                FROM orders_core o
-                WHERE o.customer_id = c.id
-              )
-            ) AS last_order_at,
+            COALESCE(os.orders, 0) AS orders,
+            COALESCE(os.gmv, 0)::float AS gmv,
+            COALESCE(os.food_orders, 0) AS food_orders,
+            COALESCE(os.parcel_orders, 0) AS parcel_orders,
+            COALESCE(os.ride_orders, 0) AS ride_orders,
+            COALESCE(c.last_order_at, os.last_order_at) AS last_order_at,
             c.created_at
           FROM customers c
+          LEFT JOIN (
+            SELECT
+              o.customer_id,
+              COUNT(*)::int AS orders,
+              COALESCE(SUM(COALESCE(NULLIF(o.grand_total, 0), NULLIF(o.fare_amount, 0), 0)) FILTER (WHERE o.status::text = 'delivered'), 0)::float AS gmv,
+              COUNT(*) FILTER (
+                WHERE o.order_type::text IN ('food', 'grocery', 'mart', 'pharmacy')
+              )::int AS food_orders,
+              COUNT(*) FILTER (WHERE o.order_type::text = 'parcel')::int AS parcel_orders,
+              COUNT(*) FILTER (
+                WHERE o.order_type::text IN ('person_ride', 'ride', 'cab')
+              )::int AS ride_orders,
+              MAX(COALESCE(o.actual_delivery_time, o.created_at)) AS last_order_at
+            FROM orders_core o
+            GROUP BY o.customer_id
+          ) os ON os.customer_id = c.id
           WHERE c.deleted_at IS NULL
           ORDER BY
-            c.created_at ASC NULLS LAST,
-            c.customer_id ASC
-          LIMIT 300
-        `,
-      []
+            c.created_at DESC NULLS LAST,
+            c.customer_id DESC
+        `
     ),
   ]);
 
@@ -2264,7 +2292,7 @@ export async function fetchRiders(periodRaw: string | null) {
         `,
       []
     ),
-    safeQuery(
+    requiredQuery(
       "riders-recent",
       () =>
         sql<
@@ -2326,14 +2354,9 @@ export async function fetchRiders(periodRaw: string | null) {
             r.selfie_url,
             sd.r2_key AS selfie_doc_key,
             sd.file_url AS selfie_doc_url,
-            COALESCE((SELECT total_balance FROM rider_wallet w WHERE w.rider_id = r.id LIMIT 1), 0)::float AS wallet,
-            COALESCE((
-              SELECT COUNT(*)::int FROM orders_core o WHERE o.rider_id = r.id AND o.status::text = 'delivered'
-            ), 0) AS deliveries,
-            COALESCE((
-              SELECT SUM(${riderEarnSql("o")}) FROM orders_core o
-              WHERE o.rider_id = r.id AND o.status::text = 'delivered'
-            ), 0)::float AS earnings,
+            COALESCE(w.total_balance, 0)::float AS wallet,
+            COALESCE(od.deliveries, 0) AS deliveries,
+            COALESCE(od.earnings, 0)::float AS earnings,
             r.created_at,
             v.vehicle_type::text AS vehicle_type,
             v.vehicle_category::text AS vehicle_category,
@@ -2375,6 +2398,16 @@ export async function fetchRiders(periodRaw: string | null) {
             ORDER BY d.verified DESC, d.updated_at DESC NULLS LAST, d.id DESC
             LIMIT 1
           ) sd ON TRUE
+          LEFT JOIN rider_wallet w ON w.rider_id = r.id
+          LEFT JOIN (
+            SELECT
+              o.rider_id,
+              COUNT(*) FILTER (WHERE o.status::text = 'delivered')::int AS deliveries,
+              COALESCE(SUM(${riderEarnSql("o")}) FILTER (WHERE o.status::text = 'delivered'), 0)::float AS earnings
+            FROM orders_core o
+            WHERE o.rider_id IS NOT NULL
+            GROUP BY o.rider_id
+          ) od ON od.rider_id = r.id
           WHERE r.deleted_at IS NULL
           ORDER BY
             CASE
@@ -2383,9 +2416,7 @@ export async function fetchRiders(periodRaw: string | null) {
               ELSE 2
             END,
             r.created_at DESC
-          LIMIT 200
-        `,
-      []
+        `
     ),
   ]);
 
@@ -2962,7 +2993,7 @@ export async function fetchMerchants(periodRaw: string | null) {
         `,
       []
     ),
-    safeQuery(
+    requiredQuery(
       "mx-recent",
       () =>
         sql<
@@ -3064,9 +3095,7 @@ export async function fetchMerchants(periodRaw: string | null) {
             COALESCE(ms.is_accepting_orders, false) DESC,
             COALESCE(agg.ctm, 0) DESC,
             ms.created_at ASC
-          LIMIT 400
-        `,
-      []
+        `
     ),
   ]);
 
@@ -3300,14 +3329,16 @@ export async function fetchMerchantDetail(storeIdRaw: string, periodRaw: string 
               o.order_type::text AS order_type,
               COALESCE(NULLIF(o.pickup_address_normalized, ''), o.pickup_address_raw) AS pickup,
               COALESCE(NULLIF(o.drop_address_normalized, ''), o.drop_address_raw) AS dropoff,
-              COALESCE(${payableSql("o")}, 0)::float AS payable,
+              COALESCE(${customerCtcSql("o")}, 0)::float AS payable,
               COALESCE(${ctmSql("o", "osb", "f")}, 0)::float AS ctm,
-              COALESCE(osb.merchant_gross, ${ctmSql("o", "osb", "f")}, 0)::float AS gross_ctm,
+              COALESCE(NULLIF(osb.merchant_gross, 0), ${ctmSql("o", "osb", "f")}, 0)::float AS gross_ctm,
               COALESCE(
-                osb.merchant_net,
-                COALESCE(osb.merchant_gross, ${ctmSql("o", "osb", "f")}, 0)
-                  - COALESCE(osb.commission_amount, o.commission_amount, 0),
-                0
+                NULLIF(osb.merchant_net, 0),
+                GREATEST(
+                  0,
+                  COALESCE(NULLIF(osb.merchant_gross, 0), ${ctmSql("o", "osb", "f")}, 0)
+                    - COALESCE(osb.commission_amount, o.commission_amount, 0)
+                )
               )::float AS net_ctm,
               COALESCE(osb.commission_amount, o.commission_amount, 0)::float AS commission,
               COALESCE(adj.compensation, 0)::float AS compensation,
@@ -3953,6 +3984,327 @@ export async function recordTaxFiling(input: {
   return { id: rows[0]?.id ?? 0 };
 }
 
+function istYmd(now = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+function addIstDay(ymd: string, days: number) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const utc = Date.UTC(y, (m || 1) - 1, d || 1) + days * 24 * 60 * 60 * 1000;
+  const dt = new Date(utc);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+export async function fetchOrdersHourly(dateRaw: string | null) {
+  const today = istYmd();
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(str(dateRaw).trim()) ? str(dateRaw).trim() : today;
+  if (date > today) throw new Error("Date cannot be in the future");
+  const from = `${date}T00:00:00+05:30`;
+  const to = `${addIstDay(date, 1)}T00:00:00+05:30`;
+  const sql = getSql();
+  const hourly = await requiredQuery(
+    "orders-hourly-day",
+    () =>
+      sql<{ hour: number; orders: number; delivered: number; cancelled: number; gmv: number }[]>`
+        SELECT
+          EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::int AS hour,
+          COUNT(*)::int AS orders,
+          COUNT(*) FILTER (WHERE status::text = 'delivered')::int AS delivered,
+          COUNT(*) FILTER (WHERE status::text = 'cancelled')::int AS cancelled,
+          COALESCE(SUM(${payableSql()}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gmv
+        FROM orders_core
+        WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz
+        GROUP BY 1
+        ORDER BY 1
+      `
+  );
+
+  return {
+    date,
+    today,
+    hourly: Array.from({ length: 24 }, (_, hour) => {
+      const row = hourly.find((r) => Number(r.hour) === hour);
+      return {
+        hour,
+        orders: num(row?.orders),
+        delivered: num(row?.delivered),
+        cancelled: num(row?.cancelled),
+        gmv: num(row?.gmv),
+      };
+    }),
+  };
+}
+
+function parseLooseOrderItems(raw: unknown): Array<{
+  name: string;
+  variant: string;
+  qty: number;
+  unit: number;
+  total: number;
+  addons: string;
+}> {
+  let arr: unknown[] = [];
+  if (Array.isArray(raw)) arr = raw;
+  else if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) arr = parsed;
+      else if (parsed && typeof parsed === "object") {
+        const o = parsed as Record<string, unknown>;
+        if (Array.isArray(o.items)) arr = o.items;
+      }
+    } catch {
+      arr = [];
+    }
+  } else if (raw && typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    if (Array.isArray(o.items)) arr = o.items;
+    else if (Array.isArray(o.order_items)) arr = o.order_items;
+    else if (Array.isArray(o.cart_items)) arr = o.cart_items;
+  }
+  return arr
+    .map((it, i) => {
+      const row = (it && typeof it === "object" ? it : {}) as Record<string, unknown>;
+      const qty = Number(row.quantity ?? row.qty) || 1;
+      const unit = Number(row.price ?? row.unit_price ?? row.base_price) || 0;
+      const total = Number(row.total ?? row.total_price ?? unit * qty) || 0;
+      const name = str(row.name ?? row.item_name ?? row.title ?? row.product_name) || `Item ${i + 1}`;
+      const variant = str(row.variant_name ?? row.variant ?? "");
+      const addonsRaw = row.customizations ?? row.addons;
+      const addons = Array.isArray(addonsRaw)
+        ? addonsRaw
+            .map((a) => {
+              if (typeof a === "string") return a;
+              if (a && typeof a === "object") {
+                const x = a as Record<string, unknown>;
+                return str(x.name ?? x.addon_name ?? x.title);
+              }
+              return "";
+            })
+            .filter(Boolean)
+            .join(", ")
+        : "";
+      return { name, variant, qty, unit, total, addons };
+    })
+    .filter((x) => x.name);
+}
+
+export async function fetchOrderPulseDetail(orderIdRaw: string) {
+  const sql = getSql();
+  const raw = str(orderIdRaw).trim();
+  const pk = Number(raw);
+  if (!raw) throw new Error("Order not found");
+
+  if (!Number.isFinite(pk) || pk <= 0) throw new Error("Order not found");
+
+  const headerRows = await requiredQuery(
+    "order-pulse-header",
+    () =>
+      sql<
+            {
+              id: number;
+              order_code: string | null;
+              public_order_id: string | null;
+              status: string;
+              order_type: string;
+              created_at: Date | string;
+              pickup: string | null;
+              dropoff: string | null;
+              customer_name: string | null;
+              customer_mobile: string | null;
+              customer_cc: string | null;
+              customer_address: string | null;
+              payable: number;
+              item_total: number;
+              packaging: number;
+              delivery: number;
+              gst: number;
+              discount: number;
+              tip: number;
+              donation: number;
+              gati_cash: number;
+              ctm: number;
+              net_ctm: number;
+              commission: number;
+              core_items: unknown;
+              food_items: unknown;
+            }[]
+          >`
+            SELECT
+              o.id,
+              COALESCE(NULLIF(o.formatted_order_id, ''), NULLIF(o.order_id, ''), o.id::text) AS order_code,
+              o.order_id AS public_order_id,
+              o.status::text AS status,
+              o.order_type::text AS order_type,
+              o.created_at,
+              COALESCE(NULLIF(o.pickup_address_normalized, ''), o.pickup_address_raw) AS pickup,
+              COALESCE(NULLIF(o.drop_address_normalized, ''), o.drop_address_raw) AS dropoff,
+              c.full_name AS customer_name,
+              c.primary_mobile AS customer_mobile,
+              c.primary_mobile_country_code AS customer_cc,
+              COALESCE(
+                NULLIF(TRIM(COALESCE(NULLIF(o.drop_address_normalized, ''), o.drop_address_raw)), ''),
+                NULLIF(
+                  TRIM(BOTH ', ' FROM CONCAT_WS(', ',
+                    NULLIF(TRIM(ca.address_line1), ''),
+                    NULLIF(TRIM(ca.address_line2), ''),
+                    NULLIF(TRIM(ca.landmark), ''),
+                    NULLIF(TRIM(ca.city), ''),
+                    NULLIF(TRIM(ca.state), ''),
+                    NULLIF(TRIM(ca.postal_code), '')
+                  )),
+                  ''
+                )
+              ) AS customer_address,
+              COALESCE(${customerCtcSql("o")}, 0)::float AS payable,
+              COALESCE(NULLIF(o.item_total, 0), 0)::float AS item_total,
+              COALESCE(${packagingSql("o", "osb")}, 0)::float AS packaging,
+              COALESCE((o.billing_snapshot->'gst_components'->'delivery'->>'original')::numeric, 0)::float AS delivery,
+              COALESCE(${gstSql("o")}, 0)::float AS gst,
+              COALESCE(GREATEST(
+                COALESCE(NULLIF(o.billing_snapshot->>'discount_amount', '')::numeric, 0),
+                COALESCE(NULLIF(o.billing_snapshot->>'promo_discount', '')::numeric, 0),
+                COALESCE((o.billing_snapshot->'gst_components'->'items'->>'discount')::numeric, 0)
+              ), 0)::float AS discount,
+              COALESCE(${tipSql("o")}, 0)::float AS tip,
+              COALESCE(${donationSql("o")}, 0)::float AS donation,
+              COALESCE(${gatiCashSql("o")}, 0)::float AS gati_cash,
+              COALESCE(${ctmSql("o", "osb", "f")}, 0)::float AS ctm,
+              COALESCE(
+                NULLIF(osb.merchant_net, 0),
+                GREATEST(
+                  0,
+                  COALESCE(NULLIF(osb.merchant_gross, 0), ${ctmSql("o", "osb", "f")}, 0)
+                    - COALESCE(osb.commission_amount, o.commission_amount, 0)
+                )
+              )::float AS net_ctm,
+              COALESCE(osb.commission_amount, o.commission_amount, 0)::float AS commission,
+              o.items AS core_items,
+              f.items AS food_items
+            FROM orders_core o
+            LEFT JOIN customers c ON c.id = o.customer_id
+            LEFT JOIN LATERAL (
+              SELECT
+                ca.address_line1,
+                ca.address_line2,
+                ca.landmark,
+                ca.city,
+                ca.state,
+                ca.postal_code
+              FROM customer_addresses ca
+              WHERE ca.customer_id = c.id
+              ORDER BY
+                COALESCE(ca.is_default, false) DESC,
+                COALESCE(ca.is_last_used, false) DESC,
+                ca.last_used_at DESC NULLS LAST,
+                ca.created_at DESC
+              LIMIT 1
+            ) ca ON TRUE
+            LEFT JOIN LATERAL (
+              SELECT merchant_gross, merchant_net, packaging_charge, commission_amount
+              FROM order_settlement_breakdown WHERE order_id = o.id LIMIT 1
+            ) osb ON TRUE
+            LEFT JOIN LATERAL (
+              SELECT food_items_total_value, items FROM orders_food WHERE order_id = o.id LIMIT 1
+            ) f ON TRUE
+            WHERE o.id = ${pk}
+            LIMIT 1
+          `
+  );
+
+  const o = headerRows[0];
+  if (!o) throw new Error("Order not found");
+
+  const publicId = str(o.public_order_id);
+  const dbItems = publicId
+    ? await safeQuery(
+        "order-pulse-items",
+        () =>
+          sql<
+            {
+              id: number;
+              item_name: string | null;
+              variant_name: string | null;
+              quantity: number | null;
+              unit: number;
+              total: number;
+              addons: string | null;
+            }[]
+          >`
+            SELECT
+              oci.id,
+              oci.item_name,
+              oci.variant_name,
+              oci.quantity,
+              COALESCE(oci.base_price, 0)::float AS unit,
+              COALESCE(oci.total_price, oci.base_price * COALESCE(oci.quantity, 1), 0)::float AS total,
+              (
+                SELECT string_agg(NULLIF(TRIM(a.addon_name), ''), ', ')
+                FROM orders_core_item_addons a
+                WHERE a.order_item_id = oci.id
+              ) AS addons
+            FROM orders_core_items oci
+            WHERE oci.order_id = ${publicId}
+            ORDER BY oci.id
+          `,
+        []
+      )
+    : [];
+
+  let items =
+    dbItems.length > 0
+      ? dbItems.map((r) => ({
+          name: str(r.item_name) || "Item",
+          variant: str(r.variant_name),
+          qty: num(r.quantity) || 1,
+          unit: num(r.unit),
+          total: num(r.total),
+          addons: str(r.addons),
+        }))
+      : parseLooseOrderItems(o.food_items);
+  if (items.length === 0) items = parseLooseOrderItems(o.core_items);
+
+  const itemQty = items.reduce((s, it) => s + (it.qty || 0), 0);
+  const itemSum = items.reduce((s, it) => s + (it.total || 0), 0);
+
+  return {
+    id: num(o.id),
+    code: str(o.order_code) || String(o.id),
+    status: str(o.status),
+    type: str(o.order_type),
+    createdAt: o.created_at instanceof Date ? o.created_at.toISOString() : str(o.created_at),
+    pickup: str(o.pickup) || "—",
+    dropoff: str(o.dropoff) || "—",
+    customerName: str(o.customer_name) || "—",
+    customerPhone: formatCustomerMobile(str(o.customer_mobile), o.customer_cc),
+    customerAddress: str(o.customer_address) || str(o.dropoff) || "—",
+    items,
+    itemCount: itemQty || items.length,
+    bill: {
+      items: itemSum > 0.005 ? itemSum : num(o.item_total),
+      packaging: num(o.packaging),
+      delivery: num(o.delivery),
+      gst: num(o.gst),
+      discount: num(o.discount),
+      tip: num(o.tip),
+      donation: num(o.donation),
+      gatiCash: num(o.gati_cash),
+      ctc: num(o.payable),
+      ctm: num(o.ctm),
+      netCtm: num(o.net_ctm),
+      commission: num(o.commission),
+    },
+  };
+}
+
 export type OverviewData = Awaited<ReturnType<typeof fetchOverview>>;
 export type PerformanceData = Awaited<ReturnType<typeof fetchPerformance>>;
 export type AnalyticsData = Awaited<ReturnType<typeof fetchAnalytics>>;
@@ -3966,4 +4318,5 @@ export type MerchantDetailData = Awaited<ReturnType<typeof fetchMerchantDetail>>
 export type FinanceData = Awaited<ReturnType<typeof fetchFinance>>;
 export type SupportData = Awaited<ReturnType<typeof fetchSupport>>;
 export type TaxData = Awaited<ReturnType<typeof fetchTax>>;
+export type OrderPulseDetail = Awaited<ReturnType<typeof fetchOrderPulseDetail>>;
 export type { Period };

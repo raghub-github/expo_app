@@ -74,6 +74,9 @@ function HomePopularRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: P
           borderRadius={14}
           hidePlaceholderIcon
           showDots={false}
+          enableAutoRotate={false}
+          enableSwipe={false}
+          enableKenBurns={false}
         />
         <View style={styles.etaBadge}>
           <Ionicons name="time-outline" size={10} color="#fff" />

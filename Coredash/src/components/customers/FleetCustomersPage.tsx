@@ -527,12 +527,13 @@ export function FleetCustomersPage() {
     );
   }, [data, q, segment]);
 
-  const customerIdsKey = useMemo(() => customers.map((c) => c.id).join("|"), [customers]);
+  const allCustomers = data?.recent ?? [];
+  const allCustomerIdsKey = useMemo(() => allCustomers.map((c) => c.id).join("|"), [allCustomers]);
 
   /** Platform-first customer (earliest join) — used when URL has no valid selection. */
   const firstCustomerId = useMemo(() => {
-    if (!data?.recent.length) return null;
-    const sorted = [...data.recent].sort((a, b) => {
+    if (!allCustomers.length) return null;
+    const sorted = [...allCustomers].sort((a, b) => {
       const ta = new Date(a.createdAt).getTime();
       const tb = new Date(b.createdAt).getTime();
       const na = Number.isFinite(ta) ? ta : Number.POSITIVE_INFINITY;
@@ -541,23 +542,18 @@ export function FleetCustomersPage() {
       return a.id.localeCompare(b.id);
     });
     return sorted[0]?.id ?? null;
-  }, [data]);
+  }, [allCustomers]);
 
   useEffect(() => {
-    if (!customers.length) {
+    if (!allCustomers.length) {
       setSelectedId(null);
       return;
     }
-    // Honor explicit URL only when that customer is in the current list
-    if (urlCustomer && customers.some((c) => c.id === urlCustomer)) {
+    if (urlCustomer && allCustomers.some((c) => c.id === urlCustomer)) {
       setSelectedId(urlCustomer);
       return;
     }
-    // Default: first joined customer (not last-active / random)
-    const fallback =
-      (firstCustomerId && customers.some((c) => c.id === firstCustomerId)
-        ? firstCustomerId
-        : null) || customers[0].id;
+    const fallback = firstCustomerId || allCustomers[0].id;
     setSelectedId(fallback);
     const params = new URLSearchParams(searchParams.toString());
     if (params.get("customer") !== fallback) {
@@ -565,7 +561,7 @@ export function FleetCustomersPage() {
       router.replace(`/customers?${params.toString()}`, { scroll: false });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sync from URL + stable keys only
-  }, [customerIdsKey, urlCustomer, firstCustomerId]);
+  }, [allCustomerIdsKey, urlCustomer, firstCustomerId]);
 
   useEffect(() => {
     setHistoryOpen(false);
@@ -615,7 +611,10 @@ export function FleetCustomersPage() {
   }, [selectedId, searchParams, userId, period, detailNonce]);
 
   const groups = useMemo(() => {
-    const selectedCustomer = selectedId ? customers.find((c) => c.id === selectedId) : null;
+    const selectedCustomer =
+      (selectedId ? customers.find((c) => c.id === selectedId) : null) ||
+      (selectedId ? allCustomers.find((c) => c.id === selectedId) : null) ||
+      null;
     const rest = selectedId ? customers.filter((c) => c.id !== selectedId) : customers;
 
     if (segment === "LATEST") {
@@ -643,7 +642,7 @@ export function FleetCustomersPage() {
     if (selectedCustomer) result.push({ key: "OPEN", items: [selectedCustomer] });
     for (const k of keys) result.push({ key: k, items: map.get(k)! });
     return result;
-  }, [customers, segment, selectedId]);
+  }, [allCustomers, customers, segment, selectedId]);
 
   const allOrders = detail?.orderHistory ?? [];
   const filteredOrders = useMemo(() => {
@@ -657,7 +656,10 @@ export function FleetCustomersPage() {
   if (loading) return <LoadingGrid />;
   if (error || !data) return <ErrorState message={error || "Failed"} onRetry={reload} />;
 
-  const selected = customers.find((c) => c.id === selectedId) ?? null;
+  const selected =
+    customers.find((c) => c.id === selectedId) ??
+    allCustomers.find((c) => c.id === selectedId) ??
+    null;
   const customer = detail?.customer;
   const active = detail?.activeOrder ?? null;
   const mix = detail?.orderMix ?? [];

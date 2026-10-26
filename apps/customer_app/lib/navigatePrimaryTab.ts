@@ -12,7 +12,6 @@
 
 import type { NavigationProp, ParamListBase } from "@react-navigation/native";
 import type { Router } from "expo-router";
-import { InteractionManager } from "react-native";
 import {
   getCustomerPrimaryTabNavState,
   hrefForPrimaryTab,
@@ -42,10 +41,9 @@ function routeNameForTab(tab: CustomerPrimaryTab): string {
 }
 
 function pinFoodHomeToTop(): void {
+  // One immediate pin. A second call after interactions lands while banners and
+  // the header are still measuring and yanks the list (often toward the end).
   scrollFoodHomeListToTop();
-  InteractionManager.runAfterInteractions(() => {
-    scrollFoodHomeListToTop();
-  });
 }
 
 function dispatchPrimaryTab(nav: TabsNav, tab: CustomerPrimaryTab): void {

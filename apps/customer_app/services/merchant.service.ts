@@ -460,7 +460,15 @@ function normalizeMenuItem(raw: MenuItem & Record<string, unknown>): MenuItem {
     price: safePrice,
     basePrice: resolvedBase,
     discountPercentage,
-    imageUrl: toAbsoluteImageUrl(raw.imageUrl ?? null) ?? raw.imageUrl,
+    imageUrl: (() => {
+      const imageRaw =
+        (typeof raw.imageUrl === "string" && raw.imageUrl.trim()) ||
+        (typeof raw.image_url === "string" && raw.image_url.trim()) ||
+        (typeof raw.item_image_url === "string" && raw.item_image_url.trim()) ||
+        "";
+      if (!imageRaw) return raw.imageUrl;
+      return toAbsoluteImageUrl(imageRaw) ?? imageRaw;
+    })(),
     categoryImageUrl:
       toAbsoluteImageUrl(
         (raw.categoryImageUrl as string | null | undefined) ??
@@ -703,22 +711,41 @@ export const merchantService = {
     storeType?: string;
   }): Promise<MerchantSummary[]> {
     // Propagate errors so callers/React Query do not cache a false empty area.
-    const { data } = await api.get<{ items: MerchantSummary[] }>(MERCHANTS_PREFIX, {
-      params: {
-        ...(params?.lat != null && params?.lng != null
-          ? { lat: params.lat, lng: params.lng }
-          : {}),
-        limit: params?.limit ?? 20,
+    const geo =
+      params?.lat != null && params?.lng != null
+        ? { lat: params.lat, lng: params.lng }
+        : {};
+    const veg = params?.vegOnly === true ? "true" : undefined;
+    const storeType = (params?.storeType ?? "FOOD").trim().toUpperCase();
+    const requestedLimit = Math.min(50, Math.max(1, params?.limit ?? 50));
+    const fetchList = async (query: Record<string, unknown>) => {
+      const { data } = await api.get<{ items: MerchantSummary[] }>(MERCHANTS_PREFIX, {
+        params: query,
+      });
+      const list = Array.isArray(data?.items) ? data.items : [];
+      return list.map((item) =>
+        normalizeMerchantListItem(item as MerchantSummary & Record<string, unknown>)
+      );
+    };
+    try {
+      return await fetchList({
+        ...geo,
+        limit: requestedLimit,
         offset: params?.offset ?? 0,
-        distanceMode: params?.distanceMode,
-        veg: params?.vegOnly === true ? "true" : undefined,
-        storeType: (params?.storeType ?? "FOOD").trim().toUpperCase(),
-      },
-    });
-    const list = Array.isArray(data?.items) ? data.items : [];
-    return list.map((item) =>
-      normalizeMerchantListItem(item as MerchantSummary & Record<string, unknown>)
-    );
+        veg,
+        storeType,
+      });
+    } catch (err) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status !== 400) throw err;
+      // Production schema is older (limit max 20, no storeType/distanceMode).
+      return fetchList({
+        ...geo,
+        limit: Math.min(20, requestedLimit),
+        offset: params?.offset ?? 0,
+        veg,
+      });
+    }
   },
 
   async getNearbyStores(params: {

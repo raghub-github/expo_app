@@ -176,8 +176,10 @@ import {
   estimateBoostUnitPrice,
   formatOfferRupee,
   parseMenuFlashSale,
+  resolveMenuOfferPriceDisplay,
   type ItemOfferDisplay,
 } from "@/lib/itemOfferDisplay";
+import { getBasePrice } from "@/components/store/storeMenuUtils";
 import { isFlashSaleCheckoutError, flashSaleCheckoutMessage } from "@/lib/flashSaleCheckoutError";
 import { computeIsDiscountEligible } from "@/lib/cartDiscountEligibility";
 import {
@@ -231,6 +233,37 @@ function roundBillAmount(n: number): number {
 const EMPTY_ADDRESSES: Address[] = [];
 
 /**
+ * Compare-at unit the store menu would strike through for this line.
+ * Uses the same `getBasePrice` + offer display as `StoreMenuItemRow`.
+ * Customized lines keep the variant price — their strike is not the base item MRP.
+ */
+function checkoutCatalogStrikeUnit(
+  menuItem: import("@/services/merchant.service").MenuItem | null | undefined,
+  cartItem: CartItem,
+  itemOfferById: Map<string, ItemOfferDisplay>
+): number | null {
+  if (cartItem.variantId || (cartItem.addons?.length ?? 0) > 0) return null;
+  const offer =
+    itemOfferById.get(cartItem.menuItemId) ??
+    itemOfferById.get(cartItemBaseId(cartItem.menuItemId)) ??
+    null;
+  if (!menuItem) {
+    return cartItem.basePrice != null && cartItem.basePrice > cartItem.price + 0.001
+      ? cartItem.basePrice
+      : null;
+  }
+  const selling = Number.isFinite(menuItem.price) ? menuItem.price : cartItem.price;
+  const display = resolveMenuOfferPriceDisplay({
+    sellingPrice: selling,
+    basePrice: getBasePrice(menuItem),
+    itemOffer: offer,
+  });
+  return display.showStrike && display.strike != null && display.strike > selling + 0.001
+    ? display.strike
+    : null;
+}
+
+/**
  * Catalog / strike / net line totals — same rules as `CheckoutCartLineRow`
  * (Boost "Get for", then MRP strike when no Boost).
  */
@@ -265,18 +298,29 @@ function cartLineStrikeNetTotals(
     };
   }
 
-  const catalogBase =
-    item.basePrice != null && item.basePrice > 0 ? item.basePrice : cartLineBaseUnitPrice(item);
-  const boostBase = estimateBoostUnitPrice(catalogBase, itemOffer);
-  const showOfferPrice = boostBase != null && boostBase < catalogBase - 0.001;
-  const catalogAllIn = Math.round(catalogBase + addonPerUnit);
+  const plainLine = addonPerUnit <= 0.005 && !item.variantId;
+  // Plain lines store the menu selling price on `price` and the compare-at
+  // (the struck price on the store page) on `basePrice`. Customized lines store
+  // the variant unit on `basePrice` — that amount is what the customer pays.
+  const sellingUnit = plainLine
+    ? item.price
+    : item.basePrice != null && item.basePrice > 0
+      ? item.basePrice
+      : cartLineBaseUnitPrice(item);
+  const compareAt =
+    item.catalogMrp != null && item.catalogMrp > sellingUnit + 0.001
+      ? item.catalogMrp
+      : plainLine && item.basePrice != null && item.basePrice > sellingUnit + 0.001
+        ? item.basePrice
+        : null;
+  const boostBase = estimateBoostUnitPrice(sellingUnit, itemOffer);
+  const showOfferPrice = boostBase != null && boostBase < sellingUnit - 0.001;
+  const catalogAllIn = Math.round(sellingUnit + addonPerUnit);
   const offerAllIn = showOfferPrice ? Math.round(boostBase! + addonPerUnit) : catalogAllIn;
   const catalog = catalogAllIn * item.quantity;
   const mrpLineTotal =
-    item.catalogMrp != null && item.catalogMrp > catalogBase
-      ? Math.round(item.catalogMrp + addonPerUnit) * item.quantity
-      : null;
-  const showMrpStrike = !showOfferPrice && mrpLineTotal != null;
+    compareAt != null ? Math.round(compareAt + addonPerUnit) * item.quantity : null;
+  const showMrpStrike = !showOfferPrice && mrpLineTotal != null && mrpLineTotal > catalog;
   const strike = showOfferPrice ? catalog : showMrpStrike ? mrpLineTotal! : null;
   const net = showOfferPrice ? offerAllIn * item.quantity : catalog;
   return {
@@ -1714,11 +1758,11 @@ function CheckoutScreen() {
     const fromBackendBinding =
       locationSource !== "current" && activeLocation?.addressId === candidateId;
 
-    // Backend already recorded this saved address as active — bind immediately so
-    // checkout never asks the user to re-select. Still re-check serviceability.
-    if (fromBackendBinding) {
-      setSelectedAddressId((prev) => prev ?? candidateId);
-    }
+    // Bind immediately so billing can price this drop in the same request.
+    // The quote below only clears the pin if the store cannot deliver there.
+    // Waiting for that quote first left Total Bill on a skeleton for the whole
+    // route lookup, then started billing only after it returned.
+    setSelectedAddressId((prev) => prev ?? candidateId);
 
     let cancelled = false;
     void getStoreDeliveryQuote({
@@ -1728,14 +1772,9 @@ function CheckoutScreen() {
     })
       .then((quote) => {
         if (cancelled) return;
-        if (quote.serviceable) {
-          setSelectedAddressId((prev) => prev ?? candidateId);
-          return;
-        }
-        if (fromBackendBinding) {
-          setSelectedAddressId((prev) => (prev === candidateId ? null : prev));
-          setOutOfZoneMessageVisible(true);
-        }
+        if (quote.serviceable) return;
+        setSelectedAddressId((prev) => (prev === candidateId ? null : prev));
+        if (fromBackendBinding) setOutOfZoneMessageVisible(true);
       })
       .catch(() => {
         // Strict fail-closed for proximity/default candidates only.
@@ -1835,9 +1874,6 @@ function CheckoutScreen() {
     staleTime: STORE_OFFERS_STALE_MS,
   });
   const storeOffersData = storeOffersQuery.data;
-  /** Wait for store-offers (or failure) so isDiscountEligible in the bill key does not flip mid-flight. */
-  const storeOffersSettled =
-    !merchantId || storeOffersQuery.isFetched || storeOffersQuery.isError;
 
   const itemOfferById = useMemo(() => {
     const offers = storeOffersData?.merchant_offers ?? [];
@@ -2421,9 +2457,16 @@ function CheckoutScreen() {
 
   const billingCalculateKeyParams: BillingCalculateKeyParams = {
     merchantId,
-    addressId: selectedAddress?.id != null ? String(selectedAddress.id) : null,
-    dropLat: selectedAddress == null ? provisionalDropLat : null,
-    dropLon: selectedAddress == null ? provisionalDropLon : null,
+    // Takeaway is priced from the restaurant. Send the store coordinates so billing
+    // can run without a saved address. Do not send the customer's GPS as the drop.
+    addressId:
+      deliveryType === "self_pickup"
+        ? null
+        : selectedAddress?.id != null
+          ? String(selectedAddress.id)
+          : null,
+    dropLat: deliveryType === "self_pickup" ? pickupLat : selectedAddress == null ? provisionalDropLat : null,
+    dropLon: deliveryType === "self_pickup" ? pickupLon : selectedAddress == null ? provisionalDropLon : null,
     billingCartKey,
     tipAmount: debouncedTipForBilling,
     donationAmount: debouncedDonationForBilling,
@@ -2475,13 +2518,17 @@ function CheckoutScreen() {
         }),
         { signal }
       ),
-    enabled: canRequestBilling && billingItemsHaveResolvableIds && storeOffersSettled,
+    // Store offers load in parallel. Their eligibility is part of billingCartKey,
+    // so a later offer payload changes the key and aborts this request instead
+    // of holding the first bill until offers return.
+    enabled: canRequestBilling && billingItemsHaveResolvableIds,
     /** Keeps last bill on screen while cart/tip/donation refetch — avoids skeleton layout jump. */
     placeholderData: keepPreviousData,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
-    retry: (failureCount, error) => isNetworkError(error) && failureCount < 1,
+    retry: (failureCount, error) => isNetworkError(error) && failureCount < 2,
+    retryDelay: 600,
   });
 
   // [PERF][CHECKOUT] billing calculate timing — logs each fetch cycle's duration so a
@@ -2512,6 +2559,20 @@ function CheckoutScreen() {
    * a stale provisional total.
    */
   const serverBill = billingQuery.data ?? null;
+  const showCheckoutTip = serverBill != null && serverBill.tipEnabled !== false;
+  const showCheckoutDonation = serverBill != null && serverBill.donationEnabled !== false;
+
+  useEffect(() => {
+    if (serverBill?.tipEnabled !== false) return;
+    setTipSliderValue(0);
+    setTipCustomMode(false);
+    setTipCustomInput("");
+  }, [serverBill?.tipEnabled]);
+
+  useEffect(() => {
+    if (serverBill?.donationEnabled !== false) return;
+    clearCheckoutDonation();
+  }, [serverBill?.donationEnabled, clearCheckoutDonation]);
 
   /**
    * Live tip/donation vs last settled bill — keeps Total / GatiCash / CTA in sync while
@@ -2521,7 +2582,9 @@ function CheckoutScreen() {
     if (serverBill == null) return 0;
     const serverTip = serverBill.tipAmount ?? 0;
     const serverDonation = serverBill.donationAmount ?? 0;
-    return roundBillAmount(tipValue - serverTip + (donationValue - serverDonation));
+    const liveTip = serverBill.tipEnabled === false ? 0 : tipValue;
+    const liveDonation = serverBill.donationEnabled === false ? 0 : donationValue;
+    return roundBillAmount(liveTip - serverTip + (liveDonation - serverDonation));
   }, [serverBill, tipValue, donationValue]);
 
   /** Settled bill finalAmount + any tip/donation still awaiting billing refetch. */
@@ -2531,6 +2594,7 @@ function CheckoutScreen() {
   }, [serverBill, gratitudePendingDelta]);
 
   useEffect(() => {
+    if (deliveryType === "self_pickup") return;
     if (
       !selectedAddress ||
       billingQuery.isPlaceholderData ||
@@ -2546,11 +2610,21 @@ function CheckoutScreen() {
     setOutOfZoneMessageVisible(true);
     idempotencyKeyRef.current = null;
   }, [
+    deliveryType,
     selectedAddress?.id,
     billingQuery.isPlaceholderData,
     serverBill?.serviceable,
     serverBill?.unserviceableReason,
   ]);
+
+  useEffect(() => {
+    if (deliveryType !== "self_pickup") return;
+    setAddressSheetVisible(false);
+    setOutOfZoneMessageVisible(false);
+    setAlmostThereModal((current) =>
+      current && /delivery address/i.test(current.message) ? null : current
+    );
+  }, [deliveryType]);
 
   /**
    * Offer Engine v2 — prefer server eligibleSubtotal (never invent from client flags).
@@ -2596,6 +2670,13 @@ function CheckoutScreen() {
    */
   const billMatchesSelectedAddress =
     billAddressMatchesSelection && !billingQuery.isPlaceholderData;
+  /** Takeaway bills are keyed without a customer address, so they must not wait on one. */
+  const billMatchesFulfillment =
+    deliveryType === "self_pickup"
+      ? !billingQuery.isPlaceholderData &&
+        billingCalculateKeyParams.deliveryType === "self_pickup" &&
+        billingCalculateKeyParams.addressId == null
+      : billMatchesSelectedAddress;
   const isDeliveryOutOfRange =
     billMatchesSelectedAddress &&
     (serverBill?.serviceable === false ||
@@ -2892,7 +2973,9 @@ function CheckoutScreen() {
       const cartSubtotal = debouncedClientFullCartSubtotal;
       const data = await billingService.getCheckoutOffers({
         merchantId: merchantId!,
-        addressId: String(selectedAddress!.id),
+        addressId: selectedAddress ? String(selectedAddress.id) : null,
+        dropLat: selectedAddress ? null : provisionalDropLat,
+        dropLon: selectedAddress ? null : provisionalDropLon,
         cartSubtotal,
         serviceType: billingServiceType,
         pincode: selectedAddress?.pincode ?? livePincode,
@@ -2903,12 +2986,53 @@ function CheckoutScreen() {
       // Live unlock math must use eligible checkout base (not full cart).
       return { ...data, fetchedCartSubtotal: debouncedClientEligibleCheckoutSubtotal };
     },
-    enabled: !!merchantId && !!selectedAddress && items.length > 0,
+    enabled:
+      !!merchantId &&
+      items.length > 0 &&
+      (!!selectedAddress || provisionalDropLat != null || !!livePincode),
     staleTime: 60_000,
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     placeholderData: keepPreviousData,
   });
+
+  /**
+   * Super Admin enable/disable bumps ruleset version in the database.
+   * The bill query key does not include that version, so poll it and refetch
+   * the open checkout as soon as it changes.
+   */
+  const liveRulesetVersion = useQuery({
+    queryKey: ["billing-ruleset-version"],
+    queryFn: () => billingService.getRulesetVersion(),
+    enabled: canRequestBilling && !paymentInProgress,
+    staleTime: 0,
+    gcTime: 30_000,
+    refetchInterval: paymentInProgress ? false : 1000,
+    refetchIntervalInBackground: false,
+    retry: 1,
+  });
+
+  const rulesetSeenRef = useRef<number | null>(null);
+  const rulesetRefreshAttempts = useRef(0);
+  useEffect(() => {
+    const live = liveRulesetVersion.data;
+    const billed = billingQuery.data?.rulesetVersion;
+    if (live == null || live <= 0) return;
+    if (rulesetSeenRef.current !== live) {
+      rulesetSeenRef.current = live;
+      rulesetRefreshAttempts.current = 0;
+    }
+    if (billed == null || live === billed) return;
+    if (billingQuery.isFetching || rulesetRefreshAttempts.current >= 2) return;
+    rulesetRefreshAttempts.current += 1;
+    void Promise.all([billingQuery.refetch(), checkoutOffersQuery.refetch()]);
+  }, [
+    liveRulesetVersion.data,
+    billingQuery.data?.rulesetVersion,
+    billingQuery.isFetching,
+    billingQuery.refetch,
+    checkoutOffersQuery.refetch,
+  ]);
 
   /**
    * Live eligible checkout base for APPLY lock / min-order.
@@ -3001,10 +3125,7 @@ function CheckoutScreen() {
       const menuItem = merchant?.menu
         ? findMenuItemByCartBaseId(merchant.menu, baseId)
         : null;
-      const catalogMrp =
-        menuItem?.basePrice != null && menuItem.basePrice > menuItem.price
-          ? menuItem.basePrice
-          : null;
+      const catalogMrp = checkoutCatalogStrikeUnit(menuItem, cartItem, itemOfferById);
       const { strike, net } = cartLineStrikeNetTotals(
         { ...cartItem, catalogMrp },
         itemOfferById
@@ -4455,8 +4576,10 @@ function CheckoutScreen() {
    * line-price delta so the number updates instantly without a skeleton flash.
    */
   const toPayAmount = useMemo(() => {
-    if (deliveryType === "delivery" && !hasDeliveryAddress) return undefined;
-
+    // No saved address yet: still show the settled server bill. deliveryFeePending
+    // already removes the unlocked delivery fee, and Place Order stays disabled
+    // until an address is selected. Hiding the whole total left a skeleton even
+    // after /billing/calculate had returned.
     const scopeChanged =
       lastSettledScopeRef.current != null &&
       lastSettledScopeRef.current !== billingDisplayScope;
@@ -4478,12 +4601,17 @@ function CheckoutScreen() {
     confirmedToPayAmount,
     items,
     itemOfferById,
-    hasDeliveryAddress,
-    deliveryType,
     billingDisplayScope,
     billingQuery.isPlaceholderData,
     billingQuery.isFetching,
   ]);
+
+  const billVisibleLoggedRef = useRef(false);
+  useEffect(() => {
+    if (billVisibleLoggedRef.current || toPayAmount == null) return;
+    billVisibleLoggedRef.current = true;
+    checkoutPerfLog("bill:visible", perfNow() - perfMountStartRef.current);
+  }, [toPayAmount]);
 
   const showPaymentFailedSheet = useCallback(
     (amountOverride?: number | null) => {
@@ -4566,47 +4694,50 @@ function CheckoutScreen() {
   const canPlaceOrder =
     !isStoreClosed &&
     items.length > 0 &&
-    hasDeliveryAddress &&
+    (deliveryType === "self_pickup" || hasDeliveryAddress) &&
     !!merchantId &&
     hasValidPayment &&
     serverBill != null &&
-    billMatchesSelectedAddress &&
+    billMatchesFulfillment &&
     billingQuery.isSuccess &&
     !billingQuery.isPlaceholderData &&
     (deliveryType === "self_pickup" || !isDeliveryOutOfRange) &&
     !riderBlocksPlaceOrder;
 
   const takeawayDistanceLabel = useMemo(() => {
-    const fromBill = formatMerchantDistanceKm(uiDistanceKm);
-    if (fromBill) return fromBill.replace(/\s+/g, " ").trim();
-    const fromMerchant = formatMerchantDistanceKm(merchant?.distanceKm);
-    if (fromMerchant) return fromMerchant.replace(/\s+/g, " ").trim();
+    const viewerLat = sessionCoords?.latitude ?? currentLocationCoords?.latitude;
+    const viewerLon = sessionCoords?.longitude ?? currentLocationCoords?.longitude;
     if (
+      viewerLat != null &&
+      viewerLon != null &&
       merchant?.latitude != null &&
-      merchant?.longitude != null &&
-      selectedAddress?.latitude != null &&
-      selectedAddress?.longitude != null
+      merchant?.longitude != null
     ) {
       const km = haversineKm(
-        Number(selectedAddress.latitude),
-        Number(selectedAddress.longitude),
+        Number(viewerLat),
+        Number(viewerLon),
         Number(merchant.latitude),
         Number(merchant.longitude)
       );
-      return formatMerchantDistanceKm(km);
+      const fromHere = formatMerchantDistanceKm(km);
+      if (fromHere) return fromHere.replace(/\s+/g, " ").trim();
     }
+    const fromMerchant = formatMerchantDistanceKm(merchant?.distanceKm);
+    if (fromMerchant) return fromMerchant.replace(/\s+/g, " ").trim();
     return null;
   }, [
-    uiDistanceKm,
+    sessionCoords?.latitude,
+    sessionCoords?.longitude,
+    currentLocationCoords?.latitude,
+    currentLocationCoords?.longitude,
     merchant?.distanceKm,
     merchant?.latitude,
     merchant?.longitude,
-    selectedAddress?.latitude,
-    selectedAddress?.longitude,
   ]);
 
   const baseOrderPayload = useMemo(() => {
-    if (!merchantId || !selectedAddress) return null;
+    if (!merchantId) return null;
+    if (deliveryType !== "self_pickup" && !selectedAddress) return null;
     const pickup =
       merchant &&
       merchant.latitude != null &&
@@ -4621,7 +4752,9 @@ function CheckoutScreen() {
     return {
       merchantId,
       items: itemsWithSnapshots,
-      addressId: String(selectedAddress.id),
+      ...(selectedAddress && deliveryType !== "self_pickup"
+        ? { addressId: String(selectedAddress.id) }
+        : {}),
       paymentMethod,
       deliveryType,
       ...(tipValue > 0 && { tipAmount: tipValue }),
@@ -4638,6 +4771,14 @@ function CheckoutScreen() {
           subscriptionBillingCycle,
         }),
       checkoutMetadata: {
+        deliveryType,
+        fulfillmentType: deliveryType === "self_pickup" ? "takeaway" : "delivery",
+        ...(deliveryType === "self_pickup"
+          ? {
+              pickupInstructions: "Collect this order from the restaurant.",
+              pickupAddress: (storeFullAddress ?? merchantName ?? "").trim() || null,
+            }
+          : {}),
         leaveAtDoor,
         receiverContactName: checkoutReceiverName.trim() || null,
         receiverContactMobile: checkoutReceiverMobile.trim() || null,
@@ -4710,7 +4851,8 @@ function CheckoutScreen() {
 
   const seedTrackingOrderCache = useCallback(
     (orderId: string, status: string) => {
-      if (!selectedAddress) return;
+      if (!selectedAddress && deliveryType !== "self_pickup") return;
+      const pickupAddress = (storeFullAddress ?? merchantName ?? "").trim();
       seedOrderDetailCache(queryClient, orderId, {
         orderId,
         status,
@@ -4724,16 +4866,20 @@ function CheckoutScreen() {
           petAtHome: instrPetAtHome,
         }),
         merchantInstructionsList: restaurantNote.trim() ? [restaurantNote.trim()] : [],
-        deliveryAddress: selectedAddress.fullAddress,
-        deliveryAddressLabel: selectedAddress.label,
+        deliveryAddress:
+          deliveryType === "self_pickup" ? pickupAddress || undefined : selectedAddress?.fullAddress,
+        deliveryAddressLabel:
+          deliveryType === "self_pickup" ? "Pickup" : selectedAddress?.label,
         deliveryContactName: checkoutReceiverName.trim() || profileContactName || null,
         deliveryContactPhone: checkoutReceiverMobile.trim() || profileContactMobile || null,
         merchantName: merchantName ?? undefined,
         merchantPublicName: merchantName ?? null,
         merchantPublicStoreId: merchantId ?? null,
         // Seed tracking map from checkout snapshots until GET /orders/:id returns.
-        deliveryLat: selectedAddress.latitude,
-        deliveryLng: selectedAddress.longitude,
+        deliveryLat:
+          deliveryType === "self_pickup" ? Number(merchant?.latitude) : selectedAddress?.latitude,
+        deliveryLng:
+          deliveryType === "self_pickup" ? Number(merchant?.longitude) : selectedAddress?.longitude,
         ...(merchant?.latitude != null && merchant?.longitude != null
           ? {
               pickupLat: Number(merchant.latitude),
@@ -4745,6 +4891,8 @@ function CheckoutScreen() {
     [
       queryClient,
       selectedAddress,
+      deliveryType,
+      storeFullAddress,
       checkoutReceiverName,
       checkoutReceiverMobile,
       profileContactName,
@@ -5384,18 +5532,14 @@ function CheckoutScreen() {
     return items.map((cartItem) => {
       const baseId = cartItemBaseId(cartItem.menuItemId);
       const menuItem = findMenuItemByCartBaseId(merchant.menu, baseId);
-      const mrp =
-        menuItem?.basePrice != null && menuItem.basePrice > menuItem.price
-          ? menuItem.basePrice
-          : null;
       return {
         ...cartItem,
         imageUrl: menuItem?.imageUrl ?? null,
         checkoutSubtext: cartItemSubline(cartItem) || null,
-        catalogMrp: mrp,
+        catalogMrp: checkoutCatalogStrikeUnit(menuItem, cartItem, itemOfferById),
       };
     });
-  }, [items, merchant?.menu]);
+  }, [items, merchant?.menu, itemOfferById]);
 
   // Canonical delivery range — uses the SAME formula as the restaurant list
   // and merchant detail header so the customer sees the same number on every
@@ -5717,9 +5861,10 @@ function CheckoutScreen() {
             </CheckoutText>
             <TouchableOpacity
               style={styles.headerAddressHit}
-              onPress={openCheckoutAddressSheet}
-              activeOpacity={0.7}
+              onPress={deliveryType === "self_pickup" ? undefined : openCheckoutAddressSheet}
+              activeOpacity={deliveryType === "self_pickup" ? 1 : 0.7}
               hitSlop={6}
+              disabled={deliveryType === "self_pickup"}
             >
               <View style={styles.headerAddressRow}>
               <CheckoutText
@@ -5729,7 +5874,13 @@ function CheckoutScreen() {
                 <CheckoutText style={[styles.headerEtaStrong, isDiscoveryDark && { color: DiscoveryColors.teal }]}>
                   {deliveryEta}
                 </CheckoutText>
-                {hasDeliveryAddress ? (
+                {deliveryType === "self_pickup" ? (
+                  <CheckoutText style={[styles.headerEtaSecondary, isDiscoveryDark && { color: DiscoveryColors.text }]}>
+                    {takeawayDistanceLabel
+                      ? ` · Pickup · ${takeawayDistanceLabel} from you`
+                      : " · Pickup at restaurant"}
+                  </CheckoutText>
+                ) : hasDeliveryAddress ? (
                   <>
                     <CheckoutText style={[styles.headerEtaSecondary, isDiscoveryDark && { color: DiscoveryColors.text }]}>
                       {" "}to {selectedAddress?.label?.toLowerCase() ?? "address"}
@@ -5753,12 +5904,14 @@ function CheckoutScreen() {
                   </CheckoutText>
                 )}
               </CheckoutText>
+              {deliveryType === "self_pickup" ? null : (
               <Ionicons
                 name="chevron-down"
                 size={14}
                 color={isDiscoveryDark ? DiscoveryColors.text : "#888888"}
                 style={styles.headerChevron}
               />
+              )}
               </View>
             </TouchableOpacity>
           </View>
@@ -6203,7 +6356,8 @@ function CheckoutScreen() {
                 <Ionicons name="flash" size={18} color={isDiscoveryDark ? DiscoveryColors.teal : GatiMitraColors.emerald} style={styles.gmEtaFlashIcon} />
                 <View style={styles.gmEtaTextCol}>
                   <CheckoutText style={[styles.gmEtaLine, dText]}>
-                    Delivery in <CheckoutText style={[styles.gmEtaBold, isDiscoveryDark && styles.darkTealText]}>{deliveryEta}</CheckoutText>
+                    {deliveryType === "self_pickup" ? "Pickup in " : "Delivery in "}
+                    <CheckoutText style={[styles.gmEtaBold, isDiscoveryDark && styles.darkTealText]}>{deliveryEta}</CheckoutText>
                   </CheckoutText>
                   {deliveryEtaImpactLabel ? (
                     <CheckoutText style={styles.weatherEtaImpact}>{deliveryEtaImpactLabel}</CheckoutText>
@@ -6217,7 +6371,34 @@ function CheckoutScreen() {
 
             <View style={[styles.gmCardDash, isDiscoveryDark && styles.darkDash]} />
 
-            {hasDeliveryAddress ? (
+            {deliveryType === "self_pickup" ? (
+              <View style={styles.gmCardPad}>
+                <View style={styles.gmMetaRow}>
+                  <Ionicons
+                    name="storefront-outline"
+                    size={20}
+                    color={dIcon}
+                    style={styles.gmAddrIcon}
+                  />
+                  <View style={styles.gmMetaTextCol}>
+                    <CheckoutText style={[styles.deliveryAddrLabel, dText]} numberOfLines={2}>
+                      <CheckoutText style={[styles.deliveryAddrPre, dText]}>Pickup from </CheckoutText>
+                      <CheckoutText style={[styles.deliveryAddrName, dText]}>
+                        {merchantName ?? "the restaurant"}
+                      </CheckoutText>
+                    </CheckoutText>
+                    <CheckoutText style={[styles.deliveryAddrSub, dMuted]} numberOfLines={3}>
+                      {(storeFullAddress ?? "").trim() || "Restaurant pickup counter"}
+                    </CheckoutText>
+                    <CheckoutText style={[styles.deliveryAddrSub, dMuted]} numberOfLines={2}>
+                      {takeawayDistanceLabel
+                        ? `${takeawayDistanceLabel} from your current location`
+                        : "Collect your order at the restaurant"}
+                    </CheckoutText>
+                  </View>
+                </View>
+              </View>
+            ) : hasDeliveryAddress ? (
               <>
             <TouchableOpacity
               style={styles.gmCardPad}
@@ -6380,7 +6561,7 @@ function CheckoutScreen() {
                 </View>
                 <CheckoutText style={[styles.gmBillSub, dMuted]}>
                   {deliveryFeePending
-                    ? "Incl. taxes · Delivery fee after address"
+                    ? "Incl. taxes · Select an address for the delivery fee"
                     : "Incl. taxes and charges"}
                 </CheckoutText>
                 {missedOfferWalletPending &&
@@ -6451,9 +6632,15 @@ function CheckoutScreen() {
           </View>
         </Animated.View>
 
-        <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(100)} style={styles.sectionContrib}>
-          <CheckoutGratitudeSections {...checkoutGratitudeProps} />
-        </Animated.View>
+        {showCheckoutTip || showCheckoutDonation ? (
+          <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(100)} style={styles.sectionContrib}>
+            <CheckoutGratitudeSections
+              {...checkoutGratitudeProps}
+              showTip={showCheckoutTip}
+              showDonation={showCheckoutDonation}
+            />
+          </Animated.View>
+        ) : null}
 
         {/* Cancellation policy — above footer */}
         <View style={styles.cancellationBlock}>
@@ -6652,7 +6839,8 @@ function CheckoutScreen() {
                     return;
                   }
                   if (!canPlaceOrder) {
-                    const reason = !hasDeliveryAddress
+                    const reason =
+                      deliveryType !== "self_pickup" && !hasDeliveryAddress
                       ? "Add a delivery address to place your order."
                       : deliveryType === "delivery" && isDeliveryOutOfRange
                         ? "This address is outside the restaurant delivery zone. Please choose another address."
@@ -6783,7 +6971,7 @@ function CheckoutScreen() {
                           <CheckoutText style={styles.ctaSolidHint} bold numberOfLines={1}>
                             {riderBlocksPlaceOrder
                               ? "Riders unavailable"
-                              : !hasDeliveryAddress
+                              : deliveryType !== "self_pickup" && !hasDeliveryAddress
                               ? "Check address"
                               : deliveryType === "delivery" && isDeliveryOutOfRange
                                 ? "Out of delivery zone"
@@ -7484,6 +7672,7 @@ function CheckoutScreen() {
         deliveryType={deliveryType}
         showDeliveryFeeRow={showDeliveryFeeRow}
         deliveryFeePending={deliveryFeePending}
+        deliveryQuoteSettled={deliveryType !== "delivery" || billMatchesSelectedAddress}
         deliveryFeeStrikeAmount={deliveryFeeStrikeAmount}
         distanceKm={uiDistanceKm}
         subscriptionPlanName={subscriptionPlanName}
@@ -7515,6 +7704,8 @@ function CheckoutScreen() {
         toPayAmount={toPayAmount}
         subscriptionDeliveryBenefitLive={subscriptionDeliveryBenefitResolved}
         {...checkoutGratitudeProps}
+        showTip={showCheckoutTip}
+        showDonation={showCheckoutDonation}
       />
 
       <RazorpayCheckoutModal

@@ -16,6 +16,7 @@ import { StoreTheme } from "@/constants/storeTheme";
 import { StoreFonts } from "@/constants/storeTypography";
 import { DietIndicator } from "./DietIndicator";
 import { MenuItemImagePlaceholder } from "./MenuItemImagePlaceholder";
+import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import {
   StoreMenuInstantCartControl,
   MENU_STEPPER_CONTROL_HEIGHT,
@@ -23,7 +24,7 @@ import {
 import { getBasePrice, getItemDiet, getSellingPrice, isItemSpicy } from "./storeMenuUtils";
 import { formatMenuPortionLabel } from "@/lib/format-menu-portion-label";
 import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
-import { isMenuItemImagePrefetched, isMenuItemImageReady, ensureMenuItemImageWarm } from "@/lib/prefetchMenuItemImages";
+import { isMenuItemImageReady, ensureMenuItemImageWarm } from "@/lib/prefetchMenuItemImages";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { sizedImageUrl } from "@/lib/imageSizing";
 import { isHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
@@ -92,16 +93,22 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   itemOffer = null,
 }: StoreMenuItemRowProps) {
   const cartQty = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
-  const imageUri = useMemo(
-    // Row thumbnail paints at IMAGE_SIZE(128)pt — request a matching WebP derivative.
+  const originalImageUri = useMemo(
     () =>
       item.imageUrl?.trim()
-        ? sizedImageUrl(toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl, IMAGE_SIZE)
+        ? toAbsoluteImageUrl(item.imageUrl) ?? item.imageUrl.trim()
         : null,
     [item.imageUrl]
   );
+  const sizedImageUri = useMemo(
+    // Row thumbnail paints at IMAGE_SIZE(128)pt — request a matching WebP derivative.
+    () => (originalImageUri ? sizedImageUrl(originalImageUri, IMAGE_SIZE) : null),
+    [originalImageUri]
+  );
+  const [useOriginalImage, setUseOriginalImage] = useState(false);
+  const imageUri = useOriginalImage ? originalImageUri : sizedImageUri;
   const [imageFailed, setImageFailed] = useState(false);
-  /** Once painted, never show shimmer again — prevents scroll recycle flicker. */
+  /** Once painted, never show the placeholder again — prevents scroll recycle flicker. */
   const [imagePainted, setImagePainted] = useState(() =>
     !!(
       imageUri &&
@@ -113,20 +120,35 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   const isCustomisable = !!(item.hasVariants || item.hasAddons || item.hasCustomizations);
 
   useEffect(() => {
+    setUseOriginalImage(false);
     setImageFailed(false);
-    if (!imageUri) return;
-    if (
-      isMenuItemImageReady(imageUri) ||
-      isHeroMediaSessionReady(imageUri) ||
-      isMenuItemImagePrefetched(imageUri)
-    ) {
-      setImagePainted(true);
+    const first = sizedImageUri ?? originalImageUri;
+    if (!first) {
+      setImagePainted(false);
+      return;
     }
-    // Warm once per URI — avoid re-prefetch storms while scrolling full-mount lists.
-    if (warmedRef.current === imageUri) return;
-    warmedRef.current = imageUri;
-    ensureMenuItemImageWarm(imageUri);
-  }, [imageUri]);
+    setImagePainted(isMenuItemImageReady(first) || isHeroMediaSessionReady(first));
+    if (warmedRef.current === first) return;
+    warmedRef.current = first;
+    ensureMenuItemImageWarm(first);
+  }, [sizedImageUri, originalImageUri]);
+
+  const handleImageError = useCallback(() => {
+    if (
+      !useOriginalImage &&
+      originalImageUri &&
+      sizedImageUri &&
+      originalImageUri !== sizedImageUri
+    ) {
+      setUseOriginalImage(true);
+      setImagePainted(
+        isMenuItemImageReady(originalImageUri) || isHeroMediaSessionReady(originalImageUri)
+      );
+      ensureMenuItemImageWarm(originalImageUri);
+      return;
+    }
+    setImageFailed(true);
+  }, [useOriginalImage, originalImageUri, sizedImageUri]);
 
   const outOfStock = item.inStock === false;
   const controlsDisabled = isStoreClosed || outOfStock;
@@ -362,25 +384,27 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
             ]}
           >
             <View style={styles.imageWrap} pointerEvents="none">
+              {!imagePainted ? (
+                showRemoteImage ? (
+                  <GMSkeleton style={StyleSheet.absoluteFill} />
+                ) : (
+                  <MenuItemImagePlaceholder />
+                )
+              ) : null}
               {showRemoteImage ? (
-                <>
-                  {!imagePainted ? <View style={styles.imageShimmer} /> : null}
-                  <Image
-                    source={{ uri: imageUri! }}
-                    style={styles.image}
-                    contentFit="cover"
-                    cachePolicy="memory-disk"
-                    recyclingKey={String(item.listRowKey ?? item.id)}
-                    transition={0}
-                    priority="normal"
-                    allowDownscaling
-                    onLoad={() => setImagePainted(true)}
-                    onError={() => setImageFailed(true)}
-                  />
-                </>
-              ) : (
-                <MenuItemImagePlaceholder />
-              )}
+                <Image
+                  source={{ uri: imageUri! }}
+                  style={styles.image}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  recyclingKey={`${item.listRowKey ?? item.id}:${useOriginalImage ? "raw" : "sized"}`}
+                  transition={0}
+                  priority="high"
+                  allowDownscaling
+                  onLoad={() => setImagePainted(true)}
+                  onError={handleImageError}
+                />
+              ) : null}
               {isStoreClosed ? <View style={styles.closedOverlay} /> : null}
               {isCustomisable ? (
                 <View style={styles.customisableOnImage} pointerEvents="none">
@@ -652,13 +676,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F3F4F6",
   },
   image: {
-    width: "100%",
-    height: "100%",
-    borderRadius: 12,
-  },
-  imageShimmer: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#E5E7EB",
     borderRadius: 12,
   },
   closedOverlay: {

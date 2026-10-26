@@ -14,8 +14,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { ReverseGeocodeResult } from "@/services/location.service";
 import type { FastPositionSource } from "@gatimitra/expo-location-kit";
+import { fastGetString, fastSetString, fastRemove, hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
 
 const STORAGE_KEY = "@gatimitra/last_device_location_v1";
+void hydrateFastKvFromAsyncStorage([STORAGE_KEY]);
 
 /** Freshness thresholds (configurable). */
 export const LOCATION_FRESH_MS = 2 * 60_000; // < 2 min
@@ -46,11 +48,9 @@ export function classifyFreshness(updatedAt: number | null | undefined, now = Da
   return "STALE";
 }
 
-/** Load the persisted device location, or null when absent/too old/corrupt. */
-export async function loadLastKnownLocation(now = Date.now()): Promise<PersistedDeviceLocation | null> {
+function parsePersisted(raw: string | null | undefined, now: number): PersistedDeviceLocation | null {
+  if (!raw) return null;
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<PersistedDeviceLocation>;
     if (
       typeof parsed?.lat !== "number" ||
@@ -75,11 +75,31 @@ export async function loadLastKnownLocation(now = Date.now()): Promise<Persisted
   }
 }
 
+/** Sync read for first paint — MMKV / in-memory, then AsyncStorage hydrate. */
+export function peekLastKnownLocation(now = Date.now()): PersistedDeviceLocation | null {
+  return parsePersisted(fastGetString(STORAGE_KEY), now);
+}
+
+/** Load the persisted device location, or null when absent/too old/corrupt. */
+export async function loadLastKnownLocation(now = Date.now()): Promise<PersistedDeviceLocation | null> {
+  const fast = peekLastKnownLocation(now);
+  if (fast) return fast;
+  try {
+    return parsePersisted(await AsyncStorage.getItem(STORAGE_KEY), now);
+  } catch {
+    return null;
+  }
+}
+
 /** Persist the latest device location (fire-and-forget; never throws). */
 export function saveLastKnownLocation(loc: PersistedDeviceLocation): void {
-  AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(loc)).catch(() => {});
+  try {
+    fastSetString(STORAGE_KEY, JSON.stringify(loc));
+  } catch {
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(loc)).catch(() => {});
+  }
 }
 
 export function clearLastKnownLocation(): void {
-  AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+  fastRemove(STORAGE_KEY);
 }
