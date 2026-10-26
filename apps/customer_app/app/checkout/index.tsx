@@ -4867,7 +4867,7 @@ function CheckoutScreen() {
         }),
         merchantInstructionsList: restaurantNote.trim() ? [restaurantNote.trim()] : [],
         deliveryAddress:
-          deliveryType === "self_pickup" ? pickupAddress || null : selectedAddress?.fullAddress,
+          deliveryType === "self_pickup" ? pickupAddress || undefined : selectedAddress?.fullAddress,
         deliveryAddressLabel:
           deliveryType === "self_pickup" ? "Pickup" : selectedAddress?.label,
         deliveryContactName: checkoutReceiverName.trim() || profileContactName || null,
