@@ -11,7 +11,7 @@
  * Registered under /v1/admin/tracking in index.ts.
  */
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
-import { and, desc, eq, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 import { auth } from "../../plugins/auth.js";
 import { getEnv } from "../../config/env.js";
@@ -20,6 +20,7 @@ import {
   orderRiderTracking,
   ordersCore,
   deliveryAssignments,
+  riders,
   trackingEvents,
   trackingSessions,
   trackingViolations,
@@ -196,37 +197,185 @@ export const trackingAdminRoutes: FastifyPluginAsync = async (app) => {
         .limit(limit);
       // Oldest→newest for the path + cumulative distance.
       const points = pointsDesc.reverse();
+      type Pt = (typeof points)[number];
 
-      let cumulativeM = 0;
-      let prev: { lat: number; lng: number } | null = null;
-      const breadcrumbs = points.map((p) => {
-        const lat = Number(p.latitude);
-        const lng = Number(p.longitude);
-        let legM = 0;
-        if (prev && Number.isFinite(lat) && Number.isFinite(lng)) {
-          legM = haversineDistanceMeters(prev.lat, prev.lng, lat, lng);
-          // Drop GPS jitter: a sub-5m hop between minute fixes is noise, not travel.
-          if (legM < 5) legM = 0;
-          cumulativeM += legM;
+      // ── Group every fix under the rider assignment that produced it ───────
+      // delivery_assignments is UNIQUE per order, so the history of EVERY rider
+      // who ever held this order lives in tracking_sessions (one row per
+      // rider↔order assignment — a reassignment opens a NEW session and never
+      // overwrites the previous one). Distance has to accumulate INSIDE a
+      // group: a flat run across riders would add the teleport from one
+      // rider's last fix to the next rider's first fix, which both breaks the
+      // drawn path and inflates the order total.
+      const keyOf = (p: Pt) =>
+        p.sessionId != null ? `s${p.sessionId}` : p.riderId != null ? `r${p.riderId}` : "unassigned";
+
+      const buckets = new Map<string, Pt[]>();
+      for (const p of points) {
+        const k = keyOf(p);
+        const bucket = buckets.get(k);
+        if (bucket) bucket.push(p);
+        else buckets.set(k, [p]);
+      }
+
+      // Session rows label each attempt (who, when, why it ended).
+      const sessionRows = await db
+        .select({
+          id: trackingSessions.id,
+          riderId: trackingSessions.riderId,
+          status: trackingSessions.status,
+          stopReason: trackingSessions.stopReason,
+          startedAt: trackingSessions.startedAt,
+          endedAt: trackingSessions.endedAt,
+        })
+        .from(trackingSessions)
+        .where(eq(trackingSessions.orderId, orderId))
+        .orderBy(asc(trackingSessions.startedAt));
+      const sessionById = new Map(sessionRows.map((s) => [s.id, s]));
+
+      const riderIds = Array.from(
+        new Set<number>([
+          ...points.map((p) => p.riderId).filter((v): v is number => v != null),
+          ...sessionRows.map((s) => s.riderId).filter((v): v is number => v != null),
+        ])
+      );
+      const riderRows = riderIds.length
+        ? await db
+            .select({ id: riders.id, name: riders.name, mobile: riders.mobile })
+            .from(riders)
+            .where(inArray(riders.id, riderIds))
+        : [];
+      const riderById = new Map(riderRows.map((r) => [r.id, r]));
+
+      const violationRows = await db
+        .select()
+        .from(trackingViolations)
+        .where(eq(trackingViolations.orderId, orderId))
+        .orderBy(desc(trackingViolations.createdAt))
+        .limit(500);
+      const mapViolation = (v: (typeof violationRows)[number]) => ({
+        id: v.id,
+        riderId: v.riderId ?? null,
+        sessionId: v.sessionId ?? null,
+        violationType: v.violationType,
+        level: v.level,
+        status: v.status,
+        distanceM: v.distanceM ?? null,
+        durationSeconds: v.durationSeconds ?? null,
+        latitude: nnum(v.latitude),
+        longitude: nnum(v.longitude),
+        message: v.message ?? null,
+        metadata: v.metadata ?? null,
+        at: iso(v.createdAt),
+      });
+
+      // Segments = buckets that have fixes, PLUS sessions that recorded none
+      // (a rider assigned then cancelled before any GPS still has to show up in
+      // the picker, otherwise the attempt silently disappears from history).
+      type Segment = {
+        key: string;
+        sessionId: number | null;
+        riderId: number | null;
+        pts: Pt[];
+        startedAt: Date | null;
+      };
+      const segments: Segment[] = [];
+      for (const [key, pts] of buckets) {
+        const sessionId = pts[0]?.sessionId ?? null;
+        const session = sessionId != null ? sessionById.get(sessionId) : undefined;
+        segments.push({
+          key,
+          sessionId,
+          riderId: pts[0]?.riderId ?? session?.riderId ?? null,
+          pts,
+          startedAt: session?.startedAt ?? pts[0]?.createdAt ?? null,
+        });
+      }
+      for (const s of sessionRows) {
+        if (buckets.has(`s${s.id}`)) continue;
+        if (s.riderId != null && buckets.has(`r${s.riderId}`)) continue;
+        segments.push({
+          key: `s${s.id}`,
+          sessionId: s.id,
+          riderId: s.riderId ?? null,
+          pts: [],
+          startedAt: s.startedAt ?? null,
+        });
+      }
+      segments.sort((a, b) => (a.startedAt?.getTime() ?? 0) - (b.startedAt?.getTime() ?? 0));
+
+      // Flat breadcrumb list stays (back-compat for any older client build);
+      // each segment points at its own slice via startIndex/endIndex so the
+      // payload never duplicates the trail.
+      const breadcrumbs: Array<Record<string, unknown>> = [];
+      const ridersOut = segments.map((seg, i) => {
+        const session = seg.sessionId != null ? sessionById.get(seg.sessionId) : undefined;
+        const rider = seg.riderId != null ? riderById.get(seg.riderId) : undefined;
+
+        let cumulativeM = 0;
+        let prev: { lat: number; lng: number } | null = null;
+        const startIndex = breadcrumbs.length;
+        for (const p of seg.pts) {
+          const lat = Number(p.latitude);
+          const lng = Number(p.longitude);
+          let legM = 0;
+          if (prev && Number.isFinite(lat) && Number.isFinite(lng)) {
+            legM = haversineDistanceMeters(prev.lat, prev.lng, lat, lng);
+            // Drop GPS jitter: a sub-5m hop between minute fixes is noise.
+            if (legM < 5) legM = 0;
+            cumulativeM += legM;
+          }
+          if (Number.isFinite(lat) && Number.isFinite(lng)) prev = { lat, lng };
+          breadcrumbs.push({
+            id: p.id,
+            riderId: p.riderId ?? null,
+            sessionId: p.sessionId ?? null,
+            sequence: p.sequenceNumber ?? null,
+            serviceType: p.serviceType ?? null,
+            source: p.source ?? null,
+            latitude: lat,
+            longitude: lng,
+            headingDegrees: nnum(p.headingDegrees),
+            speedKmh: nnum(p.speedKmh),
+            accuracyM: nnum(p.accuracyMeters),
+            legDistanceM: Math.round(legM),
+            cumulativeDistanceM: Math.round(cumulativeM),
+            at: iso(p.createdAt),
+          });
         }
-        if (Number.isFinite(lat) && Number.isFinite(lng)) prev = { lat, lng };
+        const endIndex = breadcrumbs.length - 1;
+        const firstAt = iso(seg.pts[0]?.createdAt ?? null);
+        const lastAt = iso(seg.pts[seg.pts.length - 1]?.createdAt ?? null);
+
         return {
-          id: p.id,
-          riderId: p.riderId ?? null,
-          sessionId: p.sessionId ?? null,
-          sequence: p.sequenceNumber ?? null,
-          serviceType: p.serviceType ?? null,
-          source: p.source ?? null,
-          latitude: lat,
-          longitude: lng,
-          headingDegrees: nnum(p.headingDegrees),
-          speedKmh: nnum(p.speedKmh),
-          accuracyM: nnum(p.accuracyMeters),
-          legDistanceM: Math.round(legM),
-          cumulativeDistanceM: Math.round(cumulativeM),
-          at: iso(p.createdAt),
+          key: seg.key,
+          attempt: i + 1,
+          sessionId: seg.sessionId,
+          riderId: seg.riderId,
+          riderName: rider?.name ?? null,
+          riderMobile: rider?.mobile ?? null,
+          sessionStatus: session?.status ?? null,
+          stopReason: session?.stopReason ?? null,
+          startedAt: iso(session?.startedAt ?? null) ?? firstAt,
+          endedAt: iso(session?.endedAt ?? null) ?? lastAt,
+          firstAt,
+          lastAt,
+          distanceM: Math.round(cumulativeM),
+          pointCount: seg.pts.length,
+          startIndex: seg.pts.length ? startIndex : -1,
+          endIndex: seg.pts.length ? endIndex : -1,
+          violations: violationRows
+            .filter((v) =>
+              seg.sessionId != null
+                ? v.sessionId === seg.sessionId
+                : seg.riderId != null && v.riderId === seg.riderId
+            )
+            .map(mapViolation),
         };
       });
+
+      // Order total = sum of per-rider distances (never the cross-rider jumps).
+      const cumulativeM = ridersOut.reduce((acc, r) => acc + r.distanceM, 0);
 
       const order = resolved ?? null;
 
@@ -241,13 +390,6 @@ export const trackingAdminRoutes: FastifyPluginAsync = async (app) => {
       } catch {
         routePolyline = null;
       }
-
-      const violations = await db
-        .select()
-        .from(trackingViolations)
-        .where(eq(trackingViolations.orderId, orderId))
-        .orderBy(desc(trackingViolations.createdAt))
-        .limit(200);
 
       return {
         orderId,
@@ -264,23 +406,13 @@ export const trackingAdminRoutes: FastifyPluginAsync = async (app) => {
         status: order?.currentStatus ?? order?.status ?? null,
         totalDistanceM: Math.round(cumulativeM),
         pointCount: breadcrumbs.length,
-        firstAt: breadcrumbs[0]?.at ?? null,
-        lastAt: breadcrumbs[breadcrumbs.length - 1]?.at ?? null,
+        firstAt: (breadcrumbs[0]?.at as string | null) ?? null,
+        lastAt: (breadcrumbs[breadcrumbs.length - 1]?.at as string | null) ?? null,
+        /** One entry per rider assignment, oldest attempt first. */
+        riders: ridersOut,
+        riderCount: ridersOut.length,
         breadcrumbs,
-        violations: violations.map((v) => ({
-          id: v.id,
-          riderId: v.riderId ?? null,
-          sessionId: v.sessionId ?? null,
-          violationType: v.violationType,
-          level: v.level,
-          status: v.status,
-          distanceM: v.distanceM ?? null,
-          durationSeconds: v.durationSeconds ?? null,
-          latitude: nnum(v.latitude),
-          longitude: nnum(v.longitude),
-          message: v.message ?? null,
-          at: iso(v.createdAt),
-        })),
+        violations: violationRows.map(mapViolation),
       };
     });
 
