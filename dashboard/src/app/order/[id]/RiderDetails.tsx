@@ -261,7 +261,8 @@ interface RiderLogModalProps {
   onClose: () => void;
   onCopy: (text: string) => void;
   /** Open the in-app GPS trail map for this order (used when no external URL). */
-  onTrack?: () => void;
+  /** Opens the GPS replay; the rider id preselects that attempt in the picker. */
+  onTrack?: (riderId?: number | null) => void;
 }
 
 function readRiderActivityLogSnapshot(orderId: number | null | undefined) {
@@ -524,9 +525,9 @@ export function RiderLogModal({ isOpen, orderId, refreshKey = 0, onClose, onCopy
                       ) : onTrack ? (
                         <button
                           type="button"
-                          onClick={onTrack}
+                          onClick={() => onTrack(log.riderId ?? null)}
                           className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-medium rounded-md transition-colors cursor-pointer"
-                          title="Replay this order's GPS trail on a map"
+                          title="Replay this rider's GPS trail on a map"
                         >
                           <i className="bi bi-geo-alt" />
                           Track
@@ -679,6 +680,8 @@ export default function RiderDetails({
 }: RiderDetailsProps) {
   const [showLogModal, setShowLogModal] = useState(false);
   const [showTrackingModal, setShowTrackingModal] = useState(false);
+  /** Rider whose attempt the replay should open on (null = all attempts). */
+  const [trackRiderId, setTrackRiderId] = useState<number | null>(null);
   const [selfieImgError, setSelfieImgError] = useState(false);
   const [riderPhotoOpen, setRiderPhotoOpen] = useState(false);
   const [deliveryPhotoOpen, setDeliveryPhotoOpen] = useState(false);
@@ -1359,7 +1362,10 @@ export default function RiderDetails({
                 <button
                   type="button"
                   className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded-full transition-colors cursor-pointer"
-                  onClick={() => setShowTrackingModal(true)}
+                  onClick={() => {
+                    setTrackRiderId(null); // card button = whole order, all attempts
+                    setShowTrackingModal(true);
+                  }}
                   title="Replay the rider's minute-by-minute GPS trail on a map"
                 >
                   <i className="bi bi-geo-alt" />
@@ -1870,8 +1876,9 @@ export default function RiderDetails({
         refreshKey={activityLogRefreshKey}
         onClose={() => setShowLogModal(false)}
         onCopy={onCopy}
-        onTrack={() => {
+        onTrack={(rid) => {
           setShowLogModal(false);
+          setTrackRiderId(rid ?? null);
           setShowTrackingModal(true);
         }}
       />
@@ -1879,6 +1886,7 @@ export default function RiderDetails({
         isOpen={showTrackingModal}
         orderIdText={order.formattedOrderId?.trim() || order.trackingOrderId?.trim() || null}
         riderName={order.riderName?.trim() || null}
+        initialRiderId={trackRiderId}
         onClose={() => setShowTrackingModal(false)}
       />
       <RiderPhotoModal

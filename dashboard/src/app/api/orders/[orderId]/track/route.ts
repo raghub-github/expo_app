@@ -5,8 +5,8 @@
  * timeline. [orderId] is the TEXT order id (e.g. GMF100045) — the value stored
  * in order_rider_tracking.order_id. Proxies the backend admin tracking endpoint.
  *
- * Access mirrors the other order-page APIs: super-admin OR ORDER_FOOD dashboard
- * access (agents track riders too) — not super-admin-only.
+ * Access mirrors the other order-page APIs: super-admin OR any order dashboard
+ * access — food, parcel or person-ride (agents track riders too).
  */
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthenticatedApiUser, authFailureResponse } from "@/lib/auth/api-session";
@@ -35,9 +35,14 @@ export async function GET(
     const auth = await getAuthenticatedApiUser(request);
     if (!auth.ok) return authFailureResponse(auth);
     const { user } = auth;
+    // Tracking exists for every service (food / parcel / person ride), so any
+    // order-dashboard access grants it — gating on ORDER_FOOD alone locked
+    // parcel- and ride-only agents out of their own orders' trails.
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD")) ||
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PARCEL")) ||
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PERSON_RIDE"));
     if (!allowed) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     const base = backendBase();
