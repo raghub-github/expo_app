@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LogOut } from "lucide-react";
+import { LogOut, X } from "lucide-react";
 import { poppinsUi } from "@/lib/fonts";
 import { NAV } from "@/lib/nav";
 import { wipeCoredashBrowserAuth } from "@/lib/auth/browser-wipe";
@@ -43,11 +43,21 @@ export function Sidebar({
   userId: string;
 }) {
   const pathname = usePathname();
-  const { collapsed, toggleCollapsed, sidebarWidth } = useShellChrome();
+  const {
+    collapsed,
+    toggleCollapsed,
+    sidebarWidth,
+    mobileNavOpen,
+    closeMobileNav,
+    isDesktop,
+  } = useShellChrome();
   const [confirmOut, setConfirmOut] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+
+  const drawerOpen = isDesktop || mobileNavOpen;
+  const showLabels = isDesktop ? !collapsed : true;
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
@@ -57,6 +67,11 @@ export function Sidebar({
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
+
+  useEffect(() => {
+    closeMobileNav();
+    setUserMenu(false);
+  }, [pathname, closeMobileNav]);
 
   async function logout() {
     setSigningOut(true);
@@ -73,16 +88,29 @@ export function Sidebar({
 
   return (
     <>
+      {!isDesktop && mobileNavOpen ? (
+        <button
+          type="button"
+          aria-label="Close navigation"
+          className="fixed inset-0 z-[45] bg-black/45 backdrop-blur-[1px] lg:hidden"
+          onClick={closeMobileNav}
+        />
+      ) : null}
+
       <aside
-        className={`${poppinsUi.className} fixed inset-y-0 left-0 z-40 flex h-dvh flex-col overflow-hidden text-white transition-[width] duration-200 ease-out`}
+        className={`${poppinsUi.className} fixed inset-y-0 left-0 z-50 flex h-dvh flex-col overflow-hidden text-white transition-[transform,width] duration-200 ease-out ${
+          drawerOpen ? "translate-x-0" : "-translate-x-full"
+        } lg:translate-x-0`}
         style={{
           width: sidebarWidth,
           background: "linear-gradient(180deg, #4B49AC 0%, #3A3894 58%, #2C2A78 100%)",
+          paddingLeft: "env(safe-area-inset-left)",
         }}
+        aria-hidden={!drawerOpen}
       >
         <div
           className={`flex h-[72px] min-h-[72px] shrink-0 items-center border-b border-white/10 ${
-            collapsed ? "justify-center px-2" : "gap-3 px-3"
+            showLabels ? "gap-3 px-3" : "justify-center px-2"
           }`}
         >
           <Image
@@ -94,7 +122,7 @@ export function Sidebar({
             unoptimized
             priority
           />
-          {!collapsed ? (
+          {showLabels ? (
             <div className="min-w-0 flex-1">
               <p className="truncate text-[15px] font-semibold leading-tight tracking-wide">GatiMitra</p>
               <p className="mt-0.5 truncate text-[10px] font-medium uppercase leading-tight tracking-[0.06em] text-white/65">
@@ -102,9 +130,19 @@ export function Sidebar({
               </p>
             </div>
           ) : null}
+          {!isDesktop ? (
+            <button
+              type="button"
+              onClick={closeMobileNav}
+              aria-label="Close menu"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-white/85 hover:bg-white/10"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          ) : null}
         </div>
 
-        <nav className="cd-scroll min-h-0 flex-1 overflow-y-auto px-2 py-3">
+        <nav className="cd-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-3">
           {NAV.map((item) => {
             const active = pathname === item.href || pathname.startsWith(item.href + "/");
             const Icon = item.icon;
@@ -112,9 +150,13 @@ export function Sidebar({
               <Link
                 key={item.href}
                 href={item.href}
+                prefetch
                 title={item.name}
+                onClick={() => {
+                  if (!isDesktop) closeMobileNav();
+                }}
                 className={`group relative mb-0.5 flex h-11 w-full items-center rounded-xl outline-none transition ${
-                  collapsed ? "justify-center px-0" : ""
+                  showLabels ? "" : "justify-center px-0"
                 } ${
                   active
                     ? "bg-white text-[#4B49AC] shadow-[0_8px_20px_rgba(0,0,0,0.12)]"
@@ -124,7 +166,7 @@ export function Sidebar({
                 <span className="flex size-10 shrink-0 items-center justify-center">
                   <Icon className="h-5 w-5" strokeWidth={1.6} />
                 </span>
-                {!collapsed ? (
+                {showLabels ? (
                   <span className="min-w-0 flex-1 truncate pr-2 text-[14px] font-medium tracking-wide whitespace-nowrap">
                     {item.name}
                   </span>
@@ -134,19 +176,29 @@ export function Sidebar({
           })}
         </nav>
 
-        <div className={`relative mt-auto shrink-0 border-t border-white/10 ${collapsed ? "p-2" : "p-3"}`} ref={menuRef}>
+        <div
+          className={`relative mt-auto shrink-0 border-t border-white/10 ${showLabels ? "p-3" : "p-2"}`}
+          ref={menuRef}
+        >
           <div
-            className={`flex items-center gap-1 rounded-xl bg-white/10 ${collapsed ? "flex-col p-1" : "px-1.5 py-1.5"}`}
+            className={`flex items-center gap-1 rounded-xl bg-white/10 ${
+              showLabels ? "px-1.5 py-1.5" : "flex-col p-1"
+            }`}
           >
             <button
               type="button"
               onClick={() => setUserMenu((v) => !v)}
               title={`${userName} · click for sign out`}
               className={`min-w-0 flex-1 rounded-lg px-2 py-1.5 text-left hover:bg-white/10 ${
-                collapsed ? "flex w-full justify-center px-0" : ""
+                showLabels ? "" : "flex w-full justify-center px-0"
               }`}
             >
-              {collapsed ? (
+              {showLabels ? (
+                <>
+                  <p className="truncate text-sm font-semibold tracking-wide text-white">{userName}</p>
+                  <p className="truncate text-[10px] font-medium tracking-wide text-white/60">{userEmail}</p>
+                </>
+              ) : (
                 <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white/15 text-[11px] font-semibold">
                   {userName
                     .split(/\s+/)
@@ -155,28 +207,25 @@ export function Sidebar({
                     .map((p) => p[0]?.toUpperCase() || "")
                     .join("") || "U"}
                 </span>
-              ) : (
-                <>
-                  <p className="truncate text-sm font-semibold tracking-wide text-white">{userName}</p>
-                  <p className="truncate text-[10px] font-medium tracking-wide text-white/60">{userEmail}</p>
-                </>
               )}
             </button>
-            <button
-              type="button"
-              onClick={toggleCollapsed}
-              title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-white/85 hover:bg-white/10 hover:text-white"
-            >
-              <SidebarToggleIcon expand={collapsed} />
-            </button>
+            {isDesktop ? (
+              <button
+                type="button"
+                onClick={toggleCollapsed}
+                title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-white/85 hover:bg-white/10 hover:text-white"
+              >
+                <SidebarToggleIcon expand={collapsed} />
+              </button>
+            ) : null}
           </div>
 
           {userMenu ? (
             <div
               className={`absolute z-50 rounded-xl border border-white/15 bg-[#2C2A78] p-1 shadow-xl ${
-                collapsed ? "bottom-14 left-1/2 w-40 -translate-x-1/2" : "bottom-[calc(100%+8px)] left-3 right-3"
+                showLabels ? "bottom-[calc(100%+8px)] left-3 right-3" : "bottom-14 left-1/2 w-40 -translate-x-1/2"
               }`}
             >
               <button

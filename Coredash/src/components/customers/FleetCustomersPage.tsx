@@ -25,12 +25,15 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { useCoreData } from "@/lib/hooks/useCoreData";
+import { LG_BREAKPOINT, useMinWidth } from "@/lib/hooks/useMinWidth";
 import { formatCount, formatDateTime, formatInr } from "@/lib/format";
 import { parsePeriod, type Period } from "@/lib/period";
 import { useDashboardIdentity } from "@/components/auth/DashboardIdentity";
 import { ErrorState, LoadingGrid } from "@/components/ui/Primitives";
+import { FleetSplitLayout } from "@/components/layout/FleetSplitLayout";
 import type { CustomerDetailData, CustomersData } from "@/lib/data-types";
 import { orderDetailHref } from "@/lib/order-links";
+import { ensureHttpsMediaUrl } from "@/lib/rider-media";
 
 type CustomerRow = CustomersData["recent"][number];
 type OrderRow = CustomerDetailData["orderHistory"][number];
@@ -123,17 +126,19 @@ function CustomerAvatar({
     setBroken(false);
   }, [src]);
   const px = `${size}px`;
-  if (src && !broken) {
+  const safeSrc = ensureHttpsMediaUrl(src);
+  if (safeSrc && !broken) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={src}
+        src={safeSrc}
         alt={name}
         width={size}
         height={size}
         onError={() => setBroken(true)}
         className="shrink-0 rounded-full object-cover"
         style={{ width: px, height: px }}
+        referrerPolicy="no-referrer"
       />
     );
   }
@@ -489,6 +494,8 @@ export function FleetCustomersPage() {
   const [walletOpen, setWalletOpen] = useState(false);
   const [ledgerOpen, setLedgerOpen] = useState(false);
   const [detailNonce, setDetailNonce] = useState(0);
+  const [mobileShowDetail, setMobileShowDetail] = useState(Boolean(urlCustomer));
+  const isDesktop = useMinWidth(LG_BREAKPOINT);
   const statsRange = periodToRange(period);
 
   function setStatsRange(next: StatsRange) {
@@ -499,6 +506,7 @@ export function FleetCustomersPage() {
 
   function selectCustomer(id: string) {
     setSelectedId(id);
+    setMobileShowDetail(true);
     const params = new URLSearchParams(searchParams.toString());
     if (params.get("customer") === id) return;
     params.set("customer", id);
@@ -587,11 +595,17 @@ export function FleetCustomersPage() {
           cache: "no-store",
           headers: userId ? { "x-coredash-user": userId } : undefined,
         });
-        const json = (await res.json()) as {
-          success?: boolean;
-          data?: CustomerDetailData;
-          error?: string;
-        };
+        const text = await res.text();
+        let json: { success?: boolean; data?: CustomerDetailData; error?: string } = {};
+        try {
+          json = text ? (JSON.parse(text) as typeof json) : {};
+        } catch {
+          throw new Error(
+            res.status === 504 || res.status === 502
+              ? "Server timed out loading this customer. Tap Retry."
+              : `Invalid server response (${res.status || "error"})`
+          );
+        }
         if (!res.ok || !json.success || !json.data) {
           throw new Error(json.error || "Failed to load customer");
         }
@@ -680,9 +694,14 @@ export function FleetCustomersPage() {
       : 0;
 
   return (
-    <div className="flex h-dvh min-h-[640px] overflow-hidden bg-[#F5F6F8]">
-      <aside className="flex w-[320px] shrink-0 flex-col border-r border-[#E5E7EB] bg-white">
-        <div className="border-b border-[#EEF0F4] p-4">
+    <>
+    <FleetSplitLayout
+      listWidthClass="lg:w-[320px]"
+      showDetail={isDesktop || mobileShowDetail}
+      onBackToList={() => setMobileShowDetail(false)}
+      list={
+        <>
+        <div className="border-b border-[#EEF0F4] p-3 sm:p-4">
           <div className="flex items-center gap-2">
             <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-2.5">
               <Search className="h-4 w-4 shrink-0 text-[#9CA3AF]" />
@@ -700,12 +719,12 @@ export function FleetCustomersPage() {
               </p>
             </div>
           </div>
-          <div className="mt-3">
+          <div className="mt-3 overflow-x-auto">
             <SlidingPillToggle
               options={["ALL", "ACTIVE", "PLUS", "LATEST"] as const}
               value={segment}
               onChange={setSegment}
-              className="w-full"
+              className="w-full min-w-[280px]"
             />
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2">
@@ -756,7 +775,9 @@ export function FleetCustomersPage() {
                                 ? `Joined ${formatDateTime(c.createdAt)}`
                                 : c.orders
                                   ? `${formatCount(c.orders)} orders · ${formatInr(c.gmv)}`
-                                  : "No orders yet"}
+                                  : c.lastOrderAt
+                                    ? `Last order ${formatDateTime(c.lastOrderAt)}`
+                                    : "No orders yet"}
                             </p>
                           </div>
                           <StatusBadge status={c.status} plus={c.plus} />
@@ -771,18 +792,18 @@ export function FleetCustomersPage() {
             <p className="px-3 py-8 text-center text-[13px] text-[#9CA3AF]">No customers match.</p>
           ) : null}
         </div>
-      </aside>
-
-      <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {!selected ? (
-          <div className="flex flex-1 items-center justify-center text-[14px] text-[#6B6894]">
+        </>
+      }
+      detail={
+        !selected ? (
+          <div className="flex flex-1 items-center justify-center p-6 text-[14px] text-[#6B6894]">
             Select a customer
           </div>
         ) : (
           <>
             <header className="shrink-0 border-b border-[#E5E7EB] bg-white">
-              <div className="flex items-center justify-between gap-4 px-5 py-4">
-                <div className="flex min-w-0 items-center gap-4">
+              <div className="flex flex-col gap-3 px-4 py-4 sm:px-5 lg:flex-row lg:items-center lg:justify-between lg:gap-4">
+                <div className="flex min-w-0 items-center gap-3 sm:gap-4">
                   <CustomerAvatar
                     name={customer?.name || selected.name}
                     src={customer?.avatarUrl || selected.avatarUrl}
@@ -790,7 +811,7 @@ export function FleetCustomersPage() {
                   />
                   <div className="min-w-0">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <h2 className="truncate text-[20px] font-semibold tracking-tight text-[#111827]">
+                      <h2 className="truncate text-[18px] font-semibold tracking-tight text-[#111827] sm:text-[20px]">
                         {customer?.name || selected.name}
                       </h2>
                       {customer?.plus || selected.plus ? (
@@ -800,7 +821,7 @@ export function FleetCustomersPage() {
                       ) : null}
                       <StatusBadge status={customer?.status || selected.status} />
                     </div>
-                    <p className="mt-1 text-[12px] text-[#6B7280]">
+                    <p className="mt-1 break-words text-[12px] text-[#6B7280]">
                       <span className="font-medium text-[#374151]">ID {customer?.id || selected.id}</span>
                       <span className="mx-1.5 text-[#D1D5DB]">·</span>
                       {customer?.mobile || selected.mobile}
@@ -813,7 +834,7 @@ export function FleetCustomersPage() {
                     </p>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <SlidingPillToggle
                     options={["W", "M", "6M", "Y"] as const}
                     value={statsRange}
@@ -837,7 +858,7 @@ export function FleetCustomersPage() {
               </div>
             </header>
 
-            <div className="cd-scroll min-h-0 flex-1 overflow-y-auto bg-[#F3F4F8] p-5">
+            <div className="cd-scroll min-h-0 flex-1 overflow-y-auto bg-[#F3F4F8] p-3 sm:p-5">
               {detailError ? (
                 <ErrorState message={detailError} onRetry={() => selectCustomer(selected.id)} />
               ) : null}
@@ -1027,7 +1048,7 @@ export function FleetCustomersPage() {
                   </div>
                 ) : null}
                 <div className="mt-3 overflow-hidden rounded-xl border border-[#F3F4F6]">
-                  <div className="grid grid-cols-[1.1fr_1.4fr_0.7fr] gap-2 bg-[#F9FAFB] px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF]">
+                  <div className="hidden gap-2 bg-[#F9FAFB] px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-[#9CA3AF] sm:grid sm:grid-cols-[1.1fr_1.4fr_0.7fr]">
                     <span>Order</span>
                     <span>Route</span>
                     <span className="text-right">Amount</span>
@@ -1038,27 +1059,32 @@ export function FleetCustomersPage() {
                     previewOrders.map((o) => (
                       <div
                         key={o.id}
-                        className="grid grid-cols-[1.1fr_1.4fr_0.7fr] items-center gap-2 border-t border-[#F3F4F6] px-3 py-2.5"
+                        className="grid grid-cols-1 items-start gap-1 border-t border-[#F3F4F6] px-3 py-2.5 sm:grid-cols-[1.1fr_1.4fr_0.7fr] sm:items-center sm:gap-2"
                       >
-                        <div className="min-w-0">
-                          <p className="truncate text-[13px] font-semibold text-[#7C3AED]">
-                            <a
-                              href={orderDetailHref(o.code)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="hover:underline"
-                            >
-                              {o.code}
-                            </a>
-                          </p>
-                          <p className="text-[11px] capitalize text-[#9CA3AF]">
-                            {prettyType(o.type)} · {o.status.replace(/_/g, " ")}
+                        <div className="flex min-w-0 items-start justify-between gap-2 sm:block">
+                          <div className="min-w-0">
+                            <p className="truncate text-[13px] font-semibold text-[#7C3AED]">
+                              <a
+                                href={orderDetailHref(o.code)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="hover:underline"
+                              >
+                                {o.code}
+                              </a>
+                            </p>
+                            <p className="text-[11px] capitalize text-[#9CA3AF]">
+                              {prettyType(o.type)} · {o.status.replace(/_/g, " ")}
+                            </p>
+                          </div>
+                          <p className="shrink-0 text-[13px] font-semibold tabular-nums text-[#111827] sm:hidden">
+                            {formatInr(o.payable)}
                           </p>
                         </div>
                         <p className="truncate text-[12px] text-[#6B7280]">
                           {shortAddress(o.pickup)} → {shortAddress(o.dropoff)}
                         </p>
-                        <p className="text-right text-[13px] font-semibold tabular-nums text-[#111827]">
+                        <p className="hidden text-right text-[13px] font-semibold tabular-nums text-[#111827] sm:block">
                           {formatInr(o.payable)}
                         </p>
                       </div>
@@ -1156,8 +1182,9 @@ export function FleetCustomersPage() {
               </div>
             </div>
           </>
-        )}
-      </section>
+        )
+      }
+    />
 
       {historyOpen ? (
         <div className="fixed inset-0 z-[70] flex justify-end bg-black/35" onClick={() => setHistoryOpen(false)}>
@@ -1255,7 +1282,7 @@ export function FleetCustomersPage() {
           }}
         />
       ) : null}
-    </div>
+    </>
   );
 }
 

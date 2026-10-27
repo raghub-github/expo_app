@@ -1,7 +1,13 @@
+import { createHash } from "node:crypto";
 import { cookies } from "next/headers";
 import { getSql, safeQuery } from "@/lib/db/client";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { COREDASH_ACCESS_COOKIE, NOT_AUTHORIZED, isSuperAdminRole } from "@/lib/auth/access";
+import {
+  COREDASH_ACCESS_COOKIE,
+  NOT_AUTHORIZED,
+  isCoredashAuthCookie,
+  isSuperAdminRole,
+} from "@/lib/auth/access";
 import { logAuthEvent } from "@/lib/auth/log";
 
 export type CoreUser = {
@@ -78,17 +84,50 @@ export type CoreSessionResult =
   | { ok: true; user: CoreUser }
   | { ok: false; status: 401 | 403 };
 
-const SESSION_CACHE_MS = 20_000;
+const SESSION_CACHE_MS = 60_000;
+const SESSION_CACHE_MAX = 500;
 const sessionCache = new Map<string, { at: number; result: CoreSessionResult }>();
+/** Collapse parallel avatar/API auth storms onto one Supabase+DB round-trip per caller. */
+const sessionInflight = new Map<string, Promise<CoreSessionResult>>();
 
-export async function resolveCoreSession(): Promise<CoreSessionResult> {
-  const cookieStore = await cookies();
-  const accessUid = cookieStore.get(COREDASH_ACCESS_COOKIE)?.value ?? "";
-  if (accessUid) {
-    const cached = sessionCache.get(accessUid);
-    if (cached && Date.now() - cached.at < SESSION_CACHE_MS) return cached.result;
+/**
+ * Cache key = access uid + a hash of the Supabase auth cookies that uid was
+ * verified with.
+ *
+ * Keying on `coredash_access` alone is NOT safe: that cookie holds the plain
+ * Supabase user id (see api/auth/set-cookie), so anyone who learns the uid
+ * could present it with no auth token at all and get a warm `{ ok: true }`
+ * entry straight back — a full super-admin bypass for the cache lifetime.
+ * Folding the auth token into the key means a hit requires actually holding
+ * the credential, while a returning admin still reuses their own entry.
+ */
+function sessionCacheKey(
+  authCookies: { name: string; value: string }[],
+  accessUid: string
+): string {
+  if (!accessUid) return "";
+  const material = authCookies
+    .filter((c) => isCoredashAuthCookie(c.name))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((c) => `${c.name}=${c.value}`)
+    .join("\n");
+  // No auth cookie → nothing binds the uid to a credential, so never cache.
+  if (!material) return "";
+  return `${accessUid}:${createHash("sha256").update(material).digest("hex").slice(0, 32)}`;
+}
+
+/** Token refreshes mint new keys; drop expired entries so the map can't grow forever. */
+function pruneSessionCache(now: number): void {
+  if (sessionCache.size <= SESSION_CACHE_MAX) return;
+  for (const [key, entry] of sessionCache) {
+    if (now - entry.at >= SESSION_CACHE_MS) sessionCache.delete(key);
   }
+}
 
+async function resolveCoreSessionUncached(
+  accessUid: string,
+  cacheKey: string
+): Promise<CoreSessionResult> {
   const supabase = await createServerSupabaseClient();
   const {
     data: { user },
@@ -150,8 +189,30 @@ export async function resolveCoreSession(): Promise<CoreSessionResult> {
       systemUserId: Number(row.id),
     },
   };
-  if (accessUid) sessionCache.set(accessUid, { at: Date.now(), result: ok });
+  if (cacheKey) {
+    const at = Date.now();
+    pruneSessionCache(at);
+    sessionCache.set(cacheKey, { at, result: ok });
+  }
   return ok;
+}
+
+export async function resolveCoreSession(): Promise<CoreSessionResult> {
+  const cookieStore = await cookies();
+  const accessUid = cookieStore.get(COREDASH_ACCESS_COOKIE)?.value ?? "";
+  const cacheKey = sessionCacheKey(cookieStore.getAll(), accessUid);
+  if (cacheKey) {
+    const cached = sessionCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < SESSION_CACHE_MS) return cached.result;
+    const pending = sessionInflight.get(cacheKey);
+    if (pending) return pending;
+    const run = resolveCoreSessionUncached(accessUid, cacheKey).finally(() => {
+      sessionInflight.delete(cacheKey);
+    });
+    sessionInflight.set(cacheKey, run);
+    return run;
+  }
+  return resolveCoreSessionUncached(accessUid, "");
 }
 
 export async function getCurrentCoreUser(): Promise<CoreUser | null> {

@@ -14,9 +14,9 @@ export function getDb() {
   }
 
   const sql = postgres(databaseUrl, {
-    max: 8,
+    max: 12,
     idle_timeout: 20,
-    connect_timeout: 10,
+    connect_timeout: 8,
     max_lifetime: 60 * 10,
     prepare: false,
     ...({ max_pipeline: 1 } as Record<string, number>),
@@ -30,8 +30,9 @@ export function getDb() {
       },
     },
     connection: {
-      statement_timeout: 45_000,
-      idle_in_transaction_session_timeout: 30_000,
+      // Fail fast so the UI never waits multi-minute for a stuck planner.
+      statement_timeout: 20_000,
+      idle_in_transaction_session_timeout: 20_000,
     },
   });
 
@@ -72,7 +73,7 @@ export function isRetryablePgError(error: unknown): boolean {
   );
 }
 
-export async function withPgRetry<T>(run: () => Promise<T>, label: string, attempts = 3): Promise<T> {
+export async function withPgRetry<T>(run: () => Promise<T>, label: string, attempts = 2): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
@@ -81,7 +82,7 @@ export async function withPgRetry<T>(run: () => Promise<T>, label: string, attem
       lastError = error;
       if (attempt === attempts || !isRetryablePgError(error)) throw error;
       console.warn(`[coredash:db] ${label}: retry ${attempt}`);
-      await new Promise((r) => setTimeout(r, 400 * attempt));
+      await new Promise((r) => setTimeout(r, 250 * attempt));
     }
   }
   throw lastError;

@@ -102,7 +102,7 @@ export function Panel({
   className?: string;
 }) {
   return (
-    <section className={`rounded-2xl border border-[#E4E7F7] bg-white p-4 shadow-[0_10px_30px_rgba(75,73,172,0.04)] ${className}`}>
+    <section className={`min-w-0 rounded-2xl border border-[#E4E7F7] bg-white p-4 shadow-[0_10px_30px_rgba(75,73,172,0.04)] ${className}`}>
       <h3 className="mb-4 text-[14px] font-semibold text-[#1E1C4A]">{title}</h3>
       {children}
     </section>
@@ -152,15 +152,16 @@ export function RecordSearch({
 export function DataTable({
   columns,
   rows,
-  pageSize,
+  pageSize = 10,
 }: {
   columns: Array<ReactNode>;
   rows: Array<Array<ReactNode>>;
+  /** Pass 0 to disable pagination. Default 10 so large tables stay usable. */
   pageSize?: number;
 }) {
   const paginate = pageSize != null && pageSize > 0;
   const [page, setPage] = useState(1);
-  const [size, setSize] = useState(pageSize ?? 10);
+  const [size, setSize] = useState(paginate ? pageSize : 10);
   const total = rows.length;
   const pageCount = Math.max(1, Math.ceil(total / size) || 1);
 

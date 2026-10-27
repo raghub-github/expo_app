@@ -28,6 +28,9 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCoreData } from "@/lib/hooks/useCoreData";
 import { formatCount, formatDateTime, formatInr } from "@/lib/format";
+import { LG_BREAKPOINT, useMinWidth } from "@/lib/hooks/useMinWidth";
+import { ensureHttpsMediaUrl } from "@/lib/rider-media";
+import { FleetSplitLayout } from "@/components/layout/FleetSplitLayout";
 import { parsePeriod, type Period } from "@/lib/period";
 import { useDashboardIdentity } from "@/components/auth/DashboardIdentity";
 import { ErrorState, LoadingGrid } from "@/components/ui/Primitives";
@@ -107,16 +110,18 @@ function SlidingPillToggle<T extends string>({
 }
 
 function StoreAvatar({ name, src, size = 40 }: { name: string; src?: string | null; size?: number }) {
-  if (src) {
+  const safeSrc = ensureHttpsMediaUrl(src);
+  if (safeSrc) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={src}
+        src={safeSrc}
         alt={name}
         width={size}
         height={size}
         className="rounded-xl object-cover"
         style={{ width: size, height: size }}
+        referrerPolicy="no-referrer"
       />
     );
   }
@@ -404,6 +409,8 @@ export function FleetMerchantsPage() {
   const [ratingsOpen, setRatingsOpen] = useState(false);
   const [payoutsOpen, setPayoutsOpen] = useState(false);
   const [pulseOrderId, setPulseOrderId] = useState<number | null>(null);
+  const [mobileShowDetail, setMobileShowDetail] = useState(Boolean(urlStore));
+  const isDesktop = useMinWidth(LG_BREAKPOINT);
   const statsRange = periodToRange(period);
 
   function setStatsRange(next: StatsRange) {
@@ -414,6 +421,7 @@ export function FleetMerchantsPage() {
 
   function selectStore(id: string) {
     setSelectedId(id);
+    setMobileShowDetail(true);
     const params = new URLSearchParams(searchParams.toString());
     if (params.get("store") === id) return;
     params.set("store", id);
@@ -548,9 +556,14 @@ export function FleetMerchantsPage() {
     store && store.lifetimeOrders > 0 ? (store.lifetimeCancelled / store.lifetimeOrders) * 100 : 0;
 
   return (
-    <div className="flex h-dvh min-h-[640px] overflow-hidden bg-[#F5F6F8]">
-      <aside className="flex w-[340px] shrink-0 flex-col border-r border-[#E5E7EB] bg-white">
-        <div className="border-b border-[#EEF0F4] p-4">
+    <>
+    <FleetSplitLayout
+      listWidthClass="lg:w-[340px]"
+      showDetail={isDesktop || mobileShowDetail}
+      onBackToList={() => setMobileShowDetail(false)}
+      list={
+        <>
+        <div className="border-b border-[#EEF0F4] p-3 sm:p-4">
           <div className="flex items-center gap-2">
             <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-2.5">
               <Search className="h-4 w-4 shrink-0 text-[#9CA3AF]" />
@@ -565,12 +578,12 @@ export function FleetMerchantsPage() {
               TOTAL {formatCount(data.stats.total)}
             </span>
           </div>
-          <div className="mt-3">
+          <div className="mt-3 overflow-x-auto">
             <SlidingPillToggle
               options={["ALL", "LIVE", "ACCEPTING", "NEW"] as const}
               value={segment}
               onChange={setSegment}
-              className="w-full justify-between"
+              className="w-full min-w-[280px] justify-between"
             />
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2">
@@ -633,18 +646,18 @@ export function FleetMerchantsPage() {
             <p className="px-3 py-8 text-center text-[13px] text-[#9CA3AF]">No stores match.</p>
           ) : null}
         </div>
-      </aside>
-
-      <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {!selected ? (
-          <div className="flex flex-1 items-center justify-center text-[14px] text-[#6B6894]">
+        </>
+      }
+      detail={
+        !selected ? (
+          <div className="flex flex-1 items-center justify-center p-6 text-[14px] text-[#6B6894]">
             Select a store
           </div>
         ) : (
           <>
             {/* Light sticky identity header — metrics live in scroll body */}
             <header className="z-10 shrink-0 border-b border-[#E5E7EB] bg-white">
-              <div className="flex h-[64px] items-center justify-between gap-3 px-5">
+              <div className="flex flex-col gap-3 px-4 py-3 sm:px-5 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex min-w-0 items-center gap-3">
                   <StoreAvatarWithStatus
                     name={store?.displayName || selected.name}
@@ -664,7 +677,7 @@ export function FleetMerchantsPage() {
                         </span>
                       ) : null}
                     </div>
-                    <p className="truncate text-[12px] font-medium text-[#6B7280]">
+                    <p className="break-words text-[12px] font-medium text-[#6B7280]">
                       <span className="font-mono text-[#0F766E]">{store?.storeId || selected.storeId}</span>
                       {" · "}
                       {prettyType(store?.type || selected.type)}
@@ -676,7 +689,7 @@ export function FleetMerchantsPage() {
                     </p>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => setRatingsOpen(true)}
@@ -1037,8 +1050,9 @@ export function FleetMerchantsPage() {
               </div>
             </div>
           </>
-        )}
-      </section>
+        )
+      }
+    />
 
       {historyOpen && selected ? (
         <MerchantWalletLedgerSheet
@@ -1081,7 +1095,7 @@ export function FleetMerchantsPage() {
           <PayoutsList items={detail?.payouts ?? []} />
         </SideSheet>
       ) : null}
-    </div>
+    </>
   );
 }
 
