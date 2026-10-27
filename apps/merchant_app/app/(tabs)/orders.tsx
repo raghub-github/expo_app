@@ -46,7 +46,10 @@ import {
   type OrderStage,
   type OrderCounts,
 } from "@/hooks/useOrders";
+import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { fetchFoodOrders } from "@/services/ordersApi";
+import { mapApiOrder } from "@/lib/orderRecord";
 import { TerminalOrderCard } from "@/components/order/TerminalOrderCard";
 import { RecentCompletedOrderCard } from "@/components/order/RecentCompletedOrderCard";
 import { LiveOrderCard, canMerchantMarkDelivered } from "@/components/order/LiveOrderCard";
@@ -74,7 +77,6 @@ import {
 import {
   DEFAULT_HISTORY_DATE_RANGE,
   isVisibleOnLiveOrdersBoard,
-  orderInDateRange,
   type OrderDateRange,
 } from "@/lib/orderDateRange";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
@@ -356,9 +358,9 @@ function isTerminalStatus(status: OrderStage): boolean {
   return isTerminalCompletedStatus(status);
 }
 
-/** Past orders shown on history page only. */
+/** Past orders shown on history page only (delivered / rejected / RTO). */
 function isHistoryTerminalOrder(order: OrderRecord): boolean {
-  return isTerminalStatus(order.status);
+  return isTerminalStatus(order.status) || order.status === "rto";
 }
 
 function historyOrderTimeIso(order: OrderRecord): string {
@@ -380,6 +382,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const scrollBottomPadding = isHistory ? 24 : TAB_BAR_SCROLL_CONTENT_PADDING;
   const { selectedStore, managedStores } = useSelectedStore();
   const { isOnline } = useStoreStatus();
+  const { token } = useAuth();
 
   const { orders, loading, error, refetch, transitionOrder, extendPrepDelay, acceptanceWindowMinutes } = useOrders();
 
@@ -388,6 +391,11 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
   const [dateRange, setDateRange] = useState<OrderDateRange>(DEFAULT_HISTORY_DATE_RANGE);
   const [dateSheetOpen, setDateSheetOpen] = useState(false);
+  /** Past Orders loads its own dated page — live board is capped to ~7 days / 40 rows. */
+  const [historyOrders, setHistoryOrders] = useState<OrderRecord[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const historyFetchGen = useRef(0);
   const initialTabParam = typeof params.tab === "string" ? params.tab.toLowerCase() : "";
   const [filterKey, setFilterKey] = useState<FilterKey>(
     isHistory ? "all" : resolveInitialFilterKey(initialTabParam, [])
@@ -512,14 +520,85 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     [liveBoardOrders]
   );
 
+  const loadHistoryOrders = useCallback(async () => {
+    if (!isHistory) return;
+    // Partner payloads sometimes send store id as a string ("94"); Number.isFinite("94") is false.
+    const storeId = Number(selectedStore?.id);
+    if (!token || !Number.isFinite(storeId) || storeId < 1) {
+      setHistoryOrders([]);
+      setHistoryError(null);
+      setHistoryLoading(false);
+      return;
+    }
+    const gen = ++historyFetchGen.current;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    const fromIso = new Date(dateRange.startMs).toISOString();
+    const toIso = new Date(dateRange.endMs).toISOString();
+    try {
+      if (__DEV__) {
+        console.log(`[orders] history fetch store=${storeId} from=${fromIso} to=${toIso}`);
+      }
+      const list = await fetchFoodOrders(storeId, token, {
+        limit: 200,
+        from: fromIso,
+        to: toIso,
+      });
+      if (gen !== historyFetchGen.current) return;
+      const mapped = list
+        .filter((row) => row != null && (row.orders_core_id != null || row.orders_food_id != null))
+        .map((row) =>
+          mapApiOrder(row, {
+            storeId,
+            storeName: selectedStore?.store_name ?? null,
+            storeLocality: selectedStore?.city ?? null,
+          })
+        );
+      if (__DEV__) {
+        console.log(`[orders] history ok count=${mapped.length}`);
+      }
+      setHistoryOrders(mapped);
+    } catch (e) {
+      if (gen !== historyFetchGen.current) return;
+      setHistoryOrders([]);
+      setHistoryError(e instanceof Error ? e.message : "Failed to load order history");
+      if (__DEV__) {
+        console.warn("[orders] history fetch failed", e);
+      }
+    } finally {
+      if (gen === historyFetchGen.current) setHistoryLoading(false);
+    }
+  }, [
+    isHistory,
+    token,
+    selectedStore?.id,
+    selectedStore?.store_name,
+    selectedStore?.city,
+    dateRange.startMs,
+    dateRange.endMs,
+  ]);
+
+  useEffect(() => {
+    if (!isHistory) return;
+    void loadHistoryOrders();
+  }, [isHistory, loadHistoryOrders]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await refetch();
+    if (isHistory) {
+      await loadHistoryOrders();
+    } else {
+      await refetch();
+    }
     setRefreshing(false);
-  }, [refetch]);
+  }, [isHistory, loadHistoryOrders, refetch]);
+
+  const sourceOrders = isHistory ? historyOrders : orders;
+  const listLoading = isHistory ? historyLoading : loading;
+  const listError = isHistory ? historyError : error;
 
   const filteredOrders = useMemo(() => {
-    const list = orders.filter((o) => {
+    const list = sourceOrders.filter((o) => {
       const q = search.trim().toLowerCase();
       const matchesSearch =
         !q ||
@@ -529,7 +608,8 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
 
       if (isHistory) {
         if (!isHistoryTerminalOrder(o)) return false;
-        if (!orderInDateRange(historyOrderTimeIso(o), dateRange)) return false;
+        // Server already scoped history by created_at for dateRange — do not
+        // re-filter on cancelledAt or rows disappear after a successful fetch.
         if (!orderMatchesSheetFilters(o, sheetFilters)) return false;
         return matchesSearch;
       }
@@ -573,7 +653,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       );
     }
     return list;
-  }, [orders, search, filterKey, sheetFilters, isHistory, dateRange, nowMs]);
+  }, [sourceOrders, search, filterKey, sheetFilters, isHistory, dateRange, nowMs]);
 
   const liveCounts = useMemo(() => {
     const base: Partial<Record<LiveFilterKey, number>> = {
@@ -817,7 +897,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     </View>
   ) : null;
 
-  if (error && !loading && orders.length === 0) {
+  if (listError && !listLoading && sourceOrders.length === 0) {
     return (
       <View style={[styles.container, styles.centered]}>
         <Ionicons
@@ -825,9 +905,12 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
           size={48}
           color={GatiMitraMerchant.textTertiary}
         />
-        <Text style={styles.errorText}>{error}</Text>
+        <Text style={styles.errorText}>{listError}</Text>
         <Pressable
-          onPress={refetch}
+          onPress={() => {
+            if (isHistory) void loadHistoryOrders();
+            else void refetch();
+          }}
           style={({ pressed }) => [
             styles.retryBtn,
             pressed && styles.pressed,
@@ -844,7 +927,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     !isHistory &&
     !search.trim() &&
     filteredOrders.length === 0 &&
-    !(loading && orders.length === 0);
+    !(listLoading && sourceOrders.length === 0);
 
   return (
     <View style={styles.container}>
@@ -915,7 +998,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
               />
             }
             ListEmptyComponent={
-              loading && orders.length === 0 ? (
+              listLoading && sourceOrders.length === 0 ? (
                 <View style={styles.loadingWrap}>
                   <ActivityIndicator
                     size="large"

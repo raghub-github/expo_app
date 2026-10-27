@@ -49,6 +49,15 @@ function formatDateOnly(value: string): string {
   return `${Number(d)} ${monthShortName(Number(m))} ${y}`;
 }
 
+/** Matches FeedbackCard OPEN/CLOSED: tickets by status; rating complaints by merchant reply. */
+function isComplaintResolvedOrClosed(c: Complaint): boolean {
+  const statusRaw = String(c.ticketStatus ?? "").toUpperCase();
+  if (statusRaw.includes("RESOLVE") || statusRaw.includes("CLOSE")) return true;
+  if (c.source === "ticket") return false;
+  if (typeof c.replyText === "string" && c.replyText.trim()) return true;
+  return Array.isArray(c.replies) && c.replies.length > 0;
+}
+
 function monthShortName(m: number): string {
   return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][
     Math.min(11, Math.max(0, m - 1))
@@ -70,16 +79,14 @@ export default function ComplaintsScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  // Default last 7 days; open (not resolved/closed) complaints still show outside the window.
   const [fromDate, setFromDate] = useState<string>(() => {
     const to = new Date();
     const from = new Date();
     from.setDate(to.getDate() - 7);
     return from.toISOString();
   });
-  const [toDate, setToDate] = useState<string>(() => {
-    const to = new Date();
-    return to.toISOString();
-  });
+  const [toDate, setToDate] = useState<string>(() => new Date().toISOString());
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
   const [tempRangeKey, setTempRangeKey] = useState<"7" | "21" | "30" | "all">("7");
   const [tempFilter, setTempFilter] = useState<FilterKey>("all");
@@ -120,12 +127,13 @@ export default function ComplaintsScreen() {
   };
 
   const handleConfirmDelete = async () => {
-    if (!selectedStore?.id || !token || !confirmTarget) return;
+    const storeId = Number(selectedStore?.id);
+    if (!Number.isFinite(storeId) || storeId < 1 || !token || !confirmTarget) return;
     try {
       setIsSavingReply(true);
       await deleteStoreReviewReply({
         token,
-        storeId: selectedStore.id,
+        storeId,
         reviewId: confirmTarget.id,
       });
       setItems((prev) =>
@@ -146,7 +154,8 @@ export default function ComplaintsScreen() {
 
   useEffect(() => {
     const load = async () => {
-      if (!selectedStore?.id || !token) {
+      const storeId = Number(selectedStore?.id);
+      if (!Number.isFinite(storeId) || storeId < 1 || !token) {
         setItems([]);
         setLoading(false);
         return;
@@ -156,7 +165,7 @@ export default function ComplaintsScreen() {
       try {
         const data = await fetchStoreComplaints({
           token,
-          storeId: selectedStore.id,
+          storeId,
         });
         setItems(data.data ?? []);
         setHasLoadedOnce(true);
@@ -197,7 +206,8 @@ export default function ComplaintsScreen() {
 
     return items.filter((c) => {
       const created = new Date(c.createdAt);
-      if (!Number.isNaN(created.getTime())) {
+      // Date window applies only to resolved/closed; open complaints always stay visible.
+      if (isComplaintResolvedOrClosed(c) && !Number.isNaN(created.getTime())) {
         if (from && created < from) return false;
         if (to && created > to) return false;
       }

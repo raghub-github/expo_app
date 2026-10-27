@@ -24,7 +24,10 @@ module.exports = ({ config }) => ({
     scheme: config?.expo?.scheme || appJson.expo.scheme || "gatimitra-merchant",
     // Partner launcher: assets/mxappicon.png is the single canonical icon.
     icon: "./assets/mxappicon.png",
+    // image required: Android release fails linking without drawable/splashscreen_logo.
     splash: {
+      image: "./assets/images/splash-logo.png",
+      resizeMode: "contain",
       backgroundColor: MERCHANT_SPLASH_BG,
     },
     // Light app chrome — dark status icons so time/battery stay readable on every screen.
@@ -44,10 +47,8 @@ module.exports = ({ config }) => ({
         ...(config?.expo?.ios?.infoPlist || {}),
         LSApplicationQueriesSchemes: [
           ...new Set([
-            ...((appJson.expo.ios?.infoPlist?.LSApplicationQueriesSchemes ||
-              []) as string[]),
-            ...((config?.expo?.ios?.infoPlist?.LSApplicationQueriesSchemes ||
-              []) as string[]),
+            ...(appJson.expo.ios?.infoPlist?.LSApplicationQueriesSchemes || []),
+            ...(config?.expo?.ios?.infoPlist?.LSApplicationQueriesSchemes || []),
             "upi",
             "phonepe",
             "tez",
@@ -70,7 +71,7 @@ module.exports = ({ config }) => ({
       ...(hasGoogleServices ? { googleServicesFile: "./google-services.json" } : {}),
       softwareKeyboardLayoutMode: "resize",
       intentFilters: [
-        ...(((appJson.expo.android?.intentFilters || []) as object[])),
+        ...(appJson.expo.android?.intentFilters || []),
         {
           action: "VIEW",
           autoVerify: true,
