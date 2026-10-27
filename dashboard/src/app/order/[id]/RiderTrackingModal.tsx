@@ -102,6 +102,44 @@ const attemptColor = (i: number) => ATTEMPT_COLORS[i % ATTEMPT_COLORS.length];
 const PLAY_STEP_MS = 420; // wall-clock per GPS fix at 1x
 const SPEEDS = [1, 2, 4, 8] as const;
 
+/**
+ * Raster basemap that needs no Mapbox endpoint. Used when api.mapbox.com is
+ * unreachable from the viewer's browser so the trail is still usable.
+ */
+const OSM_FALLBACK_STYLE = {
+  version: 8,
+  sources: {
+    osm: {
+      type: "raster",
+      tiles: [
+        "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      ],
+      tileSize: 256,
+      attribution: "© OpenStreetMap contributors",
+    },
+  },
+  layers: [{ id: "osm", type: "raster", source: "osm" }],
+};
+
+/** Ask the browser itself why Mapbox did not answer — the reply names the cause. */
+async function probeMapbox(tk: string): Promise<string> {
+  try {
+    const res = await fetch(
+      `https://api.mapbox.com/styles/v1/mapbox/streets-v12?access_token=${encodeURIComponent(tk)}`,
+      { cache: "no-store" }
+    );
+    return res.ok
+      ? `api.mapbox.com answered HTTP ${res.status} but its tiles never rendered`
+      : `api.mapbox.com rejected this token with HTTP ${res.status}`;
+  } catch (e) {
+    return `this browser cannot reach api.mapbox.com (${
+      (e as Error)?.message ?? "network error"
+    }) — an extension, tracking-prevention setting or network filter is blocking it`;
+  }
+}
+
 type MapStage =
   | "idle"
   | "waiting-container"
@@ -493,28 +531,49 @@ export default function RiderTrackingModal({
           setMapError(String(msg));
           setStage("failed");
         });
-        map.on("load", () => {
-          if (disposed) return;
+        // "style.load" matters too: after a fallback setStyle() the one-shot
+        // "load" event may already have been missed, and without this the map
+        // would render tiles while our layers were never drawn.
+        const markReady = () => {
+          if (disposed || mapRef.current !== map) return;
           if (watchdog) clearTimeout(watchdog);
           map.resize();
           setStage("ready");
           setMapReady(true);
-        });
+        };
+        map.on("load", markReady);
+        map.on("style.load", markReady);
 
         setStage(rect.width < 2 || rect.height < 2 ? "zero-size" : "style-loading");
-        // A style that never loads would otherwise sit blank forever.
+
+        // A Mapbox style that never loads would otherwise sit blank forever.
+        // Some browsers/extensions/networks block api.mapbox.com outright (the
+        // request just hangs, so no "error" event ever fires). Rather than show
+        // nothing, probe what actually happened and swap in an OpenStreetMap
+        // raster basemap, which needs no Mapbox endpoint at all.
         watchdog = setTimeout(() => {
-          if (disposed || mapRef.current !== map) return;
-          if (!map.isStyleLoaded?.()) {
-            const r = container.getBoundingClientRect();
-            setStage("failed");
-            setMapError(
-              `Style did not load within 12s (container ${Math.round(r.width)}×${Math.round(
-                r.height
-              )}px). Check that api.mapbox.com and events.mapbox.com are reachable from this network.`
-            );
-          }
-        }, 12000);
+          if (disposed || mapRef.current !== map || map.isStyleLoaded?.()) return;
+          void probeMapbox(tk).then((diag) => {
+            if (disposed || mapRef.current !== map || map.isStyleLoaded?.()) return;
+            setMapError(`${diag} — switched to the OpenStreetMap basemap.`);
+            try {
+              map.setStyle(OSM_FALLBACK_STYLE as any);
+            } catch {
+              setStage("failed");
+              return;
+            }
+            // If OSM cannot load either, the network is blocking tiles broadly.
+            watchdog = setTimeout(() => {
+              if (disposed || mapRef.current !== map) return;
+              if (!map.isStyleLoaded?.()) {
+                setStage("failed");
+                setMapError(
+                  `${diag}. The OpenStreetMap fallback did not load either, so map tiles are being blocked for this browser/network.`
+                );
+              }
+            }, 8000);
+          });
+        }, 7000);
       })
       .catch((err) => {
         setStage("failed");
@@ -948,6 +1007,13 @@ export default function RiderTrackingModal({
                   token {token() ? `present (${String(token()).length} chars)` : "MISSING"} · stage “{stage}”
                 </div>
               </div>
+            </div>
+          ) : null}
+
+          {/* Map works, but not on the intended basemap — say so quietly. */}
+          {stage === "ready" && mapError ? (
+            <div className="absolute left-1/2 top-3 z-[7] max-w-md -translate-x-1/2 rounded-md border border-amber-300 bg-amber-50/95 px-3 py-1.5 text-center text-[10px] leading-snug text-amber-800 shadow-sm">
+              {mapError}
             </div>
           ) : null}
 
