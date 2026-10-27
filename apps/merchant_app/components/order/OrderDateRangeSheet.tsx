@@ -150,7 +150,10 @@ export function OrderDateRangeSheet({ visible, value, onClose, onApply }: Props)
                     <View style={styles.presetRowText}>
                       <Text style={styles.presetTitle}>Custom date range</Text>
                       <Text style={styles.presetSub}>
-                        {draftPreset === "custom" && customReady
+                        {draftPreset === "custom" &&
+                        customReady &&
+                        customStart != null &&
+                        customEnd != null
                           ? formatRangeSubtitle(new Date(customStart), new Date(customEnd))
                           : "Pick From and To dates"}
                       </Text>
