@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import "mapbox-gl/dist/mapbox-gl.css";
+import { mapCache } from "@/lib/map-cache";
 import { OrderPageOverlay } from "@/components/orders/OrderPageOverlay";
 
 type Breadcrumb = {
@@ -443,12 +443,27 @@ export default function RiderTrackingModal({
     let watchdog: ReturnType<typeof setTimeout> | null = null;
     setStage("loading-lib");
 
-    void import("mapbox-gl")
-      .then((mod) => {
+    // This dashboard does NOT bundle mapbox-gl — every working map pulls it
+    // from the CDN via mapCache (which also injects mapbox-gl.css). A bundled
+    // `import("mapbox-gl")` here never resolved, which is why the canvas stayed
+    // blank with no error. We reuse the loader but build our OWN Map rather
+    // than mapCache.getOrCreateMap(), because that returns a cached singleton
+    // bound to another container (RiderRouteMap lives on this same page).
+    void mapCache
+      .loadMapboxScript()
+      .then(async () => {
         if (disposed || mapRef.current) return;
-        const mapboxgl = mod.default ?? mod;
+        const mapboxgl = (window as unknown as { mapboxgl?: any }).mapboxgl;
+        if (!mapboxgl) throw new Error("window.mapboxgl missing after script load");
         mapboxRef.current = mapboxgl;
         mapboxgl.accessToken = tk;
+        // Stops ERR_BLOCKED_BY_CLIENT noise from ad blockers on telemetry.
+        try {
+          const { disableMapboxTelemetry } = await import("@/lib/mapbox/disable-telemetry");
+          disableMapboxTelemetry();
+        } catch {
+          /* non-fatal */
+        }
         setStage("constructing");
 
         const rect = container.getBoundingClientRect();
@@ -503,7 +518,11 @@ export default function RiderTrackingModal({
       })
       .catch((err) => {
         setStage("failed");
-        setMapError(`Could not load the map library: ${(err as Error)?.message ?? "chunk failed"}`);
+        setMapError(
+          `Could not load the map library from api.mapbox.com: ${
+            (err as Error)?.message ?? "script failed"
+          }`
+        );
       });
 
     return () => {
