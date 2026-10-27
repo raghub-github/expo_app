@@ -50,14 +50,27 @@ const SAME_TAB_PRESS_DEBOUNCE_MS = 700;
 const DOCK_SWITCH_OVERLAY_MS = 380;
 const TAB_HIT_SLOP = { top: 8, bottom: 8, left: 6, right: 6 };
 
-/** True when the profile stack root (index) is showing — not any pushed child route. */
-function isProfileStackAtRoot(tabState: BottomTabBarProps["state"]): boolean {
-  const profileRoute = tabState.routes.find((r) => r.name === "profile");
-  const stack = profileRoute?.state;
+/** True when a tab's nested stack is at its index root — not a pushed child. */
+function isTabStackAtRoot(
+  tabState: BottomTabBarProps["state"],
+  tabName: string
+): boolean {
+  const tabRoute = tabState.routes.find((r) => r.name === tabName);
+  const stack = tabRoute?.state;
   if (!stack || typeof stack.index !== "number") return true;
   const active = stack.routes[stack.index];
   const name = active?.name ?? "index";
   return name === "index";
+}
+
+/** True when the profile stack root (index) is showing — not any pushed child route. */
+function isProfileStackAtRoot(tabState: BottomTabBarProps["state"]): boolean {
+  return isTabStackAtRoot(tabState, "profile");
+}
+
+/** True when Catalog (menu) stack is on the list root — not item/category screens. */
+function isMenuStackAtRoot(tabState: BottomTabBarProps["state"]): boolean {
+  return isTabStackAtRoot(tabState, "menu");
 }
 
 type MainTabName = (typeof MAIN_TAB_ORDER)[number];
@@ -291,6 +304,16 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
     router.replace("/(tabs)/profile");
   }, [router, setLastProfileSlug, setOpenProfileRootOnNextFocus]);
 
+  /** Pop Catalog nested screens without expo-router replace (replace stacks duplicate layers). */
+  const resetMenuToRoot = useCallback(() => {
+    navigation.dispatch(
+      CommonActions.navigate({
+        name: "menu",
+        params: { screen: "index" },
+      } as never)
+    );
+  }, [navigation]);
+
   const onPressMainTab = useCallback(
     (routeName: MainTabName, isActive: boolean) => {
       const now = Date.now();
@@ -306,6 +329,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
 
       const alreadyOnTab = isActive || focusedRouteName === routeName;
       const profileHasInnerPage = !isProfileStackAtRoot(state);
+      const menuHasInnerPage = !isMenuStackAtRoot(state);
 
       if (routeName === "profile" && profileHasInnerPage) {
         resetProfileToRoot();
@@ -315,11 +339,18 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
         return;
       }
 
-      if (alreadyOnTab) {
-        // Re-tapping Catalog pops nested item screens once — ignore further taps in debounce.
-        if (routeName === "menu") {
-          router.replace("/(tabs)/menu" as never);
+      // Catalog: always land on list root; never router.replace (each replace stacked a layer).
+      if (routeName === "menu") {
+        if (alreadyOnTab) {
+          if (menuHasInnerPage) resetMenuToRoot();
+          return;
         }
+        navigateToMainTab("menu");
+        if (menuHasInnerPage) resetMenuToRoot();
+        return;
+      }
+
+      if (alreadyOnTab) {
         return;
       }
 
@@ -328,8 +359,8 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
     [
       focusedRouteName,
       navigateToMainTab,
+      resetMenuToRoot,
       resetProfileToRoot,
-      router,
       state,
     ]
   );

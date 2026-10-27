@@ -681,7 +681,9 @@ async function loadCoreRows(
   sql: Sql,
   storeId: number,
   limit: number,
-  ordersFoodId?: number
+  ordersFoodId?: number,
+  /** When set, Past Orders / history uses this window instead of the live 7-day board cap. */
+  createdRange?: { fromIso: string; toIso: string } | null
 ): Promise<CoreRow[]> {
   if (ordersFoodId != null && Number.isFinite(ordersFoodId)) {
     try {
@@ -776,10 +778,91 @@ async function loadCoreRows(
     }
   }
 
-  try {
-    // Plain SELECT — BEGIN/SET LOCAL added 2–3 remote RTTs per board poll.
-    // Board only needs recent rows; Past Orders covers history.
-    return await sql<CoreRow[]>`
+  const fromIso = createdRange?.fromIso ?? null;
+  const toIso = createdRange?.toIso ?? null;
+  const useHistoryWindow = fromIso != null && toIso != null;
+
+  const selectList = async (history: boolean, lookback: "7 days" | "48 hours", rowLimit: number) => {
+    if (history && fromIso && toIso) {
+      return sql<CoreRow[]>`
+        SELECT
+          oc.id,
+          oc.order_id,
+          oc.formatted_order_id,
+          cust.full_name AS customer_full_name,
+          cust.primary_mobile AS customer_primary_mobile,
+          oc.status,
+          oc.current_status,
+          oc.delivery_type,
+          oc.grand_total,
+          oc.item_total,
+          oc.addon_total,
+          oc.billing_snapshot,
+          oc.merchant_precision_discount,
+          oc.total_ctm,
+          oc.checkout_metadata,
+          oc.payment_status,
+          oc.created_at,
+          oc.customer_id,
+          oc.rider_id,
+          oc.payment_method,
+          oc.items,
+          oc.drop_address_normalized,
+          oc.drop_address_raw,
+          oc.distance_km,
+          oc.cancelled_at,
+          oc.is_bulk_order,
+          oc.merchant_instructions_list,
+          oc.tax_invoice_number
+        FROM orders_core oc
+        LEFT JOIN customers cust ON cust.id = oc.customer_id
+        WHERE oc.merchant_store_id = ${storeId}
+          AND oc.created_at >= ${fromIso}::timestamptz
+          AND oc.created_at <= ${toIso}::timestamptz
+        ORDER BY oc.created_at DESC
+        LIMIT ${rowLimit}
+      `;
+    }
+    if (lookback === "48 hours") {
+      return sql<CoreRow[]>`
+        SELECT
+          oc.id,
+          oc.order_id,
+          oc.formatted_order_id,
+          cust.full_name AS customer_full_name,
+          cust.primary_mobile AS customer_primary_mobile,
+          oc.status,
+          oc.current_status,
+          oc.delivery_type,
+          oc.grand_total,
+          oc.item_total,
+          oc.addon_total,
+          oc.billing_snapshot,
+          oc.merchant_precision_discount,
+          oc.total_ctm,
+          oc.checkout_metadata,
+          oc.payment_status,
+          oc.created_at,
+          oc.customer_id,
+          oc.rider_id,
+          oc.payment_method,
+          oc.items,
+          oc.drop_address_normalized,
+          oc.drop_address_raw,
+          oc.distance_km,
+          oc.cancelled_at,
+          oc.is_bulk_order,
+          oc.merchant_instructions_list,
+          oc.tax_invoice_number
+        FROM orders_core oc
+        LEFT JOIN customers cust ON cust.id = oc.customer_id
+        WHERE oc.merchant_store_id = ${storeId}
+          AND oc.created_at >= NOW() - INTERVAL '48 hours'
+        ORDER BY oc.created_at DESC
+        LIMIT ${rowLimit}
+      `;
+    }
+    return sql<CoreRow[]>`
       SELECT
         oc.id,
         oc.order_id,
@@ -814,51 +897,20 @@ async function loadCoreRows(
       WHERE oc.merchant_store_id = ${storeId}
         AND oc.created_at >= NOW() - INTERVAL '7 days'
       ORDER BY oc.created_at DESC
-      LIMIT ${limit}
+      LIMIT ${rowLimit}
     `;
+  };
+
+  try {
+    // Plain SELECT — live board stays on 7 days; Past Orders uses from/to.
+    return await selectList(useHistoryWindow, "7 days", limit);
   } catch (err) {
     const code = (err as { code?: string })?.code;
     // 57014 = statement_timeout — fall back to a smaller capped window
     if (code === "57014") {
       try {
         return await Promise.race([
-          sql<CoreRow[]>`
-          SELECT
-            oc.id,
-            oc.order_id,
-            oc.formatted_order_id,
-            cust.full_name AS customer_full_name,
-            cust.primary_mobile AS customer_primary_mobile,
-            oc.status,
-            oc.current_status,
-            oc.delivery_type,
-            oc.grand_total,
-            oc.item_total,
-            oc.addon_total,
-            oc.billing_snapshot,
-            oc.merchant_precision_discount,
-            oc.total_ctm,
-            oc.checkout_metadata,
-            oc.payment_status,
-            oc.created_at,
-            oc.customer_id,
-            oc.rider_id,
-            oc.payment_method,
-            oc.items,
-            oc.drop_address_normalized,
-            oc.drop_address_raw,
-            oc.distance_km,
-            oc.cancelled_at,
-            oc.is_bulk_order,
-            oc.merchant_instructions_list,
-            oc.tax_invoice_number
-          FROM orders_core oc
-          LEFT JOIN customers cust ON cust.id = oc.customer_id
-          WHERE oc.merchant_store_id = ${storeId}
-            AND oc.created_at >= NOW() - INTERVAL '48 hours'
-          ORDER BY oc.created_at DESC
-          LIMIT ${Math.min(limit, 25)}
-        `,
+          selectList(useHistoryWindow, "48 hours", Math.min(limit, useHistoryWindow ? 80 : 25)),
           new Promise<CoreRow[]>((resolve) => {
             setTimeout(() => resolve([]), 2_000);
           }),
@@ -868,6 +920,45 @@ async function loadCoreRows(
       }
     }
     if (code !== "42703") throw err;
+    // 0412 not applied — retry without merchant_precision_discount / total_ctm.
+    if (useHistoryWindow && fromIso && toIso) {
+      return await sql<CoreRow[]>`
+        SELECT
+          oc.id,
+          oc.order_id,
+          oc.formatted_order_id,
+          cust.full_name AS customer_full_name,
+          cust.primary_mobile AS customer_primary_mobile,
+          oc.status,
+          oc.current_status,
+          oc.delivery_type,
+          oc.grand_total,
+          oc.item_total,
+          oc.addon_total,
+          oc.billing_snapshot,
+          oc.checkout_metadata,
+          oc.payment_status,
+          oc.created_at,
+          oc.customer_id,
+          oc.rider_id,
+          oc.payment_method,
+          oc.items,
+          oc.drop_address_normalized,
+          oc.drop_address_raw,
+          oc.distance_km,
+          oc.cancelled_at,
+          oc.is_bulk_order,
+          oc.merchant_instructions_list,
+          oc.tax_invoice_number
+        FROM orders_core oc
+        LEFT JOIN customers cust ON cust.id = oc.customer_id
+        WHERE oc.merchant_store_id = ${storeId}
+          AND oc.created_at >= ${fromIso}::timestamptz
+          AND oc.created_at <= ${toIso}::timestamptz
+        ORDER BY oc.created_at DESC
+        LIMIT ${limit}
+      `;
+    }
     return await sql<CoreRow[]>`
       SELECT
         oc.id,
@@ -2030,12 +2121,25 @@ async function loadCustomerOrderOrdinalsForCores(
 export async function loadMerchantFoodOrders(
   sql: Sql,
   storeId: number,
-  options: { limit?: number; ordersFoodId?: number } = {}
+  options: {
+    limit?: number;
+    ordersFoodId?: number;
+    /** Inclusive created_at window for Past Orders (ISO). */
+    createdFrom?: string | null;
+    createdTo?: string | null;
+  } = {}
 ): Promise<MerchantFoodOrderDto[]> {
-  const limit = Math.min(options.limit ?? 200, 500);
+  const historyWindow =
+    typeof options.createdFrom === "string" &&
+    options.createdFrom.length > 0 &&
+    typeof options.createdTo === "string" &&
+    options.createdTo.length > 0
+      ? { fromIso: options.createdFrom, toIso: options.createdTo }
+      : null;
+  const limit = Math.min(options.limit ?? 200, historyWindow ? 300 : 500);
   const ordersFoodId = options.ordersFoodId;
 
-  const cores = await loadCoreRows(sql, storeId, limit, ordersFoodId);
+  const cores = await loadCoreRows(sql, storeId, limit, ordersFoodId, historyWindow);
   if (cores.length === 0) return [];
 
   const isBoardList = ordersFoodId == null;

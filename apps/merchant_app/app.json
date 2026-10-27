@@ -8,6 +8,8 @@
     "userInterfaceStyle": "automatic",
     "icon": "./assets/mxappicon.png",
     "splash": {
+      "image": "./assets/images/splash-logo.png",
+      "resizeMode": "contain",
       "backgroundColor": "#F6FBF9"
     },
     "androidStatusBar": {

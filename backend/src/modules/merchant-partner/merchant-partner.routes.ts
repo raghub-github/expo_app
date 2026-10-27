@@ -9398,9 +9398,10 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
       });
 
       /** GET /merchant-partner/stores/:storeId/food-orders — partner food orders (same pipeline as Partner Site). */
-      protectedApp.get<{ Params: { storeId: string }; Querystring: { limit?: string } }>(
-        "/stores/:storeId/food-orders",
-        async (req, reply) => {
+      protectedApp.get<{
+        Params: { storeId: string };
+        Querystring: { limit?: string; from?: string; to?: string };
+      }>("/stores/:storeId/food-orders", async (req, reply) => {
           if (req.auth?.role !== "merchant" || !req.auth?.sub) {
             return reply.code(401).send({ error: "merchant_required" });
           }
@@ -9416,15 +9417,29 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           `;
           if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
 
-          const limitRaw = parseInt(String(req.query?.limit ?? "50"), 10);
-          // Merchant board does not need a deep history dump — keep the hot path small.
-          const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 50, 1), 60);
+          const fromRaw = typeof req.query?.from === "string" ? req.query.from.trim() : "";
+          const toRaw = typeof req.query?.to === "string" ? req.query.to.trim() : "";
+          const fromMs = fromRaw ? Date.parse(fromRaw) : NaN;
+          const toMs = toRaw ? Date.parse(toRaw) : NaN;
+          const hasHistoryRange =
+            Number.isFinite(fromMs) && Number.isFinite(toMs) && fromMs <= toMs;
+          const createdFrom = hasHistoryRange ? new Date(fromMs).toISOString() : null;
+          const createdTo = hasHistoryRange ? new Date(toMs).toISOString() : null;
+
+          const limitRaw = parseInt(String(req.query?.limit ?? (hasHistoryRange ? "200" : "50")), 10);
+          // Live board stays small; Past Orders may request a wider dated page.
+          const limitCap = hasHistoryRange ? 300 : 60;
+          const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 50, 1), limitCap);
           try {
             const { loadMerchantFoodOrders } = await import("./merchant-food-orders.service.js");
-            const FOOD_ORDERS_DEADLINE_MS = 12_000;
+            const FOOD_ORDERS_DEADLINE_MS = hasHistoryRange ? 20_000 : 12_000;
             const started = Date.now();
             const orders = await Promise.race([
-              loadMerchantFoodOrders(sql, storeId, { limit }),
+              loadMerchantFoodOrders(sql, storeId, {
+                limit,
+                createdFrom,
+                createdTo,
+              }),
               new Promise<never>((_, reject) => {
                 setTimeout(
                   () => reject(new Error("food_orders_timeout")),

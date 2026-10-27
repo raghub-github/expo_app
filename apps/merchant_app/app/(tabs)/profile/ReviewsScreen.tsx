@@ -31,14 +31,11 @@ export default function ReviewsScreen() {
   const [items, setItems] = useState<StoreReview[]>([]);
   const [filter, setFilter] = useState<FilterKey>("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [fromDate, setFromDate] = useState<string>(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 21);
-    return d.toISOString();
-  });
-  const [toDate, setToDate] = useState<string>(() => new Date().toISOString());
+  // Default "all" — many stores have reviews older than 21d; narrow range hid them as "0 reviews".
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
-  const [tempRangeKey, setTempRangeKey] = useState<"7" | "21" | "30" | "all">("21");
+  const [tempRangeKey, setTempRangeKey] = useState<"7" | "21" | "30" | "all">("all");
   const [tempFilter, setTempFilter] = useState<FilterKey>("all");
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -50,7 +47,8 @@ export default function ReviewsScreen() {
 
   useEffect(() => {
     const load = async () => {
-      if (!selectedStore?.id || !token) {
+      const storeId = Number(selectedStore?.id);
+      if (!Number.isFinite(storeId) || storeId < 1 || !token) {
         setItems([]);
         setLoading(false);
         return;
@@ -60,9 +58,9 @@ export default function ReviewsScreen() {
       try {
         const data = await fetchStoreReviews({
           token,
-          storeId: selectedStore.id,
-          from: fromDate,
-          to: toDate,
+          storeId,
+          from: fromDate || undefined,
+          to: toDate || undefined,
         });
         setItems(data.data ?? []);
         setHasLoadedOnce(true);
@@ -116,12 +114,13 @@ export default function ReviewsScreen() {
   };
 
   const handleConfirmDelete = async () => {
-    if (!selectedStore?.id || !token || !confirmTarget) return;
+    const storeId = Number(selectedStore?.id);
+    if (!Number.isFinite(storeId) || storeId < 1 || !token || !confirmTarget) return;
     try {
       setIsSavingReply(true);
       await deleteStoreReviewReply({
         token,
-        storeId: selectedStore.id,
+        storeId,
         reviewId: confirmTarget.id,
       });
       setItems((prev) =>
@@ -402,14 +401,11 @@ export default function ReviewsScreen() {
               <Pressable
                 style={styles.sheetSecondaryButton}
                 onPress={() => {
-                  const to = new Date();
-                  const from = new Date();
-                  from.setDate(to.getDate() - 21);
-                  setTempRangeKey("21");
+                  setTempRangeKey("all");
                   setTempFilter("all");
                   setFilter("all");
-                  setFromDate(from.toISOString());
-                  setToDate(to.toISOString());
+                  setFromDate("");
+                  setToDate("");
                   setIsFilterSheetOpen(false);
                 }}
               >

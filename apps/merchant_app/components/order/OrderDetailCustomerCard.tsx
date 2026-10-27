@@ -21,6 +21,8 @@ import {
 import { OrderCancellationBanner } from "@/components/order/OrderCancellationBanner";
 import { OrderPreparedLateTopBanner } from "@/components/order/OrderPrepDelayedBanner";
 import { ReadyHandoverTimeline } from "@/components/order/ReadyHandoverTimeline";
+import { OrderVegOnlyBadge } from "@/components/order/OrderVegOnlyBadge";
+import { isOrderVegOnly } from "@/lib/orderItemVeg";
 import { resolvePreparedLateMinutes } from "@/lib/order-prep-time";
 import { resolvePreparedAtForHandover } from "@/lib/orderHandoverTimeline";
 import { GatiMitraMerchant } from "@/constants/theme";
@@ -105,15 +107,30 @@ export function OrderDetailCustomerCard({
     setTimeout(() => setCopied(false), 1500);
   };
 
+  const showVegOnly = useMemo(
+    () =>
+      isOrderVegOnly(
+        (Array.isArray(order.items) ? order.items : []).map((it) => ({
+          name: String(it?.name ?? ""),
+          vegNonveg: it?.veg_nonveg ?? null,
+        })),
+        order.veg_non_veg ?? null
+      ),
+    [order.items, order.veg_non_veg]
+  );
+
   return (
     <View style={[styles.shell, showDelayedBanner ? styles.shellWithBanner : null]}>
       {showDelayedBanner ? <OrderPreparedLateTopBanner lateMinutes={preparedLateMins!} /> : null}
 
       <View style={[styles.card, showDelayedBanner ? styles.cardUnderBanner : null]}>
-        <View style={[styles.statusBadge, { backgroundColor: statusStyle.bg }]}>
-          <Text style={[styles.statusBadgeText, { color: statusStyle.color }]}>
-            {statusStyle.label.toUpperCase()}
-          </Text>
+        <View style={styles.badgeRow}>
+          <View style={[styles.statusBadge, { backgroundColor: statusStyle.bg }]}>
+            <Text style={[styles.statusBadgeText, { color: statusStyle.color }]}>
+              {statusStyle.label.toUpperCase()}
+            </Text>
+          </View>
+          {showVegOnly ? <OrderVegOnlyBadge /> : null}
         </View>
 
         {isReady ? (
@@ -212,6 +229,12 @@ const styles = StyleSheet.create({
   },
   cardUnderBanner: {
     borderTopWidth: 0,
+  },
+  badgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
   },
   statusBadge: {
     alignSelf: "flex-start",

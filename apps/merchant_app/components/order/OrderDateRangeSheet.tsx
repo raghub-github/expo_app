@@ -16,6 +16,7 @@ import {
   presetSubtitle,
   formatRangeSubtitle,
   formatDateBarLabel,
+  isCustomRangeComplete,
 } from "@/lib/orderDateRange";
 import { RangeCalendarPicker } from "@/components/order/RangeCalendarPicker";
 
@@ -40,13 +41,20 @@ export function OrderDateRangeSheet({ visible, value, onClose, onApply }: Props)
   const { width: windowWidth } = useWindowDimensions();
   const [step, setStep] = useState<SheetStep>("presets");
   const [draftPreset, setDraftPreset] = useState<DateRangePresetId>(value.preset);
-  const [customStart, setCustomStart] = useState(value.startMs);
-  const [customEnd, setCustomEnd] = useState(value.endMs);
+  /** Custom draft starts empty — user must pick both From and To. */
+  const [customStart, setCustomStart] = useState<number | null>(null);
+  const [customEnd, setCustomEnd] = useState<number | null>(null);
 
   const sync = useCallback(() => {
     setDraftPreset(value.preset);
-    setCustomStart(value.startMs);
-    setCustomEnd(value.endMs);
+    // Never pre-fill last-30-days into custom. Only restore an already-applied custom range.
+    if (value.preset === "custom") {
+      setCustomStart(value.startMs);
+      setCustomEnd(value.endMs);
+    } else {
+      setCustomStart(null);
+      setCustomEnd(null);
+    }
     setStep("presets");
   }, [value]);
 
@@ -56,20 +64,23 @@ export function OrderDateRangeSheet({ visible, value, onClose, onApply }: Props)
 
   const selectPreset = (preset: DateRangePresetId) => {
     setDraftPreset(preset);
-    if (preset !== "custom") {
-      const r = buildPresetRange(preset);
-      setCustomStart(r.startMs);
-      setCustomEnd(r.endMs);
-    }
   };
 
   const openCustomCalendar = () => {
     setDraftPreset("custom");
+    // Fresh custom pick: clear any leftover dates unless editing an applied custom filter.
+    if (value.preset !== "custom") {
+      setCustomStart(null);
+      setCustomEnd(null);
+    }
     setStep("calendar");
   };
 
+  const customReady = isCustomRangeComplete(customStart, customEnd);
+
   const handleApply = () => {
     if (draftPreset === "custom") {
+      if (customStart == null || customEnd == null) return;
       onApply({
         preset: "custom",
         startMs: Math.min(customStart, customEnd),
@@ -139,9 +150,12 @@ export function OrderDateRangeSheet({ visible, value, onClose, onApply }: Props)
                     <View style={styles.presetRowText}>
                       <Text style={styles.presetTitle}>Custom date range</Text>
                       <Text style={styles.presetSub}>
-                        {draftPreset === "custom"
+                        {draftPreset === "custom" &&
+                        customReady &&
+                        customStart != null &&
+                        customEnd != null
                           ? formatRangeSubtitle(new Date(customStart), new Date(customEnd))
-                          : "Select your own date range"}
+                          : "Pick From and To dates"}
                       </Text>
                     </View>
                     <Ionicons
@@ -155,7 +169,13 @@ export function OrderDateRangeSheet({ visible, value, onClose, onApply }: Props)
                 <View style={styles.footer}>
                   <Pressable
                     onPress={handleApply}
-                    style={({ pressed }) => [styles.applyBtnFull, pressed && { opacity: 0.92 }]}
+                    disabled={draftPreset === "custom" && !customReady}
+                    style={({ pressed }) => [
+                      styles.applyBtnFull,
+                      draftPreset === "custom" && !customReady && styles.applyBtnDisabled,
+                      pressed && draftPreset !== "custom" && { opacity: 0.92 },
+                      pressed && draftPreset === "custom" && customReady && { opacity: 0.92 },
+                    ]}
                   >
                     <Text style={styles.applyBtnFullText}>Apply</Text>
                   </Pressable>
@@ -163,7 +183,13 @@ export function OrderDateRangeSheet({ visible, value, onClose, onApply }: Props)
               </>
             ) : (
               <>
-                <View style={[styles.calendarPane, { paddingHorizontal: 16 }]}>
+                <ScrollView
+                  style={styles.calendarScroll}
+                  contentContainerStyle={[styles.calendarPane, { paddingHorizontal: 16 }]}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  bounces={false}
+                >
                   <RangeCalendarPicker
                     layoutWidth={calendarWidth}
                     startMs={customStart}
@@ -173,19 +199,26 @@ export function OrderDateRangeSheet({ visible, value, onClose, onApply }: Props)
                       setCustomEnd(e);
                     }}
                   />
-                </View>
+                </ScrollView>
                 <View style={styles.calendarFooter}>
                   <Pressable
                     onPress={() => setStep("presets")}
-                    style={({ pressed }) => [styles.textActionBtn, pressed && { opacity: 0.7 }]}
+                    style={({ pressed }) => [styles.secondaryBtn, pressed && { opacity: 0.85 }]}
                   >
-                    <Text style={styles.textActionBtnText}>CANCEL</Text>
+                    <Text style={styles.secondaryBtnText}>Back</Text>
                   </Pressable>
                   <Pressable
                     onPress={handleApply}
-                    style={({ pressed }) => [styles.textActionBtn, pressed && { opacity: 0.7 }]}
+                    disabled={!customReady}
+                    style={({ pressed }) => [
+                      styles.applyBtnHalf,
+                      !customReady && styles.applyBtnDisabled,
+                      pressed && customReady && { opacity: 0.92 },
+                    ]}
                   >
-                    <Text style={styles.textActionBtnText}>OK</Text>
+                    <Text style={styles.applyBtnFullText}>
+                      {customReady ? "Apply" : "Select From & To"}
+                    </Text>
                   </Pressable>
                 </View>
               </>
@@ -352,10 +385,12 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: GatiMitraMerchant.primary,
   },
+  calendarScroll: {
+    maxHeight: 520,
+  },
   calendarPane: {
     paddingTop: 8,
-    paddingBottom: 4,
-    minHeight: 380,
+    paddingBottom: 8,
   },
   footer: {
     paddingHorizontal: 16,
@@ -370,6 +405,9 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
   },
+  applyBtnDisabled: {
+    backgroundColor: "#94A3B8",
+  },
   applyBtnFullText: {
     fontSize: 16,
     fontWeight: "800",
@@ -377,22 +415,32 @@ const styles = StyleSheet.create({
   },
   calendarFooter: {
     flexDirection: "row",
-    justifyContent: "flex-end",
     alignItems: "center",
-    gap: 24,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderTopWidth: 1,
     borderTopColor: GatiMitraMerchant.border,
   },
-  textActionBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 4,
+  secondaryBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: "center",
+    borderWidth: 1.5,
+    borderColor: GatiMitraMerchant.border,
+    backgroundColor: "#FFFFFF",
   },
-  textActionBtnText: {
-    fontSize: 14,
+  secondaryBtnText: {
+    fontSize: 15,
     fontWeight: "800",
-    color: GatiMitraMerchant.primary,
-    letterSpacing: 0.5,
+    color: GatiMitraMerchant.textPrimary,
+  },
+  applyBtnHalf: {
+    flex: 1.4,
+    backgroundColor: GatiMitraMerchant.textPrimary,
+    paddingVertical: 14,
+    borderRadius: 10,
+    alignItems: "center",
   },
 });

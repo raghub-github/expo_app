@@ -131,11 +131,6 @@ export default function LoginScreen() {
       ? "+91" + phone.replace(/\D/g, "").slice(-10)
       : "";
 
-  const maskedPhone =
-    phone.replace(/\D/g, "").length >= 10
-      ? `+91 •••• •${phone.replace(/\D/g, "").slice(-3)}`
-      : phoneE164;
-
   const clearErrors = () => {
     setError("");
     setNotRegisteredSheetOpen(false);
@@ -319,8 +314,8 @@ export default function LoginScreen() {
   const resendMins = Math.floor(resendSeconds / 60);
   const resendSecs = resendSeconds % 60;
   const phoneDigits = phone.replace(/\D/g, "").slice(-10);
-  const otpSentMask =
-    phoneDigits.length === 10 ? `${phoneDigits.slice(0, 5)}****` : maskedPhone;
+  const otpSentPhone =
+    phoneDigits.length === 10 ? `+91 ${phoneDigits}` : phoneE164 || phone;
 
   const otpSheetError =
     step === "otp" && !deviceSessionMode && error.trim() ? error : null;
@@ -483,7 +478,7 @@ export default function LoginScreen() {
       <OtpVerifySheetModal
         visible={step === "otp"}
         title="Verify OTP"
-        subtitle={`The One Time Password is sent to ${otpSentMask}. Please enter the One Time Password.`}
+        subtitle={`The One Time Password is sent to ${otpSentPhone}. Please enter the One Time Password.`}
         otpLength={6}
         value={otp}
         onChange={(next) => {

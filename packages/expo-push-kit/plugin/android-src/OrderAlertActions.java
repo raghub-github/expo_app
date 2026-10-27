@@ -99,14 +99,17 @@ public final class OrderAlertActions {
     String base = prefs.getString("baseUrl", "");
     String token = prefs.getString("token", "");
     String storeId = row.optString("storeId", prefs.getString("storeId", ""));
-    String foodId = row.optString("foodOrderId", "");
-    if (foodId.length() == 0) foodId = digitsOnly(row.optString("orderId", ""));
+    String foodIdRaw = row.optString("foodOrderId", "");
+    if (foodIdRaw.length() == 0) foodIdRaw = digitsOnly(row.optString("orderId", ""));
+    // Must be final for use inside the Thread lambda (javac effectively-final rule).
+    final String foodId = foodIdRaw;
     if (base == null || token == null || base.length() == 0 || token.length() == 0) return;
     if (storeId.length() == 0 || !foodId.matches("^\\d+$")) return;
     final String url = base.replaceAll("/+$", "")
         + "/v1/merchant-partner/stores/" + storeId
         + "/food-orders/" + foodId;
     final String bearer = token;
+    final Context appContext = context.getApplicationContext();
     Thread t = new Thread(() -> {
       HttpURLConnection conn = null;
       try {
@@ -123,9 +126,9 @@ public final class OrderAlertActions {
         os.write(body);
         os.close();
         int code = conn.getResponseCode();
-        AlertEngineLog.log(context, code >= 200 && code < 300 ? "ACCEPT_SENT" : "ACCEPT_FAILED", "", foodId, "http=" + code);
+        AlertEngineLog.log(appContext, code >= 200 && code < 300 ? "ACCEPT_SENT" : "ACCEPT_FAILED", "", foodId, "http=" + code);
       } catch (Throwable err) {
-        AlertEngineLog.log(context, "ACCEPT_FAILED", "", foodId, err.getMessage());
+        AlertEngineLog.log(appContext, "ACCEPT_FAILED", "", foodId, err.getMessage());
       } finally {
         if (conn != null) conn.disconnect();
       }

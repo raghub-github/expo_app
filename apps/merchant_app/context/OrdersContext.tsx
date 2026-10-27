@@ -166,15 +166,24 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   const { activeTab } = useActiveTab();
   const { selectedStore, managedStores } = useSelectedStore();
   const orderStoreIds = useMemo(() => {
-    const fromManaged = managedStores.map((s) => s.id).filter((id) => Number.isFinite(id) && id > 0);
+    const coerceId = (raw: unknown): number | null => {
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const fromManaged = managedStores
+      .map((s) => coerceId(s.id))
+      .filter((id): id is number => id != null);
     if (fromManaged.length > 0) return [...new Set(fromManaged)];
-    if (selectedStore?.id) return [selectedStore.id];
+    const selectedId = coerceId(selectedStore?.id);
+    if (selectedId != null) return [selectedId];
     return [] as number[];
   }, [managedStores, selectedStore?.id]);
   const storeById = useMemo(() => {
     const map = new Map<number, { name: string; locality: string }>();
     for (const s of managedStores.length > 0 ? managedStores : selectedStore ? [selectedStore] : []) {
-      map.set(s.id, {
+      const id = Number(s.id);
+      if (!Number.isFinite(id) || id < 1) continue;
+      map.set(id, {
         name: s.store_name,
         locality: shortLocalityFromAddress(s.full_address),
       });

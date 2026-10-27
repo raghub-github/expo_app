@@ -80,6 +80,41 @@ export function formatRangeSubtitle(start: Date, end: Date): string {
   return `${formatIstDayMonth(start)} - ${formatIstDayMonthYear(end)}`;
 }
 
+/**
+ * Apply a chosen calendar day to From or To.
+ * Incomplete ranges stay null until the user picks both sides.
+ * Picking From always clears To so the end date must be chosen explicitly
+ * (avoids accidentally applying a single-day range from a stale To).
+ */
+export function applyBoundToRange(
+  bound: "start" | "end",
+  dayStartMs: number,
+  dayEndMs: number,
+  startMs: number | null,
+  endMs: number | null
+): { startMs: number | null; endMs: number | null; nextBound: "start" | "end" } {
+  if (bound === "start") {
+    return { startMs: dayStartMs, endMs: null, nextBound: "end" };
+  }
+  const nextEnd = dayEndMs;
+  if (startMs != null && nextEnd < startMs) {
+    // To before From — keep To, ask for a new From.
+    return { startMs: null, endMs: nextEnd, nextBound: "start" };
+  }
+  return {
+    startMs,
+    endMs: nextEnd,
+    nextBound: startMs == null ? "start" : "end",
+  };
+}
+
+export function isCustomRangeComplete(
+  startMs: number | null,
+  endMs: number | null
+): boolean {
+  return startMs != null && endMs != null && startMs <= endMs;
+}
+
 export function buildPresetRange(preset: DateRangePresetId, ref = new Date()): OrderDateRange {
   const todayStart = startOfIstDay(ref);
   const todayEnd = endOfIstDay(ref);

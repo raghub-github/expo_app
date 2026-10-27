@@ -19,11 +19,16 @@ import {
 import { formatMerchantRs } from "@/lib/merchant-line-total";
 import { formatTerminalOrderFooter } from "@/lib/terminalOrderFooter";
 import { MerchantOrderRatingBlock } from "@/components/order/MerchantOrderRatingBlock";
+import {
+  OrderVegOnlyBadge,
+  orderHasVegOnlyTag,
+} from "@/components/order/OrderVegOnlyBadge";
 
 type Props = {
   order: OrderRecord;
   storeName?: string | null;
   rejectedReason?: string | null;
+  /** Override auto-detect from line items / order veg flag. */
   vegOnly?: boolean;
   onPress: () => void;
   onReviewPress?: () => void;
@@ -64,11 +69,12 @@ export function TerminalOrderCard({
   order,
   storeName,
   rejectedReason,
-  vegOnly = false,
+  vegOnly,
   onPress,
   onReviewPress,
 }: Props) {
   const [copied, setCopied] = useState(false);
+  const showVegOnly = vegOnly ?? orderHasVegOnlyTag(order);
   const meta = statusMeta(order.status);
   const isTerminalRejected = order.status === "rejected" || order.status === "rto";
   const dateIso =
@@ -121,12 +127,7 @@ export function TerminalOrderCard({
           >
             <Text style={[styles.badgeText, { color: meta.badgeText }]}>{meta.label}</Text>
           </View>
-          {vegOnly ? (
-            <View style={styles.vegBadge}>
-              <Ionicons name="leaf" size={11} color="#166534" />
-              <Text style={styles.vegText}>VEG ONLY</Text>
-            </View>
-          ) : null}
+          {showVegOnly ? <OrderVegOnlyBadge /> : null}
         </View>
         <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
       </View>
@@ -261,23 +262,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "800",
     letterSpacing: 0.5,
-  },
-  vegBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: "#DCFCE7",
-    borderWidth: 1,
-    borderColor: "#BBF7D0",
-  },
-  vegText: {
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 0.3,
-    color: "#166534",
   },
   idRow: {
     flexDirection: "row",

@@ -17,6 +17,10 @@ import { formatOrderDateTime } from "@/components/order/orderFormatters";
 import { formatTerminalOrderFooter } from "@/lib/terminalOrderFooter";
 import { printOrderBill } from "@/lib/orderCardActions";
 import { MerchantOrderRatingBlock } from "@/components/order/MerchantOrderRatingBlock";
+import {
+  OrderVegOnlyBadge,
+  orderHasVegOnlyTag,
+} from "@/components/order/OrderVegOnlyBadge";
 import { Ionicons } from "@expo/vector-icons";
 
 type Props = {
@@ -57,6 +61,7 @@ export function RecentCompletedOrderCard({
   const placedAt = formatOrderDateTime(dateIso);
   const footerMeta = formatTerminalOrderFooter(order);
   const badge = statusBadge(order);
+  const showVegOnly = orderHasVegOnlyTag(order);
 
   const storeLine = useMemo(() => {
     const name = storeName?.trim() || "";
@@ -112,8 +117,11 @@ export function RecentCompletedOrderCard({
         detailsDefaultOpen={false}
         pressCardOpensDetail
         statusBadge={
-          <View style={[styles.badge, { backgroundColor: badge.bg, borderColor: badge.border }]}>
-            <Text style={[styles.badgeText, { color: badge.color }]}>{badge.label}</Text>
+          <View style={styles.badgeRow}>
+            <View style={[styles.badge, { backgroundColor: badge.bg, borderColor: badge.border }]}>
+              <Text style={[styles.badgeText, { color: badge.color }]}>{badge.label}</Text>
+            </View>
+            {showVegOnly ? <OrderVegOnlyBadge /> : null}
           </View>
         }
         footer={footer}
@@ -146,6 +154,12 @@ export function RecentCompletedOrderCard({
 }
 
 const styles = StyleSheet.create({
+  badgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
   badge: {
     paddingHorizontal: 10,
     paddingVertical: 4,

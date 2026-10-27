@@ -15,6 +15,8 @@ export default function AuthLayout() {
 
   const signedIn = authState.status === "authenticated";
 
+  // Declare every screen statically — conditional Stack.Screen children trigger
+  // "Layout children must be of type Screen" under Expo Router.
   return (
     <Stack
       screenOptions={{
@@ -26,15 +28,10 @@ export default function AuthLayout() {
         statusBarBackgroundColor: "#F8FAFC",
       }}
     >
-      {signedIn ? (
-        <Stack.Screen name="partner-home" />
-      ) : (
-        <>
-          <Stack.Screen name="welcome" />
-          <Stack.Screen name="login" />
-          <Stack.Screen name="signup-webview" />
-        </>
-      )}
+      <Stack.Screen name="welcome" redirect={signedIn} />
+      <Stack.Screen name="login" redirect={signedIn} />
+      <Stack.Screen name="signup-webview" redirect={signedIn} />
+      <Stack.Screen name="partner-home" redirect={!signedIn} />
     </Stack>
   );
 }

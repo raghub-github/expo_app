@@ -170,14 +170,15 @@ export async function fetchRealtimeAuthToken(
 export async function fetchFoodOrders(
   storeId: number,
   token: string,
-  opts?: { limit?: number }
+  opts?: { limit?: number; from?: string; to?: string }
 ): Promise<ApiFoodOrder[]> {
   const q = new URLSearchParams();
   if (opts?.limit) q.set("limit", String(opts.limit));
+  if (opts?.from) q.set("from", opts.from);
+  if (opts?.to) q.set("to", opts.to);
   const qs = q.toString();
-  // Server food-orders GET races at 12s. Client must be tighter than Android's
-  // connection wait or the Orders tab spins forever behind hung boot APIs.
-  const HARD_TIMEOUT_MS = 15_000;
+  // Live board races at 12s server-side; history dated queries get 20s.
+  const HARD_TIMEOUT_MS = opts?.from && opts?.to ? 22_000 : 15_000;
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders${qs ? `?${qs}` : ""}`,
     token,
