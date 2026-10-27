@@ -273,6 +273,11 @@ export async function fetchOverview(periodRaw: string | null) {
   const sql = getSql();
   const { period, from, to, previousFrom } = boundsFromSearch(periodRaw);
 
+  // Fast payable for overview aggregates — avoid deep JSON walks on every row.
+  const fastPayable = sql.unsafe(
+    `COALESCE(NULLIF(grand_total, 0), NULLIF(fare_amount, 0), 0)`
+  );
+
   const [current, previous, byType, trend, fleet, ticketsOpen, money, rev, penaltyRow] = await Promise.all([
     safeQuery(
       "overview-current",
@@ -287,13 +292,25 @@ export async function fetchOverview(periodRaw: string | null) {
           new_customers: number;
         }[]>`
           SELECT
-            (SELECT COUNT(*)::int FROM orders_core WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz) AS orders,
-            (SELECT COUNT(*)::int FROM orders_core WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz AND status::text = 'delivered') AS delivered,
-            (SELECT COUNT(*)::int FROM orders_core WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz AND status::text = 'cancelled') AS cancelled,
-            (SELECT COUNT(*)::int FROM orders_core WHERE status::text IN ('assigned','accepted','reached_store','picked_up','in_transit','created','dispatch_ready','dispatched','bill_ready','payment_done','pymt_assign_rx')) AS live,
-            (SELECT COALESCE(SUM(${payableSql()}), 0)::float FROM orders_core WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz AND status::text = 'delivered') AS gmv,
-            (SELECT COALESCE(SUM(${commissionSql()} + ${platformFeeSql()}), 0)::float FROM orders_core WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz AND status::text = 'delivered') AS commission,
-            (SELECT COUNT(*)::int FROM customers WHERE deleted_at IS NULL AND created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz) AS new_customers
+            COUNT(*)::int AS orders,
+            COUNT(*) FILTER (WHERE status::text = 'delivered')::int AS delivered,
+            COUNT(*) FILTER (WHERE status::text = 'cancelled')::int AS cancelled,
+            (
+              SELECT COUNT(*)::int FROM orders_core o2
+              WHERE o2.status::text IN (
+                'assigned','accepted','reached_store','picked_up','in_transit','created',
+                'dispatch_ready','dispatched','bill_ready','payment_done','pymt_assign_rx'
+              )
+            ) AS live,
+            COALESCE(SUM(${fastPayable}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gmv,
+            COALESCE(SUM(COALESCE(commission_amount, 0)) FILTER (WHERE status::text = 'delivered'), 0)::float AS commission,
+            (
+              SELECT COUNT(*)::int FROM customers c
+              WHERE c.deleted_at IS NULL
+                AND c.created_at >= ${from}::timestamptz AND c.created_at < ${to}::timestamptz
+            ) AS new_customers
+          FROM orders_core
+          WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz
         `,
       []
     ),
@@ -302,9 +319,15 @@ export async function fetchOverview(periodRaw: string | null) {
       () =>
         sql<{ orders: number; gmv: number; new_customers: number }[]>`
           SELECT
-            (SELECT COUNT(*)::int FROM orders_core WHERE created_at >= ${previousFrom}::timestamptz AND created_at < ${from}::timestamptz) AS orders,
-            (SELECT COALESCE(SUM(${payableSql()}), 0)::float FROM orders_core WHERE created_at >= ${previousFrom}::timestamptz AND created_at < ${from}::timestamptz AND status::text = 'delivered') AS gmv,
-            (SELECT COUNT(*)::int FROM customers WHERE deleted_at IS NULL AND created_at >= ${previousFrom}::timestamptz AND created_at < ${from}::timestamptz) AS new_customers
+            COUNT(*)::int AS orders,
+            COALESCE(SUM(${fastPayable}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gmv,
+            (
+              SELECT COUNT(*)::int FROM customers c
+              WHERE c.deleted_at IS NULL
+                AND c.created_at >= ${previousFrom}::timestamptz AND c.created_at < ${from}::timestamptz
+            ) AS new_customers
+          FROM orders_core
+          WHERE created_at >= ${previousFrom}::timestamptz AND created_at < ${from}::timestamptz
         `,
       []
     ),
@@ -316,7 +339,7 @@ export async function fetchOverview(periodRaw: string | null) {
             order_type::text AS order_type,
             COUNT(*)::int AS orders,
             COUNT(*) FILTER (WHERE status::text = 'delivered')::int AS delivered,
-            COALESCE(SUM(${payableSql()}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gmv
+            COALESCE(SUM(${fastPayable}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gmv
           FROM orders_core
           WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz
           GROUP BY order_type
@@ -331,7 +354,7 @@ export async function fetchOverview(periodRaw: string | null) {
           SELECT
             to_char(date_trunc('day', created_at AT TIME ZONE 'Asia/Kolkata'), 'YYYY-MM-DD') AS day,
             COUNT(*)::int AS orders,
-            COALESCE(SUM(${payableSql()}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gmv
+            COALESCE(SUM(${fastPayable}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gmv
           FROM orders_core
           WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz
           GROUP BY 1
@@ -352,16 +375,15 @@ export async function fetchOverview(periodRaw: string | null) {
           SELECT
             (SELECT COUNT(*)::int FROM customers WHERE deleted_at IS NULL) AS customers,
             (SELECT COUNT(*)::int FROM riders WHERE deleted_at IS NULL) AS riders,
-            (SELECT COUNT(*)::int
-             FROM riders r
-             WHERE r.deleted_at IS NULL
-               AND (
-                 SELECT UPPER(dl.status::text)
-                 FROM duty_logs dl
-                 WHERE dl.rider_id = r.id
-                 ORDER BY dl.timestamp DESC, dl.id DESC
-                 LIMIT 1
-               ) = 'ON'
+            (
+              SELECT COUNT(*)::int
+              FROM (
+                SELECT DISTINCT ON (dl.rider_id) dl.rider_id, dl.status
+                FROM duty_logs dl
+                ORDER BY dl.rider_id, dl.timestamp DESC NULLS LAST, dl.id DESC
+              ) latest
+              JOIN riders r ON r.id = latest.rider_id AND r.deleted_at IS NULL
+              WHERE UPPER(latest.status::text) = 'ON'
             ) AS riders_online,
             (SELECT COUNT(*)::int FROM merchant_stores WHERE deleted_at IS NULL) AS stores,
             (SELECT COUNT(*)::int FROM merchant_stores WHERE deleted_at IS NULL AND COALESCE(is_active, false) = true) AS stores_live
@@ -393,26 +415,21 @@ export async function fetchOverview(periodRaw: string | null) {
           platform_fee: number;
         }[]>`
           SELECT
-            COALESCE(SUM(${gstRemitSql()}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gst,
-            COALESCE(SUM(${gstSql()}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gst_bills,
+            COALESCE(SUM(COALESCE(NULLIF(billing_snapshot->>'tax_total', '')::numeric, 0)) FILTER (WHERE status::text = 'delivered'), 0)::float AS gst,
+            COALESCE(SUM(COALESCE(NULLIF(billing_snapshot->>'tax_total', '')::numeric, 0)) FILTER (WHERE status::text = 'delivered'), 0)::float AS gst_bills,
             COALESCE(SUM(COALESCE(tip_amount, 0)) FILTER (WHERE status::text = 'delivered'), 0)::float AS tips,
             COALESCE(SUM(COALESCE(donation_amount, 0)) FILTER (WHERE status::text = 'delivered'), 0)::float AS donations,
-            COALESCE(SUM(${gatiCashSql()}) FILTER (WHERE status::text = 'delivered'), 0)::float AS wallet_used,
+            COALESCE(SUM(COALESCE(NULLIF(billing_snapshot->>'gati_cash_applied', '')::numeric, 0)) FILTER (WHERE status::text = 'delivered'), 0)::float AS wallet_used,
             COALESCE((SELECT SUM(COALESCE(current_balance, 0)) FROM customer_wallet), 0)::float AS wallet_float,
             COALESCE((
               SELECT COALESCE(SUM(refund_amount), 0)::float FROM order_refunds
               WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz
             ), 0)::float AS refunds,
-            COALESCE(SUM(GREATEST(
-              0,
-              COALESCE(
-                NULLIF((billing_snapshot->'rider_payout_snapshot'->>'totalEarning')::numeric, 0),
-                COALESCE(rider_earning, 0)
-              )
-            )) FILTER (WHERE status::text = 'delivered'), 0)::float AS rider_earning,
-            COALESCE(SUM(${platformFeeSql()} + COALESCE((billing_snapshot->'gst_components'->'subscription'->>'original')::numeric, 0)) FILTER (WHERE status::text = 'delivered'), 0)::float AS platform_fee
+            COALESCE(SUM(COALESCE(rider_earning, 0)) FILTER (WHERE status::text = 'delivered'), 0)::float AS rider_earning,
+            COALESCE(SUM(COALESCE(NULLIF(billing_snapshot->>'platform_fee', '')::numeric, 0)) FILTER (WHERE status::text = 'delivered'), 0)::float AS platform_fee
           FROM orders_core
           WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz
+            AND status::text = 'delivered'
         `,
       []
     ),
@@ -428,13 +445,13 @@ export async function fetchOverview(periodRaw: string | null) {
         }[]>`
           SELECT
             COALESCE((
-              SELECT SUM(${platformChargesSql()})
+              SELECT SUM(COALESCE(NULLIF(billing_snapshot->>'platform_fee', '')::numeric, 0))
               FROM orders_core
               WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz
                 AND status::text = 'delivered'
             ), 0)::float AS charges,
             COALESCE((
-              SELECT SUM(${platformChargesSql()})
+              SELECT SUM(COALESCE(NULLIF(billing_snapshot->>'platform_fee', '')::numeric, 0))
               FROM orders_core
               WHERE created_at >= ${previousFrom}::timestamptz AND created_at < ${from}::timestamptz
                 AND status::text = 'delivered'
@@ -574,8 +591,11 @@ export async function fetchOverview(periodRaw: string | null) {
 export async function fetchPerformance(periodRaw: string | null) {
   const sql = getSql();
   const { period, from, to } = boundsFromSearch(periodRaw);
+  const fastPayable = sql.unsafe(
+    `COALESCE(NULLIF(grand_total, 0), NULLIF(fare_amount, 0), 0)`
+  );
 
-  const [byType, byStatus, eta, grocery] = await Promise.all([
+  const [byType, byStatus, eta, grocery, daily, live] = await Promise.all([
     safeQuery(
       "perf-by-type",
       () =>
@@ -588,6 +608,7 @@ export async function fetchPerformance(periodRaw: string | null) {
             failed: number;
             avg_minutes: number;
             gmv: number;
+            eta_breached: number;
           }[]
         >`
           SELECT
@@ -598,7 +619,8 @@ export async function fetchPerformance(periodRaw: string | null) {
             COUNT(*) FILTER (WHERE status::text IN ('failed','rejected'))::int AS failed,
             COALESCE(AVG(EXTRACT(EPOCH FROM (actual_delivery_time - created_at)) / 60)
               FILTER (WHERE actual_delivery_time IS NOT NULL AND status::text = 'delivered'), 0)::float AS avg_minutes,
-            COALESCE(SUM(${payableSql()}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gmv
+            COALESCE(SUM(${fastPayable}) FILTER (WHERE status::text = 'delivered'), 0)::float AS gmv,
+            COUNT(*) FILTER (WHERE eta_breached_at IS NOT NULL)::int AS eta_breached
           FROM orders_core
           WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz
           GROUP BY order_type
@@ -621,10 +643,13 @@ export async function fetchPerformance(periodRaw: string | null) {
     safeQuery(
       "perf-eta",
       () =>
-        sql<{ breached: number; total_delivered: number }[]>`
+        sql<{ breached: number; total_delivered: number; on_time: number }[]>`
           SELECT
             COUNT(*) FILTER (WHERE eta_breached_at IS NOT NULL)::int AS breached,
-            COUNT(*) FILTER (WHERE status::text = 'delivered')::int AS total_delivered
+            COUNT(*) FILTER (WHERE status::text = 'delivered')::int AS total_delivered,
+            COUNT(*) FILTER (
+              WHERE status::text = 'delivered' AND eta_breached_at IS NULL
+            )::int AS on_time
           FROM orders_core
           WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz
         `,
@@ -633,45 +658,126 @@ export async function fetchPerformance(periodRaw: string | null) {
     safeQuery(
       "perf-grocery",
       () =>
-        sql<{ store_type: string; orders: number; gmv: number }[]>`
+        sql<{ store_type: string; orders: number; gmv: number; delivered: number }[]>`
           SELECT
             COALESCE(NULLIF(ms.store_type::text, ''), 'unspecified') AS store_type,
             COUNT(*)::int AS orders,
-            COALESCE(SUM(${payableSql("oc")}) FILTER (WHERE oc.status::text = 'delivered'), 0)::float AS gmv
+            COALESCE(SUM(COALESCE(NULLIF(oc.grand_total, 0), NULLIF(oc.fare_amount, 0), 0)) FILTER (WHERE oc.status::text = 'delivered'), 0)::float AS gmv,
+            COUNT(*) FILTER (WHERE oc.status::text = 'delivered')::int AS delivered
           FROM orders_core oc
           LEFT JOIN merchant_stores ms ON ms.id = oc.merchant_store_id
           WHERE oc.created_at >= ${from}::timestamptz AND oc.created_at < ${to}::timestamptz
-            AND oc.order_type::text = 'food'
+            AND oc.order_type::text IN ('food', 'grocery', 'mart', 'pharmacy')
           GROUP BY 1
           ORDER BY orders DESC
           LIMIT 12
         `,
       []
     ),
+    safeQuery(
+      "perf-daily",
+      () =>
+        sql<
+          {
+            day: string;
+            orders: number;
+            delivered: number;
+            cancelled: number;
+            failed: number;
+          }[]
+        >`
+          SELECT
+            to_char(date_trunc('day', created_at AT TIME ZONE 'Asia/Kolkata'), 'DD Mon') AS day,
+            COUNT(*)::int AS orders,
+            COUNT(*) FILTER (WHERE status::text = 'delivered')::int AS delivered,
+            COUNT(*) FILTER (WHERE status::text = 'cancelled')::int AS cancelled,
+            COUNT(*) FILTER (WHERE status::text IN ('failed','rejected'))::int AS failed
+          FROM orders_core
+          WHERE created_at >= ${from}::timestamptz AND created_at < ${to}::timestamptz
+          GROUP BY date_trunc('day', created_at AT TIME ZONE 'Asia/Kolkata')
+          ORDER BY date_trunc('day', created_at AT TIME ZONE 'Asia/Kolkata')
+        `,
+      []
+    ),
+    safeQuery(
+      "perf-live",
+      () =>
+        sql<{ live: number }[]>`
+          SELECT COUNT(*)::int AS live
+          FROM orders_core
+          WHERE status::text NOT IN ('delivered', 'cancelled', 'failed', 'rejected')
+            AND created_at >= (${from}::timestamptz - interval '7 days')
+        `,
+      []
+    ),
   ]);
+
+  const mappedTypes = byType.map((r) => {
+    const orders = num(r.orders);
+    const delivered = num(r.delivered);
+    const cancelled = num(r.cancelled);
+    const failed = num(r.failed);
+    return {
+      type: str(r.order_type),
+      orders,
+      delivered,
+      cancelled,
+      failed,
+      avgMinutes: num(r.avg_minutes),
+      gmv: num(r.gmv),
+      etaBreached: num(r.eta_breached),
+      completionRate: orders ? (delivered / orders) * 100 : 0,
+      cancelRate: orders ? (cancelled / orders) * 100 : 0,
+      failRate: orders ? (failed / orders) * 100 : 0,
+    };
+  });
+
+  const totalOrders = mappedTypes.reduce((s, r) => s + r.orders, 0);
+  const totalDelivered = mappedTypes.reduce((s, r) => s + r.delivered, 0);
+  const totalCancelled = mappedTypes.reduce((s, r) => s + r.cancelled, 0);
+  const totalFailed = mappedTypes.reduce((s, r) => s + r.failed, 0);
+  const totalGmv = mappedTypes.reduce((s, r) => s + r.gmv, 0);
+  const avgMinutes =
+    mappedTypes.reduce((s, r) => s + r.avgMinutes * r.delivered, 0) / Math.max(totalDelivered, 1);
+  const etaBreached = num(eta[0]?.breached);
+  const etaDelivered = num(eta[0]?.total_delivered);
+  const etaOnTime = num(eta[0]?.on_time);
 
   return {
     period,
-    byType: byType.map((r) => ({
-      type: str(r.order_type),
-      orders: num(r.orders),
-      delivered: num(r.delivered),
-      cancelled: num(r.cancelled),
-      failed: num(r.failed),
-      avgMinutes: num(r.avg_minutes),
-      gmv: num(r.gmv),
-      completionRate: num(r.orders) ? (num(r.delivered) / num(r.orders)) * 100 : 0,
-      cancelRate: num(r.orders) ? (num(r.cancelled) / num(r.orders)) * 100 : 0,
-    })),
+    summary: {
+      orders: totalOrders,
+      delivered: totalDelivered,
+      cancelled: totalCancelled,
+      failed: totalFailed,
+      live: num(live[0]?.live),
+      gmv: totalGmv,
+      completionRate: totalOrders ? (totalDelivered / totalOrders) * 100 : 0,
+      cancelRate: totalOrders ? (totalCancelled / totalOrders) * 100 : 0,
+      failRate: totalOrders ? (totalFailed / totalOrders) * 100 : 0,
+      avgMinutes,
+      etaBreachRate: etaDelivered ? (etaBreached / etaDelivered) * 100 : 0,
+      etaOnTimeRate: etaDelivered ? (etaOnTime / etaDelivered) * 100 : 0,
+    },
+    byType: mappedTypes,
     byStatus: byStatus.map((r) => ({ status: str(r.status), orders: num(r.orders) })),
     eta: {
-      breached: num(eta[0]?.breached),
-      delivered: num(eta[0]?.total_delivered),
+      breached: etaBreached,
+      delivered: etaDelivered,
+      onTime: etaOnTime,
     },
     storeTypes: grocery.map((r) => ({
       storeType: str(r.store_type),
       orders: num(r.orders),
+      delivered: num(r.delivered),
       gmv: num(r.gmv),
+    })),
+    daily: daily.map((r) => ({
+      day: str(r.day),
+      orders: num(r.orders),
+      delivered: num(r.delivered),
+      cancelled: num(r.cancelled),
+      failed: num(r.failed),
     })),
   };
 }
@@ -1648,6 +1754,9 @@ export async function fetchCustomers(periodRaw: string | null) {
         `,
       []
     ),
+    // List query must stay on `customers` only. A full `orders_core` GROUP BY
+    // previously held a DB connection past nginx's 60s gateway timeout (504) and
+    // starved attachment/detail requests. Order/GMV counts come from detail.
     requiredQuery(
       "customers-recent",
       () =>
@@ -1668,11 +1777,6 @@ export async function fetchCustomers(periodRaw: string | null) {
             gmitra_plus_active: boolean | null;
             profile_image_url: string | null;
             wallet: number;
-            orders: number;
-            gmv: number;
-            food_orders: number;
-            parcel_orders: number;
-            ride_orders: number;
             last_order_at: Date | string | null;
             created_at: Date | string;
           }[]
@@ -1693,30 +1797,9 @@ export async function fetchCustomers(periodRaw: string | null) {
             c.gmitra_plus_active,
             c.profile_image_url,
             COALESCE(c.wallet_balance, 0)::float AS wallet,
-            COALESCE(os.orders, 0) AS orders,
-            COALESCE(os.gmv, 0)::float AS gmv,
-            COALESCE(os.food_orders, 0) AS food_orders,
-            COALESCE(os.parcel_orders, 0) AS parcel_orders,
-            COALESCE(os.ride_orders, 0) AS ride_orders,
-            COALESCE(c.last_order_at, os.last_order_at) AS last_order_at,
+            c.last_order_at,
             c.created_at
           FROM customers c
-          LEFT JOIN (
-            SELECT
-              o.customer_id,
-              COUNT(*)::int AS orders,
-              COALESCE(SUM(COALESCE(NULLIF(o.grand_total, 0), NULLIF(o.fare_amount, 0), 0)) FILTER (WHERE o.status::text = 'delivered'), 0)::float AS gmv,
-              COUNT(*) FILTER (
-                WHERE o.order_type::text IN ('food', 'grocery', 'mart', 'pharmacy')
-              )::int AS food_orders,
-              COUNT(*) FILTER (WHERE o.order_type::text = 'parcel')::int AS parcel_orders,
-              COUNT(*) FILTER (
-                WHERE o.order_type::text IN ('person_ride', 'ride', 'cab')
-              )::int AS ride_orders,
-              MAX(COALESCE(o.actual_delivery_time, o.created_at)) AS last_order_at
-            FROM orders_core o
-            GROUP BY o.customer_id
-          ) os ON os.customer_id = c.id
           WHERE c.deleted_at IS NULL
           ORDER BY
             c.created_at DESC NULLS LAST,
@@ -1752,11 +1835,12 @@ export async function fetchCustomers(periodRaw: string | null) {
       plus: Boolean(r.gmitra_plus_active),
       avatarUrl: resolveSelfieUrl(str(r.profile_image_url)) || null,
       wallet: num(r.wallet),
-      orders: num(r.orders),
-      gmv: num(r.gmv),
-      foodOrders: num(r.food_orders),
-      parcelOrders: num(r.parcel_orders),
-      rideOrders: num(r.ride_orders),
+      // Populated by /api/customers/[id] — list stays fast to avoid gateway 504s.
+      orders: 0,
+      gmv: 0,
+      foodOrders: 0,
+      parcelOrders: 0,
+      rideOrders: 0,
       lastOrderAt:
         r.last_order_at instanceof Date
           ? r.last_order_at.toISOString()
@@ -1844,27 +1928,11 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
             c.preferred_language,
             COALESCE(c.wallet_balance, 0)::float AS wallet,
             COALESCE(c.wallet_locked_amount, 0)::float AS wallet_locked,
-            COALESCE((SELECT COUNT(*)::int FROM orders_core o WHERE o.customer_id = c.id), 0) AS orders,
-            COALESCE((
-              SELECT SUM(${payableSql("o")}) FROM orders_core o
-              WHERE o.customer_id = c.id AND o.status::text = 'delivered'
-            ), 0)::float AS gmv,
-            COALESCE((
-              SELECT COUNT(*)::int FROM orders_core o
-              WHERE o.customer_id = c.id AND o.status::text = 'cancelled'
-            ), 0) AS cancelled,
-            COALESCE((
-              SELECT COUNT(*)::int FROM orders_core o
-              WHERE o.customer_id = c.id AND o.status::text = 'delivered'
-            ), 0) AS delivered,
-            COALESCE(
-              c.last_order_at,
-              (
-                SELECT MAX(COALESCE(o.actual_delivery_time, o.created_at))
-                FROM orders_core o
-                WHERE o.customer_id = c.id
-              )
-            ) AS last_order_at,
+            COALESCE(oc.orders, 0) AS orders,
+            COALESCE(oc.gmv, 0)::float AS gmv,
+            COALESCE(oc.cancelled, 0) AS cancelled,
+            COALESCE(oc.delivered, 0) AS delivered,
+            COALESCE(c.last_order_at, oc.last_order_at) AS last_order_at,
             c.last_login_at,
             c.created_at,
             c.created_via
@@ -1877,6 +1945,19 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
               AND UPPER(ref.referral_code) = UPPER(TRIM(c.referred_by))
             )
           )
+          LEFT JOIN LATERAL (
+            SELECT
+              COUNT(*)::int AS orders,
+              COALESCE(
+                SUM(${payableSql("o")}) FILTER (WHERE o.status::text = 'delivered'),
+                0
+              )::float AS gmv,
+              COUNT(*) FILTER (WHERE o.status::text = 'cancelled')::int AS cancelled,
+              COUNT(*) FILTER (WHERE o.status::text = 'delivered')::int AS delivered,
+              MAX(COALESCE(o.actual_delivery_time, o.created_at)) AS last_order_at
+            FROM orders_core o
+            WHERE o.customer_id = c.id
+          ) oc ON true
           WHERE c.deleted_at IS NULL
             AND (c.customer_id = ${customerId} OR c.id::text = ${customerId})
           LIMIT 1

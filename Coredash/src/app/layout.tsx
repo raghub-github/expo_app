@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Toaster } from "sonner";
 import { poppinsMono, poppinsUi } from "@/lib/fonts";
 import "./globals.css";
@@ -14,6 +14,13 @@ export const metadata: Metadata = {
     shortcut: [{ url: "/favicon.png?v=2", type: "image/png" }],
     apple: [{ url: "/favicon.png?v=2", type: "image/png", sizes: "180x180" }],
   },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#4B49AC",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

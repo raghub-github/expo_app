@@ -26,10 +26,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCoreData } from "@/lib/hooks/useCoreData";
 import { formatCount, formatInr } from "@/lib/format";
 import { parsePeriod, type Period } from "@/lib/period";
-import { vehicleImageForType } from "@/lib/rider-media";
+import { ensureHttpsMediaUrl, vehicleImageForType } from "@/lib/rider-media";
+import { LG_BREAKPOINT, useMinWidth } from "@/lib/hooks/useMinWidth";
 import { useDashboardIdentity } from "@/components/auth/DashboardIdentity";
 import { wipeCoredashBrowserAuth } from "@/lib/auth/browser-wipe";
 import { ErrorState, LoadingGrid } from "@/components/ui/Primitives";
+import { FleetSplitLayout } from "@/components/layout/FleetSplitLayout";
 import type { RiderDetailData, RidersData } from "@/lib/data-types";
 import { orderDetailHref } from "@/lib/order-links";
 
@@ -172,17 +174,19 @@ function RiderAvatar({
 }) {
   const [broken, setBroken] = useState(false);
   const px = `${size}px`;
-  if (src && !broken) {
+  const safeSrc = ensureHttpsMediaUrl(src);
+  if (safeSrc && !broken) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={src}
+        src={safeSrc}
         alt={name}
         width={size}
         height={size}
         onError={() => setBroken(true)}
         className="shrink-0 rounded-full object-cover"
         style={{ width: px, height: px }}
+        referrerPolicy="no-referrer"
       />
     );
   }
@@ -343,6 +347,8 @@ export function FleetRidersPage() {
   const [wheelFilter, setWheelFilter] = useState<WheelFilter>("ALL");
   const [dutyOffBusy, setDutyOffBusy] = useState(false);
   const [dutyById, setDutyById] = useState<Record<number, DutyLive>>({});
+  const [mobileShowDetail, setMobileShowDetail] = useState(Boolean(urlRider));
+  const isDesktop = useMinWidth(LG_BREAKPOINT);
   const [documents, setDocuments] = useState<
     Array<{
       id: number;
@@ -368,6 +374,7 @@ export function FleetRidersPage() {
 
   function selectRider(id: number) {
     setSelectedId(id);
+    setMobileShowDetail(true);
     const params = new URLSearchParams(searchParams.toString());
     if (params.get("rider") === String(id)) return;
     params.set("rider", String(id));
@@ -758,9 +765,14 @@ export function FleetRidersPage() {
   const timeTotal = timeCats.reduce((a, b) => a + b.seconds, 0);
 
   return (
-    <div className="flex h-dvh min-h-[640px] overflow-hidden bg-[#F5F6F8]">
-      <aside className="flex w-[300px] shrink-0 flex-col border-r border-[#E5E7EB] bg-white">
-        <div className="border-b border-[#EEF0F4] p-4">
+    <>
+    <FleetSplitLayout
+      listWidthClass="lg:w-[300px]"
+      showDetail={isDesktop || mobileShowDetail}
+      onBackToList={() => setMobileShowDetail(false)}
+      list={
+        <>
+        <div className="border-b border-[#EEF0F4] p-3 sm:p-4">
           <div className="flex items-center gap-2 rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-3 py-2.5">
             <Search className="h-4 w-4 text-[#9CA3AF]" />
             <input
@@ -770,7 +782,7 @@ export function FleetRidersPage() {
               className="w-full bg-transparent text-[13px] text-[#111827] outline-none placeholder:text-[#9CA3AF]"
             />
           </div>
-          <div className="mt-3 flex items-center justify-between gap-2">
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <p className="min-w-0 truncate text-[11px] font-medium tracking-wide text-[#9CA3AF]">
               {formatCount(riders.length)}
               {data.stats.total && riders.length !== data.stats.total
@@ -837,14 +849,15 @@ export function FleetRidersPage() {
             <p className="px-3 py-8 text-center text-[13px] text-[#9CA3AF]">No riders match your search.</p>
           ) : null}
         </div>
-      </aside>
-
-      <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {!selected ? (
-          <div className="flex flex-1 items-center justify-center text-[14px] text-[#6B6894]">Select a rider</div>
+        </>
+      }
+      detail={
+        !selected ? (
+          <div className="flex flex-1 items-center justify-center p-6 text-[14px] text-[#6B6894]">Select a rider</div>
         ) : (
           <>
-            <header className="flex h-[64px] items-center justify-between border-b border-[#E5E7EB] bg-white px-5">
+            <header className="shrink-0 border-b border-[#E5E7EB] bg-white px-4 py-3 sm:px-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex min-w-0 items-center gap-3">
                 <RiderAvatar name={rider?.name || selected.name} src={selfie} size={40} />
                 <div className="min-w-0">
@@ -857,7 +870,7 @@ export function FleetRidersPage() {
                   <p className="truncate text-[12px] font-medium text-[#374151]">{rider?.mobile || selected.mobile}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {dutyLabel !== "OFFLINE" ? (
                   <button
                     type="button"
@@ -905,9 +918,10 @@ export function FleetRidersPage() {
                   <MoreVertical className="h-4 w-4" strokeWidth={1.75} />
                 </button>
               </div>
+              </div>
             </header>
 
-            <div className="cd-scroll min-h-0 flex-1 overflow-y-auto p-5">
+            <div className="cd-scroll min-h-0 flex-1 overflow-y-auto p-3 sm:p-5">
               {detailError ? (
                 <ErrorState message={detailError} onRetry={() => selectRider(selected.id)} />
               ) : null}
@@ -1155,8 +1169,9 @@ export function FleetRidersPage() {
               </div>
             </div>
           </>
-        )}
-      </section>
+        )
+      }
+    />
 
       {historyOpen ? (
         <div className="fixed inset-0 z-[70] flex justify-end bg-black/35" onClick={() => setHistoryOpen(false)}>
@@ -1334,7 +1349,7 @@ export function FleetRidersPage() {
           </aside>
         </div>
       ) : null}
-    </div>
+    </>
   );
 }
 

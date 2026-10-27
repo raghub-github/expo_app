@@ -18,7 +18,21 @@ export function toAbsoluteClientMediaUrl(stored: string | null | undefined): str
   ) {
     return null;
   }
-  if (u.startsWith("http://") || u.startsWith("https://")) return u;
+  if (u.startsWith("http://") || u.startsWith("https://")) {
+    // Never hand mobile/web clients bare http:// media on production HTTPS surfaces.
+    if (u.startsWith("http://")) {
+      try {
+        const parsed = new URL(u);
+        if (parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
+          parsed.protocol = "https:";
+          return parsed.toString();
+        }
+      } catch {
+        return `https://${u.slice("http://".length)}`;
+      }
+    }
+    return u;
+  }
 
   const base = getEnv().API_BASE_URL?.replace(/\/+$/, "");
   let path = u;

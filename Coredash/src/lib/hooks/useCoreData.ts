@@ -3,13 +3,15 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useSearchParams } from "next/navigation";
 import { parsePeriod } from "@/lib/period";
-import { useDashboardIdentity } from "@/components/auth/DashboardIdentity";
+import { useDashboardIdentityOptional } from "@/components/auth/DashboardIdentity";
 import { wipeCoredashBrowserAuth } from "@/lib/auth/browser-wipe";
 
-const POLL_MS = 20_000;
-const CACHE_PREFIX = "coredash:data:v1:";
+const POLL_MS = 120_000;
+const FRESH_MS = 45_000;
+const FETCH_TIMEOUT_MS = 28_000;
+const CACHE_PREFIX = "coredash:data:v2:";
 
-const memory = new Map<string, unknown>();
+const memory = new Map<string, { at: number; value: unknown }>();
 const listeners = new Map<string, Set<() => void>>();
 const inflight = new Map<string, Promise<unknown>>();
 
@@ -33,48 +35,87 @@ function subscribeKey(key: string, onChange: () => void) {
   };
 }
 
-function readSession<T>(key: string): T | null {
+function readSession<T>(key: string): { at: number; value: T } | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = sessionStorage.getItem(key);
     if (!raw) return null;
-    return JSON.parse(raw) as T;
+    const parsed = JSON.parse(raw) as { at?: number; value?: T };
+    if (parsed?.value == null || typeof parsed.at !== "number") return null;
+    return { at: parsed.at, value: parsed.value };
   } catch {
     return null;
   }
 }
 
-function writeSession<T>(key: string, value: T) {
+function writeSession<T>(key: string, at: number, value: T) {
   if (typeof window === "undefined") return;
   try {
-    sessionStorage.setItem(key, JSON.stringify(value));
+    sessionStorage.setItem(key, JSON.stringify({ at, value }));
   } catch {
     /* quota / private mode */
   }
 }
 
 function peekCache<T>(key: string): T | null {
-  if (memory.has(key)) return memory.get(key) as T;
+  const mem = memory.get(key);
+  if (mem) return mem.value as T;
   const stored = readSession<T>(key);
-  if (stored != null) memory.set(key, stored);
-  return stored;
+  if (stored != null) {
+    memory.set(key, { at: stored.at, value: stored.value });
+    return stored.value;
+  }
+  return null;
+}
+
+function peekCacheMeta(key: string): { at: number; value: unknown } | null {
+  const mem = memory.get(key);
+  if (mem) return mem;
+  const stored = readSession(key);
+  if (stored) {
+    memory.set(key, stored);
+    return stored;
+  }
+  return null;
 }
 
 function putCache<T>(key: string, value: T) {
-  memory.set(key, value);
-  writeSession(key, value);
+  const at = Date.now();
+  memory.set(key, { at, value });
+  writeSession(key, at, value);
   emit(key);
 }
 
-async function fetchCorePath<T>(path: string, period: string, userId: string): Promise<T> {
+function isFresh(key: string) {
+  const meta = peekCacheMeta(key);
+  return Boolean(meta && Date.now() - meta.at < FRESH_MS);
+}
+
+async function fetchCorePath<T>(
+  path: string,
+  period: string,
+  userId: string,
+  signal: AbortSignal
+): Promise<T> {
   const res = await fetch(`${path}?period=${period}`, {
     credentials: "include",
     cache: "no-store",
     headers: { "Cache-Control": "no-store" },
+    signal,
   });
-  const json = (await res.json()) as { success: boolean; data?: T; error?: string };
+  const text = await res.text();
+  let json: { success?: boolean; data?: T; error?: string } = {};
+  try {
+    json = text ? (JSON.parse(text) as typeof json) : {};
+  } catch {
+    throw new Error(
+      res.status === 504 || res.status === 502
+        ? "Server timed out. Retry in a moment."
+        : `Invalid server response (${res.status || "error"})`
+    );
+  }
   if (res.status === 401 || res.status === 403) {
-    await wipeCoredashBrowserAuth(userId);
+    if (userId) await wipeCoredashBrowserAuth(userId);
     window.location.replace(res.status === 403 ? "/api/auth/denied" : "/login");
     throw new Error("UNAUTHORIZED");
   }
@@ -87,7 +128,8 @@ async function fetchCorePath<T>(path: string, period: string, userId: string): P
 export function useCoreData<T>(path: string) {
   const searchParams = useSearchParams();
   const period = parsePeriod(searchParams.get("period"));
-  const { userId } = useDashboardIdentity();
+  const identity = useDashboardIdentityOptional();
+  const userId = identity?.userId ?? "";
   const key = cacheKey(path, period);
   const cached = useSyncExternalStore(
     (onChange) => subscribeKey(key, onChange),
@@ -102,30 +144,48 @@ export function useCoreData<T>(path: string) {
   dataRef.current = resolved;
   const genRef = useRef(0);
 
-  const load = useCallback(async () => {
-    const gen = ++genRef.current;
-    if (dataRef.current == null) setLoading(true);
-    setError(null);
-    try {
-      let req = inflight.get(key) as Promise<T> | undefined;
-      if (!req) {
-        req = fetchCorePath<T>(path, period, userId).finally(() => inflight.delete(key));
-        inflight.set(key, req);
-      }
-      const next = await req;
-      if (gen !== genRef.current) return;
-      setData(next);
-      putCache(key, next);
+  const load = useCallback(
+    async (opts?: { force?: boolean }) => {
+      if (!opts?.force && isFresh(key) && dataRef.current != null) return;
+
+      const gen = ++genRef.current;
+      if (dataRef.current == null) setLoading(true);
       setError(null);
-    } catch (err) {
-      if (gen !== genRef.current) return;
-      if (dataRef.current == null) {
-        setError(err instanceof Error ? err.message : "Failed to load");
+
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+      try {
+        let req = inflight.get(key) as Promise<T> | undefined;
+        if (!req) {
+          req = fetchCorePath<T>(path, period, userId, controller.signal).finally(() => {
+            inflight.delete(key);
+          });
+          inflight.set(key, req);
+        }
+        const next = await req;
+        if (gen !== genRef.current) return;
+        setData(next);
+        putCache(key, next);
+        setError(null);
+      } catch (err) {
+        if (gen !== genRef.current) return;
+        if (controller.signal.aborted) {
+          if (dataRef.current == null) {
+            setError("Request timed out — tap Retry");
+          }
+          return;
+        }
+        if (dataRef.current == null) {
+          setError(err instanceof Error ? err.message : "Failed to load");
+        }
+      } finally {
+        window.clearTimeout(timer);
+        if (gen === genRef.current) setLoading(false);
       }
-    } finally {
-      if (gen === genRef.current) setLoading(false);
-    }
-  }, [path, period, userId, key]);
+    },
+    [path, period, userId, key]
+  );
 
   useEffect(() => {
     void load();
@@ -141,8 +201,15 @@ export function useCoreData<T>(path: string) {
     return () => {
       document.removeEventListener("visibilitychange", onVis);
       window.clearInterval(timer);
+      genRef.current += 1;
     };
   }, [load, key]);
 
-  return { data: resolved, loading: loading && resolved == null, error, reload: load, period };
+  return {
+    data: resolved,
+    loading: loading && resolved == null,
+    error,
+    reload: () => load({ force: true }),
+    period,
+  };
 }

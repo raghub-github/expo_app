@@ -28,6 +28,8 @@ function loginRedirect(request: NextRequest, pathname: string, wipe = false) {
 
 function noStore(response: NextResponse) {
   response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  // Permanent mixed-content guard: any accidental http:// subresource is upgraded.
+  response.headers.set("Content-Security-Policy", "upgrade-insecure-requests");
   return response;
 }
 

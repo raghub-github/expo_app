@@ -42,6 +42,20 @@ export type OverviewData = {
 
 export type PerformanceData = {
   period: string;
+  summary: {
+    orders: number;
+    delivered: number;
+    cancelled: number;
+    failed: number;
+    live: number;
+    gmv: number;
+    completionRate: number;
+    cancelRate: number;
+    failRate: number;
+    avgMinutes: number;
+    etaBreachRate: number;
+    etaOnTimeRate: number;
+  };
   byType: Array<{
     type: string;
     orders: number;
@@ -50,12 +64,15 @@ export type PerformanceData = {
     failed: number;
     avgMinutes: number;
     gmv: number;
+    etaBreached: number;
     completionRate: number;
     cancelRate: number;
+    failRate: number;
   }>;
   byStatus: Array<{ status: string; orders: number }>;
-  eta: { breached: number; delivered: number };
-  storeTypes: Array<{ storeType: string; orders: number; gmv: number }>;
+  eta: { breached: number; delivered: number; onTime: number };
+  storeTypes: Array<{ storeType: string; orders: number; delivered: number; gmv: number }>;
+  daily: Array<{ day: string; orders: number; delivered: number; cancelled: number; failed: number }>;
 };
 
 export type AnalyticsData = {

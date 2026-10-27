@@ -1,6 +1,7 @@
 import "server-only";
 
 import { GetObjectCommand, HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import type { Readable } from "stream";
 
 let client: S3Client | null = null;
 
@@ -20,6 +21,7 @@ function getClient() {
     endpoint,
     credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
     forcePathStyle: true,
+    requestHandler: undefined,
   });
   return client;
 }
@@ -51,6 +53,15 @@ export function normalizeMediaKey(raw: string): string {
   return key.replace(/^\/+/, "");
 }
 
+function isMissingObject(error: unknown): boolean {
+  const name = String((error as { name?: string } | null)?.name ?? "");
+  const http = Number(
+    (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata?.httpStatusCode
+  );
+  return name === "NoSuchKey" || name === "NotFound" || http === 404;
+}
+
+/** Full buffer — prefer getR2ObjectStream for large avatars/docs. */
 export async function getR2Object(keyRaw: string) {
   const key = normalizeMediaKey(keyRaw);
   if (!key) return null;
@@ -65,9 +76,38 @@ export async function getR2Object(keyRaw: string) {
       contentType: res.ContentType || null,
     };
   } catch (error) {
-    const name = String((error as { name?: string } | null)?.name ?? "");
-    const http = Number((error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata?.httpStatusCode);
-    if (name === "NoSuchKey" || name === "NotFound" || http === 404) return null;
+    if (isMissingObject(error)) return null;
+    throw error;
+  }
+}
+
+/** Stream R2 body so nginx does not wait for the whole object before first byte. */
+export async function getR2ObjectStream(keyRaw: string) {
+  const key = normalizeMediaKey(keyRaw);
+  if (!key) return null;
+  try {
+    const res = await getClient().send(
+      new GetObjectCommand({ Bucket: bucket(), Key: key })
+    );
+    if (!res.Body) return null;
+    const body = res.Body as {
+      transformToWebStream?: () => ReadableStream;
+      transformToByteArray?: () => Promise<Uint8Array>;
+    } & Readable;
+    let stream: ReadableStream<Uint8Array>;
+    if (typeof body.transformToWebStream === "function") {
+      stream = body.transformToWebStream();
+    } else {
+      const { Readable: NodeReadable } = await import("stream");
+      stream = NodeReadable.toWeb(body as InstanceType<typeof NodeReadable>) as ReadableStream<Uint8Array>;
+    }
+    return {
+      stream,
+      contentType: res.ContentType || null,
+      contentLength: typeof res.ContentLength === "number" ? res.ContentLength : null,
+    };
+  } catch (error) {
+    if (isMissingObject(error)) return null;
     throw error;
   }
 }
@@ -84,9 +124,7 @@ export async function headR2Object(keyRaw: string) {
       contentLength: typeof res.ContentLength === "number" ? res.ContentLength : null,
     };
   } catch (error) {
-    const name = String((error as { name?: string } | null)?.name ?? "");
-    const http = Number((error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata?.httpStatusCode);
-    if (name === "NoSuchKey" || name === "NotFound" || http === 404) return null;
+    if (isMissingObject(error)) return null;
     throw error;
   }
 }

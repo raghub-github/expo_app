@@ -17,7 +17,7 @@ export function ShellFrame({
   userEmail: string;
   userId: string;
 }) {
-  const { sidebarWidth } = useShellChrome();
+  const { contentOffset } = useShellChrome();
   const pathname = usePathname();
   const hideTopbar =
     pathname === "/riders" ||
@@ -28,15 +28,15 @@ export function ShellFrame({
     pathname.startsWith("/merchants/");
 
   useEffect(() => {
-    document.documentElement.style.setProperty("--cd-sidebar-w", `${sidebarWidth}px`);
-  }, [sidebarWidth]);
+    document.documentElement.style.setProperty("--cd-sidebar-w", `${contentOffset}px`);
+  }, [contentOffset]);
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-[#F4F6FF]">
+    <div className="flex h-dvh max-h-dvh overflow-hidden bg-[#F4F6FF]">
       <Sidebar userName={userName} userEmail={userEmail} userId={userId} />
       <div
         className="flex min-h-0 min-w-0 flex-1 flex-col transition-[margin] duration-200 ease-out"
-        style={{ marginLeft: sidebarWidth }}
+        style={{ marginLeft: contentOffset }}
       >
         {!hideTopbar ? (
           <Suspense fallback={<div className="h-[72px] shrink-0 border-b border-[#E4E7F7] bg-white" />}>
@@ -44,7 +44,9 @@ export function ShellFrame({
           </Suspense>
         ) : null}
         <main
-          className={`cd-scroll min-h-0 min-w-0 flex-1 overflow-y-auto ${hideTopbar ? "p-0" : "p-6"}`}
+          className={`cd-scroll min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain ${
+            hideTopbar ? "flex flex-col p-0" : "p-4 sm:p-5 lg:p-6"
+          }`}
         >
           <Suspense fallback={<div className="h-40 animate-pulse rounded-2xl bg-white" />}>
             {children}

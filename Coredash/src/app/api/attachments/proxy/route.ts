@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { contentTypeFromKey, getR2Object, headR2Object, normalizeMediaKey } from "@/lib/r2";
+import { contentTypeFromKey, getR2ObjectStream, headR2Object, normalizeMediaKey } from "@/lib/r2";
 import { CoreAuthError, requireCoreUser } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
@@ -36,16 +36,15 @@ export async function GET(request: NextRequest) {
     await requireCoreUser();
     const key = keyFromRequest(request);
     if (!key) return NextResponse.json({ error: "Missing key" }, { status: 400 });
-    const obj = await getR2Object(key);
+    const obj = await getR2ObjectStream(key);
     if (!obj) return new NextResponse(null, { status: 404 });
-    return new NextResponse(new Uint8Array(obj.buffer), {
-      status: 200,
-      headers: {
-        "Content-Type": contentTypeFromKey(key, obj.contentType),
-        "Cache-Control": "private, max-age=3600",
-        "Content-Disposition": "inline",
-      },
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": contentTypeFromKey(key, obj.contentType),
+      "Cache-Control": "private, max-age=3600",
+      "Content-Disposition": "inline",
+    };
+    if (obj.contentLength != null) headers["Content-Length"] = String(obj.contentLength);
+    return new NextResponse(obj.stream, { status: 200, headers });
   } catch (error) {
     if (error instanceof CoreAuthError) {
       return NextResponse.json({ error: error.message }, { status: error.status });
