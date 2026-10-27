@@ -102,6 +102,27 @@ const attemptColor = (i: number) => ATTEMPT_COLORS[i % ATTEMPT_COLORS.length];
 const PLAY_STEP_MS = 420; // wall-clock per GPS fix at 1x
 const SPEEDS = [1, 2, 4, 8] as const;
 
+type MapStage =
+  | "idle"
+  | "waiting-container"
+  | "loading-lib"
+  | "constructing"
+  | "style-loading"
+  | "zero-size"
+  | "ready"
+  | "failed";
+
+const STAGE_TEXT: Record<MapStage, string> = {
+  idle: "Starting…",
+  "waiting-container": "Waiting for the map container to mount…",
+  "loading-lib": "Loading the map library…",
+  constructing: "Creating the map…",
+  "style-loading": "Loading map tiles…",
+  "zero-size": "Map area measured 0px — waiting for it to get a size…",
+  ready: "Ready",
+  failed: "Map failed",
+};
+
 /**
  * Read statically so Next inlines the value at build time. A computed or
  * optional-chained lookup (process.env?.X) is not guaranteed to be replaced
@@ -254,6 +275,8 @@ export default function RiderTrackingModal({
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const setContainerRef = useCallback((node: HTMLDivElement | null) => setContainer(node), []);
   const [mapReady, setMapReady] = useState(false);
+  /** Which init step the map reached — shown on screen when it never renders. */
+  const [stage, setStage] = useState<MapStage>("idle");
 
   const mapRef = useRef<any>(null);
   const mapboxRef = useRef<any>(null);
@@ -384,44 +407,108 @@ export default function RiderTrackingModal({
   }, [selectedKey, crumbs.length]);
 
   // ── Map init — runs once the container is really in the DOM ────────────
+  // Every step reports through `stage`. A blank white canvas with no
+  // explanation was the original bug; now whatever fails says so on screen.
   useEffect(() => {
-    if (!isOpen || !container || mapRef.current) return;
-    const tk = token();
-    if (!tk) {
-      setMapError("Map is not configured (missing NEXT_PUBLIC_MAPBOX_TOKEN).");
+    if (!isOpen) return;
+    if (!container) {
+      setStage("waiting-container");
       return;
     }
+    if (mapRef.current) return;
+
+    const tk = token();
+    if (!tk) {
+      setStage("failed");
+      setMapError(
+        "No Mapbox token in this build — NEXT_PUBLIC_MAPBOX_TOKEN was empty when the dashboard image was built."
+      );
+      return;
+    }
+    // mapbox-gl needs WebGL; without it the constructor throws.
+    let webgl = false;
+    try {
+      const probe = document.createElement("canvas");
+      webgl = Boolean(probe.getContext("webgl2") || probe.getContext("webgl"));
+    } catch {
+      webgl = false;
+    }
+    if (!webgl) {
+      setStage("failed");
+      setMapError("WebGL is disabled in this browser/profile, so Mapbox cannot draw.");
+      return;
+    }
+
     let disposed = false;
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    setStage("loading-lib");
+
     void import("mapbox-gl")
       .then((mod) => {
         if (disposed || mapRef.current) return;
         const mapboxgl = mod.default ?? mod;
         mapboxRef.current = mapboxgl;
         mapboxgl.accessToken = tk;
-        const map = new mapboxgl.Map({
-          container,
-          style: MAP_STYLE,
-          center: [77.209, 28.6139],
-          zoom: 11,
-          attributionControl: false,
-        });
+        setStage("constructing");
+
+        const rect = container.getBoundingClientRect();
+        let map: any;
+        try {
+          map = new mapboxgl.Map({
+            container,
+            style: MAP_STYLE,
+            center: [77.209, 28.6139],
+            zoom: 11,
+            attributionControl: false,
+          });
+        } catch (err) {
+          setStage("failed");
+          setMapError(`Map could not start: ${(err as Error)?.message ?? "unknown error"}`);
+          return;
+        }
         mapRef.current = map;
-        map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
-        // Surface failures — a silent blank canvas is the worst outcome here.
+        try {
+          map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-right");
+        } catch {
+          /* non-fatal */
+        }
+
         map.on("error", (e: any) => {
           const msg = e?.error?.message || e?.error?.status || "Map failed to load";
           setMapError(String(msg));
+          setStage("failed");
         });
         map.on("load", () => {
           if (disposed) return;
+          if (watchdog) clearTimeout(watchdog);
           map.resize();
+          setStage("ready");
           setMapReady(true);
         });
+
+        setStage(rect.width < 2 || rect.height < 2 ? "zero-size" : "style-loading");
+        // A style that never loads would otherwise sit blank forever.
+        watchdog = setTimeout(() => {
+          if (disposed || mapRef.current !== map) return;
+          if (!map.isStyleLoaded?.()) {
+            const r = container.getBoundingClientRect();
+            setStage("failed");
+            setMapError(
+              `Style did not load within 12s (container ${Math.round(r.width)}×${Math.round(
+                r.height
+              )}px). Check that api.mapbox.com and events.mapbox.com are reachable from this network.`
+            );
+          }
+        }, 12000);
       })
-      .catch(() => setMapError("Could not load the map library."));
+      .catch((err) => {
+        setStage("failed");
+        setMapError(`Could not load the map library: ${(err as Error)?.message ?? "chunk failed"}`);
+      });
 
     return () => {
       disposed = true;
+      if (watchdog) clearTimeout(watchdog);
       setMapReady(false);
       try {
         staticMarkersRef.current.forEach((m) => m.remove?.());
@@ -436,14 +523,14 @@ export default function RiderTrackingModal({
     };
   }, [isOpen, container]);
 
-  // Keep the canvas correct when the layout shifts (the scrubber//violation
-  // rows appear once data lands, which shortens the map box).
+  // Attach immediately, NOT gated on ready: a container that is zero-sized when
+  // the map is built must still recover the instant it gets real size.
   useEffect(() => {
-    if (!container || !mapReady) return;
+    if (!container) return;
     const ro = new ResizeObserver(() => mapRef.current?.resize?.());
     ro.observe(container);
     return () => ro.disconnect();
-  }, [container, mapReady]);
+  }, [container]);
 
   // ── Road snapping (best effort, cached per attempt) ────────────────────
   useEffect(() => {
@@ -825,10 +912,23 @@ export default function RiderTrackingModal({
             </div>
           ) : null}
 
-          {/* Map failures must never be a silent blank canvas. */}
-          {mapError ? (
-            <div className="absolute left-1/2 top-3 z-[7] -translate-x-1/2 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800 shadow-sm">
-              Map: {mapError}
+          {/* Map failures must never be a silent blank canvas: while the map is
+              not ready we say which step it is on, and why it stopped. */}
+          {!loading && !error && stage !== "ready" ? (
+            <div className="pointer-events-none absolute inset-x-0 top-1/2 z-[7] flex -translate-y-1/2 justify-center px-6">
+              <div
+                className={`pointer-events-auto max-w-md rounded-lg border px-4 py-3 text-center text-[11px] shadow-sm ${
+                  stage === "failed"
+                    ? "border-red-300 bg-red-50 text-red-700"
+                    : "border-gray-200 bg-white/95 text-slate-600"
+                }`}
+              >
+                <div className="font-semibold">{STAGE_TEXT[stage]}</div>
+                {mapError ? <div className="mt-1 leading-snug">{mapError}</div> : null}
+                <div className="mt-1.5 text-[10px] text-slate-400">
+                  token {token() ? `present (${String(token()).length} chars)` : "MISSING"} · stage “{stage}”
+                </div>
+              </div>
             </div>
           ) : null}
 
