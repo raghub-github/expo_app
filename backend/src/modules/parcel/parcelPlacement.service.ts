@@ -664,14 +664,14 @@ async function cancelParcelOrderForRow(
 
   try {
     const paid = await resolveOrderPaidAmountForAutoRefund(sqlClient, row.id);
-    voidCustomerShownRefundAfterCancel({
+    queueCustomerShownRefundAfterCancel({
       orderCoreId: row.id,
       reason: reasonText,
       amount: paid,
       actorRole: cancelledByType === "system" ? "system" : "customer",
     });
   } catch (refundErr) {
-    console.warn("[cancelParcelOrder] auto-refund void failed:", refundErr);
+    console.warn("[cancelParcelOrder] auto-refund queue failed:", refundErr);
   }
 
   return { orderId: row.orderId, status: "CANCELLED" };

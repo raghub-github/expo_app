@@ -27,6 +27,12 @@ export type ParcelFareQuoteOk = {
   slabFare?: number;
   platformFee?: number;
   convenienceFee?: number;
+  /** Surge / small-order / misc charges from the PARCEL billing pipeline.
+   *  Same optional-enrich contract as the fees above — the customer bill
+   *  breakdown shows each of these separately, so they must survive the quote. */
+  surgeFee?: number;
+  smallOrderFee?: number;
+  miscFee?: number;
   taxTotal?: number;
   discountTotal?: number;
   pricingGeoLevel: string | null;
