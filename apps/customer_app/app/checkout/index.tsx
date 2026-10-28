@@ -884,6 +884,13 @@ const CHECKOUT_SCROLL_FOOTER_BASE = 110;
 const CHECKOUT_SCROLL_GATICASH_BAR_EXTRA = 92;
 /** Breathing room so `BrandingFooter` tagline + watermark sit fully above the fixed footer. */
 const CHECKOUT_SCROLL_BRANDING_CLEARANCE = 20;
+/**
+ * How long the bill may stay unresolved before checkout stops showing a skeleton and
+ * offers a retry. Sits between one BILLING_CALCULATE_TIMEOUT_MS attempt (20s) and two
+ * back-to-back ones, so a single slow-but-successful bill still lands first while a
+ * dead backend surfaces as an error instead of a forever "Loading bill…".
+ */
+const CHECKOUT_BILL_STALL_MS = 25_000;
 
 type CheckoutCartLineItem = CartItem & {
   imageUrl: string | null;
@@ -3063,15 +3070,16 @@ function CheckoutScreen() {
     if (!showFreeDeliveryAddMoreRow || !freeDeliveryProgress.offer || !merchantId) {
       return null;
     }
-    const quoted = serverBill?.deliveryFeeQuotedInr ?? 0;
-    const deliverySavings =
-      freeDeliveryProgress.offer.estimatedSavingsInr ??
-      (quoted > 0.005 ? quoted : 0);
+    // "You save" must be the delivery fee this order actually waives, so the live
+    // quote wins over the offer's generic estimate (a FIXED ₹30 delivery discount
+    // saves only ₹18 on an ₹18 fee). buildFreeDeliveryUnlockCompensation falls back
+    // to the estimate on its own when the bill has not settled yet — passing
+    // `estimate ?? quote` here inverted that and let the estimate override the quote.
     return buildFreeDeliveryUnlockCompensation({
       offer: freeDeliveryProgress.offer,
       gapInr: freeDeliveryProgress.gapInr,
       merchantId,
-      deliverySavingsInr: Number(deliverySavings) || 0,
+      deliverySavingsInr: Number(serverBill?.deliveryFeeQuotedInr ?? 0) || 0,
     });
   }, [
     showFreeDeliveryAddMoreRow,
@@ -3353,13 +3361,29 @@ function CheckoutScreen() {
   }, [missedOffersFingerprint, merchantId]);
 
   const displayMissedOfferWalletComp = useMemo(() => {
-    if (missedOfferWalletPending && pendingMissedOfferWalletRef.current) {
-      return pendingMissedOfferWalletRef.current;
+    const pendingComp = pendingMissedOfferWalletRef.current;
+    if (missedOfferWalletPending && pendingComp) {
+      // The pending comp is frozen at tap time, but its savings drive the previewed
+      // total (`missedOfferUnlockDiscount`). A delivery waiver is only ever worth the
+      // fee on the *current* bill, so re-read the quote rather than discount a newer
+      // bill by an older fee after an address / cart change.
+      if (pendingComp.offerKind === "FREE_DELIVERY") {
+        const quoted = Number(serverBill?.deliveryFeeQuotedInr ?? 0) || 0;
+        if (quoted > 0.005 && Math.abs(quoted - pendingComp.offerSavingsInr) > 0.005) {
+          return { ...pendingComp, offerSavingsInr: quoted };
+        }
+      }
+      return pendingComp;
     }
     // Store precision eligible/applied → hide unlock card (change via offers sheet).
     if (hideGatiCashUnlockCard) return null;
     return missedOfferWalletComp;
-  }, [missedOfferWalletPending, missedOfferWalletComp, hideGatiCashUnlockCard]);
+  }, [
+    missedOfferWalletPending,
+    missedOfferWalletComp,
+    hideGatiCashUnlockCard,
+    serverBill?.deliveryFeeQuotedInr,
+  ]);
 
   const missedOfferWalletPendingAmount = useMemo(() => {
     if (!missedOfferWalletPending || !displayMissedOfferWalletComp) return 0;
@@ -4895,6 +4919,39 @@ function CheckoutScreen() {
    * `ready` snaps the first real bill straight in instead of visibly counting up from
    * the 0 placeholder used before billingQuery resolves. */
   const billingReady = toPayAmount != null;
+
+  /**
+   * Bill stall guard.
+   *
+   * The skeleton is cleared only by a settled bill or by `billingQuery.isError`, but
+   * the query has two states that are neither: it sits `pending`/idle whenever
+   * `enabled` is false (merchant coords or numeric menu ids never resolved), and a
+   * key change after a failure opens a fresh, error-free cache entry. Both rendered
+   * "Loading bill…" indefinitely with no way out. Bound the wait on the *outcome*
+   * instead of on one query flag, so every cause of "still no bill" ends in a retry.
+   */
+  const [billStalled, setBillStalled] = useState(false);
+  const [billRetryNonce, setBillRetryNonce] = useState(0);
+  useEffect(() => {
+    if (toPayAmount != null) {
+      setBillStalled(false);
+      return;
+    }
+    const timer = setTimeout(() => setBillStalled(true), CHECKOUT_BILL_STALL_MS);
+    return () => clearTimeout(timer);
+  }, [toPayAmount, billRetryNonce]);
+
+  /** Bill is not coming on its own — show the error row + retry instead of a skeleton. */
+  const billNeedsRetry = (billingQuery.isError || billStalled) && toPayAmount == null;
+
+  const retryBillingCalculate = useCallback(() => {
+    setBillStalled(false);
+    setBillRetryNonce((n) => n + 1);
+    // Offers feed the billing key (and the free-delivery row), so a bill that failed
+    // because offers never arrived has to refetch both to recover.
+    void billingQuery.refetch();
+    void checkoutOffersQuery.refetch();
+  }, [billingQuery.refetch, checkoutOffersQuery.refetch]);
   // The two animated totals used to be driven from here, which re-rendered this
   // entire component once per animation tick on every bill change. They now live
   // inside <AnimatedRupeeAmount>, so each tick re-renders only that leaf.
@@ -6003,7 +6060,7 @@ function CheckoutScreen() {
   // changed the hook count when the cart emptied → "fewer hooks than expected".
   const cartIsEmpty = !merchantId || items.length === 0;
 
-  const showBillSkeleton = toPayAmount == null && !billingQuery.isError;
+  const showBillSkeleton = toPayAmount == null && !billNeedsRetry;
 
   const showDistanceBanner =
     isDeliveryOutOfRange ||
@@ -6817,6 +6874,33 @@ function CheckoutScreen() {
               </View>
             ) : null}
 
+            {billNeedsRetry ? (
+              <View style={[styles.billErrorRow, styles.gmCardPadH]}>
+                <Ionicons name="cloud-offline-outline" size={18} color={isDiscoveryDark ? "#FCA5A5" : "#DC2626"} />
+                <CheckoutText style={[styles.billErrorText, dMuted]} numberOfLines={2}>
+                  {billingQuery.isFetching
+                    ? "Still working out your bill — check your connection."
+                    : "We couldn't work out your bill. Check your connection and try again."}
+                </CheckoutText>
+                <TouchableOpacity
+                  style={[styles.billErrorRetryBtn, isDiscoveryDark && styles.darkBillErrorRetryBtn]}
+                  onPress={retryBillingCalculate}
+                  disabled={billingQuery.isFetching}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading your bill"
+                >
+                  {billingQuery.isFetching ? (
+                    <ActivityIndicator size="small" color={isDiscoveryDark ? "#FCA5A5" : "#DC2626"} />
+                  ) : (
+                    <CheckoutText style={[styles.billErrorRetryText, isDiscoveryDark && styles.darkBillErrorRetryText]}>
+                      RETRY
+                    </CheckoutText>
+                  )}
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
             {showFreeDeliveryAddMoreRow && freeDeliveryAddMoreCopy ? (
               <View style={[styles.gmFreeDeliveryProgress, isDiscoveryDark && styles.darkGmFreeDeliveryProgress]}>
                 <View style={styles.gmGoldPointerShell}>
@@ -7118,8 +7202,8 @@ function CheckoutScreen() {
                     return;
                   }
                   if (!canPlaceOrder) {
-                    if (billingQuery.isError || (toPayAmount == null && !billingQuery.isFetching)) {
-                      void billingQuery.refetch();
+                    if (billNeedsRetry || (toPayAmount == null && !billingQuery.isFetching)) {
+                      retryBillingCalculate();
                       return;
                     }
                     const reason =
@@ -7256,7 +7340,7 @@ function CheckoutScreen() {
                               ? "Check address"
                               : deliveryType === "delivery" && isDeliveryOutOfRange
                                 ? "Out of delivery zone"
-                              : billingQuery.isError
+                              : billNeedsRetry
                                 ? "Tap to retry bill"
                                 : toPayAmount == null
                                   ? "Loading bill…"
@@ -7949,7 +8033,7 @@ function CheckoutScreen() {
         bottomInset={insets.bottom}
         maxHeight={billSummarySheetMaxHeight}
         serverBill={serverBill}
-        billingError={billingQuery.isError}
+        billingError={billNeedsRetry}
         billingLoading={billingQuery.isFetching && serverBill == null}
         deliveryType={deliveryType}
         showDeliveryFeeRow={showDeliveryFeeRow}
@@ -9368,6 +9452,41 @@ const styles = StyleSheet.create({
     paddingVertical: 24,
     textAlign: "center",
   },
+  billErrorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+  },
+  billErrorText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#4B5563",
+    lineHeight: 17,
+  },
+  billErrorRetryBtn: {
+    minWidth: 68,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1.2,
+    borderColor: "#DC2626",
+    backgroundColor: "#FEF2F2",
+  },
+  darkBillErrorRetryBtn: {
+    borderColor: "#FCA5A5",
+    backgroundColor: "rgba(252, 165, 165, 0.12)",
+  },
+  billErrorRetryText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#DC2626",
+    letterSpacing: 0.4,
+  },
+  darkBillErrorRetryText: { color: "#FCA5A5" },
   billSkeletonWrap: { gap: 12 },
   billSkeletonLine: { height: 18, borderRadius: 8 },
   billSkeletonLast: { width: "60%" },

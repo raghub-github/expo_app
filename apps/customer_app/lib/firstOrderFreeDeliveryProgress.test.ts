@@ -85,3 +85,65 @@ describe("resolveFreeDeliveryProgress", () => {
     assert.equal(comp!.offerSavingsInr, 74.31);
   });
 });
+
+describe("free delivery You-save amount", () => {
+  // Production shape of platform offer 9 "First Bite, Free Delivery":
+  // delivery_discount_type = FULL_WAIVE, delivery_discount_value = NULL, so the
+  // backend reports estimatedSavingsInr = null and only the live bill knows the fee.
+  const fullWaiveOffer = {
+    id: 9,
+    name: "First Bite, Free Delivery",
+    offerKind: "FREE_DELIVERY",
+    minCartAmount: 99,
+    estimatedSavingsInr: null,
+  };
+
+  it("uses the quoted delivery fee as You save for a FULL_WAIVE offer", () => {
+    const comp = buildFreeDeliveryUnlockCompensation({
+      offer: fullWaiveOffer,
+      gapInr: 18,
+      merchantId: "GMMC1026",
+      deliverySavingsInr: 29,
+    });
+    assert.ok(comp);
+    // You save = fee waived; GatiCash = min-cart top-up. They are different numbers.
+    assert.equal(comp!.offerSavingsInr, 29);
+    assert.equal(comp!.amountInr, 18);
+    assert.notEqual(comp!.offerSavingsInr, comp!.amountInr);
+  });
+
+  it("never equals the GatiCash top-up just because the fee happens to match", () => {
+    const comp = buildFreeDeliveryUnlockCompensation({
+      offer: fullWaiveOffer,
+      gapInr: 18,
+      merchantId: "GMMC1026",
+      deliverySavingsInr: 18,
+    });
+    // Same ₹18 on both chips is legitimate here — it is the real fee, not the gap.
+    assert.equal(comp!.offerSavingsInr, 18);
+    assert.equal(comp!.amountInr, 18);
+  });
+
+  it("omits the savings clause while the bill has not quoted a fee", () => {
+    const comp = buildFreeDeliveryUnlockCompensation({
+      offer: fullWaiveOffer,
+      gapInr: 18,
+      merchantId: "GMMC1026",
+      deliverySavingsInr: 0,
+    });
+    assert.ok(comp);
+    assert.equal(comp!.offerSavingsInr, 0);
+    assert.equal(comp!.subline, "You're ₹18 away");
+    assert.ok(!comp!.subline.includes("₹0"));
+  });
+
+  it("keeps whole rupees whole and paise exact in the savings clause", () => {
+    const comp = buildFreeDeliveryUnlockCompensation({
+      offer: fullWaiveOffer,
+      gapInr: 18,
+      merchantId: "GMMC1026",
+      deliverySavingsInr: 29.5,
+    });
+    assert.equal(comp!.subline, "You're ₹18 away · save ₹29.50 on delivery");
+  });
+});
