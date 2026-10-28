@@ -136,6 +136,9 @@ export default function EarningsScreen() {
   const [bankPickerOpen, setBankPickerOpen] = useState(false);
   const [cycleExpanded, setCycleExpanded] = useState(true);
   const [currentCycleEstPayout, setCurrentCycleEstPayout] = useState<number | null>(null);
+  /** Open cycles have no stored summary row, so the list sends order_count 0.
+   *  The settlement call below is the only fresh source for the live count. */
+  const [currentCycleOrders, setCurrentCycleOrders] = useState<number | null>(null);
   const [successSheet, setSuccessSheet] = useState<{ amountLabel: string } | null>(null);
   const [cycleCards, setCycleCards] = useState<PayoutCard[] | null>(null);
   const [recentPayoutRequests, setRecentPayoutRequests] = useState<PayoutRequestListItem[]>([]);
@@ -275,6 +278,7 @@ export default function EarningsScreen() {
       !currentCycleCard.periodEnd
     ) {
       setCurrentCycleEstPayout(null);
+      setCurrentCycleOrders(null);
       return;
     }
     const periodStart = currentCycleCard.periodStart;
@@ -284,11 +288,15 @@ export default function EarningsScreen() {
       .then((summary) => {
         if (!cancelled) {
           setCurrentCycleEstPayout(Math.max(0, summary.estimatedPayout ?? 0));
+          setCurrentCycleOrders(
+            Number.isFinite(summary.orderCount) ? Math.max(0, summary.orderCount) : null,
+          );
         }
       })
       .catch(() => {
         if (!cancelled) {
           setCurrentCycleEstPayout(Math.max(0, currentCycleCard.netPayout));
+          setCurrentCycleOrders(null);
         }
       });
     return () => {
@@ -493,7 +501,7 @@ export default function EarningsScreen() {
             {cycleExpanded ? (
               <>
                 <Text style={s.payoutOrders}>
-                  Total orders · {currentCycleCard.orderCount}
+                  Total orders · {currentCycleOrders ?? currentCycleCard.orderCount}
                 </Text>
               </>
             ) : null}
