@@ -11,6 +11,8 @@ import {
   Dimensions,
   PanResponder,
   Vibration,
+  AppState,
+  type AppStateStatus,
 } from "react-native";
 import Animated, {
   Easing,
@@ -91,6 +93,7 @@ import {
 const NativeText = getTextHost();
 
 function rejectFlowLog(step: string, orderId: string, alertSessionId: string): void {
+  if (typeof __DEV__ === "undefined" || !__DEV__) return;
   console.log(`[REJECT_FLOW] ${step}`, {
     timestamp: Date.now(),
     orderId,
@@ -1064,6 +1067,69 @@ export default function IncomingOrderModal() {
   );
 
   /**
+   * Overlay / notification Accept or Reject while JS was backgrounded.
+   * Apply authoritative local cleanup so the sheet + buzzer cannot stick.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const applyNativePending = async () => {
+      try {
+        const { consumeNativePendingOrderAction } = await import("@gatimitra/expo-push-kit");
+        const pending = await consumeNativePendingOrderAction();
+        if (cancelled || !pending) return;
+        const foodId =
+          String(pending.foodOrderId || pending.orderId || "").trim() || null;
+        if (!foodId || foodId.startsWith("core-")) return;
+        const reason = pending.action === "reject" ? "rejected" : "accepted";
+        if (__DEV__) {
+          console.log("[NEW_ORDER_ALERT] event=NATIVE_PENDING_ACTION", {
+            action: pending.action,
+            orderId: foodId,
+          });
+        }
+        markIncomingOrderResolved({ foodId });
+        shownCoreIdsRef.current.add(`f:${foodId}`);
+        seenFoodIdsRef.current.add(foodId);
+        void stopNewOrderAlert(foodId, reason);
+        const current = sheetOrderRef.current;
+        if (
+          current &&
+          (current.id === foodId ||
+            String(current.ordersCoreId) === foodId ||
+            current.id === pending.orderId)
+        ) {
+          void advanceOrCloseSheet({
+            markDismissed: true,
+            parkIfLast: false,
+            stopReason: reason,
+            forFoodId: current.id,
+            forCoreId: current.ordersCoreId,
+          });
+        }
+        const boardRow = orders.find((o) => o.id === foodId);
+        if (boardRow) {
+          upsertOrder({
+            ...boardRow,
+            status: pending.action === "reject" ? "rejected" : "preparing",
+            pipelineStatus: pending.action === "reject" ? "CANCELLED" : "ACCEPTED",
+          });
+        }
+      } catch {
+        /* native optional */
+      }
+    };
+    void applyNativePending();
+    const onState = (state: AppStateStatus) => {
+      if (state === "active") void applyNativePending();
+    };
+    const sub = AppState.addEventListener("change", onState);
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+  }, [advanceOrCloseSheet, orders, upsertOrder]);
+
+  /**
    * X / backdrop: dismiss the viewed order — never auto-popup again for that order.
    * With multiple pending orders, advance to the next FIFO card (partnersite parity).
    */
@@ -1181,12 +1247,18 @@ export default function IncomingOrderModal() {
       rejectFlowLog("CLICK", actedFoodId, alertSessionId);
       setRejectingFoodId(actedFoodId);
       rejectFlowLog("MODAL_LOADING_ON", actedFoodId, alertSessionId);
+      // Stop buzzer immediately on tap — do not wait for network (idempotent if API fails).
+      rejectFlowLog("ALERT_STOP", actedFoodId, alertSessionId);
+      void stopNewOrderAlert(current.id, stopReason);
 
       try {
         rejectFlowLog("API_START", actedFoodId, alertSessionId);
         const applied = await runTransition();
         rejectFlowLog("API_SUCCESS", actedFoodId, alertSessionId);
-        if (!applied) return;
+        if (!applied) {
+          showToast("Could not reject order");
+          return;
+        }
 
         rejectFlowLog("ORDER_REMOVE_START", actedFoodId, alertSessionId);
         rejectFlowLog("CACHE_RECONCILE_START", actedFoodId, alertSessionId);
@@ -1203,8 +1275,6 @@ export default function IncomingOrderModal() {
 
         markIncomingOrderResolved({ orderCoreId: actedCoreId, foodId: actedFoodId });
         shownCoreIdsRef.current.add(`c:${actedCoreId}`);
-        rejectFlowLog("ALERT_STOP", actedFoodId, alertSessionId);
-        await stopNewOrderAlert(current.id, stopReason);
         rejectFlowLog("MODAL_CLOSE", actedFoodId, alertSessionId);
         await advanceOrCloseSheet({
           markDismissed: true,

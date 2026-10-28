@@ -61,6 +61,10 @@ function stampExpoIdentity(data: Record<string, string>, input: FcmSendInput): v
     data.experienceId = experienceId;
     data.scopeKey = experienceId;
     data.appRole = role;
+    data.target_app = role;
+  } else if (role === "customer" || role === "merchant" || role === "rider") {
+    data.appRole = role;
+    data.target_app = role;
   }
   if (input.title && !data.title) data.title = input.title;
   if (input.body) {

@@ -1,7 +1,7 @@
 package {{PACKAGE}};
 
 import android.content.Context;
-import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
@@ -13,6 +13,7 @@ import android.os.Process;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -24,14 +25,19 @@ import org.json.JSONObject;
 /**
  * Native SYSTEM_ALERT_WINDOW overlay for a critical incoming order.
  *
- * Created from OrderAlertForegroundService (not JS / React Activity).
- * Uses TYPE_APPLICATION_OVERLAY on API 26+ so the card can sit above the
- * currently visible app when Settings.canDrawOverlays is true.
+ * Shown only over the lock screen / other apps (home). Never while Partner is
+ * the foreground app — IncomingOrderModal owns in-app Accept/Reject.
+ *
+ * User can close or swipe the card away without stopping the buzzer; the same
+ * session will not reappear until a new order arrives.
  */
 public final class OrderAlertOverlay {
   private static final String TAG = "OVERLAY_DEBUG";
+  private static final String PREFS = "gatimitra_order_overlay_v1";
+  private static final String KEY_CARD_DISMISSED = "card_dismissed_sessions";
   private static final Object LOCK = new Object();
   private static final Handler MAIN = new Handler(Looper.getMainLooper());
+  private static final float SWIPE_DISMISS_DP = 96f;
 
   private static View attachedView;
   private static String attachedSessionId;
@@ -88,8 +94,6 @@ public final class OrderAlertOverlay {
     if (context == null) return;
     final String sid = sessionId == null ? "" : sessionId.trim();
     if (sid.length() == 0) return;
-    // Keep the FGS/service instance for WindowManager.addView. Application
-    // context alone is less reliable on some OEMs for TYPE_APPLICATION_OVERLAY.
     final Context host = context;
     final Context app = context.getApplicationContext();
     Runnable task = () -> showOnMain(host, app, sid, orderId, offerId, title, body, pickup, drop, orderType);
@@ -153,6 +157,58 @@ public final class OrderAlertOverlay {
     }
   }
 
+  /**
+   * User closed / swiped the floating card. Hides UI only — buzzer keeps playing
+   * until Accept/Reject/expire. Same session will not re-show the card.
+   */
+  static void dismissCardByUser(Context context, String sessionId) {
+    if (context == null) return;
+    String sid = sessionId == null ? "" : sessionId.trim();
+    if (sid.length() == 0) sid = attachedSessionId == null ? "" : attachedSessionId;
+    if (sid.length() > 0) markCardDismissed(context, sid);
+    hide(context, sid);
+    OrderAlertLockActivity.finishLive();
+    AlertEngineLog.log(context, "OVERLAY_USER_DISMISS", sid, "", "buzzer_continues=1");
+  }
+
+  static boolean isCardDismissed(Context context, String sessionId) {
+    if (context == null || sessionId == null || sessionId.trim().length() == 0) return false;
+    String raw = prefs(context).getString(KEY_CARD_DISMISSED, "");
+    return raw.contains("|" + sessionId.trim() + "|");
+  }
+
+  /** Clear dismiss markers that no longer match an active session (new order). */
+  static void pruneDismissed(Context context, String activeSessionId) {
+    if (context == null) return;
+    SharedPreferences p = prefs(context);
+    String raw = p.getString(KEY_CARD_DISMISSED, "");
+    if (raw.length() == 0) return;
+    if (activeSessionId != null && activeSessionId.trim().length() > 0) {
+      String keep = "|" + activeSessionId.trim() + "|";
+      if (raw.contains(keep) && raw.equals(keep)) return;
+      // Drop markers for sessions that are no longer active.
+      if (!raw.contains(keep)) {
+        p.edit().putString(KEY_CARD_DISMISSED, "").apply();
+      }
+    } else {
+      p.edit().putString(KEY_CARD_DISMISSED, "").apply();
+    }
+  }
+
+  private static void markCardDismissed(Context context, String sessionId) {
+    SharedPreferences p = prefs(context);
+    String token = "|" + sessionId + "|";
+    String raw = p.getString(KEY_CARD_DISMISSED, "");
+    if (raw.contains(token)) return;
+    String next = raw + token;
+    if (next.length() > 4000) next = next.substring(next.length() - 4000);
+    p.edit().putString(KEY_CARD_DISMISSED, next).commit();
+  }
+
+  private static SharedPreferences prefs(Context context) {
+    return context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+  }
+
   private static void showOnMain(
       Context host,
       Context app,
@@ -167,6 +223,17 @@ public final class OrderAlertOverlay {
   ) {
     synchronized (LOCK) {
       debug(app, "OVERLAY_CREATE_START", sessionId, orderId, "orderType=" + sessionSafe(orderType));
+      // Never mount over Partner UI or the lock screen (LockActivity hosts lock UI).
+      if (OrderAlertVisibility.shouldSuppressOverlayWindow(app)) {
+        debug(app, "OVERLAY_SKIP", sessionId, orderId, "reason=partner_or_locked");
+        removeLocked(app, attachedSessionId, "reason=partner_or_locked");
+        return;
+      }
+      pruneDismissed(app, sessionId);
+      if (isCardDismissed(app, sessionId)) {
+        debug(app, "OVERLAY_SKIP", sessionId, orderId, "reason=user_dismissed_card");
+        return;
+      }
       boolean allowed = canDraw(app);
       debug(app, "DRAW_OVERLAYS_PERMISSION=" + allowed, sessionId, orderId, null);
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
@@ -204,6 +271,11 @@ public final class OrderAlertOverlay {
 
       View card = buildCard(app, sessionId, orderId, offerId, title, body, pickup, drop, orderType);
       WindowManager.LayoutParams params = overlayParams(app);
+      // Swipe on title/price only — leave × and Accept/Reject fully tappable.
+      View titleHandle = card.findViewWithTag("gm_overlay_title");
+      View priceHandle = card.findViewWithTag("gm_overlay_price");
+      if (titleHandle != null) attachSwipeToDismiss(app, titleHandle, card, sessionId);
+      if (priceHandle != null) attachSwipeToDismiss(app, priceHandle, card, sessionId);
       try {
         wm.addView(card, params);
         attachedView = card;
@@ -278,6 +350,48 @@ public final class OrderAlertOverlay {
     return params;
   }
 
+  /**
+   * Swipe left/right on the header to hide the card. Gesture target is the header
+   * so Accept / Reject / close taps are not stolen.
+   */
+  private static void attachSwipeToDismiss(
+      final Context context,
+      final View gestureTarget,
+      final View translateTarget,
+      final String sessionId
+  ) {
+    if (gestureTarget == null || translateTarget == null) return;
+    final float[] start = new float[3]; // rawX, translationX baseline, moved
+    final float dismissPx = SWIPE_DISMISS_DP * context.getResources().getDisplayMetrics().density;
+    gestureTarget.setOnTouchListener((v, event) -> {
+      switch (event.getActionMasked()) {
+        case MotionEvent.ACTION_DOWN:
+          start[0] = event.getRawX();
+          start[1] = translateTarget.getTranslationX();
+          start[2] = 0f;
+          return true;
+        case MotionEvent.ACTION_MOVE: {
+          float dx = event.getRawX() - start[0];
+          if (Math.abs(dx) > dp(context, 8)) start[2] = 1f;
+          translateTarget.setTranslationX(start[1] + dx);
+          return true;
+        }
+        case MotionEvent.ACTION_UP:
+        case MotionEvent.ACTION_CANCEL: {
+          float dx = translateTarget.getTranslationX();
+          if (start[2] > 0f && Math.abs(dx) >= dismissPx) {
+            dismissCardByUser(context, sessionId);
+            return true;
+          }
+          translateTarget.animate().translationX(0f).setDuration(160).start();
+          return true;
+        }
+        default:
+          return false;
+      }
+    });
+  }
+
   static View buildCard(
       final Context context,
       final String sessionId,
@@ -310,13 +424,61 @@ public final class OrderAlertOverlay {
       card.setElevation(dp(context, 10));
     }
 
+    JSONObject active = null;
+    try {
+      active = OrderAlertController.getActive(context);
+    } catch (Throwable ignored) {
+    }
+    String displayId = active != null ? active.optString("displayOrderId", "") : "";
+    if (displayId.matches("^\\d+$")) displayId = "";
+    String amount = active != null ? active.optString("amount", "") : "";
+    String customer = active != null ? active.optString("customerName", "") : "";
+    String amountLabel = formatAmount(amount);
+
+    // Row 1: NEW ORDER ........ ₹price  [×]
+    LinearLayout header = new LinearLayout(context);
+    header.setOrientation(LinearLayout.HORIZONTAL);
+    header.setGravity(Gravity.CENTER_VERTICAL);
+    header.setLayoutParams(new LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT
+    ));
+
     TextView heading = new TextView(context);
     heading.setText("NEW ORDER");
+    heading.setTag("gm_overlay_title");
     heading.setTextColor(Color.parseColor("#F9FAFB"));
     heading.setTextSize(16);
     heading.setTypeface(Typeface.DEFAULT_BOLD);
     heading.setLetterSpacing(0.04f);
-    card.addView(heading);
+    LinearLayout.LayoutParams headingLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+    heading.setLayoutParams(headingLp);
+    header.addView(heading);
+
+    if (amountLabel.length() > 0) {
+      TextView price = new TextView(context);
+      price.setText(amountLabel);
+      price.setTag("gm_overlay_price");
+      price.setTextColor(Color.WHITE);
+      price.setTextSize(16);
+      price.setTypeface(Typeface.DEFAULT_BOLD);
+      price.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+      price.setPadding(dp(context, 8), 0, dp(context, 8), 0);
+      header.addView(price);
+    }
+
+    TextView close = new TextView(context);
+    close.setText("×");
+    close.setTextColor(Color.parseColor("#D1D5DB"));
+    close.setTextSize(22);
+    close.setTypeface(Typeface.DEFAULT_BOLD);
+    close.setGravity(Gravity.CENTER);
+    close.setPadding(dp(context, 10), dp(context, 4), dp(context, 4), dp(context, 4));
+    close.setContentDescription("Close");
+    close.setClickable(true);
+    close.setOnClickListener(v -> dismissCardByUser(context, sessionId));
+    header.addView(close);
+    card.addView(header);
 
     String typeLabel = displayOrderType(orderType);
     if (typeLabel.length() > 0) {
@@ -332,16 +494,6 @@ public final class OrderAlertOverlay {
     if (dropLabel.length() > 0) {
       card.addView(metaRow(context, "Drop: " + dropLabel));
     }
-
-    JSONObject active = null;
-    try {
-      active = OrderAlertController.getActive(context);
-    } catch (Throwable ignored) {
-    }
-    String displayId = active != null ? active.optString("displayOrderId", "") : "";
-    if (displayId.matches("^\\d+$")) displayId = "";
-    String amount = active != null ? active.optString("amount", "") : "";
-    String customer = active != null ? active.optString("customerName", "") : "";
 
     if (displayId.length() > 0) {
       TextView idView = new TextView(context);
@@ -361,14 +513,7 @@ public final class OrderAlertOverlay {
     if (customer.length() > 0 && !"Customer".equalsIgnoreCase(customer)) {
       card.addView(metaRow(context, customer));
     }
-    String amountLabel = formatAmount(amount);
-    if (amountLabel.length() > 0) {
-      TextView amt = metaRow(context, amountLabel);
-      amt.setTextColor(Color.WHITE);
-      amt.setTextSize(16);
-      amt.setTypeface(Typeface.DEFAULT_BOLD);
-      card.addView(amt);
-    }
+    // Amount is on the header row — do not repeat on a 3rd row.
 
     String detail = firstNonEmpty(title, body);
     boolean genericTitle = detail.length() == 0
@@ -458,33 +603,6 @@ public final class OrderAlertOverlay {
       btn.setElevation(0);
     }
     return btn;
-  }
-
-  private static void launchApp(
-      Context context,
-      String action,
-      String sessionId,
-      String orderId,
-      String offerId
-  ) {
-    try {
-      Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
-      if (launch == null) {
-        launch = new Intent(context, Class.forName("{{PACKAGE}}.MainActivity"));
-      }
-      launch.addFlags(
-          Intent.FLAG_ACTIVITY_NEW_TASK
-              | Intent.FLAG_ACTIVITY_SINGLE_TOP
-              | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-      );
-      launch.putExtra("gmOverlayAction", action);
-      launch.putExtra("alertSessionId", sessionId);
-      if (orderId != null) launch.putExtra("orderId", orderId);
-      if (offerId != null) launch.putExtra("offerId", offerId);
-      context.startActivity(launch);
-    } catch (Throwable t) {
-      debug(context, "OVERLAY_ADD_VIEW_FAILED", sessionId, orderId, "reason=launch_app err=" + t.getMessage());
-    }
   }
 
   private static String displayOrderType(String raw) {

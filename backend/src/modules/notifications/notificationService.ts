@@ -63,6 +63,7 @@ import type {
   TemplateVariables,
 } from "./types.js";
 import {
+  audienceRoleForSend,
   expectedRoleFromTarget,
   expandCampaignUserIdCandidates,
   softSkipWarningForTarget,
@@ -656,6 +657,7 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
         }
       : {}),
     appRole: row.recipient.role,
+    target_app: row.recipient.role,
   };
 }
 
@@ -1140,17 +1142,26 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
       templateCode: template.code,
       metadata: intent.metadata ?? null,
     });
+  const templateRole = String(template.role).toLowerCase();
+  const audienceRole = audienceRoleForSend(
+    intent.target as Record<string, unknown>,
+    templateRole,
+  );
   let recipients = await resolveTarget(intent.target, {
     ignoreStaleness: ignoreTokenStaleness,
+    audienceRole: audienceRole ?? undefined,
   });
-  // When targeting a single / many users, keep only tokens matching template role
-  // so a merchant id cannot receive a customer-only announcement deep link.
-  const templateRole = String(template.role).toLowerCase();
-  if (
-    (templateRole === "customer" || templateRole === "merchant" || templateRole === "rider") &&
-    ("user_id" in intent.target || "user_ids" in intent.target)
-  ) {
-    recipients = recipients.filter((r) => r.role === templateRole || r.role === "all");
+  // Hard isolation: never deliver a Customer campaign to Rider/Merchant tokens
+  // (or vice versa). Drop role="all" rows for app-specific audiences — those
+  // were previously kept and caused cross-app leakage on shared devices.
+  if (audienceRole) {
+    const before = recipients.length;
+    recipients = recipients.filter((r) => r.role === audienceRole);
+    if (before !== recipients.length) {
+      console.warn(
+        `[notifications] audience_filter template=${template.code} role=${audienceRole} dropped=${before - recipients.length}`,
+      );
+    }
   }
 
   // No push tokens: still write in-app inbox rows for explicit user / order /
@@ -1428,6 +1439,7 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           data: {
             template_code: row.templateCode,
             appRole: row.recipient.role,
+            target_app: row.recipient.role,
             ...(row.campaignId != null ? { campaign_id: String(row.campaignId) } : {}),
           },
           priority: row.priority as never,

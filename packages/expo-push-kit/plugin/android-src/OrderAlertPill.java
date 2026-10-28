@@ -162,8 +162,13 @@ public final class OrderAlertPill {
       if (windowManager == null) return;
 
       int size = dp(context, 62);
-      int box = dp(context, 64);
+      // Extra padding so the circle + badge are never clipped by the window edge.
+      int inset = dp(context, 10);
+      int box = size + inset * 2;
       FrameLayout root = new FrameLayout(context);
+      root.setClipChildren(false);
+      root.setClipToPadding(false);
+      root.setPadding(inset, inset, inset, inset);
       FrameLayout circle = new FrameLayout(context);
       GradientDrawable bg = normalBackground(context);
       pillBackground = bg;
@@ -198,9 +203,15 @@ public final class OrderAlertPill {
       badgeBg.setColor(Color.parseColor("#E11D48"));
       badgeBg.setStroke(dp(context, 1), Color.WHITE);
       mark.setBackground(badgeBg);
+      // Badge must sit above the elevated circle (Android draws by elevation).
+      if (Build.VERSION.SDK_INT >= 21) mark.setElevation(dp(context, 12));
+      if (Build.VERSION.SDK_INT >= 21) mark.setTranslationZ(dp(context, 12));
       int badgeSize = dp(context, 18);
       FrameLayout.LayoutParams badgeLp = new FrameLayout.LayoutParams(badgeSize, badgeSize, Gravity.TOP | Gravity.END);
+      badgeLp.topMargin = dp(context, 2);
+      badgeLp.rightMargin = dp(context, 2);
       root.addView(mark, badgeLp);
+      mark.bringToFront();
       badge = mark;
       bindBadge(count);
 
@@ -209,19 +220,22 @@ public final class OrderAlertPill {
           box,
           WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
           WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-              | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+              | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+              | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
           PixelFormat.TRANSLUCENT
       );
       lp.gravity = Gravity.TOP | Gravity.START;
       int screenW = context.getResources().getDisplayMetrics().widthPixels;
       int screenH = context.getResources().getDisplayMetrics().heightPixels;
+      int edge = dp(context, 12);
       SharedPreferences p = prefs(context);
       if (p.getBoolean(KEY_POS, false)) {
-        lp.x = p.getInt(KEY_X, dp(context, 16));
-        lp.y = p.getInt(KEY_Y, screenH - dp(context, 160));
+        lp.x = clamp(p.getInt(KEY_X, edge), 0, Math.max(0, screenW - box - edge));
+        lp.y = clamp(p.getInt(KEY_Y, screenH - dp(context, 160)), edge, Math.max(edge, screenH - box - edge));
       } else {
-        lp.x = Math.max(0, screenW - dp(context, 74));
-        lp.y = Math.max(0, (int) (screenH * 0.46f));
+        // Keep fully on-screen: inset from right + vertical mid.
+        lp.x = Math.max(edge, screenW - box - edge);
+        lp.y = Math.max(edge, Math.min(screenH - box - edge, (int) (screenH * 0.46f)));
       }
       root.setOnTouchListener((v, event) -> onDrag(context, root, lp, screenW, screenH, event));
       try {
@@ -270,10 +284,11 @@ public final class OrderAlertPill {
         if (start == null) return true;
         int nx = (int) (start[2] + (event.getRawX() - start[0]));
         int ny = (int) (start[3] + (event.getRawY() - start[1]));
-        int maxX = Math.max(0, screenW - pill.getWidth());
-        int maxY = Math.max(0, screenH - pill.getHeight());
-        lp.x = Math.max(0, Math.min(maxX, nx));
-        lp.y = Math.max(0, Math.min(maxY, ny));
+        int edge = dp(context, 12);
+        int maxX = Math.max(edge, screenW - pill.getWidth() - edge);
+        int maxY = Math.max(edge, screenH - pill.getHeight() - edge);
+        lp.x = clamp(nx, edge, maxX);
+        lp.y = clamp(ny, edge, maxY);
         if (Math.abs(event.getRawX() - start[0]) + Math.abs(event.getRawY() - start[1]) > dp(context, 8)) {
           start[4] = 1f;
         }
@@ -340,14 +355,16 @@ public final class OrderAlertPill {
 
   private static void playAttention(Context context) {
     if (view == null) return;
+    // Stroke the circle only — never paint the oval onto the root (that covered the badge).
     if (pillBackground != null) {
       pillBackground.setStroke(dp(context, 2), Color.parseColor("#22C55E"));
-      view.setBackground(pillBackground);
     }
+    if (badge != null) badge.bringToFront();
     shake(0);
     MAIN.postDelayed(() -> {
       if (pillBackground != null) pillBackground.setStroke(0, Color.TRANSPARENT);
       if (view != null) view.setTranslationX(0f);
+      if (badge != null) badge.bringToFront();
     }, 1000L);
   }
 
@@ -380,6 +397,11 @@ public final class OrderAlertPill {
 
   private static int dp(Context context, int value) {
     return Math.round(value * context.getResources().getDisplayMetrics().density);
+  }
+
+  private static int clamp(int value, int min, int max) {
+    if (max < min) return min;
+    return Math.max(min, Math.min(max, value));
   }
 
   /** Avoid android.R collisions; a tiny holder for the gesture origin. */

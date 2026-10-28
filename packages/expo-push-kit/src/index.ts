@@ -22,6 +22,12 @@ export {
 } from "./tokenRotation";
 
 export {
+  isForeignAppPush,
+  FOREIGN_APP_NOTIFICATION_PRESENTATION,
+  type GatiMitraAppAudience,
+} from "./appAudience";
+
+export {
   registerExpoPushTokenOnBackend,
   unregisterPushTokenOnBackend,
   type RegisterPushBody,
@@ -103,10 +109,12 @@ export {
   persistNativeAlertSound,
   setPersistentOrderPill,
   consumePersistentPillLaunch,
+  consumeNativePendingOrderAction,
   extractAlertSessionId,
   merchantAlertSessionId,
   riderAlertSessionId,
   riderSoundTypeForService,
   type NativeOrderAlert,
   type NativeOrderAlertSoundType,
+  type NativePendingOrderAction,
 } from "./orderAlert";

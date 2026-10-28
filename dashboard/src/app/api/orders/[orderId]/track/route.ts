@@ -51,18 +51,31 @@ export async function GET(
     }
 
     const qs = request.nextUrl.search ?? "";
-    const upstream = await fetch(
-      `${base}/v1/admin/tracking/order/${encodeURIComponent(id)}/track${qs}`,
-      {
-        method: "GET",
-        cache: "no-store",
-        headers: {
-          "X-Internal-Secret": process.env.INTERNAL_API_TOKEN,
-          "X-Actor-Role": "super_admin",
-          "content-type": "application/json",
-        },
+    const url = `${base}/v1/admin/tracking/order/${encodeURIComponent(id)}/track${qs}`;
+    const headers = {
+      "X-Internal-Secret": process.env.INTERNAL_API_TOKEN,
+      "X-Actor-Role": "super_admin",
+      "content-type": "application/json",
+    };
+
+    // One quiet retry — backend may still be booting when the dashboard opens the modal.
+    let upstream: Response | null = null;
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        upstream = await fetch(url, { method: "GET", cache: "no-store", headers });
+        if (upstream.ok || upstream.status < 500) break;
+        lastErr = new Error(`upstream HTTP ${upstream.status}`);
+      } catch (e) {
+        lastErr = e;
+        upstream = null;
       }
-    );
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 600));
+    }
+    if (!upstream) {
+      console.error("[GET /api/orders/[orderId]/track]", lastErr);
+      return NextResponse.json({ error: "backend_unreachable" }, { status: 502 });
+    }
     const data = await upstream.json().catch(() => ({}));
     return NextResponse.json(data, { status: upstream.status });
   } catch (e) {

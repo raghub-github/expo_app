@@ -1,17 +1,25 @@
 /**
  * Expand a raw admin-entered user id (GM… / GMMP… / GMR… / usr_… / digits)
  * into candidate ids that exist in expo_push_tokens / parents / customers.
+ *
+ * When `role` is provided, only that app's id shapes are produced so a bare
+ * numeric id cannot fan out to Customer + Merchant + Rider at once.
  */
-export function expandCampaignUserIdCandidates(raw: string): string[] {
+export function expandCampaignUserIdCandidates(
+  raw: string,
+  role?: "customer" | "merchant" | "rider" | null,
+): string[] {
   const trimmed = raw.trim();
   if (!trimmed) return [];
 
   const compact = trimmed.toUpperCase().replace(/\s+/g, "");
   const out = new Set<string>([trimmed]);
+  const audience = role ?? null;
 
   const usrMatch = trimmed.match(/^usr_(\d+)$/i);
   const gmrMatch = compact.match(/^GMR(\d+)$/);
   if (usrMatch || gmrMatch) {
+    if (audience && audience !== "rider") return [...out];
     const pk = Number(usrMatch?.[1] ?? gmrMatch?.[1]);
     if (Number.isFinite(pk) && pk > 0) {
       out.add(`usr_${pk}`);
@@ -22,6 +30,21 @@ export function expandCampaignUserIdCandidates(raw: string): string[] {
   }
 
   if (/^\d+$/.test(compact)) {
+    if (audience === "customer") {
+      out.add(`GM${compact}`);
+      return [...out];
+    }
+    if (audience === "merchant") {
+      out.add(`GMMP${compact}`);
+      return [...out];
+    }
+    if (audience === "rider") {
+      out.add(`usr_${compact}`);
+      out.add(`GMR${compact}`);
+      return [...out];
+    }
+    // Ambiguous bare digits with no role hint — keep historical expansion;
+    // callers must still filter tokens by audience before send.
     out.add(`GM${compact}`);
     out.add(`GMMP${compact}`);
     out.add(`usr_${compact}`);
@@ -29,9 +52,18 @@ export function expandCampaignUserIdCandidates(raw: string): string[] {
     return [...out];
   }
 
-  if (/^GM\d+$/i.test(compact)) out.add(compact);
-  if (/^GMMP\d+$/i.test(compact)) out.add(compact);
+  if (/^GMMP\d+$/i.test(compact)) {
+    if (audience && audience !== "merchant") return [trimmed];
+    out.add(compact);
+    return [...out];
+  }
+  if (/^GM\d+$/i.test(compact) && !/^GMMP/i.test(compact)) {
+    if (audience && audience !== "customer") return [trimmed];
+    out.add(compact);
+    return [...out];
+  }
   if (/^GMR\d+$/i.test(compact)) {
+    if (audience && audience !== "rider") return [trimmed];
     out.add(compact);
     const pk = Number(compact.replace(/^GMR/i, ""));
     if (Number.isFinite(pk) && pk > 0) out.add(`usr_${pk}`);
@@ -42,7 +74,7 @@ export function expandCampaignUserIdCandidates(raw: string): string[] {
 
 /**
  * Infer which app role a campaign target is aimed at.
- * Returns null for ambiguous targets (topic / device token) where we skip the check.
+ * Returns null for ambiguous targets where a role-specific template must be rejected.
  */
 export function expectedRoleFromTarget(
   target: Record<string, unknown>,
@@ -69,35 +101,71 @@ export function expectedRoleFromTarget(
       if (!id) continue;
       if (/^GMR\d+$/.test(id) || /^USR_\d+$/.test(id)) roles.add("rider");
       else if (/^GMMP\d+$/.test(id)) roles.add("merchant");
-      else if (/^GM\d+$/.test(id)) roles.add("customer");
+      else if (/^GM\d+$/.test(id) && !/^GMMP/.test(id)) roles.add("customer");
+      else if (/^\d+$/.test(id)) {
+        // Bare digits are ambiguous across apps — treat as multi-role.
+        roles.add("customer");
+        roles.add("merchant");
+        roles.add("rider");
+      }
     }
     if (roles.size === 1) return [...roles][0]!;
+    return null;
   }
   if (typeof target.role === "string") {
     const r = target.role.toLowerCase();
     if (r === "customer" || r === "merchant" || r === "rider") return r;
   }
-  // Pure geo target (`geo: true` without role) is role-ambiguous — template may be `all`.
-  if (target.geo === true) return null;
+  // Pure geo without role is role-ambiguous.
+  if (target.geo === true) {
+    if (typeof target.role === "string") {
+      const r = target.role.toLowerCase();
+      if (r === "customer" || r === "merchant" || r === "rider") return r;
+    }
+    return null;
+  }
   if (typeof target.topic === "string") {
     const t = target.topic.trim();
     if (t === "app_customer") return "customer";
     if (t === "app_merchant") return "merchant";
     if (t === "app_rider") return "rider";
+    // Custom / shared topics are not app-isolated.
+    return null;
   }
-  // Pure geo target (city / lat-lng without an explicit role) is role-ambiguous.
+  if (target.all_active === true) return null;
   return null;
 }
 
-/** True when template.role is compatible with the resolved audience role. */
+/**
+ * True when template.role is compatible with the resolved audience role.
+ * Role-specific templates (customer/merchant/rider) REQUIRE an explicit audience —
+ * ambiguous targets (city/all-roles, custom topic, bare digits) are rejected.
+ */
 export function templateRoleMatchesTarget(
   templateRole: string,
   expected: "customer" | "merchant" | "rider" | null,
 ): boolean {
-  if (!expected) return true;
-  const role = templateRole.toLowerCase();
+  const role = String(templateRole ?? "")
+    .trim()
+    .toLowerCase();
   if (role === "all") return true;
+  if (role !== "customer" && role !== "merchant" && role !== "rider") return true;
+  if (!expected) return false;
   return role === expected;
+}
+
+/** Resolve the hard audience used to filter tokens before FCM/Expo send. */
+export function audienceRoleForSend(
+  target: Record<string, unknown>,
+  templateRole: string,
+): "customer" | "merchant" | "rider" | null {
+  const fromTarget = expectedRoleFromTarget(target);
+  if (fromTarget) return fromTarget;
+  const role = String(templateRole ?? "")
+    .trim()
+    .toLowerCase();
+  if (role === "customer" || role === "merchant" || role === "rider") return role;
+  return null;
 }
 
 /** Default announcement template for a target role. */

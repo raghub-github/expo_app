@@ -17,7 +17,10 @@ import type {
   Recipient,
   TargetFilter,
 } from "./types.js";
-import { expandCampaignUserIdCandidates } from "./campaignTarget.js";
+import {
+  expandCampaignUserIdCandidates,
+  expectedRoleFromTarget,
+} from "./campaignTarget.js";
 import {
   dedupeNativeTokensForDispatch,
   expandCustomerPushUserIds,
@@ -35,6 +38,11 @@ export type ResolveTargetOpts = {
    * on 90-day dormancy.
    */
   ignoreStaleness?: boolean;
+  /**
+   * When set, only return tokens for this app audience. Prevents Customer
+   * campaigns from resolving Rider/Merchant tokens (and vice versa).
+   */
+  audienceRole?: "customer" | "merchant" | "rider";
 };
 
 function stalenessSql(
@@ -201,6 +209,7 @@ async function nativeFcmTokens(opts: {
         FROM public.native_device_push_tokens
         WHERE token_type = 'fcm'
           AND store_id = ANY(${storeIds}::bigint[])
+          AND lower(coalesce(role, 'merchant')) = 'merchant'
           ${stale}
       `) as unknown as typeof rows;
     } else if (userIds.length > 0) {
@@ -977,36 +986,48 @@ async function resolveTargetRaw(
   }
 
   if ("user_id" in target && typeof target.user_id === "string") {
+    const audience =
+      opts?.audienceRole ?? expectedRoleFromTarget(target as Record<string, unknown>);
     const candidates = await withCustomerTokenAliases(
-      expandCampaignUserIdCandidates(target.user_id),
+      expandCampaignUserIdCandidates(target.user_id, audience),
     );
-    const customerOnly = candidates.some((id) => /^GM\d+$/i.test(id) && !/^GMMP/i.test(id));
-    const expo = await tokensForUserIds(
-      candidates,
-      customerOnly ? "customer" : undefined,
-      opts,
-    );
-    const merchant = await tokensFromMerchantStorePushTokens({ parentMerchantIds: candidates });
+    const customerOnly =
+      audience === "customer" ||
+      (!audience &&
+        candidates.some((id) => /^GM\d+$/i.test(id) && !/^GMMP/i.test(id)));
+    const roleFilter =
+      audience ?? (customerOnly ? ("customer" as const) : undefined);
+    const expo = await tokensForUserIds(candidates, roleFilter, opts);
+    const merchant =
+      !roleFilter || roleFilter === "merchant"
+        ? await tokensFromMerchantStorePushTokens({ parentMerchantIds: candidates })
+        : [];
     const native = await nativeFcmTokens({
       userIds: candidates,
-      role: customerOnly ? "customer" : undefined,
+      role: roleFilter,
       ignoreStaleness: opts?.ignoreStaleness,
     });
     return dedupeByToken([...expo, ...merchant, ...native]);
   }
 
   if ("user_ids" in target && Array.isArray(target.user_ids)) {
+    const audience =
+      opts?.audienceRole ?? expectedRoleFromTarget(target as Record<string, unknown>);
     const candidates = [
       ...new Set(
         target.user_ids
-          .flatMap((s) => expandCampaignUserIdCandidates(String(s)))
+          .flatMap((s) => expandCampaignUserIdCandidates(String(s), audience))
           .filter(Boolean),
       ),
     ];
-    const expo = await tokensForUserIds(candidates, undefined, opts);
-    const merchant = await tokensFromMerchantStorePushTokens({ parentMerchantIds: candidates });
+    const expo = await tokensForUserIds(candidates, audience ?? undefined, opts);
+    const merchant =
+      !audience || audience === "merchant"
+        ? await tokensFromMerchantStorePushTokens({ parentMerchantIds: candidates })
+        : [];
     const native = await nativeFcmTokens({
       userIds: candidates,
+      role: audience ?? undefined,
       ignoreStaleness: opts?.ignoreStaleness,
     });
     return dedupeByToken([...expo, ...merchant, ...native]);
@@ -1014,12 +1035,13 @@ async function resolveTargetRaw(
 
   // Dedicated city / lat-lng target (`geo: true`).
   if ("geo" in target && target.geo === true && hasGeoFields(target)) {
+    const geoRole = target.role ?? opts?.audienceRole ?? null;
     return recipientsForGeo({
       city: target.city,
       lat: target.lat,
       lng: target.lng,
       radius_km: target.radius_km,
-      role: target.role ?? null,
+      role: geoRole,
       ignoreStaleness: opts?.ignoreStaleness,
     });
   }

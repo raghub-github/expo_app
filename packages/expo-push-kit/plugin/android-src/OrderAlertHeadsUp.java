@@ -89,9 +89,16 @@ public final class OrderAlertHeadsUp {
         .addAction(0, "REJECT", rejectPi)
         .addAction(0, "ACCEPT", acceptPi);
 
+    // Locked: same transparent floating-card LockActivity (screen on).
     if (isLocked(context)) {
       Intent lock = new Intent(context, OrderAlertLockActivity.class);
-      lock.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
+      lock.addFlags(
+          Intent.FLAG_ACTIVITY_NEW_TASK
+              | Intent.FLAG_ACTIVITY_NO_USER_ACTION
+              | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+              | Intent.FLAG_ACTIVITY_CLEAR_TOP
+              | Intent.FLAG_ACTIVITY_SINGLE_TOP
+      );
       lock.putExtra(OrderAlertController.EXTRA_SESSION_ID, sid);
       PendingIntent full = PendingIntent.getActivity(context, NOTIFICATION_ID + 4, lock, flags);
       b.setFullScreenIntent(full, true);

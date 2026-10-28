@@ -1,22 +1,18 @@
 /**
- * Google Play In-App Updates — when Play has a newer version for THIS package,
- * show a Play-style branded bottom sheet, then start the flexible update / store page.
- *
- * Requires a Play-distributed build. Skipped in Expo Go / non-Android.
+ * Google Play In-App Updates — official Play Core UI only (no custom sheet).
+ * Uses flexible update when allowed; falls back to the Play Store listing if
+ * the in-app update flow cannot start. Requires a Play-distributed build.
+ * Skipped in Expo Go / non-Android.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppState, Linking, Platform, type AppStateStatus } from "react-native";
 import Constants from "expo-constants";
 import * as Application from "expo-application";
-import { PlayUpdateAvailableSheet } from "@/components/PlayUpdateAvailableSheet";
-import { GatiMitraColors } from "@/constants/gatimitra";
 
 const isExpoGo = Constants.appOwnership === "expo";
-const APP_NAME = Constants.expoConfig?.name ?? "GatiMitra";
 const PACKAGE_NAME =
   Constants.expoConfig?.android?.package ?? Application.applicationId ?? "com.gatimitra.customer";
-const APP_ICON = require("../assets/icon.png");
 
 export function PlayInAppUpdateBootstrap() {
   if (Platform.OS !== "android" || isExpoGo) return null;
@@ -48,27 +44,22 @@ function openPlayStoreListing() {
   });
 }
 
-/** Only one update sheet in the tree. */
+/** Only one update host in the tree (avoids duplicate Play prompts on remount). */
 let playUpdateHostToken: symbol | null = null;
 
 function PlayInAppUpdateBootstrapInner() {
-  const [sheetVisible, setSheetVisible] = useState(false);
-  const [storeVersionHint, setStoreVersionHint] = useState<string | null>(null);
   const [isLeader, setIsLeader] = useState(false);
   const dismissedRef = useRef(false);
-  const sheetVisibleRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const flowActiveRef = useRef(false);
   const clientRef = useRef<InstanceType<
     typeof import("sp-react-native-in-app-updates").default
   > | null>(null);
   const downloadedStatusRef = useRef(0);
+  const canceledStatusRef = useRef(0);
+  const failedStatusRef = useRef(0);
   const availableStatusRef = useRef(0);
   const hostTokenRef = useRef(Symbol("play-update-host"));
-
-  const openStore = useCallback(() => {
-    setSheetVisible(false);
-    sheetVisibleRef.current = false;
-    openPlayStoreListing();
-  }, []);
 
   useEffect(() => {
     if (playUpdateHostToken) return;
@@ -83,43 +74,72 @@ function PlayInAppUpdateBootstrapInner() {
     if (!isLeader) return;
     let cancelled = false;
     let statusListener: ((event: { status: number }) => void) | null = null;
+    let intentListener: ((result: number) => void) | null = null;
+    let flexibleKind = 0;
+    let immediateKind = 1;
+
+    const startOfficialUpdate = async (
+      client: NonNullable<typeof clientRef.current>,
+      extras: {
+        isFlexibleUpdateAllowed?: boolean;
+        isImmediateUpdateAllowed?: boolean;
+      } | null
+    ) => {
+      const flexibleAllowed = extras?.isFlexibleUpdateAllowed !== false;
+      const immediateAllowed = extras?.isImmediateUpdateAllowed === true;
+      const updateType =
+        flexibleAllowed || !immediateAllowed ? flexibleKind : immediateKind;
+
+      if (!flexibleAllowed && !immediateAllowed) {
+        openPlayStoreListing();
+        return;
+      }
+
+      try {
+        flowActiveRef.current = true;
+        await client.startUpdate({ updateType });
+      } catch (err) {
+        flowActiveRef.current = false;
+        if (__DEV__) console.warn("[PlayInAppUpdate] startUpdate failed, opening store:", err);
+        openPlayStoreListing();
+      }
+    };
 
     const promptIfNeeded = async () => {
       if (cancelled || dismissedRef.current || !clientRef.current) return;
-      if (sheetVisibleRef.current) return;
+      if (inFlightRef.current || flowActiveRef.current) return;
 
-      const curVersionCode = resolveAndroidVersionCode();
-      const result = await clientRef.current.checkNeedsUpdate({
-        curVersion: curVersionCode,
-        customVersionComparator: compareAndroidVersionCodes,
-      });
+      inFlightRef.current = true;
+      try {
+        const curVersionCode = resolveAndroidVersionCode();
+        const result = await clientRef.current.checkNeedsUpdate({
+          curVersion: curVersionCode,
+          customVersionComparator: compareAndroidVersionCodes,
+        });
 
-      const other = result.other && typeof result.other === "object" ? result.other : null;
-      const updateAvailability =
-        other && "updateAvailability" in other
-          ? (other as { updateAvailability?: number }).updateAvailability
-          : undefined;
-      const storeVersion =
-        other && "availableVersionCode" in other
-          ? String((other as { availableVersionCode?: string | number }).availableVersionCode ?? "")
-          : result.storeVersion
-            ? String(result.storeVersion)
-            : "";
+        const other = result.other && typeof result.other === "object" ? result.other : null;
+        const updateAvailability =
+          other && "updateAvailability" in other
+            ? (other as { updateAvailability?: number }).updateAvailability
+            : undefined;
 
-      const playSaysAvailable =
-        result.shouldUpdate || updateAvailability === availableStatusRef.current;
+        const playSaysAvailable =
+          result.shouldUpdate || updateAvailability === availableStatusRef.current;
 
-      if (!playSaysAvailable) return;
+        if (!playSaysAvailable) return;
 
-      if (storeVersion) {
-        setStoreVersionHint(`Update available · v${storeVersion}`);
-      } else {
-        const cur =
-          Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? "";
-        setStoreVersionHint(cur ? `Current · v${cur}` : null);
+        await startOfficialUpdate(
+          clientRef.current,
+          other as {
+            isFlexibleUpdateAllowed?: boolean;
+            isImmediateUpdateAllowed?: boolean;
+          } | null
+        );
+      } catch (err) {
+        if (__DEV__) console.warn("[PlayInAppUpdate] check unavailable:", err);
+      } finally {
+        inFlightRef.current = false;
       }
-      sheetVisibleRef.current = true;
-      setSheetVisible(true);
     };
 
     const boot = async () => {
@@ -127,9 +147,13 @@ function PlayInAppUpdateBootstrapInner() {
         const mod = await import("sp-react-native-in-app-updates");
         if (cancelled) return;
 
-        const { IAUInstallStatus, IAUAvailabilityStatus } = mod;
+        const { IAUInstallStatus, IAUAvailabilityStatus, IAUUpdateKind } = mod;
         availableStatusRef.current = IAUAvailabilityStatus.AVAILABLE;
         downloadedStatusRef.current = IAUInstallStatus.DOWNLOADED;
+        canceledStatusRef.current = IAUInstallStatus.CANCELED;
+        failedStatusRef.current = IAUInstallStatus.FAILED;
+        flexibleKind = IAUUpdateKind.FLEXIBLE;
+        immediateKind = IAUUpdateKind.IMMEDIATE;
 
         const client = new mod.default(false);
         clientRef.current = client;
@@ -141,9 +165,29 @@ function PlayInAppUpdateBootstrapInner() {
             } catch {
               /* Play may already prompt restart */
             }
+            flowActiveRef.current = false;
+            return;
+          }
+          if (
+            event.status === canceledStatusRef.current ||
+            event.status === failedStatusRef.current
+          ) {
+            flowActiveRef.current = false;
           }
         };
         client.addStatusUpdateListener(statusListener);
+
+        intentListener = (result) => {
+          if (result === canceledStatusRef.current) {
+            // Soft update: user dismissed official Play UI — don't re-prompt this session.
+            dismissedRef.current = true;
+            flowActiveRef.current = false;
+            return;
+          }
+          // RESULT_OK mapped to INSTALLED by the native module — download may continue.
+        };
+        client.addIntentSelectionListener(intentListener);
+
         await promptIfNeeded();
       } catch (err) {
         if (__DEV__) console.warn("[PlayInAppUpdate] unavailable:", err);
@@ -169,25 +213,15 @@ function PlayInAppUpdateBootstrapInner() {
           /* torn down */
         }
       }
+      if (client && intentListener) {
+        try {
+          client.removeIntentSelectionListener(intentListener);
+        } catch {
+          /* torn down */
+        }
+      }
     };
   }, [isLeader]);
 
-  if (!isLeader) return null;
-
-  return (
-    <PlayUpdateAvailableSheet
-      visible={sheetVisible}
-      appName={APP_NAME}
-      appIcon={APP_ICON}
-      versionHint={storeVersionHint}
-      primaryColor={GatiMitraColors.splashMint}
-      onDismiss={() => {
-        dismissedRef.current = true;
-        sheetVisibleRef.current = false;
-        setSheetVisible(false);
-      }}
-      onUpdate={openStore}
-      onLearnMore={openStore}
-    />
-  );
+  return null;
 }

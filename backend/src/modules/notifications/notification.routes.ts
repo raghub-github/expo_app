@@ -432,9 +432,16 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
       if (!tmplCheck) return reply.code(404).send({ error: "template_not_found" });
       const expectedRole = expectedRoleFromTarget(b.target as Record<string, unknown>);
       if (!templateRoleMatchesTarget(String(tmplCheck.role), expectedRole)) {
+        const tmplRole = String(tmplCheck.role).toLowerCase();
+        const needsAudience =
+          tmplRole === "customer" || tmplRole === "merchant" || tmplRole === "rider";
         return reply.code(400).send({
-          error: "role_mismatch",
-          message: `Template ${b.templateCode} is for role "${tmplCheck.role}" but target is "${expectedRole}". Pick ${expectedRole === "customer" ? "CUSTOMER_ANNOUNCEMENT" : expectedRole === "merchant" ? "MERCHANT_ANNOUNCEMENT" : expectedRole === "rider" ? "RIDER_ANNOUNCEMENT" : "a matching"} template.`,
+          error: expectedRole ? "role_mismatch" : "audience_required",
+          message: expectedRole
+            ? `Template ${b.templateCode} is for role "${tmplCheck.role}" but target is "${expectedRole}". Pick ${expectedRole === "customer" ? "CUSTOMER_ANNOUNCEMENT" : expectedRole === "merchant" ? "MERCHANT_ANNOUNCEMENT" : expectedRole === "rider" ? "RIDER_ANNOUNCEMENT" : "a matching"} template.`
+            : needsAudience
+              ? `Template ${b.templateCode} requires an explicit ${tmplCheck.role} audience. City/location must set audience to ${tmplCheck.role}; custom FCM topics and mixed user-id lists are not allowed.`
+              : `Template ${b.templateCode} cannot be sent to this target.`,
           templateRole: tmplCheck.role,
           targetRole: expectedRole,
         });
@@ -1397,6 +1404,11 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
                priority, status, queued_at, delivered_at, clicked_at, metadata
         FROM public.notification_dispatch_logs d
         WHERE recipient_user_id = ${req.auth!.sub}
+          AND (
+            recipient_role IS NULL
+            OR lower(recipient_role) = lower(${req.auth!.role ?? ""})
+            OR lower(${req.auth!.role ?? ""}) = ''
+          )
           ${notRevoked}
           AND (
             channel = 'in_app'
@@ -1420,6 +1432,11 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         SELECT COUNT(*) AS n
         FROM public.notification_dispatch_logs d
         WHERE recipient_user_id = ${req.auth!.sub}
+          AND (
+            recipient_role IS NULL
+            OR lower(recipient_role) = lower(${req.auth!.role ?? ""})
+            OR lower(${req.auth!.role ?? ""}) = ''
+          )
           AND clicked_at IS NULL
           ${notRevoked}
           AND (

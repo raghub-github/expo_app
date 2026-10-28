@@ -1,6 +1,5 @@
 package {{PACKAGE}};
 
-import android.os.Build;
 import android.content.Intent;
 import android.content.Context;
 import androidx.annotation.NonNull;
@@ -109,16 +108,9 @@ public class OrderAlertModule extends ReactContextBaseJavaModule {
       if (OrderAlertVisibility.shouldHideBecausePartnerIsOpen(ctx)) {
         OrderAlertPill.setPartnerForeground(ctx, true);
       }
+      // WindowManager overlay only — do NOT start FGS / wake lock for the pill.
+      // FGS is reserved for active incoming-order buzzer sessions.
       OrderAlertPill.setState(ctx, enabled, count, orderId);
-      if (enabled && OrderAlertOverlay.canDraw(ctx)) {
-        Intent intent = new Intent(ctx, OrderAlertForegroundService.class);
-        intent.setAction(OrderAlertPill.ACTION_PILL);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-          ctx.startForegroundService(intent);
-        } else {
-          ctx.startService(intent);
-        }
-      }
       promise.resolve(true);
     } catch (Throwable t) {
       promise.reject("E_PILL", t);

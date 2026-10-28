@@ -38,11 +38,16 @@ public final class OrderAlertActions {
     }
     stashPending(context, act, sid, row);
     try {
+      // Stop by session AND order id so JS/native format mismatches cannot leave the buzzer running.
       if (sid.length() > 0) OrderAlertController.stop(context, sid);
-      else OrderAlertController.stopAll(context);
+      String orderToken = row != null ? row.optString("foodOrderId", "") : "";
+      if (orderToken.length() == 0 && row != null) orderToken = row.optString("orderId", "");
+      if (orderToken.length() > 0) OrderAlertController.stop(context, orderToken);
+      if (sid.length() == 0 && orderToken.length() == 0) OrderAlertController.stopAll(context);
     } catch (Throwable ignored) {
     }
     OrderAlertHeadsUp.cancel(context);
+    OrderAlertLockActivity.finishLive();
     launch(context, act, sid, row);
   }
 

@@ -126,6 +126,7 @@ let playGeneration = 0;
 const knownEventIds = new Set<string>();
 
 function logAlert(fields: Record<string, string | number | boolean | null | undefined>): void {
+  if (typeof __DEV__ === "undefined" || !__DEV__) return;
   const parts = Object.entries(fields)
     .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${k}=${v ?? ""}`);
@@ -959,11 +960,27 @@ export async function stopNewOrderAlert(
   await hydrateNewOrderAlertManager();
   const id = String(orderId ?? "").trim();
   const parked = id ? parkedSessions.get(id) : undefined;
+
+  /** Stop every known native session token for this order (format mismatches). */
+  const stopNativeForOrder = (foodId: string, alertSessionId?: string | null) => {
+    const tokens = new Set<string>();
+    if (foodId) {
+      tokens.add(foodId);
+      tokens.add(merchantAlertSessionId(foodId));
+      tokens.add(`merchant-order-${foodId}`);
+    }
+    const sid = String(alertSessionId ?? "").trim();
+    if (sid) tokens.add(sid);
+    for (const t of tokens) {
+      if (t) void stopNativeOrderAlert(t);
+    }
+  };
+
   if (parked) {
     parked.state = "stopped";
     parked.stopReason = reason;
     parkedSessions.set(id, parked);
-    void stopNativeOrderAlert(parked.alertSessionId || parked.orderId);
+    stopNativeForOrder(parked.orderId, parked.alertSessionId);
     logAlert({
       orderId: id,
       sessionId: parked.sessionId,
@@ -972,16 +989,18 @@ export async function stopNewOrderAlert(
     });
   }
   if (session && id && session.orderId !== id) {
+    // Different active order is still alerting — only tear down the acted order.
+    stopNativeForOrder(id, parked?.alertSessionId ?? merchantAlertSessionId(id));
     return;
   }
   if (!session) {
     stopOrderAlertSound();
-    void stopNativeOrderAlert(id || undefined);
+    stopNativeForOrder(id, id ? merchantAlertSessionId(id) : null);
     return;
   }
   playGeneration += 1;
   stopOrderAlertSound();
-  void stopNativeOrderAlert(session.alertSessionId || session.orderId);
+  stopNativeForOrder(session.orderId, session.alertSessionId);
   void dismissNativeNewOrderAlerts(session.orderId);
   session.state = "stopped";
   session.stopReason = reason;

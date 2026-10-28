@@ -559,10 +559,11 @@ export async function listPayoutCycles(
       let settlement: MerchantPayoutSettlementSummary | null = null;
       if (status === "CLOSED" && row.net_order_value != null) {
         settlement = summaryFromLockedSnapshot(row as Record<string, unknown>);
-      } else if (status === "OPEN") {
-        const start = new Date(row.period_start as string);
-        settlement = await computeLiveSettlement(walletId, start, new Date(), storeId);
       }
+      // OPEN cycles: do NOT computeLiveSettlement here — that walks the ledger and
+      // made /payout-cycles (and the Partner Earnings tab) multi-second. List uses
+      // stored summary columns; the detail / current-cycle card calls
+      // getPayoutSettlement once for a fresh estimate.
 
       const orderCount = settlement
         ? settlement.order_count

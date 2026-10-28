@@ -87,7 +87,11 @@ export async function fetchLedger(
   if (opts?.direction) params.set("direction", opts.direction);
   if (opts?.category) params.set("category", opts.category);
   const qs = params.toString();
-  const res = await authFetch(`${getBase()}/v1/merchant-partner/stores/${storeId}/wallet/ledger${qs ? `?${qs}` : ""}`, token);
+  const res = await authFetch(
+    `${getBase()}/v1/merchant-partner/stores/${storeId}/wallet/ledger${qs ? `?${qs}` : ""}`,
+    token,
+    { timeoutMs: 12_000 },
+  );
   if (!res.ok) throw new Error("Failed to load ledger");
   const data = await res.json();
   const rawEntries = (data as { entries?: unknown[] }).entries ?? [];
@@ -157,6 +161,7 @@ export async function fetchPayoutCycles(
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/wallet/payout-cycles?limit=${limit}`,
     token,
+    { timeoutMs: 12_000 },
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -234,6 +239,7 @@ export async function fetchPayoutRequests(
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/payout-requests?limit=${limit}`,
     token,
+    { timeoutMs: 12_000 },
   );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

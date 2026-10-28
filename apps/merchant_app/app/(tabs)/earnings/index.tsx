@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, FlatList, Pressable, ActivityIndicator, Alert, TextInput, RefreshControl, Modal } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
@@ -119,8 +119,13 @@ export default function EarningsScreen() {
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [duesDetail, setDuesDetail] = useState<LedgerEntry | null>(null);
   const [loading, setLoading] = useState(true);
+  const [cyclesReady, setCyclesReady] = useState(false);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [txFilter, setTxFilter] = useState<TxFilter>("all");
+  const ledgerLoadedForRef = useRef<string | null>(null);
+  const loadGenRef = useRef(0);
+  const hasWalletRef = useRef(false);
 
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState("");
@@ -140,50 +145,104 @@ export default function EarningsScreen() {
   const [duesOrderParams, setDuesOrderParams] = useState<RazorpayOrderParams | null>(null);
 
   const ledgerQuery = useMemo(
-    () => (activeTab === "transactions" ? txFilterToLedgerQuery(txFilter) : {}),
-    [activeTab, txFilter],
+    () => txFilterToLedgerQuery(txFilter),
+    [txFilter],
   );
 
-  const load = useCallback(async (isRefresh = false) => {
+  hasWalletRef.current = wallet != null;
+
+  /** Payouts tab core — wallet + cycles + requests. Never blocked on ledger. */
+  const loadPayoutsCore = useCallback(async (isRefresh = false) => {
     if (!storeId || !token) return;
-    if (isRefresh) setRefreshing(true); else setLoading(true);
+    const gen = ++loadGenRef.current;
+    if (isRefresh) setRefreshing(true);
+    else if (!hasWalletRef.current) setLoading(true);
+    if (!isRefresh) setCyclesReady(false);
     try {
-      const [w, l, payouts, cycles] = await Promise.all([
-        fetchWalletSummary(storeId, token),
-        fetchLedger(storeId, token, { limit: 100, ...ledgerQuery }),
-        fetchPayoutRequests(storeId, token, 20).catch(() => null),
-        fetchPayoutCycles(storeId, token, 50).catch(() => []),
-      ]);
-      const snap = getMerchantWalletFreezeSnapshot(storeId);
-      setWallet(
-        snap
-          ? {
-              ...w,
-              isFrozen: snap.isFrozen,
-              status: snap.isFrozen ? "FROZEN" : w.status,
-              freezeReason: snap.isFrozen ? snap.freezeReason : w.freezeReason,
-            }
-          : w,
-      );
-      setLedger(l.entries.filter(isMerchantVisibleLedgerEntry));
-      if (payouts) {
-        setPayoutSummary(payouts.summary);
-        setRecentPayoutRequests(payouts.recent ?? []);
-      } else {
-        setRecentPayoutRequests([]);
+      const walletPromise = fetchWalletSummary(storeId, token).then((w) => {
+        if (gen !== loadGenRef.current) return;
+        const snap = getMerchantWalletFreezeSnapshot(storeId);
+        setWallet(
+          snap
+            ? {
+                ...w,
+                isFrozen: snap.isFrozen,
+                status: snap.isFrozen ? "FROZEN" : w.status,
+                freezeReason: snap.isFrozen ? snap.freezeReason : w.freezeReason,
+              }
+            : w,
+        );
+        // Paint header immediately; cycles/list catch up in parallel.
+        setLoading(false);
+      });
+
+      const cyclesPromise = fetchPayoutCycles(storeId, token, 20)
+        .catch(() => [] as Awaited<ReturnType<typeof fetchPayoutCycles>>)
+        .then((cycles) => {
+          if (gen !== loadGenRef.current) return;
+          setCycleCards(cycles.length > 0 ? buildPayoutCardsFromCycles(cycles) : null);
+          setCyclesReady(true);
+        });
+
+      const payoutsPromise = fetchPayoutRequests(storeId, token, 20)
+        .catch(() => null)
+        .then((payouts) => {
+          if (gen !== loadGenRef.current) return;
+          if (payouts) {
+            setPayoutSummary(payouts.summary);
+            setRecentPayoutRequests(payouts.recent ?? []);
+          } else {
+            setRecentPayoutRequests([]);
+          }
+        });
+
+      await Promise.all([walletPromise, cyclesPromise, payoutsPromise]);
+    } catch {
+      /* ignore */
+    } finally {
+      if (gen === loadGenRef.current) {
+        setLoading(false);
+        setRefreshing(false);
       }
-      setCycleCards(cycles.length > 0 ? buildPayoutCardsFromCycles(cycles) : null);
-    } catch { /* ignore */ }
-    finally { setLoading(false); setRefreshing(false); }
+    }
+  }, [storeId, token]);
+
+  const loadLedger = useCallback(async (force = false) => {
+    if (!storeId || !token) return;
+    const key = `${storeId}:${JSON.stringify(ledgerQuery)}`;
+    if (!force && ledgerLoadedForRef.current === key) return;
+    setLedgerLoading(true);
+    try {
+      const l = await fetchLedger(storeId, token, { limit: 50, ...ledgerQuery });
+      setLedger(l.entries.filter(isMerchantVisibleLedgerEntry));
+      ledgerLoadedForRef.current = key;
+    } catch {
+      /* keep previous ledger */
+    } finally {
+      setLedgerLoading(false);
+    }
   }, [storeId, token, ledgerQuery]);
 
-  useEffect(() => { load(); }, [load]);
+  const load = useCallback(async (isRefresh = false) => {
+    ledgerLoadedForRef.current = null;
+    await loadPayoutsCore(isRefresh);
+    if (activeTab === "transactions") {
+      await loadLedger(true);
+    }
+  }, [loadPayoutsCore, loadLedger, activeTab]);
 
+  // Single focus-driven load (avoids mount useEffect + focus double-fetch).
   useFocusEffect(
     useCallback(() => {
-      void load(true);
-    }, [load])
+      void loadPayoutsCore(hasWalletRef.current);
+    }, [loadPayoutsCore])
   );
+
+  // Ledger only when the Transactions tab is open (or filter changes).
+  useEffect(() => {
+    if (activeTab !== "transactions" || !storeId || !token) return;
+    void loadLedger(false);
+  }, [activeTab, storeId, token, loadLedger]);
 
   const payoutCards = useMemo(() => {
     const base = cycleCards && cycleCards.length > 0 ? cycleCards : buildPayoutCards(ledger);
@@ -586,7 +645,11 @@ export default function EarningsScreen() {
           contentContainerStyle={[s.scrollContent, { paddingBottom: scrollBottom }]}
           refreshControl={refreshControl}
         >
-          {pastPayoutCards.length === 0 ? (
+          {!cyclesReady ? (
+            <View style={s.loadingBlock}>
+              <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
+            </View>
+          ) : pastPayoutCards.length === 0 ? (
             <View style={s.emptyCard}>
               <Ionicons name="receipt-outline" size={32} color={GatiMitraMerchant.textTertiary} />
               <Text style={s.emptyTitle}>No past payouts</Text>
@@ -728,12 +791,18 @@ export default function EarningsScreen() {
             { paddingBottom: scrollBottom },
             ledger.length > 0 ? s.txList : s.emptyListContent,
           ]}
-          ListEmptyComponent={(
-            <View style={s.emptyCard}>
-              <Text style={s.emptyTitle}>No transactions</Text>
-              <Text style={s.emptyText}>Order earnings and withdrawals will show here.</Text>
-            </View>
-          )}
+          ListEmptyComponent={
+            ledgerLoading ? (
+              <View style={s.loadingBlock}>
+                <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
+              </View>
+            ) : (
+              <View style={s.emptyCard}>
+                <Text style={s.emptyTitle}>No transactions</Text>
+                <Text style={s.emptyText}>Order earnings and withdrawals will show here.</Text>
+              </View>
+            )
+          }
           refreshControl={refreshControl}
         />
       )}

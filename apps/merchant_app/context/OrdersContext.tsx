@@ -48,10 +48,11 @@ import {
 } from "@/lib/incomingOrderDismissed";
 import { presentLocalLifecycleAlert } from "@/lib/presentLocalNewOrderAlert";
 
-const POLL_FAST_MS = 12_000;
-const POLL_NORMAL_MS = 35_000;
-const POLL_IDLE_MS = 45_000;
-const POLL_BACKOFF_MS = 60_000;
+/** Pending accept: realtime + FCM are primary; poll is a safety net only. */
+const POLL_FAST_MS = 18_000;
+const POLL_NORMAL_MS = 40_000;
+const POLL_IDLE_MS = 55_000;
+const POLL_BACKOFF_MS = 75_000;
 /** Reviews hydrate for delivered cards — once per store, not on every board poll. */
 const REVIEWS_CACHE_MS = 5 * 60_000;
 /** Avoid stampeding the API when managing many outlets at once. */

@@ -861,7 +861,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
   const [targetLat, setTargetLat] = useState("");
   const [targetLng, setTargetLng] = useState("");
   const [targetRadiusKm, setTargetRadiusKm] = useState("25");
-  const [targetGeoRole, setTargetGeoRole] = useState<"all" | "customer" | "merchant" | "rider">("all");
+  const [targetGeoRole, setTargetGeoRole] = useState<"all" | "customer" | "merchant" | "rider">("customer");
   const [cityHits, setCityHits] = useState<
     Array<{
       city: string | null;
@@ -895,10 +895,17 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     () => (selectedTemplate ? extractVariables(selectedTemplate.title_template, selectedTemplate.body_template) : []),
     [selectedTemplate],
   );
-  // When the template changes, reset the variable form
+  // When the template changes, reset the variable form and lock city audience
+  // to the template's app role so Customer campaigns cannot fan out to Rider/Merchant.
   useEffect(() => {
     setVarValues({});
-  }, [templateCode]);
+    const role = String(selectedTemplate?.role ?? "")
+      .trim()
+      .toLowerCase();
+    if (role === "customer" || role === "merchant" || role === "rider") {
+      setTargetGeoRole(role);
+    }
+  }, [templateCode, selectedTemplate?.role]);
 
   useEffect(() => {
     if (targetMode !== "city") {
@@ -1027,7 +1034,23 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
         const radius = Number(targetRadiusKm);
         const hasCity = city.length > 0;
         const hasCoords = Number.isFinite(lat) && Number.isFinite(lng);
-        if (!hasCity && !hasCoords) return { geo: true as const };
+        const templateRole = String(selectedTemplate?.role ?? "")
+          .trim()
+          .toLowerCase();
+        const lockedRole =
+          templateRole === "customer" ||
+          templateRole === "merchant" ||
+          templateRole === "rider"
+            ? templateRole
+            : null;
+        const geoRole =
+          lockedRole ?? (targetGeoRole !== "all" ? targetGeoRole : null);
+        if (!hasCity && !hasCoords) {
+          return {
+            geo: true as const,
+            ...(geoRole ? { role: geoRole } : {}),
+          };
+        }
         return {
           geo: true as const,
           ...(hasCity ? { city } : {}),
@@ -1039,7 +1062,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
                   Number.isFinite(radius) && radius > 0 ? radius : 25,
               }
             : {}),
-          ...(targetGeoRole !== "all" ? { role: targetGeoRole } : {}),
+          ...(geoRole ? { role: geoRole } : {}),
         };
       }
     }
@@ -1056,6 +1079,7 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
     targetLng,
     targetRadiusKm,
     targetGeoRole,
+    selectedTemplate?.role,
   ]);
 
   const varsPayload = useMemo(() => {
@@ -1889,13 +1913,19 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
                       <select
                         className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
                         value={targetGeoRole}
+                        disabled={(() => {
+                          const r = String(selectedTemplate?.role ?? "")
+                            .trim()
+                            .toLowerCase();
+                          return r === "customer" || r === "merchant" || r === "rider";
+                        })()}
                         onChange={(e) =>
                           setTargetGeoRole(
                             e.target.value as "all" | "customer" | "merchant" | "rider",
                           )
                         }
                       >
-                        <option value="all">All roles</option>
+                        <option value="all">All roles (only for all-role templates)</option>
                         <option value="customer">Customers</option>
                         <option value="merchant">Merchants</option>
                         <option value="rider">Riders</option>
