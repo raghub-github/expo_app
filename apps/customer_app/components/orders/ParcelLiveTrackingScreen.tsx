@@ -21,14 +21,21 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { LiveTrackingStatusChip } from "@/components/orders/LiveTrackingStatusChip";
 import { MapboxWebDeliveryMap } from "@/components/maps/MapboxWebDeliveryMap";
 import type { DeliveryMapPayload } from "@/components/maps/mapbox-web-delivery-html";
 import { DeliveryPartnerTrackingCard } from "@/components/orders/DeliveryPartnerTrackingCard";
-import { OrderDeliveryDetailsCard } from "@/components/orders/OrderDeliveryDetailsCard";
 import { DeliveryPartnerSafetyBottomSheet } from "@/components/orders/DeliveryPartnerSafetyBottomSheet";
 import { RideTripShareSheet } from "@/components/ride/RideTripShareSheet";
+import { RideCancelledAckSheet } from "@/components/ride/RideCancelledAckSheet";
+import { RideCancelReasonSheet } from "@/features/ride/RideCancelReasonSheet";
+import { RideCancelConfirmSheet } from "@/features/ride/RideCancelConfirmSheet";
+import { PARCEL_TRACKING_CANCEL_REASONS } from "@/lib/parcel-cancel-reasons";
+import type { RideCancelReason } from "@/lib/ride-cancel-reasons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { CX } from "@/lib/appAssetKeys";
+import { appAssetSource } from "@/components/AppAssetImage";
 import { DEFAULT_STATUS_BAR_HEIGHT, STATUS_BAR_TO_HEADER_GAP } from "@/constants/layout";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import type { OrderDetail, OrderTrackingResponse } from "@/services/order.service";
@@ -52,8 +59,6 @@ import {
   shouldShowCustomerDeliveryOtp,
   shouldShowCustomerPickupOtp,
 } from "@/lib/customer-order-status-display";
-import { buildOrderDeliveryDetailsView, maskPhone } from "@/lib/order-delivery-details";
-import { useStableOrderInstructionLists } from "@/lib/order-instruction-display";
 import { splitPickupOtpDigits } from "@/lib/ride-tracking-display";
 import { usePartnerChatUnread } from "@/hooks/usePartnerChatUnread";
 import { useFoodDeliveryRouteProgress } from "@/hooks/useFoodDeliveryRouteProgress";
@@ -74,7 +79,7 @@ const MUTED = GatiMitraColors.textSecondary;
 const MINT = GatiMitraColors.primaryMint;
 
 const { height: SCREEN_H } = Dimensions.get("window");
-const MAP_HEIGHT = Math.round(SCREEN_H * 0.4);
+const MAP_HEIGHT = Math.min(220, Math.round(SCREEN_H * 0.28));
 
 type Props = {
   order: OrderDetail;
@@ -85,15 +90,7 @@ type Props = {
   onOrderCancelled?: () => void;
 };
 
-function getCompactAddressLine(address: string | null | undefined) {
-  const raw = (address ?? "").trim();
-  if (!raw) return "";
-  const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
-  if (parts.length >= 2) return `${parts[parts.length - 2]}, ${parts[parts.length - 1]}`;
-  return raw;
-}
-
-function parcelHeadline(status: string, rideStarted: boolean): string {
+function parcelHeadline(status: string, rideStarted: boolean, hasRider: boolean): string {
   const s = normalizeCustomerOrderStatus(status);
   if (s === "DELIVERED") return "Parcel delivered";
   if (s === "CANCELLED") return "Parcel cancelled";
@@ -102,10 +99,13 @@ function parcelHeadline(status: string, rideStarted: boolean): string {
     return "Parcel is on the way";
   }
   if (isRiderAtStoreStatus(s)) return "Captain at pickup";
-  if (s === "RIDER_ASSIGNED" || s === "ACCEPTED" || s === "ASSIGNED") {
+  if (hasRider || s === "RIDER_ASSIGNED" || s === "ASSIGNED") {
     return "Captain is heading to pickup";
   }
-  return "Parcel booked successfully";
+  if (s === "ACCEPTED" && hasRider) {
+    return "Captain is heading to pickup";
+  }
+  return "Captain nearby assigning one soon";
 }
 
 function OtpBanner({ label, otp }: { label: string; otp: string }) {
@@ -147,12 +147,14 @@ export function ParcelLiveTrackingScreen({
   const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
   const resetStatusBarBackground = useScreenChromeStore((s) => s.resetStatusBarBackground);
   const { data: chatUnread } = usePartnerChatUnread(order.orderId, Boolean(order.rider));
-  const { deliveryInstructionsList } = useStableOrderInstructionLists(order);
 
   const [mapRefitNonce, setMapRefitNonce] = useState(0);
   const [shareSheetVisible, setShareSheetVisible] = useState(false);
   const [safetySheetVisible, setSafetySheetVisible] = useState(false);
+  const [cancelFlowStep, setCancelFlowStep] = useState<"reason" | "confirm" | null>(null);
+  const [selectedCancelReason, setSelectedCancelReason] = useState<RideCancelReason | null>(null);
   const [cancelLoading, setCancelLoading] = useState(false);
+  const [cancelledAckVisible, setCancelledAckVisible] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -216,7 +218,7 @@ export function ParcelLiveTrackingScreen({
   });
   const showDeliveryOtp = shouldShowCustomerDeliveryOtp(orderStatus, merged.deliveryOtp);
 
-  const headline = parcelHeadline(orderStatus, rideStarted);
+  const headline = parcelHeadline(orderStatus, rideStarted, hasRider);
   const reassurance = showPickupOtp
     ? "Share this pickup OTP with the captain only at handover"
     : showDeliveryOtp
@@ -225,7 +227,7 @@ export function ParcelLiveTrackingScreen({
         ? "Captain is heading to your drop location"
         : hasRider
           ? "Captain is on the way to pickup"
-          : "We'll notify you when the captain arrives at pickup";
+          : "We're matching a captain near your pickup";
 
   const { pickupLat, pickupLng, deliveryLat, deliveryLng } = resolveOrderTrackingMapSnapshots({
     deliveryLat: merged.deliveryLat,
@@ -373,12 +375,6 @@ export function ParcelLiveTrackingScreen({
     mapPhase,
   ]);
 
-  const deliveryDetails = useMemo(
-    () => buildOrderDeliveryDetailsView({ ...merged, deliveryInstructionsList }),
-    [merged, deliveryInstructionsList]
-  );
-
-  const pickupLabel = getCompactAddressLine(merged.merchantAddress) || "Pickup";
   const displayOrderId = merged.formattedOrderId ?? merged.orderId;
   const meta = merged.checkoutMetadata ?? {};
   const senderName =
@@ -387,6 +383,27 @@ export function ParcelLiveTrackingScreen({
     (typeof meta.senderMobile === "string" && meta.senderMobile.trim()) ||
     merged.merchantPhone ||
     null;
+  const senderAddress =
+    (typeof meta.pickupFullAddress === "string" && meta.pickupFullAddress.trim()) ||
+    (typeof meta.pickupAddress === "string" && meta.pickupAddress.trim()) ||
+    merged.merchantAddress?.trim() ||
+    (typeof meta.pickupLabel === "string" && meta.pickupLabel.trim()) ||
+    "Pickup address unavailable";
+  const receiverName =
+    (typeof meta.receiverName === "string" && meta.receiverName.trim()) ||
+    merged.deliveryPrimaryContactName?.trim() ||
+    merged.deliveryContactName?.trim() ||
+    "Receiver";
+  const receiverPhone =
+    (typeof meta.receiverMobile === "string" && meta.receiverMobile.trim()) ||
+    merged.deliveryPrimaryContactPhone?.trim() ||
+    merged.deliveryContactPhone?.trim() ||
+    null;
+  const receiverAddress =
+    (typeof meta.dropFullAddress === "string" && meta.dropFullAddress.trim()) ||
+    merged.deliveryAddress?.trim() ||
+    (typeof meta.dropLabel === "string" && meta.dropLabel.trim()) ||
+    "Drop address unavailable";
 
   const riderName = merged.rider?.name?.trim() || "Captain";
   const riderFirstName = riderName.split(" ")[0] ?? riderName;
@@ -426,45 +443,63 @@ export function ParcelLiveTrackingScreen({
     });
   }, [router, order.orderId, riderName, merged.rider]);
 
-  const handleCallSender = useCallback(() => {
-    const digits = senderPhone?.replace(/\D/g, "") ?? "";
+  const dialPhone = useCallback((phone: string | null, label: string) => {
+    const digits = phone?.replace(/\D/g, "") ?? "";
     if (!digits) {
-      Alert.alert("Unavailable", "Sender phone is not available.");
+      Alert.alert("Unavailable", `${label} phone is not available.`);
       return;
     }
     const tel = digits.length === 10 ? `+91${digits}` : digits.startsWith("+") ? digits : `+${digits}`;
     void Linking.openURL(`tel:${tel}`);
-  }, [senderPhone]);
+  }, []);
 
-  const handleCancel = useCallback(() => {
+  const handleCallSender = useCallback(
+    () => dialPhone(senderPhone, "Sender"),
+    [dialPhone, senderPhone]
+  );
+  const handleCallReceiver = useCallback(
+    () => dialPhone(receiverPhone, "Receiver"),
+    [dialPhone, receiverPhone]
+  );
+
+  const closeCancelFlow = useCallback(() => {
+    setCancelFlowStep(null);
+    setSelectedCancelReason(null);
+    setCancelLoading(false);
+  }, []);
+
+  const openCancelFlow = useCallback(() => {
     if (cancelLoading || rideStarted) return;
-    Alert.alert("Cancel parcel?", "Are you sure you want to cancel this parcel delivery?", [
-      { text: "Keep", style: "cancel" },
-      {
-        text: "Cancel parcel",
-        style: "destructive",
-        onPress: () => {
-          void (async () => {
-            setCancelLoading(true);
-            try {
-              await cancelParcelOrder(order.orderId, {
-                reasonCode: "CUSTOMER_CANCELLED",
-                reasonText: "Customer cancelled from tracking",
-                cancelMode: "manual",
-              });
-              void queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
-              void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-              onOrderCancelled?.();
-            } catch {
-              Alert.alert("Could not cancel", "Please try again or contact support.");
-            } finally {
-              setCancelLoading(false);
-            }
-          })();
-        },
-      },
-    ]);
-  }, [cancelLoading, rideStarted, order.orderId, queryClient, onOrderCancelled]);
+    setCancelFlowStep("reason");
+  }, [cancelLoading, rideStarted]);
+
+  const executeCancelParcel = useCallback(async () => {
+    if (cancelLoading || rideStarted) return;
+    const reason = selectedCancelReason;
+    setCancelLoading(true);
+    setCancelFlowStep(null);
+    try {
+      await cancelParcelOrder(order.orderId, {
+        reasonCode: reason?.id ?? "CUSTOMER_CANCELLED",
+        reasonText: reason?.label ?? "Customer cancelled from tracking",
+        cancelMode: "manual",
+      });
+      void queryClient.invalidateQueries({ queryKey: ["order", order.orderId] });
+      void queryClient.invalidateQueries({ queryKey: ["my-orders"] });
+      setSelectedCancelReason(null);
+      setCancelledAckVisible(true);
+    } catch {
+      setCancelLoading(false);
+      setCancelFlowStep("confirm");
+      Alert.alert("Could not cancel", "Please try again or contact support.");
+    }
+  }, [cancelLoading, rideStarted, selectedCancelReason, order.orderId, queryClient]);
+
+  const handleCancelledAckDismiss = useCallback(() => {
+    setCancelledAckVisible(false);
+    setCancelLoading(false);
+    onOrderCancelled?.();
+  }, [onOrderCancelled]);
 
   const etaLabel =
     etaMinutes != null && Number.isFinite(etaMinutes) && etaMinutes > 0
@@ -503,42 +538,55 @@ export function ParcelLiveTrackingScreen({
         ) : null}
       </LinearGradient>
 
-      <View style={styles.mapWrap}>
-        <View style={styles.mapSection}>
-          <MapboxWebDeliveryMap
-            key={order.orderId}
-            style={StyleSheet.absoluteFill}
-            center={deliveryMapCenter}
-            payload={deliveryMapPayload}
-            refitNonce={mapRefitNonce}
-          />
-        </View>
-        <LiveTrackingStatusChip
-          hasRiderFix={riderLat != null && riderLng != null}
-          style={styles.liveStatusChip}
-        />
-        <TouchableOpacity
-          style={[styles.mapControlBtn, styles.mapExpandBtn]}
-          activeOpacity={0.85}
-          onPress={() => setMapRefitNonce((n) => n + 1)}
-        >
-          <MaterialCommunityIcons name="arrow-expand" size={18} color="#1C1C1C" />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.mapControlBtn, styles.mapLocateBtn]}
-          activeOpacity={0.85}
-          onPress={() => setMapRefitNonce((n) => n + 1)}
-        >
-          <MaterialCommunityIcons name="crosshairs-gps" size={18} color="#1C1C1C" />
-        </TouchableOpacity>
-      </View>
-
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) }}
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 24 }}
         showsVerticalScrollIndicator={false}
         nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
       >
+        {/* Map lives inside ScrollView (food-tracking pattern) so it never steals vertical scroll. */}
+        <View style={styles.mapWrap} collapsable={false}>
+          <AppErrorBoundary
+            source="parcel-live-map"
+            fallback={() => (
+              <View style={styles.mapFallback}>
+                <MaterialCommunityIcons name="map-outline" size={36} color="#94A3B8" />
+                <CheckoutText style={styles.mapFallbackText}>Map preview unavailable</CheckoutText>
+              </View>
+            )}
+          >
+            <View style={styles.mapSection} pointerEvents="box-none">
+              <MapboxWebDeliveryMap
+                key={order.orderId}
+                style={StyleSheet.absoluteFill}
+                center={deliveryMapCenter}
+                payload={deliveryMapPayload}
+                refitNonce={mapRefitNonce}
+                gesturesEnabled={false}
+              />
+            </View>
+          </AppErrorBoundary>
+          <LiveTrackingStatusChip
+            hasRiderFix={riderLat != null && riderLng != null}
+            style={styles.liveStatusChip}
+          />
+          <TouchableOpacity
+            style={[styles.mapControlBtn, styles.mapExpandBtn]}
+            activeOpacity={0.85}
+            onPress={() => setMapRefitNonce((n) => n + 1)}
+          >
+            <MaterialCommunityIcons name="arrow-expand" size={18} color="#1C1C1C" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.mapControlBtn, styles.mapLocateBtn]}
+            activeOpacity={0.85}
+            onPress={() => setMapRefitNonce((n) => n + 1)}
+          >
+            <MaterialCommunityIcons name="crosshairs-gps" size={18} color="#1C1C1C" />
+          </TouchableOpacity>
+        </View>
+
         {showPickupOtp && merged.pickupOtp ? (
           <OtpBanner label="Pickup OTP" otp={merged.pickupOtp} />
         ) : null}
@@ -565,40 +613,53 @@ export function ParcelLiveTrackingScreen({
           ) : (
             <View style={styles.waitingCard}>
               <ActivityIndicator color={MINT} />
-              <CheckoutText style={styles.waitingText}>Finding a nearby captain…</CheckoutText>
+              <CheckoutText style={styles.waitingText}>
+                Captain nearby assigning one soon
+              </CheckoutText>
             </View>
           )}
 
-          <OrderDeliveryDetailsCard
-            {...deliveryDetails}
-            showPeachBanner
-            editDisabled={{ contact: true, address: true, instructions: true }}
-          />
-
-          <View style={styles.summaryCard}>
-            <View style={styles.summaryRow}>
-              <View style={styles.summaryAvatar}>
-                <MaterialCommunityIcons name="package-variant-closed" size={22} color="#fff" />
+          <View style={styles.partyCard}>
+            <View style={styles.partyHeader}>
+              <View style={[styles.summaryAvatar, styles.senderAvatar]}>
+                <MaterialCommunityIcons name="package-variant-closed" size={20} color="#fff" />
               </View>
-              <View style={styles.summaryInfo}>
-                <CheckoutText style={styles.summaryName} numberOfLines={1}>
-                  {senderName}
-                </CheckoutText>
-                <CheckoutText style={styles.summaryArea} numberOfLines={2}>
-                  {merged.merchantAddress?.trim() || pickupLabel}
-                </CheckoutText>
-                {senderPhone ? (
-                  <CheckoutText style={styles.summaryPhone} numberOfLines={1}>
-                    {maskPhone(senderPhone)}
-                  </CheckoutText>
-                ) : null}
-              </View>
+              <CheckoutText style={styles.partyRole}>Sender</CheckoutText>
               {senderPhone ? (
                 <TouchableOpacity style={styles.callBtn} onPress={handleCallSender} activeOpacity={0.85}>
                   <Ionicons name="call" size={18} color="#E23744" />
                 </TouchableOpacity>
               ) : null}
             </View>
+            <CheckoutText style={styles.partyNamePhone} numberOfLines={1}>
+              {senderPhone ? `${senderName} (${senderPhone})` : senderName}
+            </CheckoutText>
+            <CheckoutText style={styles.partyAddress}>{senderAddress}</CheckoutText>
+          </View>
+
+          <View style={styles.partyCard}>
+            <View style={styles.partyHeader}>
+              <View style={[styles.summaryAvatar, styles.receiverAvatar]}>
+                <Ionicons name="person" size={20} color="#fff" />
+              </View>
+              <CheckoutText style={styles.partyRole}>Receiver</CheckoutText>
+              {receiverPhone ? (
+                <TouchableOpacity
+                  style={styles.callBtn}
+                  onPress={handleCallReceiver}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="call" size={18} color="#E23744" />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+            <CheckoutText style={styles.partyNamePhone} numberOfLines={1}>
+              {receiverPhone ? `${receiverName} (${receiverPhone})` : receiverName}
+            </CheckoutText>
+            <CheckoutText style={styles.partyAddress}>{receiverAddress}</CheckoutText>
+          </View>
+
+          <View style={styles.summaryCard}>
             <View style={styles.orderIdRow}>
               <Ionicons name="document-text-outline" size={16} color={MUTED} />
               <CheckoutText style={styles.orderIdText}>Order #{displayOrderId}</CheckoutText>
@@ -614,7 +675,7 @@ export function ParcelLiveTrackingScreen({
           {!isTerminalOrderStatus(orderStatus) && !rideStarted ? (
             <TouchableOpacity
               style={styles.cancelCard}
-              onPress={handleCancel}
+              onPress={openCancelFlow}
               activeOpacity={0.85}
               disabled={cancelLoading}
             >
@@ -637,6 +698,38 @@ export function ParcelLiveTrackingScreen({
         orderId={order.orderId}
         shareKind="food"
         onClose={() => setShareSheetVisible(false)}
+      />
+
+      <RideCancelReasonSheet
+        visible={cancelFlowStep === "reason"}
+        onClose={closeCancelFlow}
+        reasons={PARCEL_TRACKING_CANCEL_REASONS}
+        title="Why do you want to cancel?"
+        subtitle="Please provide the reason for cancelling this parcel"
+        onSelectReason={(reason) => {
+          setSelectedCancelReason(reason);
+          setCancelFlowStep("confirm");
+        }}
+      />
+
+      <RideCancelConfirmSheet
+        visible={cancelFlowStep === "confirm"}
+        loading={cancelLoading}
+        heroImage={appAssetSource(CX.home.serviceParcel) ?? undefined}
+        title="Are you sure you want to cancel this parcel?"
+        message="By cancelling, you may need to start a new search that can take longer to find a captain."
+        confirmLabel="Cancel my parcel"
+        keepLabel="Keep parcel"
+        onConfirm={() => void executeCancelParcel()}
+        onKeepSearching={closeCancelFlow}
+        onClose={closeCancelFlow}
+      />
+
+      <RideCancelledAckSheet
+        visible={cancelledAckVisible}
+        title="Parcel cancelled"
+        message="Your parcel booking has been cancelled."
+        onDismiss={handleCancelledAckDismiss}
       />
     </View>
   );
@@ -693,11 +786,50 @@ const styles = StyleSheet.create({
   mapWrap: {
     marginTop: 10,
     marginHorizontal: 12,
+    height: MAP_HEIGHT,
     borderRadius: 20,
     overflow: "hidden",
-    height: MAP_HEIGHT,
     backgroundColor: "#E5E7EB",
   },
+  mapFallback: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#E5E7EB",
+  },
+  mapFallbackText: { fontSize: 13, fontWeight: "600", color: "#64748B" },
+  partyCard: {
+    backgroundColor: CARD,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
+    padding: 14,
+    gap: 4,
+  },
+  partyHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 6,
+  },
+  partyRole: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "700",
+    color: MUTED,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  partyNamePhone: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: TEXT,
+    flexShrink: 1,
+  },
+  partyAddress: { fontSize: 13, color: MUTED, lineHeight: 18, marginTop: 4 },
+  senderAvatar: { backgroundColor: GatiMitraColors.emerald },
+  receiverAvatar: { backgroundColor: "#2563EB" },
   mapSection: { ...StyleSheet.absoluteFillObject },
   liveStatusChip: { position: "absolute", top: 10, left: 10 },
   mapControlBtn: {
@@ -764,19 +896,14 @@ const styles = StyleSheet.create({
     borderColor: BORDER,
     padding: 14,
   },
-  summaryRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   summaryAvatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: GatiMitraColors.emerald,
     alignItems: "center",
     justifyContent: "center",
   },
-  summaryInfo: { flex: 1 },
-  summaryName: { fontSize: 15, fontWeight: "700", color: TEXT },
-  summaryArea: { marginTop: 2, fontSize: 12, color: MUTED },
-  summaryPhone: { marginTop: 2, fontSize: 12, color: MUTED },
   callBtn: {
     width: 42,
     height: 42,
@@ -788,10 +915,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   orderIdRow: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: BORDER,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,

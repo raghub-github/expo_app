@@ -24,6 +24,41 @@ function formatRideServiceLabel(rideType: string | null | undefined): string {
   return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) + " Ride";
 }
 
+function formatParcelServiceLabel(meta: Record<string, unknown>): string {
+  const vehicle =
+    (typeof meta.vehicleCategory === "string" && meta.vehicleCategory.trim()) ||
+    (typeof meta.vehicleType === "string" && meta.vehicleType.trim()) ||
+    (typeof meta.parcelVehicleCategory === "string" && meta.parcelVehicleCategory.trim()) ||
+    "";
+  const raw = vehicle.toLowerCase().replace(/_/g, " ").trim();
+  if (!raw) return "Parcel Delivery";
+  if (raw.includes("2") || raw.includes("bike") || raw.includes("scooter")) {
+    return "Parcel — 2 Wheeler";
+  }
+  if (raw.includes("3") || raw.includes("auto")) return "Parcel — 3 Wheeler";
+  if (raw.includes("truck") || raw.includes("mini") || raw.includes("pickup")) {
+    return `Parcel — ${raw.replace(/\b\w/g, (c) => c.toUpperCase())}`;
+  }
+  return `Parcel — ${raw.replace(/\b\w/g, (c) => c.toUpperCase())}`;
+}
+
+function orderHasParcelInvoiceCharges(input: {
+  billingSnapshot: Record<string, unknown>;
+  fareAmount?: string | null;
+  grandTotal?: string | null;
+}): boolean {
+  const snap = input.billingSnapshot;
+  const fare =
+    Number(snap.final_amount) ||
+    Number(snap.parcel_fare) ||
+    Number(snap.fare_amount) ||
+    Number(snap.item_total) ||
+    Number(input.grandTotal) ||
+    Number(input.fareAmount) ||
+    0;
+  return Number.isFinite(fare) && fare > 0.005;
+}
+
 function formatPaymentMethod(method: string | null | undefined): string {
   const m = String(method ?? "").trim().toLowerCase();
   if (!m) return "Online (pay after ride)";
@@ -63,6 +98,214 @@ function metaCoord(meta: Record<string, unknown>, ...keys: string[]): number | n
     if (Number.isFinite(n) && n !== 0) return n;
   }
   return null;
+}
+
+/**
+ * Build Rapido-style invoice PDF for a completed/cancelled parcel order.
+ * Used by GET /v1/orders/:id/invoice.pdf when orderType is parcel.
+ */
+export async function buildParcelInvoicePdfForCustomer(
+  db: PostgresJsDatabase<Record<string, unknown>>,
+  input: {
+    customerPk: number;
+    orderRef: string;
+    customerName?: string | null;
+  }
+): Promise<
+  | { ok: true; pdfBuffer: Buffer; filename: string; displayOrderId: string }
+  | { ok: false; code: string; message: string; statusCode?: number }
+> {
+  const [orderRow] = await db
+    .select({
+      id: ordersCore.id,
+      orderId: ordersCore.orderId,
+      formattedOrderId: ordersCore.formattedOrderId,
+      orderType: ordersCore.orderType,
+      status: ordersCore.status,
+      currentStatus: ordersCore.currentStatus,
+      fareAmount: ordersCore.fareAmount,
+      grandTotal: ordersCore.grandTotal,
+      tipAmount: ordersCore.tipAmount,
+      paymentMethod: ordersCore.paymentMethod,
+      billingSnapshot: ordersCore.billingSnapshot,
+      pickupAddressRaw: ordersCore.pickupAddressRaw,
+      dropAddressRaw: ordersCore.dropAddressRaw,
+      deliveryAddress: ordersCore.deliveryAddress,
+      distanceKm: ordersCore.distanceKm,
+      placedAt: ordersCore.placedAt,
+      checkoutMetadata: ordersCore.checkoutMetadata,
+      pickupLat: ordersCore.pickupLat,
+      pickupLon: ordersCore.pickupLon,
+      dropLat: ordersCore.dropLat,
+      dropLon: ordersCore.dropLon,
+      riderId: ordersCore.riderId,
+    })
+    .from(ordersCore)
+    .where(customerOrderRefWhere(input.customerPk, input.orderRef))
+    .limit(1);
+
+  if (!orderRow?.id) {
+    return { ok: false, code: "ORDER_NOT_FOUND", message: "Order not found", statusCode: 404 };
+  }
+  if (String(orderRow.orderType ?? "") !== "parcel") {
+    return { ok: false, code: "NOT_PARCEL_ORDER", message: "Not a parcel order", statusCode: 400 };
+  }
+
+  const statusUpper = normalizeCustomerOrderStatus(orderRow.currentStatus, orderRow.status);
+  if (statusUpper !== "DELIVERED" && statusUpper !== "CANCELLED") {
+    return {
+      ok: false,
+      code: "INVOICE_NOT_READY",
+      message: "Invoice is available after the parcel is delivered or cancelled.",
+      statusCode: 400,
+    };
+  }
+
+  const snap =
+    orderRow.billingSnapshot != null && typeof orderRow.billingSnapshot === "object"
+      ? (orderRow.billingSnapshot as Record<string, unknown>)
+      : {};
+
+  if (
+    !orderHasParcelInvoiceCharges({
+      billingSnapshot: snap,
+      fareAmount: orderRow.fareAmount,
+      grandTotal: orderRow.grandTotal,
+    })
+  ) {
+    return {
+      ok: false,
+      code: "NO_INVOICE_CHARGES",
+      message: "No fare invoice is available for this parcel order.",
+      statusCode: 400,
+    };
+  }
+
+  const meta =
+    orderRow.checkoutMetadata != null && typeof orderRow.checkoutMetadata === "object"
+      ? (orderRow.checkoutMetadata as Record<string, unknown>)
+      : {};
+
+  const { lines, totalFare } = buildRideInvoiceLinesFromSnapshot({
+    billingSnapshot: snap,
+    fareAmount: orderRow.fareAmount,
+    tipAmount: orderRow.tipAmount,
+    grandTotal: orderRow.grandTotal,
+    primaryChargeLabel: "Parcel Charge",
+  });
+
+  const displayOrderId =
+    orderRow.formattedOrderId?.trim() || orderRow.orderId?.trim() || String(orderRow.id);
+  const rideLabel = formatParcelServiceLabel(meta);
+  const pdfFilename = rideInvoicePdfFilename(displayOrderId);
+  const paymentMethod = formatPaymentMethod(orderRow.paymentMethod);
+  const rideDateIso =
+    orderRow.placedAt instanceof Date
+      ? orderRow.placedAt.toISOString()
+      : orderRow.placedAt
+        ? String(orderRow.placedAt)
+        : new Date().toISOString();
+
+  const placeOfSupply =
+    (typeof meta.pickupState === "string" && meta.pickupState.trim()) ||
+    (typeof meta.dropState === "string" && meta.dropState.trim()) ||
+    (typeof meta.state === "string" && meta.state.trim()) ||
+    null;
+
+  let riderName: string | null = null;
+  let vehicleNumber: string | null = null;
+  if (orderRow.riderId != null) {
+    const riderPk = Number(orderRow.riderId);
+    if (Number.isFinite(riderPk) && riderPk > 0) {
+      const [riderRow] = await db
+        .select({ name: riders.name })
+        .from(riders)
+        .where(eq(riders.id, riderPk))
+        .limit(1);
+      riderName = riderRow?.name?.trim() || null;
+
+      const [vehicleRow] = await db
+        .select({
+          registrationNumber: riderVehicles.registrationNumber,
+          vehicleNumber: riderVehicles.vehicleNumber,
+        })
+        .from(riderVehicles)
+        .where(
+          and(
+            eq(riderVehicles.riderId, riderPk),
+            eq(riderVehicles.isActive, true),
+            isNull(riderVehicles.deletedAt)
+          )
+        )
+        .orderBy(desc(riderVehicles.updatedAt))
+        .limit(1);
+      vehicleNumber =
+        vehicleRow?.registrationNumber?.trim() ||
+        vehicleRow?.vehicleNumber?.trim() ||
+        null;
+    }
+  }
+
+  const pickupAddress =
+    orderRow.pickupAddressRaw?.trim() ||
+    (typeof meta.pickupFullAddress === "string" && meta.pickupFullAddress.trim()) ||
+    (typeof meta.senderAddress === "string" && meta.senderAddress.trim()) ||
+    "Pickup";
+  const dropAddress =
+    orderRow.dropAddressRaw?.trim() ||
+    orderRow.deliveryAddress?.trim() ||
+    (typeof meta.dropFullAddress === "string" && meta.dropFullAddress.trim()) ||
+    (typeof meta.receiverAddress === "string" && meta.receiverAddress.trim()) ||
+    "Drop";
+
+  try {
+    const pdfBuffer = await buildRideInvoicePdfBuffer({
+      orderId: displayOrderId,
+      coreOrderId: orderRow.id,
+      customerPk: input.customerPk,
+      rideLabel,
+      rideDateIso,
+      customerName: input.customerName?.trim() || "Customer",
+      pickupAddress,
+      dropAddress,
+      distanceKm: orderRow.distanceKm != null ? Number(orderRow.distanceKm) : Number(snap.distanceKm) || null,
+      durationMins: null,
+      pickupLat:
+        orderRow.pickupLat != null
+          ? Number(orderRow.pickupLat)
+          : metaCoord(meta, "pickupLat", "pickup_lat"),
+      pickupLng:
+        orderRow.pickupLon != null
+          ? Number(orderRow.pickupLon)
+          : metaCoord(meta, "pickupLng", "pickup_lon", "pickupLng"),
+      dropLat:
+        orderRow.dropLat != null
+          ? Number(orderRow.dropLat)
+          : metaCoord(meta, "dropLat", "drop_lat"),
+      dropLng:
+        orderRow.dropLon != null
+          ? Number(orderRow.dropLon)
+          : metaCoord(meta, "dropLng", "drop_lon", "dropLng"),
+      lines,
+      totalFare,
+      paymentMethod,
+      billingSnapshot: snap,
+      riderName,
+      vehicleNumber,
+      placeOfSupply,
+      serviceKind: "parcel",
+    });
+
+    return { ok: true, pdfBuffer, filename: pdfFilename, displayOrderId };
+  } catch (err) {
+    console.warn("[buildParcelInvoicePdfForCustomer] PDF build failed:", err);
+    return {
+      ok: false,
+      code: "INVOICE_PDF_FAILED",
+      message: "Could not generate parcel invoice PDF. Please try again later.",
+      statusCode: 502,
+    };
+  }
 }
 
 export async function sendRideInvoiceEmailForCustomer(

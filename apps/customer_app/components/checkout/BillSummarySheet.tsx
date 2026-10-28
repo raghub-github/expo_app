@@ -29,10 +29,14 @@ import {
   formatDeliverySlabExplainSubtext,
 } from "@/lib/deliverySlabBreakdown";
 import {
-  computeCheckoutToPayAmount,
   grandTotalWithoutUnconfirmedDelivery,
   isDeliverySpecificDiscount,
 } from "@/lib/checkoutToPayAmount";
+import {
+  computeGrandToPayLeftover,
+  computeUnlistedDiscountTotal,
+  resolveBillSummaryToPay,
+} from "@/lib/billSummaryToPay";
 import { formatCheckoutSavingsRupees } from "@/lib/checkoutAppliedSavings";
 
 const GM = GatiMitraColors;
@@ -367,8 +371,9 @@ export type BillSummarySheetProps = {
   missedOfferUnlockDiscount?: number;
   missedOfferUnlockLabel?: string;
   /**
-   * Authoritative payable from checkout (Total Bill / Place Order). When set, "To pay"
-   * must use this — never a divergent local recalculation.
+   * Payable from checkout (Total Bill / Place Order). Used when it matches the
+   * settled server bill; a divergent optimistic overlay is ignored so Grand Total
+   * − discounts still equals To pay (no fabricated "Other savings").
    */
   toPayAmount?: number | null;
   /** Live membership delivery benefit (applied or checkout estimate) — updates before bill refetch settles. */
@@ -532,7 +537,10 @@ export function BillSummarySheet({
       }));
   }, [serverBill, visibleDiscounts, deliveryUnconfirmed]);
 
-  /** Residual if listed rows don't cover discountTotal (hidden/unnamed lines). */
+  /**
+   * Real engine savings in `discountTotal` not already shown as a named row.
+   * Never used to bridge Grand Total vs an optimistic To pay mismatch.
+   */
   const discountRowsGap = useMemo(() => {
     if (!serverBill) return 0;
     const listed = discountRows.reduce((s, d) => s + (d.amount ?? 0), 0);
@@ -543,14 +551,14 @@ export function BillSummarySheet({
             0
           )
         : 0;
-    const gap =
-      // Exclude the folded BOGO amount so it never re-surfaces as an "Other offers" row.
-      serverBill.discountTotal -
-      bogoDiscountTotal -
-      listed -
-      suppressedDeliveryDiscount -
-      (missedOfferUnlockDiscount > 0.005 ? missedOfferUnlockDiscount : 0);
-    return gap > 0.05 ? Math.round(gap * 100) / 100 : 0;
+    return computeUnlistedDiscountTotal({
+      discountTotal: serverBill.discountTotal,
+      listedDiscountAmount: listed,
+      bogoDiscountTotal,
+      suppressedDeliveryDiscount,
+      missedOfferUnlockDiscount:
+        missedOfferUnlockDiscount > 0.005 ? missedOfferUnlockDiscount : 0,
+    });
   }, [serverBill, discountRows, bogoDiscountTotal, missedOfferUnlockDiscount, deliveryUnconfirmed]);
 
   const showSavingsBanner = youSavedAmount > 0.005 || (serverBill != null && serverBill.discountTotal > 0.005);
@@ -670,21 +678,33 @@ export function BillSummarySheet({
     pendingDeliveryFee,
     deliverySpecificDiscount: suppressedDeliveryDiscount,
   });
-  /** Same engine as Total Bill / Place Order — never diverge. */
-  const toPayDisplay =
-    toPayAmountProp != null && Number.isFinite(toPayAmountProp) && !deliveryUnconfirmed
-      ? Math.max(0, Math.round(toPayAmountProp * 100) / 100)
-      : serverBill != null
-        ? computeCheckoutToPayAmount({
-            finalAmount: serverBill.finalAmount,
-            deliveryType,
-            deliveryFeePending: deliveryUnconfirmed,
-            pendingDeliveryFee,
-            gatiCashApplyAmount: walletDeduction,
-            missedOfferUnlockDiscount: missedOfferDiscount,
-            missedOfferWalletPendingAmount: pendingWalletCredit,
-          })
-        : 0;
+  /**
+   * Authoritative To pay for this sheet. A divergent optimistic checkout prop is
+   * ignored so we never invent "Other savings" (e.g. ₹20.18) to bridge footer lag.
+   */
+  const { toPayDisplay, ignoredDivergentProp } =
+    serverBill != null && !deliveryUnconfirmed
+      ? resolveBillSummaryToPay({
+          serverFinalAmount: serverBill.finalAmount,
+          tipAmountServer: serverBill.tipAmount ?? 0,
+          donationAmountServer: serverBill.donationAmount ?? 0,
+          tipAmountLive: tipLineAmount,
+          donationAmountLive: donationLineAmount,
+          deliveryType,
+          deliveryFeePending: deliveryUnconfirmed,
+          pendingDeliveryFee,
+          gatiCashApplyAmount: walletDeduction,
+          missedOfferUnlockDiscount: missedOfferDiscount,
+          missedOfferWalletPendingAmount: pendingWalletCredit,
+          toPayAmountProp,
+        })
+      : {
+          toPayDisplay:
+            toPayAmountProp != null && Number.isFinite(toPayAmountProp)
+              ? Math.max(0, Math.round(toPayAmountProp * 100) / 100)
+              : 0,
+          ignoredDivergentProp: false,
+        };
   const fullyPaidByGatiCash = toPayDisplay <= 0.005 && walletDeduction > 0.005;
 
   const listedPayDeductions =
@@ -696,16 +716,31 @@ export function BillSummarySheet({
         pendingWalletCredit) *
         100
     ) / 100;
-  const grandToPayGap =
-    Math.round((grandTotalShown - toPayDisplay - listedPayDeductions) * 100) / 100;
-  const payGapReasons: { key: string; label: string; subtext: string; amount: number }[] = [];
-  // An address-less bill must not invent a delivery-fee deduction to explain the gap.
-  if (!deliveryUnconfirmed && grandToPayGap > 0.05) {
+  const grandToPayLeftover = computeGrandToPayLeftover({
+    grandTotalShown,
+    toPayDisplay,
+    listedPayDeductions,
+  });
+  /**
+   * Never fabricate a discount ("Other savings") for leftover math.
+   * Only surface a non-discount "Bill updating" hint when To pay is briefly ahead
+   * of the settled breakdown (should be rare once divergent props are ignored).
+   */
+  const payGapReasons: {
+    key: string;
+    label: string;
+    subtext: string;
+    amount: number;
+    /** When true, amount is added toward To pay (prefix "+ "). */
+    isAdd?: boolean;
+  }[] = [];
+  if (!deliveryUnconfirmed && !ignoredDivergentProp && grandToPayLeftover < -0.05) {
     payGapReasons.push({
-      key: "grand-pay-gap",
-      label: "Not included in To pay",
-      subtext: "This is why Grand Total and To pay differ",
-      amount: Math.round(grandToPayGap * 100) / 100,
+      key: "pay-ahead-gap",
+      label: "Bill updating",
+      subtext: "Cart changed — refreshing breakdown",
+      amount: Math.round(Math.abs(grandToPayLeftover) * 100) / 100,
+      isAdd: true,
     });
   }
   const packagingInr = serverBill?.components.packaging.taxable_value ?? 0;
@@ -971,7 +1006,8 @@ export function BillSummarySheet({
 
                   {discountRowsGap > 0.005 ? (
                     <BillLineRow
-                      label="Other offers"
+                      label="Other discounts"
+                      subtext="Applied offers not listed above"
                       valueNode={
                         <AnimatedBillValue value={discountRowsGap} prefix="- " style={[styles.discountValue, dark && styles.discountValueDark]} />
                       }
@@ -1028,12 +1064,16 @@ export function BillSummarySheet({
                       valueNode={
                         <AnimatedBillValue
                           value={reason.amount}
-                          prefix="- "
-                          style={[styles.discountValue, dark && styles.discountValueDark]}
+                          prefix={reason.isAdd ? "+ " : "- "}
+                          style={
+                            reason.isAdd
+                              ? [styles.pendingWalletValue]
+                              : [styles.discountValue, dark && styles.discountValueDark]
+                          }
                         />
                       }
-                      labelAccent
-                      rowStyle={styles.discountRow}
+                      labelAccent={!reason.isAdd}
+                      rowStyle={reason.isAdd ? styles.pendingWalletRow : styles.discountRow}
                     />
                   ))}
 

@@ -282,7 +282,10 @@ export default function PlatformOfferAnalyticsClient() {
             </h1>
             <OfferAnalyticsModeToggle mode="normal" />
           </div>
-          <p className="text-xs text-slate-500">Usage, sales attribution, and admin mutations for platform offers.</p>
+          <p className="text-xs text-slate-500">
+            Usage, sales attribution, and admin mutations for normal platform offers (excludes FLASH_SALE and
+            FREE_DELIVERY — use those tabs). Budget KPIs are lifetime on remaining kinds only.
+          </p>
         </div>
         <DateRangeFilter
           from={from}

@@ -724,11 +724,22 @@ export async function loadBillingDatasetUncached(
     merchantOfferUsagesByUser = new Map(usageRows.map((r) => [r.offerId, r.cnt]));
   }
 
-  const [ovRow] = await db
-    .select()
-    .from(merchantBillingOverrides)
-    .where(eq(merchantBillingOverrides.merchantStoreId, opts.merchantStoreId))
-    .limit(1);
+  // Soft-fail: missing table / transient pooler blips must not 500 checkout-offers.
+  let ovRow: { overrides?: unknown } | undefined;
+  try {
+    const rows = await db
+      .select()
+      .from(merchantBillingOverrides)
+      .where(eq(merchantBillingOverrides.merchantStoreId, opts.merchantStoreId))
+      .limit(1);
+    ovRow = rows[0];
+  } catch (err) {
+    console.warn(
+      "[billing] merchant_billing_overrides load failed; continuing without overrides",
+      err instanceof Error ? err.message : err
+    );
+    ovRow = undefined;
+  }
 
   let coupon: DiscountRow | null = null;
   const code = opts.couponCode?.trim();

@@ -10,3 +10,15 @@ export const PARCEL_SEARCH_CANCEL_REASONS: RideCancelReason[] = [
   { id: "got_courier_elsewhere", label: "Got a courier elsewhere" },
   { id: "other", label: "Others" },
 ];
+
+/** Parcel live-tracking cancel (before pickup started) — same sheet UX as ride. */
+export const PARCEL_TRACKING_CANCEL_REASONS: RideCancelReason[] = [
+  { id: "wrong_pickup", label: "Selected Wrong Pickup Location" },
+  { id: "wrong_drop", label: "Selected Wrong Drop Location" },
+  { id: "booked_by_mistake", label: "Booked by mistake" },
+  { id: "wrong_vehicle", label: "Selected different vehicle" },
+  { id: "taking_too_long", label: "Captain taking too long" },
+  { id: "got_courier_elsewhere", label: "Got a courier elsewhere" },
+  { id: "changed_plans", label: "Changed my plans" },
+  { id: "other", label: "Others" },
+];

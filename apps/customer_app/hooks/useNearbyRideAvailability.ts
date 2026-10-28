@@ -49,10 +49,15 @@ export function useNearbyRideAvailability(
         signal,
       }),
     enabled,
-    refetchInterval: 8_000,
+    refetchInterval: (query) => {
+      // Stop hammering when the last call failed (e.g. old clients / transient 400).
+      if (query.state.status === "error") return false;
+      return 8_000;
+    },
     refetchIntervalInBackground: false,
     staleTime: 10_000,
     retry: 1,
+    retryDelay: 600,
     placeholderData: keepPreviousData,
     // Don't leave the book sheet stuck on a spinner if the API hangs.
     networkMode: "online",

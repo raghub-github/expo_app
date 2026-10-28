@@ -1057,7 +1057,9 @@ export async function orderRoutes(app: FastifyInstance) {
             merchantPublicStoreId,
             merchantAddress: row.pickupAddressRaw ?? null,
             deliveryAddress:
-              row.orderType === "person_ride" ? row.dropAddressRaw ?? null : null,
+              row.orderType === "person_ride" || row.orderType === "parcel"
+                ? row.dropAddressRaw ?? null
+                : null,
             merchantBannerUrl,
             merchantStoreId: row.merchantStoreId != null ? Number(row.merchantStoreId) : null,
             orderType: row.orderType ?? null,
@@ -1084,7 +1086,7 @@ export async function orderRoutes(app: FastifyInstance) {
                 ? (row.checkoutMetadata as Record<string, unknown>)
                 : null,
             billingSnapshot:
-              row.orderType === "person_ride" &&
+              (row.orderType === "person_ride" || row.orderType === "parcel") &&
               row.billingSnapshot != null &&
               typeof row.billingSnapshot === "object"
                 ? (row.billingSnapshot as Record<string, unknown>)
@@ -4173,6 +4175,7 @@ export async function orderRoutes(app: FastifyInstance) {
           id: ordersCore.id,
           orderId: ordersCore.orderId,
           formattedOrderId: ordersCore.formattedOrderId,
+          orderType: ordersCore.orderType,
           status: ordersCore.status,
           currentStatus: ordersCore.currentStatus,
           paymentStatus: ordersCore.paymentStatus,
@@ -4188,6 +4191,9 @@ export async function orderRoutes(app: FastifyInstance) {
           alternateContactPhone: ordersCore.alternateContactPhone,
           deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
           deliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+          grandTotal: ordersCore.grandTotal,
+          tipAmount: ordersCore.tipAmount,
+          items: ordersCore.items,
         })
         .from(ordersCore)
         .where(customerOrderRefWhere(customerPk, orderIdParam))
@@ -4206,6 +4212,70 @@ export async function orderRoutes(app: FastifyInstance) {
       }
 
       const billingSnap = (coreRow.billingSnapshot as Record<string, unknown> | null) ?? null;
+
+      // Parcel: fare invoice HTML (summary receipt) — food tax-invoice fees often absent.
+      if (String(coreRow.orderType ?? "") === "parcel") {
+        const orderIdDisplay = coreRow.formattedOrderId ?? coreRow.orderId ?? String(coreRow.id);
+        const createdAt = coreRow.placedAt ?? coreRow.createdAt;
+        const orderDateIso =
+          createdAt instanceof Date ? createdAt.toISOString() : new Date(createdAt).toISOString();
+        let riderName: string | null = null;
+        if (coreRow.riderId != null) {
+          const [riderRow] = await db
+            .select({ name: riders.name })
+            .from(riders)
+            .where(eq(riders.id, coreRow.riderId))
+            .limit(1);
+          riderName = riderRow?.name?.trim() || null;
+        }
+        const snap = billingSnap ?? {};
+        const parcelFare = Math.max(
+          0,
+          Number(snap.parcel_fare) ||
+            Number(snap.fare_amount) ||
+            Number(snap.item_total) ||
+            Number(coreRow.grandTotal) ||
+            0
+        );
+        const html = buildCustomerOrderSummaryReceiptHtml({
+          formattedOrderId: orderIdDisplay,
+          orderDateIso,
+          customerName: customerRow?.fullName?.trim() || "Customer",
+          deliveryAddress: coreRow.deliveryAddress ?? null,
+          restaurantName: "Courier",
+          restaurantAddress: null,
+          restaurantFssai: null,
+          storeTypeLabel: "Parcel",
+          riderName,
+          paymentMethod: coreRow.paymentMethod ?? null,
+          orderType: "parcel",
+          items:
+            parcelFare > 0.005
+              ? [
+                  {
+                    name: "Parcel delivery",
+                    quantity: 1,
+                    unitPrice: parcelFare,
+                    totalPrice: parcelFare,
+                  },
+                ]
+              : [],
+          billingSnapshot: billingSnap,
+          fallbackTotal:
+            coreRow.grandTotal != null && Number.isFinite(Number(coreRow.grandTotal))
+              ? Number(coreRow.grandTotal)
+              : null,
+          fallbackTipAmount:
+            coreRow.tipAmount != null && Number.isFinite(Number(coreRow.tipAmount))
+              ? Number(coreRow.tipAmount)
+              : null,
+        });
+        return reply.send({
+          html,
+          title: `Parcel Invoice — ${orderIdDisplay}`,
+        });
+      }
+
       if (!orderHasCustomerTaxInvoice(billingSnap)) {
         return reply.status(400).send({
           error: "NO_INVOICE_CHARGES",
@@ -4322,6 +4392,7 @@ export async function orderRoutes(app: FastifyInstance) {
           id: ordersCore.id,
           orderId: ordersCore.orderId,
           formattedOrderId: ordersCore.formattedOrderId,
+          orderType: ordersCore.orderType,
           status: ordersCore.status,
           currentStatus: ordersCore.currentStatus,
           paymentStatus: ordersCore.paymentStatus,
@@ -4352,6 +4423,28 @@ export async function orderRoutes(app: FastifyInstance) {
           error: "INVOICE_NOT_READY",
           message: "Invoice is available after the order is delivered or cancelled.",
         });
+      }
+
+      // Parcel fare invoice (Rapido-style PDF) — platform/delivery fee tax invoice often N/A.
+      if (String(coreRow.orderType ?? "") === "parcel") {
+        const { buildParcelInvoicePdfForCustomer } = await import(
+          "../rides/ride-invoice.service.js"
+        );
+        const built = await buildParcelInvoicePdfForCustomer(db, {
+          customerPk,
+          orderRef: orderIdParam,
+          customerName: customerRow?.fullName,
+        });
+        if (!built.ok) {
+          return reply.status(built.statusCode ?? 400).send({
+            error: built.code,
+            message: built.message,
+          });
+        }
+        return reply
+          .header("Content-Type", "application/pdf")
+          .header("Content-Disposition", `attachment; filename="${built.filename}"`)
+          .send(built.pdfBuffer);
       }
 
       const billingSnap = (coreRow.billingSnapshot as Record<string, unknown> | null) ?? null;

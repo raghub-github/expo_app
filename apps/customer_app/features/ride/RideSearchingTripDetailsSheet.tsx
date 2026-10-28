@@ -26,6 +26,7 @@ export type RideSearchingTripDetailsSheetProps = {
   listFare?: number | null;
   tipAmount?: number;
   statusLabel?: string;
+  cancelLabel?: string;
   onBack: () => void;
   onCancelRide: () => void;
 };
@@ -86,6 +87,7 @@ export function RideSearchingTripDetailsSheet({
   listFare = null,
   tipAmount = 0,
   statusLabel = "Searching for below services...",
+  cancelLabel = "Cancel Ride",
   onBack,
   onCancelRide,
 }: RideSearchingTripDetailsSheetProps) {
@@ -151,7 +153,7 @@ export function RideSearchingTripDetailsSheet({
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.cancelBtn} onPress={onCancelRide} activeOpacity={0.9}>
-            <AppText style={styles.cancelBtnText}>Cancel Ride</AppText>
+            <AppText style={styles.cancelBtnText}>{cancelLabel}</AppText>
           </TouchableOpacity>
         </View>
       </View>

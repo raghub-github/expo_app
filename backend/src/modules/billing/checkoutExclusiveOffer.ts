@@ -155,6 +155,12 @@ function bestEligibleAutoCoupon(
  * Best Food platform offer with promo_config.auto_apply === true (estimated savings).
  * Manual-only platform offers are excluded — customer must pass selectedPlatformOfferId.
  */
+function isPlatformDeliveryReliefOffer(offer: PlatformOfferRow): boolean {
+  const k = String(offer.offerKind ?? "").toUpperCase();
+  if (k === "FREE_DELIVERY") return true;
+  return Boolean(String(offer.deliveryDiscountType ?? "").trim());
+}
+
 function bestEligibleAutoPlatformOffer(
   ctx: BillContext,
   dataset: BillingDataset,
@@ -166,6 +172,9 @@ function bestEligibleAutoPlatformOffer(
   for (const offer of listEligiblePlatformOffersForCheckout(ctx, dataset, grossCart)) {
     if (!platformOfferCheckoutAutoApply(offer)) continue;
     if (platformOfferConflictsWithSubscriptionFreeDelivery(ctx, offer)) continue;
+    // Delivery relief is applied after the cart exclusive winner — do not let
+    // FREE_DELIVERY displace FLAT/PERCENT cart promos in the exclusive race.
+    if (isPlatformDeliveryReliefOffer(offer)) continue;
     const amt = estimateOfferDiscountValue(offer, ctx, rem);
     if (amt > bestAmt) {
       bestAmt = amt;
@@ -186,16 +195,6 @@ function bestAutoExclusiveWinner(
   const merchant = bestEligibleMerchantOffer(ctx, dataset, eligibleCart, rem);
   const coupon = bestEligibleAutoCoupon(ctx, dataset, rem);
   const platform = bestEligibleAutoPlatformOffer(ctx, dataset, itemPlusAddon, rem);
-
-  // Prefer auto_apply FREE_DELIVERY when it actually waives delivery — otherwise a
-  // slightly larger Precision cart cut (~₹87) permanently blocks free delivery (~₹74).
-  if (
-    platform.winner.kind === "platform" &&
-    platform.amount > 0.005 &&
-    String(platform.winner.offer.offerKind ?? "").toUpperCase() === "FREE_DELIVERY"
-  ) {
-    return platform.winner;
-  }
 
   type Cand = { winner: Winner; amount: number; tieBreak: number };
   const cands: Cand[] = [
@@ -310,32 +309,82 @@ export function applyExclusiveCheckoutOffer(
   );
 
   // 2) One cart-level promo (platform Flat / precision merchant / coupon).
+  // FREE_DELIVERY is delivery-fee relief — it may coexist with a cart discount
+  // unless the cart winner is itself a delivery waiver / conflicts with subscription FD.
   const winner = resolveExclusiveWinner(ctx, dataset, itemPlusAddon, rem);
-  if (winner.kind === "none") return;
+
+  const applyDeliveryRelief = () => {
+    if (ctx.customerSubscriptionFreeDeliveryEligible) return;
+    const pinnedDelivery =
+      winner.kind === "platform" && isPlatformDeliveryReliefOffer(winner.offer)
+        ? winner.offer.id
+        : null;
+    // Respect forceNoAutoOffer for auto delivery unless the exclusive winner is delivery itself.
+    if (ctx.forceNoAutoOffer === true && pinnedDelivery == null) return;
+    // Clear cart selection so delivery bucket can auto-pick FREE_DELIVERY
+    // independently of the cart exclusive winner (e.g. FLAT 35 OFF).
+    withScopedSelection(
+      ctx,
+      {
+        selectedPlatformOfferId: pinnedDelivery,
+        selectedMerchantOfferId: null,
+        forceNoAutoOffer: false,
+      },
+      () => {
+        applyPlatformDeliveryOffers(ctx, dataset, state, itemPlusAddon, rem);
+        applyPlatformFeeBucketOffers(ctx, dataset, state, itemPlusAddon, rem);
+      }
+    );
+  };
+
+  if (winner.kind === "none") {
+    applyDeliveryRelief();
+    return;
+  }
 
   if (winner.kind === "coupon") {
     applyCouponDiscount(ctx, winner.coupon, itemPlusAddon, state, rem);
+    applyDeliveryRelief();
     return;
   }
 
   if (winner.kind === "merchant") {
+    // Merchant FREE_DELIVERY already waives delivery — don't double-apply platform FD.
+    const merchantIsDelivery =
+      String(winner.offer.offerType ?? "").toUpperCase() === "FREE_DELIVERY";
     withScopedSelection(
       ctx,
       { selectedMerchantOfferId: winner.offer.id, selectedPlatformOfferId: null, forceNoAutoOffer: false },
       () => applyCartSurfaceMerchantOffers(ctx, dataset, state, itemPlusAddon, rem)
     );
+    if (!merchantIsDelivery) applyDeliveryRelief();
     return;
   }
+
+  // Platform cart winner (DISCOUNT / FLAT / FREE_DELIVERY / …)
+  const platformIsDelivery =
+    String(winner.offer.offerKind ?? "").toUpperCase() === "FREE_DELIVERY" ||
+    Boolean(String(winner.offer.deliveryDiscountType ?? "").trim());
 
   withScopedSelection(
     ctx,
     { selectedPlatformOfferId: winner.offer.id, selectedMerchantOfferId: null, forceNoAutoOffer: false },
     () => {
       applyPlatformCartOffers(ctx, dataset, state, itemPlusAddon, rem);
-      applyPlatformDeliveryOffers(ctx, dataset, state, itemPlusAddon, rem);
-      applyPlatformFeeBucketOffers(ctx, dataset, state, itemPlusAddon, rem);
     }
   );
+  if (platformIsDelivery) {
+    withScopedSelection(
+      ctx,
+      { selectedPlatformOfferId: winner.offer.id, selectedMerchantOfferId: null, forceNoAutoOffer: false },
+      () => {
+        applyPlatformDeliveryOffers(ctx, dataset, state, itemPlusAddon, rem);
+        applyPlatformFeeBucketOffers(ctx, dataset, state, itemPlusAddon, rem);
+      }
+    );
+  } else {
+    applyDeliveryRelief();
+  }
 }
 
 // Re-export for tests / partner paths that still call full merchant apply.

@@ -12,6 +12,7 @@ import {
   ScrollView,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { HOME_TAB_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
 import { useFocusEffect } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -75,6 +76,7 @@ export function ParcelBookingScreen() {
   const swapStops = useParcelBookingStore((s) => s.swapStops);
   const guidelinesShown = useParcelBookingStore((s) => s.guidelinesShown);
   const markGuidelinesShown = useParcelBookingStore((s) => s.markGuidelinesShown);
+  const searchInFlight = useParcelBookingStore((s) => s.searchInFlight);
   const visitedInnerPage = useParcelBookingStore((s) => s.visitedInnerPage);
   const markVisitedInnerPage = useParcelBookingStore((s) => s.markVisitedInnerPage);
   const markPreserveDraftOnNextFocus = useParcelBookingStore(
@@ -107,12 +109,13 @@ export function ParcelBookingScreen() {
     staleTime: 60_000,
   });
 
-  // Status bar strip = same mint as hero. Don't reset on blur so pickup/drop search stays mint.
+  // Status bar strip = same mint as hero (location search uses its own white chrome).
   // Fresh entry (closed + reopened) clears drop; returning from location/book keeps draft.
   useFocusEffect(
     useCallback(() => {
       setStatusBarBackground(HERO_MINT, "dark");
       const state = useParcelBookingStore.getState();
+      if (state.searchInFlight) return;
       if (state.preserveDraftOnNextFocus) {
         useParcelBookingStore.setState({ preserveDraftOnNextFocus: false });
         return;
@@ -139,12 +142,25 @@ export function ParcelBookingScreen() {
     });
   }, [pickup, address, coords, setPickup, profile?.full_name, profile?.mobile_number]);
 
-  // Show guidelines once per booking session — not again after location search return.
+  const hasActiveParcelTrack = useOrderStore((s) =>
+    (s.activeOrders.length > 0 ? s.activeOrders : s.activeOrder ? [s.activeOrder] : []).some(
+      (o) =>
+        (o.serviceType ?? "food") === "parcel" &&
+        o.status !== "DELIVERED" &&
+        o.status !== "CANCELLED"
+    )
+  );
+
+  // Guidelines only for a fresh booking — skip when searching, live tracking, or timeout apology.
   useEffect(() => {
-    if (guidelinesShown) return;
+    if (searchInFlight) {
+      setGuidelinesOpen(false);
+      return;
+    }
+    if (guidelinesShown || hasActiveParcelTrack) return;
     setGuidelinesOpen(true);
     markGuidelinesShown();
-  }, [guidelinesShown, markGuidelinesShown]);
+  }, [guidelinesShown, markGuidelinesShown, hasActiveParcelTrack, searchInFlight]);
 
   useEffect(() => {
     const { coords: c, requestPermissionAndFetch } = useLocationStore.getState();
@@ -228,14 +244,6 @@ export function ParcelBookingScreen() {
   const openTerms = () => router.push("/profile/legal/terms-of-service" as never);
 
   const showContinue = !!(pickup && drop && visitedInnerPage);
-  const hasActiveParcelTrack = useOrderStore((s) =>
-    (s.activeOrders.length > 0 ? s.activeOrders : s.activeOrder ? [s.activeOrder] : []).some(
-      (o) =>
-        (o.serviceType ?? "food") === "parcel" &&
-        o.status !== "DELIVERED" &&
-        o.status !== "CANCELLED"
-    )
-  );
   const dropContactLine = useMemo(() => {
     if (!drop) return null;
     const name = drop.contactName?.trim() || profile?.full_name?.trim() || "You";
@@ -250,7 +258,17 @@ export function ParcelBookingScreen() {
       {/* Root layout already paints status-bar spacer — only a tight top pad here. */}
       <View style={styles.hero}>
         <View style={styles.topRow}>
+          <TouchableOpacity
+            style={styles.backBtn}
+            onPress={() => safeRouterBack(router, HOME_TAB_FALLBACK)}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
+          >
+            <Ionicons name="arrow-back" size={20} color={GatiMitraColors.textPrimary} />
+          </TouchableOpacity>
           <AppText style={styles.eyebrow}>Send Anything. Anytime. Anywhere</AppText>
+          <View style={styles.backBtnSpacer} />
         </View>
 
         <View style={styles.titleRow}>
@@ -442,8 +460,23 @@ const styles = StyleSheet.create({
   topRow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
+    minHeight: 36,
+    gap: 8,
+  },
+  backBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#ECFDF3",
+    alignItems: "center",
     justifyContent: "center",
-    minHeight: 22,
+    borderWidth: 1,
+    borderColor: "rgba(187, 247, 208, 0.55)",
+  },
+  backBtnSpacer: {
+    width: 36,
+    height: 36,
   },
   eyebrow: {
     flex: 1,

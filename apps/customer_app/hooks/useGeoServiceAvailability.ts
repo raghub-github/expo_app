@@ -69,8 +69,10 @@ export function useGeoServiceAvailability(args: {
     // Emergency blocks must surface without a manual refresh. usePreventServicesRealtime
     // pushes an invalidation within ~1s of an admin change; these settings are the
     // safety net when Realtime is unavailable and for schedule-based expiry.
-    staleTime: 30_000,
-    refetchInterval: (query) => pollIntervalWithBackoff(query, 60_000),
+    // Keep the poll sparse — Realtime + reconnect/focus cover the hot path; a
+    // 60s trio (geo + prevent/check + service-blocks) was spamming the backend.
+    staleTime: 90_000,
+    refetchInterval: (query) => pollIntervalWithBackoff(query, 180_000),
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: true,

@@ -53,7 +53,40 @@ export type RideInvoicePdfInput = {
   riderName?: string | null;
   vehicleNumber?: string | null;
   placeOfSupply?: string | null;
+  /** Defaults to ride; parcel uses courier copy on the same Rapido-style PDF. */
+  serviceKind?: "ride" | "parcel";
 };
+
+function invoiceCopy(kind: "ride" | "parcel" | undefined) {
+  if (kind === "parcel") {
+    return {
+      idLabel: "Parcel ID",
+      timeLabel: "Time of delivery",
+      chargeLabel: "Parcel Charge",
+      fareChargeLabel: "Parcel Fare Charge",
+      partnerLabel: "Courier Name",
+      partnerFallback: "Courier Partner",
+      subject: "Parcel payment summary and tax invoices",
+      author: "GatiMitra - Parcel - Services",
+      titlePrefix: "GatiMitra Parcel Invoice",
+      ecoNote:
+        "This document is issued for the parcel delivery service facilitated by GatiMitra On-Demand Services Private Limited.",
+    };
+  }
+  return {
+    idLabel: "Ride ID",
+    timeLabel: "Time of Ride",
+    chargeLabel: "Ride Charge",
+    fareChargeLabel: "Ride Fare Charge",
+    partnerLabel: "Captain Name",
+    partnerFallback: "Ride Partner",
+    subject: "Ride payment summary and tax invoices",
+    author: "GatiMitra - Ride - Services",
+    titlePrefix: "GatiMitra Ride Invoice",
+    ecoNote:
+      "This document is issued by the Transport Service Provider and not by GatiMitra On-Demand Services Private Limited. GatiMitra acts only as an Electronic Commerce Operator for the transportation services.",
+  };
+}
 
 type RapidoAmounts = RapidoPaymentSummary;
 
@@ -301,16 +334,18 @@ async function drawPaymentSummaryPage(
 
   let y = margin + pad;
 
+  const copy = invoiceCopy(input.serviceKind);
+
   doc.font(pdfFont(true)).fontSize(17).fillColor(TEXT_DARK).text("Payment Summary", ix, y);
   drawInvoiceLogoWithName(doc, logo, ix + iw, y);
   y += 30;
 
-  doc.font(pdfFont()).fontSize(9).fillColor(LABEL_GRAY).text("Ride ID", ix, y);
+  doc.font(pdfFont()).fontSize(9).fillColor(LABEL_GRAY).text(copy.idLabel, ix, y);
   y += 13;
   doc.font(pdfFont(true)).fontSize(11).fillColor(TEXT_DARK).text(input.orderId, ix, y);
   y += 22;
 
-  doc.font(pdfFont()).fontSize(9).fillColor(LABEL_GRAY).text("Time of Ride", ix, y);
+  doc.font(pdfFont()).fontSize(9).fillColor(LABEL_GRAY).text(copy.timeLabel, ix, y);
   y += 13;
   doc.font(pdfFont()).fontSize(11).fillColor(TEXT_DARK).text(rideDate, ix, y);
   y += 22;
@@ -383,7 +418,7 @@ async function drawPaymentSummaryPage(
   let by = billY + 16;
   doc.font(pdfFont(true)).fontSize(14).fillColor(WHITE).text("Bill Details", billX, by);
   by += 22;
-  by = drawBillAmountRow(doc, billX, billW, by, "Ride Charge", amounts.rideChargeGross);
+  by = drawBillAmountRow(doc, billX, billW, by, copy.chargeLabel, amounts.rideChargeGross);
   by = drawBillAmountRow(
     doc,
     billX,
@@ -424,10 +459,11 @@ function drawRideTaxInvoicePage(
   amounts: RapidoAmounts,
   logo: RideInvoiceLogoSource | null
 ): void {
+  const copy = invoiceCopy(input.serviceKind);
   const invoiceNo = buildRideInvoiceNumber("ride", input);
   const invoiceDate = formatTaxInvoiceDate(input.rideDateIso);
   const state = input.placeOfSupply?.trim() || "";
-  const captain = input.riderName?.trim() || "Ride Partner";
+  const captain = input.riderName?.trim() || copy.partnerFallback;
   const vehicle = input.vehicleNumber?.trim() || "—";
 
   doc.addPage({ size: "A4", margin: 0 });
@@ -459,7 +495,7 @@ function drawRideTaxInvoicePage(
   }
   y = drawTaxField(doc, x + colW, y - 34, "GST Number", platformGstin(), colW);
   y = drawTaxField(doc, x, y, "Vehicle Number", vehicle, colW);
-  y = drawTaxField(doc, x + colW, y - 34, "Captain Name", captain, colW);
+  y = drawTaxField(doc, x + colW, y - 34, copy.partnerLabel, captain, colW);
   y = drawTaxField(doc, x, y, "Customer Name", input.customerName, colW);
   y = drawTaxField(doc, x, y, "Customer Pick Up Address", input.pickupAddress, colW * 2);
 
@@ -468,10 +504,10 @@ function drawRideTaxInvoicePage(
   y += 22;
 
   const rows: Array<[string, number, boolean]> = [
-    ["Ride Fare Charge", amounts.captainFee, false],
+    [copy.fareChargeLabel, amounts.captainFee, false],
     ["CGST", amounts.rideCgst, false],
     ["SGST", amounts.rideSgst, false],
-    ["Ride Charge", amounts.rideCharge, true],
+    [copy.chargeLabel, amounts.rideCharge, true],
   ];
   for (const [label, amount, bold] of rows) {
     y = drawTaxAmountRow(doc, x, y, label, amount, bold);
@@ -483,12 +519,7 @@ function drawRideTaxInvoicePage(
     .font(pdfFont())
     .fontSize(8)
     .fillColor(LABEL_GRAY)
-    .text(
-      "This document is issued by the Transport Service Provider and not by GatiMitra On-Demand Services Private Limited. GatiMitra acts only as an Electronic Commerce Operator for the transportation services.",
-      x,
-      y,
-      { width: 515, lineGap: 2 }
-    );
+    .text(copy.ecoNote, x, y, { width: 515, lineGap: 2 });
 
   drawPageFooter(doc, 2, 3);
 }
@@ -575,6 +606,7 @@ function drawPlatformTaxInvoicePage(
 }
 
 export async function buildRideInvoicePdfBuffer(input: RideInvoicePdfInput): Promise<Buffer> {
+  const copy = invoiceCopy(input.serviceKind);
   const amounts = resolveRapidoPaymentSummary(input.billingSnapshot, input.totalFare, {
     excludeTip: true,
   });
@@ -593,9 +625,9 @@ export async function buildRideInvoicePdfBuffer(input: RideInvoicePdfInput): Pro
       margin: 0,
       autoFirstPage: false,
       info: {
-        Title: `GatiMitra Ride Invoice ${input.orderId}`,
-        Author: "GatiMitra - Ride - Services",
-        Subject: "Ride payment summary and tax invoices",
+        Title: `${copy.titlePrefix} ${input.orderId}`,
+        Author: copy.author,
+        Subject: copy.subject,
       },
     });
     registerInvoicePdfFonts(doc);

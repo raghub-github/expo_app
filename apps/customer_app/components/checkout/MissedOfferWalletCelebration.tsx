@@ -233,20 +233,24 @@ export function MissedOfferWalletCelebration({
           </Animated.View>
 
           <View style={styles.chipsRow}>
-            <RewardChip
-              delay={220}
-              icon={<MaterialCommunityIcons name="sale" size={18} color="#2563EB" />}
-              label="You save"
-              value={`₹${savings}`}
-              accent="#2563EB"
-            />
-            <RewardChip
-              delay={280}
-              icon={<MaterialCommunityIcons name="wallet" size={18} color={BRAND_DARK} />}
-              label="GatiCash"
-              value={`+₹${wallet}`}
-              accent={BRAND_DARK}
-            />
+            {offerSavingsInr > 0.005 ? (
+              <RewardChip
+                delay={220}
+                icon={<MaterialCommunityIcons name="sale" size={18} color="#2563EB" />}
+                label="You save"
+                value={`₹${savings}`}
+                accent="#2563EB"
+              />
+            ) : null}
+            {walletAddInr > 0.005 ? (
+              <RewardChip
+                delay={280}
+                icon={<MaterialCommunityIcons name="wallet" size={18} color={BRAND_DARK} />}
+                label="GatiCash"
+                value={`+₹${wallet}`}
+                accent={BRAND_DARK}
+              />
+            ) : null}
           </View>
 
           <Animated.View entering={FadeIn.delay(340).duration(280)}>

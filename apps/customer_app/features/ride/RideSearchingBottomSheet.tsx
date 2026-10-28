@@ -19,6 +19,8 @@ type Props = {
   phase: "placing" | "searching" | "tip_boost" | "error";
   title: string;
   subtitle: string;
+  /** Override the default "Finding your rider…" header (e.g. parcel: Searching For Rider). */
+  searchingTitle?: string;
   elapsedLabel?: string;
   fare: number;
   /** List fare before offer — shown struck when higher than `fare`. */
@@ -38,6 +40,10 @@ type Props = {
   showFastestTag?: boolean;
   placementError?: string | null;
   routeViaLabel?: string;
+  /** Hide Route distance / Via columns — full-width pickup & drop (parcel). */
+  hideRouteMetrics?: boolean;
+  /** Show full stop addresses (no mid-string truncate). */
+  showFullAddresses?: boolean;
   onTripDetails?: () => void;
   onShareTrip?: () => void;
   shareTripEnabled?: boolean;
@@ -191,6 +197,7 @@ export function RideSearchingBottomSheet({
   phase,
   title,
   subtitle,
+  searchingTitle = "Finding your rider…",
   elapsedLabel,
   fare,
   listFare = null,
@@ -208,6 +215,8 @@ export function RideSearchingBottomSheet({
   showFastestTag = false,
   placementError,
   routeViaLabel = "Optimized",
+  hideRouteMetrics = false,
+  showFullAddresses = false,
   onTripDetails,
   onShareTrip,
   shareTripEnabled = true,
@@ -263,7 +272,7 @@ export function RideSearchingBottomSheet({
 
           <View style={styles.headerTextCol}>
             <AppText style={styles.title} numberOfLines={2}>
-              {isError ? title : "Finding your rider…"}
+              {isError ? title : searchingTitle}
             </AppText>
             <AppText style={styles.subtitle} numberOfLines={2}>
               {isError && placementError ? placementError : subtitle}
@@ -338,8 +347,8 @@ export function RideSearchingBottomSheet({
               </View>
             </View>
 
-            <View style={styles.routeCard}>
-              <View style={styles.routeLeftCol}>
+            <View style={[styles.routeCard, hideRouteMetrics && styles.routeCardFull]}>
+              <View style={[styles.routeLeftCol, hideRouteMetrics && styles.routeLeftColFull]}>
                 <View style={styles.routeStepper}>
                   {routePoints.map((point, index) => (
                     <View key={`${point.key}-rail`} style={styles.routeStepperItem}>
@@ -360,33 +369,42 @@ export function RideSearchingBottomSheet({
                   {routePoints.map((point) => (
                     <View key={point.key} style={styles.routeStopBlock}>
                       <AppText style={styles.routeStopLabel}>{point.label}</AppText>
-                      <AppText style={styles.routeStopAddr} numberOfLines={2}>
-                        {truncateText(point.address, 48)}
+                      <AppText
+                        style={styles.routeStopAddr}
+                        numberOfLines={showFullAddresses || hideRouteMetrics ? 3 : 2}
+                      >
+                        {showFullAddresses || hideRouteMetrics
+                          ? point.address.trim() || point.label
+                          : truncateText(point.address, 48)}
                       </AppText>
                     </View>
                   ))}
                 </View>
               </View>
 
-              <View style={styles.routeDivider} />
+              {!hideRouteMetrics ? (
+                <>
+                  <View style={styles.routeDivider} />
 
-              <View style={styles.routeMetricCol}>
-                <Ionicons name="trail-sign-outline" size={18} color="#94A3B8" />
-                <AppText style={styles.routeMetricLabel}>Route distance</AppText>
-                <AppText style={styles.routeMetricValue}>
-                  {rideKm != null ? `${formatKmValue(rideKm)} km` : "—"}
-                </AppText>
-              </View>
+                  <View style={styles.routeMetricCol}>
+                    <Ionicons name="trail-sign-outline" size={18} color="#94A3B8" />
+                    <AppText style={styles.routeMetricLabel}>Route distance</AppText>
+                    <AppText style={styles.routeMetricValue}>
+                      {rideKm != null ? `${formatKmValue(rideKm)} km` : "—"}
+                    </AppText>
+                  </View>
 
-              <View style={styles.routeDivider} />
+                  <View style={styles.routeDivider} />
 
-              <View style={styles.routeMetricCol}>
-                <Ionicons name="git-network-outline" size={18} color="#94A3B8" />
-                <AppText style={styles.routeMetricLabel}>Via</AppText>
-                <AppText style={styles.routeMetricValue} numberOfLines={2}>
-                  {routeViaLabel}
-                </AppText>
-              </View>
+                  <View style={styles.routeMetricCol}>
+                    <Ionicons name="git-network-outline" size={18} color="#94A3B8" />
+                    <AppText style={styles.routeMetricLabel}>Via</AppText>
+                    <AppText style={styles.routeMetricValue} numberOfLines={2}>
+                      {routeViaLabel}
+                    </AppText>
+                  </View>
+                </>
+              ) : null}
             </View>
 
             <View style={styles.actionRow}>
@@ -712,6 +730,14 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: "#E2E8F0",
     marginVertical: 2,
+  },
+  routeCardFull: {
+    alignItems: "flex-start",
+  },
+  routeLeftColFull: {
+    flex: 1,
+    minWidth: 0,
+    width: "100%",
   },
   routeCard: {
     borderRadius: 14,

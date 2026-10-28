@@ -51,6 +51,18 @@ function sanitizePlatformOfferConditions(input: unknown): Record<string, unknown
     } else {
       delete c.first_ride_only;
     }
+    // First-order free delivery: shared benefit family + explicit flag.
+    if (c.first_order_only === true || c.first_order_only === "true" || c.first_order_only === 1) {
+      c.first_order_only = true;
+    } else {
+      delete c.first_order_only;
+    }
+    const family = String(c.benefit_family ?? "").trim();
+    if (family) {
+      c.benefit_family = family;
+    } else {
+      delete c.benefit_family;
+    }
     return c;
   }
   return {};

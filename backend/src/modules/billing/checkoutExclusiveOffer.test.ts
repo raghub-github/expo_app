@@ -299,7 +299,7 @@ describe("applyExclusiveCheckoutOffer — auto-pick priority", () => {
     assert.equal(platformDiscountRows(state).length, 0);
   });
 
-  it("auto mode: FREE_DELIVERY with auto_apply preferred over merchant Precision", () => {
+  it("auto mode: FREE_DELIVERY stacks with merchant Precision (delivery + cart)", () => {
     const ctx = baseCtx({
       platformOfferGeoBindingEffectiveIds: new Set([910]),
     });
@@ -321,7 +321,44 @@ describe("applyExclusiveCheckoutOffer — auto-pick priority", () => {
     assert.equal(rem.delivery, 0);
     assert.equal(platformDiscountRows(state).length, 1);
     assert.equal(platformDiscountRows(state)[0]!.meta?.offerKind, "FREE_DELIVERY");
-    assert.equal(merchantDiscountRows(state).length, 0);
+    assert.equal(merchantDiscountRows(state).length, 1);
+  });
+
+  it("auto mode: FREE_DELIVERY stacks with platform FLAT cart discount", () => {
+    const ctx = baseCtx({
+      platformOfferGeoBindingEffectiveIds: new Set([911, 912]),
+      completedFoodOrderCount: 0,
+      firstOrderFreeDeliveryUsageCount: 0,
+    });
+    const state = emptyState();
+    const rem = remFor(500);
+    const dataset = datasetWith(
+      [],
+      [
+        platformOffer({
+          id: 911,
+          name: "FLAT 35 OFF",
+          offerKind: "DISCOUNT",
+          discountType: "FIXED",
+          valueNumeric: 35,
+          promoConfig: { auto_apply: true },
+        }),
+        platformOffer({
+          id: 912,
+          name: "Free Delivery -- First Order",
+          offerKind: "FREE_DELIVERY",
+          customerSegment: "NEW",
+          deliveryDiscountType: "FULL_WAIVE",
+          promoConfig: { auto_apply: true },
+          conditions: { first_order_only: true, benefit_family: "first_order_free_delivery" },
+        }),
+      ]
+    );
+    applyExclusiveCheckoutOffer(ctx, dataset, state, 500, rem, unexpectedCoupon);
+    assert.equal(rem.delivery, 0);
+    const kinds = platformDiscountRows(state).map((d) => d.meta?.offerKind);
+    assert.ok(kinds.includes("DISCOUNT") || kinds.includes("FLAT_DISCOUNT") || state.discounts.some((d) => d.amount === 35));
+    assert.ok(platformDiscountRows(state).some((d) => d.meta?.offerKind === "FREE_DELIVERY"));
   });
 
   it("previously-selected merchant offer now below min-order: re-picks another eligible merchant offer instead of going silent", () => {

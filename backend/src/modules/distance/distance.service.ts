@@ -375,7 +375,10 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
   if (!options.skipCache) {
     const cached = await getCached(key);
     if (cached) return cached;
-    const dbCached = await getDbCached(options);
+    const dbCached = await Promise.race([
+      getDbCached(options),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 600)),
+    ]);
     if (dbCached) {
       setCached(key, dbCached);
       return dbCached;
@@ -391,7 +394,7 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
     });
     if (mb) {
       setCached(key, mb);
-      if (!options.skipCache) await setDbCached(options, mb);
+      if (!options.skipCache) void setDbCached(options, mb);
       return mb;
     }
   }
@@ -401,7 +404,7 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
     const osrm = await fetchOSRMRoute(points, profile, osrmBaseUrl);
     if (osrm) {
       setCached(key, osrm);
-      if (!options.skipCache) await setDbCached(options, osrm);
+      if (!options.skipCache) void setDbCached(options, osrm);
       return osrm;
     }
   }
@@ -414,7 +417,7 @@ export async function getRoute(options: GetRouteOptions): Promise<RouteResult> {
     approximate: true,
   });
   setCached(key, result);
-  if (!options.skipCache) await setDbCached(options, result);
+  if (!options.skipCache) void setDbCached(options, result);
   return result;
 }
 

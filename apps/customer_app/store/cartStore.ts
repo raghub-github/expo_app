@@ -20,8 +20,18 @@ import { normalizeOrderItemSpecialInstructions } from "@/lib/order-item-special-
 import { cartQtyDebug } from "@/lib/cartQtyDebug";
 import { merchantCartMatchesRoute } from "@/lib/merchantRouteId";
 import { useFlashSaleQtyLimitAckStore } from "@/store/flashSaleQtyLimitAckStore";
+import { useRecentlyRemovedStore } from "@/store/recentlyRemovedStore";
 
 export type { CartDeliveryAnchor } from "@/lib/cartDeliveryAnchor";
+
+/** Options for quantity / remove mutations that may drop a cart line. */
+export type CartLineMutationOptions = {
+  /**
+   * When false, a line that hits qty ≤ 0 is not recorded in Recently Removed
+   * (e.g. edit-sibling cleanup). Defaults to true for user-driven removals.
+   */
+  recordRecentlyRemoved?: boolean;
+};
 
 export type CartItemAddon = {
   addonId: string;
@@ -106,8 +116,8 @@ type CartState = {
     merchantBannerUrl?: string | null,
     merchantStoreType?: string | null,
   ) => void;
-  updateQuantity: (lineId: string, delta: number) => void;
-  removeItem: (lineId: string) => void;
+  updateQuantity: (lineId: string, delta: number, options?: CartLineMutationOptions) => void;
+  removeItem: (lineId: string, options?: CartLineMutationOptions) => void;
   /**
    * Drop cart lines whose base menu item id is no longer sellable (locked / OOS /
    * deleted / filtered out of the live customer menu). Used after menu delta sync.
@@ -419,7 +429,7 @@ export const useCartStore = create<CartState>((set, get) => ({
     queueCartPersist(get);
   },
 
-  updateQuantity: (lineId, delta) => {
+  updateQuantity: (lineId, delta, options) => {
     const { items } = get();
     const now = Date.now();
     const idx = findLineIndex(items, lineId);
@@ -431,7 +441,8 @@ export const useCartStore = create<CartState>((set, get) => ({
       });
       return;
     }
-    const prevQty = items[idx]?.quantity ?? 0;
+    const removedLine = items[idx]!;
+    const prevQty = removedLine.quantity ?? 0;
     const next = items
       .map((i, iIdx) => (iIdx === idx ? { ...i, quantity: i.quantity + delta } : i))
       .filter((i) => i.quantity > 0);
@@ -447,6 +458,18 @@ export const useCartStore = create<CartState>((set, get) => ({
       cartQtyDebug("store_removeItem", { lineId, prevQty, delta });
       // Flash Sale sheet may show again when this item is re-added past the cap.
       useFlashSaleQtyLimitAckStore.getState().clearAcked(lineId);
+      const record = options?.recordRecentlyRemoved !== false;
+      const merchantIdBefore = get().merchantId;
+      if (record && merchantIdBefore && prevQty > 0) {
+        useRecentlyRemovedStore.getState().captureRemoval({
+          merchantId: merchantIdBefore,
+          merchantName: get().merchantName,
+          merchantBannerUrl: get().merchantBannerUrl,
+          merchantStoreType: get().merchantStoreType,
+          item: removedLine,
+          quantity: prevQty,
+        });
+      }
     }
     const merchantId = next.length ? get().merchantId : null;
     const merchantName = next.length ? get().merchantName : null;
@@ -476,8 +499,8 @@ export const useCartStore = create<CartState>((set, get) => ({
     };
   },
 
-  removeItem: (lineId) => {
-    get().updateQuantity(lineId, -999);
+  removeItem: (lineId, options) => {
+    get().updateQuantity(lineId, -999, options);
   },
 
   removeUnavailableMenuItems: (merchantId, availableMenuItemIds) => {
@@ -650,6 +673,7 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   clearCart: () => {
     useMealsUnderPriceCartUiStore.getState().setSuppressFloatingCart(false);
+    useRecentlyRemovedStore.getState().clearAll();
     set({
       merchantId: null,
       merchantName: null,
@@ -711,6 +735,7 @@ export const useCartStore = create<CartState>((set, get) => ({
       stashedCarts,
     } = get();
     const now = Date.now();
+    useRecentlyRemovedStore.getState().clearForMerchant(id);
 
     if (currentId === id) {
       const nextStash = { ...stashedCarts };
@@ -756,6 +781,7 @@ export const useCartStore = create<CartState>((set, get) => ({
   setCartForReorder: (merchantId, merchantName, items, merchantBannerUrl) => {
     const now = Date.now();
     const hydrated = items.map((i) => hydrateCartLine(i));
+    // Do not clear Recently Removed — reorder is not order-success / explicit cart clear.
     set({
       merchantId,
       merchantName,

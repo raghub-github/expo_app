@@ -786,7 +786,10 @@ async function fetchPlatformOffers(
       id:         o.id,
       name:       o.name ?? null,
       offer_kind: kind,
-      label:      buildPlatformLabel(kind, o.discountType, value, maxDisc),
+      // Prefer configured Offer name so store/checkout copy matches Bill Summary.
+      label:
+        (o.name && String(o.name).trim()) ||
+        buildPlatformLabel(kind, o.discountType, value, maxDisc),
       sub_label:  minOrder != null && minOrder > 0 ? `on orders above ₹${Math.round(minOrder)}` : "",
       is_geo_bound: isGeoBound,
       coupon_code: couponCode,

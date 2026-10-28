@@ -49,7 +49,9 @@ import {
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { haversineKm } from "@/lib/billSummary";
 
-const HERO_MINT = GatiMitraColors.mintSoft;
+/** Defined before StyleSheet so HMR renames never TDZ on module init. */
+const HERO_MINT = "#FFFFFF";
+const PAGE_BG = HERO_MINT;
 
 function stopToPlace(stop: ParcelStop, kind: "pickup" | "drop") {
   return {
@@ -115,10 +117,12 @@ export function ParcelLocationSearchScreen() {
     [recentParcelJourneys, lastCompletedParcelJourney]
   );
 
-  // Keep mint status bar while this screen (and courier booking) is open.
   useFocusEffect(
     useCallback(() => {
-      setStatusBarBackground(HERO_MINT, "dark");
+      setStatusBarBackground(PAGE_BG, "dark");
+      return () => {
+        useScreenChromeStore.getState().resetStatusBarBackground();
+      };
     }, [setStatusBarBackground])
   );
 
@@ -449,27 +453,32 @@ export function ParcelLocationSearchScreen() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
       keyboardVerticalOffset={0}
     >
-      <StatusBar style="dark" backgroundColor={HERO_MINT} />
-      {/* Root spacer already paints mint status bar — no extra top inset here. */}
+      <StatusBar style="dark" backgroundColor={PAGE_BG} />
       <View style={styles.header}>
-        <AppText style={styles.headerTitle}>{title}</AppText>
-      </View>
-
-      <View style={styles.searchRow}>
-        <View style={[styles.pin, { backgroundColor: pinBg }]}>
-          <Ionicons
-            name={isPickup ? "location" : "radio-button-on"}
-            size={18}
-            color={pinColor}
-          />
+        <View style={styles.headerTopRow}>
+          <AppText style={styles.headerTitle} numberOfLines={1}>
+            {title}
+          </AppText>
+          <TouchableOpacity style={styles.mapBtn} onPress={openMap} activeOpacity={0.85}>
+            <Ionicons name="location-outline" size={15} color="#111827" />
+            <AppText style={styles.mapBtnText}>Select on map</AppText>
+          </TouchableOpacity>
         </View>
-        <View style={styles.inputWrap}>
+
+        <View style={styles.searchCard}>
+          <View style={[styles.pin, { backgroundColor: pinBg }]}>
+            <Ionicons
+              name={isPickup ? "location" : "radio-button-on"}
+              size={16}
+              color={pinColor}
+            />
+          </View>
           <TextInput
             ref={inputRef}
             value={query}
             onChangeText={setQuery}
             placeholder={isPickup ? "Search pickup address" : "Search drop address"}
-            placeholderTextColor="#94A3B8"
+            placeholderTextColor="#A3A3A3"
             style={styles.input}
             returnKeyType="search"
             autoCorrect={false}
@@ -477,27 +486,24 @@ export function ParcelLocationSearchScreen() {
             blurOnSubmit={false}
           />
           {query.length > 0 ? (
-            <TouchableOpacity onPress={() => setQuery("")} hitSlop={10}>
-              <Ionicons name="close-circle" size={18} color="#94A3B8" />
+            <TouchableOpacity onPress={() => setQuery("")} hitSlop={10} style={styles.clearBtn}>
+              <Ionicons name="close-circle" size={18} color="#A3A3A3" />
+            </TouchableOpacity>
+          ) : null}
+          {canSwap ? (
+            <TouchableOpacity
+              style={styles.swapBtn}
+              onPress={onSwapStops}
+              activeOpacity={0.85}
+              accessibilityLabel="Reverse pickup and drop"
+            >
+              <Ionicons name="swap-vertical" size={16} color="#111827" />
             </TouchableOpacity>
           ) : null}
         </View>
-        {canSwap ? (
-          <TouchableOpacity
-            style={styles.swapBtn}
-            onPress={onSwapStops}
-            activeOpacity={0.85}
-            accessibilityLabel="Reverse pickup and drop"
-          >
-            <Ionicons name="swap-vertical" size={18} color="#111827" />
-          </TouchableOpacity>
-        ) : null}
       </View>
 
-      <TouchableOpacity style={styles.mapBtn} onPress={openMap} activeOpacity={0.85}>
-        <Ionicons name="location-outline" size={18} color="#334155" />
-        <AppText style={styles.mapBtnText}>Select on map</AppText>
-      </TouchableOpacity>
+      <View style={styles.headerDivider} />
 
       <ScrollView
         style={styles.list}
@@ -669,83 +675,91 @@ export function ParcelLocationSearchScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: GatiMitraColors.softBackground,
+    backgroundColor: PAGE_BG,
   },
   header: {
-    alignItems: "center",
-    justifyContent: "center",
     paddingHorizontal: 16,
-    paddingTop: 0,
-    paddingBottom: 4,
-    minHeight: 36,
-    backgroundColor: HERO_MINT,
+    paddingTop: 4,
+    paddingBottom: 12,
+    backgroundColor: PAGE_BG,
+    gap: 12,
+  },
+  headerTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    minHeight: 40,
   },
   headerTitle: {
-    textAlign: "center",
-    fontSize: 17,
-    fontWeight: "800",
-    color: "#0F172A",
+    flex: 1,
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#0A0A0A",
+    letterSpacing: -0.2,
   },
-  searchRow: {
+  searchCard: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    paddingHorizontal: 16,
-    paddingTop: 6,
-    paddingBottom: 8,
-    backgroundColor: "#fff",
+    backgroundColor: "#F5F5F5",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E8E8E8",
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    minHeight: 52,
   },
   pin: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-  },
-  inputWrap: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    borderBottomWidth: 1.5,
-    borderBottomColor: GatiMitraColors.mintHighlight,
-    paddingVertical: 8,
   },
   input: {
     flex: 1,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "600",
-    color: "#0F172A",
-    padding: 0,
+    color: "#0A0A0A",
+    paddingVertical: 12,
+    paddingHorizontal: 0,
+  },
+  clearBtn: {
+    padding: 4,
   },
   mapBtn: {
-    marginHorizontal: 16,
-    marginBottom: 8,
-    marginTop: 4,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
+    gap: 5,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: GatiMitraColors.mintHighlight,
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    paddingVertical: 12,
+    borderColor: "#D4D4D4",
+    backgroundColor: PAGE_BG,
+    flexShrink: 0,
   },
   mapBtnText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: GatiMitraColors.deepMintStart,
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#111827",
   },
   swapBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#fff",
+    borderColor: "#111827",
+    backgroundColor: PAGE_BG,
     alignItems: "center",
     justifyContent: "center",
+  },
+  headerDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#E8E8E8",
+    marginHorizontal: 16,
+    marginBottom: 4,
   },
   journeyWrap: {
     paddingHorizontal: 16,
@@ -754,7 +768,7 @@ const styles = StyleSheet.create({
   },
   list: {
     flex: 1,
-    backgroundColor: "#fff",
+    backgroundColor: PAGE_BG,
   },
   savedRow: {
     flexDirection: "row",

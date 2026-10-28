@@ -450,7 +450,11 @@ function applyCoupon(
   const cap = num(offer.maxDiscountAmount);
   if (cap > 0) amt = Math.min(amt, cap);
   amt = Math.min(Math.max(0, amt), afterDiscBase);
-  const label = `Coupon ${offer.couponCode}`;
+  // Prefer configured offer title so Bill Summary matches the offers sheet —
+  // never surface raw coupon codes like "FLAT35OFF" as the customer-facing name.
+  const label =
+    String(offer.title ?? "").trim() ||
+    (offer.couponCode ? `Coupon ${offer.couponCode}` : "Store offer");
   pushDiscount(state, rem, "items", amt, label, offer.id, "merchant_offers", {
     ...offerDiscountMeta(offer),
     itemSurface: false,

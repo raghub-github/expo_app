@@ -8,7 +8,7 @@ function isPincode(value?: string | null): boolean {
 }
 
 export function resolveHomeLocationPrimary(address: ReverseGeocodeResult | null): string {
-  if (!address) return "Current location";
+  if (!address) return "Detecting address…";
 
   const fullParts = filterCoordinateAddressParts(
     (address.fullAddress ?? "")
@@ -35,11 +35,50 @@ export function resolveHomeLocationPrimary(address: ReverseGeocodeResult | null)
         !isRawCoordinateText(p) &&
         p.toLowerCase() !== "india" &&
         p.toLowerCase() !== "current location" &&
+        p.toLowerCase() !== "detecting address…" &&
         p.toLowerCase() !== normalizedState
     );
 
   const dedupedAreaLocality = Array.from(new Set(areaLocalityCandidates));
-  return dedupedAreaLocality.slice(0, 2).join(", ") || "Current location";
+  if (dedupedAreaLocality.length > 0) return dedupedAreaLocality.slice(0, 2).join(", ");
+  if (address.city?.trim()) return address.city.trim();
+  return "Detecting address…";
+}
+
+/** Secondary line under the home pin — never repeats the primary / "Current location". */
+export function resolveHomeLocationSecondary(
+  address: ReverseGeocodeResult | null,
+  primary: string,
+  hasCoords: boolean
+): string {
+  if (!hasCoords) return "Turn on location for accurate address";
+  const fullParts = filterCoordinateAddressParts(
+    (address?.fullAddress ?? "")
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean)
+  );
+  const stateCandidate =
+    address?.state?.trim() ||
+    [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india") ||
+    address?.city?.trim() ||
+    null;
+  const primaryLower = primary.trim().toLowerCase();
+  if (
+    stateCandidate &&
+    !isRawCoordinateText(stateCandidate) &&
+    stateCandidate.toLowerCase() !== "current location" &&
+    stateCandidate.toLowerCase() !== primaryLower &&
+    !primaryLower.includes(stateCandidate.toLowerCase())
+  ) {
+    return stateCandidate;
+  }
+  if (primaryLower === "detecting address…" || primaryLower === "current location") {
+    return "Updating address…";
+  }
+  return stateCandidate && stateCandidate.toLowerCase() !== primaryLower
+    ? stateCandidate
+    : "Near you";
 }
 
 export function resolveHomeWeatherQueryParams(

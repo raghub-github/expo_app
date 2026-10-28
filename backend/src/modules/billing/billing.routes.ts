@@ -103,6 +103,7 @@ const calculateBodySchema = z.object({
   selectedPlatformOfferId: z.coerce.number().int().positive().optional().nullable(),
   selectedMerchantOfferId: z.coerce.number().int().positive().optional().nullable(),
   forceNoAutoOffer: z.boolean().optional(),
+  waiveMinCartForSelectedPlatformOffer: z.boolean().optional(),
   parcelWeightKg: z.coerce.number().nonnegative().optional().nullable(),
   parcelSpeed: z.string().optional().nullable(),
   parcelScope: z.string().optional().nullable(),

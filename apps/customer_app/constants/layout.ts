@@ -1,4 +1,4 @@
-import { Appearance, Platform } from "react-native";
+import { Appearance, Dimensions, Platform, StatusBar } from "react-native";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 /**
@@ -90,11 +90,35 @@ export const CUSTOMER_TAB_BAR_FLOAT_GAP = 0;
 /** Gap between floating cart/track bar and the full tab capsule below it. */
 export const FLOATING_CART_ABOVE_TAB_GAP = 8;
 
-/** Bottom inset for tab / ride nav — never collapse under Android system chrome. */
+/**
+ * True when the RN window already ends above the Android system nav
+ * (non edge-to-edge). Padding the tab bar by insets.bottom again creates the
+ * large white gap under Home/Food/Orders/Profile.
+ */
+export function androidWindowAlreadyClearsSystemNav(): boolean {
+  if (Platform.OS !== "android") return false;
+  const screenH = Dimensions.get("screen").height;
+  const windowH = Dimensions.get("window").height;
+  const status = StatusBar.currentHeight ?? 0;
+  const overlap = Math.round(screenH - windowH - status);
+  return overlap > 8 && overlap < 160;
+}
+
+/**
+ * Bottom inset under the tab icon row.
+ * - Edge-to-edge Android: pad by real safe-area so icons clear gesture/3-button chrome.
+ * - Window already above system nav: do NOT re-apply nav height (avoids huge white gap).
+ * - iOS: home-indicator inset (min 8).
+ */
 export function resolveTabBarBottomInset(insetsBottom: number): number {
   const inset = resolveBottomSafeInset(insetsBottom);
   if (Platform.OS === "android") {
-    return Math.max(DEFAULT_ANDROID_NAV_BOTTOM_INSET, inset);
+    if (androidWindowAlreadyClearsSystemNav()) {
+      // Window already clears Back/Home/Recents — keep icons flush, tiny breath only.
+      return 0;
+    }
+    // Edge-to-edge: icons must sit above system chrome inside the sheet.
+    return inset > 0 ? inset : DEFAULT_ANDROID_NAV_BOTTOM_INSET;
   }
   return Math.max(inset, 8);
 }

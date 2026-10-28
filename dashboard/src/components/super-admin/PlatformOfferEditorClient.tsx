@@ -487,6 +487,16 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       conditions.first_ride_only = true;
     }
 
+    // First-order FREE_DELIVERY: shared benefit family + no cancel/refund restore.
+    const isFirstOrderFreeDelivery =
+      form.offer_kind === "FREE_DELIVERY" &&
+      (String(form.customer_segment).toUpperCase() === "NEW" ||
+        conditions.first_order_only === true);
+    if (isFirstOrderFreeDelivery) {
+      conditions.first_order_only = true;
+      conditions.benefit_family = "first_order_free_delivery";
+    }
+
     const aud = form.offer_audience.toUpperCase();
     let delTypeRaw = rideParcelService ? "" : form.delivery_discount_type;
     // FREE_DELIVERY with PERCENT/FIXED but empty value would cut ₹0 — coerce to FULL_WAIVE.
@@ -543,14 +553,14 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       max_discount_amount:
         String(form.max_discount_amount).trim() === "" ? null : Number(form.max_discount_amount),
       budget_total: budgetTotal,
-      max_uses_per_user: savingFlash ? 1 : maxUsesPerUser,
+      max_uses_per_user: savingFlash || isFirstOrderFreeDelivery ? 1 : maxUsesPerUser,
       max_uses_total: maxUsesTotal,
       max_uses_per_day: maxUsesPerDay,
       max_uses_per_month: maxUsesPerMonth,
       consume_mode: form.consume_mode === "ON_DELIVERED" ? "ON_DELIVERED" : "ON_PLACED",
-      restore_on_cancel: form.restore_on_cancel,
-      restore_on_refund: form.restore_on_refund,
-      is_stackable: form.is_stackable,
+      restore_on_cancel: isFirstOrderFreeDelivery ? false : form.restore_on_cancel,
+      restore_on_refund: isFirstOrderFreeDelivery ? false : form.restore_on_refund,
+      is_stackable: isFirstOrderFreeDelivery ? false : form.is_stackable,
       discount_type: form.discount_type,
       value_numeric: valueNumeric,
       delivery_discount_type: delType || null,

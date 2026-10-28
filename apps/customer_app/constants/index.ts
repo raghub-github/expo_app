@@ -13,6 +13,8 @@ export const STORAGE_KEYS = {
   AUTH_TOKEN: "gm_customer_access_token",
   AUTH_SESSION: "gm_customer_session_v1",
   CART: "gm_customer_cart_v1",
+  /** Recently removed cart lines — survives navigation / app restart until order or clear. */
+  RECENTLY_REMOVED: "gm_customer_recently_removed_v1",
   SHOP_CART: "gm_customer_shop_cart_v1",
   THEME: "gm_customer_theme",
   LANGUAGE: "gm_customer_language",

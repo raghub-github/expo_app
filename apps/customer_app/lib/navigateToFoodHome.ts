@@ -77,9 +77,8 @@ function seedNearbyMerchantsListOnly(): void {
   const lat = coords.latitude;
   const lng = coords.longitude;
   const vegOnly = useDietaryPreferenceStore.getState().vegOnly;
+  // Seed only the active dietary list — both veg modes caused redundant work.
   seedMerchantsListQueryIfCached(queryClient, lat, lng, vegOnly, "FOOD");
-  seedMerchantsListQueryIfCached(queryClient, lat, lng, false, "FOOD");
-  seedMerchantsListQueryIfCached(queryClient, lat, lng, true, "FOOD");
 
   const hints = extractCustomerGeoHints(address, coords);
   const layout =

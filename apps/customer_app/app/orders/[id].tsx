@@ -9,7 +9,7 @@ import { View, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Imag
 import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { StatusBar } from "expo-status-bar";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Clipboard from "expo-clipboard";
 import { MapboxWebDeliveryMap } from "@/components/maps/MapboxWebDeliveryMap";
@@ -46,6 +46,7 @@ import { OrderItemCustomizationModal } from "@/components/orders/OrderItemCustom
 import { OrderDeliveryRatingSheet } from "@/components/orders/OrderDeliveryRatingSheet";
 import {
   getCustomerOrderStatusBannerText,
+  getParcelOrderStatusBannerText,
   getPersonRideStatusBannerText,
   isCustomerOrderRefundCompleted,
   isPersonRideInProgressStatus,
@@ -55,7 +56,9 @@ import {
   isTerminalOrderStatus,
   normalizeCustomerOrderStatus,
   isParcelOrder,
+  isParcelSearchingStatus,
 } from "@/lib/customer-order-status-display";
+import { buildParcelSearchingResumeParams } from "@/lib/parcel-orders";
 import {
   customerSupportChatTopicsQueryKey,
   fetchCustomerSupportChatTopics,
@@ -319,6 +322,52 @@ export default function OrderDetailsScreen() {
       clearTimeout(hung);
     };
   }, [order, router, openedFromRideHome, orderId, queryClient]);
+
+  // Parcel still searching — send to courier map search, not live tracking UI.
+  useEffect(() => {
+    if (!order || !isParcelOrder(order)) return;
+    if (!isParcelSearchingStatus(order, order.status)) return;
+
+    let cancelled = false;
+    const redirectToParcelSearch = () => {
+      if (cancelled) return;
+      cancelled = true;
+      router.replace({
+        pathname: "/home/service/parcel-searching",
+        params: buildParcelSearchingResumeParams(order),
+      } as never);
+    };
+    const hung = setTimeout(redirectToParcelSearch, 6_000);
+    void getRideOrderStatus(order.orderId)
+      .then((rideStatus) => {
+        if (cancelled) return;
+        if (isRideCaptainAssigned(rideStatus) || rideStatus.rider) {
+          cancelled = true;
+          queryClient.setQueryData(["parcelOrderStatus", order.orderId], rideStatus);
+          if (rideStatus.rider) {
+            seedOrderDetailCache(queryClient, order.orderId, {
+              orderId: order.orderId,
+              status: rideStatus.appStatus || order.status,
+              rider: rideStatus.rider,
+            });
+          }
+          void queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+          return;
+        }
+        redirectToParcelSearch();
+      })
+      .catch(() => {
+        redirectToParcelSearch();
+      })
+      .finally(() => {
+        clearTimeout(hung);
+      });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(hung);
+    };
+  }, [order, router, orderId, queryClient]);
 
   useEffect(() => {
     if (!order || !isPersonRideOrder(order) || !isInProgress) return;
@@ -607,7 +656,10 @@ export default function OrderDetailsScreen() {
     if (navLockRef.current) return;
     navLockRef.current = true;
     const isDeliveredFood =
-      !!order && !isPersonRideOrder(order) && (order.status ?? "").trim().toUpperCase() === "DELIVERED";
+      !!order &&
+      !isPersonRideOrder(order) &&
+      !isParcelOrder(order) &&
+      (order.status ?? "").trim().toUpperCase() === "DELIVERED";
     if (isDeliveredFood) {
       void queryClient.prefetchQuery({
         queryKey: customerSupportChatTopicsQueryKey("delivered", "food"),
@@ -653,10 +705,10 @@ export default function OrderDetailsScreen() {
       await downloadOrderInvoice(orderId, order?.formattedOrderId ?? order?.orderId ?? orderId);
     } catch (e) {
       const msg =
+        (e instanceof Error && e.message.trim() ? e.message : null) ??
         (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data
           ?.message ??
         (e as { response?: { data?: { error?: string } } })?.response?.data?.error ??
-        (e instanceof Error ? e.message : null) ??
         "Could not download invoice. Please try again.";
       Alert.alert("Invoice unavailable", msg);
     } finally {
@@ -724,11 +776,23 @@ export default function OrderDetailsScreen() {
     !isRideAwaitingPickupStatus(order.status) &&
     !isPersonRideInProgressStatus(order.status);
 
+  const isParcelSearching =
+    isParcelDeliveryOrder && isParcelSearchingStatus(order, order.status);
+
   if (isRideSearching) {
     return (
       <View style={[styles.center, styles.screen]}>
         <ActivityIndicator size="large" color={GREEN} />
         <AppText style={styles.mutedText}>Opening ride search…</AppText>
+      </View>
+    );
+  }
+
+  if (isParcelSearching) {
+    return (
+      <View style={[styles.center, styles.screen]}>
+        <ActivityIndicator size="large" color={GREEN} />
+        <AppText style={styles.mutedText}>Opening courier search…</AppText>
       </View>
     );
   }
@@ -753,8 +817,8 @@ export default function OrderDetailsScreen() {
     );
   }
 
-  // Parcel live tracking — food-style courier layout (not person-ride sheet).
-  if (isParcelDeliveryOrder && isInProgress) {
+  // Parcel live tracking — only after captain accepts (search redirects above).
+  if (isParcelDeliveryOrder && isInProgress && !isParcelSearchingStatus(order, order.status)) {
     return (
       <>
         <AndroidBackHandler fallback={PARCEL_HOME_FALLBACK} preferFallback />
@@ -872,7 +936,8 @@ export default function OrderDetailsScreen() {
     );
   }
 
-  const isDeliveredFood = orderStatus === "DELIVERED" && !isPersonRideOrder(order);
+  const isDeliveredFood =
+    orderStatus === "DELIVERED" && !isPersonRideOrder(order) && !isParcelDeliveryOrder;
 
   if (isDeliveredFood && !useHistoryOrderDetails) {
     const storeId = order.merchantPublicStoreId;
@@ -891,13 +956,41 @@ export default function OrderDetailsScreen() {
     );
   }
 
+  const checkoutMeta = (order.checkoutMetadata ?? {}) as Record<string, unknown>;
+  const parcelSenderName =
+    (typeof checkoutMeta.senderName === "string" && checkoutMeta.senderName.trim()) || null;
+  const parcelSenderPhone =
+    (typeof checkoutMeta.senderMobile === "string" && checkoutMeta.senderMobile.trim()) ||
+    order.merchantPhone?.trim() ||
+    null;
+  const parcelSenderAddress =
+    (typeof checkoutMeta.pickupFullAddress === "string" && checkoutMeta.pickupFullAddress.trim()) ||
+    order.merchantAddress?.trim() ||
+    null;
+  const parcelReceiverName =
+    (typeof checkoutMeta.receiverName === "string" && checkoutMeta.receiverName.trim()) ||
+    order.deliveryPrimaryContactName?.trim() ||
+    order.deliveryContactName?.trim() ||
+    null;
+  const parcelReceiverPhone =
+    (typeof checkoutMeta.receiverMobile === "string" && checkoutMeta.receiverMobile.trim()) ||
+    order.deliveryPrimaryContactPhone?.trim() ||
+    order.deliveryContactPhone?.trim() ||
+    null;
   const restaurantName = isRideOrder
     ? "Your ride"
-    : order.merchantPublicName ?? order.merchantName ?? "Restaurant";
+    : isParcelDeliveryOrder
+      ? "Courier"
+      : order.merchantPublicName ?? order.merchantName ?? "Restaurant";
   const merchantArea = isRideOrder
     ? getCompactAddressLine(order.merchantAddress)
-    : getCompactAddressLine(order.merchantAddress);
-  const dropAddress = order.deliveryAddress?.trim() || null;
+    : isParcelDeliveryOrder
+      ? getCompactAddressLine(parcelSenderAddress) || getCompactAddressLine(order.merchantAddress)
+      : getCompactAddressLine(order.merchantAddress);
+  const dropAddress =
+    (typeof checkoutMeta.dropFullAddress === "string" && checkoutMeta.dropFullAddress.trim()) ||
+    order.deliveryAddress?.trim() ||
+    null;
   const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
   const items = order.items ?? [];
   const bill = parseOrderBillFromSnapshot(
@@ -921,9 +1014,15 @@ export default function OrderDetailsScreen() {
   const paymentMethodLabel = (order.paymentMethod ?? "UPI").replace(/_/g, " ").toUpperCase();
   const statusBanner = isRideOrder
     ? getPersonRideStatusBannerText(orderStatus, order.paymentStatus)
-    : getCustomerOrderStatusBannerText(orderStatus, order.paymentStatus);
-  const pageTitle = isRideOrder ? "Ride Details" : "Order Details";
-  const billTitle = isRideOrder ? "Fare Summary" : "Bill Summary";
+    : isParcelDeliveryOrder
+      ? getParcelOrderStatusBannerText(orderStatus, order.paymentStatus)
+      : getCustomerOrderStatusBannerText(orderStatus, order.paymentStatus);
+  const pageTitle = isRideOrder
+    ? "Ride Details"
+    : isParcelDeliveryOrder
+      ? "Parcel Details"
+      : "Order Details";
+  const billTitle = isRideOrder || isParcelDeliveryOrder ? "Fare Summary" : "Bill Summary";
 
   return (
     <>
@@ -1037,6 +1136,8 @@ export default function OrderDetailsScreen() {
               <View style={styles.restaurantLogo}>
                 {isRideOrder ? (
                   <Ionicons name="bicycle" size={22} color={GREEN} />
+                ) : isParcelDeliveryOrder ? (
+                  <MaterialCommunityIcons name="package-variant-closed" size={22} color={GREEN} />
                 ) : bannerUri ? (
                   <Image source={{ uri: bannerUri }} style={styles.restaurantLogoImg} resizeMode="cover" />
                 ) : (
@@ -1048,17 +1149,22 @@ export default function OrderDetailsScreen() {
                   {restaurantName}
                 </AppText>
                 {!!merchantArea && (
-                  <AppText style={styles.restaurantArea} numberOfLines={isRideOrder ? 2 : 1}>
-                    {isRideOrder ? `Pickup · ${merchantArea}` : merchantArea}
+                  <AppText
+                    style={styles.restaurantArea}
+                    numberOfLines={isRideOrder || isParcelDeliveryOrder ? 2 : 1}
+                  >
+                    {isRideOrder || isParcelDeliveryOrder
+                      ? `Pickup · ${merchantArea}`
+                      : merchantArea}
                   </AppText>
                 )}
-                {isRideOrder && dropAddress ? (
+                {(isRideOrder || isParcelDeliveryOrder) && dropAddress ? (
                   <AppText style={styles.restaurantArea} numberOfLines={2}>
                     Drop · {dropAddress}
                   </AppText>
                 ) : null}
               </View>
-              {!isRideOrder ? (
+              {!isRideOrder && !isParcelDeliveryOrder ? (
                 <TouchableOpacity
                   style={styles.callBtn}
                   onPress={() => {
@@ -1092,7 +1198,7 @@ export default function OrderDetailsScreen() {
               </TouchableOpacity>
             </View>
 
-            {!isRideOrder
+            {!isRideOrder && !isParcelDeliveryOrder
               ? items.map((item, index) => {
               const diet = toDietType(item.vegNonVeg);
               const lineTotal = item.lineTotal ?? item.price * item.quantity;
@@ -1410,7 +1516,38 @@ export default function OrderDetailsScreen() {
             </View>
           ) : null}
 
-          {deliveryCustomerName ? (
+          {isParcelDeliveryOrder ? (
+            <>
+              <View style={styles.card}>
+                <View style={styles.infoRow}>
+                  <MaterialCommunityIcons name="package-variant-closed" size={20} color={GREEN} />
+                  <View style={styles.infoTextWrap}>
+                    <AppText style={styles.infoTitle}>Sender</AppText>
+                    <AppText style={styles.infoSub}>
+                      {parcelSenderName ?? "Sender"}
+                      {parcelSenderPhone ? ` · ${parcelSenderPhone}` : ""}
+                    </AppText>
+                    {parcelSenderAddress ? (
+                      <AppText style={styles.infoSub}>{parcelSenderAddress}</AppText>
+                    ) : null}
+                  </View>
+                </View>
+              </View>
+              <View style={styles.card}>
+                <View style={styles.infoRow}>
+                  <Ionicons name="person-outline" size={20} color={GREEN} />
+                  <View style={styles.infoTextWrap}>
+                    <AppText style={styles.infoTitle}>Receiver</AppText>
+                    <AppText style={styles.infoSub}>
+                      {parcelReceiverName ?? deliveryCustomerName ?? "Receiver"}
+                      {parcelReceiverPhone ? ` · ${parcelReceiverPhone}` : ""}
+                    </AppText>
+                    {dropAddress ? <AppText style={styles.infoSub}>{dropAddress}</AppText> : null}
+                  </View>
+                </View>
+              </View>
+            </>
+          ) : deliveryCustomerName ? (
             <View style={styles.card}>
               <View style={styles.infoRow}>
                 <Ionicons name="person-outline" size={20} color={GREEN} />
@@ -1438,7 +1575,7 @@ export default function OrderDetailsScreen() {
                 <AppText style={styles.infoSub}>{formatPaymentDate(order.createdAt)}</AppText>
               </View>
             </View>
-            {!!order.deliveryAddress && (
+            {!!order.deliveryAddress && !isParcelDeliveryOrder && (
               <>
                 <View style={styles.infoDivider} />
                 <View style={styles.infoRow}>

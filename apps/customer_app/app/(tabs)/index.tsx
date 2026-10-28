@@ -34,8 +34,13 @@ import {
 import { useCustomerServiceBlockSheetStore } from "@/store/customerServiceBlockSheetStore";
 import { useLocationStore } from "@/store/locationStore";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
-import { resolveHomeLocationPrimary, resolveHomeWeatherQueryParams } from "@/lib/weather-location";
-import { isRawCoordinateText } from "@/lib/isRawCoordinateText";
+import {
+  resolveHomeLocationPrimary,
+  resolveHomeLocationSecondary,
+  resolveHomeWeatherQueryParams,
+} from "@/lib/weather-location";
+import { resolveDeliveryLocationLabel } from "@/lib/resolveDeliveryLocationLabel";
+import { useAddresses } from "@/hooks/useAddresses";
 import { normalizeOfferLocationParams } from "@/lib/featuredOfferGeo";
 import { reloadCustomerAppAssets } from "@/store/appAssetsStore";
 import { useNearbyGroceryAvailability } from "@/hooks/useNearbyGroceryAvailability";
@@ -110,15 +115,7 @@ export default function HomeScreen() {
     warmFoodHomeEntry();
   }, [locationHydrated, coords?.latitude, coords?.longitude]);
 
-  const isPincode = (value?: string | null) => !!value && /^\d{6}$/.test(value.trim());
-  const fullParts = (address?.fullAddress ?? "")
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .filter((p) => !isRawCoordinateText(p));
-  const stateCandidate =
-    address?.state ??
-    [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india");
+  const { data: addresses = [] } = useAddresses();
   const { enabledServices } = useCustomerGeoServiceAvailability();
   const { groceryEnabled } = useNearbyGroceryAvailability();
   const homeEnabledServices = useMemo(
@@ -130,20 +127,27 @@ export default function HomeScreen() {
     () => (coords ? resolveHomeWeatherQueryParams(address, coords) : { lat: undefined, lng: undefined }),
     [address, coords]
   );
-  const locationPrimary = resolveHomeLocationPrimary(address);
-  // Never fall back to raw GPS text in the header secondary line.
-  const placeholderAddress =
-    !address ||
-    (address.primary === "Current location" &&
-      !address.city &&
-      !address.state &&
-      !address.pincode);
-  const locationSecondary =
-    stateCandidate && !isRawCoordinateText(stateCandidate) && !placeholderAddress
-      ? stateCandidate
-      : coords
-        ? "Current location"
-        : "Turn on location for accurate address";
+  const locationPrimary = useMemo(() => {
+    const resolved = resolveDeliveryLocationLabel({
+      locationSource,
+      address,
+      addresses,
+      coords,
+    });
+    if (
+      resolved &&
+      resolved.toLowerCase() !== "current location" &&
+      !resolved.toLowerCase().startsWith("detecting")
+    ) {
+      return resolved.length > 42 ? `${resolved.slice(0, 41)}…` : resolved;
+    }
+    return resolveHomeLocationPrimary(address);
+  }, [locationSource, address, addresses, coords]);
+  const locationSecondary = resolveHomeLocationSecondary(
+    address,
+    locationPrimary,
+    coords != null
+  );
   const { data: weather, isFetching: weatherFetching } = useLocationWeather(weatherParams);
 
   const hasLiveWeather =
@@ -197,7 +201,7 @@ export default function HomeScreen() {
       prioritizeVisibleMerchantBanners(12);
       warmFoodHomeEntry();
       const now = Date.now();
-      if (now - lastBlocksRefetchRef.current > 60_000) {
+      if (now - lastBlocksRefetchRef.current > 180_000) {
         lastBlocksRefetchRef.current = now;
         void queryClient.invalidateQueries({
           queryKey: CUSTOMER_SERVICE_BLOCKS_QUERY_KEY,

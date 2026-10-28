@@ -21,7 +21,14 @@ export type ParcelFareQuoteOk = {
   eligible: boolean;
   baseFare: number;
   distanceFare: number;
+  /** Payable total (slab fare + active PARCEL billing charges when enriched). */
   finalFare: number;
+  /** Raw geo-slab fare before billing rules (optional; set by quote-batch enrich). */
+  slabFare?: number;
+  platformFee?: number;
+  convenienceFee?: number;
+  taxTotal?: number;
+  discountTotal?: number;
   pricingGeoLevel: string | null;
   pricingGeoRefId: string | null;
 };

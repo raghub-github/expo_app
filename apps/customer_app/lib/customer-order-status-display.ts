@@ -220,6 +220,22 @@ export function isPersonRideSearchingStatus(
   return normalizeCustomerOrderStatus(status) === "SEARCHING_RIDER";
 }
 
+/** Parcel still finding a captain — redirect to parcel-searching, not live tracking. */
+export function isParcelSearchingStatus(
+  order: Parameters<typeof isParcelOrder>[0] & { rider?: unknown },
+  status: string | null | undefined
+): boolean {
+  if (!isParcelOrder(order)) return false;
+  if (order.rider) return false;
+  const s = normalizeCustomerOrderStatus(status);
+  return (
+    s === "SEARCHING_RIDER" ||
+    s === "PLACED" ||
+    s === "ORDER_PLACED" ||
+    s === "CREATED"
+  );
+}
+
 /** Banner for completed / cancelled ride orders (not food). */
 export function getPersonRideStatusBannerText(
   status: string,
@@ -489,12 +505,17 @@ export function getFloatingOrderStatusText(
     return hasRider ? "Rider arriving at the restaurant" : "Waiting for a delivery partner";
   }
   if (s === "PREPARING") return "Restaurant is preparing your order";
-  if (s === "ACCEPTED") return "Order accepted by restaurant";
+  if (s === "ACCEPTED") {
+    if (service === "parcel" && !hasRider) return "Captain nearby assigning one soon";
+    return "Order accepted by restaurant";
+  }
   if (isMerchantPreparingStatus(s)) return "Order accepted & being prepared";
   if (s === "SEARCHING_RIDER") {
+    if (service === "parcel") return "Captain nearby assigning one soon";
     return isParcelOrRide ? "Finding a nearby captain" : "Waiting for a delivery partner";
   }
   if (s === "ORDER_PLACED" || s === "PLACED" || s === "CREATED") {
+    if (service === "parcel") return "Captain nearby assigning one soon";
     return isParcelOrRide ? "Finding a nearby captain" : "Order confirmed";
   }
   return "Order in progress";
@@ -647,4 +668,27 @@ export function getCustomerOrderStatusBannerText(
     return "Order placed";
   }
   return "Order in progress";
+}
+
+/** Parcel history / details banner — never food/restaurant wording. */
+export function getParcelOrderStatusBannerText(
+  status: string,
+  paymentStatus?: string | null
+): string {
+  const s = normalizeCustomerOrderStatus(status);
+  if (s === "CANCELLED") return "Parcel was cancelled";
+  if (s === "PAYMENT_FAILED" || s === "FAILED" || paymentStatus?.toLowerCase() === "failed") {
+    return "Payment failed";
+  }
+  if (s === "DELIVERED") return "Parcel was delivered";
+  if (isRiderAtCustomerStatus(s)) return "Captain is near drop";
+  if (isCustomerOrderOnTheWayStatus(s)) return "Parcel is on the way";
+  if (isRiderAtStoreStatus(s)) return "Captain at pickup";
+  if (s === "RIDER_ASSIGNED" || s === "ASSIGNED" || s === "ACCEPTED") {
+    return "Captain heading to pickup";
+  }
+  if (s === "SEARCHING_RIDER" || s === "ORDER_PLACED" || s === "PLACED" || s === "CREATED") {
+    return "Captain nearby assigning one soon";
+  }
+  return "Parcel in progress";
 }

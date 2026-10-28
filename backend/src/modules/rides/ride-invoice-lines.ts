@@ -21,6 +21,8 @@ export function buildRideInvoiceLinesFromSnapshot(input: {
   fareAmount?: string | null;
   tipAmount?: string | null;
   grandTotal?: string | null;
+  /** Defaults to "Ride Charge"; use "Parcel Charge" for courier orders. */
+  primaryChargeLabel?: string;
 }): { lines: RideInvoiceLine[]; totalFare: number } {
   const snap =
     input.billingSnapshot != null && typeof input.billingSnapshot === "object"
@@ -31,6 +33,7 @@ export function buildRideInvoiceLinesFromSnapshot(input: {
   const rideFare = Math.max(
     0,
     billNum(snap.ride_fare) ||
+      billNum(snap.parcel_fare) ||
       billNum(snap.fare_amount) ||
       billNum(snap.item_total) ||
       billNum(input.fareAmount)
@@ -42,7 +45,8 @@ export function buildRideInvoiceLinesFromSnapshot(input: {
   const waitingCharge = billNum(snap.waiting_charge) || billNum(snap.waiting_charges);
   const surgeCharge = billNum(snap.surge_fee) || billNum(snap.surge_charge);
 
-  const lines: RideInvoiceLine[] = [{ label: "Ride Charge", amount: round2(rideFare) }];
+  const primaryLabel = (input.primaryChargeLabel ?? "Ride Charge").trim() || "Ride Charge";
+  const lines: RideInvoiceLine[] = [{ label: primaryLabel, amount: round2(rideFare) }];
 
   const pushFee = (label: string, amount: number) => {
     if (amount <= 0.005) return;
@@ -157,7 +161,11 @@ function reconcileRideInvoiceTotal(input: {
   let computed = input.rideFare + input.tip;
   for (const line of input.lines) {
     if (line.isDiscount) computed -= line.amount;
-    else if (!line.label.toLowerCase().includes("ride charge")) computed += line.amount;
+    else {
+      const label = line.label.toLowerCase();
+      if (label.includes("ride charge") || label.includes("parcel charge")) continue;
+      computed += line.amount;
+    }
   }
   computed = round2(Math.max(0, computed));
   const snapFinal = round2(input.snapFinal > 0 ? input.snapFinal : input.grand);

@@ -8,7 +8,8 @@
  *
  * Source partition (no double counting):
  *   pending_orders                                  -> customer food/grocery (all states)
- *   orders_core_payments x orders_core (parcel/ride)-> customer parcel + person_ride captures
+ *   orders_core (parcel/ride) ± orders_core_payments -> customer parcel + person_ride
+ *     (cash COD parcels have no payment row — still listed from orders_core)
  *   onboarding_payments                             -> rider onboarding fee
  *   rider_wallet_payments                           -> rider negative-wallet / top-up
  *   subscription_payments                           -> merchant subscription
@@ -214,32 +215,94 @@ const UNION_CTE = sql`
     LEFT JOIN orders_food ofood ON ofood.order_id = oc.id
 
     UNION ALL
-    -- Customer parcel + person-ride captures (order-type partitioned to avoid overlap)
+    -- Customer parcel + person_ride from orders_core (cash COD has no payment capture row).
+    -- Prefer latest orders_core_payments when present (online / QR); else list the order itself.
     SELECT
-      'order_payment:' || ocp.id::text AS uid,
-      'order_payment' AS source,
+      CASE
+        WHEN ocp.id IS NOT NULL THEN 'order_payment:' || ocp.id::text
+        ELSE 'orders_core:' || oc.id::text
+      END AS uid,
+      CASE WHEN ocp.id IS NOT NULL THEN 'order_payment' ELSE 'orders_core' END AS source,
       'customer' AS app,
       lower(oc.order_type::text) AS service,
       'order' AS purpose,
-      COALESCE(ocp.payment_status,'PAID') AS status,
-      CASE lower(COALESCE(ocp.payment_status,'paid'))
-        WHEN 'paid' THEN 'paid'
-        WHEN 'refunded' THEN 'refunded'
-        WHEN 'failed' THEN 'failed'
-        ELSE 'paid'
+      COALESCE(ocp.payment_status, oc.payment_status::text, 'pending') AS status,
+      -- Cancelled + never captured → failed (not pending). Cash rides settle as completed → paid.
+      CASE
+        WHEN (
+          lower(COALESCE(oc.status::text, '')) IN ('cancelled', 'canceled')
+          OR upper(replace(COALESCE(oc.current_status, ''), ' ', '_')) IN ('CANCELLED', 'CANCELED')
+        )
+        AND NOT (
+          lower(COALESCE(ocp.payment_status, '')) IN ('paid', 'captured', 'success', 'completed')
+          OR lower(COALESCE(oc.payment_status::text, '')) IN ('paid', 'captured', 'completed', 'refunded', 'partially_refunded')
+        )
+          THEN 'failed'
+        WHEN ocp.id IS NOT NULL THEN
+          CASE lower(COALESCE(ocp.payment_status, ''))
+            WHEN 'paid' THEN 'paid'
+            WHEN 'captured' THEN 'paid'
+            WHEN 'success' THEN 'paid'
+            WHEN 'completed' THEN 'paid'
+            WHEN 'refunded' THEN 'refunded'
+            WHEN 'failed' THEN 'failed'
+            WHEN 'initiated' THEN 'pending'
+            WHEN 'pending' THEN 'pending'
+            ELSE 'pending'
+          END
+        ELSE
+          CASE lower(COALESCE(oc.payment_status::text, 'pending'))
+            WHEN 'paid' THEN 'paid'
+            WHEN 'captured' THEN 'paid'
+            WHEN 'completed' THEN 'paid'
+            WHEN 'refunded' THEN 'refunded'
+            WHEN 'partially_refunded' THEN 'refunded'
+            WHEN 'failed' THEN 'failed'
+            WHEN 'cancelled' THEN 'failed'
+            WHEN 'pending' THEN 'pending'
+            WHEN 'processing' THEN 'pending'
+            ELSE 'pending'
+          END
       END AS norm_status,
-      lower(COALESCE(ocp.payment_gateway, ocp.payment_method, 'online')) AS payment_mode,
-      ROUND(COALESCE(ocp.amount,0) * 100)::bigint AS gross_paise,
-      ROUND(COALESCE(ocp.amount,0) * 100)::bigint AS paid_paise,
-      COALESCE(ocp.currency,'INR') AS currency,
+      lower(COALESCE(
+        ocp.payment_gateway,
+        ocp.payment_method,
+        oc.payment_method::text,
+        'cash'
+      )) AS payment_mode,
+      ROUND(COALESCE(ocp.amount, oc.grand_total, oc.fare_amount, 0) * 100)::bigint AS gross_paise,
+      CASE
+        WHEN (
+          lower(COALESCE(oc.status::text, '')) IN ('cancelled', 'canceled')
+          OR upper(replace(COALESCE(oc.current_status, ''), ' ', '_')) IN ('CANCELLED', 'CANCELED')
+        )
+        AND NOT (
+          lower(COALESCE(ocp.payment_status, '')) IN ('paid', 'captured', 'success', 'completed')
+          OR lower(COALESCE(oc.payment_status::text, '')) IN ('paid', 'captured', 'completed', 'refunded', 'partially_refunded')
+        )
+          THEN 0
+        WHEN ocp.id IS NOT NULL
+          AND lower(COALESCE(ocp.payment_status, '')) IN ('paid', 'captured', 'success', 'completed')
+          THEN ROUND(COALESCE(ocp.amount, 0) * 100)::bigint
+        WHEN lower(COALESCE(oc.payment_status::text, '')) IN ('paid', 'captured', 'completed')
+          THEN ROUND(COALESCE(oc.grand_total, oc.fare_amount, 0) * 100)::bigint
+        WHEN lower(COALESCE(oc.payment_method::text, '')) IN ('cash', 'cod')
+          AND upper(replace(COALESCE(oc.current_status, ''), ' ', '_')) IN (
+            'DELIVERED', 'COMPLETED', 'COMPLETE'
+          )
+          THEN ROUND(COALESCE(oc.grand_total, oc.fare_amount, 0) * 100)::bigint
+        ELSE 0
+      END AS paid_paise,
+      COALESCE(ocp.currency, 'INR') AS currency,
       (ocp.gateway_response->>'razorpayOrderId') AS razorpay_order_id,
       COALESCE(ocp.gateway_response->>'razorpayPaymentId', ocp.transaction_id) AS razorpay_payment_id,
-      ocp.transaction_id AS internal_ref,
+      COALESCE(ocp.transaction_id, oc.order_id) AS internal_ref,
       NULLIF(TRIM(oc.formatted_order_id), '') AS business_order_id,
       'customer' AS entity_type, oc.customer_id::text AS entity_id,
       c.full_name AS entity_name,
       COALESCE(c.primary_mobile, oc.customer_id::text) AS entity_display_id,
-      COALESCE(ocp.paid_at, ocp.created_at) AS created_at, ocp.created_at AS updated_at,
+      COALESCE(ocp.paid_at, ocp.created_at, oc.placed_at, oc.created_at) AS created_at,
+      COALESCE(ocp.created_at, oc.updated_at, oc.created_at) AS updated_at,
       oc.status::text AS order_status,
       oc.current_status AS order_current_status,
       COALESCE(oc.is_bulk_order, false) AS is_bulk,
@@ -256,13 +319,11 @@ const UNION_CTE = sql`
       (oc.eta_breached_at IS NOT NULL) AS eta_breached,
       oc.merchant_store_id AS merchant_store_id,
       NULLIF(TRIM(oc.order_id), '') AS ledger_order_id
-    FROM orders_core_payments ocp
+    FROM orders_core oc
     LEFT JOIN LATERAL (
-      SELECT oc.*
-      FROM orders_core oc
-      WHERE ocp.order_id IS NOT NULL
-        AND TRIM(ocp.order_id) <> ''
-        AND (
+      SELECT ocp.*
+      FROM orders_core_payments ocp
+      WHERE (
           oc.order_id = ocp.order_id
           OR oc.formatted_order_id = ocp.order_id
           OR oc.id::text = ocp.order_id
@@ -271,19 +332,11 @@ const UNION_CTE = sql`
             AND oc.id = ocp.order_id::bigint
           )
         )
-      ORDER BY
-        CASE
-          WHEN NULLIF(TRIM(oc.formatted_order_id), '') IS NOT NULL THEN 0
-          WHEN oc.order_id = ocp.order_id THEN 1
-          ELSE 2
-        END,
-        oc.id DESC
+      ORDER BY ocp.created_at DESC NULLS LAST, ocp.id DESC
       LIMIT 1
-    ) oc ON true
-    LEFT JOIN orders_food ofood ON ofood.order_id = oc.id
+    ) ocp ON true
     LEFT JOIN customers c ON c.id = oc.customer_id
-    WHERE oc.id IS NOT NULL
-      AND oc.order_type IN ('parcel','person_ride')
+    WHERE oc.order_type IN ('parcel', 'person_ride')
 
     UNION ALL
     -- Rider onboarding fee
@@ -742,6 +795,8 @@ function serviceFilterSql(services: string[]): SQL | null {
       )`);
     } else if (key === "negative_wallet" || key === "negative_wallet_recovery") {
       parts.push(sql`t.service IN ('negative_wallet', 'negative_wallet_recovery')`);
+    } else if (key === "ride" || key === "person_ride") {
+      parts.push(sql`t.service IN ('person_ride', 'ride')`);
     } else if (key === "pickup") {
       parts.push(sql`EXISTS (
         SELECT 1 FROM orders_food of
@@ -773,7 +828,14 @@ async function fetchTxnPage(params: ListTransactionsParams): Promise<{
 
   if (params.apps?.length) conds.push(sql`t.app IN (${inList(params.apps.map((a) => a.toLowerCase()))})`);
   else if (params.app) conds.push(sql`t.app = ${params.app}`);
-  if (params.service) conds.push(sql`t.service = ${params.service.toLowerCase()}`);
+  if (params.service) {
+    const svc = params.service.toLowerCase();
+    if (svc === "ride" || svc === "person_ride") {
+      conds.push(sql`t.service IN ('person_ride', 'ride')`);
+    } else {
+      conds.push(sql`t.service = ${svc}`);
+    }
+  }
   if (params.services?.length) {
     const svc = serviceFilterSql(params.services);
     if (svc) conds.push(svc);
@@ -1335,6 +1397,22 @@ export async function getTransactionDetail(uid: string): Promise<TransactionDeta
       `);
       const rr = ((Array.isArray(r) ? r : (r as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>)[0];
       if (rr) breakdown.push(...breakdownFromBillingSnapshot((rr.billing_snapshot as Record<string, unknown>) ?? null, { tip: asNum(rr.tip_amount), grandTotal: asNum(rr.grand_total) }));
+    } else if (source === "orders_core" && Number.isFinite(id)) {
+      const r = await db.execute(sql`
+        SELECT billing_snapshot, grand_total, tip_amount
+        FROM orders_core
+        WHERE id = ${id}
+        LIMIT 1
+      `);
+      const rr = ((Array.isArray(r) ? r : (r as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>)[0];
+      if (rr) {
+        breakdown.push(
+          ...breakdownFromBillingSnapshot((rr.billing_snapshot as Record<string, unknown>) ?? null, {
+            tip: asNum(rr.tip_amount),
+            grandTotal: asNum(rr.grand_total),
+          })
+        );
+      }
     } else if (source === "onboarding_payment" && Number.isFinite(id)) {
       const r = await db.execute(sql`SELECT amount, subtotal_paise, gst_amount_paise FROM onboarding_payments WHERE id = ${id} LIMIT 1`);
       const rr = ((Array.isArray(r) ? r : (r as { rows?: unknown[] }).rows ?? []) as Array<Record<string, unknown>>)[0];

@@ -253,7 +253,8 @@ export async function computeBillForParcel(
     subscriptionOptIn: false,
     customerSubscriptionActive: false,
     customerSubscriptionFreeDeliveryEligible: false,
-    isSelfPickup: true,
+    /** Parcel is a delivery service — never treat as food self-pickup. */
+    isSelfPickup: false,
     deliveryPricingEngine: undefined,
     checkoutAudience: "CUSTOMER",
     completedPersonRideCount: null,

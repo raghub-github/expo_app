@@ -156,7 +156,7 @@ const SERVICES = [
   { value: "pharma", label: "Pharma" },
   { value: "pickup", label: "Pickup" },
   { value: "parcel", label: "Parcel" },
-  { value: "person_ride", label: "Person Ride" },
+  { value: "person_ride", label: "Ride" },
   { value: "wallet_topup", label: "Wallet top-up" },
   { value: "subscription", label: "Subscription" },
   { value: "onboarding", label: "Onboarding" },

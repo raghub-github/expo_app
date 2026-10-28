@@ -96,8 +96,9 @@ export function FoodHomeLayoutPrefetch() {
     const lng = coords.longitude;
 
     // Instant: seed RQ + decode card art from sync cache (no 500ms wait).
-    seedMerchantsListQueryIfCached(queryClient, lat, lng, false);
-    seedMerchantsListQueryIfCached(queryClient, lat, lng, true);
+    // Only the active veg preference — prefetching both veg modes doubled
+    // /v1/merchants FOOD traffic on every location settle.
+    seedMerchantsListQueryIfCached(queryClient, lat, lng, vegOnly);
     seedMerchantsListQueryIfCached(queryClient, lat, lng, false, "GROCERY");
     const syncFood = readSyncMerchantsList(lat, lng, vegOnly) ?? readSyncMerchantsList(lat, lng, false);
     if (syncFood?.length) {
@@ -113,8 +114,7 @@ export function FoodHomeLayoutPrefetch() {
     const timer = setTimeout(() => {
       void (async () => {
         await Promise.allSettled([
-          prefetchMerchantsList(queryClient, lat, lng, false),
-          prefetchMerchantsList(queryClient, lat, lng, true),
+          prefetchMerchantsList(queryClient, lat, lng, vegOnly),
           prefetchMerchantsList(queryClient, lat, lng, false, "GROCERY"),
         ]);
         if (cancelled) return;

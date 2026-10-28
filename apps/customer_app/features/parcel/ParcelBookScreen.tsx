@@ -87,9 +87,9 @@ export function ParcelBookScreen() {
   const pickup = useParcelBookingStore((s) => s.pickup);
   const drop = useParcelBookingStore((s) => s.drop);
 
-  const [vehicleCodes, setVehicleCodes] = useState<ParcelVehicleCategoryCode[]>(
-    () => [...FALLBACK_PARCEL_CATEGORY_CODES]
-  );
+  /** Empty until assignments load — avoid flashing all FALLBACK categories. */
+  const [vehicleCodes, setVehicleCodes] = useState<ParcelVehicleCategoryCode[]>([]);
+  const [vehicleCodesReady, setVehicleCodesReady] = useState(false);
   const [selectedVehicleId, setSelectedVehicleId] = useState<ParcelVehicleCategoryCode | null>(
     null
   );
@@ -121,6 +121,7 @@ export function ParcelBookScreen() {
   );
 
   useEffect(() => {
+    if (useParcelBookingStore.getState().searchInFlight) return;
     if (!pickup || !drop) {
       useParcelBookingStore.getState().markPreserveDraftOnNextFocus();
       router.replace("/home/service/parcels" as never);
@@ -132,8 +133,10 @@ export function ParcelBookScreen() {
     void (async () => {
       const codes = await fetchParcelBookVehicleCodes();
       if (cancelled) return;
-      const nextKey = codes.join(",");
-      setVehicleCodes((prev) => (prev.join(",") === nextKey ? prev : codes));
+      const next = codes.length > 0 ? codes : [...FALLBACK_PARCEL_CATEGORY_CODES];
+      const nextKey = next.join(",");
+      setVehicleCodes((prev) => (prev.join(",") === nextKey ? prev : next));
+      setVehicleCodesReady(true);
     })();
     return () => {
       cancelled = true;
@@ -180,7 +183,7 @@ export function ParcelBookScreen() {
   const {
     data: availability,
     isLoading: availabilityLoading,
-    isError: availabilityError,
+    isFetched: availabilityFetched,
   } = useNearbyRideAvailability(
     pickupPoint?.latitude ?? null,
     pickupPoint?.longitude ?? null,
@@ -219,6 +222,13 @@ export function ParcelBookScreen() {
     if (!pickupPoint || fareTripKm == null || vehicleCodes.length === 0) {
       return;
     }
+    // Absurd long-haul (e.g. 1000+ km) — skip quote-batch hammering; show unavailable fast.
+    if (fareTripKm > 500) {
+      setFareByVehicle({});
+      setFaresLoading(false);
+      setFaresSettled(true);
+      return;
+    }
     const ac = new AbortController();
     setFaresLoading(true);
     setFaresSettled(false);
@@ -228,10 +238,12 @@ export function ParcelBookScreen() {
         pickupLng: pickupPoint.longitude,
         tripKm: fareTripKm,
         vehicleTypes: vehicleCodes,
+        paymentMode,
         signal: ac.signal,
       });
       if (ac.signal.aborted) return;
       if (!result.ok) {
+        if (result.code === "ABORTED") return;
         setFareByVehicle({});
         setFaresLoading(false);
         setFaresSettled(true);
@@ -239,6 +251,7 @@ export function ParcelBookScreen() {
       }
       const next: Record<string, number> = {};
       for (const [code, q] of Object.entries(result.quotes)) {
+        // finalFare already includes active PARCEL billing charges (platform/surge/tax/…).
         next[code] = Math.round(q.finalFare);
       }
       setFareByVehicle(next);
@@ -246,30 +259,33 @@ export function ParcelBookScreen() {
       setFaresSettled(true);
     })();
     return () => ac.abort();
-  }, [pickupPoint?.latitude, pickupPoint?.longitude, fareTripKm, vehicleCodesKey]);
+  }, [
+    pickupPoint?.latitude,
+    pickupPoint?.longitude,
+    fareTripKm,
+    vehicleCodesKey,
+    paymentMode,
+  ]);
 
-  // Ride-parity: only categories with fare AND nearby on-duty parcel captains.
-  // No bike-lite — parcel catalog is only 2W / 3W / 4W.
+  /**
+   * Unlock once catalog + nearby supply are known.
+   * Do NOT wait on quote-batch — Network Error / slow billing was leaving
+   * "Finding available vehicles…" forever even when captains were online.
+   */
+  const vehiclesFilterReady =
+    vehicleCodesReady && availabilityFetched && !availabilityLoading;
+
+  // Only nearby on-duty parcel categories. Fare filter applies after quotes settle.
   const displayVehicles = useMemo(() => {
-    let list = allVehicles;
-    if (faresSettled && !faresLoading) {
+    if (!vehiclesFilterReady) return [];
+    let list = allVehicles.filter((v) =>
+      parcelCategoryHasNearbySupply(nearbyRiders, v.id as ParcelVehicleCategoryCode)
+    );
+    if (faresSettled) {
       list = list.filter((v) => (fareByVehicle[v.id] ?? 0) > 0);
     }
-    if (!availabilityLoading && !availabilityError) {
-      list = list.filter((v) =>
-        parcelCategoryHasNearbySupply(nearbyRiders, v.id as ParcelVehicleCategoryCode)
-      );
-    }
     return list;
-  }, [
-    allVehicles,
-    fareByVehicle,
-    faresLoading,
-    faresSettled,
-    availabilityLoading,
-    availabilityError,
-    nearbyRiders,
-  ]);
+  }, [vehiclesFilterReady, allVehicles, fareByVehicle, faresSettled, nearbyRiders]);
 
   const selectedVehicle =
     displayVehicles.find((v) => v.id === selectedVehicleId) ?? displayVehicles[0] ?? null;
@@ -288,53 +304,49 @@ export function ParcelBookScreen() {
     [nearbyRiders, parcelCategories]
   );
 
-  const routeSettled = !routeLoading;
-  /** Same gate as ride-book: no book UI / searching until supply + fares allow it. */
+  /** Same gate as ride-book: no book UI until supply (and fares, once settled) allow it. */
   const noVehiclesAvailable = useMemo(() => {
     if (!pickupPoint || !dropPoint) return false;
-    if (!routeSettled || availabilityLoading) return false;
-    if (nearbyRiders.length > 0) return false;
+    if (!vehiclesFilterReady) return false;
 
-    // No nearby on-duty captains that can serve parcel categories (ride-parity).
-    if (!availabilityError && allVehicles.length > 0 && !hasCaptainSupply) {
+    if (allVehicles.length > 0 && !hasCaptainSupply) {
       return true;
     }
 
-    // Trip too long / no fare slabs for any parcel vehicle.
-    if (faresLoading) return false;
-    if (faresSettled && displayVehicles.length === 0) return true;
+    // While fares are still loading, keep waiting — don't flash "unavailable".
+    if (!faresSettled && fareTripKm != null) return false;
+
+    if (displayVehicles.length === 0) return true;
 
     return false;
   }, [
     pickupPoint,
     dropPoint,
-    routeSettled,
-    availabilityLoading,
-    availabilityError,
-    faresLoading,
-    faresSettled,
+    vehiclesFilterReady,
     displayVehicles.length,
     allVehicles.length,
     hasCaptainSupply,
-    nearbyRiders.length,
+    faresSettled,
+    fareTripKm,
   ]);
 
   const unavailableMessage = useMemo(() => {
     if (fareTripKm != null && fareTripKm > 0) {
-      return "Oops! No rides are available for this route right now. The trip may be too long for nearby vehicles, or no captains are online. Try a different pickup or drop.";
+      return "Oops! No parcel vehicles are available for this route right now. The trip may be too long for nearby vehicles, or no captains are online. Try a different pickup or drop.";
     }
     return "Oops! No riders available near your pickup location. Please select a different pickup or try again shortly.";
   }, [fareTripKm]);
 
   useEffect(() => {
-    if (nearbyRiders.length > 0 || hasCaptainSupply) {
+    if (displayVehicles.length > 0 || hasCaptainSupply) {
       setServiceUnavailableVisible(false);
       return;
     }
     if (!noVehiclesAvailable) return;
-    const t = setTimeout(() => setServiceUnavailableVisible(true), 800);
+    // Short delay so brief refetch flicker doesn't flash the sheet.
+    const t = setTimeout(() => setServiceUnavailableVisible(true), 280);
     return () => clearTimeout(t);
-  }, [nearbyRiders.length, hasCaptainSupply, noVehiclesAvailable]);
+  }, [displayVehicles.length, hasCaptainSupply, noVehiclesAvailable]);
 
   useEffect(() => {
     if (displayVehicles.length === 0) return;
@@ -397,6 +409,7 @@ export function ParcelBookScreen() {
     if (!(fare != null && fare > 0)) return;
     // Require a matching nearby captain for the chosen category (ride-parity).
     if (!hasNearbyParcelCaptainSupply(nearbyRiders, [selectedVehicle.id as ParcelVehicleCategoryCode])) {
+      useParcelBookingStore.getState().markGuidelinesShown();
       setServiceUnavailableVisible(true);
       return;
     }
@@ -406,6 +419,9 @@ export function ParcelBookScreen() {
       offers: parcelFeaturedOffers,
     });
     const displayPayable = offerPreview.discount >= 1 ? offerPreview.payable : fare;
+    useParcelBookingStore.getState().setSearchInFlight(true);
+    useParcelBookingStore.getState().markGuidelinesShown();
+    useParcelBookingStore.getState().markPreserveDraftOnNextFocus();
     router.push({
       pathname: "/home/service/parcel-searching",
       params: {
@@ -544,7 +560,14 @@ export function ParcelBookScreen() {
           ) : null}
 
           <View style={styles.vehicleList}>
-            {displayVehicles.map((vehicle) => {
+            {!vehiclesFilterReady ? (
+              <View style={styles.vehiclesLoading}>
+                <ActivityIndicator size="small" color={GatiMitraColors.deepMintStart} />
+                <AppText style={styles.vehiclesLoadingText}>Finding available vehicles…</AppText>
+              </View>
+            ) : null}
+            {vehiclesFilterReady
+              ? displayVehicles.map((vehicle) => {
               const selected = vehicle.id === selectedVehicle?.id;
               const img =
                 vehicle.imageKey === "van" ? null : resolveRideImage(vehicle.imageKey);
@@ -623,68 +646,78 @@ export function ParcelBookScreen() {
                   </View>
                 </TouchableOpacity>
               );
-            })}
+            })
+              : null}
           </View>
 
-          <View style={styles.payOffersRow}>
-            <TouchableOpacity
-              style={styles.payOffersHalf}
-              activeOpacity={0.85}
-              onPress={() => setPaymentSheetOpen(true)}
-            >
-              <Ionicons
-                name={paymentMode === "online" ? "card-outline" : "wallet-outline"}
-                size={18}
-                color="#111827"
-              />
-              <AppText style={styles.payOffersText}>
-                {paymentMode === "online" ? "Online" : "Cash"}
-              </AppText>
-              <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
-            </TouchableOpacity>
-            <View style={styles.payOffersDivider} />
-            <TouchableOpacity
-              style={styles.payOffersHalf}
-              activeOpacity={0.85}
-              onPress={() => setOffersSheetOpen(true)}
-            >
-              <Ionicons name="pricetag-outline" size={18} color="#111827" />
-              <AppText style={styles.payOffersText}>
-                Offers{parcelBookOffers.length > 0 ? ` (${parcelBookOffers.length})` : ""}
-              </AppText>
-              <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
-            </TouchableOpacity>
-          </View>
+          {/* 2-col grid: left = PAY AT + Cash, right = Pickup/Drop + Offers (edge-aligned). */}
+          <View style={styles.payGrid}>
+            {paymentMode === "cash" ? (
+              <View style={styles.payGridRow}>
+                <View style={styles.payGridLeft}>
+                  <AppText style={styles.payAtLabel}>PAY AT</AppText>
+                </View>
+                <View style={styles.payGridRight}>
+                  <View style={styles.payAtToggle}>
+                    <TouchableOpacity
+                      style={[styles.payAtOpt, payAt === "pickup" && styles.payAtOptOn]}
+                      onPress={() => setPayAt("pickup")}
+                      activeOpacity={0.85}
+                    >
+                      <AppText
+                        style={[
+                          styles.payAtOptText,
+                          payAt === "pickup" && styles.payAtOptTextOn,
+                        ]}
+                      >
+                        Pickup
+                      </AppText>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.payAtOpt, payAt === "drop" && styles.payAtOptOn]}
+                      onPress={() => setPayAt("drop")}
+                      activeOpacity={0.85}
+                    >
+                      <AppText
+                        style={[styles.payAtOptText, payAt === "drop" && styles.payAtOptTextOn]}
+                      >
+                        Drop
+                      </AppText>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            ) : null}
 
-          {paymentMode === "cash" ? (
-          <View style={styles.payAtRow}>
-            <AppText style={styles.payAtLabel}>PAY AT</AppText>
-            <View style={styles.payAtToggle}>
+            <View style={[styles.payGridRow, styles.payOffersRow]}>
               <TouchableOpacity
-                style={[styles.payAtOpt, payAt === "pickup" && styles.payAtOptOn]}
-                onPress={() => setPayAt("pickup")}
+                style={styles.payGridLeft}
                 activeOpacity={0.85}
+                onPress={() => setPaymentSheetOpen(true)}
               >
-                <AppText
-                  style={[styles.payAtOptText, payAt === "pickup" && styles.payAtOptTextOn]}
-                >
-                  Pickup
+                <Ionicons
+                  name={paymentMode === "online" ? "card-outline" : "wallet-outline"}
+                  size={18}
+                  color="#111827"
+                />
+                <AppText style={styles.payOffersText}>
+                  {paymentMode === "online" ? "Online" : "Cash"}
                 </AppText>
+                <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.payAtOpt, payAt === "drop" && styles.payAtOptOn]}
-                onPress={() => setPayAt("drop")}
+                style={styles.payGridRight}
                 activeOpacity={0.85}
+                onPress={() => setOffersSheetOpen(true)}
               >
-                <AppText
-                  style={[styles.payAtOptText, payAt === "drop" && styles.payAtOptTextOn]}
-                >
-                  Drop
+                <Ionicons name="pricetag-outline" size={18} color="#111827" />
+                <AppText style={styles.payOffersText}>
+                  Offers{parcelBookOffers.length > 0 ? ` (${parcelBookOffers.length})` : ""}
                 </AppText>
+                <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
               </TouchableOpacity>
             </View>
           </View>
-          ) : null}
 
           <TouchableOpacity
             style={[
@@ -714,6 +747,7 @@ export function ParcelBookScreen() {
         visible={serviceUnavailableVisible}
         message={unavailableMessage}
         onOkay={() => {
+          useParcelBookingStore.getState().markGuidelinesShown();
           setServiceUnavailableVisible(false);
           router.back();
         }}
@@ -822,6 +856,18 @@ const styles = StyleSheet.create({
   },
   vehicleList: {
     gap: 10,
+  },
+  vehiclesLoading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingVertical: 28,
+  },
+  vehiclesLoadingText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#64748B",
   },
   receiverRow: {
     flexDirection: "row",
@@ -968,20 +1014,42 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#94A3B8",
   },
-  payOffersRow: {
+  /**
+   * Same horizontal inset as optionCard padding (12) so PAY AT / Cash / Offers
+   * line up with vehicle card content (bike … ₹fare), not outside the card.
+   */
+  payGrid: {
+    gap: 4,
+    paddingHorizontal: 12,
+  },
+  payGridRow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  /** Left column — PAY AT + Cash, left edge matches vehicle card content. */
+  payGridLeft: {
+    flexShrink: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    gap: 6,
+    minWidth: 0,
+  },
+  /** Right column — Pickup/Drop + Offers, right edge matches vehicle card. */
+  payGridRight: {
+    flexShrink: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 6,
+  },
+  payOffersRow: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderColor: "#E2E8F0",
     paddingVertical: 10,
-  },
-  payOffersHalf: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
   },
   payOffersDivider: {
     width: StyleSheet.hairlineWidth,
@@ -992,11 +1060,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: "#111827",
-  },
-  payAtRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
   },
   payAtLabel: {
     fontSize: 12,

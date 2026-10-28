@@ -56,8 +56,11 @@ export async function getRideAvailability(params: {
   if (params.radiusKm != null) search.set("radiusKm", String(params.radiusKm));
   if (params.rideType) search.set("rideType", params.rideType);
   if (params.serviceType) search.set("serviceType", params.serviceType);
-  if (params.tripKm != null && Number.isFinite(params.tripKm)) {
-    search.set("tripKm", String(params.tripKm));
+  if (params.tripKm != null && Number.isFinite(params.tripKm) && params.tripKm >= 0) {
+    // Older servers still validate max(500). Cap here so we never 400-spam availability.
+    // Trips beyond this are handled by fare eligibility / book-screen distance gate.
+    const capped = Math.min(params.tripKm, 500);
+    search.set("tripKm", String(capped));
   }
   if (params.pickupPincode) search.set("pickupPincode", params.pickupPincode);
   if (params.pickupState) search.set("pickupState", params.pickupState);
