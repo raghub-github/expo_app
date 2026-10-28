@@ -22,6 +22,11 @@ export type FreeDeliveryOfferLike = {
   estimatedSavingsInr?: number | null;
 };
 
+/** Same ₹ rendering as the celebration / unlock sheet — whole rupees stay whole. */
+function formatInr(value: number): string {
+  return value % 1 === 0 ? String(Math.round(value)) : value.toFixed(2);
+}
+
 /** Strict: Super Admin "Offer kind" = FREE_DELIVERY only. */
 export function isPlatformFreeDeliveryOffer(offer: {
   offerKind?: string | null;
@@ -125,6 +130,10 @@ export function buildFreeDeliveryUnlockCompensation(args: {
   // Never use the GatiCash top-up gap as "You save" — that is wallet credit, not delivery waived.
   const offerSavingsInr = quoted > 0.005 ? quoted : estimated;
   const amountInr = Math.min(gap, 500);
+  // Savings are unknown until the bill quotes a delivery fee — say nothing rather
+  // than promise "save ₹0", and never substitute the GatiCash top-up for it.
+  const savingsClause =
+    offerSavingsInr > 0.005 ? ` · save ₹${formatInr(offerSavingsInr)} on delivery` : "";
   return {
     key: missedOfferKeyForCandidate(
       { source: "platform", id: args.offer.id },
@@ -134,7 +143,7 @@ export function buildFreeDeliveryUnlockCompensation(args: {
     offerSavingsInr,
     unlockGapInr: gap,
     headline: `Add ₹${amountInr} to GatiCash & unlock free delivery`,
-    subline: `You're ₹${gap} away · save ₹${offerSavingsInr} on delivery`,
+    subline: `You're ₹${gap} away${savingsClause}`,
     offerId: args.offer.id,
     offerSource: "platform",
     offerKind: "FREE_DELIVERY",

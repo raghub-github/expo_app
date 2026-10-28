@@ -253,11 +253,15 @@ export function MissedOfferWalletCelebration({
             ) : null}
           </View>
 
-          <Animated.View entering={FadeIn.delay(340).duration(280)}>
-            <CheckoutText style={styles.footerNote}>
-              ₹{wallet} credited to wallet after you place this order
-            </CheckoutText>
-          </Animated.View>
+          {/* Wallet credit is the GatiCash top-up, never the discount — and there is
+              no credit to promise when the top-up is zero. */}
+          {walletAddInr > 0.005 ? (
+            <Animated.View entering={FadeIn.delay(340).duration(280)}>
+              <CheckoutText style={styles.footerNote}>
+                ₹{wallet} credited to wallet after you place this order
+              </CheckoutText>
+            </Animated.View>
+          ) : null}
         </Animated.View>
       </View>
     </Modal>
