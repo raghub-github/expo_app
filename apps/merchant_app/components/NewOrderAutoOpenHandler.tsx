@@ -1,8 +1,8 @@
 /**
- * When a new-order push arrives while the app is backgrounded / process still
- * alive, wake Partner and open Home → New tab (not order detail).
- * Killed + force-stopped devices still show a MAX-importance heads-up; tap /
- * FSI (USE_FULL_SCREEN_INTENT) opens the app.
+ * Ensures new-order Android channels exist.
+ * When native OrderAlert FGS + overlay is available, do NOT wake MainActivity —
+ * that caused a duplicate flash before the floating NEW ORDER card.
+ * Wake is only used as fallback (Expo Go / overlay permission denied).
  */
 import { useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
@@ -93,7 +93,23 @@ export default function NewOrderAutoOpenHandler() {
 
       if (AppState.currentState === "active") return;
 
-      void wakeMerchantAppForOrder(path);
+      // Native FGS + floating overlay owns lock/home presentation. Waking
+      // MainActivity here caused a duplicate "flash" before the order card.
+      void (async () => {
+        try {
+          const { isNativeOrderAlertAvailable, canDrawNativeOverlays } = await import(
+            "@gatimitra/expo-push-kit"
+          );
+          if (isNativeOrderAlertAvailable()) {
+            const canDraw = await canDrawNativeOverlays();
+            // Overlay permitted (or unknown) → do not bring the app forward.
+            if (canDraw !== false) return;
+          }
+        } catch {
+          /* Expo Go / missing native — fall through to wake */
+        }
+        void wakeMerchantAppForOrder(path);
+      })();
     });
   }, []);
 

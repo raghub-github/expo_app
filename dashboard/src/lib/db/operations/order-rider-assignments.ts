@@ -148,6 +148,9 @@ export type RiderAssignmentTimelineEvent = {
   occurred_at: string;
   merchant_distance_km: number | null;
   customer_distance_km: number | null;
+  /** Rider GPS at the moment of the milestone (when recorded). */
+  rider_latitude: number | null;
+  rider_longitude: number | null;
   status_message: string | null;
   metadata?: Record<string, unknown> | null;
 };
@@ -225,6 +228,8 @@ export async function getRiderAssignmentTimeline(
       occurred_at,
       merchant_distance_km,
       customer_distance_km,
+      rider_latitude,
+      rider_longitude,
       status_message,
       metadata
     FROM order_rider_assignment_timeline_events
@@ -232,19 +237,31 @@ export async function getRiderAssignmentTimeline(
     ORDER BY occurred_at ASC, id ASC
   `;
 
-  const events = (eventRows as Record<string, unknown>[]).map((row) => ({
-    event_type: String(row.event_type ?? ""),
-    occurred_at: toIso(row.occurred_at) ?? "",
-    merchant_distance_km:
-      row.merchant_distance_km == null ? null : Number(row.merchant_distance_km),
-    customer_distance_km:
-      row.customer_distance_km == null ? null : Number(row.customer_distance_km),
-    status_message: row.status_message == null ? null : String(row.status_message),
-    metadata:
-      row.metadata && typeof row.metadata === "object"
-        ? (row.metadata as Record<string, unknown>)
-        : null,
-  }));
+  const events = (eventRows as Record<string, unknown>[]).map((row) => {
+    const lat =
+      row.rider_latitude == null || !Number.isFinite(Number(row.rider_latitude))
+        ? null
+        : Number(row.rider_latitude);
+    const lng =
+      row.rider_longitude == null || !Number.isFinite(Number(row.rider_longitude))
+        ? null
+        : Number(row.rider_longitude);
+    return {
+      event_type: String(row.event_type ?? ""),
+      occurred_at: toIso(row.occurred_at) ?? "",
+      merchant_distance_km:
+        row.merchant_distance_km == null ? null : Number(row.merchant_distance_km),
+      customer_distance_km:
+        row.customer_distance_km == null ? null : Number(row.customer_distance_km),
+      rider_latitude: lat,
+      rider_longitude: lng,
+      status_message: row.status_message == null ? null : String(row.status_message),
+      metadata:
+        row.metadata && typeof row.metadata === "object"
+          ? (row.metadata as Record<string, unknown>)
+          : null,
+    };
+  });
 
   // Assigned often lacked GPS at write time — fill from assignment columns / accepted event /
   // frozen accept pickup distance so the Assigned distance box still shows.

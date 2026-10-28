@@ -9,6 +9,10 @@
  * Never gate shouldShowAlert / shouldShowBanner on FloatingInAppBannerHost.
  */
 import { AppState } from "react-native";
+import {
+  FOREIGN_APP_NOTIFICATION_PRESENTATION,
+  isForeignAppPush,
+} from "@gatimitra/expo-push-kit";
 import { isRiderDispatchOfferPushData } from "@/src/lib/riderDispatchOfferChannel";
 import { startRiderDispatchBuzzer } from "@/src/lib/nativeDispatchAlert";
 
@@ -46,6 +50,9 @@ export async function installRiderForegroundNotificationHandler(): Promise<void>
     Notifications.setNotificationHandler({
       handleNotification: async (notification) => {
         const data = (notification?.request?.content?.data ?? {}) as Record<string, unknown>;
+        if (isForeignAppPush(data, "rider")) {
+          return { ...FOREIGN_APP_NOTIFICATION_PRESENTATION };
+        }
         const isDispatch = isRiderDispatchOfferPushData(data);
         const appActive = AppState.currentState === "active";
         let nativeOwns = false;

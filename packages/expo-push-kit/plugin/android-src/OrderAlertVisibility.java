@@ -3,6 +3,7 @@ package {{PACKAGE}};
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.Application;
+import android.app.KeyguardManager;
 import android.content.Context;
 import android.os.Bundle;
 import android.os.Handler;
@@ -32,19 +33,36 @@ public final class OrderAlertVisibility {
       @Override public void onActivityStarted(Activity activity) {}
       @Override public void onActivityResumed(Activity activity) {
         if (!samePackage(activity)) return;
+        // Lock-screen FSI activity is not "Partner open" — keep its card + overlay.
+        if (activity instanceof OrderAlertLockActivity) return;
         resumed++;
         MAIN.removeCallbacks(pendingShow);
-        OrderAlertPill.setPartnerForeground(activity.getApplicationContext(), true);
+        Context appCtx = activity.getApplicationContext();
+        OrderAlertPill.setPartnerForeground(appCtx, true);
+        // Partner UI owns Accept/Reject while foreground — drop duplicate native card.
+        OrderAlertOverlay.hideAll(appCtx);
       }
       @Override public void onActivityPaused(Activity activity) {
         if (!samePackage(activity)) return;
+        if (activity instanceof OrderAlertLockActivity) return;
         leftForegroundOnce = true;
         resumed = Math.max(0, resumed - 1);
         if (resumed > 0) return;
         MAIN.removeCallbacks(pendingShow);
         final Context appCtx = activity.getApplicationContext();
         pendingShow = () -> {
-          if (resumed == 0) OrderAlertPill.setPartnerForeground(appCtx, false);
+          if (resumed != 0) return;
+          OrderAlertPill.setPartnerForeground(appCtx, false);
+          // Re-show home-screen overlay only when unlocked + session still active.
+          try {
+            if (isDeviceLocked(appCtx)) return;
+            org.json.JSONObject active = OrderAlertController.getActive(appCtx);
+            if (active == null) return;
+            String sid = active.optString("sessionId", "");
+            if (OrderAlertOverlay.isCardDismissed(appCtx, sid)) return;
+            OrderAlertOverlay.show(appCtx, active);
+          } catch (Throwable ignored) {
+          }
         };
         MAIN.postDelayed(pendingShow, SHOW_DELAY_MS);
       }
@@ -59,6 +77,22 @@ public final class OrderAlertVisibility {
     if (resumed > 0) return true;
     if (leftForegroundOnce) return false;
     return processLooksForeground(context);
+  }
+
+  /** Keyguard locked — LockActivity owns the floating card; skip WindowManager twin. */
+  static boolean isDeviceLocked(Context context) {
+    if (context == null) return false;
+    try {
+      KeyguardManager km = (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
+      return km != null && km.isKeyguardLocked();
+    } catch (Throwable t) {
+      return false;
+    }
+  }
+
+  /** True when the native floating WindowManager card must not be mounted. */
+  static boolean shouldSuppressOverlayWindow(Context context) {
+    return shouldHideBecausePartnerIsOpen(context) || isDeviceLocked(context);
   }
 
   /** Best-effort snapshot used when the service starts before a lifecycle callback. */

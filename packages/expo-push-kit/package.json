@@ -13,7 +13,7 @@
   "files": ["src", "plugin"],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/controller.test.ts src/app-integration.test.ts src/orderAlert.test.ts src/tokenRotation.test.ts",
+    "test": "node --import tsx --test src/controller.test.ts src/app-integration.test.ts src/orderAlert.test.ts src/tokenRotation.test.ts src/appAudience.test.ts",
     "lint": "echo \"(expo-push-kit) no lint configured\""
   },
   "peerDependencies": {

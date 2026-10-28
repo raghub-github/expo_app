@@ -17,6 +17,8 @@ export type RiderTimelineData = {
     occurred_at: string;
     merchant_distance_km?: number | null;
     customer_distance_km?: number | null;
+    rider_latitude?: number | null;
+    rider_longitude?: number | null;
   }>;
 };
 

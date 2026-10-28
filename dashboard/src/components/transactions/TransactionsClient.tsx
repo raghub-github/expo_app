@@ -155,12 +155,20 @@ export function TransactionsClient() {
       Object.entries(filters).forEach(([k, v]) => { if (v) sp.set(k, String(v)); });
       sp.set("page", String(page));
       sp.set("limit", String(pageSize));
-      const res = await fetch(`/api/transactions?${sp.toString()}`, { credentials: "include" });
+      const res = await fetch(`/api/transactions?${sp.toString()}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
       const json = (await res.json()) as ListResp;
       if (!res.ok || !json.success) throw new Error(json.error || "Failed to load transactions");
       return json;
     },
-    staleTime: 15_000,
+    // Keep the board live: poll while the tab is visible; Refresh still forces an immediate refetch.
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    refetchOnMount: "always",
     placeholderData: (prev) => prev,
   });
 

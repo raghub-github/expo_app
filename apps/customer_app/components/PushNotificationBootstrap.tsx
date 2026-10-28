@@ -24,6 +24,8 @@ import {
   rememberPushPresented,
   pushPresentationKey,
   loadInbox,
+  isForeignAppPush,
+  FOREIGN_APP_NOTIFICATION_PRESENTATION,
   type PushNotificationOpenPayload,
 } from "@gatimitra/expo-push-kit";
 import { useAuthStore } from "@/store/authStore";
@@ -482,6 +484,9 @@ function PushNotificationBootstrapInner() {
         Notifications.setNotificationHandler({
           handleNotification: async (notification) => {
             const data = (notification.request.content.data ?? {}) as Record<string, unknown>;
+            if (isForeignAppPush(data, "customer")) {
+              return { ...FOREIGN_APP_NOTIFICATION_PRESENTATION };
+            }
             const tray = customerAnnouncementForegroundDecision({
               isAnnouncement: isCustomerAnnouncementData(data),
               alreadyTrayCopy: data.gm_tray === "1",

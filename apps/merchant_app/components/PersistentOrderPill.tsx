@@ -51,18 +51,15 @@ export default function PersistentOrderPill() {
       const on = allowed === true;
       setOverlayAllowed(on);
       setNativeOverlay(on && nativePill);
+      // Event-driven only — never poll SecureStore / start FGS on a 1s timer.
       await setPersistentOrderPill(on && nativePill, pending, focusId);
     };
     void sync();
-    const sub = AppState.addEventListener("change", () => {
-      void sync();
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") void sync();
     });
-    const tick = setInterval(() => {
-      void sync();
-    }, 1000);
     return () => {
       cancelled = true;
-      clearInterval(tick);
       sub.remove();
     };
   }, [isAuthenticated, pending, focusId]);
@@ -158,6 +155,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderWidth: 1.5,
     borderColor: "#FFFFFF",
+    zIndex: 20,
+    elevation: 16,
   },
   badgeText: {
     color: "#FFFFFF",

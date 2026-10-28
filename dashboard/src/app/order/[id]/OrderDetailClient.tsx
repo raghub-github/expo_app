@@ -2530,6 +2530,7 @@ export default function OrderDetailClient({
                   ? formatDeliveredByLabel(order.deliveredBy, order.riderId)
                   : null,
                 trackingOrderId: hasAssignedRider ? displayId : null,
+                // RiderDetails resolves/creates the public trip share URL via API.
                 trackingUrl: null,
                 deliveryOtp: order.deliveryOtp ?? null,
                 deliveryType: order.deliveryType ?? null,

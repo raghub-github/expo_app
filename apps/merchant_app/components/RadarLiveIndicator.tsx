@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useRef } from "react";
-import { View, StyleSheet, Animated, Easing } from "react-native";
+import { AppState, View, StyleSheet, Animated, Easing, type AppStateStatus } from "react-native";
 
 const SIZE_DEFAULT = 32;
 const SIZE_COMPACT = 24;
@@ -66,16 +66,37 @@ export function RadarLiveIndicator({ compact }: RadarLiveIndicatorProps) {
   };
 
   useEffect(() => {
-    const a1 = runPulse(s1, o1, 0);
-    const a2 = runPulse(s2, o2, STAGGER_MS);
-    const a3 = runPulse(s3, o3, STAGGER_MS * 2);
-    a1.start();
-    a2.start();
-    a3.start();
+    let a1: Animated.CompositeAnimation | null = null;
+    let a2: Animated.CompositeAnimation | null = null;
+    let a3: Animated.CompositeAnimation | null = null;
+
+    const stopAll = () => {
+      a1?.stop();
+      a2?.stop();
+      a3?.stop();
+      a1 = a2 = a3 = null;
+    };
+
+    const startAll = () => {
+      stopAll();
+      a1 = runPulse(s1, o1, 0);
+      a2 = runPulse(s2, o2, STAGGER_MS);
+      a3 = runPulse(s3, o3, STAGGER_MS * 2);
+      a1.start();
+      a2.start();
+      a3.start();
+    };
+
+    if (AppState.currentState === "active") startAll();
+
+    const onAppState = (state: AppStateStatus) => {
+      if (state === "active") startAll();
+      else stopAll();
+    };
+    const sub = AppState.addEventListener("change", onAppState);
     return () => {
-      a1.stop();
-      a2.stop();
-      a3.stop();
+      sub.remove();
+      stopAll();
     };
   }, [s1, o1, s2, o2, s3, o3]);
 

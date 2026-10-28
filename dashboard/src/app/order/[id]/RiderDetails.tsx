@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import RiderTimeline, { type RiderTimelineData } from "./RiderTimeline";
 import RiderTrackingModal from "./RiderTrackingModal";
 import { useCancellationReasonCatalog } from "@/hooks/useCancellationReasonCatalog";
@@ -773,7 +774,32 @@ export default function RiderDetails({
     : "—";
   const trackingOrderId =
     hasAssignedRider && order.trackingOrderId?.trim() ? order.trackingOrderId.trim() : "—";
-  const trackingUrl = hasAssignedRider && order.trackingUrl?.trim() ? order.trackingUrl.trim() : "";
+  const shareOrderKey =
+    order.formattedOrderId?.trim() ||
+    order.trackingOrderId?.trim() ||
+    (order.orderId != null ? String(order.orderId) : "");
+  // Public Tracking URL was hardcoded null upstream — resolve/create trip_share_links here.
+  const trackingShareQuery = useQuery({
+    queryKey: ["order-tracking-share", shareOrderKey],
+    enabled: Boolean(hasAssignedRider && shareOrderKey),
+    staleTime: 5 * 60_000,
+    retry: 1,
+    queryFn: async (): Promise<string | null> => {
+      const res = await fetch(
+        `/api/orders/${encodeURIComponent(shareOrderKey)}/tracking-share-link`,
+        { credentials: "include", cache: "no-store" }
+      );
+      const json = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        url?: string;
+      };
+      if (!res.ok || !json.success || !json.url?.trim()) return null;
+      return json.url.trim();
+    },
+  });
+  const trackingUrl =
+    (hasAssignedRider && order.trackingUrl?.trim()) ||
+    (hasAssignedRider ? trackingShareQuery.data?.trim() || "" : "");
   const isPickupOrderType = isSelfPickupDelivery(order.deliveryType);
   const showPickupHelpMessage = isPickupOrderType && !hasAssignedRider;
   const blockTakeawayRiderAssign = isPickupOrderType;
@@ -1449,38 +1475,65 @@ export default function RiderDetails({
                   ) : null}
                 </div>
               </DetailField>
-              <DetailField label="Tracking URL">
-                {trackingUrl ? (
-                  <a
-                    href={trackingUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-0.5 font-semibold text-emerald-600"
-                  >
-                    <i className="bi bi-box-arrow-up-right" />
-                    Open link
-                  </a>
-                ) : (
-                  <span className="text-slate-500">—</span>
-                )}
-              </DetailField>
-              <DetailField label="Delivery OTP">
-                <div className="flex flex-col gap-1">
+              <div className="col-span-2 min-w-0">
+                <DetailField label="Tracking URL">
+                  {trackingUrl ? (
+                    <div className="flex w-full min-w-0 items-center gap-1.5">
+                      <span
+                        className="min-w-0 flex-1 truncate text-[10px] text-slate-600"
+                        title={trackingUrl}
+                      >
+                        {trackingUrl}
+                      </span>
+                      <CopyIconButton
+                        value={trackingUrl}
+                        fieldKey="trackingUrl"
+                        copiedField={copiedField}
+                        onCopied={markCopied}
+                        onCopy={onCopy}
+                        ariaLabel="Copy tracking URL"
+                      />
+                      <a
+                        href={trackingUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-100"
+                      >
+                        <i className="bi bi-box-arrow-up-right" />
+                        Open
+                      </a>
+                    </div>
+                  ) : trackingShareQuery.isPending && !trackingShareQuery.isError ? (
+                    <span className="text-slate-400">Loading…</span>
+                  ) : (
+                    <span className="text-slate-500">—</span>
+                  )}
+                </DetailField>
+              </div>
+              {/* Same 3-col grid as wait/rating/tip so View Delivery image left edge matches Cx rating. */}
+              <div className="col-span-2 grid grid-cols-3 gap-x-3 gap-y-1 min-w-0 items-end">
+                <DetailField label="Delivery OTP">
                   <span className="inline-flex w-fit px-2 py-0.5 border border-dashed border-emerald-400 bg-emerald-50 rounded font-mono text-emerald-700 font-bold tracking-[0.12em]">
                     {deliveryOtp}
+                  </span>
+                </DetailField>
+                <div className="min-w-0 flex flex-col gap-0.5">
+                  <span className="text-[10px] font-medium text-transparent select-none" aria-hidden>
+                    .
                   </span>
                   {deliveryProofUrl ? (
                     <button
                       type="button"
                       onClick={() => setDeliveryPhotoOpen(true)}
-                      className="inline-flex w-fit items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-emerald-700"
+                      className="inline-flex w-fit max-w-none shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-emerald-600 px-2.5 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-emerald-700"
                     >
-                      <i className="bi bi-image" />
-                      View Delivery image
+                      <i className="bi bi-image shrink-0" />
+                      <span className="whitespace-nowrap">Delivery image</span>
                     </button>
                   ) : null}
                 </div>
-              </DetailField>
+                <div />
+              </div>
               {showStoreWaitTime ||
               (showRiderRating && customerFeedback?.deliveryRating != null) ||
               tipLabel ? (
@@ -1885,6 +1938,7 @@ export default function RiderDetails({
       <RiderTrackingModal
         isOpen={showTrackingModal}
         orderIdText={order.formattedOrderId?.trim() || order.trackingOrderId?.trim() || null}
+        orderCoreId={order.orderId ?? null}
         riderName={order.riderName?.trim() || null}
         initialRiderId={trackRiderId}
         onClose={() => setShowTrackingModal(false)}

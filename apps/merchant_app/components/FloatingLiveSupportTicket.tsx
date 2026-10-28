@@ -116,14 +116,6 @@ export function FloatingLiveSupportTicket() {
   ]);
 
   useEffect(() => {
-    pulse.value = withRepeat(
-      withTiming(1, { duration: 900, easing: Easing.inOut(Easing.ease) }),
-      -1,
-      true
-    );
-  }, [pulse]);
-
-  useEffect(() => {
     let cancelled = false;
     setPosReady(false);
     if (storeId == null) {
@@ -309,6 +301,28 @@ export function FloatingLiveSupportTicket() {
     pathname.includes("/support/chat") &&
     (String(routeTicketId) === String(activeTicket.ticketId) || routeTicketId === "new");
 
+  const fabVisible =
+    activeTicket != null &&
+    !isLiveSupportTicketTerminal(activeTicket.status) &&
+    posReady &&
+    !fabDismissed &&
+    !onThisTicketChat;
+
+  useEffect(() => {
+    if (!fabVisible) {
+      pulse.value = 0.4;
+      return;
+    }
+    pulse.value = withRepeat(
+      withTiming(1, { duration: 900, easing: Easing.inOut(Easing.ease) }),
+      -1,
+      true
+    );
+    return () => {
+      pulse.value = 0.4;
+    };
+  }, [fabVisible, pulse]);
+
   useEffect(() => {
     if (activeTicket == null || isLiveSupportTicketTerminal(activeTicket.status) || onThisTicketChat) {
       return;
@@ -316,13 +330,7 @@ export function FloatingLiveSupportTicket() {
     void refreshActiveTicket();
   }, [refreshActiveTicket, activeTicket?.ticketId, activeTicket?.status, onThisTicketChat, pathname]);
 
-  if (
-    activeTicket == null ||
-    isLiveSupportTicketTerminal(activeTicket.status) ||
-    !posReady ||
-    fabDismissed ||
-    onThisTicketChat
-  ) {
+  if (!fabVisible) {
     return null;
   }
 

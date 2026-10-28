@@ -171,7 +171,11 @@ public final class OrderAlertController {
     try {
       JSONObject row = OrderAlertController.getActive(context);
       if (row != null) {
-        OrderAlertOverlay.show(context, row);
+        if (OrderAlertVisibility.shouldSuppressOverlayWindow(context)) {
+          OrderAlertOverlay.hideAll(context);
+        } else {
+          OrderAlertOverlay.show(context, row);
+        }
         ensureService(
             context,
             row.optString("sessionId", sessionId),
@@ -293,6 +297,11 @@ public final class OrderAlertController {
       putPrimary(context, sid);
     }
 
+    // New session → allow the floating card again (previous dismiss was for another order).
+    try {
+      OrderAlertOverlay.pruneDismissed(context, sid);
+    } catch (Throwable ignored) {
+    }
     ensureService(context, sid, oid, offer, sound, title, body, pickupText, dropText, typeText);
     OrderAlertPill.onNewOrder(context, sid);
     AlertEngineLog.log(context, "ALERT_SESSION_CREATED", sid, oid, "sound=" + sound + " type=" + typeText);
@@ -320,10 +329,12 @@ public final class OrderAlertController {
         }
       }
     }
+    // Always release the current player; remaining sessions restart via ensureService.
+    stopAudio();
     if (empty) {
-      OrderAlertOverlay.hide(context, sid);
+      OrderAlertOverlay.hideAll(context);
       OrderAlertHeadsUp.cancel(context);
-      stopAudio();
+      OrderAlertLockActivity.finishLive();
       stopService(context);
       AlertEngineLog.log(context, "ALERT_STOPPED", sid, "", "remaining=0");
       Log.i(TAG, "stop sessionId=" + sid);
@@ -332,6 +343,9 @@ public final class OrderAlertController {
     OrderAlertOverlay.hide(context, sid);
     JSONObject next = getActive(context);
     if (next != null) {
+      if (!OrderAlertVisibility.shouldSuppressOverlayWindow(context)) {
+        OrderAlertOverlay.show(context, next);
+      }
       ensureService(
           context,
           next.optString("sessionId", ""),
@@ -357,6 +371,7 @@ public final class OrderAlertController {
     }
     OrderAlertOverlay.hideAll(context);
     OrderAlertHeadsUp.cancel(context);
+    OrderAlertLockActivity.finishLive();
     stopAudio();
     stopService(context);
     Log.i(TAG, "stop all");
@@ -894,9 +909,13 @@ public final class OrderAlertController {
   private static boolean matches(JSONObject row, String token) {
     if (token == null || token.length() == 0) return false;
     String sessionId = row.optString("sessionId", "");
+    String orderId = row.optString("orderId", "");
+    String offerId = row.optString("offerId", "");
+    String foodId = row.optString("foodOrderId", "");
     if (token.equals(sessionId)
-        || token.equals(row.optString("orderId", ""))
-        || token.equals(row.optString("offerId", ""))) {
+        || token.equals(orderId)
+        || token.equals(offerId)
+        || token.equals(foodId)) {
       return true;
     }
     // JS may omit waveNumber (`RIDER_NEW_ORDER:order:rider`) while FCM includes it.
@@ -904,7 +923,44 @@ public final class OrderAlertController {
         && (sessionId.startsWith(token + ":") || token.startsWith(sessionId + ":"))) {
       return true;
     }
+    // Unify merchant-order-<id> ↔ MERCHANT_NEW_ORDER:<id>:<store> ↔ raw food id.
+    String extracted = extractOrderToken(token);
+    if (extracted.length() > 0) {
+      if (extracted.equals(orderId) || extracted.equals(offerId) || extracted.equals(foodId)) {
+        return true;
+      }
+      if (sessionId.equals("merchant-order-" + extracted)
+          || sessionId.equals("rider-offer-" + extracted)
+          || sessionId.startsWith("MERCHANT_NEW_ORDER:" + extracted + ":")
+          || sessionId.startsWith("RIDER_NEW_ORDER:" + extracted + ":")) {
+        return true;
+      }
+      String sessionExtracted = extractOrderToken(sessionId);
+      if (sessionExtracted.length() > 0 && sessionExtracted.equals(extracted)) {
+        return true;
+      }
+    }
     return false;
+  }
+
+  /** Pull the stable food/order id out of native or JS session id formats. */
+  private static String extractOrderToken(String token) {
+    if (token == null) return "";
+    String t = token.trim();
+    if (t.length() == 0) return "";
+    if (t.startsWith("merchant-order-")) return t.substring("merchant-order-".length());
+    if (t.startsWith("rider-offer-")) return t.substring("rider-offer-".length());
+    if (t.startsWith("MERCHANT_NEW_ORDER:")) {
+      String rest = t.substring("MERCHANT_NEW_ORDER:".length());
+      int colon = rest.indexOf(':');
+      return colon >= 0 ? rest.substring(0, colon) : rest;
+    }
+    if (t.startsWith("RIDER_NEW_ORDER:")) {
+      String rest = t.substring("RIDER_NEW_ORDER:".length());
+      int colon = rest.indexOf(':');
+      return colon >= 0 ? rest.substring(0, colon) : rest;
+    }
+    return t;
   }
 
   private static void putPrimary(Context context, String sessionId) {

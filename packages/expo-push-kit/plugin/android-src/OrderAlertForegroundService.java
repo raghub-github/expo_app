@@ -41,7 +41,7 @@ public class OrderAlertForegroundService extends Service {
   @Override
   public void onCreate() {
     super.onCreate();
-    acquireWakeLock();
+    // Wake lock only while an active alert session runs (see onStartCommand).
   }
 
   @Override
@@ -51,6 +51,7 @@ public class OrderAlertForegroundService extends Service {
       return holdPillOrStop();
     }
     if (OrderAlertPill.ACTION_PILL.equals(intent.getAction())) {
+      // Legacy ACTION_PILL: apply WM overlay without holding FGS / wake lock.
       if (OrderAlertVisibility.shouldHideBecausePartnerIsOpen(this)) {
         OrderAlertPill.setPartnerForeground(this, true);
       }
@@ -58,16 +59,17 @@ public class OrderAlertForegroundService extends Service {
       if (OrderAlertController.getActive(this) != null) {
         return START_STICKY;
       }
+      releaseWakeLock();
       try {
-        startAsForeground(buildPillNotification(OrderAlertPill.count(this)));
+        stopForeground(true);
       } catch (Throwable ignored) {
       }
-      return START_STICKY;
+      stopSelf();
+      return START_NOT_STICKY;
     }
 
     if (intent != null && OrderAlertController.ACTION_STOP.equals(intent.getAction())) {
       stopInternal();
-      if (OrderAlertPill.isEnabled(this) && OrderAlertOverlay.canDraw(this)) return START_STICKY;
       return START_NOT_STICKY;
     }
 
@@ -100,21 +102,47 @@ public class OrderAlertForegroundService extends Service {
 
     Notification notification = buildNotification(sessionId, orderId, title, body);
     AlertEngineLog.log(this, "NOTIFICATION_POST_START", sessionId, orderId, "id=" + NOTIFICATION_ID);
+    boolean foregroundOk = false;
     try {
-      startAsForeground(notification);
-      AlertEngineLog.log(this, "NOTIFICATION_POST_SUCCESS", sessionId, orderId, "id=" + NOTIFICATION_ID);
+      foregroundOk = startAsForeground(notification);
+      if (foregroundOk) {
+        AlertEngineLog.log(this, "NOTIFICATION_POST_SUCCESS", sessionId, orderId, "id=" + NOTIFICATION_ID);
+      } else {
+        AlertEngineLog.log(this, "NOTIFICATION_POST_FAILED", sessionId, orderId, "err=startForeground_false");
+      }
     } catch (Throwable t) {
       AlertEngineLog.log(this, "NOTIFICATION_POST_FAILED", sessionId, orderId, "err=" + t.getMessage());
+      foregroundOk = false;
     }
+    // Android 12+ kills the process if startForeground never succeeds — fail closed.
+    if (!foregroundOk) {
+      Log.e(TAG, "startForeground failed — stopping service to avoid system crash dialog");
+      try {
+        OrderAlertController.stop(this, sessionId);
+      } catch (Throwable ignored) {
+      }
+      releaseWakeLock();
+      stopSelf();
+      return START_NOT_STICKY;
+    }
+    acquireWakeLock();
     OrderAlertOverlay.debug(this, "FGS_STARTED", sessionId, orderId, "sound=" + soundType);
     OrderAlertOverlay.debug(this, "NOTIFICATION_POSTED", sessionId, orderId, "id=" + NOTIFICATION_ID);
     AlertEngineLog.log(this, "FGS_START", sessionId, orderId, "started=1");
     OrderAlertController.onServiceStart(this, intent);
     AlertEngineLog.log(this, "OVERLAY_START", sessionId, orderId, null);
-    // Overlay MUST use this Service as WindowManager host (not MainActivity).
-    // Independent of JS / Manage Communication / selected-sound cache.
-    // startForeground() already ran so Android allows the overlay window.
-    OrderAlertOverlay.show(this, sessionId, orderId, offerId, title, body, pickup, drop, orderType);
+    // Lock screen: FSI LockActivity hosts the floating card + turns screen on.
+    // Unlocked home: WindowManager overlay. Never both (duplicate flash).
+    // In-app: RN IncomingOrderModal owns Accept/Reject — hide native card.
+    if (OrderAlertVisibility.shouldSuppressOverlayWindow(this)) {
+      OrderAlertOverlay.hideAll(this);
+    } else {
+      OrderAlertOverlay.show(this, sessionId, orderId, offerId, title, body, pickup, drop, orderType);
+    }
+    if (isLocked()) {
+      // Help the FSI LockActivity turn the panel on even if the OEM delays FSI.
+      pulseDisplayWake();
+    }
     OrderAlertPill.apply(this);
     handler.removeCallbacks(watchdog);
     handler.postDelayed(watchdog, MAX_ALERT_MS);
@@ -126,7 +154,10 @@ public class OrderAlertForegroundService extends Service {
   public void onDestroy() {
     handler.removeCallbacks(watchdog);
     OrderAlertOverlay.hideAll(this);
-    OrderAlertPill.hide(this);
+    // Pill is independent of FGS lifetime — keep WM overlay if still enabled.
+    if (OrderAlertPill.isEnabled(this) && OrderAlertOverlay.canDraw(this)) {
+      OrderAlertPill.apply(this);
+    }
     OrderAlertController.onServiceDestroy();
     releaseWakeLock();
     try {
@@ -141,19 +172,23 @@ public class OrderAlertForegroundService extends Service {
     return null;
   }
 
+  /** After restart with null intent: restore WM pill if needed, never hold FGS for pill alone. */
   private int holdPillOrStop() {
     if (OrderAlertPill.isEnabled(this) && OrderAlertOverlay.canDraw(this)) {
       if (OrderAlertVisibility.shouldHideBecausePartnerIsOpen(this)) {
         OrderAlertPill.setPartnerForeground(this, true);
       }
       OrderAlertPill.apply(this);
-      try {
-        startAsForeground(buildPillNotification(OrderAlertPill.count(this)));
-      } catch (Throwable ignored) {
-      }
+    }
+    if (OrderAlertController.getActive(this) != null) {
       return START_STICKY;
     }
-    stopInternal();
+    releaseWakeLock();
+    try {
+      stopForeground(true);
+    } catch (Throwable ignored) {
+    }
+    stopSelf();
     return START_NOT_STICKY;
   }
 
@@ -163,13 +198,10 @@ public class OrderAlertForegroundService extends Service {
     OrderAlertController.onServiceDestroy();
     if (OrderAlertPill.isEnabled(this) && OrderAlertOverlay.canDraw(this)) {
       OrderAlertPill.apply(this);
-      try {
-        startAsForeground(buildPillNotification(OrderAlertPill.count(this)));
-      } catch (Throwable ignored) {
-      }
-      return;
+    } else {
+      OrderAlertPill.hide(this);
     }
-    OrderAlertPill.hide(this);
+    releaseWakeLock();
     try {
       stopForeground(true);
     } catch (Throwable ignored) {
@@ -214,15 +246,10 @@ public class OrderAlertForegroundService extends Service {
     nm.createNotificationChannel(channel);
   }
 
-  private void startAsForeground(Notification notification) {
+  /** @return true when startForeground succeeded (required to avoid process kill). */
+  private boolean startAsForeground(Notification notification) {
     try {
-      if (Build.VERSION.SDK_INT >= 34) {
-        startForeground(
-            NOTIFICATION_ID,
-            notification,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-        );
-      } else if (Build.VERSION.SDK_INT >= 29) {
+      if (Build.VERSION.SDK_INT >= 29) {
         startForeground(
             NOTIFICATION_ID,
             notification,
@@ -231,11 +258,15 @@ public class OrderAlertForegroundService extends Service {
       } else {
         startForeground(NOTIFICATION_ID, notification);
       }
+      return true;
     } catch (Throwable t) {
-      Log.w(TAG, "startForeground failed: " + t.getMessage());
+      Log.w(TAG, "startForeground typed failed: " + t.getMessage());
       try {
         startForeground(NOTIFICATION_ID, notification);
-      } catch (Throwable ignored) {
+        return true;
+      } catch (Throwable t2) {
+        Log.e(TAG, "startForeground fallback failed: " + t2.getMessage());
+        return false;
       }
     }
   }
@@ -301,9 +332,17 @@ public class OrderAlertForegroundService extends Service {
         .addAction(0, "ACCEPT", acceptPi)
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE);
 
+    // Locked: full-screen intent → transparent LockActivity with the same floating
+    // card (turns screen on). Not a dimmed duplicate — window is transparent.
     if (isLocked()) {
       Intent lock = new Intent(this, OrderAlertLockActivity.class);
-      lock.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
+      lock.addFlags(
+          Intent.FLAG_ACTIVITY_NEW_TASK
+              | Intent.FLAG_ACTIVITY_NO_USER_ACTION
+              | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+              | Intent.FLAG_ACTIVITY_CLEAR_TOP
+              | Intent.FLAG_ACTIVITY_SINGLE_TOP
+      );
       lock.putExtra(OrderAlertController.EXTRA_SESSION_ID, sessionId);
       PendingIntent full = PendingIntent.getActivity(this, NOTIFICATION_ID + 4, lock, flags);
       builder.setFullScreenIntent(full, true);
@@ -359,6 +398,20 @@ public class OrderAlertForegroundService extends Service {
       wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "gatimitra:order-alert");
       wakeLock.setReferenceCounted(false);
       wakeLock.acquire(MAX_ALERT_MS + 5000L);
+    } catch (Throwable ignored) {
+    }
+  }
+
+  /** Brief screen wake so the lock-screen floating card is visible. */
+  private void pulseDisplayWake() {
+    try {
+      PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+      if (pm == null) return;
+      @SuppressWarnings("deprecation")
+      int flags = PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP;
+      PowerManager.WakeLock wl = pm.newWakeLock(flags, "gatimitra:order-screen-on");
+      wl.setReferenceCounted(false);
+      wl.acquire(8_000L);
     } catch (Throwable ignored) {
     }
   }

@@ -87,6 +87,38 @@ module.exports = ({ config }) => ({
     plugins: [
       ...(appJson.expo.plugins || []),
       "expo-dev-client",
+      [
+        "expo-build-properties",
+        {
+          android: {
+            // Google Play DEX optimization: R8 minify/obfuscation (target ≥25% obfuscation).
+            enableProguardInReleaseBuilds: true,
+            enableShrinkResourcesInReleaseBuilds: true,
+            extraProguardRules: [
+              // React Native / Hermes / Expo
+              "-keep class com.facebook.react.** { *; }",
+              "-keep class com.facebook.hermes.** { *; }",
+              "-keep class com.facebook.jni.** { *; }",
+              "-keep class expo.modules.** { *; }",
+              "-keep class com.swmansion.** { *; }",
+              // Gatimitra native order-alert stack (reflection / FCM entry)
+              "-keep class com.gatimitra.partner.OrderAlert** { *; }",
+              "-keepclassmembers class com.gatimitra.partner.OrderAlert** { *; }",
+              // Razorpay checkout
+              "-keep class com.razorpay.** { *; }",
+              "-dontwarn com.razorpay.**",
+              // Mapbox
+              "-keep class com.mapbox.** { *; }",
+              "-dontwarn com.mapbox.**",
+              // Expo notifications / FCM
+              "-keep class com.google.firebase.** { *; }",
+              "-dontwarn com.google.firebase.**",
+            ].join("\n"),
+          },
+        },
+      ],
+      // SDK 54 template reads enableMinifyInReleaseBuilds (shrink requires it).
+      "./plugins/withAndroidMinifyRelease",
       "./plugins/withMerchantOrderWake",
       "./plugins/withAndroidUpiQueries",
       [

@@ -404,7 +404,9 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
   const lastAppliedRouteTabRef = useRef("");
   const filterKeyBootstrapped = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
-  const nowMs = useNowMs(true, 60_000);
+  // Live board: one shared 1s clock for card countdowns (avoids N timers per row).
+  // History: 60s is enough for 24h visibility filtering.
+  const nowMs = useNowMs(true, isHistory ? 60_000 : 1_000);
   const [rejectTarget, setRejectTarget] = useState<OrderRecord | null>(null);
   const [prepDelayOrder, setPrepDelayOrder] = useState<OrderRecord | null>(null);
   const [prepDelayLoading, setPrepDelayLoading] = useState(false);
@@ -537,7 +539,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     const toIso = new Date(dateRange.endMs).toISOString();
     try {
       if (__DEV__) {
-        console.log(`[orders] history fetch store=${storeId} from=${fromIso} to=${toIso}`);
+        if (__DEV__) console.log(`[orders] history fetch store=${storeId} from=${fromIso} to=${toIso}`);
       }
       const list = await fetchFoodOrders(storeId, token, {
         limit: 200,
@@ -555,7 +557,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
           })
         );
       if (__DEV__) {
-        console.log(`[orders] history ok count=${mapped.length}`);
+        if (__DEV__) console.log(`[orders] history ok count=${mapped.length}`);
       }
       setHistoryOrders(mapped);
     } catch (e) {
@@ -838,6 +840,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     return (
       <LiveOrderCard
         order={item}
+        nowMs={nowMs}
         acceptanceWindowMinutes={acceptanceWindowMinutes}
         storeName={orderStoreName}
         onAccept={() => handleAccept(item)}

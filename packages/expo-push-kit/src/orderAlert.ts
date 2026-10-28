@@ -30,6 +30,16 @@ export type NativeOrderAlert = {
   startedAt: number;
 };
 
+export type NativePendingOrderAction = {
+  action: "accept" | "reject" | string;
+  sessionId: string;
+  orderId: string;
+  foodOrderId: string;
+  displayOrderId: string;
+  storeId: string;
+  at: number;
+};
+
 type NativeOrderAlertModule = {
   startAlert: (
     sessionId: string,
@@ -51,6 +61,7 @@ type NativeOrderAlertModule = {
   ) => Promise<string | null>;
   setPersistentPill?: (enabled: boolean, count: number, orderId: string | null) => Promise<boolean>;
   consumePillLaunch?: () => Promise<{ kind?: string; count?: number; orderId?: string | null } | null>;
+  consumePendingAction?: () => Promise<string | null>;
 };
 
 const Native = NativeModules.GatimitraOrderAlert as NativeOrderAlertModule | undefined;
@@ -182,6 +193,33 @@ export async function consumePersistentPillLaunch(): Promise<{
     const row = await Native.consumePillLaunch();
     if (!row || row.kind !== "orders") return null;
     return { count: Number(row.count ?? 0), orderId: String(row.orderId ?? "") };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Overlay / notification Accept or Reject while JS was dead.
+ * Clears the one-shot stash so the RN sheet does not reopen a resolved order.
+ */
+export async function consumeNativePendingOrderAction(): Promise<NativePendingOrderAction | null> {
+  if (!Native?.consumePendingAction || Platform.OS !== "android") return null;
+  try {
+    const raw = await Native.consumePendingAction();
+    const text = String(raw ?? "").trim();
+    if (!text) return null;
+    const parsed = JSON.parse(text) as Partial<NativePendingOrderAction>;
+    const action = String(parsed.action ?? "").trim().toLowerCase();
+    if (action !== "accept" && action !== "reject") return null;
+    return {
+      action,
+      sessionId: String(parsed.sessionId ?? "").trim(),
+      orderId: String(parsed.orderId ?? "").trim(),
+      foodOrderId: String(parsed.foodOrderId ?? "").trim(),
+      displayOrderId: String(parsed.displayOrderId ?? "").trim(),
+      storeId: String(parsed.storeId ?? "").trim(),
+      at: Number(parsed.at) || Date.now(),
+    };
   } catch {
     return null;
   }

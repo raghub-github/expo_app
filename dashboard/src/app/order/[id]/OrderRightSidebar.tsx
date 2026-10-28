@@ -1221,36 +1221,45 @@ export default function OrderRightSidebar({
 
       try {
         setIsLoadingRecons(true);
-        let res = await fetch(`/api/orders/${order.id}/recons`, {
-          credentials: "include",
-          signal,
-          cache: "no-store",
-        });
-        // Transient auth/DB blip under parallel sidebar loads — quiet retry, then silence.
-        if (res.status === 503 && !signal?.aborted) {
-          await new Promise((r) => setTimeout(r, 400));
-          if (!signal?.aborted) {
-            res = await fetch(`/api/orders/${order.id}/recons`, {
-              credentials: "include",
-              signal,
-              cache: "no-store",
-            });
-          }
+        const fetchRecons = () =>
+          fetch(`/api/orders/${order.id}/recons`, {
+            credentials: "include",
+            signal,
+            cache: "no-store",
+          });
+        let res = await fetchRecons();
+        // First hit can 404 HTML while the route is still compiling; 503 = DB blip.
+        if (
+          !signal?.aborted &&
+          (res.status === 503 || res.status === 404 || res.status === 502)
+        ) {
+          await new Promise((r) => setTimeout(r, 500));
+          if (!signal?.aborted) res = await fetchRecons();
         }
         if (signal?.aborted) return;
         if (!res.ok) {
           const text = await res.text();
+          const looksLikeHtml = /^\s*<!DOCTYPE|\s*<html/i.test(text);
           let code = "";
-          try {
-            code = String(JSON.parse(text)?.code ?? "");
-          } catch {
-            /* ignore */
+          if (!looksLikeHtml) {
+            try {
+              code = String(JSON.parse(text)?.code ?? "");
+            } catch {
+              /* ignore */
+            }
           }
-          if (res.status === 503 || code === "SERVICE_UNAVAILABLE") {
+          // Compile race / transient outage — don't spam the console with HTML.
+          if (
+            res.status === 503 ||
+            res.status === 404 ||
+            res.status === 502 ||
+            code === "SERVICE_UNAVAILABLE" ||
+            looksLikeHtml
+          ) {
             return;
           }
           // eslint-disable-next-line no-console
-          console.error("Failed to load recons", text);
+          console.error("Failed to load recons", text.slice(0, 200));
           return;
         }
         const json = await res.json();

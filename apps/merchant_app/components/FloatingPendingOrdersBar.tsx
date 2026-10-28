@@ -275,6 +275,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     borderWidth: 2,
     borderColor: "#FFFFFF",
+    zIndex: 20,
+    ...Platform.select({
+      android: { elevation: 16 },
+      default: {},
+    }),
   },
   badgeText: {
     fontSize: 11,

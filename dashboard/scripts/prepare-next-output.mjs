@@ -188,11 +188,22 @@ export function applyOneDriveModuleResolutionOptions(env = process.env) {
 }
 
 export async function prepareNextBuildOutput() {
+  // Always free :3001 first. A live `npm run dev` rewrites `.next/dev/types`
+  // mid-clean/build and corrupts routes.d.ts → TS "Declaration or statement expected".
+  if (process.platform === "win32") {
+    console.log("[prepare-next] stopping dashboard on :3001 (if any) before cleaning .next");
+    stopDashboardDevServer();
+  }
   forceRemoveLock();
   forceRemoveTrace();
   removeAllNextOutputs();
   forceRemoveLock();
   forceRemoveTrace();
+  // Dev may have recreated .next between kill and rm — wipe again.
+  if (fs.existsSync(nextDir)) {
+    forceRemoveLock();
+    forceRemovePath(nextDir);
+  }
   removeDashboardWebpackCache();
   ensureNextOutputJunction({ required: repoOnOneDrive() });
 
