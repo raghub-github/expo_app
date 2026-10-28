@@ -200,6 +200,16 @@ export type BillContext = {
    * Omit / null = unknown → first-ride offers fail closed (cannot be bypassed).
    */
   completedPersonRideCount?: number | null;
+  /**
+   * Delivered FOOD orders (`orders_core.order_type = food` + status delivered).
+   * Used for first-order FREE_DELIVERY. Null = unknown → fail closed.
+   */
+  completedFoodOrderCount?: number | null;
+  /**
+   * Active (reserved|consumed) redemptions in benefit family `first_order_free_delivery`
+   * across all campaigns / coupon aliases. Null = unknown → fail closed.
+   */
+  firstOrderFreeDeliveryUsageCount?: number | null;
   /** Completed delivered parcel orders for this customer (Parcel first-N / loyalty). */
   completedParcelCount?: number | null;
   /** Ride catalog code / type (bike, auto, cab-economy, …). */
@@ -225,6 +235,10 @@ export type BillContext = {
    * removed the applied offer in the UI. Coupons (entered manually) are still applied.
    */
   forceNoAutoOffer?: boolean;
+  /**
+   * GatiCash min-cart unlock: apply `selectedPlatformOfferId` even when cart is below min.
+   */
+  waiveMinCartForSelectedPlatformOffer?: boolean;
 };
 
 export type AppliedLine = {

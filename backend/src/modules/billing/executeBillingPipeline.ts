@@ -188,9 +188,11 @@ function applyCouponDiscount(
 
   rem.items -= take;
   state.discountTotal += take;
+  const metaDesc = String(coupon.metadata?.description ?? coupon.metadata?.title ?? "").trim();
   const line: AppliedLine = {
     kind: "discount",
-    label: `Coupon ${coupon.code}`,
+    // Prefer merchant-facing description when present; client also remaps via offers catalog.
+    label: metaDesc || `Coupon ${coupon.code}`,
     amount: take,
     hidden: coupon.isHidden,
     meta: {

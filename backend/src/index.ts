@@ -48,6 +48,7 @@ import { runStoreScheduleTick, runStoreScheduleTickForStore } from "./modules/me
 import { runOrderAcceptanceTimeoutTick } from "./services/order-acceptance-timeout.js";
 import { runOrderAutoAcceptTick } from "./services/order-auto-accept.js";
 import { runRideSearchTimeoutTick } from "./services/ride-search-timeout.js";
+import { runParcelSearchTimeoutTick } from "./services/parcel-search-timeout.js";
 import { runRiderTrackingWatchdogTick } from "./lib/rider-tracking-watchdog.service.js";
 import { runOrderDispatchWaveTick } from "./lib/order-dispatch-tick.js";
 import { withLock, closeRedis } from "@gatimitra/redis";
@@ -1275,6 +1276,7 @@ let pendingPaymentReconcilerInterval: ReturnType<typeof setInterval> | null = nu
 let orderAcceptanceTimeoutInterval: ReturnType<typeof setInterval> | null = null;
 let orderAutoAcceptInterval: ReturnType<typeof setInterval> | null = null;
 let rideSearchTimeoutInterval: ReturnType<typeof setInterval> | null = null;
+let parcelSearchTimeoutInterval: ReturnType<typeof setInterval> | null = null;
 let orderDispatchWaveInterval: ReturnType<typeof setInterval> | null = null;
 let competitorSnapshotsInterval: ReturnType<typeof setInterval> | null = null;
 let etaLiveTickInterval: ReturnType<typeof setInterval> | null = null;
@@ -1325,6 +1327,7 @@ const gracefulShutdown = async (signal: string) => {
   if (orderAcceptanceTimeoutInterval) { clearInterval(orderAcceptanceTimeoutInterval); orderAcceptanceTimeoutInterval = null; }
   if (orderAutoAcceptInterval) { clearInterval(orderAutoAcceptInterval); orderAutoAcceptInterval = null; }
   if (rideSearchTimeoutInterval) { clearInterval(rideSearchTimeoutInterval); rideSearchTimeoutInterval = null; }
+  if (parcelSearchTimeoutInterval) { clearInterval(parcelSearchTimeoutInterval); parcelSearchTimeoutInterval = null; }
   if (orderDispatchWaveInterval) { clearInterval(orderDispatchWaveInterval); orderDispatchWaveInterval = null; }
   if (competitorSnapshotsInterval) { clearInterval(competitorSnapshotsInterval); competitorSnapshotsInterval = null; }
   if (etaLiveTickInterval) { clearInterval(etaLiveTickInterval); etaLiveTickInterval = null; }
@@ -1583,6 +1586,21 @@ try {
       .catch((err) => app.log.error({ err }, "ride_search_timeout_tick"));
   setTimeout(() => { void runRideSearchTickLocked(); }, 3_000);
   rideSearchTimeoutInterval = setInterval(() => { void runRideSearchTickLocked(); }, rideSearchTimeoutIntervalMs);
+
+  const parcelSearchTimeoutIntervalMs = 15_000;
+  const runParcelSearchTickLocked = () =>
+    withLock("tick:parcel-search-timeout", 25_000, () => runParcelSearchTimeoutTick(app.log))
+      .then((result) => {
+        incrCounter(
+          "tick_runs_total",
+          "Polling tick outcomes by lock state",
+          1,
+          { tick: "parcel_search_timeout", outcome: result === null ? "skipped" : "ran" },
+        );
+      })
+      .catch((err) => app.log.error({ err }, "parcel_search_timeout_tick"));
+  setTimeout(() => { void runParcelSearchTickLocked(); }, 4_000);
+  parcelSearchTimeoutInterval = setInterval(() => { void runParcelSearchTickLocked(); }, parcelSearchTimeoutIntervalMs);
 
   // Rider tracking watchdog — sweeps active pre-pickup sessions for location-off /
   // no-movement / opposite-direction and warns the rider every N min per the

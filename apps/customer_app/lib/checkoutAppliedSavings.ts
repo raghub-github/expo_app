@@ -48,3 +48,27 @@ export function hasAppliedMembershipFreeDelivery(
     (d) => isSubscriptionBenefitDiscount(d) && (Number(d.amount) || 0) > 0.005
   );
 }
+
+/**
+ * Instant "You saved" while /billing/calculate catches up: keep free-delivery
+ * savings fixed (quoted fee) and scale the rest with cart value.
+ */
+export function estimateOptimisticCheckoutSavings(args: {
+  settledSavingsTotal: number;
+  settledFreeDeliverySavings: number;
+  settledCartValue: number;
+  liveCartValue: number;
+}): number {
+  const settled = roundSavingsMoney(args.settledSavingsTotal);
+  const fd = Math.min(
+    settled,
+    roundSavingsMoney(Math.max(0, args.settledFreeDeliverySavings))
+  );
+  const rest = Math.max(0, settled - fd);
+  const settledCart = Math.max(0, args.settledCartValue);
+  const liveCart = Math.max(0, args.liveCartValue);
+  if (settledCart <= 0.005) {
+    return roundSavingsMoney(fd + rest);
+  }
+  return roundSavingsMoney(fd + rest * (liveCart / settledCart));
+}

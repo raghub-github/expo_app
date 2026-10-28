@@ -13,7 +13,7 @@ export function CustomerMapUnavailable({
   style,
 }: Props) {
   return (
-    <View style={[styles.root, style]}>
+    <View style={[styles.root, style]} pointerEvents="none">
       <Ionicons name="map-outline" size={32} color="#9CA3AF" />
       <AppText style={styles.text}>{message}</AppText>
     </View>

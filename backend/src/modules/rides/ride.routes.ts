@@ -94,7 +94,16 @@ const availabilityQuerySchema = z.object({
   rideType: z.string().min(1).optional(),
   /** Duty service filter — person_ride (default) or parcel. */
   serviceType: z.enum(["person_ride", "parcel"]).optional(),
-  tripKm: z.coerce.number().min(0).max(500).optional(),
+  /**
+   * Clamp oversized tripKm instead of 400 — long parcel legs were spamming validation_error
+   * and the book UI flashed every vehicle type.
+   */
+  tripKm: z.preprocess((raw) => {
+    if (raw == null || raw === "") return undefined;
+    const n = typeof raw === "number" ? raw : parseFloat(String(raw));
+    if (!Number.isFinite(n) || n < 0) return undefined;
+    return Math.min(n, 10_000);
+  }, z.number().min(0).max(10_000).optional()),
   pickupPincode: z.string().optional(),
   pickupState: z.string().optional(),
 });

@@ -13,11 +13,14 @@ export const DEFAULT_ANDROID_NAV_BOTTOM_INSET_PURE = 24;
 
 export function resolveTabBarBottomInsetPure(
   insetsBottom: number,
-  platform: "ios" | "android" | "web" = "android"
+  platform: "ios" | "android" | "web" = "android",
+  /** When true, activity window already sits above system nav (non edge-to-edge). */
+  windowClearsSystemNav = false
 ): number {
   const inset = Math.max(0, insetsBottom);
   if (platform === "android") {
-    return Math.max(DEFAULT_ANDROID_NAV_BOTTOM_INSET_PURE, inset);
+    if (windowClearsSystemNav) return 0;
+    return inset > 0 ? inset : DEFAULT_ANDROID_NAV_BOTTOM_INSET_PURE;
   }
   return Math.max(inset, 8);
 }
@@ -27,7 +30,11 @@ export function resolveTabBarBottomInsetPure(
  */
 export function resolveCustomerFloatingChromeBottomPure(
   rawBottom: number,
-  platform: "ios" | "android" | "web" = "android"
+  platform: "ios" | "android" | "web" = "android",
+  windowClearsSystemNav = false
 ): number {
-  return resolveTabBarBottomInsetPure(rawBottom, platform) + CUSTOMER_TAB_BAR_FLOAT_GAP_PURE;
+  return (
+    resolveTabBarBottomInsetPure(rawBottom, platform, windowClearsSystemNav) +
+    CUSTOMER_TAB_BAR_FLOAT_GAP_PURE
+  );
 }

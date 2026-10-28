@@ -34,6 +34,7 @@ import { closedStoreCtaCopy, getOpenSoonState } from "@/lib/storeScheduleUi";
 import { useScheduleTick } from "@/hooks/useScheduleTick";
 import { FloatingOrderTrackingPill } from "@/components/orders/FloatingOrderTrackingPill";
 import { isTerminalOrderStatus } from "@/lib/customer-order-status-display";
+import { resolveParcelTrackingNavigation } from "@/lib/parcel-orders";
 import { FLOATING_EDGE_TAB_GAP } from "@/components/FloatingEdgeChrome";
 import { StoreText } from "@/components/store/StoreText";
 import {
@@ -327,9 +328,16 @@ export function GlobalFloatingCart() {
   const openOrderTracking = (ord: ActiveOrder) => {
     const service = ord.serviceType ?? "food";
     if (service === "parcel") {
+      const nav = resolveParcelTrackingNavigation({
+        orderId: ord.orderId,
+        formattedOrderId: ord.formattedOrderId,
+        status: ord.status,
+        orderType: "parcel",
+        vehicleImageKey: ord.vehicleImageKey,
+      });
       router.push({
-        pathname: "/orders/[id]",
-        params: { id: ord.orderId, returnTo: "parcel" },
+        pathname: nav.pathname,
+        params: nav.params,
       } as never);
       return;
     }

@@ -171,7 +171,15 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
       ? Math.round(input.tripKm * 100) / 100
       : haversineKm(input.pickupLat, input.pickupLng, input.dropLat, input.dropLng);
 
-  let fare = Math.max(0, Number(input.estimatedFare) || 0);
+  if (!(distanceKm > 0)) {
+    throw Object.assign(new Error("Valid trip distance is required to price this parcel"), {
+      statusCode: 400,
+      code: "INVALID_TRIP_KM",
+    });
+  }
+
+  // Authoritative geo-slab re-quote (never trust client estimatedFare as SSOT).
+  let fare = 0;
   let fareQuoteMeta: Record<string, unknown> | null = null;
   try {
     const quote = await quoteParcelVehicleFare({
@@ -190,11 +198,18 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
         pricingGeoRefId: quote.pricingGeoRefId,
       };
     }
-  } catch {
-    /* keep client fare */
+  } catch (e) {
+    throw Object.assign(new Error("Could not price this parcel trip"), {
+      statusCode: 400,
+      code: "PARCEL_QUOTE_FAILED",
+      cause: e,
+    });
   }
   if (!(fare > 0)) {
-    throw Object.assign(new Error("Could not price this parcel trip"), { statusCode: 400 });
+    throw Object.assign(new Error("Could not price this parcel trip for the selected vehicle"), {
+      statusCode: 400,
+      code: "PARCEL_FARE_UNAVAILABLE",
+    });
   }
 
   const searchTimeoutSec = DEFAULT_PARCEL_SEARCH_TIMEOUT_SEC;
@@ -295,6 +310,8 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
     searchExpiresAt: searchExpiresAt.toISOString(),
     pickupLabel,
     dropLabel,
+    senderName,
+    senderMobile,
     receiverName,
     receiverMobile,
     couponCode,
@@ -551,40 +568,28 @@ export type CancelParcelOrderInput = {
   cancelledByType?: "customer" | "system";
 };
 
-export async function cancelParcelOrder(input: CancelParcelOrderInput): Promise<{
+type ParcelCancelRow = {
+  id: number;
   orderId: string;
-  status: string;
-}> {
+  status: string | null;
+  riderId: number | null;
+  paymentStatus?: string | null;
+};
+
+async function cancelParcelOrderForRow(
+  row: ParcelCancelRow,
+  opts: {
+    customerPk: number | null;
+    cancelMode: "manual" | "auto" | "timeout";
+    cancelledByType: "customer" | "system";
+    reasonCode: string;
+    reasonText: string;
+  }
+): Promise<{ orderId: string; status: string }> {
   const db = getDb();
   const sqlClient = getSql();
-  const [row] = await db
-    .select({
-      id: ordersCore.id,
-      orderId: ordersCore.orderId,
-      status: ordersCore.status,
-      riderId: ordersCore.riderId,
-      orderType: ordersCore.orderType,
-    })
-    .from(ordersCore)
-    .where(
-      and(customerOrderRefWhere(input.customerPk, input.orderRef), eq(ordersCore.orderType, "parcel"))
-    )
-    .limit(1);
-
-  if (!row?.id || !row.orderId) {
-    throw Object.assign(new Error("Parcel order not found"), { statusCode: 404 });
-  }
-
   const now = new Date();
-  const cancelMode = input.cancelMode ?? "manual";
-  const cancelledByType =
-    input.cancelledByType ?? (cancelMode === "timeout" ? "system" : "customer");
-  const reasonCode = input.reasonCode?.trim() || "CUSTOMER_CANCELLED";
-  const reasonText =
-    input.reasonText?.trim() ||
-    (cancelMode === "timeout"
-      ? "Rider Not Assigned"
-      : "Customer cancelled parcel while searching");
+  const { cancelMode, cancelledByType, reasonCode, reasonText } = opts;
 
   const status = String(row.status ?? "");
   if (status === "cancelled") {
@@ -599,6 +604,11 @@ export async function cancelParcelOrder(input: CancelParcelOrderInput): Promise<
     throw Object.assign(new Error("Rider already assigned"), { statusCode: 409 });
   }
 
+  const payStatus = String(row.paymentStatus ?? "").toLowerCase();
+  const paymentNeverCaptured = !["paid", "captured", "completed", "refunded", "partially_refunded"].includes(
+    payStatus
+  );
+
   await db.transaction(async (tx) => {
     await tx
       .update(ordersCore)
@@ -607,7 +617,9 @@ export async function cancelParcelOrder(input: CancelParcelOrderInput): Promise<
         currentStatus: "CANCELLED",
         cancelledAt: now,
         cancelledBy: cancelledByType === "system" ? "SYSTEM" : "customer",
-        cancelledById: cancelledByType === "customer" ? input.customerPk : null,
+        cancelledById: cancelledByType === "customer" ? opts.customerPk : null,
+        // Uncaptured cancel → failed (admin Transactions must not stay Pending).
+        ...(paymentNeverCaptured ? { paymentStatus: "failed" as const } : {}),
         updatedAt: now,
       })
       .where(eq(ordersCore.id, row.id));
@@ -627,7 +639,7 @@ export async function cancelParcelOrder(input: CancelParcelOrderInput): Promise<
   await recordOrderCancellation(sqlClient, {
     orderCorePk: row.id,
     cancelledBy: cancelledByType === "system" ? "SYSTEM" : "customer",
-    cancelledById: cancelledByType === "customer" ? input.customerPk : null,
+    cancelledById: cancelledByType === "customer" ? opts.customerPk : null,
     reasonCode: cancelMode === "timeout" ? "AUTO_CANCELLED" : reasonCode,
     reasonText,
     previousStatus: status,
@@ -644,7 +656,7 @@ export async function cancelParcelOrder(input: CancelParcelOrderInput): Promise<
     status: "CANCELLED",
     previousStatus: status.toUpperCase(),
     actorType: cancelledByType === "system" ? "system" : "customer",
-    actorId: cancelledByType === "customer" ? input.customerPk : null,
+    actorId: cancelledByType === "customer" ? opts.customerPk : null,
     statusMessage: reasonText,
     occurredAt: now,
     metadata: { reasonCode, cancelMode, displayReason: reasonCode },
@@ -663,4 +675,92 @@ export async function cancelParcelOrder(input: CancelParcelOrderInput): Promise<
   }
 
   return { orderId: row.orderId, status: "CANCELLED" };
+}
+
+/** System auto-cancel when parcel rider search window expires (no tip-boost). */
+export async function autoCancelExpiredParcelOrder(orderCorePk: number): Promise<boolean> {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      id: ordersCore.id,
+      orderId: ordersCore.orderId,
+      status: ordersCore.status,
+      riderId: ordersCore.riderId,
+      paymentStatus: ordersCore.paymentStatus,
+    })
+    .from(ordersCore)
+    .where(and(eq(ordersCore.id, orderCorePk), eq(ordersCore.orderType, "parcel")))
+    .limit(1);
+
+  if (!row?.id || !row.orderId) return false;
+
+  await cancelParcelOrderForRow(
+    {
+      id: row.id,
+      orderId: row.orderId,
+      status: row.status,
+      riderId: row.riderId,
+      paymentStatus: row.paymentStatus,
+    },
+    {
+      customerPk: null,
+      cancelledByType: "system",
+      cancelMode: "timeout",
+      reasonCode: "RIDER_SEARCH_TIMEOUT",
+      reasonText: "No rider accepted within the search window",
+    }
+  );
+  return true;
+}
+
+export async function cancelParcelOrder(input: CancelParcelOrderInput): Promise<{
+  orderId: string;
+  status: string;
+}> {
+  const db = getDb();
+  const [row] = await db
+    .select({
+      id: ordersCore.id,
+      orderId: ordersCore.orderId,
+      status: ordersCore.status,
+      riderId: ordersCore.riderId,
+      orderType: ordersCore.orderType,
+      paymentStatus: ordersCore.paymentStatus,
+    })
+    .from(ordersCore)
+    .where(
+      and(customerOrderRefWhere(input.customerPk, input.orderRef), eq(ordersCore.orderType, "parcel"))
+    )
+    .limit(1);
+
+  if (!row?.id || !row.orderId) {
+    throw Object.assign(new Error("Parcel order not found"), { statusCode: 404 });
+  }
+
+  const cancelMode = input.cancelMode ?? "manual";
+  const cancelledByType =
+    input.cancelledByType ?? (cancelMode === "timeout" ? "system" : "customer");
+  const reasonCode = input.reasonCode?.trim() || "CUSTOMER_CANCELLED";
+  const reasonText =
+    input.reasonText?.trim() ||
+    (cancelMode === "timeout"
+      ? "Rider Not Assigned"
+      : "Customer cancelled parcel while searching");
+
+  return cancelParcelOrderForRow(
+    {
+      id: row.id,
+      orderId: row.orderId,
+      status: row.status,
+      riderId: row.riderId,
+      paymentStatus: row.paymentStatus,
+    },
+    {
+      customerPk: input.customerPk,
+      cancelMode,
+      cancelledByType,
+      reasonCode,
+      reasonText,
+    }
+  );
 }

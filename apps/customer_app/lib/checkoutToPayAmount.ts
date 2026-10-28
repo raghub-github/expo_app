@@ -62,6 +62,72 @@ export type CheckoutToPayInput = {
 };
 
 /**
+ * Instant qty/add/remove estimate of the pre-wallet bill final.
+ *
+ * Fixed fees (packaging, platform, delivery, tip, …) stay put; the variable share
+ * (food after discounts + item tax) scales with cart value so First Bite / % offers
+ * do not get treated as a 1:1 add to "To pay" (which made TOTAL diverge from the
+ * settled Bill Summary figure).
+ */
+export function estimateOptimisticPreWalletAmount(input: {
+  settledPreWallet: number;
+  settledCartValue: number;
+  liveCartValue: number;
+  settledFixedFees: number;
+  settledTip: number;
+  settledDonation: number;
+  liveTip: number;
+  liveDonation: number;
+}): number {
+  const settledCart = Math.max(0, input.settledCartValue);
+  const liveCart = Math.max(0, input.liveCartValue);
+  const settledPre = Math.max(0, input.settledPreWallet);
+  const settledFixed = Math.max(0, Math.min(input.settledFixedFees, settledPre));
+  const settledTip = Math.max(0, input.settledTip);
+  const settledDonation = Math.max(0, input.settledDonation);
+  const liveFixed = Math.max(
+    0,
+    settledFixed - settledTip - settledDonation + Math.max(0, input.liveTip) + Math.max(0, input.liveDonation)
+  );
+
+  if (settledCart <= 0.005) {
+    return roundCheckoutMoney(Math.max(0, liveFixed + liveCart));
+  }
+
+  const variable = Math.max(0, settledPre - settledFixed);
+  const marginal = variable / settledCart;
+  return roundCheckoutMoney(Math.max(0, liveFixed + liveCart * marginal));
+}
+
+/**
+ * Packaging / platform / delivery / surge / … + tip/donation — does not scale 1:1
+ * with food qty. Used by {@link estimateOptimisticPreWalletAmount}.
+ */
+export function sumCheckoutFixedFeeComponents(input: {
+  packaging?: number;
+  platform?: number;
+  delivery?: number;
+  surge?: number;
+  smallOrder?: number;
+  convenience?: number;
+  subscription?: number;
+  tip?: number;
+  donation?: number;
+}): number {
+  return roundCheckoutMoney(
+    Math.max(0, input.packaging ?? 0) +
+      Math.max(0, input.platform ?? 0) +
+      Math.max(0, input.delivery ?? 0) +
+      Math.max(0, input.surge ?? 0) +
+      Math.max(0, input.smallOrder ?? 0) +
+      Math.max(0, input.convenience ?? 0) +
+      Math.max(0, input.subscription ?? 0) +
+      Math.max(0, input.tip ?? 0) +
+      Math.max(0, input.donation ?? 0)
+  );
+}
+
+/**
  * Payable amount shown across checkout UI and used when applying wallet / unlocks
  * on top of `serverBill.finalAmount`.
  */

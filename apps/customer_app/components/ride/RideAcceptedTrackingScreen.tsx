@@ -43,6 +43,7 @@ import { getRideOrderStatus, cancelRideOrder, type RideOrderStatusResponse } fro
 import { cancelParcelOrder } from "@/services/parcelBooking.service";
 import { orderService } from "@/services/order.service";
 import { buildRideSearchingResumeParams } from "@/lib/person-ride-orders";
+import { buildParcelSearchingResumeParams } from "@/lib/parcel-orders";
 import { RideTripDetailsSheet } from "@/components/ride/RideTripDetailsSheet";
 import { RideInProgressNoticeCarousel } from "@/components/ride/RideInProgressNoticeCarousel";
 import { speakRideTollNotice } from "@/lib/speak-ride-notice";
@@ -305,7 +306,10 @@ export function RideAcceptedTrackingScreen({
     void queryClient.invalidateQueries({ queryKey: ["my-orders", "active-rides"] });
 
     if (isParcelOrder(order)) {
-      router.replace("/home/service/parcel-searching" as never);
+      router.replace({
+        pathname: "/home/service/parcel-searching",
+        params: buildParcelSearchingResumeParams(order),
+      } as never);
       return;
     }
 

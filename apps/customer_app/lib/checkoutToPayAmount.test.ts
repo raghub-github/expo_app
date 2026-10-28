@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   computeCheckoutStrikethroughTotal,
   computeCheckoutToPayAmount,
+  estimateOptimisticPreWalletAmount,
   grandTotalWithoutUnconfirmedDelivery,
   isDeliverySpecificDiscount,
+  sumCheckoutFixedFeeComponents,
 } from "./checkoutToPayAmount";
 
 test("grand total drops an unconfirmed delivery fee and its waiver", () => {
@@ -143,6 +145,49 @@ test("to-pay and strikethrough reconcile for wallet-covered order", () => {
   assert.equal(toPay, 0);
   assert.equal(strike, finalAmount);
   assert.equal(round2(strike! + toPay - gatiCash), 0);
+});
+
+test("optimistic pre-wallet scales food share, keeps fixed fees", () => {
+  // Settled: cart 200, fixed fees 40, variable 120 → preWallet 160 (40% effective after offers).
+  const next = estimateOptimisticPreWalletAmount({
+    settledPreWallet: 160,
+    settledCartValue: 200,
+    liveCartValue: 300,
+    settledFixedFees: 40,
+    settledTip: 0,
+    settledDonation: 0,
+    liveTip: 0,
+    liveDonation: 0,
+  });
+  // variable 120/200=0.6 → 40 + 300*0.6 = 220
+  assert.equal(next, 220);
+});
+
+test("optimistic pre-wallet swaps live tip without rescaling food", () => {
+  const next = estimateOptimisticPreWalletAmount({
+    settledPreWallet: 170,
+    settledCartValue: 200,
+    liveCartValue: 200,
+    settledFixedFees: 50,
+    settledTip: 10,
+    settledDonation: 0,
+    liveTip: 25,
+    liveDonation: 0,
+  });
+  // fixed without tip 40 + live tip 25 + variable 120 = 185
+  assert.equal(next, 185);
+});
+
+test("sumCheckoutFixedFeeComponents adds fee legs", () => {
+  assert.equal(
+    sumCheckoutFixedFeeComponents({
+      packaging: 5,
+      platform: 3,
+      delivery: 20,
+      tip: 10,
+    }),
+    38
+  );
 });
 
 function round2(n: number): number {

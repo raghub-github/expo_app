@@ -89,8 +89,11 @@ export function usePreventServicesAtPin() {
       return checkPreventServices({ lat, lng });
     },
     enabled,
-    staleTime: 45_000,
-    refetchInterval: (query) => pollIntervalWithBackoff(query, 60_000),
+    // geo/services already merges preventBlocked for tiles; this check is the
+    // lock authority. Realtime invalidates on admin write/expiry — poll is a
+    // sparse safety net only (was 60s and duplicated geo/services work).
+    staleTime: 120_000,
+    refetchInterval: (query) => pollIntervalWithBackoff(query, 300_000),
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: true,

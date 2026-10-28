@@ -12,6 +12,10 @@ import {
 } from "../../db/schema.js";
 import type { PlatformOfferRow } from "./types.js";
 import {
+  FIRST_ORDER_FREE_DELIVERY_BENEFIT_FAMILY,
+  platformOfferFirstOrderBenefitFamily,
+} from "./platformOfferFirstOrderFood.js";
+import {
   offerLedgerOrderPredicate,
   parseOfferOrderNumericPk,
   resolveOfferOrderKeys,
@@ -175,11 +179,41 @@ export async function recordPlatformOfferUsageAtPlacement(
       maxUsesPerUser: billingPlatformOffers.maxUsesPerUser,
       maxUsesPerDay: billingPlatformOffers.maxUsesPerDay,
       maxUsesPerMonth: billingPlatformOffers.maxUsesPerMonth,
+      offerKind: billingPlatformOffers.offerKind,
+      customerSegment: billingPlatformOffers.customerSegment,
+      conditions: billingPlatformOffers.conditions,
+      restoreOnCancel: billingPlatformOffers.restoreOnCancel,
+      restoreOnRefund: billingPlatformOffers.restoreOnRefund,
     })
     .from(billingPlatformOffers)
     .where(eq(billingPlatformOffers.id, offerId))
     .limit(1)
     .for("update");
+
+  const offerRow = {
+    offerKind: offerCfg?.offerKind ?? "DISCOUNT",
+    customerSegment: offerCfg?.customerSegment ?? "ALL",
+    conditions: (offerCfg?.conditions ?? {}) as Record<string, unknown>,
+  } as PlatformOfferRow;
+  const benefitFamily = platformOfferFirstOrderBenefitFamily(offerRow);
+
+  // Cross-campaign lock: refuse if another first-order free-delivery usage is active.
+  if (benefitFamily) {
+    const [prior] = await tx
+      .select({ id: platformOfferUsages.id })
+      .from(platformOfferUsages)
+      .where(
+        and(
+          eq(platformOfferUsages.customerId, customerId),
+          eq(platformOfferUsages.benefitFamily, benefitFamily),
+          inArray(platformOfferUsages.status, [...ACTIVE_USAGE_STATUSES])
+        )
+      )
+      .limit(1);
+    if (prior) {
+      return { ok: false, status: "first_order_benefit_already_used" };
+    }
+  }
 
   const mode = String(
     input.consumeMode ?? offerCfg?.consumeMode ?? "ON_PLACED"
@@ -187,29 +221,75 @@ export async function recordPlatformOfferUsageAtPlacement(
   const status = mode === "ON_DELIVERED" ? "reserved" : "consumed";
   const now = new Date();
 
-  const inserted = await tx
-    .insert(platformOfferUsages)
-    .values({
-      platformOfferId: offerId,
-      customerId,
-      orderId: orderPk,
-      orderIdText,
-      status,
-      appliedAt: now,
-      consumedAt: status === "consumed" ? now : null,
-      discountAmount: String(discount),
-      consumedBudget: status === "consumed" ? String(discount) : "0",
-      usageCount: 1,
-      metadata: {
-        consume_mode: mode,
-        audit_event: "customer_redemption",
-        audit_at: now.toISOString(),
-      },
-    } as never)
-    .onConflictDoNothing()
-    .returning({ id: platformOfferUsages.id });
+  const usageMeta = {
+    consume_mode: mode,
+    audit_event: "customer_redemption",
+    audit_at: now.toISOString(),
+    ...(benefitFamily ? { benefit_family: benefitFamily } : {}),
+  };
+  const baseValues = {
+    platformOfferId: offerId,
+    customerId,
+    orderId: orderPk,
+    orderIdText,
+    status,
+    appliedAt: now,
+    consumedAt: status === "consumed" ? now : null,
+    discountAmount: String(discount),
+    consumedBudget: status === "consumed" ? String(discount) : "0",
+    usageCount: 1,
+    metadata: usageMeta,
+  };
+
+  let inserted: Array<{ id: number }> = [];
+  try {
+    inserted = await tx
+      .insert(platformOfferUsages)
+      .values({
+        ...baseValues,
+        benefitFamily: benefitFamily ?? null,
+      } as never)
+      .onConflictDoNothing()
+      .returning({ id: platformOfferUsages.id });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (benefitFamily && /benefit_family|unique|duplicate/i.test(msg) && !/does not exist/i.test(msg)) {
+      return { ok: false, status: "first_order_benefit_already_used" };
+    }
+    // Pre-migration: column may not exist — retry without benefitFamily (family still in metadata).
+    if (/benefit_family|does not exist/i.test(msg)) {
+      inserted = await tx
+        .insert(platformOfferUsages)
+        .values(baseValues as never)
+        .onConflictDoNothing()
+        .returning({ id: platformOfferUsages.id });
+    } else {
+      throw e;
+    }
+  }
 
   if (!inserted.length) {
+    // Distinguish idempotent same-order retry from cross-order benefit-family conflict.
+    const [existingForOrder] = await tx
+      .select({ id: platformOfferUsages.id })
+      .from(platformOfferUsages)
+      .where(
+        and(
+          eq(platformOfferUsages.platformOfferId, offerId),
+          orderPk != null
+            ? eq(platformOfferUsages.orderId, orderPk)
+            : orderIdText
+              ? eq(platformOfferUsages.orderIdText, orderIdText)
+              : sql`false`
+        )
+      )
+      .limit(1);
+    if (existingForOrder) {
+      return { ok: true, status: "already_recorded" };
+    }
+    if (benefitFamily) {
+      return { ok: false, status: "first_order_benefit_already_used" };
+    }
     return { ok: true, status: "already_recorded" };
   }
 
@@ -429,11 +509,92 @@ async function releaseUsages(
     );
 
   for (const row of rows) {
+    const u = row.usage;
+    const meta = (u.metadata ?? {}) as Record<string, unknown>;
+    const family =
+      (typeof (u as { benefitFamily?: string | null }).benefitFamily === "string" &&
+        String((u as { benefitFamily?: string | null }).benefitFamily).trim()) ||
+      (typeof meta.benefit_family === "string" && meta.benefit_family.trim()) ||
+      null;
+
+    // First-order free delivery: release campaign budget, but NEVER restore
+    // customer lifetime eligibility (prevents cancel-and-reorder abuse).
+    if (family === FIRST_ORDER_FREE_DELIVERY_BENEFIT_FAMILY) {
+      const wasConsumed = u.status === "consumed";
+      const budgetToRestore = wasConsumed
+        ? Number(u.consumedBudget ?? u.discountAmount ?? 0) || 0
+        : 0;
+      await db.transaction(async (tx) => {
+        const auditEvent =
+          nextStatus === "cancelled"
+            ? "cancel_no_restore_first_order_fd"
+            : "refund_no_restore_first_order_fd";
+        await tx
+          .update(platformOfferUsages)
+          .set({
+            status: nextStatus,
+            cancelledAt: nextStatus === "cancelled" ? now : u.cancelledAt,
+            refundedAt: nextStatus === "refunded" ? now : u.refundedAt,
+            updatedAt: now,
+            metadata: sql`COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({
+              audit_event: auditEvent,
+              audit_at: now.toISOString(),
+              previous_status: u.status,
+              budget_restored: budgetToRestore,
+              lifetime_eligibility_retained: false,
+            })}::jsonb`,
+          })
+          .where(
+            and(
+              eq(platformOfferUsages.id, u.id),
+              inArray(platformOfferUsages.status, ["reserved", "consumed"])
+            )
+          );
+
+        if (budgetToRestore > 0) {
+          await tx
+            .update(billingPlatformOffers)
+            .set({
+              budgetUsed: sql`GREATEST(0, COALESCE(budget_used, 0) - ${budgetToRestore})`,
+              updatedAt: now,
+            })
+            .where(eq(billingPlatformOffers.id, u.platformOfferId));
+        }
+
+        // Permanent lock after status leaves reserved|consumed (unique index frees).
+        try {
+          await tx
+            .insert(platformOfferUsages)
+            .values({
+              platformOfferId: u.platformOfferId,
+              customerId: u.customerId,
+              orderId: null,
+              orderIdText: `lifetime-lock:${family}:${u.customerId}`,
+              status: "consumed",
+              appliedAt: now,
+              consumedAt: now,
+              discountAmount: "0",
+              consumedBudget: "0",
+              benefitFamily: family,
+              usageCount: 0,
+              metadata: {
+                audit_event: "first_order_fd_lifetime_lock",
+                source_usage_id: u.id,
+                audit_at: now.toISOString(),
+              },
+            } as never)
+            .onConflictDoNothing();
+        } catch {
+          /* unique race — lock already present */
+        }
+      });
+      continue;
+    }
+
     const allow =
       restoreFlag === "restoreOnCancel" ? row.restoreOnCancel !== false : row.restoreOnRefund !== false;
     if (!allow) continue;
 
-    const u = row.usage;
     const wasConsumed = u.status === "consumed";
     const budgetToRestore = wasConsumed ? Number(u.consumedBudget ?? u.discountAmount ?? 0) || 0 : 0;
 

@@ -5,7 +5,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TouchableOpacity, StyleSheet, ActivityIndicator } from "react-native";
+import { View, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
@@ -144,11 +144,23 @@ export default function RideMapPickerScreen() {
     setLocating(true);
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") return;
+      if (status !== "granted") {
+        Alert.alert("Location permission", "Please enable location access to use Locate me.");
+        return;
+      }
+      if (geocodeTimeoutRef.current) {
+        clearTimeout(geocodeTimeoutRef.current);
+        geocodeTimeoutRef.current = null;
+      }
       const pos = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
+        accuracy: Location.Accuracy.High,
       });
       const { latitude, longitude } = pos.coords;
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        Alert.alert("Location not found", "Could not fetch your current location. Try again.");
+        return;
+      }
+      centerCoordRef.current = { latitude, longitude };
       setCenterCoord({ latitude, longitude });
       mapRef.current?.animateToRegion?.({
         latitude,
@@ -157,6 +169,8 @@ export default function RideMapPickerScreen() {
         longitudeDelta: 0.012,
       });
       await updateAddressFromCoords(latitude, longitude);
+    } catch {
+      Alert.alert("Location not found", "Could not fetch your current location. Try again.");
     } finally {
       setLocating(false);
     }

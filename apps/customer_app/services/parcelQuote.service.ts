@@ -35,6 +35,8 @@ export async function getParcelFareQuoteBatch(params: {
   vehicleTypes: ParcelVehicleCategoryCode[];
   pickupPincode?: string;
   pickupState?: string;
+  /** Applied to PARCEL billing charge rules (cash / online). */
+  paymentMode?: "cash" | "cod" | "online" | null;
   signal?: AbortSignal;
 }): Promise<ParcelFareQuoteBatchResult> {
   try {
@@ -54,7 +56,7 @@ export async function getParcelFareQuoteBatch(params: {
           }
         | { ok: false; code: string; message: string }
       >;
-    }>(`${PARCEL_PREFIX}/quote-batch`, body, { signal: params.signal, timeout: 15_000 });
+    }>(`${PARCEL_PREFIX}/quote-batch`, body, { signal: params.signal, timeout: 8_000 });
 
     if (!data?.ok || !data.quotes) return { ok: false, error: "Quote batch unavailable" };
 

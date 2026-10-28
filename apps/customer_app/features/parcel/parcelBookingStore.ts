@@ -32,12 +32,15 @@ type ParcelBookingState = {
    * Fresh entry from outside clears drop.
    */
   preserveDraftOnNextFocus: boolean;
+  /** Captain search in progress — keep pickup/drop and skip guidelines under the search screen. */
+  searchInFlight: boolean;
   setPickup: (stop: ParcelStop | null) => void;
   setDrop: (stop: ParcelStop | null) => void;
   setReceiver: (receiver: ParcelReceiver | null) => void;
   markGuidelinesShown: () => void;
   markVisitedInnerPage: () => void;
   markPreserveDraftOnNextFocus: () => void;
+  setSearchInFlight: (value: boolean) => void;
   /** Clear drop + receiver for a fresh Courier visit (keeps pickup seed). */
   clearDropSession: () => void;
   swapStops: () => void;
@@ -51,12 +54,14 @@ export const useParcelBookingStore = create<ParcelBookingState>((set, get) => ({
   guidelinesShown: false,
   visitedInnerPage: false,
   preserveDraftOnNextFocus: false,
+  searchInFlight: false,
   setPickup: (pickup) => set({ pickup }),
   setDrop: (drop) => set({ drop }),
   setReceiver: (receiver) => set({ receiver }),
   markGuidelinesShown: () => set({ guidelinesShown: true }),
   markVisitedInnerPage: () => set({ visitedInnerPage: true }),
   markPreserveDraftOnNextFocus: () => set({ preserveDraftOnNextFocus: true }),
+  setSearchInFlight: (searchInFlight) => set({ searchInFlight }),
   clearDropSession: () =>
     set({
       drop: null,
@@ -73,8 +78,8 @@ export const useParcelBookingStore = create<ParcelBookingState>((set, get) => ({
       pickup: null,
       drop: null,
       receiver: null,
-      guidelinesShown: false,
       visitedInnerPage: false,
       preserveDraftOnNextFocus: false,
+      searchInFlight: false,
     }),
 }));

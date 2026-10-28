@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Dimensions, Platform, StatusBar } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { androidWindowAlreadyClearsSystemNav } from "@/constants/layout";
 
 /**
  * Height of the Android system navigation bar that a translucent Modal draws
@@ -9,6 +10,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
  */
 export function androidNavigationBarOverlap(): number {
   if (Platform.OS !== "android") return 0;
+  if (!androidWindowAlreadyClearsSystemNav()) return 0;
   const screenH = Dimensions.get("screen").height;
   const windowH = Dimensions.get("window").height;
   const status = StatusBar.currentHeight ?? 0;

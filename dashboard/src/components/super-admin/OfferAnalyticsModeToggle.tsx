@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 
-export type OfferAnalyticsMode = "normal" | "flash";
+export type OfferAnalyticsMode = "normal" | "flash" | "free_delivery";
 
 export function OfferAnalyticsModeToggle({ mode }: { mode: OfferAnalyticsMode }) {
   return (
@@ -34,6 +34,18 @@ export function OfferAnalyticsModeToggle({ mode }: { mode: OfferAnalyticsMode })
         }
       >
         FLASH
+      </Link>
+      <Link
+        href="/dashboard/super-admin/offers-coupons/free-delivery-tracker"
+        role="tab"
+        aria-selected={mode === "free_delivery"}
+        className={
+          mode === "free_delivery"
+            ? "rounded-md bg-teal-700 px-3 py-1.5 text-xs font-semibold text-white shadow-sm"
+            : "rounded-md px-3 py-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800"
+        }
+      >
+        FREE DELIVERY
       </Link>
     </div>
   );

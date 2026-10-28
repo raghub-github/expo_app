@@ -2498,6 +2498,11 @@ export const platformOfferUsages = pgTable(
     consumedBudget: numeric("consumed_budget", { precision: 14, scale: 4 }).notNull().default("0"),
     /** Order grand total at redemption — analytics / sales attribution. */
     orderSaleAmount: numeric("order_sale_amount", { precision: 14, scale: 4 }),
+    /**
+     * Shared promotion identity (e.g. first_order_free_delivery). Enables
+     * cross-campaign one-time locks via partial unique index.
+     */
+    benefitFamily: text("benefit_family"),
     usageCount: integer("usage_count").notNull().default(1),
     metadata: jsonb("metadata").notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -2512,6 +2517,10 @@ export const platformOfferUsages = pgTable(
       table.customerId,
       table.status
     ),
+    /** One active redemption per customer for a shared benefit family (e.g. first-order FD). */
+    benefitFamilyActiveUidx: uniqueIndex("platform_offer_usages_benefit_family_customer_active_uidx")
+      .on(table.customerId, table.benefitFamily)
+      .where(sql`status IN ('reserved', 'consumed') AND benefit_family IS NOT NULL`),
   })
 );
 

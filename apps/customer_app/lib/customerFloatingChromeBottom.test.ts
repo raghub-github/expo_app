@@ -34,4 +34,14 @@ describe("resolveCustomerFloatingChromeBottomPure", () => {
     const foodWithTrackY = resolveCustomerFloatingChromeBottomPure(34, "android");
     assert.equal(homeY, foodWithTrackY);
   });
+
+  it("does not re-pad Android when the window already clears system nav", () => {
+    assert.equal(resolveTabBarBottomInsetPure(48, "android", true), 0);
+    assert.equal(resolveCustomerFloatingChromeBottomPure(48, "android", true), 0);
+  });
+
+  it("edge-to-edge Android still pads by the safe-area inset", () => {
+    assert.equal(resolveTabBarBottomInsetPure(48, "android", false), 48);
+    assert.equal(resolveTabBarBottomInsetPure(0, "android", false), 24);
+  });
 });

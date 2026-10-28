@@ -24,6 +24,7 @@ import { clearDismissedNotificationIds } from "@/lib/dismissedNotifications";
 import { resetActiveLocationReconcileGate } from "@/lib/activeLocationReconcileGate";
 import { useOrderStore } from "@/store/orderStore";
 import { useCartStore } from "@/store/cartStore";
+import { useRecentlyRemovedStore } from "@/store/recentlyRemovedStore";
 import { useShopCartStore } from "@/store/shopCartStore";
 import { useCheckoutOfferStore } from "@/store/checkoutOfferStore";
 import { useCheckoutAddressHandoffStore } from "@/store/checkoutAddressHandoffStore";
@@ -45,6 +46,7 @@ import {
 function clearInMemoryCustomerStores(): void {
   useOrderStore.getState().clearActiveOrder();
   useCartStore.getState().clearCart();
+  useRecentlyRemovedStore.getState().clearAll();
   useShopCartStore.getState().clearCart();
   useCheckoutOfferStore.getState().setPending(null);
   useCheckoutAddressHandoffStore.getState().clear();
@@ -89,6 +91,7 @@ async function clearPersistedCustomerCaches(): Promise<void> {
     clearWalletBalanceCache(),
     clearDismissedNotificationIds(),
     removeSecureItem(STORAGE_KEYS.CART),
+    removeSecureItem(STORAGE_KEYS.RECENTLY_REMOVED),
     removeSecureItem(STORAGE_KEYS.SHOP_CART),
     removeSecureItem(STORAGE_KEYS.PROFILE_OFFLINE),
     AsyncStorage.multiRemove([

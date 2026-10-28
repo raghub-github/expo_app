@@ -98,6 +98,8 @@ import { CouponApplyCelebration } from "@/components/checkout/CouponApplyCelebra
 import { CouponAvailableBottomSheet } from "@/components/checkout/CouponAvailableBottomSheet";
 import { BillSummarySheet } from "@/components/checkout/BillSummarySheet";
 import { CheckoutText } from "@/components/checkout/CheckoutText";
+import { RecentlyRemovedSection } from "@/components/cart/RecentlyRemovedSection";
+import { useRecentlyRemovedStore } from "@/store/recentlyRemovedStore";
 import { AnimatedRupeeAmount } from "@/components/checkout/AnimatedRupeeAmount";
 import { CheckoutGatiCashWalletBar } from "@/components/checkout/CheckoutGatiCashWalletBar";
 import { CheckoutMissedOfferWalletCard } from "@/components/checkout/CheckoutMissedOfferWalletCard";
@@ -127,6 +129,7 @@ import {
 } from "@/hooks/useCouponAvailablePrompt";
 import {
   friendlyCheckoutDiscountLabel,
+  resolveCheckoutDiscountDisplayLabel,
   isSubscriptionBenefitDiscount,
   splitCheckoutDiscounts,
   flashSaleSavingsByOfferId as flashSaleSavingsMapFromDiscounts,
@@ -134,6 +137,7 @@ import {
 } from "@/lib/checkout-discount-display";
 import {
   computeAppliedCheckoutSavings,
+  estimateOptimisticCheckoutSavings,
   formatCheckoutSavingsRupees,
   hasAppliedMembershipFreeDelivery,
 } from "@/lib/checkoutAppliedSavings";
@@ -145,6 +149,11 @@ import {
   resolveOfferMinOrderGap,
 } from "@/lib/checkoutOfferMinOrder";
 import {
+  buildFreeDeliveryUnlockCompensation,
+  formatAddMoreForFreeDelivery,
+  resolveFreeDeliveryProgress,
+} from "@/lib/firstOrderFreeDeliveryProgress";
+import {
   buildBillingCalculateParams,
   buildBillingCalculateQueryKey,
   type BillingCalculateKeyParams,
@@ -154,6 +163,9 @@ import { DeliveryAddressText } from "@/components/address/DeliveryAddressText";
 import {
   computeCheckoutStrikethroughTotal,
   computeCheckoutToPayAmount,
+  estimateOptimisticPreWalletAmount,
+  isDeliverySpecificDiscount,
+  sumCheckoutFixedFeeComponents,
 } from "@/lib/checkoutToPayAmount";
 import { CURRENT_SUBSCRIPTION_QUERY_KEY } from "@/lib/subscriptionCache";
 import { useCheckoutOfferStore } from "@/store/checkoutOfferStore";
@@ -1147,6 +1159,15 @@ function CheckoutScreen() {
   const items = useCartStore((s) => s.items);
   const merchantId = useCartStore((s) => s.merchantId);
   const merchantName = useCartStore((s) => s.merchantName);
+  const recentlyRemovedEntries = useRecentlyRemovedStore((s) => s.entries);
+  const recentlyRemovedCount = useMemo(() => {
+    if (!merchantId) return 0;
+    let n = 0;
+    for (const e of recentlyRemovedEntries) {
+      if (e.merchantId === merchantId) n += 1;
+    }
+    return n;
+  }, [merchantId, recentlyRemovedEntries]);
   const updateQuantity = useCartStore((s) => s.updateQuantity);
   const clearCart = useCartStore((s) => s.clearCart);
   const syncPricesFromMap = useCartStore((s) => s.syncPricesFromMap);
@@ -1317,6 +1338,8 @@ function CheckoutScreen() {
   const [missedOfferWalletPending, setMissedOfferWalletPending] = useState(false);
   const [selectedMissedOfferKey, setSelectedMissedOfferKey] = useState<string | null>(null);
   const [missedOfferSheetVisible, setMissedOfferSheetVisible] = useState(false);
+  /** Unlock sheet opened from Total Bill FREE_DELIVERY "ADD" (not the GatiCash card). */
+  const [freeDeliveryUnlockSheetVisible, setFreeDeliveryUnlockSheetVisible] = useState(false);
   const [missedOfferCelebration, setMissedOfferCelebration] =
     useState<MissedOfferWalletCompensation | null>(null);
   const [selectedPlatformOfferId, setSelectedPlatformOfferId] = useState<number | null>(null);
@@ -2527,8 +2550,9 @@ function CheckoutScreen() {
     staleTime: 15_000,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
-    retry: (failureCount, error) => isNetworkError(error) && failureCount < 2,
-    retryDelay: 600,
+    // Axios already retries network/503 once. Extra RQ retries stacked to ~60–80s of
+    // "Loading bill…" with no CTA recovery — fail fast and let the user tap retry.
+    retry: 0,
   });
 
   // [PERF][CHECKOUT] billing calculate timing — logs each fetch cycle's duration so a
@@ -2921,7 +2945,7 @@ function CheckoutScreen() {
     return false;
   }, [cartLevelCheckoutPromoDiscounts, serverBill, deliveryType]);
 
-  const showMembershipUpsell =
+  const showMembershipUpsellBase =
     showSubscriptionPromo &&
     !(membershipFreeDeliveryOnBill && !subscriptionOptIn) &&
     !platformFreeDeliveryOnBill;
@@ -2997,6 +3021,77 @@ function CheckoutScreen() {
   });
 
   /**
+   * First-order / platform FREE_DELIVERY still available (eligible, min-cart locked,
+   * or already on the bill). While true: hide GMitra Plus; if below min cart, show
+   * "Add ₹X more to avail free delivery" under Total Bill.
+   */
+  const freeDeliveryProgress = useMemo(
+    () =>
+      resolveFreeDeliveryProgress({
+        platformOffers: checkoutOffersQuery.data?.platformOffers,
+        platformOffersIneligible: checkoutOffersQuery.data?.platformOffersIneligible,
+        cartSubtotal: clientEligibleCheckoutSubtotal,
+        freeDeliveryAlreadyOnBill: platformFreeDeliveryOnBill,
+      }),
+    [
+      checkoutOffersQuery.data?.platformOffers,
+      checkoutOffersQuery.data?.platformOffersIneligible,
+      clientEligibleCheckoutSubtotal,
+      platformFreeDeliveryOnBill,
+    ]
+  );
+
+  // Keep next to freeDeliveryProgress — late binding + React Compiler/HMR caused
+  // ReferenceError: Property 'showMembershipUpsell' doesn't exist (TDZ).
+  const showMembershipUpsell = useMemo(
+    () => showMembershipUpsellBase && !freeDeliveryProgress.offerAvailable,
+    [showMembershipUpsellBase, freeDeliveryProgress.offerAvailable]
+  );
+
+  const showFreeDeliveryAddMoreRow =
+    deliveryType === "delivery" &&
+    freeDeliveryProgress.offerAvailable &&
+    freeDeliveryProgress.gapInr > 0 &&
+    freeDeliveryProgress.offer != null &&
+    !platformFreeDeliveryOnBill;
+
+  const freeDeliveryAddMoreCopy = showFreeDeliveryAddMoreRow
+    ? formatAddMoreForFreeDelivery(freeDeliveryProgress.gapInr)
+    : "";
+
+  const freeDeliveryUnlockComp = useMemo(() => {
+    if (!showFreeDeliveryAddMoreRow || !freeDeliveryProgress.offer || !merchantId) {
+      return null;
+    }
+    const quoted = serverBill?.deliveryFeeQuotedInr ?? 0;
+    const deliverySavings =
+      freeDeliveryProgress.offer.estimatedSavingsInr ??
+      (quoted > 0.005 ? quoted : 0);
+    return buildFreeDeliveryUnlockCompensation({
+      offer: freeDeliveryProgress.offer,
+      gapInr: freeDeliveryProgress.gapInr,
+      merchantId,
+      deliverySavingsInr: Number(deliverySavings) || 0,
+    });
+  }, [
+    showFreeDeliveryAddMoreRow,
+    freeDeliveryProgress.offer,
+    freeDeliveryProgress.gapInr,
+    merchantId,
+    serverBill?.deliveryFeeQuotedInr,
+  ]);
+
+  const openFreeDeliveryUnlockSheet = useCallback(() => {
+    if (!freeDeliveryUnlockComp) return;
+    setSelectedMissedOfferKey(freeDeliveryUnlockComp.key);
+    setFreeDeliveryUnlockSheetVisible(true);
+  }, [freeDeliveryUnlockComp]);
+
+  useEffect(() => {
+    if (!showFreeDeliveryAddMoreRow) setFreeDeliveryUnlockSheetVisible(false);
+  }, [showFreeDeliveryAddMoreRow]);
+
+  /**
    * Super Admin enable/disable bumps ruleset version in the database.
    * The bill query key does not include that version, so poll it and refetch
    * the open checkout as soon as it changes.
@@ -3005,9 +3100,12 @@ function CheckoutScreen() {
     queryKey: ["billing-ruleset-version"],
     queryFn: () => billingService.getRulesetVersion(),
     enabled: canRequestBilling && !paymentInProgress,
-    staleTime: 0,
+    staleTime: 15_000,
     gcTime: 30_000,
-    refetchInterval: paymentInProgress ? false : 1000,
+    // 1s polling flooded the connection and helped starve POST /billing/calculate
+    // (client saw Network Error while GETs still succeeded). 8s was still chatty
+    // on idle checkout; admin ruleset bumps are rare.
+    refetchInterval: paymentInProgress ? false : 20_000,
     refetchIntervalInBackground: false,
     retry: 1,
   });
@@ -3278,6 +3376,7 @@ function CheckoutScreen() {
 
   const handleMissedOfferAddMoreItems = useCallback(() => {
     setMissedOfferSheetVisible(false);
+    setFreeDeliveryUnlockSheetVisible(false);
     if (merchantId) {
       router.push(`/home/merchant/${merchantId}` as never);
     } else {
@@ -3352,7 +3451,11 @@ function CheckoutScreen() {
 
   const handleSelectMissedOfferWallet = useCallback(() => {
     if (!hasEligibleCheckoutOfferBase) return;
-    if (!missedOfferWalletComp || missedOfferWalletPending) return;
+    const unlockTarget =
+      freeDeliveryUnlockSheetVisible && freeDeliveryUnlockComp
+        ? freeDeliveryUnlockComp
+        : missedOfferWalletComp;
+    if (!unlockTarget || missedOfferWalletPending) return;
     if (!authSession) {
       Alert.alert("Sign in required", "Please sign in to add GatiCash for this offer.");
       return;
@@ -3367,18 +3470,27 @@ function CheckoutScreen() {
     pendingCouponCelebrationRef.current = null;
     setCouponCelebrationVisible(false);
 
-    pendingMissedOfferWalletRef.current = missedOfferWalletComp;
+    pendingMissedOfferWalletRef.current = unlockTarget;
     setMissedOfferWalletPending(true);
-    setSelectedMissedOfferKey(missedOfferWalletComp.key);
-    setMissedOfferCelebration(missedOfferWalletComp);
+    setSelectedMissedOfferKey(unlockTarget.key);
+    setMissedOfferCelebration(unlockTarget);
     setMissedOfferSheetVisible(false);
-  }, [hasEligibleCheckoutOfferBase, missedOfferWalletComp, missedOfferWalletPending, authSession]);
+    setFreeDeliveryUnlockSheetVisible(false);
+  }, [
+    hasEligibleCheckoutOfferBase,
+    freeDeliveryUnlockSheetVisible,
+    freeDeliveryUnlockComp,
+    missedOfferWalletComp,
+    missedOfferWalletPending,
+    authSession,
+  ]);
 
   const handleRemoveMissedOfferWallet = useCallback(() => {
     pendingMissedOfferWalletRef.current = null;
     setMissedOfferWalletPending(false);
     setSelectedMissedOfferKey(null);
     setMissedOfferSheetVisible(false);
+    setFreeDeliveryUnlockSheetVisible(false);
     setMissedOfferCelebration(null);
     setForceNoAutoOffer(false);
     setCheckoutOfferUserPinned(false);
@@ -3433,14 +3545,14 @@ function CheckoutScreen() {
   const appliedDiscountRows = useMemo(
     () =>
       (primaryCheckoutDiscount ? [primaryCheckoutDiscount] : []).map((d) => ({
-        label: friendlyCheckoutDiscountLabel(d.label),
+        label: resolveCheckoutDiscountDisplayLabel(d, checkoutOffersQuery.data),
         amount: d.amount,
         platformOfferId:
           typeof d.meta?.platformOfferId === "number" ? (d.meta.platformOfferId as number) : null,
         merchantOfferId:
           typeof d.meta?.merchantOfferId === "number" ? (d.meta.merchantOfferId as number) : null,
       })),
-    [primaryCheckoutDiscount]
+    [primaryCheckoutDiscount, checkoutOffersQuery.data]
   );
 
   const subscriptionBenefitRows = useMemo(
@@ -3457,7 +3569,10 @@ function CheckoutScreen() {
 
     if (primaryCheckoutDiscount && primaryCheckoutDiscount.amount > 0.005) {
       parts.push({
-        label: friendlyCheckoutDiscountLabel(primaryCheckoutDiscount.label),
+        label: resolveCheckoutDiscountDisplayLabel(
+          primaryCheckoutDiscount,
+          checkoutOffersQuery.data
+        ),
         amount: primaryCheckoutDiscount.amount,
       });
     }
@@ -3490,6 +3605,7 @@ function CheckoutScreen() {
     return parts;
   }, [
     primaryCheckoutDiscount,
+    checkoutOffersQuery.data,
     flashSaleSavingsTotal,
     flashSaleBillLine?.label,
     subscriptionBenefitDiscounts,
@@ -4504,17 +4620,6 @@ function CheckoutScreen() {
     return displayMissedOfferWalletComp.offerSavingsInr;
   }, [missedOfferWalletPending, displayMissedOfferWalletComp]);
 
-  const gatiCashMaxApply = useMemo(() => {
-    if (billFinalWithLiveGratitude == null || gatiCashAvailable <= 0.005) return 0;
-    const base = roundBillAmount(billFinalWithLiveGratitude - missedOfferUnlockDiscount);
-    return Math.min(gatiCashAvailable, Math.max(0, base));
-  }, [billFinalWithLiveGratitude, gatiCashAvailable, missedOfferUnlockDiscount]);
-
-  const gatiCashApplyAmount = useMemo(() => {
-    if (!useGatiCashWallet || gatiCashMaxApply <= 0.005) return 0;
-    return gatiCashMaxApply;
-  }, [useGatiCashWallet, gatiCashMaxApply]);
-
   const checkoutScrollBottomInset = useMemo(
     () =>
       footerBottomInset +
@@ -4525,11 +4630,144 @@ function CheckoutScreen() {
     [footerBottomInset, deliveryType, deliveryUnavailableAlert]
   );
 
-  /** Authoritative total from the last SETTLED server bill (not a mid-flight placeholder). */
-  const confirmedToPayAmount = useMemo(() => {
-    if (serverBill == null || billFinalWithLiveGratitude == null) return undefined;
+  const liveCartValue = useMemo(
+    () => roundBillAmount(effectiveCartValue(items, itemOfferById)),
+    [items, itemOfferById]
+  );
+
+  /**
+   * Snapshot at last SETTLED bill (fetch idle + cart debounce caught up).
+   * Qty taps update `items` before `debouncedItems` / isFetching flip — never rewrite
+   * the baseline in that window or TOTAL freezes on the stale server final.
+   */
+  const lastSettledBillRef = useRef<{
+    items: CartItem[];
+    preWalletAmount: number;
+    cartValue: number;
+    fixedFees: number;
+    tip: number;
+    donation: number;
+    savingsTotal: number;
+    freeDeliverySavings: number;
+  } | null>(null);
+  /** Address + delivery type + store coords — qty taps must not count as a new scope. */
+  const billingDisplayScope = `${selectedAddress?.id ?? "none"}|${deliveryType}|${pickupLat ?? ""}|${pickupLon ?? ""}`;
+  const lastSettledScopeRef = useRef<string | null>(null);
+
+  const feeWithGst = (line?: { taxable_value?: number; gst?: number } | null) =>
+    Math.max(0, line?.taxable_value ?? 0) + Math.max(0, line?.gst ?? 0);
+
+  useEffect(() => {
+    if (billFinalWithLiveGratitude == null || serverBill == null || billingQuery.isFetching) {
+      return;
+    }
+    // Debounce not caught up — keep prior baseline for instant qty/add/remove.
+    if (items !== debouncedItems) return;
+    const tipAtSettle = serverBill.tipEnabled === false ? 0 : tipValue;
+    const donationAtSettle = serverBill.donationEnabled === false ? 0 : donationValue;
+    const c = serverBill.components;
+    const freeDeliverySavings = billVisibleDiscounts.reduce(
+      (s, d) => (isDeliverySpecificDiscount(d) ? s + (Number(d.amount) || 0) : s),
+      0
+    );
+    lastSettledBillRef.current = {
+      items,
+      preWalletAmount: billFinalWithLiveGratitude,
+      cartValue: liveCartValue,
+      fixedFees: sumCheckoutFixedFeeComponents({
+        packaging: feeWithGst(c?.packaging),
+        platform: feeWithGst(c?.platform),
+        delivery: feeWithGst(c?.delivery),
+        surge: feeWithGst(c?.surge),
+        smallOrder: feeWithGst(c?.small_order),
+        convenience: feeWithGst(c?.convenience),
+        subscription: feeWithGst(c?.subscription),
+        tip: tipAtSettle,
+        donation: donationAtSettle,
+      }),
+      tip: tipAtSettle,
+      donation: donationAtSettle,
+      savingsTotal: checkoutSavingsTotal,
+      freeDeliverySavings,
+    };
+    lastSettledScopeRef.current = billingDisplayScope;
+  }, [
+    billFinalWithLiveGratitude,
+    serverBill,
+    billingQuery.isFetching,
+    items,
+    debouncedItems,
+    liveCartValue,
+    tipValue,
+    donationValue,
+    billingDisplayScope,
+    billVisibleDiscounts,
+    checkoutSavingsTotal,
+  ]);
+
+  /**
+   * Pre-wallet payable shown everywhere (Total Bill, footer, GatiCash cap, Bill Summary).
+   * While /billing/calculate is in flight, scale the last settled food share with cart
+   * value instead of adding raw line deltas (that ignored First Bite / % offers and made
+   * TOTAL ≠ Bill Summary "To pay", and left GatiCash capped on the stale final).
+   */
+  const displayPreWalletAmount = useMemo(() => {
+    if (billFinalWithLiveGratitude == null) return null;
+    const scopeChanged =
+      lastSettledScopeRef.current != null &&
+      lastSettledScopeRef.current !== billingDisplayScope;
+    const stalePlaceholder = billingQuery.isPlaceholderData && scopeChanged;
+    if (stalePlaceholder) return null;
+    if (scopeChanged && billingQuery.isFetching) return null;
+
+    const snapshot = lastSettledBillRef.current;
+    if (!snapshot || snapshot.items === items) return billFinalWithLiveGratitude;
+    if (Math.abs(liveCartValue - snapshot.cartValue) < 0.005) {
+      return billFinalWithLiveGratitude;
+    }
+    const liveTip = serverBill?.tipEnabled === false ? 0 : tipValue;
+    const liveDonation = serverBill?.donationEnabled === false ? 0 : donationValue;
+    return estimateOptimisticPreWalletAmount({
+      settledPreWallet: snapshot.preWalletAmount,
+      settledCartValue: snapshot.cartValue,
+      liveCartValue,
+      settledFixedFees: snapshot.fixedFees,
+      settledTip: snapshot.tip,
+      settledDonation: snapshot.donation,
+      liveTip,
+      liveDonation,
+    });
+  }, [
+    billFinalWithLiveGratitude,
+    billingDisplayScope,
+    billingQuery.isPlaceholderData,
+    billingQuery.isFetching,
+    items,
+    liveCartValue,
+    tipValue,
+    donationValue,
+    serverBill?.tipEnabled,
+    serverBill?.donationEnabled,
+  ]);
+
+  const gatiCashMaxApply = useMemo(() => {
+    if (displayPreWalletAmount == null || gatiCashAvailable <= 0.005) return 0;
+    const base = roundBillAmount(displayPreWalletAmount - missedOfferUnlockDiscount);
+    return Math.min(gatiCashAvailable, Math.max(0, base));
+  }, [displayPreWalletAmount, gatiCashAvailable, missedOfferUnlockDiscount]);
+
+  const gatiCashApplyAmount = useMemo(() => {
+    if (!useGatiCashWallet || gatiCashMaxApply <= 0.005) return 0;
+    return gatiCashMaxApply;
+  }, [useGatiCashWallet, gatiCashMaxApply]);
+
+  /**
+   * Single display total for Total Bill, footer TOTAL, and Bill Summary "To pay".
+   */
+  const toPayAmount = useMemo(() => {
+    if (displayPreWalletAmount == null || serverBill == null) return undefined;
     return computeCheckoutToPayAmount({
-      finalAmount: billFinalWithLiveGratitude,
+      finalAmount: displayPreWalletAmount,
       deliveryType,
       deliveryFeePending,
       pendingDeliveryFee: Math.max(
@@ -4544,67 +4782,44 @@ function CheckoutScreen() {
           : 0,
     });
   }, [
+    displayPreWalletAmount,
     serverBill,
-    billFinalWithLiveGratitude,
+    deliveryType,
+    deliveryFeePending,
     gatiCashApplyAmount,
     missedOfferUnlockDiscount,
     missedOfferWalletPending,
     missedOfferWalletPendingAmount,
-    deliveryFeePending,
-    deliveryType,
   ]);
 
   /**
-   * Snapshot of the cart + confirmed total at the moment billing last SETTLED (i.e. not
-   * while a refetch triggered by this cart is still in flight — `keepPreviousData` would
-   * otherwise make `confirmedToPayAmount` look "fresh" while it's actually still the
-   * PRE-tap value). Only updates once `billingQuery` has finished fetching.
+   * "You saved" banner + Total Bill pill — tracks qty instantly with the same
+   * settle snapshot as toPay (free-delivery amount stays fixed; other savings scale).
    */
-  const lastSettledBillRef = useRef<{ items: CartItem[]; toPayAmount: number } | null>(null);
-  /** Address + delivery type + store coords — qty taps must not count as a new scope. */
-  const billingDisplayScope = `${selectedAddress?.id ?? "none"}|${deliveryType}|${pickupLat ?? ""}|${pickupLon ?? ""}`;
-  const lastSettledScopeRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (confirmedToPayAmount == null || billingQuery.isFetching) return;
-    lastSettledBillRef.current = { items, toPayAmount: confirmedToPayAmount };
-    lastSettledScopeRef.current = billingDisplayScope;
-  }, [confirmedToPayAmount, billingQuery.isFetching, items, billingDisplayScope]);
-
-  /**
-   * Display total. Never show cart-only / placeholder / previous-address amounts.
-   * Qty +/- on the same address uses the last settled server bill plus the known
-   * line-price delta so the number updates instantly without a skeleton flash.
-   */
-  const toPayAmount = useMemo(() => {
-    // No saved address yet: still show the settled server bill. deliveryFeePending
-    // already removes the unlocked delivery fee, and Place Order stays disabled
-    // until an address is selected. Hiding the whole total left a skeleton even
-    // after /billing/calculate had returned.
-    const scopeChanged =
-      lastSettledScopeRef.current != null &&
-      lastSettledScopeRef.current !== billingDisplayScope;
-    // Only hide for placeholder when the address/delivery scope changed — cart/tip
-    // refetches keep the last total visible (with optional qty delta below).
-    const stalePlaceholder = billingQuery.isPlaceholderData && scopeChanged;
-    if (stalePlaceholder) return undefined;
-    if (confirmedToPayAmount == null) return undefined;
-
-    if (scopeChanged && billingQuery.isFetching) return undefined;
-
+  const displayCheckoutSavings = useMemo(() => {
     const snapshot = lastSettledBillRef.current;
-    if (!snapshot || snapshot.items === items) return confirmedToPayAmount;
-    const delta =
-      effectiveCartValue(items, itemOfferById) - effectiveCartValue(snapshot.items, itemOfferById);
-    if (Math.abs(delta) < 0.005) return confirmedToPayAmount;
-    return Math.max(0, roundBillAmount(snapshot.toPayAmount + delta));
-  }, [
-    confirmedToPayAmount,
-    items,
-    itemOfferById,
-    billingDisplayScope,
-    billingQuery.isPlaceholderData,
-    billingQuery.isFetching,
-  ]);
+    if (!snapshot || snapshot.items === items) return checkoutSavingsTotal;
+    if (Math.abs(liveCartValue - snapshot.cartValue) < 0.005) return checkoutSavingsTotal;
+    return estimateOptimisticCheckoutSavings({
+      settledSavingsTotal: snapshot.savingsTotal,
+      settledFreeDeliverySavings: snapshot.freeDeliverySavings,
+      settledCartValue: snapshot.cartValue,
+      liveCartValue,
+    });
+  }, [checkoutSavingsTotal, items, liveCartValue, toPayAmount]);
+
+  /** Coupon-row headline with the same instant savings figure as the bill. */
+  const displayOffersAppliedHeadline = useMemo(() => {
+    if (!(displayCheckoutSavings > 0.005) || !(checkoutSavingsTotal > 0.005)) {
+      return offersAppliedHeadline;
+    }
+    const from = `You saved ₹${formatCheckoutSavingsRupees(checkoutSavingsTotal)}`;
+    const to = `You saved ₹${formatCheckoutSavingsRupees(displayCheckoutSavings)}`;
+    if (from === to) return offersAppliedHeadline;
+    return offersAppliedHeadline.includes(from)
+      ? offersAppliedHeadline.replace(from, to)
+      : offersAppliedHeadline;
+  }, [offersAppliedHeadline, displayCheckoutSavings, checkoutSavingsTotal]);
 
   const billVisibleLoggedRef = useRef(false);
   useEffect(() => {
@@ -4664,13 +4879,13 @@ function CheckoutScreen() {
     return computeCheckoutStrikethroughTotal({
       toPayAmount,
       gatiCashApplyAmount,
-      checkoutSavingsTotal,
+      checkoutSavingsTotal: displayCheckoutSavings,
       missedOfferWalletPending,
       missedOfferWalletPendingAmount,
     });
   }, [
     toPayAmount,
-    checkoutSavingsTotal,
+    displayCheckoutSavings,
     gatiCashApplyAmount,
     missedOfferWalletPending,
     missedOfferWalletPendingAmount,
@@ -5955,10 +6170,10 @@ function CheckoutScreen() {
         </Animated.View>
       )}
 
-      {checkoutSavingsTotal > 0.005 ? (
+      {displayCheckoutSavings > 0.005 ? (
         <View style={[styles.checkoutSavingsTag, isDiscoveryDark && styles.darkSavingsTag]}>
           <CheckoutText style={[styles.checkoutSavingsTagText, isDiscoveryDark && styles.darkSavingsTagText]} bold>
-            {`🥳 You saved ₹${formatCheckoutSavingsRupees(checkoutSavingsTotal)} on this order`}
+            {`🥳 You saved ₹${formatCheckoutSavingsRupees(displayCheckoutSavings)} on this order`}
           </CheckoutText>
         </View>
       ) : null}
@@ -6146,6 +6361,19 @@ function CheckoutScreen() {
           </Animated.View>
         ) : null}
 
+        {/* Recently removed — after items/upsell, before coupons/payment */}
+        {recentlyRemovedCount > 0 ? (
+          <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(45)} style={styles.section}>
+            <View style={[styles.checkoutFullBleedSection, dCard, { paddingHorizontal: 0, paddingVertical: 0 }]}>
+              <RecentlyRemovedSection
+                merchantId={merchantId}
+                menu={merchant?.menu}
+                isDark={isDiscoveryDark}
+              />
+            </View>
+          </Animated.View>
+        ) : null}
+
         {/* Offers — blue banner, GMitra plus, applied savings, coupons */}
         {showMembershipUpsell || showCheckoutCouponRow ? (
         <Animated.View entering={FadeInDown.duration(ANIM_DURATION).delay(50)} style={styles.section}>
@@ -6273,7 +6501,7 @@ function CheckoutScreen() {
               )}
               <View style={styles.offersBodyTextCol}>
                 <CheckoutText style={[styles.offersAppliedHeadline, dText]} numberOfLines={2}>
-                  {offersAppliedHeadline}
+                  {displayOffersAppliedHeadline}
                 </CheckoutText>
                 {offersAppliedSubline ? (
                   <CheckoutText
@@ -6539,10 +6767,10 @@ function CheckoutScreen() {
                           ready={billingReady}
                           style={[styles.gmBillFinal, dText]}
                         />
-                        {checkoutSavingsTotal > 0.005 ? (
+                        {displayCheckoutSavings > 0.005 ? (
                           <View style={[styles.gmSavedPill, isDiscoveryDark && styles.darkSavedPill]}>
                             <CheckoutText style={[styles.gmSavedPillText, isDiscoveryDark && styles.darkSavedPillText]}>
-                              You saved ₹{formatCheckoutSavingsRupees(checkoutSavingsTotal)}
+                              You saved ₹{formatCheckoutSavingsRupees(displayCheckoutSavings)}
                             </CheckoutText>
                           </View>
                         ) : null}
@@ -6589,7 +6817,42 @@ function CheckoutScreen() {
               </View>
             ) : null}
 
-            {showGmitraPlusAttachRow ? (
+            {showFreeDeliveryAddMoreRow && freeDeliveryAddMoreCopy ? (
+              <View style={[styles.gmFreeDeliveryProgress, isDiscoveryDark && styles.darkGmFreeDeliveryProgress]}>
+                <View style={styles.gmGoldPointerShell}>
+                  <View style={[styles.gmGoldPointerBorder, { borderBottomColor: isDiscoveryDark ? "#3F3F46" : "#FBCFE8" }]} />
+                  <View style={[styles.gmGoldPointerFill, { borderBottomColor: isDiscoveryDark ? "#2A1F24" : "#FDF2F8" }]} />
+                </View>
+                <Ionicons name="bicycle-outline" size={18} color={isDiscoveryDark ? "#F9A8D4" : "#DB2777"} />
+                <CheckoutText
+                  style={[styles.gmFreeDeliveryProgressText, isDiscoveryDark && styles.darkGmFreeDeliveryProgressText]}
+                  numberOfLines={2}
+                >
+                  {freeDeliveryAddMoreCopy}
+                </CheckoutText>
+                <TouchableOpacity
+                  style={[
+                    styles.gmFreeDeliveryAddBtn,
+                    isDiscoveryDark && styles.darkGmFreeDeliveryAddBtn,
+                    !freeDeliveryUnlockComp && styles.gmFreeDeliveryAddBtnDisabled,
+                  ]}
+                  onPress={openFreeDeliveryUnlockSheet}
+                  disabled={!freeDeliveryUnlockComp}
+                  activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add to unlock free delivery"
+                >
+                  <CheckoutText
+                    style={[
+                      styles.gmFreeDeliveryAddBtnText,
+                      isDiscoveryDark && styles.darkGmFreeDeliveryAddBtnText,
+                    ]}
+                  >
+                    ADD
+                  </CheckoutText>
+                </TouchableOpacity>
+              </View>
+            ) : showGmitraPlusAttachRow ? (
               <View style={[styles.gmGoldAttach, { backgroundColor: subscriptionAttachTheme.softBg }]}>
                 <View style={styles.gmGoldPointerShell}>
                   <View style={[styles.gmGoldPointerBorder, { borderBottomColor: subscriptionAttachTheme.border }]} />
@@ -6671,11 +6934,27 @@ function CheckoutScreen() {
       />
 
       <MissedOfferUnlockSheet
-        visible={missedOfferSheetVisible && hasEligibleCheckoutOfferBase}
-        offer={missedOfferWalletComp}
+        visible={
+          hasEligibleCheckoutOfferBase &&
+          ((missedOfferSheetVisible && missedOfferWalletComp != null) ||
+            (freeDeliveryUnlockSheetVisible && freeDeliveryUnlockComp != null))
+        }
+        offer={
+          freeDeliveryUnlockSheetVisible && freeDeliveryUnlockComp
+            ? freeDeliveryUnlockComp
+            : missedOfferWalletComp
+        }
         bottomInset={insets.bottom}
-        pending={missedOfferWalletPending}
-        onClose={() => setMissedOfferSheetVisible(false)}
+        pending={
+          missedOfferWalletPending &&
+          (freeDeliveryUnlockSheetVisible
+            ? pendingMissedOfferWalletRef.current?.key === freeDeliveryUnlockComp?.key
+            : true)
+        }
+        onClose={() => {
+          setMissedOfferSheetVisible(false);
+          setFreeDeliveryUnlockSheetVisible(false);
+        }}
         onAddToWallet={handleSelectMissedOfferWallet}
         onRemoveFromWallet={handleRemoveMissedOfferWallet}
         onAddMoreItems={handleMissedOfferAddMoreItems}
@@ -6839,20 +7118,22 @@ function CheckoutScreen() {
                     return;
                   }
                   if (!canPlaceOrder) {
+                    if (billingQuery.isError || (toPayAmount == null && !billingQuery.isFetching)) {
+                      void billingQuery.refetch();
+                      return;
+                    }
                     const reason =
                       deliveryType !== "self_pickup" && !hasDeliveryAddress
                       ? "Add a delivery address to place your order."
                       : deliveryType === "delivery" && isDeliveryOutOfRange
                         ? "This address is outside the restaurant delivery zone. Please choose another address."
-                      : billingQuery.isError
-                        ? "Could not load the bill. Pull to refresh or try again."
-                        : billingQuery.isLoading ||
-                            billingQuery.isPlaceholderData ||
-                            billingQuery.isFetching
-                          ? "Updating your bill — try again in a moment."
-                          : !serverBill
-                            ? "Waiting for the bill to load."
-                            : "Select a payment method to continue.";
+                      : billingQuery.isLoading ||
+                          billingQuery.isPlaceholderData ||
+                          billingQuery.isFetching
+                        ? "Updating your bill — try again in a moment."
+                        : !serverBill
+                          ? "Waiting for the bill to load."
+                          : "Select a payment method to continue.";
                     setAlmostThereModal({ title: "Almost there", message: reason });
                     return;
                   }
@@ -6976,7 +7257,7 @@ function CheckoutScreen() {
                               : deliveryType === "delivery" && isDeliveryOutOfRange
                                 ? "Out of delivery zone"
                               : billingQuery.isError
-                                ? "Bill error"
+                                ? "Tap to retry bill"
                                 : toPayAmount == null
                                   ? "Loading bill…"
                                   : !hasValidPayment
@@ -7661,6 +7942,7 @@ function CheckoutScreen() {
         onSave={setDonationScope}
       />
 
+      {/* Same toPayAmount as Total Bill / footer — never diverge mid qty change. */}
       <BillSummarySheet
         visible={billSummarySheetVisible}
         onClose={() => setBillSummarySheetVisible(false)}
@@ -7681,7 +7963,7 @@ function CheckoutScreen() {
         onGstInfoPress={() => setGstBreakdownModalVisible(true)}
         visibleDiscounts={visibleDiscounts.map((d) => ({
           ...d,
-          label: friendlyCheckoutDiscountLabel(d.label),
+          label: resolveCheckoutDiscountDisplayLabel(d, checkoutOffersQuery.data),
         }))}
         showItemTotalStrike={
           showItemTotalStrike &&
@@ -7701,7 +7983,7 @@ function CheckoutScreen() {
             ? `${missedOfferWalletComp.offerTitle} unlocked`
             : "Offer unlocked"
         }
-        toPayAmount={toPayAmount}
+        toPayAmount={toPayAmount ?? null}
         subscriptionDeliveryBenefitLive={subscriptionDeliveryBenefitResolved}
         {...checkoutGratitudeProps}
         showTip={showCheckoutTip}
@@ -8856,6 +9138,58 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 12,
+  },
+  gmFreeDeliveryProgress: {
+    position: "relative",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#FDF2F8",
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#FBCFE8",
+  },
+  darkGmFreeDeliveryProgress: {
+    backgroundColor: "#2A1F24",
+    borderTopColor: "#3F3F46",
+  },
+  gmFreeDeliveryProgressText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#9D174D",
+    lineHeight: 18,
+  },
+  darkGmFreeDeliveryProgressText: {
+    color: "#F9A8D4",
+  },
+  gmFreeDeliveryAddBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: "#DB2777",
+    backgroundColor: "#FFFFFF",
+    minWidth: 64,
+    alignItems: "center",
+  },
+  darkGmFreeDeliveryAddBtn: {
+    borderColor: "#F9A8D4",
+    backgroundColor: "#1C1216",
+  },
+  gmFreeDeliveryAddBtnDisabled: {
+    opacity: 0.45,
+  },
+  gmFreeDeliveryAddBtnText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#DB2777",
+    letterSpacing: 0.3,
+  },
+  darkGmFreeDeliveryAddBtnText: {
+    color: "#F9A8D4",
   },
   gmGoldPointerShell: {
     position: "absolute",

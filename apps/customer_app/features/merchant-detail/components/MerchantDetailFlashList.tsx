@@ -26,6 +26,7 @@ import Animated, {
 import { StoreInfoCard } from "@/components/store/StoreInfoCard";
 import { StoreFilterBar, type StoreFilterId } from "@/components/store/StoreFilterBar";
 import { ClassicFreeDeliveryBanner } from "@/components/store/ClassicFreeDeliveryBanner";
+import { RecentlyRemovedSection } from "@/components/cart/RecentlyRemovedSection";
 import { StorePastOrdersSection } from "@/components/store/StorePastOrdersSection";
 import { StoreComboSection } from "@/components/store/StoreComboSection";
 import { StoreSectionHeader } from "@/components/store/StoreSectionHeader";
@@ -167,6 +168,8 @@ export type MerchantDetailFlashListProps = {
   classicLayout?: boolean;
   refreshing?: boolean;
   onRefresh?: () => void;
+  /** Menu catalog — powers Recently Removed thumbnails on the inner page. */
+  menu?: MenuItem[] | undefined;
 };
 
 /** Viewports kept mounted above + below the screen. Large enough that a fling never uncovers empty cells. */
@@ -276,8 +279,11 @@ const MerchantDetailFlashListInner = forwardRef<
     classicLayout = false,
     refreshing = false,
     onRefresh,
+    menu,
   } = props;
   const dark = useMerchantUiDark();
+  const menuForRecentlyRemoved =
+    menu ?? (merchant as MerchantSummary & { menu?: MenuItem[] }).menu;
 
   const showCategoryRail = showCategoryRailProp && categoryChips.length > 0;
   const railInset = 0;
@@ -541,6 +547,11 @@ const MerchantDetailFlashListInner = forwardRef<
               filtersActive={filtersActive}
             />
             {!dark ? <ClassicFreeDeliveryBanner /> : null}
+            <RecentlyRemovedSection
+              merchantId={merchantId}
+              menu={menuForRecentlyRemoved}
+              isDark={dark}
+            />
           </View>
         );
 

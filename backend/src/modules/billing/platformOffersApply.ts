@@ -13,12 +13,17 @@ import {
 } from "./platformOfferUsage.service.js";
 import { platformOfferFirstRideOnlyPasses } from "./platformOfferFirstRide.js";
 import {
+  platformOfferFirstOrderFreeDeliveryPasses,
+  platformOfferRequiresFirstOrderFreeDelivery,
+} from "./platformOfferFirstOrderFood.js";
+import {
   computeRideParcelPromoDiscount,
   getOfferPromoConfig,
   rideParcelPromoPasses,
 } from "./rideParcelPromoApply.js";
 import { platformOfferCouponCodesMatch } from "./platformOfferCouponCode.js";
 import { platformOfferServiceMatches } from "./platformOfferServiceTypes.js";
+import { platformOfferCheckoutDisplayName } from "./platformOfferDisplayName.js";
 import { isFoodFlashSale } from "./flashSale.js";
 
 export { platformOfferServiceMatches } from "./platformOfferServiceTypes.js";
@@ -218,12 +223,23 @@ export function platformOfferEligible(
   if (!nowInWindow(new Date(), o.startsAt, o.endsAt)) return false;
   if (!platformOfferLocationVisible(ctx, o)) return false;
   if (!isFoodFlashSale(o)) {
-    if (!platformOfferMinCartMeetsThreshold(o, platformOfferMinOrderBase(o, ctx, itemPlusAddon))) return false;
+    const waiveMinCart =
+      ctx.waiveMinCartForSelectedPlatformOffer === true &&
+      ctx.selectedPlatformOfferId != null &&
+      ctx.selectedPlatformOfferId === o.id;
+    if (
+      !waiveMinCart &&
+      !platformOfferMinCartMeetsThreshold(o, platformOfferMinOrderBase(o, ctx, itemPlusAddon))
+    ) {
+      return false;
+    }
   }
   const cond = (o.conditions ?? {}) as Record<string, unknown>;
   if (!platformOfferConditionsPass(cond, ctx)) return false;
   // First Ride Only — independent of per-user usage limits; server-side only.
   if (!platformOfferFirstRideOnlyPasses(ctx, o)) return false;
+  // First-order FREE_DELIVERY — server history + shared benefit family (not client flags).
+  if (!platformOfferFirstOrderFreeDeliveryPasses(ctx, o)) return false;
   // Ride/Parcel promo_config gates (first-N, vehicle, payment, peak, weight, …).
   if (!rideParcelPromoPasses(ctx, o)) return false;
   if (!platformOfferBudgetAvailable(o)) return false;
@@ -508,7 +524,16 @@ function pickPlatformOfferWinner(
 
   const selectedId = ctx.selectedPlatformOfferId;
   if (selectedId != null) {
-    return resolveSelectedPlatformOfferForCheckout(ctx, dataset, itemPlusAddon, selectedId, kindFilter);
+    const selected = resolveSelectedPlatformOfferForCheckout(
+      ctx,
+      dataset,
+      itemPlusAddon,
+      selectedId,
+      kindFilter
+    );
+    // Selected cart DISCOUNT must not block a different delivery-bucket offer
+    // (e.g. FREE_DELIVERY). Only honor selection when it matches this kind filter.
+    if (selected) return selected;
   }
 
   // Manual-apply-only promos: skip auto-pick unless coupon matches.
@@ -558,8 +583,16 @@ export function listEligiblePlatformOffersForCheckout(
   for (const o of offers) {
     if (!nowInWindow(now, o.startsAt, o.endsAt)) continue;
     const cohort = effectiveCustomerSegment(o);
-    if ((cohort === "NEW" && ctx.userSegment !== "NEW") || (cohort === "EXISTING" && ctx.userSegment === "NEW"))
+    // First-order FREE_DELIVERY uses food-order history (not all-service NEW/EXISTING).
+    // A prior Ride must not permanently block first food free delivery.
+    const skipGenericSegment = platformOfferRequiresFirstOrderFreeDelivery(o);
+    if (
+      !skipGenericSegment &&
+      ((cohort === "NEW" && ctx.userSegment !== "NEW") ||
+        (cohort === "EXISTING" && ctx.userSegment === "NEW"))
+    ) {
       continue;
+    }
     if (platformOfferConflictsWithSubscriptionFreeDelivery(ctx, o)) continue;
     const k = kindUpper(o);
     if (k === "SUBSCRIPTION_BENEFIT" && !customerHasSubscriptionOfferAccess(ctx)) continue;
@@ -598,8 +631,11 @@ function applyCartDiscountAmount(
 
   rem.items -= amt;
   state.discountTotal += amt;
-  const label =
-    (winner.name?.trim() || `GatiMitra offer #${winner.id}`) + (labelSuffix ? ` ${labelSuffix}` : "");
+  const baseLabel =
+    platformOfferCheckoutDisplayName(winner) ||
+    winner.name?.trim() ||
+    `GatiMitra offer #${winner.id}`;
+  const label = baseLabel + (labelSuffix ? ` ${labelSuffix}` : "");
   const line: AppliedLine = {
     kind: "discount",
     label,
@@ -741,13 +777,12 @@ export function applyPlatformDeliveryOffers(
   rem.delivery = Math.max(0, rem.delivery - cut);
   state.discountTotal += cut;
   const k = kindUpper(winner);
-  const offerName = winner.name?.trim();
+  // Same title as checkout-offers sheet (Offer name for FREE_DELIVERY).
   const label =
-    k === "FREE_DELIVERY"
-      ? offerName || "Free Delivery"
-      : offerName
-        ? `Delivery discount · ${offerName}`
-        : `Delivery discount (#${winner.id})`;
+    platformOfferCheckoutDisplayName(winner) ||
+    (k === "FREE_DELIVERY"
+      ? "Free Delivery"
+      : `Delivery discount (#${winner.id})`);
   const line: AppliedLine = {
     kind: "discount",
     label,
@@ -813,7 +848,9 @@ export function applyPlatformFeeBucketOffers(
   state.discountTotal += cut;
 
   const label =
-    winner.name?.trim() || `Platform fee discount · ${k.replace(/_/g, " ")} (#${winner.id})`;
+    platformOfferCheckoutDisplayName(winner) ||
+    winner.name?.trim() ||
+    `Platform fee discount · ${k.replace(/_/g, " ")} (#${winner.id})`;
   const line: AppliedLine = {
     kind: "discount",
     label,

@@ -22,7 +22,7 @@ import { runOnJS } from "react-native-reanimated";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { orderService } from "@/services/order.service";
 import type { OrderDetail, OrderSummary } from "@/services/order.service";
 import { BrandingFooter } from "@/components/BrandingFooter";
@@ -31,6 +31,8 @@ import { RideHistoryRow } from "@/components/ride/RideHistoryRow";
 import { RideActiveHistoryRow } from "@/components/ride/RideActiveHistoryRow";
 import { isPersonRideOrderSummary } from "@/lib/person-ride-orders";
 import { getRideDropTitle } from "@/lib/ride-order-display";
+import { isParcelOrder } from "@/lib/customer-order-status-display";
+import { resolveParcelTrackingNavigation } from "@/lib/parcel-orders";
 import { checkReorderStoreEligibility } from "@/hooks/useReorderStoreEligibility";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
 import { useLocationStore } from "@/store/locationStore";
@@ -116,6 +118,20 @@ function orderMatchesSearch(order: OrderSummary, query: string): boolean {
       textIncludes(order.deliveryAddress, q)
     );
   }
+  if (isParcelOrderSummary(order)) {
+    const parties = parcelCardParties(order);
+    return (
+      textIncludes("courier", q) ||
+      textIncludes(parties.senderName, q) ||
+      textIncludes(parties.receiverName, q) ||
+      textIncludes(parties.senderAddress, q) ||
+      textIncludes(parties.receiverAddress, q) ||
+      textIncludes(order.merchantAddress, q) ||
+      textIncludes(order.deliveryAddress, q) ||
+      textIncludes(order.formattedOrderId, q) ||
+      textIncludes(order.orderId, q)
+    );
+  }
   return (
     textIncludes(order.merchantName, q) ||
     textIncludes(order.merchantPublicName, q) ||
@@ -153,6 +169,34 @@ function getCompactAddressLine(address: string | null | undefined) {
   return raw;
 }
 
+function isParcelOrderSummary(order: OrderSummary): boolean {
+  return isParcelOrder(order);
+}
+
+function parcelCardParties(order: OrderSummary): {
+  senderName: string;
+  senderAddress: string;
+  receiverName: string;
+  receiverAddress: string;
+} {
+  const meta = (order.checkoutMetadata ?? {}) as Record<string, unknown>;
+  const senderName =
+    (typeof meta.senderName === "string" && meta.senderName.trim()) || "Sender";
+  const senderAddress =
+    (typeof meta.pickupFullAddress === "string" && meta.pickupFullAddress.trim()) ||
+    (typeof meta.pickupLabel === "string" && meta.pickupLabel.trim()) ||
+    order.merchantAddress?.trim() ||
+    "Pickup";
+  const receiverName =
+    (typeof meta.receiverName === "string" && meta.receiverName.trim()) || "Receiver";
+  const receiverAddress =
+    (typeof meta.dropFullAddress === "string" && meta.dropFullAddress.trim()) ||
+    (typeof meta.dropLabel === "string" && meta.dropLabel.trim()) ||
+    order.deliveryAddress?.trim() ||
+    "Drop";
+  return { senderName, senderAddress, receiverName, receiverAddress };
+}
+
 function DashedDivider() {
   return <View style={styles.dashedDivider} />;
 }
@@ -167,13 +211,17 @@ function ActiveOrderCard({
   onViewMenu: () => void;
 }) {
   const badge = getActiveOrderBadge(order.status);
-  const restaurantName = order.merchantPublicName ?? order.merchantName ?? "";
+  const isParcel = isParcelOrderSummary(order);
+  const restaurantName = isParcel
+    ? "Courier"
+    : order.merchantPublicName ?? order.merchantName ?? "";
   const merchantArea = getCompactAddressLine(order.merchantAddress);
-  const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
+  const bannerUri = isParcel ? null : toAbsoluteImageUrl(order.merchantBannerUrl);
   const items = order.items ?? [];
   const primaryItems = items.slice(0, 2);
   const moreCount = Math.max(0, items.length - 2);
   const price = orderListPriceDisplay(order);
+  const parties = isParcel ? parcelCardParties(order) : null;
 
   return (
     <View style={styles.orderCard}>
@@ -183,7 +231,11 @@ function ActiveOrderCard({
             <Image source={{ uri: bannerUri }} style={styles.orderThumbImage} contentFit="cover" />
           ) : (
             <View style={styles.orderThumbFallback}>
-              <Ionicons name="restaurant-outline" size={22} color="#B0B0B0" />
+              {isParcel ? (
+                <MaterialCommunityIcons name="package-variant-closed" size={22} color="#B0B0B0" />
+              ) : (
+                <Ionicons name="restaurant-outline" size={22} color="#B0B0B0" />
+              )}
             </View>
           )}
         </View>
@@ -194,13 +246,13 @@ function ActiveOrderCard({
               {restaurantName}
             </AppText>
           )}
-          {!!merchantArea && (
+          {!!merchantArea && !isParcel && (
             <AppText style={styles.orderLocation} numberOfLines={1}>
               {merchantArea}
             </AppText>
           )}
           <TouchableOpacity onPress={onViewMenu} style={styles.viewMenuBtn} activeOpacity={0.8}>
-            <AppText style={styles.viewMenuText}>View menu</AppText>
+            <AppText style={styles.viewMenuText}>{isParcel ? "View Info" : "View menu"}</AppText>
             <Ionicons name="chevron-forward" size={12} color={GREEN} />
           </TouchableOpacity>
         </View>
@@ -210,7 +262,31 @@ function ActiveOrderCard({
         </View>
       </View>
 
-      {primaryItems.length > 0 && (
+      {isParcel && parties ? (
+        <>
+          <DashedDivider />
+          <TouchableOpacity
+            style={styles.orderItemsBlock}
+            onPress={onTrack}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Track parcel"
+          >
+            <AppText style={styles.parcelPartyLine} numberOfLines={2}>
+              <AppText style={styles.parcelPartyLabel}>Sender · </AppText>
+              {parties.senderName}
+              {parties.senderAddress ? ` · ${getCompactAddressLine(parties.senderAddress) || parties.senderAddress}` : ""}
+            </AppText>
+            <AppText style={[styles.parcelPartyLine, { marginTop: 6 }]} numberOfLines={2}>
+              <AppText style={styles.parcelPartyLabel}>Receiver · </AppText>
+              {parties.receiverName}
+              {parties.receiverAddress
+                ? ` · ${getCompactAddressLine(parties.receiverAddress) || parties.receiverAddress}`
+                : ""}
+            </AppText>
+          </TouchableOpacity>
+        </>
+      ) : primaryItems.length > 0 ? (
         <>
           <DashedDivider />
           <TouchableOpacity
@@ -251,7 +327,7 @@ function ActiveOrderCard({
             )}
           </TouchableOpacity>
         </>
-      )}
+      ) : null}
 
       <DashedDivider />
 
@@ -331,12 +407,16 @@ function HistoryOrderCard({
   const hasStoreReply = Boolean(order.storeMerchantReplyText?.trim());
   const price = orderListPriceDisplay(order);
 
-  const restaurantName = order.merchantPublicName ?? order.merchantName ?? "";
+  const isParcel = isParcelOrderSummary(order);
+  const restaurantName = isParcel
+    ? "Courier"
+    : order.merchantPublicName ?? order.merchantName ?? "";
   const merchantArea = getCompactAddressLine(order.merchantAddress);
-  const bannerUri = toAbsoluteImageUrl(order.merchantBannerUrl);
+  const bannerUri = isParcel ? null : toAbsoluteImageUrl(order.merchantBannerUrl);
   const items = order.items ?? [];
   const primaryItems = items.slice(0, 2);
   const moreCount = Math.max(0, items.length - 2);
+  const parties = isParcel ? parcelCardParties(order) : null;
 
   return (
     <View style={styles.orderCard}>
@@ -346,7 +426,11 @@ function HistoryOrderCard({
             <Image source={{ uri: bannerUri }} style={styles.orderThumbImage} contentFit="cover" />
           ) : (
             <View style={styles.orderThumbFallback}>
-              <Ionicons name="restaurant-outline" size={22} color="#B0B0B0" />
+              {isParcel ? (
+                <MaterialCommunityIcons name="package-variant-closed" size={22} color="#B0B0B0" />
+              ) : (
+                <Ionicons name="restaurant-outline" size={22} color="#B0B0B0" />
+              )}
             </View>
           )}
         </View>
@@ -357,13 +441,13 @@ function HistoryOrderCard({
               {restaurantName}
             </AppText>
           )}
-          {!!merchantArea && (
+          {!!merchantArea && !isParcel && (
             <AppText style={styles.orderLocation} numberOfLines={1}>
               {merchantArea}
             </AppText>
           )}
           <TouchableOpacity onPress={onViewMenu} style={styles.viewMenuBtn} activeOpacity={0.8}>
-            <AppText style={styles.viewMenuText}>View menu</AppText>
+            <AppText style={styles.viewMenuText}>{isParcel ? "View Info" : "View menu"}</AppText>
             <Ionicons name="chevron-forward" size={12} color={GREEN} />
           </TouchableOpacity>
         </View>
@@ -374,10 +458,12 @@ function HistoryOrderCard({
 
         {isMenuOpen && (
           <View style={styles.moreMenu}>
-            <TouchableOpacity style={styles.moreMenuItem} onPress={onShareRestaurant} activeOpacity={0.8}>
-              <Ionicons name="share-social-outline" size={18} color="#696969" />
-              <AppText style={styles.moreMenuText}>Share restaurant</AppText>
-            </TouchableOpacity>
+            {!isParcel ? (
+              <TouchableOpacity style={styles.moreMenuItem} onPress={onShareRestaurant} activeOpacity={0.8}>
+                <Ionicons name="share-social-outline" size={18} color="#696969" />
+                <AppText style={styles.moreMenuText}>Share restaurant</AppText>
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity style={styles.moreMenuItem} onPress={onOrderDetails} activeOpacity={0.8}>
               <Ionicons name="receipt-outline" size={18} color="#696969" />
               <AppText style={styles.moreMenuText}>Order details</AppText>
@@ -390,7 +476,33 @@ function HistoryOrderCard({
         )}
       </View>
 
-      {primaryItems.length > 0 && (
+      {isParcel && parties ? (
+        <>
+          <DashedDivider />
+          <TouchableOpacity
+            style={styles.orderItemsBlock}
+            onPress={onPress}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="View parcel details"
+          >
+            <AppText style={styles.parcelPartyLine} numberOfLines={2}>
+              <AppText style={styles.parcelPartyLabel}>Sender · </AppText>
+              {parties.senderName}
+              {parties.senderAddress
+                ? ` · ${getCompactAddressLine(parties.senderAddress) || parties.senderAddress}`
+                : ""}
+            </AppText>
+            <AppText style={[styles.parcelPartyLine, { marginTop: 6 }]} numberOfLines={2}>
+              <AppText style={styles.parcelPartyLabel}>Receiver · </AppText>
+              {parties.receiverName}
+              {parties.receiverAddress
+                ? ` · ${getCompactAddressLine(parties.receiverAddress) || parties.receiverAddress}`
+                : ""}
+            </AppText>
+          </TouchableOpacity>
+        </>
+      ) : primaryItems.length > 0 ? (
         <>
           <DashedDivider />
           <TouchableOpacity
@@ -431,7 +543,7 @@ function HistoryOrderCard({
             )}
           </TouchableOpacity>
         </>
-      )}
+      ) : null}
 
       <DashedDivider />
 
@@ -609,7 +721,7 @@ export default function OrdersScreen() {
     }, [queryClient])
   );
 
-  const { data, isPending } = useQuery({
+  const { data, isPending, isFetching, isError, refetch, error } = useQuery({
     queryKey: ["my-orders"],
     queryFn: async () => {
       const list = await orderService.getMyOrders({ limit: 50 });
@@ -637,8 +749,14 @@ export default function OrdersScreen() {
   });
 
   const orders = data ?? [];
-  /** Full-page spinner only when we have nothing cached/in-memory to paint. */
-  const showFullPageLoading = data === undefined && isPending;
+  /**
+   * Full-page spinner only while a fetch is actually in flight and we have
+   * nothing to paint. `isPending && !isFetching` used to happen after a canceled
+   * auth race — that left Active/History stuck on "Loading orders..." forever.
+   */
+  const showFullPageLoading = data === undefined && isFetching;
+  const showLoadFailed =
+    data === undefined && !isFetching && (isError || isPending);
 
   const visibleOrders = orders.filter((o) => !hiddenOrderIds.has(o.orderId));
 
@@ -764,6 +882,13 @@ export default function OrdersScreen() {
     if (navLockRef.current) return;
     navLockRef.current = true;
     const fromList = findOrderInListCache(queryClient, orderId);
+    if (fromList && isParcelOrderSummary(fromList) && !opts?.history && !opts?.rate) {
+      const nav = resolveParcelTrackingNavigation(fromList);
+      if (nav.pathname === "/home/service/parcel-searching") {
+        router.push({ pathname: nav.pathname, params: nav.params } as never);
+        return;
+      }
+    }
     if (fromList) {
       seedOrderDetailCache(queryClient, orderId, orderSummaryToDetail(fromList));
     }
@@ -901,7 +1026,11 @@ export default function OrdersScreen() {
           key={order.orderId}
           order={order}
           onPress={() => openOrderDetails(order.orderId, { history: true })}
-          onViewMenu={() => navigateToStore(order)}
+          onViewMenu={() =>
+            isParcelOrderSummary(order)
+              ? openOrderDetails(order.orderId, { history: true })
+              : navigateToStore(order)
+          }
           onReorder={() => handleReorder(order)}
           onShareFeedback={() => openOrderDetails(order.orderId, { rate: true, history: true })}
           onViewFeedback={() => openOrderDetails(order.orderId, { history: true })}
@@ -978,6 +1107,25 @@ export default function OrdersScreen() {
           <ActivityIndicator size="large" color={GREEN} />
           <AppText style={styles.loadingText}>Loading orders...</AppText>
         </View>
+      ) : showLoadFailed ? (
+        <View style={styles.centered}>
+          <Ionicons name="cloud-offline-outline" size={48} color={BORDER} />
+          <AppText style={styles.emptyTitle}>Couldn't load orders</AppText>
+          <AppText style={styles.emptySub}>
+            {error instanceof Error && error.message
+              ? error.message
+              : "Check your connection and try again."}
+          </AppText>
+          <TouchableOpacity
+            onPress={() => {
+              void refetch();
+            }}
+            style={styles.exploreBtn}
+            activeOpacity={0.9}
+          >
+            <AppText style={styles.exploreBtnText}>Try again</AppText>
+          </TouchableOpacity>
+        </View>
       ) : (
         <GestureDetector gesture={tabSwipeGesture}>
           <View style={styles.pager}>
@@ -1027,7 +1175,11 @@ export default function OrdersScreen() {
                         key={order.orderId}
                         order={order}
                         onTrack={() => openOrderDetails(order.orderId)}
-                        onViewMenu={() => navigateToStore(order)}
+                        onViewMenu={() =>
+                          isParcelOrderSummary(order)
+                            ? openOrderDetails(order.orderId)
+                            : navigateToStore(order)
+                        }
                       />
                     )
                   )}
@@ -1324,6 +1476,17 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#E8F5EE",
+  },
+  parcelPartyLine: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: TITLE_DARK,
+    fontWeight: "500",
+  },
+  parcelPartyLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: TEXT_GRAY,
   },
   orderLineWrap: { paddingVertical: 2 },
   orderLine: {

@@ -5,6 +5,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { auth } from "../../plugins/auth.js";
+import { getDb } from "../../db/client.js";
 import { quoteParcelVehicleFareBatch } from "./parcelQuote.service.js";
 import {
   DEFAULT_PARCEL_SEARCH_TIMEOUT_SEC,
@@ -12,6 +13,10 @@ import {
   cancelParcelOrder,
 } from "./parcelPlacement.service.js";
 import { resolveCustomerPkFromSub } from "../rides/ride.placement.service.js";
+import {
+  computeBillForParcel,
+  resolveParcelBillingGeo,
+} from "../billing/parcelBilling.service.js";
 
 const vehicleSchema = z.enum(["2_wheeler", "3_wheeler", "4_wheeler_non_ac"]);
 
@@ -22,6 +27,8 @@ const batchBodySchema = z.object({
   pickupPincode: z.string().optional().nullable(),
   pickupState: z.string().optional().nullable(),
   vehicleTypes: z.array(vehicleSchema).optional(),
+  /** Cash / online — used for payment-mode billing charge rules. */
+  paymentMode: z.enum(["cash", "cod", "online"]).optional().nullable(),
 });
 
 const placeBodySchema = z.object({
@@ -72,6 +79,57 @@ export const parcelRoutes: FastifyPluginAsync = async (app) => {
 
       try {
         const { quotes } = await quoteParcelVehicleFareBatch(parsed.data);
+        // Apply active PARCEL billing charge rules (booking/platform fee, tax, …)
+        // on top of geo slab fare so book UI matches placement payable.
+        try {
+          const db = getDb();
+          const resolvedGeo = await resolveParcelBillingGeo({
+            pickupLat: parsed.data.pickupLat,
+            pickupLng: parsed.data.pickupLng,
+            pickupPincode: parsed.data.pickupPincode,
+            pickupState: parsed.data.pickupState,
+          });
+          await Promise.all(
+            Object.entries(quotes).map(async ([code, q]) => {
+              if (!q || q.ok !== true || !q.eligible || !(q.finalFare > 0)) return;
+              const slabFare = q.finalFare;
+              const billRes = await computeBillForParcel(db, {
+                customerId: 0,
+                parcelFare: slabFare,
+                distanceKm: parsed.data.tripKm,
+                pickupLat: parsed.data.pickupLat,
+                pickupLng: parsed.data.pickupLng,
+                pickupPincode: parsed.data.pickupPincode,
+                pickupState: parsed.data.pickupState,
+                vehicleType: code,
+                paymentMode: parsed.data.paymentMode ?? null,
+                forceNoAutoOffer: true,
+                resolvedGeo,
+              });
+              if (!billRes.ok) return;
+              const b = billRes.billing;
+              const payable = Math.max(
+                0,
+                Math.round(Number(b.final_amount) * 100) / 100
+              );
+              if (!(payable > 0)) return;
+              quotes[code] = {
+                ...q,
+                finalFare: payable,
+                slabFare,
+                platformFee: Math.max(0, Number(b.platform_fee) || 0),
+                convenienceFee: Math.max(0, Number(b.convenience_fee) || 0),
+                surgeFee: Math.max(0, Number(b.surge_fee) || 0),
+                smallOrderFee: Math.max(0, Number(b.small_order_fee) || 0),
+                miscFee: Math.max(0, Number(b.misc_fee) || 0),
+                taxTotal: Math.max(0, Number(b.tax_total) || 0),
+                discountTotal: Math.max(0, Number(b.discount_total) || 0),
+              };
+            })
+          );
+        } catch (billErr) {
+          req.log.warn({ err: billErr }, "parcel quote-batch billing enrich skipped");
+        }
         return reply.send({ ok: true, quotes });
       } catch (e) {
         req.log.error({ err: e }, "parcel quote-batch failed");

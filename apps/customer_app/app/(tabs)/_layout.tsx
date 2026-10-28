@@ -123,6 +123,9 @@ export default function TabsLayout() {
           options={{
             title: "Orders",
             headerShown: false,
+            // Same as Home/Food: freezeOnBlur can leave My Orders stuck on
+            // "Loading orders..." after a fetch completes while the tab was blurred.
+            freezeOnBlur: false,
           }}
         />
         <Tabs.Screen

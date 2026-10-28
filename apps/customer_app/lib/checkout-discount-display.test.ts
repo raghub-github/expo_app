@@ -5,6 +5,8 @@ import {
   flashSaleSavingsByOfferId,
   isFlashSaleDiscount,
   isCheckoutPromoDiscount,
+  resolveCheckoutDiscountDisplayLabel,
+  friendlyCheckoutDiscountLabel,
 } from "./checkout-discount-display";
 
 describe("flash sale checkout display helpers", () => {
@@ -31,5 +33,41 @@ describe("flash sale checkout display helpers", () => {
     assert.equal(isFlashSaleDiscount(promo), false);
     assert.equal(isCheckoutPromoDiscount(promo), true);
     assert.deepEqual(flashSaleSavingsByOfferId([promo]), {});
+  });
+});
+
+describe("resolveCheckoutDiscountDisplayLabel", () => {
+  it("prefers platform offer name from catalog over billing label", () => {
+    const label = resolveCheckoutDiscountDisplayLabel(
+      {
+        label: "Delivery discount · Free Delivery",
+        amount: 70,
+        meta: { platformOfferId: 12, offerKind: "FREE_DELIVERY" },
+      },
+      {
+        platformOffers: [{ id: 12, name: "Free Delivery -- First Order" }],
+      }
+    );
+    assert.equal(label, "Free Delivery -- First Order");
+  });
+
+  it("prefers merchant offer title over coupon code label", () => {
+    const label = resolveCheckoutDiscountDisplayLabel(
+      {
+        label: "Coupon FLAT35OFF",
+        amount: 35,
+        meta: { merchantOfferId: 4, code: "FLAT35OFF" },
+      },
+      {
+        merchantOffers: [
+          { id: 4, title: "Flat ₹35 Off above ₹199", requiresCouponCode: "FLAT35OFF" },
+        ],
+      }
+    );
+    assert.equal(label, "Flat ₹35 Off above ₹199");
+  });
+
+  it("strips Coupon prefix when catalog miss", () => {
+    assert.equal(friendlyCheckoutDiscountLabel("Coupon WELCOME50"), "WELCOME50");
   });
 });

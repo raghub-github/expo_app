@@ -58,7 +58,8 @@ export {
 };
 export type { LocationPermissionStatus, DeviceLocationReadiness };
 
-const GEOCODE_MS = 1_200;
+/** Mapbox reverse-geocode budget — too short → placeholder "Current location" forever. */
+const GEOCODE_MS = 8_000;
 const STORAGE_KEY = "@gatimitra/last_selected_location_v1";
 /** Toggle verbose location logging for field debugging (raw coords, accuracy, PIN). */
 const LOCATION_DEBUG = __DEV__;
@@ -184,9 +185,14 @@ function isPlaceholderAddress(address: ReverseGeocodeResult | null | undefined):
 }
 
 function commitDeviceFix(fix: DeviceFix, opts: { refining: boolean }): void {
+  const prev = useLocationStore.getState();
+  // Honor an intentional saved pin — don't wipe the header with GPS placeholders.
+  if (prev.locationSource === "selected" && !opts.refining) {
+    return;
+  }
   const addrToken = ++addressCommitSeq;
   AsyncStorage.removeItem(STORAGE_KEY).catch(() => {}); // drop any stale selected pin
-  const prevAddress = useLocationStore.getState().address;
+  const prevAddress = prev.address;
   const keepVisibleAddress = !isPlaceholderAddress(prevAddress);
   useLocationStore.setState({
     coords: { latitude: fix.latitude, longitude: fix.longitude },
@@ -201,6 +207,17 @@ function commitDeviceFix(fix: DeviceFix, opts: { refining: boolean }): void {
     // Keep the last real label on screen while Mapbox runs — never flash "Updating…".
     refining: keepVisibleAddress ? false : opts.refining,
     error: null,
+    // Show detecting immediately when we have no real label yet (GPS is known).
+    address: keepVisibleAddress
+      ? prevAddress
+      : {
+          primary: "Detecting address…",
+          secondary: "",
+          fullAddress: "Detecting address…",
+          city: null,
+          state: null,
+          pincode: null,
+        },
   });
   saveLastKnownLocation({
     lat: fix.latitude,

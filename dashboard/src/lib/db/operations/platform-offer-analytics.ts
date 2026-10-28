@@ -170,9 +170,15 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
       budget_consumed: string | null;
     }>
   >`
-    WITH oa_scoped AS (
+    WITH normal_offers AS (
+      SELECT *
+      FROM billing_platform_offers
+      WHERE UPPER(COALESCE(offer_kind, '')) NOT IN ('FLASH_SALE', 'FREE_DELIVERY')
+    ),
+    oa_scoped AS (
       SELECT oa.*
       FROM offer_order_applications oa
+      INNER JOIN normal_offers no ON no.id = oa.platform_offer_id
       WHERE oa.offer_source = 'PLATFORM'
         AND oa.platform_offer_id IS NOT NULL
         AND oa.created_at >= ${fromIso}::timestamptz
@@ -191,15 +197,15 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
       )
     )
     SELECT
-      (SELECT COUNT(*)::int FROM billing_platform_offers) AS total_offers,
-      (SELECT COUNT(*)::int FROM billing_platform_offers WHERE is_active = true) AS active_offers,
+      (SELECT COUNT(*)::int FROM normal_offers) AS total_offers,
+      (SELECT COUNT(*)::int FROM normal_offers WHERE is_active = true) AS active_offers,
       (SELECT COUNT(*)::int FROM oa_joined) AS total_redemptions,
       (SELECT COUNT(DISTINCT oc_customer_id)::int FROM oa_joined WHERE oc_customer_id IS NOT NULL) AS active_users,
       (SELECT COUNT(DISTINCT order_id)::int FROM oa_joined) AS orders_applied,
       (SELECT COALESCE(SUM(COALESCE(oc_grand_total, 0)), 0)::text FROM oa_joined) AS sales_attributed,
       (SELECT COALESCE(SUM(discount_amount), 0)::text FROM oa_joined) AS discount_total,
-      (SELECT COALESCE(SUM(budget_total), 0)::text FROM billing_platform_offers WHERE budget_total IS NOT NULL) AS budget_total,
-      (SELECT COALESCE(SUM(budget_used), 0)::text FROM billing_platform_offers) AS budget_consumed
+      (SELECT COALESCE(SUM(budget_total), 0)::text FROM normal_offers WHERE budget_total IS NOT NULL) AS budget_total,
+      (SELECT COALESCE(SUM(budget_used), 0)::text FROM normal_offers) AS budget_consumed
   `;
 
   const budgetTotal = num(summaryRow?.budget_total);
@@ -209,8 +215,10 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
     WITH oa_scoped AS (
       SELECT oa.*
       FROM offer_order_applications oa
+      INNER JOIN billing_platform_offers bo ON bo.id = oa.platform_offer_id
       WHERE oa.offer_source = 'PLATFORM'
         AND oa.platform_offer_id IS NOT NULL
+        AND UPPER(COALESCE(bo.offer_kind, '')) NOT IN ('FLASH_SALE', 'FREE_DELIVERY')
         AND oa.created_at >= ${fromIso}::timestamptz
         AND oa.created_at <= ${toIso}::timestamptz
     )
@@ -269,6 +277,7 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
       FROM flash_sale_redemptions r
       WHERE r.platform_offer_id = o.id
     ) fs_all ON true
+    WHERE UPPER(COALESCE(o.offer_kind, '')) NOT IN ('FLASH_SALE', 'FREE_DELIVERY')
     ORDER BY a.orders_applied DESC NULLS LAST, o.id ASC
     LIMIT 200
   `;
@@ -287,8 +296,10 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
     WITH oa_scoped AS (
       SELECT oa.*
       FROM offer_order_applications oa
+      INNER JOIN billing_platform_offers bo ON bo.id = oa.platform_offer_id
       WHERE oa.offer_source = 'PLATFORM'
         AND oa.platform_offer_id IS NOT NULL
+        AND UPPER(COALESCE(bo.offer_kind, '')) NOT IN ('FLASH_SALE', 'FREE_DELIVERY')
         AND oa.created_at >= ${fromIso}::timestamptz
         AND oa.created_at <= ${toIso}::timestamptz
     ),
@@ -422,6 +433,7 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
       o.name AS offer_name
     FROM geo_platform_offer_bindings b
     INNER JOIN billing_platform_offers o ON o.id = b.platform_offer_id
+    WHERE UPPER(COALESCE(o.offer_kind, '')) NOT IN ('FLASH_SALE', 'FREE_DELIVERY')
     ORDER BY o.id, state_name NULLS LAST, b.geo_level, b.id
     LIMIT 500
   `;
@@ -502,6 +514,7 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
       COALESCE(SUM(COALESCE(oc.grand_total, 0)), 0)::text AS sales_attributed,
       COALESCE(SUM(oa.discount_amount), 0)::text AS discount_total
     FROM offer_order_applications oa
+    INNER JOIN billing_platform_offers bo ON bo.id = oa.platform_offer_id
     LEFT JOIN orders_core oc ON (
       oc.id = oa.order_id
       OR oc.order_id = ('GM' || oa.order_id::text)
@@ -509,6 +522,7 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
     )
     WHERE oa.offer_source = 'PLATFORM'
       AND oa.platform_offer_id IS NOT NULL
+      AND UPPER(COALESCE(bo.offer_kind, '')) NOT IN ('FLASH_SALE', 'FREE_DELIVERY')
       AND oa.created_at >= ${fromIso}::timestamptz
       AND oa.created_at <= ${toIso}::timestamptz
     GROUP BY 1
@@ -524,6 +538,7 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
       COALESCE(SUM(COALESCE(oc.grand_total, 0)), 0)::text AS sales_attributed,
       COALESCE(SUM(oa.discount_amount), 0)::text AS discount_total
     FROM offer_order_applications oa
+    INNER JOIN billing_platform_offers bo ON bo.id = oa.platform_offer_id
     LEFT JOIN orders_core oc ON (
       oc.id = oa.order_id
       OR oc.order_id = ('GM' || oa.order_id::text)
@@ -531,6 +546,7 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
     )
     WHERE oa.offer_source = 'PLATFORM'
       AND oa.platform_offer_id IS NOT NULL
+      AND UPPER(COALESCE(bo.offer_kind, '')) NOT IN ('FLASH_SALE', 'FREE_DELIVERY')
       AND oa.created_at >= ${fromIso}::timestamptz
       AND oa.created_at <= ${toIso}::timestamptz
     GROUP BY 1
@@ -583,6 +599,7 @@ export async function getPlatformOfferAnalytics(range?: Partial<DateRange> | nul
      )
     WHERE oa.offer_source = 'PLATFORM'
       AND oa.platform_offer_id IS NOT NULL
+      AND UPPER(COALESCE(o.offer_kind, '')) NOT IN ('FLASH_SALE', 'FREE_DELIVERY')
       AND oa.created_at >= ${fromIso}::timestamptz
       AND oa.created_at <= ${toIso}::timestamptz
     ORDER BY oa.created_at DESC

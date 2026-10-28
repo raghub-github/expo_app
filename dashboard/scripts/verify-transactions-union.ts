@@ -15,8 +15,14 @@ import { listTransactions, getTransactionDetail } from "../src/lib/db/operations
 const SOURCE_PROBES: Array<{ name: string; sql: string }> = [
   { name: "pending_orders (customer food/grocery)", sql: `SELECT count(*)::int AS c FROM pending_orders` },
   {
-    name: "order_payment (parcel + person_ride captures)",
-    sql: `SELECT count(*)::int AS c FROM orders_core_payments ocp JOIN orders_core oc ON oc.order_id = ocp.order_id WHERE oc.order_type IN ('parcel','person_ride')`,
+    name: "orders_core parcel + person_ride (list source of truth)",
+    sql: `SELECT count(*)::int AS c FROM orders_core WHERE order_type IN ('parcel','person_ride')`,
+  },
+  {
+    name: "order_payment captures linked to parcel/person_ride",
+    sql: `SELECT count(*)::int AS c FROM orders_core_payments ocp JOIN orders_core oc ON (
+      oc.order_id = ocp.order_id OR oc.formatted_order_id = ocp.order_id OR oc.id::text = ocp.order_id
+    ) WHERE oc.order_type IN ('parcel','person_ride')`,
   },
   { name: "onboarding_payments (rider onboarding)", sql: `SELECT count(*)::int AS c FROM onboarding_payments` },
   { name: "rider_wallet_payments (rider wallet)", sql: `SELECT count(*)::int AS c FROM rider_wallet_payments` },
@@ -71,6 +77,15 @@ async function main() {
       failures++;
       console.error(`  FAIL ${app}: ${(e as Error).message}`);
     }
+  }
+
+  console.log("\n=== 4. Parcel service filter ===");
+  try {
+    const r = await listTransactions({ service: "parcel", limit: 5 });
+    console.log(`  service=parcel: ${r.rows.length} rows (sample services: ${r.rows.map((x) => x.service).join(",") || "none"})`);
+  } catch (e) {
+    failures++;
+    console.error(`  FAIL service=parcel: ${(e as Error).message}`);
   }
 
   console.log(`\n=== DONE — ${failures === 0 ? "ALL CHECKS PASSED" : failures + " FAILURE(S)"} ===`);

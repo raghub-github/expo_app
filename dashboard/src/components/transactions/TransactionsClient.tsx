@@ -62,7 +62,7 @@ const SERVICE_OPTIONS: Record<string, { value: string; label: string }[]> = {
     { value: "food", label: "Food" },
     { value: "grocery", label: "Grocery" },
     { value: "parcel", label: "Parcel" },
-    { value: "person_ride", label: "Person Ride" },
+    { value: "person_ride", label: "Ride" },
     { value: "wallet_topup", label: "Wallet Top-up" },
   ],
   merchant: [
@@ -281,7 +281,9 @@ export function TransactionsClient() {
                 <tr key={r.uid} onClick={() => setSelectedUid(r.uid)} className="cursor-pointer hover:bg-gray-50">
                   <td className="whitespace-nowrap px-3 py-2.5 text-gray-600">{fmtTime(r.createdAt)}</td>
                   <td className="px-3 py-2.5 capitalize text-gray-800">{r.app}</td>
-                  <td className="px-3 py-2.5 capitalize text-gray-800">{r.service.replace(/_/g, " ")}</td>
+                  <td className="px-3 py-2.5 capitalize text-gray-800">
+                    {r.service === "person_ride" ? "Ride" : r.service.replace(/_/g, " ")}
+                  </td>
                   <td className="px-3 py-2.5"><StatusBadge status={r.normStatus} raw={r.status} /></td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-right font-medium text-gray-900">{inr(r.grossPaise)}</td>
                   <td className="whitespace-nowrap px-3 py-2.5 text-right text-gray-600">{inr(r.paidPaise)}</td>

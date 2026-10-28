@@ -7,6 +7,31 @@ export type CheckoutDiscountLike = {
   hidden?: boolean;
 };
 
+/** Minimal offer catalog shape used to resolve bill-summary labels. */
+export type CheckoutOfferCatalog = {
+  coupons?: Array<{ code: string; description?: string | null }> | null;
+  merchantOffers?: Array<{
+    id: number;
+    title: string;
+    requiresCouponCode?: string | null;
+  }> | null;
+  merchantOffersIneligible?: Array<{
+    id: number;
+    title: string;
+    requiresCouponCode?: string | null;
+  }> | null;
+  platformOffers?: Array<{
+    id: number;
+    name: string | null;
+    couponCode?: string | null;
+  }> | null;
+  platformOffersIneligible?: Array<{
+    id: number;
+    name: string | null;
+    couponCode?: string | null;
+  }> | null;
+};
+
 /**
  * Customer-facing discount names — show the merchant's actual configured offer
  * title (as it appears in the offers sheet) rather than a generic placeholder.
@@ -15,8 +40,77 @@ export function friendlyCheckoutDiscountLabel(label: string | null | undefined):
   const raw = String(label ?? "").trim();
   if (!raw) return "Store offer";
   // Platform delivery lines historically used "Delivery discount · {name}".
-  const stripped = raw.replace(/^Delivery discount\s*[·•\-–—]\s*/i, "").trim();
+  const stripped = raw
+    .replace(/^Delivery discount\s*[·•\-–—]\s*/i, "")
+    .replace(/^Coupon\s+/i, "")
+    .trim();
   return stripped || raw;
+}
+
+function normCode(v: string | null | undefined): string {
+  return String(v ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+}
+
+/**
+ * Prefer the live offers-sheet title/name over billing pipeline labels like
+ * `Coupon FLAT35OFF` or generic delivery placeholders.
+ */
+export function resolveCheckoutDiscountDisplayLabel(
+  discount: CheckoutDiscountLike,
+  catalog?: CheckoutOfferCatalog | null
+): string {
+  const meta = discount.meta ?? null;
+  const platformId = meta?.platformOfferId;
+  if (typeof platformId === "number" && platformId > 0 && catalog) {
+    const hit =
+      catalog.platformOffers?.find((o) => o.id === platformId) ??
+      catalog.platformOffersIneligible?.find((o) => o.id === platformId);
+    const name = String(hit?.name ?? "").trim();
+    if (name) return name;
+  }
+
+  const merchantId = meta?.merchantOfferId;
+  if (typeof merchantId === "number" && merchantId > 0 && catalog) {
+    const hit =
+      catalog.merchantOffers?.find((o) => o.id === merchantId) ??
+      catalog.merchantOffersIneligible?.find((o) => o.id === merchantId);
+    const title = String(hit?.title ?? "").trim();
+    if (title) return title;
+  }
+
+  const codeFromMeta =
+    typeof meta?.code === "string"
+      ? meta.code
+      : typeof meta?.couponCode === "string"
+        ? meta.couponCode
+        : null;
+  const labelCode = String(discount.label ?? "")
+    .replace(/^Coupon\s+/i, "")
+    .trim();
+  const code = normCode(codeFromMeta) || normCode(labelCode);
+
+  if (code && catalog) {
+    const platformHit =
+      catalog.platformOffers?.find((o) => normCode(o.couponCode) === code) ??
+      catalog.platformOffersIneligible?.find((o) => normCode(o.couponCode) === code);
+    const platformName = String(platformHit?.name ?? "").trim();
+    if (platformName) return platformName;
+
+    const merchantHit =
+      catalog.merchantOffers?.find((o) => normCode(o.requiresCouponCode) === code) ??
+      catalog.merchantOffersIneligible?.find((o) => normCode(o.requiresCouponCode) === code);
+    const merchantTitle = String(merchantHit?.title ?? "").trim();
+    if (merchantTitle) return merchantTitle;
+
+    const couponHit = catalog.coupons?.find((c) => normCode(c.code) === code);
+    const couponDesc = String(couponHit?.description ?? "").trim();
+    if (couponDesc) return couponDesc;
+  }
+
+  return friendlyCheckoutDiscountLabel(discount.label);
 }
 
 export function isSubscriptionBenefitDiscount(d: CheckoutDiscountLike): boolean {

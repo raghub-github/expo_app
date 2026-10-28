@@ -1589,7 +1589,7 @@ export default function MerchantDetailScreen() {
       // drop duplicate siblings — never create a second row just because the note changed.
       if (editLineId) {
         for (const sid of siblings) {
-          if (sid) removeItem(sid);
+          if (sid) removeItem(sid, { recordRecentlyRemoved: false });
         }
         replaceLine(editLineId, lineInput, qty);
       } else {
@@ -1869,7 +1869,7 @@ export default function MerchantDetailScreen() {
       // second cart row when the note text changes.
       if (editLineId) {
         for (const sid of siblings) {
-          if (sid) removeItem(sid);
+          if (sid) removeItem(sid, { recordRecentlyRemoved: false });
         }
         replaceLine(
           editLineId,
@@ -2674,6 +2674,7 @@ export default function MerchantDetailScreen() {
         heroVideoUri={merchantBannerHeroVideoUri}
         merchantLogoUri={merchantLogoUri}
         merchant={pageMerchant}
+        menu={merchant?.menu ?? pageMerchant?.menu}
         merchantId={merchantId}
         distanceKm={distanceKm}
         storeEtaLabel={storeEtaLabel}

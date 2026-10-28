@@ -35,6 +35,8 @@ type Props = {
   refitNonce?: number;
   onReady?: () => void;
   style?: object;
+  /** When false, map pan/zoom are off so a parent ScrollView can scroll (parcel courier screens). */
+  gesturesEnabled?: boolean;
 };
 
 export function MapboxWebDeliveryMap(props: Props) {
@@ -54,6 +56,7 @@ function MapboxWebDeliveryMapInner({
   refitNonce = 0,
   onReady,
   style,
+  gesturesEnabled = true,
 }: Props) {
   const Mapbox = useCustomerNativeMapbox();
   const cameraRef = useRef(null);
@@ -206,10 +209,10 @@ function MapboxWebDeliveryMapInner({
         attributionEnabled={false}
         compassEnabled={false}
         scaleBarEnabled={false}
-        scrollEnabled
-        zoomEnabled
+        scrollEnabled={gesturesEnabled}
+        zoomEnabled={gesturesEnabled}
         pitchEnabled={false}
-        rotateEnabled
+        rotateEnabled={gesturesEnabled}
         surfaceView={false}
         onDidFinishLoadingMap={() => {
           try {

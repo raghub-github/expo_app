@@ -24,9 +24,10 @@ export function AbandonedCartReminderBootstrap() {
       const prev = appState.current;
       appState.current = next;
 
+      // Only true background — treating `inactive` as leave double-fired
+      // schedule (active→inactive then inactive→background) on Android.
       const goingBackground =
-        (prev === "active" || prev === "inactive") &&
-        (next === "background" || next === "inactive");
+        (prev === "active" || prev === "inactive") && next === "background";
       const goingForeground = prev.match(/inactive|background/) && next === "active";
 
       if (goingBackground) {

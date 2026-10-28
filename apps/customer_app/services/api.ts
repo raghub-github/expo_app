@@ -42,6 +42,9 @@ function isRetryableRequest(err: AxiosError): boolean {
   if (method === "post" && typeof config.url === "string" && config.url.includes("/v1/rides/quote-batch")) {
     return true;
   }
+  if (method === "post" && typeof config.url === "string" && config.url.includes("/v1/parcel/quote-batch")) {
+    return true;
+  }
   if (method === "post" && typeof config.url === "string" && config.url.includes("/v1/rides/quote")) {
     return true;
   }
@@ -96,15 +99,18 @@ api.interceptors.request.use(
         config.url.includes("/v1/veg-mode"))
     ) {
       // Skip the round-trip — backend would log ERROR "Authentication required".
-      const cancelErr = new Error("No auth token for authenticated route") as Error & {
-        code: string;
-        name: string;
+      // IMPORTANT: do NOT use Axios/RQ CancelledError here. TanStack Query treats
+      // cancellations as "never settled", which leaves screens like My Orders stuck
+      // on isPending forever ("Loading orders...") with no error UI / retry.
+      const authErr = new Error("Not signed in") as Error & {
+        status?: number;
+        code?: string;
       };
-      cancelErr.code = "ERR_CANCELED";
-      cancelErr.name = "CanceledError";
+      authErr.status = 401;
+      authErr.code = "ERR_NO_AUTH_TOKEN";
       // throw, don't Promise.reject: Hermes reports that as an uncaught rejection
       // even when the caller handles the request.
-      throw cancelErr;
+      throw authErr;
     }
     if (!shouldBypassStartupGate(config.url)) {
       cfg.__startupGate = await enterStartupApiGate(config.url);

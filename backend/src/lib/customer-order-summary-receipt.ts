@@ -173,7 +173,7 @@ function summaryRow(label: string, amount: number, opts?: { discount?: boolean; 
 const TERMS_URL =
   process.env.CUSTOMER_TERMS_URL?.trim() || "https://gatimitra.com/legal/terms";
 
-const TERMS_ITEMS = [
+const FOOD_TERMS_ITEMS = [
   "This is an order summary receipt issued by GatiMitra for your food order placed on the platform.",
   "Food items are supplied by the restaurant partner listed above. GatiMitra facilitates ordering and delivery.",
   "Taxes and charges shown are as per the billing snapshot at the time of order placement.",
@@ -182,11 +182,30 @@ const TERMS_ITEMS = [
   "This document is not a tax invoice for platform or delivery fees. Download the tax invoice separately when available.",
 ];
 
+const PARCEL_TERMS_ITEMS = [
+  "This is an order summary receipt issued by GatiMitra for your parcel delivery order.",
+  "Taxes and charges shown are as per the billing snapshot at the time of booking.",
+  "Refunds, if applicable, are processed per GatiMitra refund and cancellation policy.",
+  "For order-related support, use in-app Help or write to order@gatimitra.com.",
+  "Download the tax invoice PDF from Order Details for a detailed fare invoice when available.",
+];
+
+const RIDE_TERMS_ITEMS = [
+  "This is an order summary receipt issued by GatiMitra for your ride.",
+  "Taxes and charges shown are as per the billing snapshot at the time of the trip.",
+  "Refunds, if applicable, are processed per GatiMitra refund and cancellation policy.",
+  "For ride-related support, use in-app Help or write to order@gatimitra.com.",
+];
+
 export function buildCustomerOrderSummaryReceiptHtml(input: CustomerOrderSummaryReceiptInput): string {
   const isRide = input.orderType === "person_ride";
+  const isParcel = input.orderType === "parcel";
   const title = isRide
     ? "GatiMitra Ride Order: Summary and Receipt"
-    : "GatiMitra Food Order: Summary and Receipt";
+    : isParcel
+      ? "GatiMitra Parcel Order: Summary and Receipt"
+      : "GatiMitra Food Order: Summary and Receipt";
+  const termsItems = isRide ? RIDE_TERMS_ITEMS : isParcel ? PARCEL_TERMS_ITEMS : FOOD_TERMS_ITEMS;
 
   const bill = parseOrderBillFromSnapshot(
     input.billingSnapshot,
@@ -264,7 +283,7 @@ export function buildCustomerOrderSummaryReceiptHtml(input: CustomerOrderSummary
   const storeLabel = input.storeTypeLabel?.trim() || "Store";
 
   const footerFssai =
-    input.restaurantFssai?.trim() && !isRide
+    input.restaurantFssai?.trim() && !isRide && !isParcel
       ? `<div class="footer">
           <div class="footer-name">${escapeHtml(input.restaurantName)}</div>
           <div>FSSAI Lic. No. ${escapeHtml(input.restaurantFssai.trim())}</div>
@@ -290,8 +309,9 @@ export function buildCustomerOrderSummaryReceiptHtml(input: CustomerOrderSummary
     ${metaRow("Order Time", formatOrderDateTime(input.orderDateIso))}
     ${metaRow("Customer Name", input.customerName)}
     ${metaRow("Delivery Address", input.deliveryAddress)}
-    ${isRide ? "" : metaRow(`${storeLabel} Name`, input.restaurantName)}
-    ${isRide ? "" : metaRow(`${storeLabel} Address`, input.restaurantAddress)}
+    ${isRide || isParcel ? "" : metaRow(`${storeLabel} Name`, input.restaurantName)}
+    ${isRide || isParcel ? "" : metaRow(`${storeLabel} Address`, input.restaurantAddress)}
+    ${isParcel ? metaRow("Service", "Parcel delivery") : ""}
     ${metaRow("Delivery partner's Name", input.riderName)}
     ${input.paymentMethod ? metaRow("Payment", input.paymentMethod.replace(/_/g, " ").toUpperCase()) : ""}
   </div>
@@ -321,7 +341,7 @@ export function buildCustomerOrderSummaryReceiptHtml(input: CustomerOrderSummary
   <div class="terms">
     <h2>Terms &amp; Conditions (<a href="${escapeHtml(TERMS_URL)}">${escapeHtml(TERMS_URL)}</a>)</h2>
     <ol>
-      ${TERMS_ITEMS.map((t) => `<li>${escapeHtml(t)}</li>`).join("\n")}
+      ${termsItems.map((t) => `<li>${escapeHtml(t)}</li>`).join("\n")}
     </ol>
   </div>
 

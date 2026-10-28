@@ -48,7 +48,14 @@ import {
   platformOfferLocationVisible,
   platformOfferServiceMatches,
 } from "./platformOffersApply.js";
+import { platformOfferCheckoutDisplayName } from "./platformOfferDisplayName.js";
 import { platformOfferRequiresFirstRideOnly } from "./platformOfferFirstRide.js";
+import {
+  countDeliveredFoodOrdersForCustomer,
+  countFirstOrderFreeDeliveryUsagesForCustomer,
+  firstOrderFreeDeliveryIneligibilityReason,
+  platformOfferRequiresFirstOrderFreeDelivery,
+} from "./platformOfferFirstOrderFood.js";
 import { countCompletedParcelsForCustomer, rideParcelPromoPasses } from "./rideParcelPromoApply.js";
 import {
   countDeliveredOrdersForCustomer,
@@ -144,6 +151,8 @@ export type ComputeBillInput = {
   selectedMerchantOfferId?: number | null;
   /** When true, skip auto platform/merchant offers (customer tapped Remove). */
   forceNoAutoOffer?: boolean;
+  /** GatiCash unlock: apply the selected platform offer even below min cart. */
+  waiveMinCartForSelectedPlatformOffer?: boolean;
   /** Parcel weight (kg) for weight-based platform offers. */
   parcelWeightKg?: number | null;
   parcelSpeed?: string | null;
@@ -463,13 +472,11 @@ export async function computeBillForOrder(
     db: { perUnitByMenuItemId: packDb.perUnitById, foundMenuItemIds: packDb.foundIds },
   });
 
-  const userSegRaw = input.userSegment ?? "ALL";
+  // Authoritative segment from delivered order history — never trust client NEW/EXISTING.
   const userSegment: "NEW" | "EXISTING" | "ALL" =
-    userSegRaw === "NEW" || userSegRaw === "EXISTING"
-      ? userSegRaw
-      : customerCompletedOrderCount != null
-        ? userSegmentFromOrderCount(customerCompletedOrderCount)
-        : "ALL";
+    customerCompletedOrderCount != null
+      ? userSegmentFromOrderCount(customerCompletedOrderCount)
+      : "ALL";
 
   const orderValue = itemSubtotal + addonSubtotal;
 
@@ -621,6 +628,7 @@ export async function computeBillForOrder(
     })(),
     selectedMerchantOfferId: input.selectedMerchantOfferId ?? null,
     forceNoAutoOffer: input.forceNoAutoOffer === true,
+    waiveMinCartForSelectedPlatformOffer: input.waiveMinCartForSelectedPlatformOffer === true,
   };
 
   if (serviceType === "PARCEL" && input.customerId > 0) {
@@ -630,6 +638,18 @@ export async function computeBillForOrder(
   // Load per-user merchant offer usage counts outside the shared dataset cache.
   // Only needed when at least one active offer has a per-user cap.
   if (input.customerId > 0) {
+    const needsFirstOrderFood =
+      serviceType === "FOOD" &&
+      dataset.platformOffers.some((o) => platformOfferRequiresFirstOrderFreeDelivery(o));
+    if (needsFirstOrderFood) {
+      const [foodCount, familyUses] = await Promise.all([
+        countDeliveredFoodOrdersForCustomer(db, input.customerId),
+        countFirstOrderFreeDeliveryUsagesForCustomer(db, input.customerId),
+      ]);
+      ctx.completedFoodOrderCount = foodCount;
+      ctx.firstOrderFreeDeliveryUsageCount = familyUses;
+    }
+
     const offersWithCap = dataset.merchantOffers.filter((o) => o.maxUsesPerUser != null && o.maxUsesPerUser > 0);
     if (offersWithCap.length > 0) {
       ctx.merchantOfferUsagesByUser = await loadMerchantOfferUsagesByUser(
@@ -642,6 +662,7 @@ export async function computeBillForOrder(
     const platformWithLimits = dataset.platformOffers.filter(
       (o) =>
         isFlashSaleKind(o.offerKind) ||
+        platformOfferRequiresFirstOrderFreeDelivery(o) ||
         (o.maxUsesPerUser != null && o.maxUsesPerUser > 0) ||
         (o.maxUsesPerDay != null && o.maxUsesPerDay > 0) ||
         (o.maxUsesPerMonth != null && o.maxUsesPerMonth > 0)
@@ -1240,6 +1261,9 @@ function formatPlatformOfferLockReason(reason: string, grossCart: number): strin
     }
   }
   if (reason.includes("first_ride_only=")) return "Only available on your first Person Ride";
+  if (reason.includes("first_order_free_delivery=")) {
+    return "Only available on your first food order";
+  }
   if (reason.includes("subscription_free_delivery=active")) return "Already included in your membership";
   if (reason.includes("subscription_benefit_requires_membership")) return "Available with GMitra Plus membership";
   return "Not eligible on this order";
@@ -1264,40 +1288,6 @@ function describePlatformOfferRow(o: PlatformOfferRow): string {
   const dk = String(o.offerKind ?? "DISCOUNT").toUpperCase();
   if (dk !== "DISCOUNT" && dk !== "COUPON") parts.push(dk.replace(/_/g, " "));
   return parts.join(" · ") || "Platform offer";
-}
-
-/** Checkout sheet title — fixed amounts always show ₹ (never "Flat 100 off"). */
-function platformOfferCheckoutDisplayName(o: {
-  name: string | null;
-  discountType: string | null;
-  valueNumeric: number | null;
-  maxDiscountAmount: number | null;
-}): string {
-  const dt = String(o.discountType ?? "").toUpperCase();
-  const v = num(o.valueNumeric);
-  if (dt === "FIXED" && v > 0) {
-    return `Flat ₹${Math.round(v)} Off`;
-  }
-  if (dt === "PERCENTAGE" && v > 0) {
-    const cap = num(o.maxDiscountAmount);
-    if (cap > 0) return `Flat ${Math.round(v)}% Off up to ₹${Math.round(cap)}`;
-    return `Flat ${Math.round(v)}% Off`;
-  }
-  return normalizeFlatAmountOfferTitle(o.name);
-}
-
-/** "Flat 100 off" → "Flat ₹100 Off"; leave % titles alone. */
-function normalizeFlatAmountOfferTitle(name: string | null | undefined): string {
-  const raw = String(name ?? "").trim();
-  if (!raw) return "Platform offer";
-  if (/%/.test(raw) || /₹/.test(raw)) {
-    return raw.replace(/\s+/g, " ");
-  }
-  const m = raw.match(/^flat\s+(\d+)\s*(?:rs\.?|inr)?\s*off?$/i);
-  if (m) return `Flat ₹${m[1]} Off`;
-  const m2 = raw.match(/^(\d+)\s*(?:rs\.?|inr)?\s*off$/i);
-  if (m2) return `Flat ₹${m2[1]} Off`;
-  return raw;
 }
 
 /**
@@ -1450,17 +1440,15 @@ export async function listCheckoutBillOffers(
   const distanceKm = route.distanceKm;
 
   const serviceType = (input.serviceType ?? "FOOD").trim().toUpperCase();
-  const userSegRaw = input.userSegment ?? "ALL";
   let customerCompletedOrderCount: number | null = null;
   if (input.customerId > 0) {
     customerCompletedOrderCount = await countDeliveredOrdersForCustomer(db, input.customerId);
   }
+  // Authoritative segment from delivered order history — never trust client NEW/EXISTING.
   const userSegment: "NEW" | "EXISTING" | "ALL" =
-    userSegRaw === "NEW" || userSegRaw === "EXISTING"
-      ? userSegRaw
-      : customerCompletedOrderCount != null
-        ? userSegmentFromOrderCount(customerCompletedOrderCount)
-        : "ALL";
+    customerCompletedOrderCount != null
+      ? userSegmentFromOrderCount(customerCompletedOrderCount)
+      : "ALL";
 
   const dropGeoRefByLevel = geo.refs;
   const platformOfferGeoBindingEffectiveIds = geo.geoBoundOfferIds;
@@ -1600,6 +1588,18 @@ export async function listCheckoutBillOffers(
   }
 
   if (input.customerId > 0) {
+    const needsFirstOrderFood =
+      serviceType === "FOOD" &&
+      dataset.platformOffers.some((o) => platformOfferRequiresFirstOrderFreeDelivery(o));
+    if (needsFirstOrderFood) {
+      const [foodCount, familyUses] = await Promise.all([
+        countDeliveredFoodOrdersForCustomer(db, input.customerId),
+        countFirstOrderFreeDeliveryUsagesForCustomer(db, input.customerId),
+      ]);
+      ctx.completedFoodOrderCount = foodCount;
+      ctx.firstOrderFreeDeliveryUsageCount = familyUses;
+    }
+
     const offersWithCap = dataset.merchantOffers.filter(
       (o) => o.maxUsesPerUser != null && o.maxUsesPerUser > 0
     );
@@ -1614,6 +1614,7 @@ export async function listCheckoutBillOffers(
     const platformWithLimits = dataset.platformOffers.filter(
       (o) =>
         isFlashSaleKind(o.offerKind) ||
+        platformOfferRequiresFirstOrderFreeDelivery(o) ||
         (o.maxUsesPerUser != null && o.maxUsesPerUser > 0) ||
         (o.maxUsesPerDay != null && o.maxUsesPerDay > 0) ||
         (o.maxUsesPerMonth != null && o.maxUsesPerMonth > 0)
@@ -1942,6 +1943,10 @@ function listEligiblePlatformOffersForCheckoutWithReasons(
       } else if (ctx.completedPersonRideCount > 0) {
         reasons.push(`first_ride_only=has_${ctx.completedPersonRideCount}_completed_rides`);
       }
+    }
+    if (platformOfferRequiresFirstOrderFreeDelivery(o)) {
+      const why = firstOrderFreeDeliveryIneligibilityReason(ctx, o);
+      if (why) reasons.push(why);
     }
     if (!rideParcelPromoPasses(ctx, o)) {
       reasons.push("ride_parcel_promo=failed");

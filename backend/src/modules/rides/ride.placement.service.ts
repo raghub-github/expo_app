@@ -810,6 +810,7 @@ export async function cancelRideOrder(input: CancelRideOrderInput): Promise<{
       orderId: ordersCore.orderId,
       status: ordersCore.status,
       riderId: ordersCore.riderId,
+      paymentStatus: ordersCore.paymentStatus,
     })
     .from(ordersCore)
     .where(customerOrderRefWhere(input.customerPk, input.orderRef))
@@ -820,7 +821,13 @@ export async function cancelRideOrder(input: CancelRideOrderInput): Promise<{
   }
 
   return cancelRideOrderForRow(
-    { id: row.id, orderId: row.orderId, status: row.status, riderId: row.riderId },
+    {
+      id: row.id,
+      orderId: row.orderId,
+      status: row.status,
+      riderId: row.riderId,
+      paymentStatus: row.paymentStatus,
+    },
     {
     customerPk: input.customerPk,
     reasonCode: input.reasonCode,
@@ -839,6 +846,7 @@ export async function autoCancelExpiredRideOrder(orderCorePk: number): Promise<b
       orderId: ordersCore.orderId,
       status: ordersCore.status,
       riderId: ordersCore.riderId,
+      paymentStatus: ordersCore.paymentStatus,
     })
     .from(ordersCore)
     .where(and(eq(ordersCore.id, orderCorePk), eq(ordersCore.orderType, "person_ride")))
@@ -847,7 +855,13 @@ export async function autoCancelExpiredRideOrder(orderCorePk: number): Promise<b
   if (!row?.id || !row.orderId) return false;
 
   await cancelRideOrderForRow(
-    { id: row.id, orderId: row.orderId, status: row.status, riderId: row.riderId },
+    {
+      id: row.id,
+      orderId: row.orderId,
+      status: row.status,
+      riderId: row.riderId,
+      paymentStatus: row.paymentStatus,
+    },
     {
     customerPk: null,
     cancelledByType: "system",
@@ -857,7 +871,13 @@ export async function autoCancelExpiredRideOrder(orderCorePk: number): Promise<b
 }
 
 async function cancelRideOrderForRow(
-  row: { id: number; orderId: string; status: string | null; riderId: number | null },
+  row: {
+    id: number;
+    orderId: string;
+    status: string | null;
+    riderId: number | null;
+    paymentStatus?: string | null;
+  },
   input: {
     customerPk: number | null;
     reasonCode?: string;
@@ -896,6 +916,11 @@ async function cancelRideOrderForRow(
     throw Object.assign(new Error("Rider already assigned"), { statusCode: 409 });
   }
 
+  const payStatus = String(row.paymentStatus ?? "").toLowerCase();
+  const paymentNeverCaptured = !["paid", "captured", "completed", "refunded", "partially_refunded"].includes(
+    payStatus
+  );
+
   await db.transaction(async (tx) => {
     await tx
       .update(ordersCore)
@@ -905,6 +930,8 @@ async function cancelRideOrderForRow(
         cancelledAt: now,
         cancelledBy: cancelledByType === "system" ? "SYSTEM" : "customer",
         cancelledById: cancelledByType === "customer" ? input.customerPk : null,
+        // Uncaptured cancel → failed (admin Transactions must not stay Pending).
+        ...(paymentNeverCaptured ? { paymentStatus: "failed" as const } : {}),
         updatedAt: now,
       })
       .where(eq(ordersCore.id, row.id));

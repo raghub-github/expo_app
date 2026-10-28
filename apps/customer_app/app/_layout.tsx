@@ -31,6 +31,7 @@ import { QueryClientProvider, focusManager, useQueryClient } from "@tanstack/rea
 import { queryClient } from "@/lib/queryClient";
 import { useAuthStore } from "@/store/authStore";
 import { useCartStore } from "@/store/cartStore";
+import { useRecentlyRemovedStore } from "@/store/recentlyRemovedStore";
 import { useLanguageStore } from "@/store/languageStore";
 import { useLocationStore, getDeviceLocationReadiness, coordsMovedSignificantly } from "@/store/locationStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
@@ -265,6 +266,7 @@ export default function RootLayout() {
   const homeImagesPrefetched = useAppAssetsStore((s) => s.homeImagesPrefetched);
   const hydrateAuth = useAuthStore((s) => s.hydrate);
   const hydrateCart = useCartStore((s) => s.hydrate);
+  const hydrateRecentlyRemoved = useRecentlyRemovedStore((s) => s.hydrate);
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
   const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
   const promptLocationPermissionIfNeeded = useLocationStore((s) => s.promptLocationPermissionIfNeeded);
@@ -296,13 +298,25 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
-    hydrateAuth();
-    hydrateCart();
+    void (async () => {
+      await hydrateAuth();
+      // Cart + recently-removed share the customer scope stamp; hydrate after
+      // auth so a cold start does not refuse a still-binding owner id.
+      await Promise.all([hydrateCart(), hydrateRecentlyRemoved()]);
+    })();
     hydrateLanguage();
     void hydrateLocation();
     void hydrateRecentLocations();
     void hydrateFavoriteLocations();
-  }, [hydrateAuth, hydrateCart, hydrateLanguage, hydrateLocation, hydrateRecentLocations, hydrateFavoriteLocations]);
+  }, [
+    hydrateAuth,
+    hydrateCart,
+    hydrateRecentlyRemoved,
+    hydrateLanguage,
+    hydrateLocation,
+    hydrateRecentLocations,
+    hydrateFavoriteLocations,
+  ]);
 
   useEffect(() => {
     if (!session?.userId) return;
