@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowUpCircle } from "lucide-react";
 import * as XLSX from "xlsx";
 import type { WorkBook } from "xlsx";
 import { useToast } from "@/context/ToastContext";
+import { fetchJsonWithTimeout } from "@/lib/fetch-json-with-timeout";
 
 export interface TransactionsExportSeed {
   app: "all" | "customer" | "merchant" | "rider";
@@ -363,9 +364,17 @@ export function ExportTransactionsSheet({
     }
     setExporting(true);
     try {
-      const res = await fetch("/api/transactions/export", {
+      // Exports scan far more rows than one page, so they get a longer deadline than
+      // the list — but still a deadline, so a dead connection fails with a readable
+      // message instead of leaving "Exporting…" on screen indefinitely.
+      const json = await fetchJsonWithTimeout<{
+        success?: boolean;
+        rows?: ExportRow[];
+        truncated?: boolean;
+        error?: string;
+      }>("/api/transactions/export", {
         method: "POST",
-        credentials: "include",
+        timeoutMs: 120_000,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           apps: appMode === "specific" ? apps : [],
@@ -379,8 +388,7 @@ export function ExportTransactionsSheet({
           userTypes: userMode === "specific" ? userTypes : [],
         }),
       });
-      const json = (await res.json()) as { success?: boolean; rows?: ExportRow[]; truncated?: boolean; error?: string };
-      if (!res.ok || !json.success || !json.rows) throw new Error(json.error || "Export failed");
+      if (!json.rows) throw new Error(json.error || "Export failed");
       const headers = sheetHeaders(selected, json.rows);
       const data = json.rows.map((row) => sheetRow(selected, row, headers));
       const ws = XLSX.utils.json_to_sheet(data.length ? data : [{}], { header: headers });
