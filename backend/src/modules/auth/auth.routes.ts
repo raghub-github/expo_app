@@ -1499,6 +1499,7 @@ export async function authRoutes(app: FastifyInstance) {
       const verified = await verifySupabaseAccessToken(accessToken);
       if (!verified.ok) {
         if (verified.kind === "unreachable") {
+          req.log?.error?.({}, "exchange-rider: supabase auth unreachable");
           return reply.code(503).send({
             error: "supabase_unreachable",
             message: verified.message,
@@ -1935,7 +1936,13 @@ export async function authRoutes(app: FastifyInstance) {
       const verified = await verifySupabaseAccessToken(accessToken);
       if (!verified.ok) {
         if (verified.kind === "unreachable") {
-          return reply.code(503).send({ error: verified.message });
+          // `error` is a code the client branches on; the sentence belongs in
+          // `message`. Sending the sentence as `error` is what put "Supabase Auth
+          // temporarily unreachable" on the customer OTP screen.
+          req.log?.error?.({}, "exchange-customer: supabase auth unreachable");
+          return reply
+            .code(503)
+            .send({ error: "supabase_unreachable", message: verified.message });
         }
         req.log?.warn?.(
           { errMsg: verified.message },
@@ -2088,6 +2095,7 @@ export async function authRoutes(app: FastifyInstance) {
       const verified = await verifySupabaseAccessToken(accessToken);
       if (!verified.ok) {
         if (verified.kind === "unreachable") {
+          req.log?.error?.({}, "exchange-merchant: supabase auth unreachable");
           return reply
             .code(503)
             .send({ error: "supabase_unreachable", message: verified.message });

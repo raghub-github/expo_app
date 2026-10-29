@@ -1,11 +1,21 @@
 /**
  * Validate a Supabase Auth access token for OTP exchange endpoints.
  *
- * Prefer local JWT verification (SUPABASE_JWT_SECRET) so exchange still works
- * when Auth API is unreachable (UND_ERR_CONNECT_TIMEOUT / fetch failed).
- * Fall back to `auth.getUser(jwt)` when local verify fails (e.g. asymmetric keys).
+ * Prefer local JWT verification so exchange still works when Auth API is
+ * unreachable (UND_ERR_CONNECT_TIMEOUT / fetch failed). Two local paths:
+ *
+ *  - HS256 against SUPABASE_JWT_SECRET (legacy symmetric signing key), and
+ *  - the project JWKS for asymmetric keys (ES256/RS256/EdDSA).
+ *
+ * The JWKS path is not optional. Once a project moves to JWT signing keys,
+ * Supabase issues asymmetric access tokens, the symmetric check can never
+ * succeed, and *every* exchange silently degrades to a live `auth.getUser()`
+ * round-trip — the exact network dependency this module exists to avoid. The
+ * only visible symptom is users being told to retry whenever that call fails.
+ *
+ * `auth.getUser(jwt)` stays as the last resort.
  */
-import { jwtVerify } from "jose";
+import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { createSecretKey } from "node:crypto";
 import { getEnv } from "../../config/env.js";
 import { getSupabase } from "../../lib/supabase.js";
@@ -26,6 +36,10 @@ export type VerifySupabaseAccessResult =
   | { ok: true; user: VerifiedSupabaseAccessUser }
   | VerifySupabaseAccessFailure;
 
+/** Shown to end users on a login screen, so it names no vendor and asks for the
+ *  one action that helps. The underlying cause goes to the logs, not the phone. */
+const UNREACHABLE_MESSAGE = "Could not verify your code right now. Please try again.";
+
 function isNetworkish(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const e = err as { message?: string; code?: string; name?: string; cause?: { code?: string; message?: string } };
@@ -44,34 +58,29 @@ function isNetworkish(err: unknown): boolean {
   );
 }
 
-async function verifyLocally(accessToken: string): Promise<VerifiedSupabaseAccessUser | null> {
-  const env = getEnv();
-  const keys = [
-    createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET, "utf-8")),
-    ...(env.SUPABASE_JWT_SECRET_PREVIOUS
-      ? [createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET_PREVIOUS, "utf-8"))]
-      : []),
-  ];
+/**
+ * Project JWKS, resolved once per process.
+ *
+ * `cacheMaxAge` is deliberately long: jose refetches whenever a token carries an
+ * unknown `kid`, so key rotation is still picked up promptly, while a Supabase Auth
+ * blip cannot invalidate keys we have already fetched. That is the whole point —
+ * logins keep working through an Auth API outage.
+ */
+let jwksCache: ReturnType<typeof createRemoteJWKSet> | null = null;
+function getJwks(): ReturnType<typeof createRemoteJWKSet> | null {
+  if (jwksCache) return jwksCache;
+  const base = getEnv().SUPABASE_URL?.trim().replace(/\/+$/, "");
+  if (!base) return null;
+  jwksCache = createRemoteJWKSet(new URL(`${base}/auth/v1/.well-known/jwks.json`), {
+    timeoutDuration: 5_000,
+    cooldownDuration: 30_000,
+    cacheMaxAge: 6 * 60 * 60_000,
+  });
+  return jwksCache;
+}
 
-  let payload: Record<string, unknown> | null = null;
-  let lastErr: unknown = null;
-  for (const key of keys) {
-    try {
-      const verified = await jwtVerify(accessToken, key, {
-        // Small clock skew for mobile device clocks.
-        clockTolerance: 30,
-      });
-      payload = verified.payload as Record<string, unknown>;
-      break;
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  if (!payload) {
-    if (lastErr && isNetworkish(lastErr)) return null;
-    return null;
-  }
-
+/** Shared claim mapping for both local verification paths. */
+function userFromPayload(payload: JWTPayload): VerifiedSupabaseAccessUser | null {
   const sub = typeof payload.sub === "string" ? payload.sub : "";
   if (!sub) return null;
 
@@ -94,6 +103,41 @@ async function verifyLocally(accessToken: string): Promise<VerifiedSupabaseAcces
   return { id: sub, phone, email, via: "jwt" };
 }
 
+/** HS256 against the legacy symmetric signing secret. */
+async function verifySymmetric(accessToken: string): Promise<VerifiedSupabaseAccessUser | null> {
+  const env = getEnv();
+  const keys = [
+    createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET, "utf-8")),
+    ...(env.SUPABASE_JWT_SECRET_PREVIOUS
+      ? [createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET_PREVIOUS, "utf-8"))]
+      : []),
+  ];
+
+  for (const key of keys) {
+    try {
+      // Small clock skew for mobile device clocks.
+      const verified = await jwtVerify(accessToken, key, { clockTolerance: 30 });
+      return userFromPayload(verified.payload);
+    } catch {
+      /* wrong secret or asymmetric token — try the next path */
+    }
+  }
+  return null;
+}
+
+/** ES256 / RS256 / EdDSA against the project's published JWKS. */
+async function verifyAsymmetric(accessToken: string): Promise<VerifiedSupabaseAccessUser | null> {
+  const jwks = getJwks();
+  if (!jwks) return null;
+  try {
+    const verified = await jwtVerify(accessToken, jwks, { clockTolerance: 30 });
+    return userFromPayload(verified.payload);
+  } catch {
+    // Includes "JWKS could not be fetched" — fall through to auth.getUser().
+    return null;
+  }
+}
+
 async function verifyViaGetUser(accessToken: string): Promise<VerifySupabaseAccessResult> {
   try {
     const supabase = getSupabase();
@@ -104,7 +148,7 @@ async function verifyViaGetUser(accessToken: string): Promise<VerifySupabaseAcce
         return {
           ok: false,
           kind: "unreachable",
-          message: "Supabase Auth temporarily unreachable. Please retry.",
+          message: UNREACHABLE_MESSAGE,
         };
       }
       return { ok: false, kind: "invalid", message: msg };
@@ -123,7 +167,7 @@ async function verifyViaGetUser(accessToken: string): Promise<VerifySupabaseAcce
       return {
         ok: false,
         kind: "unreachable",
-        message: "Supabase Auth temporarily unreachable. Please retry.",
+        message: UNREACHABLE_MESSAGE,
       };
     }
     return {
@@ -137,8 +181,12 @@ async function verifyViaGetUser(accessToken: string): Promise<VerifySupabaseAcce
 export async function verifySupabaseAccessToken(
   accessToken: string
 ): Promise<VerifySupabaseAccessResult> {
-  const local = await verifyLocally(accessToken);
-  if (local) return { ok: true, user: local };
+  const symmetric = await verifySymmetric(accessToken);
+  if (symmetric) return { ok: true, user: symmetric };
+
+  const asymmetric = await verifyAsymmetric(accessToken);
+  if (asymmetric) return { ok: true, user: asymmetric };
+
   return verifyViaGetUser(accessToken);
 }
 
