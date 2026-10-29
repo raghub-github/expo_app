@@ -6,6 +6,7 @@ import { Download, Loader2 } from "lucide-react";
 import { ExportTransactionsSheet } from "@/components/transactions/ExportTransactionsSheet";
 import { TablePagination } from "@/components/riders/TablePagination";
 import { usePermissions } from "@/hooks/usePermissions";
+import { fetchJsonWithTimeout } from "@/lib/fetch-json-with-timeout";
 
 /* ----------------------------- types ----------------------------- */
 type TxnApp = "customer" | "merchant" | "rider";
@@ -150,22 +151,19 @@ export function TransactionsClient() {
 
   const query = useQuery({
     queryKey: ["transactions", filters, page, pageSize],
-    queryFn: async (): Promise<ListResp> => {
+    queryFn: ({ signal }): Promise<ListResp> => {
       const sp = new URLSearchParams();
       Object.entries(filters).forEach(([k, v]) => { if (v) sp.set(k, String(v)); });
       sp.set("page", String(page));
       sp.set("limit", String(pageSize));
-      const res = await fetch(`/api/transactions?${sp.toString()}`, {
-        credentials: "include",
-        cache: "no-store",
-      });
-      const json = (await res.json()) as ListResp;
-      if (!res.ok || !json.success) throw new Error(json.error || "Failed to load transactions");
-      return json;
+      return fetchJsonWithTimeout<ListResp>(`/api/transactions?${sp.toString()}`, { signal });
     },
     // Keep the board live: poll while the tab is visible; Refresh still forces an immediate refetch.
     staleTime: 10_000,
-    refetchInterval: 15_000,
+    // Stop polling once a fetch fails. Re-polling a server we cannot reach every 15s
+    // only piles up doomed requests and fills the console; window focus, the Retry
+    // button and Refresh all bring the board back once the connection is good again.
+    refetchInterval: (query) => (query.state.status === "error" ? false : 15_000),
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     refetchOnMount: "always",
@@ -273,7 +271,21 @@ export function TransactionsClient() {
             {query.isLoading ? (
               <tr><td colSpan={9} className="px-3 py-10 text-center text-gray-400">Loading…</td></tr>
             ) : query.isError ? (
-              <tr><td colSpan={9} className="px-3 py-10 text-center text-rose-500">{(query.error as Error)?.message ?? "Error loading transactions"}</td></tr>
+              <tr>
+                <td colSpan={9} className="px-3 py-10 text-center">
+                  <p className="text-rose-500">{(query.error as Error)?.message ?? "Error loading transactions"}</p>
+                  <p className="mt-1 text-xs text-gray-400">Auto-refresh is paused until this succeeds.</p>
+                  <button
+                    type="button"
+                    onClick={() => void query.refetch()}
+                    disabled={query.isFetching}
+                    className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-lg bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-80"
+                  >
+                    {query.isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
+                    Retry
+                  </button>
+                </td>
+              </tr>
             ) : rows.length === 0 ? (
               <tr><td colSpan={9} className="px-3 py-10 text-center text-gray-400">No transactions match these filters.</td></tr>
             ) : (
@@ -357,12 +369,8 @@ function StatusBadge({ status, raw }: { status: string; raw: string }) {
 function DetailDrawer({ uid, onClose }: { uid: string; onClose: () => void }) {
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["transaction-detail", uid],
-    queryFn: async (): Promise<DetailResp> => {
-      const res = await fetch(`/api/transactions/detail?uid=${encodeURIComponent(uid)}`, { credentials: "include" });
-      const json = (await res.json()) as DetailResp;
-      if (!res.ok || !json.success) throw new Error(json.error || "Failed to load detail");
-      return json;
-    },
+    queryFn: ({ signal }): Promise<DetailResp> =>
+      fetchJsonWithTimeout<DetailResp>(`/api/transactions/detail?uid=${encodeURIComponent(uid)}`, { signal }),
   });
   const row = data?.row ?? null;
 
