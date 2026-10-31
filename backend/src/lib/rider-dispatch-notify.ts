@@ -16,6 +16,7 @@ import {
   type DispatchOfferRiderEarnings,
 } from "./build-dispatch-offer-rider-earnings.js";
 import { sendRiderDispatchDirectPush } from "./rider-dispatch-push.js";
+import { fetchDispatchWaveSettings } from "./order-dispatch-settings.js";
 
 
 const SERVICE_LABEL: Record<DispatchOrderTarget["serviceType"], string> = {
@@ -23,6 +24,38 @@ const SERVICE_LABEL: Record<DispatchOrderTarget["serviceType"], string> = {
   parcel: "Parcel",
   person_ride: "Ride",
 };
+
+
+/**
+ * How long the native alert card may wait on the offer deadline before giving up.
+ *
+ * The deadline is a nice-to-have (it drives the countdown); the alert itself is
+ * not. A slow settings read must cost the rider a countdown, never a ring.
+ */
+const OFFER_DEADLINE_LOOKUP_BUDGET_MS = 200;
+
+/**
+ * Server-authoritative moment this offer stops being this rider's to take: the
+ * next wave supersedes it one wave interval after it was sent. Returned as epoch
+ * ms so the device renders a countdown without trusting its own clock offset for
+ * anything but elapsed time.
+ *
+ * Resolves to null rather than guessing — an invented deadline would either keep
+ * a dead card on screen or retire a live offer early.
+ */
+async function resolveOfferExpiryMs(
+  settings: Promise<number | null>
+): Promise<number | null> {
+  let timer: NodeJS.Timeout | undefined;
+  const budget = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), OFFER_DEADLINE_LOOKUP_BUDGET_MS);
+  });
+  try {
+    return await Promise.race([settings, budget]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 
 function formatDistanceKm(meters: number): string {
@@ -156,6 +189,12 @@ export async function notifyRiderDispatchOffer(
       });
 
 
+    // Runs alongside earnings. Both are enrichment; neither gates the alert.
+    const offerExpiryPromise: Promise<number | null> = fetchDispatchWaveSettings(target.serviceType)
+      .then((s) => assignment_notify_started_at + s.waveIntervalSeconds * 1000)
+      .catch(() => null);
+
+
     const alertSessionId = `RIDER_NEW_ORDER:${target.orderId}:${rider.riderId}:${target.waveNumber}`;
     const basePayload: DispatchOfferPayload = {
       type: "dispatch_offer",
@@ -204,6 +243,7 @@ export async function notifyRiderDispatchOffer(
 
     const fcmSend = async () => {
       try {
+        const offerExpiresAtMs = await resolveOfferExpiryMs(offerExpiryPromise);
         const sharedVariables = {
           orderId: target.orderId,
           formattedOrderId: target.formattedOrderId ?? "",
@@ -232,6 +272,11 @@ export async function notifyRiderDispatchOffer(
           alertStartedAt: String(assignment_notify_started_at),
           alertSessionId: `RIDER_NEW_ORDER:${target.orderId}:${rider.riderId}:${target.waveNumber}`,
           gmAlertAction: "start",
+          // Read by the native alert card for its countdown. Omitted, not zeroed,
+          // when unknown: the card hides the timer instead of showing "expired".
+          ...(offerExpiresAtMs != null
+            ? { expiresAt: String(offerExpiresAtMs), pickupDistance: dist }
+            : { pickupDistance: dist }),
         };
         const sharedOverrides = { title, body };
 

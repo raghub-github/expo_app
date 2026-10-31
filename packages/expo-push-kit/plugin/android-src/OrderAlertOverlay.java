@@ -467,6 +467,22 @@ public final class OrderAlertOverlay {
       header.addView(price);
     }
 
+    // Countdown, server-authoritative. Only elapsed time is read from this device;
+    // the deadline itself came from the backend, so a wrong device clock cannot
+    // extend an offer. Absent deadline => no timer, rather than a fake one.
+    long expiresAtMs = parseEpochMs(active != null ? active.optString("expiresAt", "") : "");
+    if (expiresAtMs > 0L) {
+      TextView countdown = new TextView(context);
+      countdown.setTag("gm_overlay_countdown");
+      countdown.setTextColor(Color.parseColor("#5EEAD4"));
+      countdown.setTextSize(15);
+      countdown.setTypeface(Typeface.DEFAULT_BOLD);
+      countdown.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+      countdown.setPadding(dp(context, 8), 0, dp(context, 8), 0);
+      header.addView(countdown);
+      startCountdown(context, countdown, sessionId, expiresAtMs);
+    }
+
     TextView close = new TextView(context);
     close.setText("×");
     close.setTextColor(Color.parseColor("#D1D5DB"));
@@ -559,6 +575,56 @@ public final class OrderAlertOverlay {
     card.addView(actions);
     root.addView(card);
     return root;
+  }
+
+  /**
+   * Ticks the remaining seconds once per second and retires the alert at zero.
+   *
+   * Keyed on sessionId: a tick that fires after a newer offer replaced this card
+   * must not stop the new one, and a detached view must not keep a timer alive.
+   */
+  private static void startCountdown(
+      final Context context,
+      final TextView view,
+      final String sessionId,
+      final long expiresAtMs
+  ) {
+    final Context app = context.getApplicationContext();
+    final Runnable[] tick = new Runnable[1];
+    tick[0] = () -> {
+      if (view.getParent() == null) return;
+      long leftMs = expiresAtMs - System.currentTimeMillis();
+      if (leftMs <= 0L) {
+        view.setText("0s");
+        try {
+          OrderAlertController.stop(app, sessionId);
+        } catch (Throwable ignored) {
+        }
+        return;
+      }
+      view.setText(((leftMs + 999L) / 1000L) + "s");
+      MAIN.postDelayed(tick[0], 1000L);
+    };
+    MAIN.post(tick[0]);
+  }
+
+  /** Accepts epoch millis or an ISO-8601 instant; 0 means "no usable deadline". */
+  static long parseEpochMs(String raw) {
+    String v = raw == null ? "" : raw.trim();
+    if (v.length() == 0) return 0L;
+    try {
+      if (v.matches("^\\d+$")) {
+        long n = Long.parseLong(v);
+        // Seconds-vs-millis is ambiguous only by magnitude; anything below this
+        // threshold cannot be a sane millisecond timestamp.
+        return n < 100000000000L ? n * 1000L : n;
+      }
+      if (Build.VERSION.SDK_INT >= 26) {
+        return java.time.Instant.parse(v).toEpochMilli();
+      }
+    } catch (Throwable ignored) {
+    }
+    return 0L;
   }
 
   /** Gap above the system navigation bar so Accept/Reject stay tappable. */
