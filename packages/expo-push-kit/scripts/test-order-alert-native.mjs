@@ -21,7 +21,11 @@ const SRC_DIR = join(here, "..", "plugin", "android-src");
 const TEST_DIR = join(here, "..", "plugin", "android-test");
 
 /** Classes free of Android imports — these compile and run for real. */
-const PURE = ["OrderAlertAcceptPlan.java", "OrderAlertCardText.java"];
+const PURE = [
+  "OrderAlertAcceptPlan.java",
+  "OrderAlertCardText.java",
+  "OrderAlertPresentation.java",
+];
 
 const ROLES = [
   { role: "rider", pkg: "com.gatimitra.rider" },
@@ -77,7 +81,8 @@ function checkPureApiUsage(sources) {
   const problems = [];
   for (const [file, text] of sources) {
     if (PURE.includes(file)) continue;
-    for (const m of text.matchAll(/\b(OrderAlertCardText|OrderAlertAcceptPlan)\.(\w+)\s*\(/g)) {
+    const pureClasses = PURE.map((f) => f.replace(/\.java$/, "")).join("|");
+    for (const m of text.matchAll(new RegExp(`\\b(${pureClasses})\\.(\\w+)\\s*\\(`, "g"))) {
       const [, cls, method] = m;
       if (!declared.get(cls)?.has(method)) {
         problems.push(`${file}: ${cls}.${method}() is not declared on ${cls}`);

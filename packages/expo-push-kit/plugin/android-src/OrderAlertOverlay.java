@@ -94,6 +94,24 @@ public final class OrderAlertOverlay {
     if (context == null) return;
     final String sid = sessionId == null ? "" : sessionId.trim();
     if (sid.length() == 0) return;
+    // The single gate for "may a native card be on screen right now".
+    //
+    // It lives here rather than at each call site because there are four of
+    // them and every one has to agree; one that forgets puts this card on top
+    // of the in-app sheet, which is exactly what riders and merchants saw.
+    //
+    // js_attached is the authoritative half: the app says it is presenting this
+    // offer itself. shouldSuppressOverlayWindow covers the cases JS cannot
+    // report — a locked keyguard, or the app being in front before the React
+    // tree has attached to the alert.
+    if (!OrderAlertPresentation.shouldMountOverlay(
+        OrderAlertController.isJsOwned(context, sid),
+        OrderAlertVisibility.shouldHideBecausePartnerIsOpen(context),
+        OrderAlertVisibility.isDeviceLocked(context),
+        isCardDismissed(context, sid))) {
+      hideAll(context);
+      return;
+    }
     final Context host = context;
     final Context app = context.getApplicationContext();
     Runnable task = () -> showOnMain(host, app, sid, orderId, offerId, title, body, pickup, drop, orderType);

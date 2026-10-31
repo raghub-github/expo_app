@@ -18,6 +18,7 @@ public final class OrderAlertNativeTest {
     acceptPlan();
     cardText();
     countdown();
+    presentation();
 
     System.out.println("  " + passed + " passed, " + failed + " failed  [role=" + ROLE + "]");
     if (failed > 0) System.exit(1);
@@ -164,6 +165,64 @@ public final class OrderAlertNativeTest {
     // the backend is the one that actually retires the assignment either way.
     eq("a device clock ahead of the server expires early",
         "0s", OrderAlertCardText.countdownLabel(now, now + 60_000));
+  }
+
+  // ---------------------------------------------------------- presentation
+
+  private static final boolean JS = true, FG = true, LOCKED = true, DISMISSED = true;
+  private static final boolean NO = false;
+
+  private static void presentation() {
+    // The defect this rule exists for: app open, native card also mounted.
+    // Whichever way the app signalled it is up, the overlay must stay off.
+    check("claimed by the app -> no overlay",
+        !OrderAlertPresentation.shouldMountOverlay(JS, NO, NO, NO));
+    check("app in front but not yet claimed -> still no overlay",
+        !OrderAlertPresentation.shouldMountOverlay(NO, FG, NO, NO));
+    check("claimed and in front -> no overlay",
+        !OrderAlertPresentation.shouldMountOverlay(JS, FG, NO, NO));
+    eq("an open app owns the card",
+        OrderAlertPresentation.Surface.IN_APP,
+        OrderAlertPresentation.resolve(JS, NO, NO, NO));
+
+    // The only combination that earns a floating card.
+    check("backgrounded, unlocked, not dismissed -> overlay",
+        OrderAlertPresentation.shouldMountOverlay(NO, NO, NO, NO));
+    eq("and that is the overlay surface",
+        OrderAlertPresentation.Surface.OVERLAY,
+        OrderAlertPresentation.resolve(NO, NO, NO, NO));
+
+    // Lock screen wins outright — LockActivity hosts the card, a WindowManager
+    // twin would be a second popup.
+    for (boolean js : new boolean[] {NO, JS}) {
+      for (boolean fg : new boolean[] {NO, FG}) {
+        for (boolean dis : new boolean[] {NO, DISMISSED}) {
+          eq("locked always defers to the lock screen",
+              OrderAlertPresentation.Surface.LOCK_SCREEN,
+              OrderAlertPresentation.resolve(js, fg, LOCKED, dis));
+          check("locked never mounts the overlay",
+              !OrderAlertPresentation.shouldMountOverlay(js, fg, LOCKED, dis));
+        }
+      }
+    }
+
+    // A swipe-away suppresses the card but nothing else.
+    eq("dismissed in the background shows nothing",
+        OrderAlertPresentation.Surface.NONE,
+        OrderAlertPresentation.resolve(NO, NO, NO, DISMISSED));
+    eq("dismissal does not stop the app presenting it",
+        OrderAlertPresentation.Surface.IN_APP,
+        OrderAlertPresentation.resolve(JS, NO, NO, DISMISSED));
+
+    // Exhaustive: never more than one surface, and overlay is the rare case.
+    int overlayCount = 0;
+    for (int i = 0; i < 16; i++) {
+      OrderAlertPresentation.Surface s = OrderAlertPresentation.resolve(
+          (i & 1) != 0, (i & 2) != 0, (i & 4) != 0, (i & 8) != 0);
+      check("every combination resolves to exactly one surface", s != null);
+      if (s == OrderAlertPresentation.Surface.OVERLAY) overlayCount++;
+    }
+    eq("only one of the 16 states mounts a floating card", 1, overlayCount);
   }
 
   // --------------------------------------------------------------- harness
