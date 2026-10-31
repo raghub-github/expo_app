@@ -49,6 +49,10 @@ import {
   clearMerchantStoreOrderNotifications,
   shouldClearOrderNotifications,
 } from "../../lib/clear-merchant-order-notifications.js";
+import {
+  PENDING_DECISION_STATUSES,
+  normalizeOrderStatusForTransition,
+} from "../../lib/merchant-order-decision-outcome.js";
 import { recordReadyTimeline } from "../../lib/order-food-status-timeline.js";
 import { maybeStartOrderDispatch } from "../../lib/order-dispatch.service.js";
 import { fetchFoodRiderAcceptFlow } from "../../lib/food-rider-accept-flow.js";
@@ -2851,12 +2855,6 @@ async function loadStoreRatingsForOrders(
   return result;
 }
 
-function normalizeOrderStatusForTransition(raw: string | null | undefined): string {
-  let s = String(raw || "CREATED").toUpperCase().replace("NEW", "CREATED");
-  if (s === "PLACED" || s === "ORDER_RECEIVED" || s === "ORDER_PLACED") s = "CREATED";
-  return s;
-}
-
 const VALID_TRANSITIONS: Record<string, string[]> = {
   CREATED: ["ACCEPTED", "CANCELLED"],
   NEW: ["ACCEPTED", "CANCELLED"],
@@ -2868,6 +2866,22 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
   CANCELLED: [],
   RTO: [],
 };
+
+/**
+ * The same normalisation as {@link normalizeOrderStatusForTransition}, in SQL,
+ * so a compare-and-swap guard and the status TypeScript read can never disagree.
+ * UPPER runs first and the match is exact.
+ */
+function normalizedFoodStatusSql(sql: Sql) {
+  return sql`
+    (CASE
+       WHEN UPPER(TRIM(COALESCE(order_status, 'CREATED'))) = ANY(${PENDING_DECISION_STATUSES}::text[])
+         THEN 'CREATED'
+       WHEN TRIM(COALESCE(order_status, '')) = '' THEN 'CREATED'
+       ELSE UPPER(TRIM(order_status))
+     END)
+  `;
+}
 
 async function resolveCoreIdForFood(
   sql: Sql,
@@ -2989,9 +3003,7 @@ export async function patchMerchantFoodOrderStatus(
           prep_time_source = ${prep.prepTimeSource}
       WHERE id = ${ordersFoodId}
         AND merchant_store_id = ${storeId}
-        AND UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED')) IN (
-          'CREATED', 'PLACED', 'ORDER_RECEIVED', 'ORDER_PLACED'
-        )
+        AND ${normalizedFoodStatusSql(sql)} = 'CREATED'
       RETURNING id
     `;
     } catch (acceptErr) {
@@ -3007,9 +3019,7 @@ export async function patchMerchantFoodOrderStatus(
           prep_time_source = ${prep.prepTimeSource}
       WHERE id = ${ordersFoodId}
         AND merchant_store_id = ${storeId}
-        AND UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED')) IN (
-          'CREATED', 'PLACED', 'ORDER_RECEIVED', 'ORDER_PLACED'
-        )
+        AND ${normalizedFoodStatusSql(sql)} = 'CREATED'
       RETURNING id
     `;
     }
@@ -3230,14 +3240,7 @@ export async function patchMerchantFoodOrderStatus(
               cancelled_by_type = ${cancelledByTypeForDb}
           WHERE id = ${ordersFoodId}
             AND merchant_store_id = ${storeId}
-            AND (
-              CASE
-                WHEN UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED')) IN (
-                  'PLACED', 'ORDER_RECEIVED', 'ORDER_PLACED'
-                ) THEN 'CREATED'
-                ELSE UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED'))
-              END
-            ) = ${currentStatus}
+            AND ${normalizedFoodStatusSql(sql)} = ${currentStatus}
           RETURNING id
         `
       : await sql`
@@ -3247,14 +3250,7 @@ export async function patchMerchantFoodOrderStatus(
               cancelled_by_type = ${cancelledByTypeForDb}
           WHERE id = ${ordersFoodId}
             AND merchant_store_id = ${storeId}
-            AND (
-              CASE
-                WHEN UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED')) IN (
-                  'PLACED', 'ORDER_RECEIVED', 'ORDER_PLACED'
-                ) THEN 'CREATED'
-                ELSE UPPER(REPLACE(COALESCE(order_status, 'CREATED'), 'NEW', 'CREATED'))
-              END
-            ) = ${currentStatus}
+            AND ${normalizedFoodStatusSql(sql)} = ${currentStatus}
           RETURNING id
         `;
     if (!Array.isArray(cancelRows) || cancelRows.length === 0) {

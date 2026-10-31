@@ -9893,7 +9893,18 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             if (msg === "order_not_found") return reply.code(404).send({ error: msg });
             if (msg === "store_mismatch") return reply.code(403).send({ error: msg });
             if (msg.startsWith("invalid_transition:")) {
-              return reply.code(400).send({ error: msg.replace("invalid_transition:", "Invalid transition: ") });
+              // Usually a second device acting on a card this store already
+              // decided — a conflict with a sentence staff can read, not a 400
+              // carrying "Invalid transition: CREATED:CANCELLED".
+              const { classifyMerchantDecisionFailure } = await import(
+                "../../lib/merchant-order-decision-outcome.js"
+              );
+              const outcome = classifyMerchantDecisionFailure(msg);
+              return reply.code(outcome.status).send({
+                error: outcome.message,
+                code: outcome.code,
+                actualStatus: outcome.actualStatus,
+              });
             }
             return reply.code(500).send({ error: msg });
           }

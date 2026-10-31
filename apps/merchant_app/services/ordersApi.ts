@@ -398,6 +398,27 @@ function coerceRiderTs(value: unknown): string | null {
   }
 }
 
+/**
+ * A decision this store already made on another device, or a move the order can
+ * no longer take. Carries the server's code so callers can retire the card
+ * instead of inviting staff to tap again at something already settled.
+ */
+export class MerchantOrderDecisionError extends Error {
+  readonly code: string;
+  readonly actualStatus: string;
+  constructor(message: string, code: string, actualStatus: string) {
+    super(message);
+    this.name = "MerchantOrderDecisionError";
+    this.code = code;
+    this.actualStatus = actualStatus;
+  }
+}
+
+/** True when the order is settled, so there is nothing left for this device to do. */
+export function isOrderAlreadyDecided(err: unknown): err is MerchantOrderDecisionError {
+  return err instanceof MerchantOrderDecisionError && err.code === "order_already_decided";
+}
+
 export async function patchFoodOrderStatus(
   storeId: number,
   ordersFoodId: number,
@@ -435,8 +456,16 @@ export async function patchFoodOrderStatus(
     }
   );
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { error?: string }).error || "Failed to update order");
+    const err = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      code?: string;
+      actualStatus?: string;
+    };
+    const message = err.error || "Failed to update order";
+    if (err.code) {
+      throw new MerchantOrderDecisionError(message, err.code, err.actualStatus ?? "");
+    }
+    throw new Error(message);
   }
   const data = (await res.json()) as { order?: ApiFoodOrder };
   if (!data.order) throw new Error("Order update failed");
