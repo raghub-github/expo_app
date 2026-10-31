@@ -15,6 +15,24 @@ describe("merchant decision failure", () => {
     assert.equal(out.actualStatus, "ACCEPTED");
   });
 
+  it("names the device that won when it is known", () => {
+    const out = classifyMerchantDecisionFailure(
+      "invalid_transition:ACCEPTED:CANCELLED",
+      "Kitchen tablet"
+    );
+    assert.equal(out.status, 409);
+    assert.equal(out.message, "This order was already accepted on Kitchen tablet.");
+  });
+
+  it("falls back to 'another device' when the winner was not recorded", () => {
+    // Orders decided before migration 0646, or by cron / admin tooling, have no
+    // device to name. Saying so beats naming the wrong one.
+    for (const unknown of [undefined, null, "", "   "]) {
+      const out = classifyMerchantDecisionFailure("invalid_transition:ACCEPTED:CANCELLED", unknown);
+      assert.equal(out.message, "This order was already accepted on another device.");
+    }
+  });
+
   it("treats a loss to another device's reject as a conflict", () => {
     const out = classifyMerchantDecisionFailure("invalid_transition:CANCELLED:ACCEPTED");
     assert.equal(out.status, 409);

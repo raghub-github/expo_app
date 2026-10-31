@@ -2883,6 +2883,41 @@ function normalizedFoodStatusSql(sql: Sql) {
   `;
 }
 
+/**
+ * Record which store device won the decision.
+ *
+ * Kept out of the accept/cancel compare-and-swap on purpose. Those guards are
+ * the thing that makes a multi-device store safe, and they are proven; widening
+ * them to carry audit fields would put a schema dependency on the one query
+ * that must never fail. This runs only after a decision has already been won,
+ * is keyed by primary key, and swallows a missing column so the app is safe to
+ * deploy whether or not migration 0646 has been applied yet.
+ */
+async function stampDecisionDevice(
+  sql: Sql,
+  ordersFoodId: number,
+  deviceId: string | null | undefined,
+  actorUserId: string | null | undefined
+): Promise<void> {
+  const device = String(deviceId ?? "").trim();
+  const user = String(actorUserId ?? "").trim();
+  if (!device && !user) return;
+  try {
+    await sql`
+      UPDATE orders_food
+      SET decision_device_id = ${device || null},
+          decision_user_id = ${user || null}
+      WHERE id = ${ordersFoodId}
+    `;
+  } catch (err) {
+    const msg = String((err as { message?: string })?.message ?? err).toLowerCase();
+    // Migration 0646 not applied yet — the decision itself already succeeded.
+    if (!msg.includes("decision_device_id") && !msg.includes("decision_user_id")) {
+      console.warn("[merchant-decision] device stamp failed", msg.slice(0, 160));
+    }
+  }
+}
+
 async function resolveCoreIdForFood(
   sql: Sql,
   food: { id: number; order_id: number | null; core_order_id: string | null }
@@ -2907,6 +2942,10 @@ export async function patchMerchantFoodOrderStatus(
     actionSource?: MerchantOrderActionSource;
     actionMode?: MerchantOrderActionMode;
     preparationTimeMinutes?: number | null;
+    /** Store device that sent this decision, for the multi-device audit trail. */
+    deviceId?: string | null;
+    /** Authenticated merchant user behind the decision. */
+    actorUserId?: string | null;
   }
 ): Promise<MerchantFoodOrderDto> {
   const status = String(newStatus || "").toUpperCase();
@@ -3031,6 +3070,10 @@ export async function patchMerchantFoodOrderStatus(
       if (st !== "ACCEPTED") {
         throw new Error(`invalid_transition:${currentStatus}:${status}`);
       }
+      // Already ACCEPTED by another device — that device owns the decision, so
+      // do not overwrite its stamp with this one's.
+    } else {
+      await stampDecisionDevice(sql, ordersFoodId, opts?.deviceId, opts?.actorUserId);
     }
     try {
       await sql`
@@ -3256,6 +3299,8 @@ export async function patchMerchantFoodOrderStatus(
     if (!Array.isArray(cancelRows) || cancelRows.length === 0) {
       throw new Error(`invalid_transition:${currentStatus}:${status}`);
     }
+    // Past the guard means this device's reject is the one that landed.
+    await stampDecisionDevice(sql, ordersFoodId, opts?.deviceId, opts?.actorUserId);
     // Sync core status immediately so customer refund can start without waiting on rule engine.
     try {
       await sql`
@@ -3461,6 +3506,10 @@ export async function patchMerchantFoodOrderStatus(
           }
         : {}),
       ...(status === "CANCELLED" ? { cancel_mode: actionMode } : {}),
+      // Attributes every attempt, including one a second device lost, without
+      // needing a column — metadata is already jsonb on this table.
+      ...(opts?.deviceId ? { device_id: String(opts.deviceId).trim() } : {}),
+      ...(opts?.actorUserId ? { actor_user_id: String(opts.actorUserId).trim() } : {}),
     });
     await sql`
       INSERT INTO merchant_order_food_actions (

@@ -1,3 +1,5 @@
+import type { Sql } from "postgres";
+
 /**
  * Turns a failed store decision into something the device that lost can act on.
  *
@@ -75,8 +77,18 @@ function titleCase(status: string): string {
  * `raw` is the `invalid_transition:<from>:<to>` thrown by the decision guards.
  * `from` is the status the order was found in, which is what distinguishes a
  * genuine race from an actually illegal transition.
+ *
+ * `decidedOnDevice` names the store device that won, when it is known. "already
+ * accepted on Kitchen tablet" tells a counter who to ask; "on another device"
+ * is the honest fallback when the deciding device was not recorded — which is
+ * every order decided before migration 0646, and anything decided by cron or
+ * admin tooling rather than a device.
  */
-export function classifyMerchantDecisionFailure(raw: string): MerchantDecisionOutcome {
+export function classifyMerchantDecisionFailure(
+  raw: string,
+  decidedOnDevice?: string | null
+): MerchantDecisionOutcome {
+  const where = String(decidedOnDevice ?? "").trim() || "another device";
   const [, fromRaw = "", toRaw = ""] = raw.split(":");
   const from = fromRaw.trim().toUpperCase();
   const to = toRaw.trim().toUpperCase();
@@ -84,18 +96,10 @@ export function classifyMerchantDecisionFailure(raw: string): MerchantDecisionOu
   // The order was no longer pending, so some other device — or the expiry job —
   // got there first. That is a conflict, not a bad request.
   if (from && !PENDING.has(from)) {
-    if (from === "CANCELLED") {
-      return {
-        status: 409,
-        code: "order_already_decided",
-        message: "This order was already cancelled on another device.",
-        actualStatus: from,
-      };
-    }
     return {
       status: 409,
       code: "order_already_decided",
-      message: `This order was already ${titleCase(from)} on another device.`,
+      message: `This order was already ${titleCase(from)} on ${where}.`,
       actualStatus: from,
     };
   }
@@ -108,4 +112,32 @@ export function classifyMerchantDecisionFailure(raw: string): MerchantDecisionOu
     message: `This order cannot move to ${titleCase(to)} right now.`,
     actualStatus: from || "CREATED",
   };
+}
+
+/**
+ * Human name of the device whose decision won, for the conflict message.
+ *
+ * Tolerates migration 0646 not being applied: without decision_device_id there
+ * is simply nothing to name, and the caller falls back to "another device".
+ * Never throws — this runs on an error path that must still produce a reply.
+ */
+export async function lookupDecidingDeviceName(
+  sql: Sql,
+  ordersFoodId: number
+): Promise<string | null> {
+  try {
+    const rows = (await sql`
+      SELECT COALESCE(NULLIF(TRIM(s.device_name), ''), NULLIF(TRIM(s.device_model), '')) AS name
+      FROM orders_food f
+      LEFT JOIN user_device_sessions s ON s.device_id = f.decision_device_id
+      WHERE f.id = ${ordersFoodId} AND f.decision_device_id IS NOT NULL
+      ORDER BY s.last_active DESC NULLS LAST
+      LIMIT 1
+    `) as unknown as Array<{ name: string | null }>;
+    const name = String(rows?.[0]?.name ?? "").trim();
+    return name || null;
+  } catch {
+    // Column absent (pre-0646) or the lookup failed — the message degrades.
+    return null;
+  }
 }

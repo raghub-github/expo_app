@@ -53,6 +53,21 @@ import {
   toOnboardingTaskDto,
 } from "../../lib/merchant-onboarding-tasks.js";
 
+/**
+ * Device id a merchant client sends with an order decision.
+ *
+ * Audit-only, so it is sanitised rather than trusted: it is written to the
+ * order and the action log, never used to authorise anything. Authorisation
+ * comes from the verified token and the store membership check.
+ */
+function readDeviceIdHeader(raw: string | string[] | undefined): string | null {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return null;
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 type AuditContext = {
   performedBy: string;
   performedById: number | null;
@@ -9878,6 +9893,11 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                   req.body?.preparation_time_minutes != null
                     ? Number(req.body.preparation_time_minutes)
                     : undefined,
+                // Which of the store's devices sent this. Header, not body, so
+                // every merchant client carries it without a body change; the
+                // user id comes from the verified token, never the client.
+                deviceId: readDeviceIdHeader(req.headers["x-gm-device-id"]),
+                actorUserId: req.auth.sub,
               }
             );
             if (newStatus === "ACCEPTED" || newStatus === "CANCELLED") {
@@ -9896,10 +9916,11 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               // Usually a second device acting on a card this store already
               // decided — a conflict with a sentence staff can read, not a 400
               // carrying "Invalid transition: CREATED:CANCELLED".
-              const { classifyMerchantDecisionFailure } = await import(
+              const { classifyMerchantDecisionFailure, lookupDecidingDeviceName } = await import(
                 "../../lib/merchant-order-decision-outcome.js"
               );
-              const outcome = classifyMerchantDecisionFailure(msg);
+              const decidedOn = await lookupDecidingDeviceName(sql, ordersFoodId);
+              const outcome = classifyMerchantDecisionFailure(msg, decidedOn);
               return reply.code(outcome.status).send({
                 error: outcome.message,
                 code: outcome.code,

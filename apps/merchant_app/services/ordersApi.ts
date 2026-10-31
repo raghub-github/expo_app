@@ -1,5 +1,6 @@
 import { getConfig } from "@/config/env";
 import { authFetch } from "@/services/authFetch";
+import { getOrCreateMerchantDeviceId } from "@/lib/merchantDeviceId";
 
 const getBase = () => getConfig().apiBaseUrl.replace(/\/+$/, "");
 
@@ -433,12 +434,19 @@ export async function patchFoodOrderStatus(
   }
 ): Promise<ApiFoodOrder> {
   const st = status.toUpperCase();
+  // One order is live on every device signed into this store, so the server
+  // needs to know which of them decided it. Audit only — authorisation still
+  // comes from the token. A device id that cannot be read is simply omitted.
+  const deviceId = await getOrCreateMerchantDeviceId().catch(() => "");
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}`,
     token,
     {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(deviceId ? { "x-gm-device-id": deviceId } : {}),
+      },
       body: JSON.stringify({
         status,
         action_source: opts?.action_source ?? "app",
