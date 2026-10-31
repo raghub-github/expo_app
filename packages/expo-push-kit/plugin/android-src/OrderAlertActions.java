@@ -9,7 +9,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import org.json.JSONObject;
 
@@ -116,53 +115,32 @@ public final class OrderAlertActions {
   private static void postAccept(Context context, String sessionId, JSONObject row) {
     if (row == null) return;
     SharedPreferences prefs = context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-    String base = prefs.getString("baseUrl", "");
-    String token = prefs.getString("token", "");
-    if (base == null || token == null || base.length() == 0 || token.length() == 0) {
-      // Nobody has signed in on this device since the alert stack was installed.
-      // Report it rather than dropping the tap on the floor.
-      recordResult(context, "failed", 0, "not_signed_in");
-      AlertEngineLog.log(context, "ACCEPT_FAILED", sessionId, "", "no_credentials");
+    final String bearerToken = prefs.getString("token", "");
+    OrderAlertAcceptPlan plan = OrderAlertAcceptPlan.build(
+        APP_ROLE,
+        prefs.getString("baseUrl", ""),
+        bearerToken,
+        sessionId,
+        row.optString("orderId", ""),
+        row.optString("offerId", ""),
+        row.optString("storeId", prefs.getString("storeId", "")),
+        row.optString("foodOrderId", "")
+    );
+    if (!plan.isSendable()) {
+      // Never drop the tap silently — the card has already closed by now, which
+      // on its own looks exactly like a successful accept.
+      recordResult(context, "failed", 0, plan.reason);
+      AlertEngineLog.log(context, "ACCEPT_FAILED", sessionId, plan.orderToken, plan.reason);
       return;
     }
 
-    final String root = base.replaceAll("/+$", "");
-    final String bearer = token.startsWith("Bearer ") ? token : "Bearer " + token;
-    final String url;
-    final String method;
-    final String payload;
-    final String orderToken;
-
-    if ("rider".equals(APP_ROLE)) {
-      String ref = row.optString("orderId", "");
-      if (ref.trim().length() == 0) ref = row.optString("offerId", "");
-      if (ref.trim().length() == 0) {
-        recordResult(context, "failed", 0, "no_order_ref");
-        return;
-      }
-      orderToken = ref.trim();
-      // Mirrors riderApi.acceptOrder — same route, same empty JSON body.
-      url = root + "/v1/rider/orders/" + encodePathSegment(orderToken) + "/accept";
-      method = "POST";
-      payload = "{}";
-    } else {
-      String storeId = row.optString("storeId", prefs.getString("storeId", ""));
-      String foodId = row.optString("foodOrderId", "");
-      if (foodId.length() == 0) foodId = digitsOnly(row.optString("orderId", ""));
-      if (storeId.length() == 0 || !foodId.matches("^\\d+$")) {
-        recordResult(context, "failed", 0, "no_order_ref");
-        return;
-      }
-      orderToken = foodId;
-      url = root + "/v1/merchant-partner/stores/" + storeId + "/food-orders/" + foodId;
-      method = "PATCH";
-      payload = "{\"status\":\"ACCEPTED\",\"action_source\":\"notification\",\"accept_mode\":\"manual\"}";
-    }
-
-    // Keyed on the alert session so overlay-tap + notification-action on the same
-    // offer collapse into one accept server-side instead of racing.
-    final String idempotencyKey =
-        "gm-native-accept:" + (sessionId == null || sessionId.length() == 0 ? orderToken : sessionId);
+    final String url = plan.url;
+    final String method = plan.method;
+    final String payload = plan.body;
+    final String orderToken = plan.orderToken;
+    final String idempotencyKey = plan.idempotencyKey;
+    final String bearer =
+        bearerToken.startsWith("Bearer ") ? bearerToken : "Bearer " + bearerToken;
     final Context appContext = context.getApplicationContext();
     Thread t = new Thread(() -> {
       HttpURLConnection conn = null;
@@ -227,14 +205,6 @@ public final class OrderAlertActions {
           .optString("error", "");
     } catch (Throwable ignored) {
       return "";
-    }
-  }
-
-  private static String encodePathSegment(String raw) {
-    try {
-      return URLEncoder.encode(raw, "UTF-8").replace("+", "%20");
-    } catch (Throwable ignored) {
-      return raw;
     }
   }
 

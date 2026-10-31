@@ -27,34 +27,47 @@ const SERVICE_LABEL: Record<DispatchOrderTarget["serviceType"], string> = {
 
 
 /**
- * How long the native alert card may wait on the offer deadline before giving up.
+ * How long the critical alert may wait on card enrichment before going without it.
  *
- * The deadline is a nice-to-have (it drives the countdown); the alert itself is
- * not. A slow settings read must cost the rider a countdown, never a ring.
+ * Everything this budget covers — the offer deadline, the rider's payout — is
+ * decoration on an alert whose whole job is to ring. One shared deadline for all
+ * of it, so adding a second enrichment never adds a second delay.
  */
-const OFFER_DEADLINE_LOOKUP_BUDGET_MS = 200;
+const CARD_ENRICHMENT_BUDGET_MS = 200;
 
 /**
- * Server-authoritative moment this offer stops being this rider's to take: the
- * next wave supersedes it one wave interval after it was sent. Returned as epoch
- * ms so the device renders a countdown without trusting its own clock offset for
- * anything but elapsed time.
- *
- * Resolves to null rather than guessing — an invented deadline would either keep
- * a dead card on screen or retire a live offer early.
+ * When this offer stops being this rider's to take: one wave interval after it
+ * was sent, which is when the next wave supersedes it. Null when the service has
+ * no wave configuration — the card then hides its timer rather than inventing one.
  */
-async function resolveOfferExpiryMs(
-  settings: Promise<number | null>
+export async function resolveOfferDeadlineMs(
+  serviceType: DispatchOrderTarget["serviceType"],
+  sentAtMs: number
 ): Promise<number | null> {
-  let timer: NodeJS.Timeout | undefined;
-  const budget = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), OFFER_DEADLINE_LOOKUP_BUDGET_MS);
-  });
   try {
-    return await Promise.race([settings, budget]);
-  } finally {
-    if (timer) clearTimeout(timer);
+    const cfg = await fetchDispatchWaveSettings(serviceType);
+    return sentAtMs + cfg.waveIntervalSeconds * 1000;
+  } catch {
+    return null;
   }
+}
+
+/** Resolves to null at the shared deadline instead of holding up the alert. */
+function underDeadline<T>(work: Promise<T>, deadline: Promise<null>): Promise<T | null> {
+  return Promise.race([work, deadline]);
+}
+
+function startDeadline(ms: number): { deadline: Promise<null>; cancel: () => void } {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  return {
+    deadline,
+    cancel: () => {
+      if (timer) clearTimeout(timer);
+    },
+  };
 }
 
 
@@ -143,7 +156,7 @@ function needsDirectFcmFallback(skipReason: string | null | undefined): boolean 
 export async function notifyRiderDispatchOffer(
   target: DispatchOrderTarget,
   rider: EligibleDispatchRider,
-  opts?: { realert?: boolean }
+  opts?: { realert?: boolean; offerExpiresAtMs?: number | null }
 ): Promise<void> {
   // A re-alert (GAP 3b) reuses the same wave but MUST carry a distinct idempotency key, otherwise
   // notificationService dedups it against the first offer and nothing is re-sent.
@@ -189,10 +202,14 @@ export async function notifyRiderDispatchOffer(
       });
 
 
-    // Runs alongside earnings. Both are enrichment; neither gates the alert.
-    const offerExpiryPromise: Promise<number | null> = fetchDispatchWaveSettings(target.serviceType)
-      .then((s) => assignment_notify_started_at + s.waveIntervalSeconds * 1000)
-      .catch(() => null);
+    // Every rider in a wave shares one deadline, so the fan-out resolves it once
+    // and passes it in. Reading it here per rider would put an extra round-trip
+    // on the critical path for each of them — a 20-rider wave against a pooled
+    // connection is exactly where that stops being free.
+    const offerExpiryPromise: Promise<number | null> =
+      opts?.offerExpiresAtMs !== undefined
+        ? Promise.resolve(opts.offerExpiresAtMs)
+        : resolveOfferDeadlineMs(target.serviceType, assignment_notify_started_at);
 
 
     const alertSessionId = `RIDER_NEW_ORDER:${target.orderId}:${rider.riderId}:${target.waveNumber}`;
@@ -243,7 +260,23 @@ export async function notifyRiderDispatchOffer(
 
     const fcmSend = async () => {
       try {
-        const offerExpiresAtMs = await resolveOfferExpiryMs(offerExpiryPromise);
+        // One deadline, both lookups. Whatever has landed by then rides along; the
+        // rest is omitted rather than guessed, and the WS follow-up still carries
+        // the full earnings breakdown to the in-app sheet.
+        const { deadline, cancel } = startDeadline(CARD_ENRICHMENT_BUDGET_MS);
+        const [offerExpiresAtMs, cardEarnings] = await Promise.all([
+          underDeadline(offerExpiryPromise, deadline).then((v) => v ?? null),
+          underDeadline(earningsPromise, deadline).then((v) => v ?? null),
+        ]);
+        cancel();
+
+        // The rider must never be shown the customer's bill as if it were theirs.
+        // This is the rider's own payout and nothing else.
+        const riderPayout =
+          cardEarnings && Number.isFinite(cardEarnings.totalEarning) && cardEarnings.totalEarning > 0
+            ? cardEarnings.totalEarning
+            : null;
+
         const sharedVariables = {
           orderId: target.orderId,
           formattedOrderId: target.formattedOrderId ?? "",
@@ -272,11 +305,20 @@ export async function notifyRiderDispatchOffer(
           alertStartedAt: String(assignment_notify_started_at),
           alertSessionId: `RIDER_NEW_ORDER:${target.orderId}:${rider.riderId}:${target.waveNumber}`,
           gmAlertAction: "start",
-          // Read by the native alert card for its countdown. Omitted, not zeroed,
-          // when unknown: the card hides the timer instead of showing "expired".
-          ...(offerExpiresAtMs != null
-            ? { expiresAt: String(offerExpiresAtMs), pickupDistance: dist }
-            : { pickupDistance: dist }),
+          // --- fields the native alert card renders when JS is dead ---
+          // Pre-formatted: the card has no locale/unit logic of its own, and the
+          // raw pickupDistanceMeters above renders as a bare "1430 m".
+          pickupDistance: dist,
+          // Without this the card falls back to scraping an id out of the body
+          // text, which only ever matched food orders.
+          formattedOrderId: target.formattedOrderId ?? "",
+          // Omitted, not zeroed, when unknown — the card hides the row rather
+          // than showing a timer at zero or a payout of ₹0.
+          ...(offerExpiresAtMs != null ? { expiresAt: String(offerExpiresAtMs) } : {}),
+          ...(riderPayout != null ? { amount: String(riderPayout) } : {}),
+          ...(cardEarnings?.tripDistanceKm
+            ? { tripDistanceKm: String(cardEarnings.tripDistanceKm) }
+            : {}),
         };
         const sharedOverrides = { title, body };
 
@@ -462,8 +504,11 @@ export async function notifyEligibleRidersDispatchOffer(
   }
 
 
+  // One read for the whole wave, off the per-rider critical path.
+  const offerExpiresAtMs = await resolveOfferDeadlineMs(target.serviceType, Date.now());
+
   const results = await Promise.allSettled(
-    riders.map((rider) => notifyRiderDispatchOffer(target, rider))
+    riders.map((rider) => notifyRiderDispatchOffer(target, rider, { offerExpiresAtMs }))
   );
   return results.filter((r) => r.status === "fulfilled").length;
 }

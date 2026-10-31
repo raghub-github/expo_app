@@ -10,11 +10,15 @@
       "default": "./src/index.ts"
     }
   },
-  "files": ["src", "plugin"],
+  "files": [
+    "src",
+    "plugin"
+  ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/controller.test.ts src/app-integration.test.ts src/orderAlert.test.ts src/pendingOrderAction.test.ts src/tokenRotation.test.ts src/appAudience.test.ts",
-    "lint": "echo \"(expo-push-kit) no lint configured\""
+    "test": "node --import tsx --test src/controller.test.ts src/app-integration.test.ts src/orderAlert.test.ts src/pendingOrderAction.test.ts src/tokenRotation.test.ts src/appAudience.test.ts && node scripts/test-order-alert-native.mjs",
+    "lint": "echo \"(expo-push-kit) no lint configured\"",
+    "test:native": "node scripts/test-order-alert-native.mjs"
   },
   "peerDependencies": {
     "expo-constants": ">=16",
@@ -28,7 +32,9 @@
     "react-native-safe-area-context": ">=4"
   },
   "peerDependenciesMeta": {
-    "expo-intent-launcher": { "optional": true }
+    "expo-intent-launcher": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "typescript": "~5.9.2"

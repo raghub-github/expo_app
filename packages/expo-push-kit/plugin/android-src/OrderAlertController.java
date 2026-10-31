@@ -152,6 +152,7 @@ public final class OrderAlertController {
     String storeId = first(data, "storeId", "store_id", "merchantStoreId");
     String foodId = first(data, "foodOrderId", "food_order_id");
     String expires = first(data, "expiresAt", "expires_at", "acceptUntil");
+    String tripKm = first(data, "tripDistanceKm", "trip_distance_km");
     synchronized (LOCK) {
       JSONObject row = findSession(context, sessionId, "", "");
       if (row == null) return;
@@ -162,6 +163,7 @@ public final class OrderAlertController {
         if (storeId.length() > 0) row.put("storeId", storeId);
         if (foodId.length() > 0) row.put("foodOrderId", foodId);
         if (expires.length() > 0) row.put("expiresAt", expires);
+        if (tripKm.length() > 0 && !"0".equals(tripKm)) row.put("tripDistanceKm", tripKm);
         if (title != null && title.trim().length() > 0) row.put("title", title.trim());
         if (body != null && body.trim().length() > 0) row.put("body", body.trim());
         upsertSession(context, row);
@@ -204,9 +206,12 @@ public final class OrderAlertController {
     );
     if (display.matches("^\\d+$")) display = "";
     if (display.length() == 0) {
+      // Last resort when no id field came through. GMF is food; rides and parcels
+      // carry their own prefixes, and matching food only is why those cards showed
+      // no order id at all.
       String blob = first(data, "title", "body", "message", "orderNumber", "order_number");
       java.util.regex.Matcher m = java.util.regex.Pattern
-          .compile("GMF\\d+", java.util.regex.Pattern.CASE_INSENSITIVE)
+          .compile("GM[A-Z]\\d+", java.util.regex.Pattern.CASE_INSENSITIVE)
           .matcher(blob);
       if (m.find()) display = m.group().toUpperCase();
     }
