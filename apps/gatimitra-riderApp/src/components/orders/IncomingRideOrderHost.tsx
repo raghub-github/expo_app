@@ -504,6 +504,23 @@ export function IncomingRideOrderHost() {
     };
   }, []);
 
+  /**
+   * Re-claim on every new offer, not just at mount.
+   *
+   * Claiming is what tells the native layer "this app is presenting the card
+   * itself", which is what keeps the floating overlay off the screen while the
+   * in-app sheet is up. Claiming once at mount only covered whatever offer
+   * happened to be live then, so the next offer to arrive while the app was
+   * already open was never claimed and surfaced as two stacked popups.
+   *
+   * No cleanup: releasing here would hand the card back mid-offer. The native
+   * lifecycle watcher releases it when the app actually leaves the screen.
+   */
+  useEffect(() => {
+    if (!poolHeadId) return;
+    void attachRiderDispatchBuzzer();
+  }, [poolHeadId]);
+
   const closeModal = useCallback(() => {
     stopRiderDispatchBuzzer(activeOrderIdRef.current);
     setModalVisible(false);

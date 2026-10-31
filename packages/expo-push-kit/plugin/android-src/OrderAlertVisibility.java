@@ -18,7 +18,6 @@ public final class OrderAlertVisibility {
   private static final long SHOW_DELAY_MS = 320L;
   private static int resumed;
   private static boolean registered;
-  private static boolean leftForegroundOnce;
   private static Runnable pendingShow;
 
   private OrderAlertVisibility() {}
@@ -45,7 +44,6 @@ public final class OrderAlertVisibility {
       @Override public void onActivityPaused(Activity activity) {
         if (!samePackage(activity)) return;
         if (activity instanceof OrderAlertLockActivity) return;
-        leftForegroundOnce = true;
         resumed = Math.max(0, resumed - 1);
         if (resumed > 0) return;
         MAIN.removeCallbacks(pendingShow);
@@ -60,7 +58,10 @@ public final class OrderAlertVisibility {
             if (active == null) return;
             String sid = active.optString("sessionId", "");
             if (OrderAlertOverlay.isCardDismissed(appCtx, sid)) return;
-            OrderAlertOverlay.show(appCtx, active);
+            // The app is gone from the screen, so whatever it claimed it can no
+            // longer present. Take the card back before showing it, or the
+            // js_attached gate in show() would keep the rider with nothing.
+            OrderAlertController.release(appCtx, sid);
           } catch (Throwable ignored) {
           }
         };
@@ -72,10 +73,26 @@ public final class OrderAlertVisibility {
     });
   }
 
-  /** True only before the user has sent Partner to the background. */
+  /**
+   * True while this app's own UI is in front, so a native card would land on
+   * top of the in-app sheet.
+   *
+   * The resumed counter is the fast path but it is not trustworthy on its own:
+   * register() can run after an activity has already resumed (the lifecycle
+   * callback for that resume is gone), leaving the counter at 0 while the app
+   * is plainly visible. This used to fall back to the process check only until
+   * the first time the app was backgrounded, after which the stale counter was
+   * the sole signal — and a desynced 0 meant the overlay mounted over the
+   * foreground app for the rest of the process's life. The process check now
+   * always backs it up.
+   *
+   * IMPORTANCE_FOREGROUND is a visible activity. A process running only our
+   * alert foreground service reports IMPORTANCE_FOREGROUND_SERVICE, a
+   * different value, so the running buzzer cannot make a backgrounded app look
+   * foreground and wrongly suppress the card.
+   */
   static boolean shouldHideBecausePartnerIsOpen(Context context) {
     if (resumed > 0) return true;
-    if (leftForegroundOnce) return false;
     return processLooksForeground(context);
   }
 

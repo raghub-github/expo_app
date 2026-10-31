@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { canDrawNativeOverlays, isNativeOrderAlertAvailable } from "@gatimitra/expo-push-kit";
 import { getItem, setItem } from "@/src/utils/storage";
 import {
   getBackgroundRunningStatus,
@@ -9,9 +10,12 @@ import {
  * Android / iOS permission checker for settings-gated onboarding steps.
  *
  * Battery + Background Running use real OS APIs (expo-battery / location).
- * Display-over-apps still uses a short-lived cache only as a soft hint because
- * Expo has no Settings.canDrawOverlays() wrapper; Allow always opens the real
- * system screen and never auto-grants on undetermined.
+ * Display-over-apps asks the native alert module, which wraps
+ * Settings.canDrawOverlays(). The stored flag is only a fallback for builds
+ * without that module — on its own it reports whatever the rider was last
+ * marked as, so it survives both a trip to Settings that changed nothing and a
+ * later revoke, and tells a rider with no overlay that they are ready for one.
+ * Allow always opens the real system screen and never auto-grants.
  */
 
 const PERMISSION_STATE_KEY = "android_permission_states";
@@ -118,6 +122,16 @@ export class AndroidPermissionChecker {
     }
 
     try {
+      if (isNativeOrderAlertAvailable()) {
+        // Authoritative: this is Settings.canDrawOverlays() on the other side.
+        // Keep the cache in step so a revoke cannot be masked by a stale "granted".
+        const allowed = await canDrawNativeOverlays();
+        await savePermissionState("display_over_apps", allowed ? "granted" : "denied");
+        return allowed
+          ? { status: "granted", canAskAgain: false }
+          : { status: "undetermined", canAskAgain: true };
+      }
+
       const cached = await getCachedPermissionStates();
       const cachedState = cached["display_over_apps"];
 
@@ -132,7 +146,17 @@ export class AndroidPermissionChecker {
     }
   }
 
+  /**
+   * Called when the rider comes back from the overlay settings screen. Returning
+   * is not consent, so confirm with the OS before recording a grant — otherwise
+   * backing out of Settings marks the permission granted forever.
+   */
   async markDisplayOverAppsGranted(): Promise<void> {
+    if (isNativeOrderAlertAvailable()) {
+      const allowed = await canDrawNativeOverlays().catch(() => false);
+      await savePermissionState("display_over_apps", allowed ? "granted" : "denied");
+      return;
+    }
     await savePermissionState("display_over_apps", "granted");
   }
 

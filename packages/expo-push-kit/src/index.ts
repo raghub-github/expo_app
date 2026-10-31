@@ -110,6 +110,7 @@ export {
   setPersistentOrderPill,
   consumePersistentPillLaunch,
   consumeNativePendingOrderAction,
+  persistNativeOrderAlertActionCredentials,
   extractAlertSessionId,
   merchantAlertSessionId,
   riderAlertSessionId,

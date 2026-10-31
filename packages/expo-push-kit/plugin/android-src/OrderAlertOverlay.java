@@ -94,6 +94,24 @@ public final class OrderAlertOverlay {
     if (context == null) return;
     final String sid = sessionId == null ? "" : sessionId.trim();
     if (sid.length() == 0) return;
+    // The single gate for "may a native card be on screen right now".
+    //
+    // It lives here rather than at each call site because there are four of
+    // them and every one has to agree; one that forgets puts this card on top
+    // of the in-app sheet, which is exactly what riders and merchants saw.
+    //
+    // js_attached is the authoritative half: the app says it is presenting this
+    // offer itself. shouldSuppressOverlayWindow covers the cases JS cannot
+    // report — a locked keyguard, or the app being in front before the React
+    // tree has attached to the alert.
+    if (!OrderAlertPresentation.shouldMountOverlay(
+        OrderAlertController.isJsOwned(context, sid),
+        OrderAlertVisibility.shouldHideBecausePartnerIsOpen(context),
+        OrderAlertVisibility.isDeviceLocked(context),
+        isCardDismissed(context, sid))) {
+      hideAll(context);
+      return;
+    }
     final Context host = context;
     final Context app = context.getApplicationContext();
     Runnable task = () -> showOnMain(host, app, sid, orderId, offerId, title, body, pickup, drop, orderType);
@@ -445,7 +463,7 @@ public final class OrderAlertOverlay {
     ));
 
     TextView heading = new TextView(context);
-    heading.setText("NEW ORDER");
+    heading.setText(headingFor(orderType));
     heading.setTag("gm_overlay_title");
     heading.setTextColor(Color.parseColor("#F9FAFB"));
     heading.setTextSize(16);
@@ -457,7 +475,10 @@ public final class OrderAlertOverlay {
 
     if (amountLabel.length() > 0) {
       TextView price = new TextView(context);
-      price.setText(amountLabel);
+      // Riders are sent their own payout in this field; merchants are sent the
+      // order total. Rendering both as a bare rupee figure invites a rider to
+      // read the number as the fare.
+      price.setText(OrderAlertCardText.amountLabel(amount));
       price.setTag("gm_overlay_price");
       price.setTextColor(Color.WHITE);
       price.setTextSize(16);
@@ -465,6 +486,22 @@ public final class OrderAlertOverlay {
       price.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
       price.setPadding(dp(context, 8), 0, dp(context, 8), 0);
       header.addView(price);
+    }
+
+    // Countdown, server-authoritative. Only elapsed time is read from this device;
+    // the deadline itself came from the backend, so a wrong device clock cannot
+    // extend an offer. Absent deadline => no timer, rather than a fake one.
+    long expiresAtMs = parseEpochMs(active != null ? active.optString("expiresAt", "") : "");
+    if (expiresAtMs > 0L) {
+      TextView countdown = new TextView(context);
+      countdown.setTag("gm_overlay_countdown");
+      countdown.setTextColor(Color.parseColor("#5EEAD4"));
+      countdown.setTextSize(15);
+      countdown.setTypeface(Typeface.DEFAULT_BOLD);
+      countdown.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+      countdown.setPadding(dp(context, 8), 0, dp(context, 8), 0);
+      header.addView(countdown);
+      startCountdown(context, countdown, sessionId, expiresAtMs);
     }
 
     TextView close = new TextView(context);
@@ -493,6 +530,11 @@ public final class OrderAlertOverlay {
     String dropLabel = safeText(drop);
     if (dropLabel.length() > 0) {
       card.addView(metaRow(context, "Drop: " + dropLabel));
+    }
+
+    String tripKm = active != null ? safeText(active.optString("tripDistanceKm", "")) : "";
+    if (tripKm.length() > 0 && !"0".equals(tripKm)) {
+      card.addView(metaRow(context, "Trip: " + tripKm + " km"));
     }
 
     if (displayId.length() > 0) {
@@ -561,6 +603,42 @@ public final class OrderAlertOverlay {
     return root;
   }
 
+  /**
+   * Ticks the remaining seconds once per second and retires the alert at zero.
+   *
+   * Keyed on sessionId: a tick that fires after a newer offer replaced this card
+   * must not stop the new one, and a detached view must not keep a timer alive.
+   */
+  private static void startCountdown(
+      final Context context,
+      final TextView view,
+      final String sessionId,
+      final long expiresAtMs
+  ) {
+    final Context app = context.getApplicationContext();
+    final Runnable[] tick = new Runnable[1];
+    tick[0] = () -> {
+      if (view.getParent() == null) return;
+      long leftMs = expiresAtMs - System.currentTimeMillis();
+      if (leftMs <= 0L) {
+        view.setText("0s");
+        try {
+          OrderAlertController.stop(app, sessionId);
+        } catch (Throwable ignored) {
+        }
+        return;
+      }
+      view.setText(OrderAlertCardText.countdownLabel(expiresAtMs, System.currentTimeMillis()));
+      MAIN.postDelayed(tick[0], 1000L);
+    };
+    MAIN.post(tick[0]);
+  }
+
+  /** Accepts epoch millis or an ISO-8601 instant; 0 means "no usable deadline". */
+  static long parseEpochMs(String raw) {
+    return OrderAlertCardText.parseEpochMs(raw);
+  }
+
   /** Gap above the system navigation bar so Accept/Reject stay tappable. */
   static int bottomSafePx(Context context) {
     int nav = 0;
@@ -605,21 +683,16 @@ public final class OrderAlertOverlay {
     return btn;
   }
 
+  private static String headingFor(String orderType) {
+    return OrderAlertCardText.headingFor(orderType);
+  }
+
   private static String displayOrderType(String raw) {
-    String v = safeText(raw).toLowerCase();
-    if (v.length() == 0) return "";
-    if ("food".equals(v)) return "Food";
-    if ("parcel".equals(v)) return "Parcel";
-    if ("ride".equals(v) || "person_ride".equals(v) || "person-ride".equals(v)) return "Ride";
-    if (v.length() == 1) return v.toUpperCase();
-    return Character.toUpperCase(v.charAt(0)) + v.substring(1);
+    return OrderAlertCardText.displayOrderType(raw);
   }
 
   private static String displayPickup(String raw) {
-    String v = safeText(raw);
-    if (v.length() == 0) return "";
-    if (v.matches("^\\d+$")) return v + " m";
-    return v;
+    return OrderAlertCardText.displayPickup(raw);
   }
 
   private static String firstNonEmpty(String a, String b) {
@@ -638,19 +711,7 @@ public final class OrderAlertOverlay {
   }
 
   private static String formatAmount(String raw) {
-    String v = safeText(raw);
-    if (v.length() == 0 || "0".equals(v) || "0.0".equals(v) || "0.00".equals(v)) return "";
-    if (v.startsWith("₹")) return v;
-    try {
-      double n = Double.parseDouble(v);
-      if (n <= 0) return "";
-      if (Math.abs(n - Math.rint(n)) < 0.001) {
-        return "₹" + String.valueOf((long) Math.rint(n));
-      }
-      return "₹" + v;
-    } catch (Throwable t) {
-      return v;
-    }
+    return OrderAlertCardText.formatAmount(raw);
   }
 
   private static String sessionSafe(String value) {
