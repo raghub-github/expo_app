@@ -79,18 +79,38 @@ retire() {
 # backend's old IP since both listen on :3000). Best-effort: if nginx isn't
 # running yet (first deploy) or the reload fails, log it and continue — we
 # already verified the new container is healthy.
+# Most upstreams in infra/nginx/nginx.conf are STATIC (`upstream backend {
+# server backend:3000; keepalive 32; }`), which nginx resolves to a container IP
+# once, at config load. A redeploy gives the container a new IP, so the reload
+# below is what re-resolves it.
+#
+# The catch is timing. Reloading immediately after `docker rm` of the old
+# container is a race: Docker's embedded DNS can still hand back the dead IP,
+# and nginx then caches THAT until the next reload — leaving the service 502
+# behind a deploy that reported success. Observed three times in a row on
+# backend; the one deploy that came up healthy simply won the race.
+#
+# So: let DNS settle, reload, then reload again a few seconds later. The second
+# reload costs nothing and closes the window for good.
 reload_nginx() {
   [[ "$svc" == "nginx" ]] && return 0
-  echo "▶ deploy: $svc — reloading nginx to re-resolve upstream DNS"
   local nginx_cid
   nginx_cid=$("${compose[@]}" ps -q nginx | head -1 || true)
-  if [[ -n "$nginx_cid" ]]; then
+  if [[ -z "$nginx_cid" ]]; then
+    echo "⚠ deploy: $svc — no nginx container found; skipping reload"
+    return 0
+  fi
+
+  local attempt
+  for attempt in 1 2; do
+    sleep "${NGINX_RELOAD_SETTLE_SECONDS:-5}"
+    echo "▶ deploy: $svc — reloading nginx to re-resolve upstream DNS (pass $attempt/2)"
     if docker exec "$nginx_cid" nginx -s reload 2>/dev/null; then
       echo "✔ deploy: $svc — nginx reloaded"
     else
       echo "⚠ deploy: $svc — nginx reload failed (not fatal; manual restart may be needed)"
     fi
-  fi
+  done
 }
 
 # Pre-flight: when deploying nginx, validate the new config inside a throwaway

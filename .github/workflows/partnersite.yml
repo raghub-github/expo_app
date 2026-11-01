@@ -136,7 +136,7 @@ jobs:
             git fetch --depth 1 origin main
             git reset --hard origin/main
             chmod +x infra/scripts/deploy-service.sh
-            infra/scripts/deploy-service.sh partnersite http://localhost:3000/api/health 90
+            infra/scripts/deploy-service.sh partnersite http://localhost:3000/api/health 180
             EOF
             mkdir -p ~/.ssh
             chmod 700 ~/.ssh
@@ -147,3 +147,12 @@ jobs:
                 -i ~/.ssh/id_ed25519 \
                 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
                 'bash -s' < /tmp/_ssh_script.sh
+
+      # deploy-service.sh only probes the health URL from INSIDE the container,
+      # so it cannot see whether nginx is routing to it. That gap let three
+      # backend deploys print a clean success while the public hostname served
+      # 502 from a cached, dead upstream IP. Fail the job instead.
+      - name: Verify through nginx (public hostname)
+        run: |
+          chmod +x infra/scripts/verify-public-endpoint.sh
+          infra/scripts/verify-public-endpoint.sh https://partner.gatimitra.com/

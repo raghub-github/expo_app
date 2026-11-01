@@ -128,7 +128,7 @@ jobs:
             # app network (so `coredash` is resolvable by nginx's request-time
             # resolver), then health-check the container's root path (which
             # 303-redirects to the public /login page — no DB needed).
-            infra/scripts/deploy-service.sh coredash http://localhost:3004/ 90
+            infra/scripts/deploy-service.sh coredash http://localhost:3004/ 180
             EOF
             mkdir -p ~/.ssh
             chmod 700 ~/.ssh
@@ -139,3 +139,12 @@ jobs:
                 -i ~/.ssh/id_ed25519 \
                 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
                 'bash -s' < /tmp/_ssh_coredash.sh
+
+      # deploy-service.sh only probes the health URL from INSIDE the container,
+      # so it cannot see whether nginx is routing to it. That gap let three
+      # backend deploys print a clean success while the public hostname served
+      # 502 from a cached, dead upstream IP. Fail the job instead.
+      - name: Verify through nginx (public hostname)
+        run: |
+          chmod +x infra/scripts/verify-public-endpoint.sh
+          infra/scripts/verify-public-endpoint.sh https://treasury.gatimitra.com/

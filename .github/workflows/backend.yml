@@ -102,7 +102,11 @@ jobs:
             git fetch --depth 1 origin main
             git reset --hard origin/main
             chmod +x infra/scripts/deploy-service.sh
-            infra/scripts/deploy-service.sh backend http://localhost:3000/v1/health 90
+            # 180s, not 90: backend needs ~55s to answer health on an idle VPS,
+            # and a push that touches a shared package or the deploy script
+            # co-triggers up to six deploy workflows whose concurrent Docker
+            # builds pushed it past 90s and tripped a needless rollback.
+            infra/scripts/deploy-service.sh backend http://localhost:3000/v1/health 180
             EOF
             mkdir -p ~/.ssh
             chmod 700 ~/.ssh
@@ -113,3 +117,14 @@ jobs:
                 -i ~/.ssh/id_ed25519 \
                 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
                 'bash -s' < /tmp/_ssh_script.sh
+
+      # The deploy above only ever probes localhost INSIDE the container, so it
+      # cannot tell whether nginx is actually routing to the new one. That gap
+      # let three deploys report a clean success while api.gatimitra.com served
+      # 502 from a cached, dead upstream IP. Check the real hostname, and fail
+      # the job if the API is not reachable — a deploy that left production down
+      # must never show up green.
+      - name: Verify through nginx (public hostname)
+        run: |
+          chmod +x infra/scripts/verify-public-endpoint.sh
+          infra/scripts/verify-public-endpoint.sh https://api.gatimitra.com/v1/health
