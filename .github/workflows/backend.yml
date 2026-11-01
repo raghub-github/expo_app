@@ -102,7 +102,11 @@ jobs:
             git fetch --depth 1 origin main
             git reset --hard origin/main
             chmod +x infra/scripts/deploy-service.sh
-            infra/scripts/deploy-service.sh backend http://localhost:3000/v1/health 90
+            # 180s, not 90: backend needs ~55s to answer health on an idle VPS,
+            # and a push that touches a shared package or the deploy script
+            # co-triggers up to six deploy workflows whose concurrent Docker
+            # builds pushed it past 90s and tripped a needless rollback.
+            infra/scripts/deploy-service.sh backend http://localhost:3000/v1/health 180
             EOF
             mkdir -p ~/.ssh
             chmod 700 ~/.ssh
