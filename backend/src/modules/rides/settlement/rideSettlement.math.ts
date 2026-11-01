@@ -175,6 +175,15 @@ export type SettlementInput = {
    */
   commissionOnToll?: boolean;
 
+  /**
+   * Whether this rider is entitled to the waiting charge (an active GatiMitra Max
+   * subscription). The customer is charged waiting either way; a rider without Max
+   * does not receive it and the company retains it.
+   *
+   * Defaults to true so an omitted flag never silently withholds pay.
+   */
+  riderWaitingEntitled?: boolean;
+
   components: RideBillComponents;
 };
 
@@ -185,8 +194,22 @@ export type SettlementResult = {
 
   /** Sum of the customer-facing charges that fund the platform. */
   companyChargesTotal: number;
-  /** Amount that flows through the ride service itself (rider + platform share). */
+  /**
+   * Amount that flows through the ride service itself (rider + platform share),
+   * on the GROSS pre-discount bill — the base that is actually split.
+   */
   commissionableBase: number;
+  /**
+   * The same base on the discounted bill the customer actually paid. Equal to
+   * `commissionableBase` when no offer applied; lower when one did.
+   */
+  commissionableBaseNet: number;
+  /**
+   * Company-funded top-up keeping the rider whole against a customer offer —
+   * the share the rider would have lost if the discount had reached their
+   * earnings. Already included in `riderEarnings`.
+   */
+  promotionSubsidy: number;
   /** Company's take on the ride service. */
   companyCommission: number;
 
@@ -346,9 +369,18 @@ export function computeRideSettlement(input: SettlementInput): SettlementResult 
   const tollAsCompany = commissionOnToll ? c.tollCharge : 0;
   const tollAsRiderPassThrough = commissionOnToll ? 0 : c.tollCharge;
 
+  // GatiMitra Max gate. The customer is charged waiting regardless; a rider without
+  // an active Max subscription does not receive it, so it moves from the rider's
+  // pass-through to the company's charges. Food and parcel already gate this (see
+  // resolveRiderWaitingEntitlement) — ride settlement did not, so every cash and
+  // online ride paid waiting through to the rider whatever their subscription.
+  const riderWaitingEntitled = input.riderWaitingEntitled !== false;
+  const waitingToRider = riderWaitingEntitled ? c.waitingCharge : 0;
+  const waitingRetainedByCompany = round2(c.waitingCharge - waitingToRider);
+
   // Rider-side add-ons charged to the customer (outside residual split).
   const riderPassThroughFromCustomer = round2(
-    c.waitingCharge +
+    waitingToRider +
       c.nightCharge +
       c.peakHourCharge +
       c.festivalCharge +
@@ -366,23 +398,39 @@ export function computeRideSettlement(input: SettlementInput): SettlementResult 
       c.gatewayFee +
       c.smallOrderFee +
       c.taxTotal +
-      tollAsCompany
+      tollAsCompany +
+      waitingRetainedByCompany
   );
+
+  // A customer offer reduces what the CUSTOMER pays, never what the RIDER earns.
+  // So the base that gets split is the GROSS (pre-discount) trip revenue: add the
+  // discount back onto the bill before deriving it. The company funds the gap —
+  // see `promotionSubsidy` below and the wallet settlement at the end.
+  //
+  // Without this, a ₹20 coupon on a ₹50 ride shrank the base to ₹30 and the rider
+  // was paid their percentage of ₹30. The rider is not a party to the promotion.
+  const fareDiscountTotal = round2(c.couponDiscount + c.companyFundedDiscount);
+  const grossBill = round2(customerBill + fareDiscountTotal);
 
   // commissionable_base = pure trip revenue split between company (commission)
   // and rider (earnings). Waiting / night / airport / toll pass-through / tip /
   // customer-funded surge & pickup incentive belong to the rider and are
   // excluded from the base being split.
-  const commissionableBase = round2(
-    Math.max(
-      0,
-      customerBill -
-        companyChargesTotal -
-        c.surgeCustomerShare -
-        riderPassThroughFromCustomer -
-        c.tipAmount
-    )
-  );
+  const baseFrom = (bill: number) =>
+    round2(
+      Math.max(
+        0,
+        bill -
+          companyChargesTotal -
+          c.surgeCustomerShare -
+          riderPassThroughFromCustomer -
+          c.tipAmount
+      )
+    );
+  // The base actually split. Identical to the net base when no offer applied, so
+  // an undiscounted ride settles to exactly the same numbers as before.
+  const commissionableBase = baseFrom(grossBill);
+  const commissionableBaseNet = baseFrom(customerBill);
 
   const companyCommission = round2((commissionableBase * platformPct) / 100);
 
@@ -399,10 +447,25 @@ export function computeRideSettlement(input: SettlementInput): SettlementResult 
     )
   );
 
+  // The company-funded top-up that keeps the rider whole: what the rider would
+  // have lost had the offer been allowed to shrink their share. Zero with no
+  // offer, so this is purely additive to existing behaviour.
+  const promotionSubsidy = round2(
+    Math.max(
+      0,
+      commissionableBase -
+        companyCommission -
+        (commissionableBaseNet - round2((commissionableBaseNet * platformPct) / 100))
+    )
+  );
+
   // Company receivable: everything the company is owed for this ride.
   // Company-funded surge / pickup incentive are subsidies paid to the rider
   // and therefore inflate receivable (company "owes" that subsidy out of its
   // share of the bill / wallet recovery).
+  // Every rupee of ride discount is company money (there is no merchant to share
+  // it with on a ride), so the whole discount reduces what the company is owed —
+  // not just the portion already tagged company-funded.
   const companyReceivable = round2(
     Math.max(
       0,
@@ -410,7 +473,7 @@ export function computeRideSettlement(input: SettlementInput): SettlementResult 
         companyCommission +
         c.surgeCompanyShare +
         c.pickupIncentiveCompanyShare -
-        c.companyFundedDiscount
+        fareDiscountTotal
     )
   );
 
@@ -419,10 +482,24 @@ export function computeRideSettlement(input: SettlementInput): SettlementResult 
   let walletDebit = 0;
 
   if (paymentMode === "cash") {
-    // Customer paid rider in cash. Company received nothing — recover our
-    // share from the rider's wallet. Rider physically keeps their earnings.
+    // The rider is accountable for collecting `customerBill` and is owed
+    // `riderEarnings`. Settle the difference through the wallet, SIGNED: normally
+    // they collect more than they earn and we recover our share, but under an
+    // offer the customer owes less than the rider earns and the company tops the
+    // rider up instead.
+    //
+    // Measured against customerBill, not customerPaid — a rider who under-collects
+    // still owes us the full amount, so the shortfall stays with them rather than
+    // silently moving to the company. Deriving it from this identity (rather than
+    // from companyReceivable) also stops a company-funded surge or pickup
+    // incentive — money we owe the rider — being recovered FROM the rider.
     companyReceived = 0;
-    walletDebit = companyReceivable;
+    const riderOwed = round2(riderEarnings - customerBill);
+    if (riderOwed >= 0) {
+      walletCredit = riderOwed;
+    } else {
+      walletDebit = round2(-riderOwed);
+    }
   } else {
     // Online / wallet / mixed — the customer has paid us the full bill.
     // We owe the rider their earnings; the rest is our net revenue.
@@ -439,6 +516,8 @@ export function computeRideSettlement(input: SettlementInput): SettlementResult 
     paymentMode,
     companyChargesTotal,
     commissionableBase,
+    commissionableBaseNet,
+    promotionSubsidy,
     companyCommission,
     companyReceivable,
     companyReceived,

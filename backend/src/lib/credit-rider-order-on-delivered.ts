@@ -568,6 +568,34 @@ export async function creditRiderOrderEarningOnDelivered(
     Math.max(0, readDynamicRiderIncentiveFromSnapshot(row.billing_snapshot).amount)
   );
 
+  // PROMISE FLOOR — the rider never receives less than the earning they were
+  // shown when they accepted. The frozen snapshot is that promise; the leg
+  // recomputation above is the entitlement. They should agree, and when they do
+  // this is a no-op, but the two are resolved from different inputs (the snapshot
+  // from the accept-time geo, the legs from live rule lookups), so a rider must
+  // not absorb the difference. The dynamic incentive is inside the snapshot's
+  // surge figure but is credited as its own ledger line, so take it back out
+  // before comparing or it would be paid twice.
+  const promisedDeliveryEarning = payoutSnap
+    ? round2(
+        Math.max(
+          0,
+          payoutSnap.baseEarning +
+            payoutSnap.waitingEarning +
+            payoutSnap.surgeEarning -
+            dynamicIncentive
+        )
+      )
+    : 0;
+  if (promisedDeliveryEarning > deliveryFee) {
+    console.info("[credit-rider] honouring accepted earning over recomputed legs", {
+      order_id: orderIdText,
+      promised: promisedDeliveryEarning,
+      recomputed: deliveryFee,
+    });
+    deliveryFee = promisedDeliveryEarning;
+  }
+
   if (deliveryFee <= 0 && tipAmount <= 0 && dynamicIncentive <= 0) {
     return { credited: false, deliveryCredited: false, tipCredited: false, error: "zero_earning" };
   }

@@ -397,6 +397,27 @@ export async function persistRideRiderPayoutFromSummary(
 }
 
 /** Freeze rider offer payout at accept time — fallback when summary is unavailable. */
+/**
+ * First-mile distance for the frozen payout, in km.
+ *
+ * MUST agree with the delivery-time credit, which reads the stamped
+ * `orders_core.rider_pickup_distance_meters`. The snapshot used to haversine the
+ * rider's last-known `riders.lat/lon` instead, and that row is often stale or
+ * empty at accept — so the pre-pickup leg came out ₹0 and the rider was shown
+ * (for example) ₹18 for an order that credited ₹38. Prefer the stamped value and
+ * only fall back to a live haversine.
+ */
+function resolveFrozenPickupKm(
+  stampedMeters: unknown,
+  fallbackKm: number | undefined
+): number | undefined {
+  const meters = Number(stampedMeters);
+  if (Number.isFinite(meters) && meters > 0) {
+    return Math.max(0, Math.round((meters / 1000) * 10) / 10);
+  }
+  return fallbackKm;
+}
+
 export async function persistRideRiderAcceptPayoutSnapshot(
   orderCorePk: number,
   riderId: number
@@ -413,6 +434,7 @@ export async function persistRideRiderAcceptPayoutSnapshot(
       checkoutMetadata: ordersCore.checkoutMetadata,
       billingSnapshot: ordersCore.billingSnapshot,
       fareAmount: ordersCore.fareAmount,
+      riderPickupDistanceMeters: ordersCore.riderPickupDistanceMeters,
       rideType: ordersRide.rideType,
       customerTipAmount: ordersRide.customerTipAmount,
       acceptPayoutSnapshot: ordersRide.acceptPayoutSnapshot,
@@ -446,10 +468,12 @@ export async function persistRideRiderAcceptPayoutSnapshot(
 
   const riderLat = parseCoord(riderRow?.lat);
   const riderLng = parseCoord(riderRow?.lon);
-  const pickupKm =
+  const pickupKm = resolveFrozenPickupKm(
+    row.riderPickupDistanceMeters,
     riderLat && riderLng && pickupLat && pickupLng
       ? Math.max(0, Math.round((haversineDistanceMeters(riderLat, riderLng, pickupLat, pickupLng) / 1000) * 10) / 10)
-      : undefined;
+      : undefined
+  );
 
   // Gross (pre-discount) metered fare — never the discounted final_fare, so an
   // offer / free ride never shrinks the frozen rider payout.
@@ -519,9 +543,33 @@ export async function persistRideRiderAcceptPayoutSnapshot(
 }
 
 /** Freeze food rider offer payout at accept — matches incoming-offer geo slab earnings. */
-export async function persistFoodRiderAcceptPayoutSnapshot(
+export function persistFoodRiderAcceptPayoutSnapshot(
   orderCorePk: number,
   riderId: number
+): Promise<RideRiderPayoutSnapshot | null> {
+  return persistDeliveryRiderAcceptPayoutSnapshot(orderCorePk, riderId, "food");
+}
+
+/** Freeze parcel rider offer payout at accept — same contract as food. */
+export function persistParcelRiderAcceptPayoutSnapshot(
+  orderCorePk: number,
+  riderId: number
+): Promise<RideRiderPayoutSnapshot | null> {
+  return persistDeliveryRiderAcceptPayoutSnapshot(orderCorePk, riderId, "parcel");
+}
+
+/**
+ * Freeze the delivery rider's accepted earning (food + parcel).
+ *
+ * Parcel previously had no accept snapshot at all, which meant two things: the
+ * rider had no recorded promise to be held to, and the delivery-time credit —
+ * which reads surge and waiting out of this snapshot — saw zero for both, so a
+ * parcel rider was never paid the waiting the customer had been charged.
+ */
+async function persistDeliveryRiderAcceptPayoutSnapshot(
+  orderCorePk: number,
+  riderId: number,
+  service: "food" | "parcel"
 ): Promise<RideRiderPayoutSnapshot | null> {
   const db = getDb();
   const [row] = await db
@@ -535,9 +583,10 @@ export async function persistFoodRiderAcceptPayoutSnapshot(
       billingSnapshot: ordersCore.billingSnapshot,
       tipAmount: ordersCore.tipAmount,
       fareAmount: ordersCore.fareAmount,
+      riderPickupDistanceMeters: ordersCore.riderPickupDistanceMeters,
     })
     .from(ordersCore)
-    .where(and(eq(ordersCore.id, orderCorePk), eq(ordersCore.orderType, "food")))
+    .where(and(eq(ordersCore.id, orderCorePk), eq(ordersCore.orderType, service)))
     .limit(1);
 
   if (!row?.id) return null;
@@ -561,7 +610,8 @@ export async function persistFoodRiderAcceptPayoutSnapshot(
 
   const riderLat = parseCoord(riderRow?.lat);
   const riderLng = parseCoord(riderRow?.lon);
-  const pickupKm =
+  const pickupKm = resolveFrozenPickupKm(
+    row.riderPickupDistanceMeters,
     riderLat && riderLng && pickupLat && pickupLng
       ? Math.max(
           0,
@@ -569,55 +619,66 @@ export async function persistFoodRiderAcceptPayoutSnapshot(
             (haversineDistanceMeters(riderLat, riderLng, pickupLat, pickupLng) / 1000) * 10
           ) / 10
         )
-      : undefined;
+      : undefined
+  );
 
   // Gross/standard delivery fee (delivery_fee_gross) — never the net customer fee
-  // after a free-delivery / membership subsidy, so the frozen food payout is
+  // after a free-delivery / membership subsidy, so the frozen delivery payout is
   // offer-independent and matches the delivery-time settlement resolver.
   const customerFare = resolveRiderDeliveryFeeFromCore({
     riderEarning: null,
     fareAmount: row.fareAmount,
     billingSnapshot: row.billingSnapshot,
   });
-  if (!Number.isFinite(customerFare) || customerFare <= 0) return null;
 
-  const payout = await resolveOrderRiderPayoutBreakdown({
-    service: "food",
-    customerFare,
-    pickupLat,
-    pickupLng,
-    dropLat,
-    dropLng,
-    pickupKm,
-    dropKm: tripKm,
-    riderLat: riderLat || undefined,
-    riderLng: riderLng || undefined,
-    riderId,
-    waitingMinutes: 0,
-  });
-
-  if (payout == null || payout.finalAmount <= 0) return null;
-
-  // FARE CONSISTENCY (bug fix): freeze the v3.2 leg-reconciled total (same resolver the offer
-  // + delivery credit use), not the bare percentage-of-fare pool — so the frozen food payout
-  // equals what the rider is actually credited. Dynamic import avoids a require cycle.
+  // FARE CONSISTENCY: freeze the v3.2 leg-reconciled total (the same resolver the offer
+  // and the delivery credit use), not the bare percentage-of-fare pool — so the frozen
+  // payout equals what the rider is actually credited. Dynamic import avoids a cycle.
   const { buildDispatchOfferRiderEarnings } = await import("./build-dispatch-offer-rider-earnings.js");
   const legEarnings = await buildDispatchOfferRiderEarnings({
     orderCoreId: orderCorePk,
-    serviceType: "food",
+    serviceType: service,
     riderId,
     riderLat: riderLat || 0,
     riderLng: riderLng || 0,
     pickupDistanceMeters: (pickupKm ?? 0) * 1000,
   }).catch(() => null);
+
+  // Delivery rider pay comes from the rider's own distance legs, so a ₹0 customer
+  // fee (free delivery, membership, full coupon) must NOT stop the snapshot being
+  // frozen — the legs still owe the rider. Only give up when neither source can
+  // produce anything.
+  const payout =
+    Number.isFinite(customerFare) && customerFare > 0
+      ? await resolveOrderRiderPayoutBreakdown({
+          service,
+          customerFare,
+          pickupLat,
+          pickupLng,
+          dropLat,
+          dropLng,
+          pickupKm,
+          dropKm: tripKm,
+          riderLat: riderLat || undefined,
+          riderLng: riderLng || undefined,
+          riderId,
+          waitingMinutes: 0,
+        })
+      : null;
+
+  if ((payout == null || payout.finalAmount <= 0) && !(legEarnings && legEarnings.totalEarning > 0)) {
+    return null;
+  }
   const tip = round0(Number(row.tipAmount) || 0);
   const totalEarning =
-    legEarnings && legEarnings.totalEarning > 0 ? legEarnings.totalEarning : payout.finalAmount + tip;
+    legEarnings && legEarnings.totalEarning > 0
+      ? legEarnings.totalEarning
+      : round0((payout?.finalAmount ?? 0) + tip);
   return persistRideRiderPayoutFromSummary(orderCorePk, {
-    baseEarning: legEarnings?.baseEarning ?? payout.subtotalBeforeSurge,
+    baseEarning: legEarnings?.baseEarning ?? payout?.subtotalBeforeSurge ?? 0,
     waitingEarning: legEarnings?.waitingEarning ?? 0,
-    surgeEarning: legEarnings?.surgeEarning ?? payout.surgeTotal,
-    appliedSurges: legEarnings?.appliedSurges ?? payout.appliedSurges,
+    surgeEarning: legEarnings?.surgeEarning ?? payout?.surgeTotal ?? 0,
+    appliedSurges: legEarnings?.appliedSurges ?? payout?.appliedSurges ?? [],
     totalEarning,
     customerTipAmount: tip,
     pickupDistanceKm: pickupKm,
@@ -626,7 +687,7 @@ export async function persistFoodRiderAcceptPayoutSnapshot(
       pickupKm != null && tripKm != null
         ? Math.round((pickupKm + tripKm) * 10) / 10
         : tripKm ?? pickupKm,
-    calcTrace: buildRiderCalcTraceEntry("food", payout.trace),
+    calcTrace: payout ? buildRiderCalcTraceEntry(service, payout.trace) : undefined,
   });
 }
 

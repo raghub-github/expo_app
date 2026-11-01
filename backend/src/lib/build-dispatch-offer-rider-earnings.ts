@@ -12,6 +12,7 @@ import {
   roundRideTripDistanceKm,
 } from "./ride-address-display.js";
 import { resolveRiderDeliveryFeeFromBilling } from "./rider-order-earning-resolve.js";
+import { resolveRideGrossFareForPayout } from "./rider-fare-basis.js";
 import {
   resolveOrderRiderPayoutBreakdown,
   type OrderRiderPayoutService,
@@ -79,6 +80,7 @@ export async function resolveCustomerFareForRiderPayout(
     const [row] = await db
       .select({
         fareAmount: ordersCore.fareAmount,
+        billingSnapshot: ordersCore.billingSnapshot,
         estimatedFare: ordersRide.estimatedFare,
         finalFare: ordersRide.finalFare,
       })
@@ -86,8 +88,17 @@ export async function resolveCustomerFareForRiderPayout(
       .innerJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
       .where(eq(ordersCore.id, orderCoreId))
       .limit(1);
-    const fare = Number(row?.finalFare ?? row?.estimatedFare ?? row?.fareAmount ?? 0);
-    return Number.isFinite(fare) && fare > 0 ? fare : 0;
+    if (!row) return 0;
+    // The GROSS metered fare, never `final_fare`. final_fare is the customer's
+    // post-offer payable (and ₹0 on a free ride), and it is written only once the
+    // ride is billed — so preferring it made the rider's own earning drop between
+    // the offer they accepted and the screen they saw afterwards.
+    return resolveRideGrossFareForPayout({
+      estimatedFare: row.estimatedFare,
+      finalFare: row.finalFare,
+      fareAmount: row.fareAmount,
+      billingSnapshot: row.billingSnapshot,
+    });
   }
 
   const [row] = await db
