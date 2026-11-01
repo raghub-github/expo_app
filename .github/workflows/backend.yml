@@ -88,7 +88,10 @@ jobs:
       - name: Zero-downtime deploy on VPS (with retry)
         uses: nick-fields/retry@v3
         with:
-          timeout_minutes: 12
+          # 20, not 12: a slow `compose pull` on the VPS can eat ~10 minutes, and
+          # the step was timing out mid-health-check — which left two replicas
+          # running and wedged the deploy (see RECOVERY in deploy-service.sh).
+          timeout_minutes: 20
           max_attempts: 6
           retry_wait_seconds: 45
           retry_on: error
