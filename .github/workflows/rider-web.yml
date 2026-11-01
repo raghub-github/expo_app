@@ -111,7 +111,7 @@ jobs:
             # Pull the freshly pushed :latest image, bring the container up on
             # the app network (so `rider-web` is resolvable by nginx's request-
             # time resolver), then health-check the container's root path.
-            infra/scripts/deploy-service.sh rider-web http://localhost:3001/ 90
+            infra/scripts/deploy-service.sh rider-web http://localhost:3001/ 180
             EOF
             mkdir -p ~/.ssh
             chmod 700 ~/.ssh
@@ -122,3 +122,12 @@ jobs:
                 -i ~/.ssh/id_ed25519 \
                 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
                 'bash -s' < /tmp/_ssh_rider_web.sh
+
+      # deploy-service.sh only probes the health URL from INSIDE the container,
+      # so it cannot see whether nginx is routing to it. That gap let three
+      # backend deploys print a clean success while the public hostname served
+      # 502 from a cached, dead upstream IP. Fail the job instead.
+      - name: Verify through nginx (public hostname)
+        run: |
+          chmod +x infra/scripts/verify-public-endpoint.sh
+          infra/scripts/verify-public-endpoint.sh https://rider.gatimitra.com/
