@@ -113,3 +113,27 @@ jobs:
                 -i ~/.ssh/id_ed25519 \
                 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
                 'bash -s' < /tmp/_ssh_script.sh
+
+      # The deploy above only ever probes localhost INSIDE the container, so it
+      # cannot tell whether nginx is actually routing to the new one. That gap
+      # let three deploys report a clean success while api.gatimitra.com served
+      # 502 from a cached, dead upstream IP. Check the real hostname, and fail
+      # the job if the API is not reachable — a deploy that left production down
+      # must never show up green.
+      - name: Verify the API through nginx (public hostname)
+        run: |
+          url="https://api.gatimitra.com/v1/health"
+          for attempt in $(seq 1 12); do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' --max-time 10 "$url" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "✔ $url -> 200"
+              cat /tmp/health.json; echo
+              exit 0
+            fi
+            echo "attempt $attempt: $url -> $code (retrying in 10s)"
+            sleep 10
+          done
+          echo "::error::$url never returned 200 after the deploy. The container"
+          echo "::error::may be healthy while nginx holds a stale upstream IP —"
+          echo "::error::reload nginx on the VPS, or re-run this workflow."
+          exit 1
