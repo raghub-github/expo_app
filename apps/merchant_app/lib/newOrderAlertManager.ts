@@ -890,6 +890,20 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
   const orderId = String(args.orderId || "").trim();
   if (!orderId) return;
   await dismissNativeNewOrderAlerts(orderId);
+  // dismissNativeNewOrderAlerts only clears tray notifications. Claiming is what
+  // retires the floating native card, which otherwise stays on screen underneath
+  // the Incoming sheet now taking over the same order — two popups, one order.
+  // Claim rather than stop: the buzzer must keep ringing until the order is
+  // actually decided, and native still owns the audio.
+  if (isNativeOrderAlertAvailable()) {
+    try {
+      await claimNativeOrderAlert(
+        String(args.alertSessionId || "").trim() || merchantAlertSessionId(orderId)
+      );
+    } catch {
+      /* native optional */
+    }
+  }
   const liveCfg = resolveConfig(args.settings, args.device);
 
   if (session && session.orderId !== orderId) {

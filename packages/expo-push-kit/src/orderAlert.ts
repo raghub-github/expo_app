@@ -13,6 +13,10 @@
  */
 import { NativeModules, Platform } from "react-native";
 import type { NativeOrderAlertSoundType } from "./orderAlertIds";
+import {
+  parseNativePendingOrderAction,
+  type NativePendingOrderAction,
+} from "./pendingOrderAction";
 export {
   extractAlertSessionId,
   merchantAlertSessionId,
@@ -30,15 +34,7 @@ export type NativeOrderAlert = {
   startedAt: number;
 };
 
-export type NativePendingOrderAction = {
-  action: "accept" | "reject" | string;
-  sessionId: string;
-  orderId: string;
-  foodOrderId: string;
-  displayOrderId: string;
-  storeId: string;
-  at: number;
-};
+export type { NativePendingOrderAction } from "./pendingOrderAction";
 
 type NativeOrderAlertModule = {
   startAlert: (
@@ -62,6 +58,11 @@ type NativeOrderAlertModule = {
   setPersistentPill?: (enabled: boolean, count: number, orderId: string | null) => Promise<boolean>;
   consumePillLaunch?: () => Promise<{ kind?: string; count?: number; orderId?: string | null } | null>;
   consumePendingAction?: () => Promise<string | null>;
+  persistActionCredentials?: (
+    baseUrl: string,
+    token: string,
+    storeId: string
+  ) => Promise<boolean>;
 };
 
 const Native = NativeModules.GatimitraOrderAlert as NativeOrderAlertModule | undefined;
@@ -205,22 +206,32 @@ export async function consumePersistentPillLaunch(): Promise<{
 export async function consumeNativePendingOrderAction(): Promise<NativePendingOrderAction | null> {
   if (!Native?.consumePendingAction || Platform.OS !== "android") return null;
   try {
-    const raw = await Native.consumePendingAction();
-    const text = String(raw ?? "").trim();
-    if (!text) return null;
-    const parsed = JSON.parse(text) as Partial<NativePendingOrderAction>;
-    const action = String(parsed.action ?? "").trim().toLowerCase();
-    if (action !== "accept" && action !== "reject") return null;
-    return {
-      action,
-      sessionId: String(parsed.sessionId ?? "").trim(),
-      orderId: String(parsed.orderId ?? "").trim(),
-      foodOrderId: String(parsed.foodOrderId ?? "").trim(),
-      displayOrderId: String(parsed.displayOrderId ?? "").trim(),
-      storeId: String(parsed.storeId ?? "").trim(),
-      at: Number(parsed.at) || Date.now(),
-    };
+    return parseNativePendingOrderAction(await Native.consumePendingAction());
   } catch {
     return null;
+  }
+}
+
+/**
+ * Hand native the credentials it needs to accept while JS is dead.
+ *
+ * Call this whenever the session token changes: a stale token means the native
+ * accept comes back 401 and the rider loses the order with no way to tell why.
+ * `storeId` is merchant-only; riders pass "".
+ */
+export async function persistNativeOrderAlertActionCredentials(args: {
+  baseUrl: string;
+  token: string;
+  storeId?: string | null;
+}): Promise<boolean> {
+  if (!Native?.persistActionCredentials || Platform.OS !== "android") return false;
+  const baseUrl = String(args.baseUrl ?? "").trim();
+  const token = String(args.token ?? "").trim();
+  if (!baseUrl || !token) return false;
+  try {
+    await Native.persistActionCredentials(baseUrl, token, String(args.storeId ?? "").trim());
+    return true;
+  } catch {
+    return false;
   }
 }
