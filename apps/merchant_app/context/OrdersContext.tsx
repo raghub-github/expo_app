@@ -17,6 +17,7 @@ import { useActiveTab } from "@/context/ActiveTabContext";
 import {
   fetchFoodOrder,
   fetchFoodOrders,
+  isOrderAlreadyDecided,
   patchFoodOrderStatus,
   postCompleteSelfPickup,
   postFoodOrderPrepDelay,
@@ -794,25 +795,37 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         return true;
       } catch (e) {
         const msg = e instanceof Error ? e.message : "";
-        const alreadyAtTarget =
-          /invalid transition/i.test(msg) &&
-          new RegExp(`${apiStatus}:${apiStatus}`, "i").test(msg);
-        if (alreadyAtTarget) {
+        // Another device in this store already decided the order, or it was
+        // already at the target status. Either way the server is right and this
+        // device's cached row is stale — adopt the server's version rather than
+        // rolling back to a pending card nobody can act on any more.
+        const settledElsewhere =
+          isOrderAlreadyDecided(e) ||
+          (/invalid transition/i.test(msg) &&
+            new RegExp(`${apiStatus}:${apiStatus}`, "i").test(msg));
+        if (settledElsewhere) {
           try {
             const updated = await fetchFoodOrder(storeId, Number(orderId), token);
             setCachedFoodOrder(storeId, Number(orderId), updated);
+            const authoritative = mapWithStore(updated, storeId);
             setOrders((list) =>
               list.map((o) =>
-                o.id === orderId
-                  ? preferProgressedOrderRecord(mapWithStore(updated, storeId), o)
-                  : o
+                o.id === orderId ? preferProgressedOrderRecord(authoritative, o) : o
               )
             );
-            setError(null);
             requestMerchantDashboardStatsRefresh();
-            return true;
-          } catch {
-            // fall through to rollback
+            // Succeeded only if the store ended up where this device asked.
+            // A device that tapped Accept on an order another device rejected
+            // must not be told its accept went through.
+            if (String(authoritative.pipelineStatus ?? "").toUpperCase() === apiStatus) {
+              setError(null);
+              return true;
+            }
+            setError(msg || "This order was already decided on another device.");
+            throw e;
+          } catch (reconcileErr) {
+            if (reconcileErr === e) throw e;
+            // Could not reach the server to confirm — fall through to rollback.
           }
         }
         setOrders(prev);

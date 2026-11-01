@@ -152,6 +152,7 @@ public final class OrderAlertController {
     String storeId = first(data, "storeId", "store_id", "merchantStoreId");
     String foodId = first(data, "foodOrderId", "food_order_id");
     String expires = first(data, "expiresAt", "expires_at", "acceptUntil");
+    String tripKm = first(data, "tripDistanceKm", "trip_distance_km");
     synchronized (LOCK) {
       JSONObject row = findSession(context, sessionId, "", "");
       if (row == null) return;
@@ -162,6 +163,7 @@ public final class OrderAlertController {
         if (storeId.length() > 0) row.put("storeId", storeId);
         if (foodId.length() > 0) row.put("foodOrderId", foodId);
         if (expires.length() > 0) row.put("expiresAt", expires);
+        if (tripKm.length() > 0 && !"0".equals(tripKm)) row.put("tripDistanceKm", tripKm);
         if (title != null && title.trim().length() > 0) row.put("title", title.trim());
         if (body != null && body.trim().length() > 0) row.put("body", body.trim());
         upsertSession(context, row);
@@ -204,9 +206,12 @@ public final class OrderAlertController {
     );
     if (display.matches("^\\d+$")) display = "";
     if (display.length() == 0) {
+      // Last resort when no id field came through. GMF is food; rides and parcels
+      // carry their own prefixes, and matching food only is why those cards showed
+      // no order id at all.
       String blob = first(data, "title", "body", "message", "orderNumber", "order_number");
       java.util.regex.Matcher m = java.util.regex.Pattern
-          .compile("GMF\\d+", java.util.regex.Pattern.CASE_INSENSITIVE)
+          .compile("GM[A-Z]\\d+", java.util.regex.Pattern.CASE_INSENSITIVE)
           .matcher(blob);
       if (m.find()) display = m.group().toUpperCase();
     }
@@ -394,6 +399,22 @@ public final class OrderAlertController {
     }
   }
 
+  /**
+   * True while the React UI is presenting this alert itself.
+   *
+   * The one authoritative answer to "is a card already on screen". Process
+   * importance only guesses at it, and guessing is how the overlay ended up
+   * stacked on top of the in-app sheet.
+   */
+  public static boolean isJsOwned(Context context, String sessionId) {
+    if (context == null) return false;
+    synchronized (LOCK) {
+      JSONObject row = findSession(context, sessionId, sessionId, sessionId);
+      if (row == null) return false;
+      return "js_attached".equals(row.optString("owner", "native"));
+    }
+  }
+
   public static JSONObject claim(Context context, String sessionId) {
     synchronized (LOCK) {
       JSONObject row = findSession(context, sessionId, sessionId, sessionId);
@@ -404,11 +425,18 @@ public final class OrderAlertController {
         putPrimary(context, row.optString("sessionId", sessionId));
       } catch (Exception ignored) {
       }
+      // The overlay may already be mounted — the FCM can beat the React tree to
+      // the screen. Retire it now that the app is presenting the same offer.
+      try {
+        OrderAlertOverlay.hide(context, row.optString("sessionId", sessionId));
+      } catch (Throwable ignored) {
+      }
       return row;
     }
   }
 
   public static JSONObject release(Context context, String sessionId) {
+    JSONObject result;
     synchronized (LOCK) {
       JSONObject row = findSession(context, sessionId, sessionId, sessionId);
       if (row == null) return getActive(context);
@@ -417,8 +445,17 @@ public final class OrderAlertController {
         upsertSession(context, row);
       } catch (Exception ignored) {
       }
-      return row;
+      result = row;
     }
+    // Handing the card back: if the app is no longer in front, the native
+    // overlay is now the only thing that can present this offer.
+    try {
+      if (!OrderAlertVisibility.shouldSuppressOverlayWindow(context)) {
+        OrderAlertOverlay.show(context, result);
+      }
+    } catch (Throwable ignored) {
+    }
+    return result;
   }
 
   static void onServiceStart(Context context, Intent intent) {

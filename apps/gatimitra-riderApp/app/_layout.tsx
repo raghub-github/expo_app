@@ -40,6 +40,7 @@ import { ActiveOrderResumeBootstrap } from "@/src/components/orders/ActiveOrderR
 import { ActiveOrderKeepAwakeGate } from "@/src/hooks/useActiveOrderKeepAwake";
 import { RiderPostDeliveryTipHost } from "@/src/components/orders/RiderPostDeliveryTipHost";
 import { RiderPersistentDispatchPill } from "@/src/components/RiderPersistentDispatchPill";
+import { RiderNativeAlertActionBridge } from "@/src/components/RiderNativeAlertActionBridge";
 import { RiderSearchingNotification } from "@/src/components/RiderSearchingNotification";
 import { RiderToastHost } from "@/src/components/RiderToastHost";
 import { RiderOfflineBanner } from "@/src/components/RiderOfflineBanner";
@@ -236,6 +237,7 @@ function RootLayoutNav() {
           <RiderPaymentSuccessSheet />
           <RiderPostDeliveryTipHost />
           <RiderPersistentDispatchPill />
+          <RiderNativeAlertActionBridge />
           <RiderSearchingNotification />
           <RiderToastHost />
           <RiderOfflineBanner />
