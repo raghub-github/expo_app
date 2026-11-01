@@ -5,9 +5,16 @@ import {
   type RiderActionPhase,
   type RiderActionType,
 } from "@/src/lib/rider-action-kind";
+import { isRiderActionExpired } from "@/src/lib/rider-pending-action-ttl";
+
+export { isRiderActionExpired, riderActionTtlMs } from "@/src/lib/rider-pending-action-ttl";
 
 const STORAGE_KEY = "gm.rider.pendingActions.v1";
 const MAX_ACTIONS = 8;
+
+function prune(actions: PendingRiderAction[], now = Date.now()): PendingRiderAction[] {
+  return actions.filter((a) => a && !isRiderActionExpired(a, now));
+}
 
 export type PendingRiderAction = {
   actionId: string;
@@ -49,10 +56,9 @@ export const useRiderPendingActionStore = create<Store>((set, get) => ({
     try {
       const raw = await AsyncStorage.getItem(STORAGE_KEY);
       const parsed = raw ? (JSON.parse(raw) as PendingRiderAction[]) : [];
-      set({
-        hydrated: true,
-        actions: Array.isArray(parsed) ? parsed.slice(-MAX_ACTIONS) : [],
-      });
+      const kept = Array.isArray(parsed) ? prune(parsed).slice(-MAX_ACTIONS) : [];
+      set({ hydrated: true, actions: kept });
+      if (Array.isArray(parsed) && kept.length !== parsed.length) persist(kept);
     } catch {
       set({ hydrated: true, actions: [] });
     }
@@ -68,9 +74,9 @@ export const useRiderPendingActionStore = create<Store>((set, get) => ({
     persist(next);
   },
   getOrCreate: (orderId, actionType, payload) => {
-    const existing = get().actions.find(
-      (a) => a.orderId === orderId && a.actionType === actionType
-    );
+    const existing = get()
+      .actions.filter((a) => !isRiderActionExpired(a))
+      .find((a) => a.orderId === orderId && a.actionType === actionType);
     if (existing) {
       const merged = {
         ...existing,
@@ -111,7 +117,9 @@ export const useRiderPendingActionStore = create<Store>((set, get) => ({
     persist(next);
   },
   getByOrderAction: (orderId, actionType) =>
-    get().actions.find((a) => a.orderId === orderId && a.actionType === actionType) ?? null,
+    get()
+      .actions.filter((a) => !isRiderActionExpired(a))
+      .find((a) => a.orderId === orderId && a.actionType === actionType) ?? null,
 }));
 
 export function riderPendingPhase(
@@ -119,7 +127,9 @@ export function riderPendingPhase(
   actionType: RiderActionType
 ): RiderActionPhase {
   if (!orderId) return "idle";
-  return useRiderPendingActionStore.getState().getByOrderAction(orderId, actionType)?.phase ?? "idle";
+  const action = useRiderPendingActionStore.getState().getByOrderAction(orderId, actionType);
+  if (!action || isRiderActionExpired(action)) return "idle";
+  return action.phase;
 }
 
 export function findPendingRiderAction(
@@ -129,5 +139,13 @@ export function findPendingRiderAction(
 ): PendingRiderAction | null {
   const refs = new Set(orderRefs.map((r) => String(r ?? "").trim()).filter(Boolean));
   if (refs.size === 0) return null;
-  return actions.find((a) => a.actionType === actionType && refs.has(a.orderId)) ?? null;
+  const now = Date.now();
+  return (
+    actions.find(
+      (a) =>
+        a.actionType === actionType &&
+        refs.has(a.orderId) &&
+        !isRiderActionExpired(a, now)
+    ) ?? null
+  );
 }

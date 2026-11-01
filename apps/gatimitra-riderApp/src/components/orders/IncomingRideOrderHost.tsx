@@ -75,6 +75,13 @@ import {
 } from "@/src/lib/acceptOrderLatency";
 import { refreshRiderLocationBeforeAccept } from "@/src/lib/refreshRiderLocationBeforeAccept";
 
+/**
+ * Hard deadline on a retryable accept. The background retry queue gets this
+ * long to land the accept; after that the slider is handed back to the rider
+ * rather than spinning on "Accepting..." forever.
+ */
+const ACCEPT_WEDGE_RELEASE_MS = 12_000;
+
 const EMPTY_ORDERS: RiderOrderSummary[] = [];
 
 function toIncomingOrder(order: RiderOrderSummary, offerShownAtMs: number): IncomingDispatchOrder {
@@ -164,14 +171,23 @@ export function IncomingRideOrderHost() {
   const offerShownAtRef = useRef(new Map<string, number>());
   const stickyOfferRef = useRef<RiderOrderSummary | null>(null);
   const acceptingRef = useRef(false);
+  // Which order the in-flight accept belongs to. The busy state used to be a
+  // bare boolean, so a single accept that ended in a retryable error latched it
+  // true forever AND applied to every later offer: the slider rendered busy,
+  // gestures were ignored, and the card could not even expire. One bad accept
+  // wedged the rider out of every ride until the app was reinstalled.
+  const acceptingOrderIdRef = useRef<string | null>(null);
+  const acceptWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [rejectHydrated, setRejectHydrated] = useState(false);
   const [rejectSheetOpen, setRejectSheetOpen] = useState(false);
-  const [accepting, setAccepting] = useState(false);
+  const [acceptingOrderId, setAcceptingOrderId] = useState<string | null>(null);
   const [acceptSwipeResetKey, setAcceptSwipeResetKey] = useState(0);
   const [acceptBusyLabel, setAcceptBusyLabel] = useState<string | null>(null);
   const [poolEpoch, setPoolEpoch] = useState(0);
 
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
+  // Busy only for the order actually being accepted, never globally.
+  const accepting = acceptingOrderId != null && acceptingOrderId === activeOrderId;
   const [modalVisible, setModalVisible] = useState(false);
   const activeOrderIdRef = useRef<string | null>(null);
   const sessionUserRef = useRef<string | null>(null);
@@ -596,18 +612,46 @@ export function IncomingRideOrderHost() {
   const handleAccept = useCallback(() => {
     const id = activeOrderIdRef.current;
     const order = activeOrderRef.current;
-    if (!id || !order || acceptingRef.current) return;
+    if (!id || !order) return;
+    // Re-entry guard, scoped to THIS order. It used to be a bare boolean, so an
+    // accept left hanging on one offer silently swallowed the swipe on every
+    // later offer too - the slider animated across and then simply did nothing.
+    if (acceptingRef.current && acceptingOrderIdRef.current === id) return;
+    if (acceptWatchdogRef.current) {
+      clearTimeout(acceptWatchdogRef.current);
+      acceptWatchdogRef.current = null;
+    }
     acceptingRef.current = true;
+    acceptingOrderIdRef.current = id;
     riderDispatchLog("ACCEPT_REQUEST_START", { orderId: id });
     markAcceptLatency("T1_HANDLER");
     setAcceptLatencyOrderId(id);
     const acceptRef = order.formattedOrderId?.trim() || id;
     const snap = order;
 
-    setAccepting(true);
+    setAcceptingOrderId(id);
     setAcceptBusyLabel(t("orders.incoming.accepting", "Accepting..."));
 
+    const clearWatchdog = () => {
+      if (acceptWatchdogRef.current) {
+        clearTimeout(acceptWatchdogRef.current);
+        acceptWatchdogRef.current = null;
+      }
+    };
+
+    /** Hand the slider back so the rider can swipe again. */
+    const releaseAccept = () => {
+      clearWatchdog();
+      acceptingRef.current = false;
+      acceptingOrderIdRef.current = null;
+      setAcceptingOrderId(null);
+      setAcceptBusyLabel(null);
+      setAcceptSwipeResetKey((k) => k + 1);
+    };
+
     const finishAccept = () => {
+      clearWatchdog();
+      acceptingOrderIdRef.current = null;
       acceptingRef.current = false;
       markAcceptLatency("T9_SUCCESS_STATE");
       locallyAcceptedRef.current.add(id);
@@ -616,7 +660,7 @@ export function IncomingRideOrderHost() {
       closeModal();
       markAcceptLatency("T10_MODAL_CLOSE");
       setActiveOrderId(null);
-      setAccepting(false);
+      setAcceptingOrderId(null);
       setAcceptBusyLabel(null);
       navigateAfterAccept(snap);
       InteractionManager.runAfterInteractions(() => {
@@ -638,18 +682,50 @@ export function IncomingRideOrderHost() {
         onError: async (err) => {
           if (isRetryableRiderActionError(err) || classifyRiderActionFailure(err) === "busy") {
             acceptingRef.current = true;
-            setAccepting(true);
+            acceptingOrderIdRef.current = id;
+            setAcceptingOrderId(id);
             const kind = classifyRiderActionFailure(err);
             setAcceptBusyLabel(
               kind === "timeout"
                 ? t("orders.incoming.checkingStatus", "Connection lost. Checking order status...")
                 : t("orders.incoming.waitingConnection", "Waiting for connection...")
             );
+            // The background retry queue may still land this accept, so stay
+            // busy for now — but never indefinitely. Without this deadline a
+            // single flaky accept left the slider spinning forever: it could
+            // not be swiped again and the offer could not expire.
+            clearWatchdog();
+            acceptWatchdogRef.current = setTimeout(() => {
+              acceptWatchdogRef.current = null;
+              if (acceptingOrderIdRef.current !== id) return;
+              void (async () => {
+                try {
+                  const active = await riderApi.getActiveOrders();
+                  const hit = active.find(
+                    (o) =>
+                      o.id === id ||
+                      o.id === acceptRef ||
+                      (snap.formattedOrderId && o.formattedOrderId === snap.formattedOrderId)
+                  );
+                  if (hit) {
+                    finishAccept();
+                    return;
+                  }
+                } catch {
+                  /* fall through to release */
+                }
+                if (acceptingOrderIdRef.current !== id) return;
+                riderDispatchLog("ACCEPT_WEDGE_RELEASED", { orderId: id });
+                releaseAccept();
+              })();
+            }, ACCEPT_WEDGE_RELEASE_MS);
             return;
           }
 
           acceptingRef.current = false;
-          setAccepting(false);
+          acceptingOrderIdRef.current = null;
+          clearWatchdog();
+          setAcceptingOrderId(null);
           setAcceptBusyLabel(null);
           riderDispatchLog("ACCEPT_RESPONSE_RECEIVED", {
             orderId: id,
@@ -753,11 +829,20 @@ export function IncomingRideOrderHost() {
       useIncomingDispatchOfferStore.getState().clearOfferId(id);
       closeModal();
       setActiveOrderId(null);
-      setAccepting(false);
+      acceptingOrderIdRef.current = null;
+      setAcceptingOrderId(null);
       setAcceptBusyLabel(null);
       navigateAfterAccept(snap);
     }
   }, [acceptPending, closeModal, navigateAfterAccept, queryClient]);
+
+  // Never leave a watchdog running past unmount.
+  useEffect(
+    () => () => {
+      if (acceptWatchdogRef.current) clearTimeout(acceptWatchdogRef.current);
+    },
+    []
+  );
 
   const handleExpired = useCallback(() => {
     const id = activeOrderIdRef.current;

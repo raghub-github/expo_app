@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, StyleSheet } from "react-native";
 import { RiderActionSlider } from "@/src/components/orders/RiderActionSlider";
 import {
@@ -9,6 +9,14 @@ import { beginAcceptLatency } from "@/src/lib/acceptOrderLatency";
 import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
 const URGENT_SECONDS = 20;
+
+/**
+ * Last-resort backstop. `loading` rightly suppresses expiry while an accept is
+ * genuinely in flight, but it must not do so forever: a stuck accept used to
+ * pin the offer open permanently, with a dead slider and no way out. The host's
+ * accept watchdog should resolve long before this fires.
+ */
+const STUCK_LOADING_EXPIRY_MS = 30_000;
 
 type OfferClockOrder = {
   id: string;
@@ -58,16 +66,32 @@ export const IncomingOfferAcceptFooter = memo(function IncomingOfferAcceptFooter
     else visibleSinceRef.current = null;
   }, [visible, order.id]);
 
+  const loadingSinceRef = useRef<number | null>(null);
+  useEffect(() => {
+    loadingSinceRef.current = loading ? Date.now() : null;
+  }, [loading, order.id]);
+
   const secondsLeft = useMemo(() => riderAcceptSecondsLeft(order), [order, nowTick]);
   const mmss = useMemo(() => formatRiderAcceptCountdown(secondsLeft), [secondsLeft]);
   const fuseUrgent = secondsLeft > 0 && secondsLeft <= URGENT_SECONDS;
 
+  // Stable identity: an inline arrow here re-rendered the memoised slider on
+  // every 250ms countdown tick, competing with the drag on the JS thread.
+  const handleComplete = useCallback(() => {
+    beginAcceptLatency(`slide:${Date.now()}`);
+    onAccept();
+  }, [onAccept]);
+
   useEffect(() => {
-    if (!visible || secondsLeft > 0 || loading) return;
+    if (!visible || secondsLeft > 0) return;
+    if (loading) {
+      const busySince = loadingSinceRef.current;
+      if (busySince == null || Date.now() - busySince < STUCK_LOADING_EXPIRY_MS) return;
+    }
     const shownAt = visibleSinceRef.current;
     if (shownAt != null && Date.now() - shownAt < 600) return;
     onExpired?.();
-  }, [visible, secondsLeft, loading, onExpired]);
+  }, [visible, secondsLeft, loading, nowTick, onExpired]);
 
   return (
     <View
@@ -81,10 +105,7 @@ export const IncomingOfferAcceptFooter = memo(function IncomingOfferAcceptFooter
     >
       <RiderActionSlider
         label={loading ? loadingLabel || "Accepting..." : `${acceptLabel} (${mmss})`}
-        onComplete={() => {
-          beginAcceptLatency(`slide:${Date.now()}`);
-          onAccept();
-        }}
+        onComplete={handleComplete}
         loading={loading}
         busyLabel={loadingLabel || "Accepting..."}
         disabled={secondsLeft <= 0}

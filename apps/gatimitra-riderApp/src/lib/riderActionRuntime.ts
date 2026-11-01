@@ -11,7 +11,10 @@ import {
 import { riderActionLog } from "@/src/lib/rider-action-log";
 import { isRiderNetworkOnline } from "@/src/stores/riderNetworkStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
-import { useRiderPendingActionStore } from "@/src/stores/riderPendingActionStore";
+import {
+  isRiderActionExpired,
+  useRiderPendingActionStore,
+} from "@/src/stores/riderPendingActionStore";
 import { isOrderTakenByAnotherRiderError } from "@/src/lib/rider-dispatch-accept-errors";
 
 const ACTIVE_KEY = ["rider", "orders", "active"] as const;
@@ -348,6 +351,10 @@ function schedulePendingRetry(actionId: string): void {
   if (retryTimers.has(actionId)) return;
   const action = useRiderPendingActionStore.getState().actions.find((a) => a.actionId === actionId);
   if (!action) return;
+  if (isRiderActionExpired(action)) {
+    useRiderPendingActionStore.getState().remove(actionId);
+    return;
+  }
   const delay = riderActionRetryDelayMs(action.retryCount);
   const timer = setTimeout(() => {
     retryTimers.delete(actionId);
@@ -364,6 +371,17 @@ export async function flushRiderPendingActions(): Promise<void> {
   const pending = [...store.actions];
   for (const action of pending) {
     if (inflight.has(action.actionId)) continue;
+    // An offer that has aged out cannot be accepted any more; replaying it just
+    // keeps the row alive and the rider's slider busy. Drop it instead.
+    if (isRiderActionExpired(action)) {
+      riderActionLog("EXPIRED", {
+        action_id: action.actionId,
+        order_id: action.orderId,
+        action_type: action.actionType,
+      });
+      store.remove(action.actionId);
+      continue;
+    }
     riderActionLog("RETRY", {
       action_id: action.actionId,
       order_id: action.orderId,
