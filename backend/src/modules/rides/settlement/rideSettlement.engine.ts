@@ -1,7 +1,10 @@
 import type { Sql, TransactionSql } from "postgres";
 import { getSql } from "../../../db/client.js";
 import { syncNegativeWalletBlocks } from "../../../lib/rider-negative-wallet-blocks.js";
-import { loadEffectiveServicePayoutRule } from "../../rider-payout-pricing/riderPayoutPricing.repository.js";
+import {
+  loadEffectiveServicePayoutRule,
+  riderHasActiveGmitraMax,
+} from "../../rider-payout-pricing/riderPayoutPricing.repository.js";
 import { resolveRidePricingGeoFromPickup } from "../../ride-state-config/rideStateConfig.repository.js";
 import {
   computeRideSettlement,
@@ -95,6 +98,57 @@ function round2(n: number): number {
   const v = Number(n);
   if (!Number.isFinite(v)) return 0;
   return Math.round(v * 100) / 100;
+}
+
+/**
+ * Fill in pickup coordinates from orders_core when the caller did not supply
+ * usable ones.
+ *
+ * Two of the three settlement callers read pickupLat/pickupLon off the billing
+ * snapshot, which has never carried those keys — so the geo lookup silently
+ * failed, no payout rule matched, and the engine fell back to "rider gets 100%,
+ * company commission 0". The same ride then paid the rider a different amount
+ * depending on whether the customer chose cash (geo resolved, rule applied) or
+ * online/QR (geo empty, 100% fallback). Resolving it here means no call site can
+ * reintroduce that.
+ */
+async function withOrderPickupGeo(orderCoreId: number, geo: RideGeoInput): Promise<RideGeoInput> {
+  const lat = Number(geo.pickupLat ?? 0);
+  const lng = Number(geo.pickupLng ?? 0);
+  const hasCoords = Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0;
+  if (hasCoords || geo.pickupPincode || geo.pickupState) return geo;
+  try {
+    const sql = getSql();
+    const rows = await sql<Array<{ pickup_lat: unknown; pickup_lon: unknown }>>`
+      SELECT pickup_lat, pickup_lon FROM orders_core WHERE id = ${orderCoreId} LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) return geo;
+    const coreLat = Number(row.pickup_lat);
+    const coreLng = Number(row.pickup_lon);
+    if (!Number.isFinite(coreLat) || !Number.isFinite(coreLng) || coreLat === 0 || coreLng === 0) {
+      return geo;
+    }
+    return { ...geo, pickupLat: coreLat, pickupLng: coreLng };
+  } catch (err) {
+    console.warn("[rideSettlement] pickup geo backfill failed:", orderCoreId, err);
+    return geo;
+  }
+}
+
+/**
+ * Whether the rider receives the waiting charge. Mirrors the food/parcel gate in
+ * resolveRiderWaitingEntitlement. Fails OPEN (entitled) so a flaky subscription
+ * lookup never silently withholds a rider's pay.
+ */
+async function resolveRiderWaitingEntitled(riderId: number | null): Promise<boolean> {
+  if (riderId == null || !(riderId > 0)) return true;
+  try {
+    return await riderHasActiveGmitraMax(riderId);
+  } catch (err) {
+    console.warn("[rideSettlement] Max lookup failed, paying waiting through:", riderId, err);
+    return true;
+  }
 }
 
 async function resolvePayoutPercentages(
@@ -275,6 +329,24 @@ function componentLedgerLines(result: SettlementResult): LedgerLine[] {
       accountKind: "company_discount_subsidy",
       reasonCode: "DISCOUNT",
       description: "Company-funded discount",
+    });
+  }
+  // The money the company injected so the customer's offer did not come out of
+  // the rider's earnings. Recorded as its own line so the gap between what the
+  // customer paid and what the rider was paid is always explained.
+  if (result.promotionSubsidy > 0) {
+    lines.push({
+      direction: "debit",
+      amount: result.promotionSubsidy,
+      accountKind: "company_rider_promotion_subsidy",
+      reasonCode: "RIDER_PROMO_SUBSIDY",
+      description: "Company-funded rider top-up (customer offer)",
+      metadata: {
+        commissionableBaseGross: result.commissionableBase,
+        commissionableBaseNet: result.commissionableBaseNet,
+        couponDiscount: c.couponDiscount,
+        companyFundedDiscount: c.companyFundedDiscount,
+      },
     });
   }
   return lines;
@@ -469,7 +541,9 @@ export async function postOnlineRideSettlement(
   }
 
   const settlementId = buildSettlementId(input.orderCoreId);
-  const payout = await resolvePayoutPercentages(input.geo);
+  const payout = await resolvePayoutPercentages(
+    await withOrderPickupGeo(input.orderCoreId, input.geo)
+  );
 
   const gatiCashApplied = round2(input.paymentSplit.gatiCashApplied ?? 0);
   const razorpayAmount = round2(input.paymentSplit.razorpayAmount ?? 0);
@@ -491,6 +565,7 @@ export async function postOnlineRideSettlement(
     riderPercentage: payout.riderPercentage,
     payoutRuleId: payout.payoutRuleId,
     commissionOnToll: (await loadRideWalletPolicy(sql)).commissionOnToll,
+    riderWaitingEntitled: await resolveRiderWaitingEntitled(input.riderId ?? null),
     components: input.billing.components,
   });
 
@@ -683,7 +758,9 @@ export async function postCashRideSettlement(
   }
 
   const settlementId = buildSettlementId(input.orderCoreId);
-  const payout = await resolvePayoutPercentages(input.geo);
+  const payout = await resolvePayoutPercentages(
+    await withOrderPickupGeo(input.orderCoreId, input.geo)
+  );
   const customerBill = round2(input.billing.customerBill);
 
   const result = computeRideSettlement({
@@ -695,6 +772,7 @@ export async function postCashRideSettlement(
     payoutRuleId: payout.payoutRuleId,
     cashCollected: customerBill,
     commissionOnToll: policy.commissionOnToll,
+    riderWaitingEntitled: await resolveRiderWaitingEntitled(input.riderId ?? null),
     components: input.billing.components,
   });
 

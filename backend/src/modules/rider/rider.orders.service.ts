@@ -72,6 +72,7 @@ import { rideAddressLabelsFromCheckoutMetadata, rideGeoFromCheckoutMetadata, res
 import {
   persistRideRiderAcceptPayoutSnapshot,
   persistFoodRiderAcceptPayoutSnapshot,
+  persistParcelRiderAcceptPayoutSnapshot,
   persistRideRiderPayoutFromSummary,
   applyRidePickupWaitingToBilling,
   readRideRiderPayoutSnapshot,
@@ -3225,12 +3226,22 @@ async function acceptParcelOrderForRider(
     occurredAt: now,
   });
   noteRiderOrderLocationMilestone(riderId, accepted.id, "accepted");
-  void backfillAcceptTimelineDistances({
-    orderCorePk: preCheck.id,
-    riderId,
-  }).catch((err) => {
-    console.warn("[acceptParcelOrderForRider] timeline distance backfill failed:", err);
-  });
+  void (async () => {
+    try {
+      await backfillAcceptTimelineDistances({ orderCorePk: preCheck.id, riderId });
+    } catch (err) {
+      console.warn("[acceptParcelOrderForRider] timeline distance backfill failed:", err);
+    }
+    // Freeze what the parcel rider accepted. Runs after the distance backfill so
+    // the first-mile leg is priced off the stamped pickup distance rather than a
+    // stale rider location, and so the delivery credit can read the frozen surge
+    // and waiting back out of it.
+    try {
+      await persistParcelRiderAcceptPayoutSnapshot(preCheck.id, riderId);
+    } catch (err) {
+      console.warn("[acceptParcelOrderForRider] payout snapshot failed:", err);
+    }
+  })();
   void notifyCustomerParcelLifecycle({
     orderIdText,
     templateCode: "PARCEL_RIDER_ON_THE_WAY",

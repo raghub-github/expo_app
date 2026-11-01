@@ -243,14 +243,17 @@ test("company-funded discount reduces company receivable without touching rider 
     components: { ...baseComponents, companyFundedDiscount: 20 },
   });
 
-  // The customer bill already has the discount removed; commissionable_base
-  // shrinks accordingly. Rider percentage math is applied on what customer
-  // actually pays for the ride service (455 - 20 = 435).
-  assert.equal(res.commissionableBase, 435);
-  assert.equal(res.companyCommission, 87);
-  assert.equal(res.riderEarnings, 348);
-  // Receivable = 45 charges + 87 commission - 20 subsidy = 112
-  assert.equal(res.companyReceivable, 112);
+  // The discount is the company's promotion, so it is added back before the base
+  // is split: the rider earns the same as they would on the undiscounted ride and
+  // the company absorbs the ₹20. (This test previously asserted the opposite —
+  // that the rider's share shrank with the customer's discount.)
+  assert.equal(res.commissionableBase, 455, "gross base, discount added back");
+  assert.equal(res.commissionableBaseNet, 435, "what the customer actually funded");
+  assert.equal(res.companyCommission, 91);
+  assert.equal(res.riderEarnings, 364);
+  assert.equal(res.promotionSubsidy, 16, "80% of the ₹20 the company gave away");
+  // Receivable = 45 charges + 91 commission - 20 discount = 116
+  assert.equal(res.companyReceivable, 116);
 });
 
 test("zero platform percentage still produces a valid settlement (rider gets full residual)", () => {
@@ -506,4 +509,217 @@ test("negative wallet flag path: rider_earnings never negative even with weird i
   assert.equal(res.companyCommission, 0);
   assert.equal(res.riderEarnings, 0);
   assert.ok(res.companyReceivable >= 0);
+});
+
+// ---------------------------------------------------------------------------
+// Offer-independent rider pay. The owner's rule, verbatim: "if any ride rider
+// app showing 50 rupees and customer app showing 30 rupees and 20 rupees
+// discount, then rider should get 50 rupees after the ride, customer will pay
+// 30 and company deposit 20 in his wallet to fulfill it."
+// ---------------------------------------------------------------------------
+
+const offerComponents = (discount: number, companyFunded = 0) => ({
+  ...zeroComponents,
+  couponDiscount: discount - companyFunded,
+  companyFundedDiscount: companyFunded,
+});
+
+test("owner's example — ₹50 fare, ₹20 coupon, CASH: rider gets ₹50, company tops up ₹20", () => {
+  const res = computeRideSettlement({
+    customerBill: 30, // customer pays the discounted fare
+    customerPaid: 30,
+    paymentMode: "cash",
+    platformPercentage: 0,
+    riderPercentage: 100,
+    components: { ...offerComponents(20), baseFare: 50 },
+  });
+  assert.equal(res.riderEarnings, 50, "rider earns the GROSS fare, not the discounted one");
+  assert.equal(res.promotionSubsidy, 20, "company funds the whole ₹20 gap");
+  // Rider holds ₹30 cash and is owed ₹50 → the company puts ₹20 in the wallet.
+  assert.equal(res.walletCredit, 20);
+  assert.equal(res.walletDebit, 0);
+});
+
+test("owner's example — ₹50 fare, ₹20 coupon, ONLINE: wallet credited the full ₹50", () => {
+  const res = computeRideSettlement({
+    customerBill: 30,
+    customerPaid: 30,
+    paymentMode: "online",
+    platformPercentage: 0,
+    riderPercentage: 100,
+    components: { ...offerComponents(20), baseFare: 50 },
+  });
+  assert.equal(res.riderEarnings, 50);
+  assert.equal(res.walletCredit, 50, "company collected ₹30 and still owes the rider ₹50");
+});
+
+test("first ride free — customer pays ₹0, rider still paid in full by the company", () => {
+  for (const paymentMode of ["cash", "online"] as const) {
+    const res = computeRideSettlement({
+      customerBill: 0,
+      customerPaid: 0,
+      paymentMode,
+      platformPercentage: 0,
+      riderPercentage: 100,
+      components: { ...offerComponents(100), baseFare: 100 },
+    });
+    assert.equal(res.riderEarnings, 100, `${paymentMode}: free ride must still pay the rider`);
+    assert.equal(res.walletCredit, 100, `${paymentMode}: the whole amount comes from the company`);
+    assert.equal(res.walletDebit, 0);
+    assert.equal(res.promotionSubsidy, 100);
+  }
+});
+
+test("commission still applies to the gross fare, so the rider keeps their normal share", () => {
+  const res = computeRideSettlement({
+    customerBill: 80, // ₹100 fare less a ₹20 discount
+    customerPaid: 80,
+    paymentMode: "online",
+    platformPercentage: 20,
+    riderPercentage: 80,
+    components: offerComponents(20),
+  });
+  // Undiscounted, this rider would earn ₹80. The offer must not change that.
+  assert.equal(res.riderEarnings, 80);
+  assert.equal(res.commissionableBase, 100, "base is the gross fare");
+  assert.equal(res.commissionableBaseNet, 80, "net base records what was collected");
+  assert.equal(res.companyCommission, 20);
+  assert.equal(res.promotionSubsidy, 16, "the rider's 80% share of the ₹20 discount");
+});
+
+test("a company-funded discount behaves identically to a coupon for the rider", () => {
+  const coupon = computeRideSettlement({
+    customerBill: 80,
+    customerPaid: 80,
+    paymentMode: "online",
+    platformPercentage: 20,
+    riderPercentage: 80,
+    components: offerComponents(20, 0),
+  });
+  const companyFunded = computeRideSettlement({
+    customerBill: 80,
+    customerPaid: 80,
+    paymentMode: "online",
+    platformPercentage: 20,
+    riderPercentage: 80,
+    components: offerComponents(20, 20),
+  });
+  assert.equal(coupon.riderEarnings, companyFunded.riderEarnings);
+  assert.equal(coupon.promotionSubsidy, companyFunded.promotionSubsidy);
+});
+
+test("no discount changes nothing — rider pay is identical with and without the new path", () => {
+  const res = computeRideSettlement({
+    customerBill: 425,
+    customerPaid: 425,
+    paymentMode: "online",
+    platformPercentage: 18,
+    riderPercentage: 82,
+    components: baseComponents,
+  });
+  assert.equal(res.promotionSubsidy, 0, "no offer ⇒ no subsidy");
+  assert.equal(res.commissionableBase, res.commissionableBaseNet);
+});
+
+test("money is conserved: customer payment + company subsidy funds rider + company", () => {
+  for (const discount of [0, 10, 25, 50, 100]) {
+    const res = computeRideSettlement({
+      customerBill: 100 - discount,
+      customerPaid: 100 - discount,
+      paymentMode: "online",
+      platformPercentage: 20,
+      riderPercentage: 80,
+      components: offerComponents(discount),
+    });
+
+    // The rider's entitlement never moves with the customer's discount.
+    assert.equal(res.riderEarnings, 80, `discount ${discount}: rider pay must not move`);
+
+    // Every rupee paid to the rider is funded either by the customer's payment or
+    // by the company. Nothing is created and nothing is lost.
+    const fundedByCustomer = Math.min(res.customerPaid, res.riderEarnings);
+    const fundedByCompany = Math.max(0, res.riderEarnings - res.customerPaid);
+    assert.equal(
+      Math.round((fundedByCustomer + fundedByCompany) * 100) / 100,
+      res.riderEarnings,
+      `discount ${discount}: rider payout is fully funded`
+    );
+
+    // And the subsidy we report is exactly the share the discount would have cost
+    // the rider at this commission rate.
+    assert.equal(
+      res.promotionSubsidy,
+      Math.round(discount * 0.8 * 100) / 100,
+      `discount ${discount}: reported subsidy`
+    );
+  }
+});
+
+test("waiting and tip stay fully the rider's and are never commissioned", () => {
+  const res = computeRideSettlement({
+    customerBill: 100 + 40 + 15,
+    customerPaid: 155,
+    paymentMode: "online",
+    platformPercentage: 20,
+    riderPercentage: 80,
+    components: { ...zeroComponents, waitingCharge: 40, tipAmount: 15 },
+  });
+  // ₹100 fare → ₹80 rider share, plus ₹40 waiting and ₹15 tip in full.
+  assert.equal(res.riderEarnings, 135);
+  assert.equal(res.companyCommission, 20);
+});
+
+test("cash: a company-funded surge is not recovered from the rider's wallet", () => {
+  const res = computeRideSettlement({
+    customerBill: 100,
+    customerPaid: 100,
+    paymentMode: "cash",
+    platformPercentage: 20,
+    riderPercentage: 80,
+    components: { ...zeroComponents, surgeTotal: 30, surgeCustomerShare: 0, surgeCompanyShare: 30 },
+  });
+  // Rider earns ₹80 of fare + ₹30 company surge = ₹110, holds ₹100 cash.
+  assert.equal(res.riderEarnings, 110);
+  assert.equal(res.walletCredit, 10, "company owes the rider ₹10, it must not debit them");
+  assert.equal(res.walletDebit, 0);
+});
+
+test("Max gate: a rider without GatiMitra Max does not receive the waiting charge", () => {
+  const withMax = computeRideSettlement({
+    customerBill: 140,
+    customerPaid: 140,
+    paymentMode: "online",
+    platformPercentage: 20,
+    riderPercentage: 80,
+    riderWaitingEntitled: true,
+    components: { ...zeroComponents, waitingCharge: 40 },
+  });
+  const withoutMax = computeRideSettlement({
+    customerBill: 140,
+    customerPaid: 140,
+    paymentMode: "online",
+    platformPercentage: 20,
+    riderPercentage: 80,
+    riderWaitingEntitled: false,
+    components: { ...zeroComponents, waitingCharge: 40 },
+  });
+
+  assert.equal(withMax.riderEarnings, 120, "₹80 fare share + ₹40 waiting");
+  assert.equal(withoutMax.riderEarnings, 80, "fare share only — company retains the waiting");
+  // The customer paid the same either way, and the withheld waiting must not leak
+  // back to the rider through the commissionable base.
+  assert.equal(withoutMax.commissionableBase, withMax.commissionableBase);
+  assert.equal(withoutMax.companyChargesTotal, withMax.companyChargesTotal + 40);
+});
+
+test("Max gate defaults to entitled so an omitted flag never withholds pay", () => {
+  const omitted = computeRideSettlement({
+    customerBill: 140,
+    customerPaid: 140,
+    paymentMode: "online",
+    platformPercentage: 20,
+    riderPercentage: 80,
+    components: { ...zeroComponents, waitingCharge: 40 },
+  });
+  assert.equal(omitted.riderEarnings, 120);
 });
