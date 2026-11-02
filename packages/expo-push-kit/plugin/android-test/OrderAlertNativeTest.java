@@ -19,6 +19,7 @@ public final class OrderAlertNativeTest {
     cardText();
     countdown();
     presentation();
+    decisionLedger();
 
     System.out.println("  " + passed + " passed, " + failed + " failed  [role=" + ROLE + "]");
     if (failed > 0) System.exit(1);
@@ -226,6 +227,175 @@ public final class OrderAlertNativeTest {
   }
 
   // --------------------------------------------------------------- harness
+
+  // ------------------------------------------------------- decision ledger
+
+  private static void decisionLedger() {
+    final long TTL = OrderAlertDecisionLedger.DEFAULT_TTL_MS;
+    final long NOW = 1_700_000_000_000L;
+
+    // ---- canonicalisation: every id shape must reduce to one order token.
+    eq("canonical from merchant session id",
+        "100058", OrderAlertDecisionLedger.canonicalToken("MERCHANT_NEW_ORDER:100058:12"));
+    eq("canonical from native session id",
+        "100058", OrderAlertDecisionLedger.canonicalToken("merchant-order-100058"));
+    eq("canonical from raw id",
+        "100058", OrderAlertDecisionLedger.canonicalToken("100058"));
+    eq("canonical from rider session id",
+        "ORD9", OrderAlertDecisionLedger.canonicalToken("RIDER_NEW_ORDER:ORD9:4:1"));
+    eq("canonical trims", "100058", OrderAlertDecisionLedger.canonicalToken("  100058 "));
+    eq("canonical of null is empty", "", OrderAlertDecisionLedger.canonicalToken(null));
+    eq("canonical of blank is empty", "", OrderAlertDecisionLedger.canonicalToken("   "));
+
+    // ---- merchant keys unify the two id forms the backend mints.
+    String[] startKeys = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:100058:12", "100058", "", "100058");
+    String[] stopByCoreId = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:100058:12", "ord_abc", "", "100058");
+    check("merchant keys are order-scoped", startKeys.length > 0);
+
+    // THE CORE GUARANTEE: accept -> a replayed start for that order is refused.
+    String led = OrderAlertDecisionLedger.record("", startKeys, NOW, TTL);
+    check("decided right after accept",
+        OrderAlertDecisionLedger.isDecided(led, startKeys, NOW, TTL));
+
+    // The reported bug: phone off, FCM queues the start, the stop lands first or
+    // is lost, the start arrives on power-on hours later. It must not beep.
+    long afterReboot = NOW + (6L * 60L * 60L * 1000L);
+    check("queued start after a reboot is still refused",
+        OrderAlertDecisionLedger.isDecided(led, startKeys, afterReboot, TTL));
+
+    // A stop keyed on the core order id must block a start keyed on the food id.
+    String ledCore = OrderAlertDecisionLedger.record("", stopByCoreId, NOW, TTL);
+    check("stop by a different id form still blocks the start",
+        OrderAlertDecisionLedger.isDecided(ledCore, startKeys, NOW, TTL));
+
+    // A stop that arrives BEFORE any start must still block it (FCM ordering).
+    check("stop-before-start blocks the later start",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopByCoreId, NOW, TTL),
+            startKeys, NOW + 5_000L, TTL));
+
+    // ---- a different order is untouched.
+    String[] other = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:100059:12", "100059", "", "100059");
+    check("a different order is NOT decided",
+        !OrderAlertDecisionLedger.isDecided(led, other, NOW, TTL));
+
+    // ---- expiry: the ledger must not grow forever.
+    check("decision expires after the ttl",
+        !OrderAlertDecisionLedger.isDecided(led, startKeys, NOW + TTL + 1L, TTL));
+    eq("expired entries are pruned away",
+        0, OrderAlertDecisionLedger.size(
+            OrderAlertDecisionLedger.prune(led, NOW + TTL + 1L, TTL)));
+    eq("live entries survive a prune",
+        OrderAlertDecisionLedger.size(led),
+        OrderAlertDecisionLedger.size(OrderAlertDecisionLedger.prune(led, NOW, TTL)));
+    check("ttl of zero never expires",
+        OrderAlertDecisionLedger.isDecided(led, startKeys, NOW + (99L * TTL), 0L));
+
+    // ---- empty / malformed input must never throw or false-positive.
+    check("empty ledger decides nothing",
+        !OrderAlertDecisionLedger.isDecided("", startKeys, NOW, TTL));
+    check("null ledger decides nothing",
+        !OrderAlertDecisionLedger.isDecided(null, startKeys, NOW, TTL));
+    check("no keys decides nothing",
+        !OrderAlertDecisionLedger.isDecided(led, new String[0], NOW, TTL));
+    check("null keys decides nothing",
+        !OrderAlertDecisionLedger.isDecided(led, null, NOW, TTL));
+    check("garbage ledger decides nothing",
+        !OrderAlertDecisionLedger.isDecided("not-a-ledger|x@|@5", startKeys, NOW, TTL));
+    eq("recording nothing on an empty ledger stays empty",
+        "", OrderAlertDecisionLedger.record("", new String[0], NOW, TTL));
+
+    // ---- separators can never corrupt an entry.
+    String[] nasty = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "", "10|00@58", "", "");
+    String nastyLed = OrderAlertDecisionLedger.record("", nasty, NOW, TTL);
+    eq("a token carrying separators yields exactly one entry", 1,
+        OrderAlertDecisionLedger.size(nastyLed));
+    check("the sanitised token round-trips",
+        OrderAlertDecisionLedger.isDecided(nastyLed, nasty, NOW, TTL));
+
+    // ---- re-recording the same order must not duplicate it.
+    String twice = OrderAlertDecisionLedger.record(led, startKeys, NOW + 1_000L, TTL);
+    eq("re-deciding does not grow the ledger",
+        OrderAlertDecisionLedger.size(led), OrderAlertDecisionLedger.size(twice));
+
+    // ---- bounded growth: oldest decisions are evicted, newest survive.
+    String big = "";
+    for (int i = 0; i < OrderAlertDecisionLedger.MAX_ENTRIES + 50; i++) {
+      big = OrderAlertDecisionLedger.record(
+          big,
+          OrderAlertDecisionLedger.decisionKeys("merchant", "", "ord" + i, "", ""),
+          NOW + i,
+          TTL);
+    }
+    eq("ledger is capped", OrderAlertDecisionLedger.MAX_ENTRIES,
+        OrderAlertDecisionLedger.size(big));
+    check("the newest decision survives the cap",
+        OrderAlertDecisionLedger.isDecided(
+            big,
+            OrderAlertDecisionLedger.decisionKeys(
+                "merchant", "", "ord" + (OrderAlertDecisionLedger.MAX_ENTRIES + 49), "", ""),
+            NOW + 10_000L,
+            TTL));
+    check("the oldest decision was evicted",
+        !OrderAlertDecisionLedger.isDecided(
+            big,
+            OrderAlertDecisionLedger.decisionKeys("merchant", "", "ord0", "", ""),
+            NOW + 10_000L,
+            TTL));
+
+    // ---- ROLE SPLIT. A rider's next wave must still ring; a merchant's
+    // accepted order must not. Keying riders on the order id would silently
+    // cost them work, so this split is load-bearing, not cosmetic.
+    String[] wave1 = OrderAlertDecisionLedger.decisionKeys(
+        "rider", "RIDER_NEW_ORDER:ORD9:4:1", "ORD9", "ORD9", "");
+    String[] wave2 = OrderAlertDecisionLedger.decisionKeys(
+        "rider", "RIDER_NEW_ORDER:ORD9:4:2", "ORD9", "ORD9", "");
+    String riderLed = OrderAlertDecisionLedger.record("", wave1, NOW, TTL);
+    check("rider wave 1 is decided",
+        OrderAlertDecisionLedger.isDecided(riderLed, wave1, NOW, TTL));
+    check("rider wave 2 for the SAME order still alerts",
+        !OrderAlertDecisionLedger.isDecided(riderLed, wave2, NOW, TTL));
+    check("rider keys are session-scoped, not order-scoped",
+        !OrderAlertDecisionLedger.isDecided(
+            riderLed,
+            OrderAlertDecisionLedger.decisionKeys(
+                "rider", "RIDER_NEW_ORDER:ORD9:7:1", "ORD9", "ORD9", ""),
+            NOW, TTL));
+    String merchLed = OrderAlertDecisionLedger.record(
+        "", OrderAlertDecisionLedger.decisionKeys(
+            "merchant", "MERCHANT_NEW_ORDER:555:3", "555", "", "555"), NOW, TTL);
+    check("merchant re-push of a decided order is blocked",
+        OrderAlertDecisionLedger.isDecided(
+            merchLed,
+            OrderAlertDecisionLedger.decisionKeys(
+                "merchant", "MERCHANT_NEW_ORDER:555:3", "555", "", "555"),
+            NOW + 60_000L, TTL));
+    check("rider with an empty session id yields no keys",
+        OrderAlertDecisionLedger.decisionKeys("rider", "", "ORD9", "ORD9", "").length == 0);
+
+    // ---- stale-session guard: what stops a persisted row being resurrected.
+    final long MAXAGE = OrderAlertDecisionLedger.DEFAULT_SESSION_MAX_AGE_MS;
+    check("a fresh session is not stale",
+        !OrderAlertDecisionLedger.isSessionStale(NOW, NOW + 1_000L, MAXAGE));
+    check("a session at the limit is not stale",
+        !OrderAlertDecisionLedger.isSessionStale(NOW, NOW + MAXAGE, MAXAGE));
+    check("a session past the limit is stale",
+        OrderAlertDecisionLedger.isSessionStale(NOW, NOW + MAXAGE + 1L, MAXAGE));
+    check("a day-old session is stale",
+        OrderAlertDecisionLedger.isSessionStale(NOW, NOW + (24L * 60L * 60L * 1000L), MAXAGE));
+    check("a row with no startedAt is stale, not immortal",
+        OrderAlertDecisionLedger.isSessionStale(0L, NOW, MAXAGE));
+    check("a future startedAt (clock skew) is not stale",
+        !OrderAlertDecisionLedger.isSessionStale(NOW + 60_000L, NOW, MAXAGE));
+    check("maxAge of zero disables the staleness guard",
+        !OrderAlertDecisionLedger.isSessionStale(1L, NOW, 0L));
+    check("the watchdog window is inside the staleness bound",
+        MAXAGE > (20L * 60L * 1000L));
+  }
 
   private static void check(String name, boolean ok) {
     if (ok) {

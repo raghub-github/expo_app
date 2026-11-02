@@ -11,6 +11,24 @@ import { expandCampaignUserIdCandidates } from "../modules/notifications/campaig
 
 export type CriticalAlertAction = "start" | "stop";
 
+/**
+ * FCM collapse key for an alert control message.
+ *
+ * Deliberately keyed on the SESSION and not the action. FCM queues messages for
+ * an offline device; with a per-action key a "start" and the "stop" that cancels
+ * it both survive the queue and are delivered in an unspecified order when the
+ * device comes back, so a merchant who already accepted could be rung by the
+ * stale "start". Sharing the key makes a later stop replace a still-undelivered
+ * start outright.
+ *
+ * A rider's next dispatch wave carries a different alertSessionId (it includes
+ * the wave number), so it gets its own key and is never collapsed away by an
+ * earlier wave's stop.
+ */
+export function criticalAlertCollapseKey(alertSessionId: string): string {
+  return `gm_alert_${String(alertSessionId ?? "").trim()}`;
+}
+
 function flatten(data: Record<string, unknown> | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!data) return out;
@@ -59,7 +77,7 @@ export async function sendCriticalAlertControlFcm(args: {
           playSound: false,
           appRole: args.appRole,
           priority: "critical",
-          collapseKey: `gm_alert_${args.action}_${sessionId}`,
+          collapseKey: criticalAlertCollapseKey(sessionId),
           data,
         });
         const tail = t.length > 6 ? t.slice(-6) : "******";

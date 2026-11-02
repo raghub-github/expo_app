@@ -24,6 +24,7 @@ const TEST_DIR = join(here, "..", "plugin", "android-test");
 const PURE = [
   "OrderAlertAcceptPlan.java",
   "OrderAlertCardText.java",
+  "OrderAlertDecisionLedger.java",
   "OrderAlertPresentation.java",
 ];
 
