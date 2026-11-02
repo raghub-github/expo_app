@@ -40,6 +40,8 @@ import { classifyRiderActionFailure } from "@/src/lib/rider-action-kind";
 import { openDutyActionError } from "@/src/stores/dutyActionErrorStore";
 import { isRiderNetworkOnline } from "@/src/stores/riderNetworkStore";
 import {
+  dutyServerRejectionMessage,
+  isDutyServerRejection,
   resolveDutyGoOnFailureKind,
   type DutyLocationFixResult,
 } from "@/src/lib/dutyToggleFailure";
@@ -522,9 +524,24 @@ export function useDutyToggle() {
             online: isRiderNetworkOnline(),
             apiError: error,
           });
-          openDutyActionError({ kind: failKind === "location" ? "server" : failKind }, () => {
-            void setDuty(true);
-          });
+          // The server answering "no" is not a connectivity problem. Telling a
+          // rider on full signal to "check your connection" hides the real
+          // reason and sends them chasing their network instead.
+          const rejection = isDutyServerRejection(error)
+            ? dutyServerRejectionMessage(error)
+            : null;
+          openDutyActionError(
+            rejection
+              ? {
+                  kind: "server",
+                  title: "Could not go ON duty",
+                  message: rejection,
+                }
+              : { kind: failKind === "location" ? "server" : failKind },
+            () => {
+              void setDuty(true);
+            }
+          );
           return { ok: false, reason: "network" };
         }
       }

@@ -10,6 +10,10 @@ import { getSql } from "../db/client.js";
 import { expandCampaignUserIdCandidates } from "../modules/notifications/campaignTarget.js";
 import { sendFcmV1 } from "../modules/notifications/fcmProvider.js";
 import type { DispatchOrderTarget } from "./order-assignment-engine.js";
+import {
+  selectRiderPushDelivery,
+  type RiderPushTokenRow,
+} from "./rider-push-delivery.js";
 
 function channelIdForService(serviceType: DispatchOrderTarget["serviceType"]): string {
   if (serviceType === "food") return "rider_dispatch_food_v1";
@@ -25,12 +29,13 @@ function soundForService(serviceType: DispatchOrderTarget["serviceType"]): strin
   return "notification";
 }
 
-async function loadRiderNativeFcmTokens(userIds: string[]): Promise<string[]> {
+async function loadRiderNativeFcmTokens(userIds: string[]): Promise<RiderPushTokenRow[]> {
   if (userIds.length === 0) return [];
   const sql = getSql();
   try {
     const rows = (await sql`
-      SELECT native_token
+      SELECT native_token, device_model, device_brand, os_name, app_version,
+             extract(epoch from coalesce(last_seen_at, updated_at)) * 1000 AS last_seen_ms
       FROM public.native_device_push_tokens
       WHERE user_id = ANY(${userIds}::text[])
         AND token_type = 'fcm'
@@ -48,14 +53,24 @@ async function loadRiderNativeFcmTokens(userIds: string[]): Promise<string[]> {
       ORDER BY
         CASE WHEN lower(coalesce(source, 'app')) = 'app' THEN 0 ELSE 1 END,
         updated_at DESC NULLS LAST
-    `) as unknown as Array<{ native_token: string }>;
-    return [
-      ...new Set(
-        rows
-          .map((r) => String(r.native_token ?? "").trim())
-          .filter((t) => t.length > 0 && !isExpoPushTokenString(t))
-      ),
-    ];
+    `) as unknown as Array<{
+      native_token: string;
+      device_model: string | null;
+      device_brand: string | null;
+      os_name: string | null;
+      app_version: string | null;
+      last_seen_ms: string | number | null;
+    }>;
+    return rows
+      .map((r) => ({
+        token: String(r.native_token ?? "").trim(),
+        deviceModel: r.device_model,
+        deviceBrand: r.device_brand,
+        osName: r.os_name,
+        appVersion: r.app_version,
+        lastSeenMs: r.last_seen_ms == null ? null : Number(r.last_seen_ms),
+      }))
+      .filter((r) => r.token.length > 0 && !isExpoPushTokenString(r.token));
   } catch {
     return [];
   }
@@ -113,9 +128,27 @@ export async function sendRiderDispatchDirectPush(args: {
   const push_dispatch_started_at = Date.now();
   try {
     const candidates = expandCampaignUserIdCandidates(`usr_${args.riderId}`);
-    const nativeTokens = await loadRiderNativeFcmTokens(candidates);
-    const expoTokens =
-      nativeTokens.length > 0 ? [] : await loadRiderExpoTokens(candidates);
+    const nativeCandidates = await loadRiderNativeFcmTokens(candidates);
+    // One push per DEVICE, not per stored token. FCM rotates tokens and the old
+    // rows survive, so looping over every token rang the same handset two to
+    // four times for a single order.
+    const expoCandidates =
+      nativeCandidates.length > 0 ? [] : await loadRiderExpoTokens(candidates);
+    const { nativeTokens, expoTokens } = selectRiderPushDelivery({
+      nativeCandidates,
+      expoCandidates,
+    });
+    if (nativeCandidates.length > nativeTokens.length) {
+      console.info(
+        "[dispatch] collapsed_stale_rider_tokens",
+        JSON.stringify({
+          riderId: args.riderId,
+          orderId: args.orderId,
+          stored: nativeCandidates.length,
+          sent: nativeTokens.length,
+        })
+      );
+    }
 
     console.info(
       `[ALERT_ENGINE] BACKEND_SEND_START role=rider riderId=${args.riderId} orderId=${args.orderId} ` +

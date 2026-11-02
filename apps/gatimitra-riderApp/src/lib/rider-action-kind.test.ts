@@ -56,3 +56,39 @@ describe("riderActionRetryDelayMs", () => {
     assert.ok(riderActionRetryDelayMs(0) >= 1_000);
   });
 });
+
+// HttpError (from @/src/services/http) is matched structurally, not with
+// instanceof, so that this module stays importable without react-native.
+// These cases are what guarantee that swap did not change classification.
+class FakeHttpError extends Error {
+  status: number;
+  constructor(status: number) {
+    super(`http ${status}`);
+    this.name = "HttpError";
+    this.status = status;
+  }
+}
+
+describe("classifyRiderActionFailure: HttpError shape", () => {
+  it("classifies by status exactly as ApiError does", () => {
+    assert.equal(classifyRiderActionFailure(new FakeHttpError(401)), "auth");
+    assert.equal(classifyRiderActionFailure(new FakeHttpError(409)), "conflict");
+    assert.equal(classifyRiderActionFailure(new FakeHttpError(503)), "server");
+    assert.equal(classifyRiderActionFailure(new FakeHttpError(408)), "server");
+    assert.equal(classifyRiderActionFailure(new FakeHttpError(429)), "server");
+    assert.equal(classifyRiderActionFailure(new FakeHttpError(403)), "business");
+  });
+
+  it("does not read status off an unrelated error that happens to carry one", () => {
+    // Previously impossible via instanceof; the name check preserves that.
+    const rogue = Object.assign(new Error("Network request failed"), { status: 409 });
+    assert.equal(classifyRiderActionFailure(rogue), "network");
+  });
+
+  it("ignores a non-numeric status on an HttpError", () => {
+    const weird = new FakeHttpError(500);
+    (weird as unknown as { status: unknown }).status = "500";
+    // Falls through to message matching rather than throwing or mis-reading.
+    assert.equal(classifyRiderActionFailure(weird), "business");
+  });
+});

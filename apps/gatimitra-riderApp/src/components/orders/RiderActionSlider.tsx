@@ -34,6 +34,7 @@ import {
   SLIDE_TRACK_H,
 } from "@/src/theme/slideAction";
 import { SLIDE_COMPLETE_RATIO } from "@/src/lib/slideCompleteThreshold";
+import { shouldClaimSlide, shouldCompleteSlide } from "@/src/lib/slideGesture";
 import { beginSlideAction, markSlideAction } from "@/src/lib/slideActionLatency";
 import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
@@ -108,6 +109,7 @@ export const RiderActionSlider = memo(function RiderActionSlider({
   const isDragging = useSharedValue(0);
 
   const firedJsRef = useRef(false);
+  const activeDragRef = useRef(false);
   const prevBusyRef = useRef(parentBusy);
   const ignoreRef = useRef(ignoreGestures);
   ignoreRef.current = ignoreGestures;
@@ -203,53 +205,59 @@ export const RiderActionSlider = memo(function RiderActionSlider({
         return true;
       }
       const max = maxDrag();
-      if (dx < max * SLIDE_COMPLETE_RATIO) return false;
-      const end = max > 0 ? max : dx;
-      translateX.value = withSpring(end, SNAP_SPRING);
+      if (!shouldCompleteSlide(dx, max, SLIDE_COMPLETE_RATIO)) return false;
+      translateX.value = withSpring(max, SNAP_SPRING);
       fireComplete();
       return true;
     },
     [fireComplete, translateX]
   );
 
-  const pan = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => !ignoreRef.current,
-        onMoveShouldSetPanResponder: (_, g) =>
-          !ignoreRef.current && Math.abs(g.dx) > 2 && Math.abs(g.dx) > Math.abs(g.dy),
-        onStartShouldSetPanResponderCapture: () => !ignoreRef.current,
-        onMoveShouldSetPanResponderCapture: (_, g) =>
-          !ignoreRef.current && Math.abs(g.dx) > 2 && Math.abs(g.dx) > Math.abs(g.dy),
-        onPanResponderTerminationRequest: () => false,
-        onPanResponderGrant: () => {
-          if (firedJsRef.current && !parentBusyRef.current) {
-            firedJsRef.current = false;
-            firedSv.value = 0;
-            translateX.value = 0;
-          }
-          isDragging.value = 1;
-        },
-        onPanResponderMove: (_, g) => {
-          if (firedJsRef.current) return;
-          const max = maxDrag();
-          translateX.value = Math.max(0, Math.min(g.dx, max));
-        },
-        onPanResponderRelease: (_, g) => {
-          isDragging.value = 0;
-          if (!tryComplete(g.dx)) {
-            translateX.value = withSpring(0, RESET_SPRING);
-          }
-        },
-        onPanResponderTerminate: () => {
-          isDragging.value = 0;
-          if (!firedJsRef.current) {
-            translateX.value = withSpring(0, RESET_SPRING);
-          }
-        },
-      }),
-    [firedSv, isDragging, translateX, tryComplete]
-  );
+  const pan = useMemo(() => {
+    const shouldClaim = (g: { dx: number; dy: number }) =>
+      shouldClaimSlide(g, ignoreRef.current);
+
+    return PanResponder.create({
+      // Deliberately do NOT claim on touch-down. A slide has to prove itself
+      // with horizontal movement, so a vertical drag that happens to start on
+      // the track still scrolls the page behind it.
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: (_, g) => shouldClaim(g),
+      onMoveShouldSetPanResponderCapture: (_, g) => shouldClaim(g),
+      // Once a slide is genuinely under way it must not be yanked away
+      // mid-drag; before that, let an ancestor scroll view take over.
+      onPanResponderTerminationRequest: () => !activeDragRef.current,
+      onPanResponderGrant: () => {
+        activeDragRef.current = true;
+        if (firedJsRef.current && !parentBusyRef.current) {
+          firedJsRef.current = false;
+          firedSv.value = 0;
+          translateX.value = 0;
+        }
+        isDragging.value = 1;
+      },
+      onPanResponderMove: (_, g) => {
+        if (firedJsRef.current) return;
+        const max = maxDrag();
+        translateX.value = Math.max(0, Math.min(g.dx, max));
+      },
+      onPanResponderRelease: (_, g) => {
+        activeDragRef.current = false;
+        isDragging.value = 0;
+        if (!tryComplete(g.dx)) {
+          translateX.value = withSpring(0, RESET_SPRING);
+        }
+      },
+      onPanResponderTerminate: () => {
+        activeDragRef.current = false;
+        isDragging.value = 0;
+        if (!firedJsRef.current) {
+          translateX.value = withSpring(0, RESET_SPRING);
+        }
+      },
+    });
+  }, [firedSv, isDragging, translateX, tryComplete]);
 
   const thumbStyle = useAnimatedStyle(() => {
     const hint =
