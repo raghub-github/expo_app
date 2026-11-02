@@ -68,6 +68,63 @@ function template(text, { pkg, role }) {
  * verified by deliberately breaking one. Parsing is all that pass proves, and
  * this seam is the part most likely to rot.
  */
+/**
+ * Every session-row field the card READS must be one the controller WRITES.
+ *
+ * The card reads its detail off the persisted session row
+ * (`active.optString("storeName", ...)`) and the controller fills that row from
+ * the FCM payload (`row.put("storeName", ...)`). Nothing compiles the two
+ * together: a read with no matching write silently renders an empty line
+ * forever, and javac cannot see it because both sides are just strings.
+ *
+ * This is not hypothetical. Reconciling a branch that had rewritten the
+ * controller dropped four of these writes while leaving every read in place;
+ * the whole suite stayed green because the formatters are pure and tested on
+ * their own. This check closes that gap.
+ */
+function checkSessionRowFields(sources) {
+  const WRITER = "OrderAlertController.java";
+  const READERS = ["OrderAlertOverlay.java", "OrderAlertLockActivity.java"];
+  // Written by start()/stop() bookkeeping rather than from the payload.
+  const INTRINSIC = new Set([
+    "sessionId",
+    "orderId",
+    "offerId",
+    "soundType",
+    "owner",
+    "startedAt",
+    "title",
+    "body",
+    "pickup",
+    "drop",
+    "orderType",
+    "alertState",
+  ]);
+
+  const writerText = sources.get(WRITER) || "";
+  const written = new Set(INTRINSIC);
+  for (const m of writerText.matchAll(/\.put\(\s*"([A-Za-z0-9_]+)"/g)) {
+    written.add(m[1]);
+  }
+
+  const problems = [];
+  for (const reader of READERS) {
+    const text = sources.get(reader);
+    if (!text) continue;
+    for (const m of text.matchAll(
+      /\.(?:optString|optLong|optInt|optBoolean|optDouble)\(\s*"([A-Za-z0-9_]+)"/g
+    )) {
+      const field = m[1];
+      if (!written.has(field)) {
+        problems.push(
+          `${reader}: reads session-row field "${field}" that ${WRITER} never writes`
+        );
+      }
+    }
+  }
+  return [...new Set(problems)];
+}
+
 function checkPureApiUsage(sources) {
   const declared = new Map();
   for (const [file, text] of sources) {
@@ -180,6 +237,12 @@ try {
       failures += apiProblems.length;
       console.log(`  ${target.role}: ${apiProblems.length} bad call(s) into the pure classes`);
       for (const line of apiProblems) console.log(`    ${line}`);
+    }
+    const rowProblems = checkSessionRowFields(rendered);
+    if (rowProblems.length > 0) {
+      failures += rowProblems.length;
+      console.log(`  ${target.role}: ${rowProblems.length} unwritten session-row field(s)`);
+      for (const line of rowProblems) console.log(`    ${line}`);
     }
     for (const file of readdirSync(TEST_DIR).filter((f) => f.endsWith(".java"))) {
       writeFileSync(
