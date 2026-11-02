@@ -88,12 +88,25 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 45, not 15: this job rolls FIVE images, and the step budget below needs
+    # room for more than one attempt to mean anything.
+    timeout-minutes: 45
     steps:
       - name: Roll workers on VPS (with retry)
         uses: nick-fields/retry@v3
         with:
-          timeout_minutes: 8
+          # 20, not 8. This step pulls and extracts five worker images, while
+          # backend-deploy is allowed 20 minutes for ONE - workers had a quarter
+          # of the budget for five times the work.
+          #
+          # Measured 2026-11-02 on merge e2944485: the step was still printing
+          # "Extracting" for all five images when the 480s budget expired. It was
+          # not stuck and nothing was corrupt - a Node image is mostly
+          # node_modules, and many small files are slow to extract onto
+          # overlayfs. The earlier failure in the same merge additionally hit
+          # containerd "no such file or directory" errors, which is what six
+          # deploy workflows pulling at once on one VPS looks like.
+          timeout_minutes: 20
           max_attempts: 6
           retry_wait_seconds: 45
           retry_on: error
