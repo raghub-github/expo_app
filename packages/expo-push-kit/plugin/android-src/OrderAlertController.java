@@ -285,6 +285,13 @@ public final class OrderAlertController {
     String foodId = first(data, "foodOrderId", "food_order_id");
     String expires = first(data, "expiresAt", "expires_at", "acceptUntil");
     String tripKm = first(data, "tripDistanceKm", "trip_distance_km");
+    // Detail the rich card shows. Carried on the session row rather than as
+    // intent extras: buildCard already resolves the row, and both the overlay
+    // and the lock-screen activity call it, so one write feeds both surfaces.
+    String storeName = first(data, "storeName", "store_name", "restaurantName", "merchantName");
+    String itemCount = first(data, "itemCount", "item_count", "items");
+    String toPickupKm = first(data, "toPickupKm", "to_pickup_km", "pickupDistanceKm");
+    String overallKm = first(data, "overallKm", "overall_km", "totalDistanceKm");
     String itemsJson = first(data, "itemsJson", "items_json", "orderItemsJson", "itemsSummary");
     String special = first(
         data,
@@ -305,6 +312,10 @@ public final class OrderAlertController {
         if (foodId.length() > 0) row.put("foodOrderId", foodId);
         if (expires.length() > 0) row.put("expiresAt", expires);
         if (tripKm.length() > 0 && !"0".equals(tripKm)) row.put("tripDistanceKm", tripKm);
+        if (storeName.length() > 0) row.put("storeName", storeName);
+        if (itemCount.length() > 0) row.put("itemCount", itemCount);
+        if (toPickupKm.length() > 0 && !"0".equals(toPickupKm)) row.put("toPickupKm", toPickupKm);
+        if (overallKm.length() > 0 && !"0".equals(overallKm)) row.put("overallKm", overallKm);
         if (itemsJson.length() > 0) row.put("itemsJson", itemsJson);
         if (special.length() > 0) row.put("specialInstructions", special);
         if (payment.length() > 0) row.put("paymentMethod", payment);
