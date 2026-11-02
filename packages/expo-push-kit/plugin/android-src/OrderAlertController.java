@@ -424,11 +424,21 @@ public final class OrderAlertController {
     synchronized (LOCK) {
       // Record BEFORE removing: the row carries the other id forms this order is
       // known by, and a stop that arrives before any start must still block it.
+      //
+      // Prefer the ROW's session id over the needle. Callers legitimately stop by
+      // order id - the rider app's stopRiderDispatchBuzzer passes
+      // activeOrderIdRef, and the merchant JS tries several token shapes - and a
+      // rider decision is keyed on the wave-scoped session id. Keying it on the
+      // needle would record `s:<orderId>`, which no real
+      // RIDER_NEW_ORDER:<order>:<rider>:<wave> session id can ever match, so the
+      // rider would get no replay protection at all. Resolving the row first
+      // records the true wave and still lets the NEXT wave ring.
       JSONObject doomed = findSession(context, sid, "", "");
       recordDecision(
           context,
           decisionKeys(
-              sid,
+              OrderAlertDecisionLedger.resolveDecisionSessionId(
+                  sid, doomed != null ? doomed.optString("sessionId", "") : ""),
               doomed != null ? doomed.optString("orderId", "") : "",
               doomed != null ? doomed.optString("offerId", "") : ""));
       removeSession(context, sid);

@@ -137,6 +137,26 @@ public final class OrderAlertDecisionLedger {
     if (token.length() > 0) keys.add("o:" + token);
   }
 
+  /**
+   * Which session id a decision should be recorded under.
+   *
+   * Callers legitimately stop by ORDER id, not session id: the rider app's
+   * stopRiderDispatchBuzzer passes activeOrderIdRef, and the merchant JS tries
+   * several token shapes in turn. Because a rider decision is keyed on the
+   * wave-scoped session id, keying it on that needle would record
+   * `s:&lt;orderId&gt;` - which no real RIDER_NEW_ORDER:&lt;order&gt;:&lt;rider&gt;:&lt;wave&gt;
+   * session id can ever match, leaving riders with no replay protection.
+   *
+   * So prefer the session id carried by the session row that was actually
+   * found, and fall back to the needle only when there is no row (the
+   * stop-before-start case, where the needle IS the best id available).
+   */
+  public static String resolveDecisionSessionId(String needle, String rowSessionId) {
+    String row = rowSessionId == null ? "" : rowSessionId.trim();
+    if (row.length() > 0) return row;
+    return needle == null ? "" : needle.trim();
+  }
+
   /** True when any of these keys was decided and the decision has not expired. */
   public static boolean isDecided(String ledger, String[] keys, long nowMs, long ttlMs) {
     if (keys == null || keys.length == 0) return false;

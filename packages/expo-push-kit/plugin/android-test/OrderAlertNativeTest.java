@@ -424,6 +424,47 @@ public final class OrderAlertNativeTest {
                 "merchant", "MERCHANT_NEW_ORDER:999999:" + STORE, "GM10000420", "", "999999"),
             NOW, TTL));
 
+    // ---- resolveDecisionSessionId: stopping by ORDER id must still record the
+    // real wave. stopRiderDispatchBuzzer passes activeOrderIdRef, not a session
+    // id, so without this a rider decision was filed under `s:<orderId>` - a key
+    // no RIDER_NEW_ORDER:<order>:<rider>:<wave> id can ever match, leaving riders
+    // with no replay protection at all.
+    final String W1 = "RIDER_NEW_ORDER:ORD9:4:1";
+    final String W2 = "RIDER_NEW_ORDER:ORD9:4:2";
+
+    eq("prefers the row's session id over an order-id needle",
+        W1, OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", W1));
+    eq("falls back to the needle when no row was found",
+        "ORD9", OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", ""));
+    eq("falls back when the row has no session id",
+        "ORD9", OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", "   "));
+    eq("null row session id falls back to the needle",
+        "ORD9", OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", null));
+    eq("both blank resolves to empty",
+        "", OrderAlertDecisionLedger.resolveDecisionSessionId(null, null));
+    eq("trims the resolved id", W1,
+        OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", "  " + W1 + " "));
+
+    // End to end for the rider: stop arrives by ORDER id, the row is found, so
+    // wave 1 is suppressed and wave 2 still rings.
+    String riderByOrderId = OrderAlertDecisionLedger.record(
+        "",
+        OrderAlertDecisionLedger.decisionKeys(
+            "rider",
+            OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", W1),
+            "ORD9", "ORD9", ""),
+        NOW, TTL);
+    check("rider stop by order id suppresses the wave it belongs to",
+        OrderAlertDecisionLedger.isDecided(
+            riderByOrderId,
+            OrderAlertDecisionLedger.decisionKeys("rider", W1, "ORD9", "ORD9", ""),
+            NOW, TTL));
+    check("rider stop by order id still lets the NEXT wave ring",
+        !OrderAlertDecisionLedger.isDecided(
+            riderByOrderId,
+            OrderAlertDecisionLedger.decisionKeys("rider", W2, "ORD9", "ORD9", ""),
+            NOW, TTL));
+
     // ---- stale-session guard: what stops a persisted row being resurrected.
     final long MAXAGE = OrderAlertDecisionLedger.DEFAULT_SESSION_MAX_AGE_MS;
     check("a fresh session is not stale",
