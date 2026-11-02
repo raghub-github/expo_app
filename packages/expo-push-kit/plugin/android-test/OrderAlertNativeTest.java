@@ -377,6 +377,53 @@ public final class OrderAlertNativeTest {
     check("rider with an empty session id yields no keys",
         OrderAlertDecisionLedger.decisionKeys("rider", "", "ORD9", "ORD9", "").length == 0);
 
+    // ---- THE INVARIANT THE WHOLE FIX RESTS ON.
+    // Both payloads are built from the same two ids:
+    //   start: orderId = core text ("GM100..."), foodOrderId = numeric,
+    //          alertSessionId = MERCHANT_NEW_ORDER:<foodId ?? coreText>:<store>
+    //   stop : the same, from order.status_changed
+    // The food-order lookup can resolve on one side and not the other, so the
+    // session ids can legitimately differ. Because BOTH always also carry the
+    // core order id, their key sets always intersect on it. Verified against
+    // production: orders_core.order_id is always "GM..."-prefixed (0 purely
+    // numeric rows) and never collides with an orders_food.id, so the numeric
+    // and GM namespaces cannot cross-silence a different order.
+    final String CORE = "GM10000419";
+    final String FOOD = "100058";
+    final String STORE = "12";
+
+    String[] startLookupOk = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:" + FOOD + ":" + STORE, CORE, CORE, FOOD);
+    String[] startLookupFailed = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:" + CORE + ":" + STORE, CORE, CORE, "");
+    String[] stopLookupOk = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:" + FOOD + ":" + STORE, CORE, "", FOOD);
+    String[] stopLookupFailed = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:" + CORE + ":" + STORE, CORE, "", "");
+
+    // All four lookup combinations must silence the start. Any single one of
+    // these failing is a buzzer that never stops.
+    check("stop(lookup ok) blocks start(lookup ok)",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopLookupOk, NOW, TTL), startLookupOk, NOW, TTL));
+    check("stop(lookup ok) blocks start(lookup FAILED)",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopLookupOk, NOW, TTL), startLookupFailed, NOW, TTL));
+    check("stop(lookup FAILED) blocks start(lookup ok)",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopLookupFailed, NOW, TTL), startLookupOk, NOW, TTL));
+    check("stop(lookup FAILED) blocks start(lookup FAILED)",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopLookupFailed, NOW, TTL), startLookupFailed, NOW, TTL));
+
+    // The numeric food id of one order must never silence a different order.
+    check("a food id does not collide with another order's core id",
+        !OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopLookupOk, NOW, TTL),
+            OrderAlertDecisionLedger.decisionKeys(
+                "merchant", "MERCHANT_NEW_ORDER:999999:" + STORE, "GM10000420", "", "999999"),
+            NOW, TTL));
+
     // ---- stale-session guard: what stops a persisted row being resurrected.
     final long MAXAGE = OrderAlertDecisionLedger.DEFAULT_SESSION_MAX_AGE_MS;
     check("a fresh session is not stale",
