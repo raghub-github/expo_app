@@ -2,6 +2,14 @@ import "server-only";
 
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
+import {
+  DB_QUERY_DEADLINE_MS,
+  DbTimeoutError,
+  isDbTimeoutError,
+  withQueryDeadline,
+} from "@/lib/db/deadline";
+
+export { DB_QUERY_DEADLINE_MS, DbTimeoutError, isDbTimeoutError, withQueryDeadline };
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _sql: ReturnType<typeof postgres> | null = null;
@@ -30,7 +38,14 @@ export function getDb() {
       },
     },
     connection: {
-      // Fail fast so the UI never waits multi-minute for a stuck planner.
+      // NOTE: these are startup parameters, and Supavisor (the Supabase
+      // transaction pooler we connect through on :6543) SILENTLY DROPS them.
+      // Verified against production: with both set here, the server still
+      // reports statement_timeout = 2min and
+      // idle_in_transaction_session_timeout = 0, and a 25s query ran to
+      // completion. They are kept because they DO apply on a direct :5432
+      // connection, but nothing may depend on them — the real guard is the
+      // client-side deadline in @/lib/db/deadline.
       statement_timeout: 20_000,
       idle_in_transaction_session_timeout: 20_000,
     },
@@ -77,9 +92,12 @@ export async function withPgRetry<T>(run: () => Promise<T>, label: string, attem
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      return await run();
+      return await withQueryDeadline(run, label);
     } catch (error) {
       lastError = error;
+      // A deadline must never be retried: that would double the wait that the
+      // deadline exists to bound.
+      if (isDbTimeoutError(error)) throw error;
       if (attempt === attempts || !isRetryablePgError(error)) throw error;
       console.warn(`[coredash:db] ${label}: retry ${attempt}`);
       await new Promise((r) => setTimeout(r, 250 * attempt));
