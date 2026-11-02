@@ -33,6 +33,7 @@ public final class OrderAlertController {
   private static final String PREFS = "gatimitra_order_alert_v1";
   private static final String KEY_SESSIONS = "sessions";
   private static final String KEY_PRIMARY = "primarySessionId";
+  private static final String KEY_DECISIONS = "decidedAlerts";
   private static final String APP_ROLE = "{{ROLE}}";
   static final String ACTION_STOP = "{{PACKAGE}}.ORDER_ALERT_STOP";
   static final String EXTRA_SESSION_ID = "alertSessionId";
@@ -52,6 +53,74 @@ public final class OrderAlertController {
   private static String playingSessionId;
 
   private OrderAlertController() {}
+
+  /**
+   * Decision ledger: "this alert is already accepted/rejected, never ring for
+   * it again". See OrderAlertDecisionLedger for why an edge-triggered
+   * start/stop pair cannot hold that guarantee on its own.
+   */
+  private static String[] decisionKeys(String sessionId, String orderId, String offerId) {
+    return OrderAlertDecisionLedger.decisionKeys(APP_ROLE, sessionId, orderId, offerId, "");
+  }
+
+  private static boolean isDecided(Context context, String[] keys) {
+    if (context == null || keys == null || keys.length == 0) return false;
+    try {
+      String ledger = prefs(context).getString(KEY_DECISIONS, "");
+      return OrderAlertDecisionLedger.isDecided(
+          ledger, keys, System.currentTimeMillis(), OrderAlertDecisionLedger.DEFAULT_TTL_MS);
+    } catch (Throwable t) {
+      // A broken ledger must never block a real order.
+      return false;
+    }
+  }
+
+  private static void recordDecision(Context context, String[] keys) {
+    if (context == null || keys == null || keys.length == 0) return;
+    try {
+      SharedPreferences sp = prefs(context);
+      String next = OrderAlertDecisionLedger.record(
+          sp.getString(KEY_DECISIONS, ""),
+          keys,
+          System.currentTimeMillis(),
+          OrderAlertDecisionLedger.DEFAULT_TTL_MS);
+      // commit, not apply: the process is often killed moments after an accept,
+      // and a decision lost to an async write is a buzzer that comes back.
+      sp.edit().putString(KEY_DECISIONS, next).commit();
+    } catch (Throwable ignored) {
+    }
+  }
+
+  /**
+   * Drop sessions too old to be legitimately alerting. Without this a row left
+   * behind by a missed stop is immortal, and every later service start - pill,
+   * app launch, START_STICKY restart - resurrects its buzzer, which is why the
+   * sound came back after powering the device off and on.
+   */
+  private static void pruneStaleSessions(Context context) {
+    JSONArray arr = listSessions(context);
+    if (arr.length() == 0) return;
+    long now = System.currentTimeMillis();
+    JSONArray next = new JSONArray();
+    int dropped = 0;
+    for (int i = 0; i < arr.length(); i++) {
+      try {
+        JSONObject cur = arr.getJSONObject(i);
+        if (OrderAlertDecisionLedger.isSessionStale(
+            cur.optLong("startedAt", 0L), now, OrderAlertDecisionLedger.DEFAULT_SESSION_MAX_AGE_MS)) {
+          dropped++;
+          continue;
+        }
+        next.put(cur);
+      } catch (Exception ignored) {
+      }
+    }
+    if (dropped > 0) {
+      saveSessions(context, next);
+      if (next.length() == 0) putPrimary(context, "");
+      Log.i(TAG, "pruned " + dropped + " stale session(s)");
+    }
+  }
 
   public static boolean handleRemoteMessage(Context context, RemoteMessage message) {
     if (context == null || message == null) return false;
@@ -82,15 +151,36 @@ public final class OrderAlertController {
     boolean controlOnly = "1".equals(first(data, "gmAlertControl", "alertControl"));
     if ("stop".equalsIgnoreCase(action)) {
       String sessionId = resolveSessionId(data);
-      if (sessionId.length() > 0) {
-        // Session-scoped stop only. Also stopping by orderId would kill a newer
-        // rider wave that reused the same order/offer id.
-        stop(context, sessionId);
-      } else {
-        String orderId = first(data, "orderId", "order_id", "foodOrderId", "offerId", "offer_id");
-        if (orderId.length() > 0) stop(context, orderId);
+      String stopOrder = first(data, "orderId", "order_id", "foodOrderId", "food_order_id");
+      String stopFood = first(data, "foodOrderId", "food_order_id");
+      String stopOffer = first(data, "offerId", "offer_id");
+
+      // Ledger the decision under EVERY id this order is known by, even when no
+      // local session matches. The backend mints the alert session id from the
+      // food order id when its lookup resolves and from the core order id when it
+      // does not, so a stop can carry a different id than the start did. Without
+      // this the stop lands on nothing, nothing is remembered, and the next
+      // delivery of the queued start rings an order that is already decided.
+      recordDecision(
+          context,
+          OrderAlertDecisionLedger.decisionKeys(
+              APP_ROLE, sessionId, stopOrder, stopOffer, stopFood));
+
+      if (sessionId.length() > 0) stop(context, sessionId);
+      if (!"rider".equals(APP_ROLE)) {
+        // A merchant order that left the pending state is decided for good, so
+        // stopping by order id is correct and is the only thing that clears a
+        // session whose id was built from the other id form. A rider's order id
+        // is legitimately re-offered in a later wave, so there the stop must stay
+        // session-scoped or the next wave is silently killed.
+        for (int i = 0; i < 3; i++) {
+          String token = i == 0 ? stopOrder : (i == 1 ? stopFood : stopOffer);
+          if (token.length() > 0 && !token.equals(sessionId)) stop(context, token);
+        }
+      } else if (sessionId.length() == 0 && stopOrder.length() > 0) {
+        stop(context, stopOrder);
       }
-      return controlOnly || sessionId.length() > 0;
+      return controlOnly || sessionId.length() > 0 || stopOrder.length() > 0;
     }
 
     if (!isCriticalForThisApp(data)) {
@@ -153,6 +243,13 @@ public final class OrderAlertController {
     String foodId = first(data, "foodOrderId", "food_order_id");
     String expires = first(data, "expiresAt", "expires_at", "acceptUntil");
     String tripKm = first(data, "tripDistanceKm", "trip_distance_km");
+    // Detail the rich card shows. Carried on the session row rather than as
+    // intent extras: buildCard already resolves the row, and both the overlay
+    // and the lock-screen activity call it, so one write feeds both surfaces.
+    String storeName = first(data, "storeName", "store_name", "restaurantName", "merchantName");
+    String itemCount = first(data, "itemCount", "item_count", "items");
+    String toPickupKm = first(data, "toPickupKm", "to_pickup_km", "pickupDistanceKm");
+    String overallKm = first(data, "overallKm", "overall_km", "totalDistanceKm");
     synchronized (LOCK) {
       JSONObject row = findSession(context, sessionId, "", "");
       if (row == null) return;
@@ -164,6 +261,10 @@ public final class OrderAlertController {
         if (foodId.length() > 0) row.put("foodOrderId", foodId);
         if (expires.length() > 0) row.put("expiresAt", expires);
         if (tripKm.length() > 0 && !"0".equals(tripKm)) row.put("tripDistanceKm", tripKm);
+        if (storeName.length() > 0) row.put("storeName", storeName);
+        if (itemCount.length() > 0) row.put("itemCount", itemCount);
+        if (toPickupKm.length() > 0 && !"0".equals(toPickupKm)) row.put("toPickupKm", toPickupKm);
+        if (overallKm.length() > 0 && !"0".equals(overallKm)) row.put("overallKm", overallKm);
         if (title != null && title.trim().length() > 0) row.put("title", title.trim());
         if (body != null && body.trim().length() > 0) row.put("body", body.trim());
         upsertSession(context, row);
@@ -254,7 +355,17 @@ public final class OrderAlertController {
     String dropText = drop == null ? "" : drop.trim();
     String typeText = orderType == null ? "" : orderType.trim();
 
+    // Already accepted/rejected -> never ring again. This is what makes start
+    // idempotent against a replayed, queued or out-of-order FCM "start".
+    String[] keys = decisionKeys(sid, oid, offer);
+    if (isDecided(context, keys)) {
+      AlertEngineLog.log(context, "ALERT_START_REFUSED_DECIDED", sid, oid, "role=" + APP_ROLE);
+      Log.i(TAG, "start refused - already decided sessionId=" + sid + " orderId=" + oid);
+      return;
+    }
+
     synchronized (LOCK) {
+      pruneStaleSessions(context);
       JSONObject existing = findSession(context, sid, oid, offer);
       if (existing != null) {
         String existingId = existing.optString("sessionId", sid);
@@ -322,6 +433,25 @@ public final class OrderAlertController {
     OrderAlertPill.onOrderClosed(context, sid);
     boolean empty;
     synchronized (LOCK) {
+      // Record BEFORE removing: the row carries the other id forms this order is
+      // known by, and a stop that arrives before any start must still block it.
+      //
+      // Prefer the ROW's session id over the needle. Callers legitimately stop by
+      // order id - the rider app's stopRiderDispatchBuzzer passes
+      // activeOrderIdRef, and the merchant JS tries several token shapes - and a
+      // rider decision is keyed on the wave-scoped session id. Keying it on the
+      // needle would record `s:<orderId>`, which no real
+      // RIDER_NEW_ORDER:<order>:<rider>:<wave> session id can ever match, so the
+      // rider would get no replay protection at all. Resolving the row first
+      // records the true wave and still lets the NEXT wave ring.
+      JSONObject doomed = findSession(context, sid, "", "");
+      recordDecision(
+          context,
+          decisionKeys(
+              OrderAlertDecisionLedger.resolveDecisionSessionId(
+                  sid, doomed != null ? doomed.optString("sessionId", "") : ""),
+              doomed != null ? doomed.optString("orderId", "") : "",
+              doomed != null ? doomed.optString("offerId", "") : ""));
       removeSession(context, sid);
       empty = listSessions(context).length() == 0;
       if (empty) {
@@ -382,8 +512,26 @@ public final class OrderAlertController {
     Log.i(TAG, "stop all");
   }
 
+  /**
+   * The session a specific id refers to, or null.
+   *
+   * Accept/Reject must act on the alert the user actually tapped. Resolving it
+   * through getActive() instead returns the PRIMARY session, so with two orders
+   * queued a merchant could accept one and leave the other one buzzing - or
+   * stop the wrong one outright.
+   */
+  public static JSONObject getSessionById(Context context, String sessionId) {
+    if (context == null) return null;
+    String sid = sessionId == null ? "" : sessionId.trim();
+    if (sid.length() == 0) return null;
+    synchronized (LOCK) {
+      return findSession(context, sid, "", "");
+    }
+  }
+
   public static JSONObject getActive(Context context) {
     synchronized (LOCK) {
+      pruneStaleSessions(context);
       String primary = prefs(context).getString(KEY_PRIMARY, "");
       JSONObject row = findSession(context, primary, "", "");
       if (row == null) {

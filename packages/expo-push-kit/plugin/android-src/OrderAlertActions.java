@@ -40,7 +40,9 @@ public final class OrderAlertActions {
       Log.i(TAG, "duplicate " + act + " session=" + sid);
       return;
     }
-    JSONObject row = OrderAlertController.getActive(context);
+    // The tapped alert, not whichever one happens to be primary.
+    JSONObject row = OrderAlertController.getSessionById(context, sid);
+    if (row == null) row = OrderAlertController.getActive(context);
     AlertEngineLog.log(context, "accept".equals(act) ? "ACCEPT_CLICKED" : "REJECT_CLICKED", sid, "", null);
     // Stash first: the HTTP call below merges its outcome into this row, so an app
     // that cold-starts mid-flight reads "pending" instead of a false success.

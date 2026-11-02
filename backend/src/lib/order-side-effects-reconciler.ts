@@ -18,6 +18,7 @@
  */
 import { getSql } from "../db/client.js";
 import { isSelfPickupFulfillment } from "./self-pickup.js";
+import { shouldClearOrderNotifications } from "./clear-merchant-order-notifications.js";
 
 /** Only heal orders at least this old — let the inline fast-path run first (avoid double work). */
 const MIN_AGE_SECONDS = 30;
@@ -37,10 +38,34 @@ export function decideOrderSideEffects(input: {
   hasDispatchSession: boolean;
   hasMerchantNotification: boolean;
   isSelfPickup: boolean;
+  /**
+   * Is the order still waiting for the merchant to accept or reject it?
+   *
+   * Required, not optional-defaulting-to-true: forgetting to pass it must be a
+   * type error, because defaulting it is exactly how the bug below survived.
+   *
+   * Accepting an order DELETES its merchant_store_notifications row (see
+   * clearMerchantStoreOrderNotifications). Without this gate the reconciler
+   * then sees "no merchant notification" for an order that is ACCEPTED or
+   * PREPARING - both of which are in the rider-dispatchable status list the
+   * candidate query filters on - and re-sends the NEW ORDER alert, which
+   * carries gmAlertAction:"start" and rings the buzzer again. It repeats every
+   * tick until a rider is assigned or the order ages out of the lookback
+   * window. A merchant reported exactly that: the alert returning after they
+   * had already accepted.
+   *
+   * There is nothing to heal once the merchant has acted, so the only safe
+   * answer is to not re-notify. Derive it from the SAME predicate that decides
+   * to clear the notification, so the two can never disagree: if a status
+   * clears merchant order notifications, the reconciler must not recreate them.
+   */
+  awaitingMerchantAcceptance: boolean;
 }): OrderSideEffectDecision {
   return {
+    // Dispatch is unaffected: a rider is legitimately dispatched for ACCEPTED /
+    // PREPARING / READY_FOR_PICKUP orders, so that healing must keep working.
     startDispatch: !input.isSelfPickup && !input.hasDispatchSession,
-    notifyMerchant: !input.hasMerchantNotification,
+    notifyMerchant: !input.hasMerchantNotification && input.awaitingMerchantAcceptance,
   };
 }
 
@@ -54,6 +79,7 @@ type ReconcileCandidateRow = {
   checkout_metadata: unknown;
   has_session: boolean;
   has_merchant_notif: boolean;
+  food_order_status: string | null;
 };
 
 export type OrderSideEffectsReconcileResult = {
@@ -90,7 +116,8 @@ export async function runOrderSideEffectsReconcile(
         WHERE n.store_id = of.merchant_store_id
           AND n.order_id = of.id
           AND n.type = 'order'
-      ) AS has_merchant_notif
+      ) AS has_merchant_notif,
+      of.order_status AS food_order_status
     FROM orders_core oc
     INNER JOIN orders_food of ON of.order_id = oc.id
     WHERE oc.order_type = 'food'
@@ -126,10 +153,17 @@ export async function runOrderSideEffectsReconcile(
       row.billing_snapshot,
       row.checkout_metadata
     );
+    // Same predicate that clears merchant order notifications, negated: if a
+    // status is past "waiting for the merchant", it clears them and we must not
+    // recreate them.
+    const awaitingMerchantAcceptance = !shouldClearOrderNotifications(
+      String(row.food_order_status ?? "")
+    );
     const decision = decideOrderSideEffects({
       hasDispatchSession: row.has_session === true,
       hasMerchantNotification: row.has_merchant_notif === true,
       isSelfPickup,
+      awaitingMerchantAcceptance,
     });
 
     if (decision.notifyMerchant && storeId != null && orderIdText) {
