@@ -30,6 +30,7 @@ import { ServiceRestrictedSheet } from "@/src/components/ServiceRestrictedSheet"
 import { RiderDutyLocationPing } from "@/src/components/RiderDutyLocationPing";
 import { isRiderWsEnabled } from "@/src/config/env";
 import { IncomingRideOrderHost } from "@/src/components/orders/IncomingRideOrderHost";
+import { OverlayErrorBoundary } from "@/src/components/OverlayErrorBoundary";
 import { SubscriptionDutyBlockedSheetHost } from "@/src/components/subscription/SubscriptionDutyBlockedSheetHost";
 import { WaitingForReviewSheetHost } from "@/src/components/onboarding/WaitingForReviewSheetHost";
 import { DutyWorkLocationMismatchSheetHost } from "@/src/components/duty/DutyWorkLocationMismatchSheet";
@@ -227,20 +228,52 @@ function RootLayoutNav() {
             <Stack.Screen name="modal" options={{ presentation: "modal" }} />
           </Stack>
 
-          <IncomingRideOrderHost />
-          <SubscriptionDutyBlockedSheetHost />
-          <WaitingForReviewSheetHost />
-          <DutyWorkLocationMismatchSheetHost />
-          <DutyActionErrorModalHost />
-          <WorkingLocationSuccessModal />
-          <RiderDocumentUpdateSheetHost />
-          <RiderPaymentSuccessSheet />
-          <RiderPostDeliveryTipHost />
-          <RiderPersistentDispatchPill />
-          <RiderNativeAlertActionBridge />
-          <RiderSearchingNotification />
-          <RiderToastHost />
-          <RiderOfflineBanner />
+          {/* Each global overlay is isolated: these sit beside the router
+              <Stack> in the ROOT layout, outside every route error boundary,
+              so one render throw here used to crash the entire app - most
+              visibly when a malformed dispatch offer arrived. */}
+          <OverlayErrorBoundary name="incoming-order">
+            <IncomingRideOrderHost />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="subscription-blocked">
+            <SubscriptionDutyBlockedSheetHost />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="waiting-review">
+            <WaitingForReviewSheetHost />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="duty-location-mismatch">
+            <DutyWorkLocationMismatchSheetHost />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="duty-error">
+            <DutyActionErrorModalHost />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="working-location">
+            <WorkingLocationSuccessModal />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="document-update">
+            <RiderDocumentUpdateSheetHost />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="payment-success">
+            <RiderPaymentSuccessSheet />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="post-delivery-tip">
+            <RiderPostDeliveryTipHost />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="dispatch-pill">
+            <RiderPersistentDispatchPill />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="native-alert-bridge">
+            <RiderNativeAlertActionBridge />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="searching-notification">
+            <RiderSearchingNotification />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="toast">
+            <RiderToastHost />
+          </OverlayErrorBoundary>
+          <OverlayErrorBoundary name="offline-banner">
+            <RiderOfflineBanner />
+          </OverlayErrorBoundary>
         </ThemeProvider>
       </AppProviders>
     );
