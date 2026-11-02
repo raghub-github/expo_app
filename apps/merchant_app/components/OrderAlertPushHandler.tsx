@@ -21,6 +21,7 @@ import {
 import { isMerchantNewOrderPushData } from "@/lib/merchantNewOrderChannel";
 import { installMerchantForegroundNotificationHandler } from "@/lib/merchantNotificationHandler";
 import {
+  applyGlobalOrderAlertStop,
   continueOrStartNewOrderAlert,
   dismissNativeNewOrderAlerts,
   extractNewOrderEventId,
@@ -36,6 +37,25 @@ import {
   extractAlertSessionId,
   getActiveNativeOrderAlert,
 } from "@gatimitra/expo-push-kit";
+
+function isGlobalOrderStopPush(data: Record<string, unknown> | null | undefined): boolean {
+  if (!data) return false;
+  const action = String(data.gmAlertAction ?? data.alertAction ?? "").toLowerCase();
+  const event = String(data.event ?? data.type ?? "").toUpperCase();
+  const scope = String(data.scope ?? "").toLowerCase();
+  return (
+    action === "stop" ||
+    event === "STOP_ALERT" ||
+    scope === "global_order_stop"
+  );
+}
+
+function stopReasonFromPush(data: Record<string, unknown>): "accepted" | "rejected" | "cancelled" {
+  const st = String(data.terminalStatus ?? "").toUpperCase();
+  if (st === "ACCEPTED") return "accepted";
+  if (st === "REJECTED") return "rejected";
+  return "cancelled";
+}
 
 export default function OrderAlertPushHandler() {
   const { selectedStore } = useSelectedStore();
@@ -174,6 +194,12 @@ export default function OrderAlertPushHandler() {
     })();
 
     const unsubFg = registerMerchantForegroundPushHandler(({ data, date }) => {
+      // Global lifecycle stop from ANY device / Admin / Partner Website.
+      if (isGlobalOrderStopPush(data)) {
+        const orderId = extractNewOrderIdFromPush(data);
+        void applyGlobalOrderAlertStop(orderId, stopReasonFromPush(data));
+        return;
+      }
       if (!isMerchantNewOrderPushData(data)) return;
       if (AppState.currentState !== "active") {
         // Background: OS channel owns sound — only seed session (no JS playback).

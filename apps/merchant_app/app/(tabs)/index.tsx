@@ -35,13 +35,14 @@ import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useOrders, type OrderRecord } from "@/hooks/useOrders";
 import { LiveOrderCard } from "@/components/order/LiveOrderCard";
+import { useNowMs } from "@/hooks/useNowMs";
 import { DashboardOrdersEmptyState } from "@/components/order/DashboardOrdersEmptyState";
 import { RejectOrderSheet } from "@/components/order/RejectOrderSheet";
 import { MerchantPrepDelaySheet } from "@/components/order/MerchantPrepDelaySheet";
 import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/RejectFollowUpHost";
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
-import { fetchWalletSummary } from "@/services/walletApi";
+import { fetchWalletSummary, peekWalletSummary } from "@/services/walletApi";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
 import { openOrderDetailOnce } from "@/lib/openOrderDetailOnce";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
@@ -53,6 +54,7 @@ import {
   useOnboardingBenefitsWindow,
 } from "@/components/OnboardingBenefitsCard";
 import { useMenuItems, MENU_CATALOG_LIST_FILTERS } from "@/hooks/useMenuQueries";
+import { HomeAdsStrip } from "@/components/HomeAdsStrip";
 
 const { width } = Dimensions.get("window");
 const KPI_VIEWPORT = width - H_PADDING * 2;
@@ -76,12 +78,14 @@ function KpiCard({
   icon,
   accent,
   negative = false,
+  onPress,
 }: {
   title: string;
   value: string;
   icon: keyof typeof Ionicons.glyphMap;
   accent: "primary" | "navy";
   negative?: boolean;
+  onPress?: () => void;
 }) {
   const iconColor = negative
     ? "#DC2626"
@@ -89,14 +93,8 @@ function KpiCard({
       ? GatiMitraMerchant.primary
       : GatiMitraMerchant.navy;
 
-  return (
-    <View
-      style={[
-        styles.kpiCardWrap,
-        { width: KPI_CARD_WIDTH },
-        negative ? styles.kpiCardNegative : null,
-      ]}
-    >
+  const body = (
+    <>
       <View style={styles.kpiTopRow}>
         <View style={[styles.kpiIconWrap, { backgroundColor: iconColor }]}>
           <Ionicons name={icon} size={KPI_ICON_GLYPH} color="#fff" />
@@ -113,6 +111,35 @@ function KpiCard({
       >
         {value}
       </Text>
+    </>
+  );
+
+  if (onPress) {
+    return (
+      <Pressable
+        onPress={onPress}
+        accessibilityRole="button"
+        style={({ pressed }) => [
+          styles.kpiCardWrap,
+          { width: KPI_CARD_WIDTH },
+          negative ? styles.kpiCardNegative : null,
+          pressed ? { opacity: 0.88 } : null,
+        ]}
+      >
+        {body}
+      </Pressable>
+    );
+  }
+
+  return (
+    <View
+      style={[
+        styles.kpiCardWrap,
+        { width: KPI_CARD_WIDTH },
+        negative ? styles.kpiCardNegative : null,
+      ]}
+    >
+      {body}
     </View>
   );
 }
@@ -182,24 +209,39 @@ export default function DashboardScreen() {
       applyOrderTabParam(orderTabParam);
     }, [orderTabParam, applyOrderTabParam])
   );
-  const [todayEarning, setTodayEarning] = useState(0);
-  const [deliveredToday, setDeliveredToday] = useState(0);
-  const [walletBalance, setWalletBalance] = useState(0);
+  const cachedWallet = storeId != null ? peekWalletSummary(storeId) : null;
+  const [todayEarning, setTodayEarning] = useState(() =>
+    Number(cachedWallet?.today_earning) || 0
+  );
+  const [deliveredToday, setDeliveredToday] = useState(() =>
+    Number(cachedWallet?.delivered_today ?? 0) || 0
+  );
+  const [walletBalance, setWalletBalance] = useState(() =>
+    cachedWallet ? resolveWalletDisplayBalance(cachedWallet) : 0
+  );
 
-  const lastStatsAtRef = useRef(0);
+  const lastStatsAtRef = useRef(cachedWallet ? Date.now() : 0);
+  const applyWalletStats = useCallback((wallet: NonNullable<ReturnType<typeof peekWalletSummary>>) => {
+    setTodayEarning(Number(wallet.today_earning) || 0);
+    setDeliveredToday(Number(wallet.delivered_today ?? 0) || 0);
+    setWalletBalance(resolveWalletDisplayBalance(wallet));
+    lastStatsAtRef.current = Date.now();
+  }, []);
+
   const loadDashboardStats = useCallback(async () => {
     if (!token || !storeId) return;
+    const peeked = peekWalletSummary(storeId);
+    if (peeked) applyWalletStats(peeked);
     try {
       const wallet = await fetchWalletSummary(storeId, token);
-      setTodayEarning(Number(wallet.today_earning) || 0);
-      setDeliveredToday(Number(wallet.delivered_today ?? 0) || 0);
-      setWalletBalance(resolveWalletDisplayBalance(wallet));
-      lastStatsAtRef.current = Date.now();
+      applyWalletStats(wallet);
     } catch {
-      setTodayEarning(0);
-      setDeliveredToday(0);
+      if (!peekWalletSummary(storeId)) {
+        setTodayEarning(0);
+        setDeliveredToday(0);
+      }
     }
-  }, [token, storeId]);
+  }, [token, storeId, applyWalletStats]);
 
   useEffect(() => {
     void loadDashboardStats();
@@ -217,6 +259,9 @@ export default function DashboardScreen() {
       void loadDashboardStats();
     }, [loadDashboardStats])
   );
+
+  // One shared clock for home LiveOrderCards (avoids N × 1s timers heating the device).
+  const nowMs = useNowMs(true, 1_000);
 
   const hasActiveOrders = useMemo(
     () => orders.some((o) => isActiveMerchantOrderStage(o.status)),
@@ -399,6 +444,8 @@ export default function DashboardScreen() {
       <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
       <Text style={styles.dateText}>{formatTodayDate()}</Text>
 
+      <HomeAdsStrip placement="home" />
+
       <View style={styles.section}>
         <ScrollView
           horizontal
@@ -479,6 +526,7 @@ export default function DashboardScreen() {
                 <LiveOrderCard
                   key={order.id}
                   order={order}
+                  nowMs={nowMs}
                   acceptanceWindowMinutes={acceptanceWindowMinutes}
                   storeName={
                     order.merchantStoreName?.trim() ||

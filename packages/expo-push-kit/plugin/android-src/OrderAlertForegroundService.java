@@ -278,14 +278,15 @@ public class OrderAlertForegroundService extends Service {
     String display = active != null ? active.optString("displayOrderId", "") : "";
     if (display.matches("^\\d+$")) display = "";
     String amount = active != null ? active.optString("amount", "") : "";
-    String safeBody;
-    if (display.length() > 0) {
-      safeBody = amount.length() > 0 && !"0".equals(amount) ? (display + " · ₹" + amount.replace("₹", "")) : display;
-    } else if (body != null && body.trim().length() > 0) {
-      safeBody = body.trim();
-    } else {
-      safeBody = "Open the app to respond";
-    }
+    String customer = active != null ? active.optString("customerName", "") : "";
+    String itemsJson = active != null ? active.optString("itemsJson", "") : "";
+    String safeBody = OrderAlertCardText.shadeBody(
+        display,
+        amount,
+        customer,
+        itemsJson,
+        body != null && body.trim().length() > 0 ? body.trim() : "Open to accept"
+    );
 
     Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
     if (launch == null) {
@@ -298,6 +299,7 @@ public class OrderAlertForegroundService extends Service {
     launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
     if (sessionId != null) launch.putExtra("alertSessionId", sessionId);
     if (orderId != null) launch.putExtra("orderId", orderId);
+    launch.putExtra("gmOverlayAction", "open");
 
     int flags = PendingIntent.FLAG_UPDATE_CURRENT;
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -305,14 +307,10 @@ public class OrderAlertForegroundService extends Service {
     }
     PendingIntent content = PendingIntent.getActivity(this, NOTIFICATION_ID, launch, flags);
 
-    Intent acceptIntent = new Intent(this, OrderAlertActionReceiver.class);
-    acceptIntent.setAction(OrderAlertHeadsUp.ACTION_ACCEPT);
-    acceptIntent.putExtra(OrderAlertController.EXTRA_SESSION_ID, sessionId);
-    Intent rejectIntent = new Intent(this, OrderAlertActionReceiver.class);
-    rejectIntent.setAction(OrderAlertHeadsUp.ACTION_REJECT);
-    rejectIntent.putExtra(OrderAlertController.EXTRA_SESSION_ID, sessionId);
-    PendingIntent acceptPi = PendingIntent.getBroadcast(this, NOTIFICATION_ID + 2, acceptIntent, flags);
-    PendingIntent rejectPi = PendingIntent.getBroadcast(this, NOTIFICATION_ID + 3, rejectIntent, flags);
+    Intent openIntent = new Intent(this, OrderAlertActionReceiver.class);
+    openIntent.setAction(OrderAlertHeadsUp.ACTION_OPEN);
+    openIntent.putExtra(OrderAlertController.EXTRA_SESSION_ID, sessionId);
+    PendingIntent openPi = PendingIntent.getBroadcast(this, NOTIFICATION_ID + 2, openIntent, flags);
 
     NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
         .setSmallIcon(smallIcon())
@@ -328,8 +326,7 @@ public class OrderAlertForegroundService extends Service {
         .setPriority(NotificationCompat.PRIORITY_MAX)
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setContentIntent(content)
-        .addAction(0, "REJECT", rejectPi)
-        .addAction(0, "ACCEPT", acceptPi)
+        .addAction(0, OrderAlertCardText.openToAcceptLabel(), openPi)
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE);
 
     // Locked: full-screen intent → transparent LockActivity with the same floating

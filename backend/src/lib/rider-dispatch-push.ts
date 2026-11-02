@@ -259,20 +259,8 @@ export async function sendRiderDispatchDirectPush(args: {
       }
     }
 
-    if (nativeTokens.length > 0) {
-      try {
-        const { sendCriticalAlertControlFcm } = await import("./critical-alert-control.js");
-        await sendCriticalAlertControlFcm({
-          tokens: nativeTokens,
-          action: "start",
-          alertSessionId,
-          appRole: "rider",
-          data,
-        });
-      } catch {
-        /* companion FCM is best-effort */
-      }
-    }
+    // Primary payload already includes gmAlertAction=start — do not send a
+    // companion start FCM (duplicate wake / twin shade on native builds).
 
     if (!anyOk && expoTokens.length > 0) {
       try {

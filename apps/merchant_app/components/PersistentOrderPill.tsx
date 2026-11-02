@@ -2,8 +2,17 @@
  * Native overlay when the Partner build includes it.
  * Expo Go has no WindowManager overlay, so the same pill is drawn inside the app.
  */
-import { useEffect, useState } from "react";
-import { AppState, NativeModules, Platform, Pressable, StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Animated,
+  AppState,
+  NativeModules,
+  PanResponder,
+  Platform,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { router } from "expo-router";
 import { AppText as Text } from "@/components/AppText";
@@ -21,16 +30,46 @@ import { useIncomingOrderSheetOptional } from "@/context/IncomingOrderSheetConte
 
 const nativePill = NativeModules.GatimitraOrderAlert?.setPersistentPill != null;
 const HOME_OVERLAY_DEVICE_KEY = "mx_home_overlay_orders_device_v1";
+const IN_APP_PILL_DISMISSED_KEY = "mx_in_app_order_pill_dismissed_v1";
+/** Premium dark-black circle (matches native OrderAlertPill). */
+const PILL_FILL = "#111111";
+const PILL_SIZE = 62;
 
 export default function PersistentOrderPill() {
   const { isAuthenticated } = useAuth();
   const { orders } = useOrders();
   const sheet = useIncomingOrderSheetOptional();
+  const { width: screenW, height: screenH } = useWindowDimensions();
   const [nativeOverlay, setNativeOverlay] = useState(false);
   const [overlayAllowed, setOverlayAllowed] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [overDismiss, setOverDismiss] = useState(false);
   const pendingOrders = orders.filter((o) => o.status === "created");
   const pending = pendingOrders.length;
   const focusId = pending === 1 ? String(pendingOrders[0]?.id ?? "") : "";
+  const prevPendingRef = useRef(pending);
+
+  const initialX = Math.max(10, screenW - 72);
+  const initialY = screenH * 0.46;
+  const pos = useRef(new Animated.ValueXY({ x: initialX, y: initialY })).current;
+  const pillOpacity = useRef(new Animated.Value(1)).current;
+  const originRef = useRef({ x: initialX, y: initialY });
+  const movedRef = useRef(false);
+  const overDismissRef = useRef(false);
+  const metricsRef = useRef({ screenW, screenH, pending });
+  metricsRef.current = { screenW, screenH, pending };
+  const sheetRef = useRef(sheet);
+  sheetRef.current = sheet;
+
+  const dismissZone = useMemo(
+    () => ({
+      x: screenW / 2 - 32,
+      y: screenH - 100,
+      size: 64,
+    }),
+    [screenW, screenH]
+  );
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
@@ -39,11 +78,13 @@ export default function PersistentOrderPill() {
       if (!isAuthenticated) {
         setOverlayAllowed(false);
         setNativeOverlay(false);
+        setDismissed(false);
         await setPersistentOrderPill(false, 0, "");
         return;
       }
       const homePref = await SecureStore.getItemAsync(HOME_OVERLAY_DEVICE_KEY);
       const homeOverlayOn = homePref !== "0";
+      const dismissedPref = await SecureStore.getItemAsync(IN_APP_PILL_DISMISSED_KEY);
       const nativeAllowed = nativePill ? await canDrawNativeOverlays() : null;
       const osAllowed = await readMerchantOverlayAllowed();
       const allowed = homeOverlayOn && (nativeAllowed === true || osAllowed === true);
@@ -51,6 +92,7 @@ export default function PersistentOrderPill() {
       const on = allowed === true;
       setOverlayAllowed(on);
       setNativeOverlay(on && nativePill);
+      setDismissed(dismissedPref === "1");
       // Event-driven only — never poll SecureStore / start FGS on a 1s timer.
       await setPersistentOrderPill(on && nativePill, pending, focusId);
     };
@@ -63,6 +105,16 @@ export default function PersistentOrderPill() {
       sub.remove();
     };
   }, [isAuthenticated, pending, focusId]);
+
+  // New pending order clears an in-app dismiss so the pill can return when needed.
+  useEffect(() => {
+    if (pending > prevPendingRef.current) {
+      void SecureStore.deleteItemAsync(IN_APP_PILL_DISMISSED_KEY);
+      setDismissed(false);
+      pillOpacity.setValue(1);
+    }
+    prevPendingRef.current = pending;
+  }, [pending, pillOpacity]);
 
   useEffect(() => {
     if (Platform.OS !== "android" || !isAuthenticated || !nativePill) return;
@@ -83,29 +135,138 @@ export default function PersistentOrderPill() {
     };
   }, [isAuthenticated, sheet]);
 
+  const open = useCallback(() => {
+    router.push("/(tabs)/orders");
+    if (metricsRef.current.pending > 0) sheetRef.current?.reopenParkedIncomingOrders();
+  }, []);
+
+  const dismissInApp = useCallback(() => {
+    Animated.timing(pillOpacity, {
+      toValue: 0,
+      duration: 180,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (!finished) return;
+      setDismissed(true);
+      setDragging(false);
+      setOverDismiss(false);
+      void SecureStore.setItemAsync(IN_APP_PILL_DISMISSED_KEY, "1");
+    });
+  }, [pillOpacity]);
+
+  const hitDismiss = useCallback((x: number, y: number, zone: typeof dismissZone) => {
+    const cx = x + PILL_SIZE / 2;
+    const cy = y + PILL_SIZE / 2;
+    const pad = 14;
+    return (
+      cx >= zone.x - pad &&
+      cx <= zone.x + zone.size + pad &&
+      cy >= zone.y - pad &&
+      cy <= zone.y + zone.size + pad
+    );
+  }, []);
+
+  const openRef = useRef(open);
+  openRef.current = open;
+  const dismissRef = useRef(dismissInApp);
+  dismissRef.current = dismissInApp;
+  const zoneRef = useRef(dismissZone);
+  zoneRef.current = dismissZone;
+  const hitRef = useRef(hitDismiss);
+  hitRef.current = hitDismiss;
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) + Math.abs(g.dy) > 6,
+        onPanResponderGrant: () => {
+          movedRef.current = false;
+          overDismissRef.current = false;
+        },
+        onPanResponderMove: (_, g) => {
+          const { screenW: w, screenH: h } = metricsRef.current;
+          if (Math.abs(g.dx) + Math.abs(g.dy) > 8) {
+            movedRef.current = true;
+            setDragging(true);
+          }
+          const nx = Math.max(8, Math.min(w - PILL_SIZE - 8, originRef.current.x + g.dx));
+          const ny = Math.max(8, Math.min(h - PILL_SIZE - 8, originRef.current.y + g.dy));
+          pos.setValue({ x: nx, y: ny });
+          const hot = hitRef.current(nx, ny, zoneRef.current);
+          overDismissRef.current = hot;
+          setOverDismiss(hot);
+        },
+        onPanResponderRelease: (_, g) => {
+          const { screenW: w, screenH: h } = metricsRef.current;
+          if (!movedRef.current) {
+            setDragging(false);
+            openRef.current();
+            return;
+          }
+          const nx = Math.max(8, Math.min(w - PILL_SIZE - 8, originRef.current.x + g.dx));
+          const ny = Math.max(8, Math.min(h - PILL_SIZE - 8, originRef.current.y + g.dy));
+          originRef.current = { x: nx, y: ny };
+          if (overDismissRef.current) {
+            dismissRef.current();
+            return;
+          }
+          setDragging(false);
+          setOverDismiss(false);
+        },
+        onPanResponderTerminate: () => {
+          setDragging(false);
+          setOverDismiss(false);
+        },
+      }),
+    [pos]
+  );
+
   // In-app circle is only a stand-in when Android has allowed Appear on top
   // and this build cannot draw the home-screen overlay. Production uses that overlay.
-  if (!isAuthenticated || !overlayAllowed || nativeOverlay || nativePill) return null;
+  if (!isAuthenticated || !overlayAllowed || nativeOverlay || nativePill || dismissed) return null;
 
   const Brand = getTextHost();
 
-  const open = () => {
-    router.push("/(tabs)/orders");
-    if (pending > 0) sheet?.reopenParkedIncomingOrders();
-  };
-
   return (
-    <View style={styles.wrap} pointerEvents="box-none">
-      <Pressable style={styles.pill} onPress={open} accessibilityRole="button">
-        <Brand style={styles.brand} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
-          GatiMitra
-        </Brand>
-      </Pressable>
-      {pending > 0 ? (
-        <View style={styles.badge} pointerEvents="none">
-          <Text style={styles.badgeText}>{pending > 9 ? "9+" : pending}</Text>
+    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+      {dragging ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.dismissTarget,
+            {
+              left: dismissZone.x,
+              top: dismissZone.y,
+              backgroundColor: overDismiss ? "#DC2626" : "#B91C1C",
+              transform: [{ scale: overDismiss ? 1.08 : 1 }],
+            },
+          ]}
+        >
+          <Text style={styles.dismissX}>×</Text>
         </View>
       ) : null}
+      <Animated.View
+        style={[
+          styles.wrap,
+          {
+            transform: pos.getTranslateTransform(),
+            opacity: pillOpacity,
+          },
+        ]}
+        {...panResponder.panHandlers}
+      >
+        <View style={styles.pill} accessibilityRole="button">
+          <Brand style={styles.brand} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+            GatiMitra
+          </Brand>
+        </View>
+        {pending > 0 ? (
+          <View style={styles.badge} pointerEvents="none">
+            <Text style={styles.badgeText}>{pending > 9 ? "9+" : pending}</Text>
+          </View>
+        ) : null}
+      </Animated.View>
     </View>
   );
 }
@@ -113,25 +274,21 @@ export default function PersistentOrderPill() {
 const styles = StyleSheet.create({
   wrap: {
     position: "absolute",
-    right: 10,
-    top: "46%",
+    left: 0,
+    top: 0,
     width: 70,
     height: 70,
     zIndex: 50,
     elevation: 12,
   },
   pill: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    backgroundColor: "#0F766E",
+    width: PILL_SIZE,
+    height: PILL_SIZE,
+    borderRadius: PILL_SIZE / 2,
+    backgroundColor: PILL_FILL,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#000000",
-    shadowOpacity: 0.22,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 8,
+    elevation: 6,
   },
   brand: {
     color: "#FFFFFF",
@@ -163,5 +320,24 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "700",
     textAlign: "center",
+  },
+  dismissTarget: {
+    position: "absolute",
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#7F1D1D",
+    zIndex: 60,
+    elevation: 20,
+  },
+  dismissX: {
+    color: "#FFFFFF",
+    fontSize: 30,
+    fontWeight: "700",
+    lineHeight: 34,
+    includeFontPadding: false,
   },
 });

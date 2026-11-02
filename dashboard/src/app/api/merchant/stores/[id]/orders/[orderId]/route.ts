@@ -38,6 +38,7 @@ import {
 } from "@/lib/merchant-order-ctm";
 import { broadcastMerchantIncomingResolved } from "@/lib/merchant-incoming-resolved-broadcast";
 import { notifyOrderCancelled } from "@/lib/notify-order-cancelled";
+import { notifyMerchantAccepted } from "@/lib/notify-merchant-accepted";
 
 export const runtime = "nodejs";
 
@@ -335,6 +336,11 @@ export async function PATCH(
       } catch (ctmErr) {
         console.warn("[orders PATCH] merchant CTM freeze failed:", ctmErr);
       }
+      // Global Partner-device alert stop (FCM) — same path as Partner Website accept.
+      void notifyMerchantAccepted({
+        ordersCoreId: existing.order_id as number,
+        fromStatus: currentStatus,
+      });
     }
 
     if (newStatus === "CANCELLED") {

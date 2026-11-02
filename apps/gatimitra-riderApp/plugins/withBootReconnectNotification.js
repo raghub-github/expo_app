@@ -95,6 +95,14 @@ public class BootReconnectReceiver extends BroadcastReceiver {
     }
 
     try {
+      // Drop any locally cached dispatch-alert sessions after reboot so accepted
+      // offers cannot reappear as "waiting" until the backend re-authorizes them.
+      try {
+        Class<?> ctrl = Class.forName("${packageName}.OrderAlertController");
+        ctrl.getMethod("clearPersistedAlertsOnBoot", Context.class).invoke(null, context);
+      } catch (Throwable ignored) {
+        /* OrderAlert plugin may be absent in some builds */
+      }
       ensureChannel(context);
 
       Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());

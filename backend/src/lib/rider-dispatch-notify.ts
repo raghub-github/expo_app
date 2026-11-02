@@ -413,18 +413,8 @@ export async function notifyRiderDispatchOffer(
             })
           );
         }
-        try {
-          const { sendRiderAlertControl } = await import("./critical-alert-control.js");
-          await sendRiderAlertControl({
-            riderId: rider.riderId,
-            action: "start",
-            alertSessionId,
-            orderId: target.orderId,
-            serviceType: target.serviceType,
-          });
-        } catch {
-          /* companion FCM is best-effort */
-        }
+        // Template/direct push metadata already includes gmAlertAction=start.
+        // Companion start FCM removed — native FGS arms from the primary message.
       } catch (err) {
         console.warn(
           "[dispatch] PUSH_FAILED",

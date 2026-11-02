@@ -19,8 +19,9 @@ import android.widget.TextView;
 
 /**
  * One compact persistent "Orders N" window. Hidden while Partner is foreground.
- * Count 0 still shows the pill. Drag is device-local. A drag to the top edge
- * hides the view only; it does not turn off push or the Appear-on-top setting.
+ * Count 0 still shows the pill. Drag is device-local. Dragging onto the
+ * bottom-center dismiss target hides the view only; it does not turn off push
+ * or the Appear-on-top setting.
  */
 public final class OrderAlertPill {
   static final String PREFS = "gatimitra_order_pill_v1";
@@ -33,12 +34,21 @@ public final class OrderAlertPill {
   static final String KEY_POS = "hasPos";
   public static final String ACTION_PILL = "{{PACKAGE}}.ORDER_PILL_HOLD";
 
+  /** Premium dark-black circle fill (replaces mint/teal). */
+  private static final String PILL_FILL = "#111111";
+  private static final String DISMISS_IDLE = "#B91C1C";
+  private static final String DISMISS_HOT = "#DC2626";
+
   private static final Object LOCK = new Object();
   private static final Handler MAIN = new Handler(Looper.getMainLooper());
   private static FrameLayout view;
   private static TextView badge;
   private static WindowManager wm;
   private static WindowManager.LayoutParams params;
+  private static FrameLayout dismissView;
+  private static WindowManager.LayoutParams dismissParams;
+  private static GradientDrawable dismissBackground;
+  private static TextView dismissIcon;
   private static boolean partnerForeground;
   private static boolean pendingAttention;
   private static GradientDrawable pillBackground;
@@ -75,6 +85,7 @@ public final class OrderAlertPill {
       hide(context);
       return;
     }
+    // New enable or a higher pending count → allow the pill again after a user dismiss.
     if ((!wasEnabled) || n > prev) ed.putBoolean(KEY_DISMISSED, false);
     ed.commit();
     apply(context);
@@ -132,6 +143,7 @@ public final class OrderAlertPill {
   static void hide(final Context context) {
     Runnable task = () -> {
       synchronized (LOCK) {
+        hideDismissLocked();
         removeLocked();
       }
     };
@@ -142,6 +154,7 @@ public final class OrderAlertPill {
   private static void showOnMain(Context context, int count) {
     synchronized (LOCK) {
       if (partnerForeground || isDismissed(context) || !OrderAlertOverlay.canDraw(context)) {
+        hideDismissLocked();
         removeLocked();
         return;
       }
@@ -153,6 +166,10 @@ public final class OrderAlertPill {
         }
         return;
       }
+      // Guarantee a single WindowManager surface — never stack duplicate pills.
+      hideDismissLocked();
+      removeLocked();
+
       WindowManager windowManager;
       try {
         windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
@@ -173,7 +190,7 @@ public final class OrderAlertPill {
       GradientDrawable bg = normalBackground(context);
       pillBackground = bg;
       circle.setBackground(bg);
-      if (Build.VERSION.SDK_INT >= 21) circle.setElevation(dp(context, 6));
+      if (Build.VERSION.SDK_INT >= 21) circle.setElevation(dp(context, 4));
       FrameLayout.LayoutParams circleLp = new FrameLayout.LayoutParams(size, size, Gravity.CENTER);
       root.addView(circle, circleLp);
 
@@ -291,7 +308,10 @@ public final class OrderAlertPill {
         lp.y = clamp(ny, edge, maxY);
         if (Math.abs(event.getRawX() - start[0]) + Math.abs(event.getRawY() - start[1]) > dp(context, 8)) {
           start[4] = 1f;
+          ensureDismissTarget(context, screenW, screenH);
         }
+        boolean over = isOverDismiss(lp, pill.getWidth(), pill.getHeight(), screenW, screenH);
+        setDismissHot(over);
         try {
           if (wm != null) wm.updateViewLayout(pill, lp);
         } catch (Throwable ignored) {
@@ -302,20 +322,147 @@ public final class OrderAlertPill {
       case MotionEvent.ACTION_CANCEL: {
         float[] start = (float[]) pill.getTag();
         boolean moved = start != null && start[4] > 0f;
+        boolean over = moved && isOverDismiss(lp, pill.getWidth(), pill.getHeight(), screenW, screenH);
+        hideDismissLocked();
         if (!moved) {
           openApp(context);
           return true;
         }
         prefs(context).edit().putBoolean(KEY_POS, true).putInt(KEY_X, lp.x).putInt(KEY_Y, lp.y).commit();
-        if (event.getRawY() < screenH * 0.12f) {
-          prefs(context).edit().putBoolean(KEY_DISMISSED, true).commit();
-          hide(context);
+        if (over) {
+          dismissSmooth(context);
         }
         return true;
       }
       default:
         return false;
     }
+  }
+
+  /** Bottom-center drop zone — Zomato-style close target while dragging. */
+  private static void ensureDismissTarget(Context context, int screenW, int screenH) {
+    synchronized (LOCK) {
+      if (wm == null) return;
+      if (dismissView != null && dismissParams != null) {
+        try {
+          dismissView.setAlpha(1f);
+          wm.updateViewLayout(dismissView, dismissParams);
+        } catch (Throwable ignored) {
+        }
+        return;
+      }
+      int size = dp(context, 64);
+      FrameLayout root = new FrameLayout(context);
+      GradientDrawable bg = new GradientDrawable();
+      bg.setShape(GradientDrawable.OVAL);
+      bg.setColor(Color.parseColor(DISMISS_IDLE));
+      bg.setStroke(dp(context, 2), Color.parseColor("#7F1D1D"));
+      dismissBackground = bg;
+      root.setBackground(bg);
+      if (Build.VERSION.SDK_INT >= 21) root.setElevation(dp(context, 8));
+
+      TextView icon = new TextView(context);
+      icon.setText("×");
+      icon.setTextColor(Color.WHITE);
+      icon.setTextSize(30);
+      icon.setTypeface(Typeface.DEFAULT_BOLD);
+      icon.setGravity(Gravity.CENTER);
+      icon.setIncludeFontPadding(false);
+      root.addView(icon, new FrameLayout.LayoutParams(
+          FrameLayout.LayoutParams.MATCH_PARENT,
+          FrameLayout.LayoutParams.MATCH_PARENT,
+          Gravity.CENTER
+      ));
+      dismissIcon = icon;
+
+      WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+          size,
+          size,
+          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+              | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+              | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+              | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+          PixelFormat.TRANSLUCENT
+      );
+      lp.gravity = Gravity.TOP | Gravity.START;
+      lp.x = Math.max(0, (screenW - size) / 2);
+      // Bottom-center, clear of gesture nav / home indicator.
+      lp.y = Math.max(0, screenH - size - dp(context, 36));
+      root.setAlpha(0f);
+      try {
+        wm.addView(root, lp);
+        dismissView = root;
+        dismissParams = lp;
+        root.animate().alpha(1f).setDuration(140).start();
+      } catch (Throwable ignored) {
+        dismissView = null;
+        dismissParams = null;
+        dismissBackground = null;
+        dismissIcon = null;
+      }
+    }
+  }
+
+  private static void setDismissHot(boolean hot) {
+    if (dismissBackground == null) return;
+    dismissBackground.setColor(Color.parseColor(hot ? DISMISS_HOT : DISMISS_IDLE));
+    if (dismissView != null) {
+      float scale = hot ? 1.08f : 1f;
+      dismissView.setScaleX(scale);
+      dismissView.setScaleY(scale);
+    }
+  }
+
+  private static boolean isOverDismiss(
+      WindowManager.LayoutParams pillLp,
+      int pillW,
+      int pillH,
+      int screenW,
+      int screenH
+  ) {
+    if (dismissParams == null) return false;
+    int dismissSize = dismissParams.width;
+    int dx = dismissParams.x;
+    int dy = dismissParams.y;
+    // Expand hit area slightly so the drop feels forgiving.
+    int pad = Math.max(8, dismissSize / 5);
+    int pillCx = pillLp.x + pillW / 2;
+    int pillCy = pillLp.y + pillH / 2;
+    int zoneL = dx - pad;
+    int zoneT = dy - pad;
+    int zoneR = dx + dismissSize + pad;
+    int zoneB = dy + dismissSize + pad;
+    return pillCx >= zoneL && pillCx <= zoneR && pillCy >= zoneT && pillCy <= zoneB;
+  }
+
+  private static void dismissSmooth(Context context) {
+    prefs(context).edit().putBoolean(KEY_DISMISSED, true).commit();
+    final FrameLayout pill = view;
+    if (pill == null) {
+      hide(context);
+      return;
+    }
+    pill.animate()
+        .alpha(0f)
+        .scaleX(0.82f)
+        .scaleY(0.82f)
+        .setDuration(180)
+        .withEndAction(() -> hide(context))
+        .start();
+  }
+
+  private static void hideDismissLocked() {
+    try {
+      if (wm != null && dismissView != null && dismissView.getParent() != null) {
+        wm.removeView(dismissView);
+      }
+    } catch (Throwable ignored) {
+    }
+    dismissView = null;
+    dismissParams = null;
+    dismissBackground = null;
+    dismissIcon = null;
   }
 
   private static void removeLocked() {
@@ -327,6 +474,7 @@ public final class OrderAlertPill {
     badge = null;
     wm = null;
     params = null;
+    pillBackground = null;
   }
 
   private static void openApp(Context context) {
@@ -349,7 +497,7 @@ public final class OrderAlertPill {
   private static GradientDrawable normalBackground(Context context) {
     GradientDrawable bg = new GradientDrawable();
     bg.setShape(GradientDrawable.OVAL);
-    bg.setColor(Color.parseColor("#0F766E"));
+    bg.setColor(Color.parseColor(PILL_FILL));
     return bg;
   }
 
@@ -357,7 +505,7 @@ public final class OrderAlertPill {
     if (view == null) return;
     // Stroke the circle only — never paint the oval onto the root (that covered the badge).
     if (pillBackground != null) {
-      pillBackground.setStroke(dp(context, 2), Color.parseColor("#22C55E"));
+      pillBackground.setStroke(dp(context, 2), Color.parseColor("#FFFFFF"));
     }
     if (badge != null) badge.bringToFront();
     shake(0);

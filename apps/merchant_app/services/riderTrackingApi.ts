@@ -51,7 +51,8 @@ export type MerchantRiderTrackingPayload = {
   approach: MerchantRiderApproach | null;
 };
 
-export const MERCHANT_RIDER_TRACKING_POLL_MS = 5000;
+/** HTTP fallback only while WS is down — keep ≥10s to avoid radio heat. */
+export const MERCHANT_RIDER_TRACKING_POLL_MS = 10_000;
 
 export async function fetchMerchantRiderTracking(
   storeId: number,

@@ -5,7 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import type { MerchantTrackingMapPayload } from "@/lib/merchant-rider-tracking-html";
 
 /** Poll cadence while the tracking view is open (matches the partnersite). */
-export const MERCHANT_RIDER_TRACKING_POLL_MS = 5000;
+export const MERCHANT_RIDER_TRACKING_POLL_MS = 10_000;
 
 type ApiPin = { latitude: number; longitude: number } | null;
 type ApiLocation = {

@@ -42,6 +42,7 @@ import { ActiveOrderKeepAwakeGate } from "@/src/hooks/useActiveOrderKeepAwake";
 import { RiderPostDeliveryTipHost } from "@/src/components/orders/RiderPostDeliveryTipHost";
 import { RiderPersistentDispatchPill } from "@/src/components/RiderPersistentDispatchPill";
 import { RiderNativeAlertActionBridge } from "@/src/components/RiderNativeAlertActionBridge";
+import { RiderOrderAlertAppOpenMute } from "@/src/components/RiderOrderAlertAppOpenMute";
 import { RiderSearchingNotification } from "@/src/components/RiderSearchingNotification";
 import { RiderToastHost } from "@/src/components/RiderToastHost";
 import { RiderOfflineBanner } from "@/src/components/RiderOfflineBanner";
@@ -134,6 +135,7 @@ function RootLayoutNav() {
       <AppProviders>
         <ThemeProvider value={DefaultTheme}>
           <RiderPushSetup />
+          <RiderOrderAlertAppOpenMute />
           <RiderPendingReferralResume />
           <RiderDutyLocationPing />
           <ActiveOrderResumeBootstrap />

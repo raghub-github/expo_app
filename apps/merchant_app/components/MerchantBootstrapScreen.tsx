@@ -1,6 +1,6 @@
 /**
- * Branded boot splash — soft mint canvas, plain centered copy.
- * Tagline: Sell More . Earn More . Grow More
+ * Branded boot splash — solid darker teal canvas, centered Lora branding.
+ * Tagline: Sell More · Earn More · Grow More
  */
 import { useCallback, useEffect, useRef } from "react";
 import { AppText as Text } from "@/components/AppText";
@@ -15,23 +15,21 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const LORA_BOLD = "Lora_700Bold";
 const LORA_REGULAR = "Lora_400Regular";
 
-/** Soft mint-white canvas. */
-const GRADIENT_TOP = "#F6FBF9";
-const GRADIENT_MID = "#EFF8F4";
-const GRADIENT_BOTTOM = "#E3F2EB";
-const ACCENT = "#14B8A6";
-const TITLE_COLOR = "#0F172A";
-const SUBTITLE_COLOR = "#334155";
+/** Darker brand teal — matches native splash handoff. */
+const CANVAS = "#026F68";
+const TITLE_COLOR = "#000000";
+const SUBTITLE_COLOR = "#000000";
+const RULE_COLOR = "rgba(0,0,0,0.28)";
+const SPINNER_COLOR = "rgba(0,0,0,0.55)";
 /** Status/nav bar colour while the splash owns the screen. */
-export const MERCHANT_SPLASH_BG = GRADIENT_TOP;
+export const MERCHANT_SPLASH_BG = CANVAS;
 const SPINNER_BOTTOM_GAP = 28;
-const EXIT_DURATION_MS = 420;
+const EXIT_DURATION_MS = 280;
 
 type Props = {
   /**
@@ -57,6 +55,8 @@ export function MerchantBootstrapScreen({
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
   const fade = useRef(new Animated.Value(1)).current;
+  const brandOpacity = useRef(new Animated.Value(0)).current;
+  const brandLift = useRef(new Animated.Value(10)).current;
   const splashReadyFiredRef = useRef(false);
   const exitStartedRef = useRef(false);
   const completedRef = useRef(false);
@@ -70,6 +70,23 @@ export function MerchantBootstrapScreen({
     splashReadyFiredRef.current = true;
     onSplashReadyRef.current?.();
   }, []);
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(brandOpacity, {
+        toValue: 1,
+        duration: 420,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(brandLift, {
+        toValue: 0,
+        duration: 420,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [brandOpacity, brandLift]);
 
   useEffect(() => {
     if (variant !== "root" || !appReady || exitStartedRef.current) return;
@@ -105,43 +122,38 @@ export function MerchantBootstrapScreen({
       accessibilityLabel="GatiMitra Partner loading"
       onLayout={handleSplashLayout}
     >
-      <StatusBar style="dark" backgroundColor={GRADIENT_TOP} translucent={false} />
-      <LinearGradient
-        colors={[GRADIENT_TOP, GRADIENT_MID, GRADIENT_BOTTOM]}
-        locations={[0, 0.45, 1]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={[styles.gradient, { top: bleedTop, height: bleedHeight }]}
-      />
-      <LinearGradient
-        colors={["rgba(22,163,74,0.10)", "rgba(22,163,74,0)", "rgba(30,58,95,0.06)"]}
-        locations={[0, 0.55, 1]}
-        start={{ x: 0.1, y: 0 }}
-        end={{ x: 0.9, y: 1 }}
-        style={[styles.gradient, { top: bleedTop, height: bleedHeight }]}
+      <StatusBar style="dark" backgroundColor={CANVAS} translucent={false} />
+      <View
         pointerEvents="none"
+        style={[styles.canvas, { top: bleedTop, height: bleedHeight, backgroundColor: CANVAS }]}
       />
-
-      <View pointerEvents="none" style={[styles.blob, styles.blobTopRight]} />
-      <View pointerEvents="none" style={[styles.blob, styles.blobBottomLeft]} />
-      <View pointerEvents="none" style={[styles.ring, styles.ringOuter]} />
-      <View pointerEvents="none" style={[styles.ring, styles.ringInner]} />
+      {/* Soft depth — very light center glow, no mint blobs / logo duplicates */}
+      <View pointerEvents="none" style={styles.glow} />
 
       <View
         pointerEvents="none"
-        style={[styles.statusFill, { height: topBleed, backgroundColor: GRADIENT_TOP }]}
+        style={[styles.statusFill, { height: topBleed, backgroundColor: CANVAS }]}
       />
 
-      <View style={styles.center} pointerEvents="none">
+      <Animated.View
+        style={[
+          styles.center,
+          {
+            opacity: brandOpacity,
+            transform: [{ translateY: brandLift }],
+          },
+        ]}
+        pointerEvents="none"
+      >
         <Text style={styles.title}>GatiMitra Partner</Text>
-        <View style={styles.divider} />
-        <Text style={styles.subtitle}>Sell More . Earn More . Grow More</Text>
+        <View style={styles.rule} />
+        <Text style={styles.subtitle}>Sell More · Earn More · Grow More</Text>
         <ActivityIndicator
           style={[styles.spinner, { bottom: spinnerBottom }]}
           size="small"
-          color={ACCENT}
+          color={SPINNER_COLOR}
         />
-      </View>
+      </Animated.View>
 
       {statusMessage ? (
         <View
@@ -162,58 +174,21 @@ const styles = StyleSheet.create({
   overlayRoot: {
     zIndex: 10000,
     elevation: 10000,
-    backgroundColor: GRADIENT_TOP,
+    backgroundColor: CANVAS,
   },
   inlineRoot: {
     flex: 1,
     width: "100%",
-    backgroundColor: GRADIENT_TOP,
+    backgroundColor: CANVAS,
   },
-  gradient: {
+  canvas: {
     position: "absolute",
     left: 0,
     right: 0,
   },
-  blob: {
-    position: "absolute",
-    borderRadius: 999,
-    backgroundColor: "rgba(22, 163, 74, 0.07)",
-  },
-  blobTopRight: {
-    width: 220,
-    height: 220,
-    top: "8%",
-    right: -70,
-  },
-  blobBottomLeft: {
-    width: 180,
-    height: 180,
-    bottom: "14%",
-    left: -50,
-    backgroundColor: "rgba(30, 58, 95, 0.05)",
-  },
-  ring: {
-    position: "absolute",
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-  ringOuter: {
-    width: 320,
-    height: 320,
-    top: "22%",
-    alignSelf: "center",
-    left: "50%",
-    marginLeft: -160,
-    borderColor: "rgba(22, 163, 74, 0.08)",
-  },
-  ringInner: {
-    width: 260,
-    height: 260,
-    top: "26%",
-    alignSelf: "center",
-    left: "50%",
-    marginLeft: -130,
-    borderColor: "rgba(30, 58, 95, 0.06)",
+  glow: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(255,255,255,0.06)",
   },
   statusFill: {
     position: "absolute",
@@ -231,28 +206,29 @@ const styles = StyleSheet.create({
   },
   title: {
     fontFamily: LORA_BOLD,
-    fontSize: 34,
+    fontSize: 36,
     fontWeight: "700",
     color: TITLE_COLOR,
-    letterSpacing: 0.3,
+    letterSpacing: 0.15,
     textAlign: "center",
   },
-  divider: {
-    width: "76%",
-    maxWidth: 260,
+  rule: {
+    width: 44,
     height: 2,
-    backgroundColor: ACCENT,
-    marginTop: 20,
-    marginBottom: 18,
+    borderRadius: 1,
+    backgroundColor: RULE_COLOR,
+    marginTop: 8,
+    marginBottom: 8,
   },
   subtitle: {
     fontFamily: LORA_BOLD,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "700",
     lineHeight: 18,
     color: SUBTITLE_COLOR,
-    letterSpacing: 1.3,
+    letterSpacing: 0.9,
     textAlign: "center",
+    marginTop: 0,
   },
   spinner: {
     position: "absolute",
@@ -268,9 +244,9 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: "rgba(255,255,255,0.92)",
+    backgroundColor: "rgba(0,0,0,0.08)",
     borderWidth: 1,
-    borderColor: "rgba(15, 23, 42, 0.08)",
+    borderColor: "rgba(0,0,0,0.12)",
   },
   statusText: {
     fontFamily: LORA_BOLD,

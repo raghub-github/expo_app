@@ -1057,7 +1057,7 @@ export function MerchantCustomHeader() {
     if (!watching || !selectedStore?.id || !token) return;
     const id = setInterval(() => {
       refreshLicenseDocs();
-    }, 12_000);
+    }, 30_000);
     return () => clearInterval(id);
   }, [
     licenseAwaitingRefresh,

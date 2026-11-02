@@ -242,6 +242,15 @@ public class BootReconnectReceiver extends BroadcastReceiver {
     }
 
     try {
+      // Drop any locally cached order-alert sessions. Accepted/rejected orders must
+      // never resurrect as "waiting for acceptance" after reboot; pending ones are
+      // re-validated from the backend when the partner reopens the app.
+      try {
+        Class<?> ctrl = Class.forName("${packageName}.OrderAlertController");
+        ctrl.getMethod("clearPersistedAlertsOnBoot", Context.class).invoke(null, context);
+      } catch (Throwable ignored) {
+        /* OrderAlert plugin may be absent in some builds */
+      }
       if (!BootReconnectHelper.showNotification(context)) {
         BootReconnectHelper.markPending(context);
       }

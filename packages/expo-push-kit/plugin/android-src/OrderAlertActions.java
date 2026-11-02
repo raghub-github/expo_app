@@ -35,7 +35,23 @@ public final class OrderAlertActions {
     if (context == null) return;
     String act = action == null ? "" : action.trim().toLowerCase();
     String sid = sessionId == null ? "" : sessionId.trim();
-    if (!"accept".equals(act) && !"reject".equals(act)) return;
+    if (!"accept".equals(act) && !"reject".equals(act) && !"open".equals(act)) return;
+
+    // OPEN TO ACCEPT: mute buzzer, open app to the pending order. Never auto-accept.
+    if ("open".equals(act)) {
+      JSONObject row = OrderAlertController.getActive(context);
+      AlertEngineLog.log(context, "OPEN_TO_ACCEPT_CLICKED", sid, "", null);
+      try {
+        if (sid.length() > 0) OrderAlertController.mute(context, sid);
+        else OrderAlertController.muteAll(context);
+      } catch (Throwable ignored) {
+      }
+      OrderAlertHeadsUp.cancel(context);
+      OrderAlertLockActivity.finishLive();
+      launch(context, "open", sid, row);
+      return;
+    }
+
     if (!claim(context, sid, act)) {
       Log.i(TAG, "duplicate " + act + " session=" + sid);
       return;

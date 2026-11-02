@@ -38,7 +38,7 @@ type Props = {
 };
 
 /**
- * Owns the accept countdown tick so the offer body / map do not re-render every 250ms.
+ * Owns the accept countdown tick so the offer body / map do not re-render every second.
  */
 export const IncomingOfferAcceptFooter = memo(function IncomingOfferAcceptFooter({
   order,
@@ -57,7 +57,8 @@ export const IncomingOfferAcceptFooter = memo(function IncomingOfferAcceptFooter
 
   useEffect(() => {
     if (!visible) return;
-    const t = setInterval(() => setNowTick(Date.now()), 250);
+    // Countdown is whole seconds — 250ms woke the JS thread 4× harder than needed.
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(t);
   }, [visible]);
 
@@ -76,7 +77,7 @@ export const IncomingOfferAcceptFooter = memo(function IncomingOfferAcceptFooter
   const fuseUrgent = secondsLeft > 0 && secondsLeft <= URGENT_SECONDS;
 
   // Stable identity: an inline arrow here re-rendered the memoised slider on
-  // every 250ms countdown tick, competing with the drag on the JS thread.
+  // every countdown tick, competing with the drag on the JS thread.
   const handleComplete = useCallback(() => {
     beginAcceptLatency(`slide:${Date.now()}`);
     onAccept();

@@ -104,6 +104,8 @@ export {
   stopNativeOrderAlert,
   getActiveNativeOrderAlert,
   claimNativeOrderAlert,
+  muteNativeOrderAlert,
+  muteAllNativeOrderAlerts,
   releaseNativeOrderAlert,
   canDrawNativeOverlays,
   persistNativeAlertSound,

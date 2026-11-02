@@ -15,6 +15,7 @@ import {
   type AppStateStatus,
 } from "react-native";
 import Animated, {
+  cancelAnimation,
   Easing,
   runOnJS,
   useAnimatedStyle,
@@ -220,6 +221,10 @@ function NewOrderFusePill({
       -1,
       false
     );
+    return () => {
+      cancelAnimation(pulse);
+      cancelAnimation(entryScale);
+    };
   }, [entryScale, pulse, urgent]);
 
   const shellStyle = useAnimatedStyle(() => ({
@@ -290,6 +295,7 @@ function SwipeHintArrow({ color }: { color: string }) {
       -1,
       true
     );
+    return () => cancelAnimation(pulse);
   }, [pulse]);
 
   const arrowStyle = useAnimatedStyle(() => ({
@@ -358,6 +364,7 @@ function AcceptOrderSwipeButton({
       -1,
       false
     );
+    return () => cancelAnimation(btnPulse);
   }, [btnPulse]);
 
   useEffect(() => {
@@ -1420,14 +1427,16 @@ export default function IncomingOrderModal() {
     };
 
     void verifyOpenOrder();
-    const intervalMs = acceptSecondsLeft(
+    const leftSec = acceptSecondsLeft(
       sheetOrder.createdAt,
       acceptanceWindowMinutes,
       Date.now(),
       sheetOrder.merchantResponseDeadlineAt
-    ) <= 0
-      ? 8_000
-      : 15_000;
+    );
+    // Adaptive verify: far from deadline → light; near/past → tighter.
+    // Realtime + fuse + FCM remain primary; this is authority reconcile only.
+    const intervalMs =
+      leftSec <= 0 ? 8_000 : leftSec <= 30 ? 15_000 : 30_000;
     const t = setInterval(() => {
       if (!isAppForeground()) return;
       void verifyOpenOrder();

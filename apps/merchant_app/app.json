@@ -8,9 +8,9 @@
     "userInterfaceStyle": "automatic",
     "icon": "./assets/mxappicon.png",
     "splash": {
-      "image": "./assets/images/splash-logo.png",
+      "image": "./assets/images/splash-blank.png",
       "resizeMode": "contain",
-      "backgroundColor": "#F6FBF9"
+      "backgroundColor": "#026F68"
     },
     "androidStatusBar": {
       "hidden": false,

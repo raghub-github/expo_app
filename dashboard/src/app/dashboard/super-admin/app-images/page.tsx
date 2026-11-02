@@ -6,6 +6,7 @@ import { ImageIcon, Loader2, Trash2, Upload, RefreshCw, Plus } from "lucide-reac
 import { usePermissions } from "@/hooks/usePermissions";
 import type { AppStaticAssetRow } from "@/lib/db/operations/app-static-assets";
 import { LearningCentreAdminPanel } from "@/components/super-admin/LearningCentreAdminPanel";
+import { HomeAdsAdminPanel } from "@/components/super-admin/HomeAdsAdminPanel";
 import { resolveAttachmentProxyUrl } from "@/lib/attachments/resolve-attachment-proxy-url";
 import { cn } from "@/lib/utils";
 import {
@@ -18,7 +19,7 @@ import {
 } from "@/lib/app-static-assets/shared";
 import { HOME_MAP_STATIC_ASSET_ID } from "@/lib/home-map/shared";
 
-type PageTab = AppStaticAssetApp | "learning" | "home_map";
+type PageTab = AppStaticAssetApp | "learning" | "home_map" | "home_ads";
 
 function previewUrl(proxyUrl: string | null): string | null {
   if (!proxyUrl) return null;
@@ -48,7 +49,12 @@ export default function AppImagesPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingUploadIds = useRef<string[]>([]);
-  const app = tab === "learning" || tab === "home_map" ? (tab === "home_map" ? "dashboard" : "merchant") : tab;
+  const app =
+    tab === "learning" || tab === "home_map" || tab === "home_ads"
+      ? tab === "home_map"
+        ? "dashboard"
+        : "merchant"
+      : tab;
 
   useEffect(() => {
     if (!permLoading && !isSuperAdmin) {
@@ -75,7 +81,7 @@ export default function AppImagesPage() {
   }, [app]);
 
   useEffect(() => {
-    if (isSuperAdmin && tab !== "learning") void loadItems();
+    if (isSuperAdmin && tab !== "learning" && tab !== "home_ads") void loadItems();
   }, [isSuperAdmin, loadItems, tab]);
 
   const grouped = useMemo((): SectionGroup[] => {
@@ -208,14 +214,18 @@ export default function AppImagesPage() {
             ? "Learning Centre"
             : tab === "home_map"
               ? "Home Map"
-              : "App images"}
+              : tab === "home_ads"
+                ? "Home Ads"
+                : "App images"}
         </h1>
         <p className="mt-1 max-w-3xl text-xs text-slate-500 sm:text-sm">
           {tab === "learning"
             ? "Add section title, video title, thumbnail, and a YouTube link. Select Rider, Merchant, or Customer for each video. Tapping a card in the app opens YouTube."
             : tab === "home_map"
               ? "Upload the static map image shown on Control Dashboard Home when Home Map mode is set to Static Map Image. Image is stored in R2 and served via proxy — no hardcoded URL. Fully responsive across desktop, laptop, tablet, and mobile."
-              : "Upload images and videos to R2 for Customer, Rider & Merchant apps. Files are served via signed URLs — no bundled assets in app code. Branding → App icon updates in-app after the next app open; the Expo bundling / phone home-screen icon is native and needs a store rebuild. Packaging tips video: MP4, max 80 MB."}
+              : tab === "home_ads"
+                ? "Create promo ad cards for Customer, Rider, and Merchant apps. Toggle enable/disable per ad. Active ads appear on Home and Orders; when none are enabled, apps show nothing."
+                : "Upload images and videos to R2 for Customer, Rider & Merchant apps. Files are served via signed URLs — no bundled assets in app code. Branding → App icon updates in-app after the next app open; the Expo bundling / phone home-screen icon is native and needs a store rebuild. Packaging tips video: MP4, max 80 MB."}
         </p>
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -260,14 +270,26 @@ export default function AppImagesPage() {
         </button>
         <button
           type="button"
+          onClick={() => setTab("home_ads")}
+          className={cn(
+            "rounded-full px-4 py-2 text-sm font-medium transition-colors",
+            tab === "home_ads"
+              ? "bg-teal-600 text-white shadow-sm"
+              : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+          )}
+        >
+          Home Ads
+        </button>
+        <button
+          type="button"
           onClick={() => {
             if (tab === "learning") setLearningTick((n) => n + 1);
-            else void loadItems();
+            else if (tab !== "home_ads") void loadItems();
           }}
-          disabled={tab !== "learning" && loading}
+          disabled={tab !== "learning" && tab !== "home_ads" && loading}
           className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
         >
-          <RefreshCw className={cn("h-4 w-4", tab !== "learning" && loading && "animate-spin")} />
+          <RefreshCw className={cn("h-4 w-4", tab !== "learning" && tab !== "home_ads" && loading && "animate-spin")} />
           Refresh
         </button>
         </div>
@@ -275,6 +297,8 @@ export default function AppImagesPage() {
 
       {tab === "learning" ? (
         <LearningCentreAdminPanel key={learningTick} />
+      ) : tab === "home_ads" ? (
+        <HomeAdsAdminPanel />
       ) : (
         <>
       {error ? (

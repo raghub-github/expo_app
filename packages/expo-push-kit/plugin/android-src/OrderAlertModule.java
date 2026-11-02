@@ -166,6 +166,26 @@ public class OrderAlertModule extends ReactContextBaseJavaModule {
     }
   }
 
+  /** Stop buzzer on app open without retiring the pending order session. */
+  @ReactMethod
+  public void muteAlert(String sessionId, Promise promise) {
+    try {
+      promise.resolve(toMap(OrderAlertController.mute(getReactApplicationContext(), sessionId)));
+    } catch (Throwable t) {
+      promise.reject("E_ALERT_MUTE", t);
+    }
+  }
+
+  @ReactMethod
+  public void muteAllAlerts(Promise promise) {
+    try {
+      OrderAlertController.muteAll(getReactApplicationContext());
+      promise.resolve(true);
+    } catch (Throwable t) {
+      promise.reject("E_ALERT_MUTE_ALL", t);
+    }
+  }
+
   @ReactMethod
   public void releaseAlert(String sessionId, Promise promise) {
     try {

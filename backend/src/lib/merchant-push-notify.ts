@@ -501,32 +501,9 @@ async function notifyMerchantStore(
         `alertSessionId=${args.pushData?.alertSessionId ?? ""} ts=${Date.now()}`
     );
     const nativeResult = await sendMerchantNativeFcm(nativeTokens, pushPayload);
-    const isCriticalNewOrder =
-      args.channelId === "merchant_new_orders_alert" ||
-      args.channelId === "merchant_new_orders_alert_v2" ||
-      String(args.pushData?.type ?? "").toLowerCase() === "merchant_new_order" ||
-      String(args.pushData?.template_code ?? "").toUpperCase() === "MERCHANT_NEW_ORDER";
-    if (nativeResult.ok && isCriticalNewOrder) {
-      const sessionId = String(args.pushData?.alertSessionId ?? "").trim();
-      if (sessionId) {
-        try {
-          const { sendCriticalAlertControlFcm } = await import("./critical-alert-control.js");
-          await sendCriticalAlertControlFcm({
-            tokens: nativeTokens,
-            action: "start",
-            alertSessionId: sessionId,
-            appRole: "merchant",
-            data: {
-              ...(args.pushData ?? {}),
-              gmAlertAction: "start",
-              soundType: "notification",
-            },
-          });
-        } catch {
-          /* companion FCM is best-effort */
-        }
-      }
-    }
+    // No companion start FCM: the primary silent payload already carries
+    // gmAlertAction=start + alertSessionId. CriticalAlertMessagingService starts
+    // the FGS from that single message — a second start wake was a duplicate source.
     if (!nativeResult.ok) {
       const expoFallback = [
         ...new Set(expoCandidateTokens.filter((t) => isExpoPushTokenString(t))),
@@ -916,6 +893,10 @@ export async function notifyMerchantStoreNewOrderPush(
     itemCount: number;
     amount: number;
     customerName: string;
+    itemsJson?: string;
+    specialInstructions?: string;
+    paymentMethod?: string;
+    expiresAt?: string;
   }
 ): Promise<void> {
   if (!Number.isInteger(args.storeId) || args.storeId < 1) return;
@@ -962,14 +943,23 @@ export async function notifyMerchantStoreNewOrderPush(
       alertSessionId: `MERCHANT_NEW_ORDER:${args.foodOrderId ?? args.orderIdText}:${args.storeId}`,
       gmAlertAction: "start",
       soundType: "notification",
+      itemsJson: String(args.itemsJson ?? "").slice(0, 1800),
+      specialInstructions: String(args.specialInstructions ?? "").slice(0, 240),
+      paymentMethod: String(args.paymentMethod ?? "").slice(0, 40),
+      expiresAt: String(args.expiresAt ?? ""),
     },
   });
 }
 
-/** Tell every other logged-in Partner device to drop this order alert. */
+/** Tell every logged-in Partner device to drop this order alert (global stop). */
 export async function notifyMerchantOrderAlertStop(
   sql: Sql,
-  args: { storeId: number; foodOrderId: number }
+  args: {
+    storeId: number;
+    foodOrderId: number;
+    stopAtMs?: number;
+    status?: string;
+  }
 ): Promise<void> {
   if (!Number.isInteger(args.storeId) || args.storeId < 1) return;
   if (!Number.isInteger(args.foodOrderId) || args.foodOrderId < 1) return;
@@ -977,6 +967,8 @@ export async function notifyMerchantOrderAlertStop(
     ignoreStaleness: true,
   });
   if (tokens.length === 0) return;
+  const stopAtMs = args.stopAtMs ?? Date.now();
+  const status = String(args.status ?? "TERMINAL").trim().toUpperCase() || "TERMINAL";
   const { sendCriticalAlertControlFcm } = await import("./critical-alert-control.js");
   await sendCriticalAlertControlFcm({
     tokens,
@@ -986,9 +978,15 @@ export async function notifyMerchantOrderAlertStop(
     data: {
       type: "NEW_ORDER",
       gmType: "MERCHANT_NEW_ORDER",
+      event: "STOP_ALERT",
       foodOrderId: String(args.foodOrderId),
       storeId: String(args.storeId),
       orderId: String(args.foodOrderId),
+      alertStopAt: String(stopAtMs),
+      alertEventVersion: String(stopAtMs),
+      terminalStatus: status,
+      // Explicit: this is lifecycle termination, never a device-local mute.
+      scope: "global_order_stop",
     },
   });
 }

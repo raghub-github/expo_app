@@ -404,6 +404,16 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
         merchantStoreId: row.merchant_store_id ?? null,
         merchantName: row.store_name ?? "Store",
       });
+      // Direct FCM stop — do not rely solely on eventBus timing / foodId lookup.
+      void import("../../lib/merchant-incoming-alert-stop.js")
+        .then(({ stopMerchantIncomingAlertForCoreOrder }) =>
+          stopMerchantIncomingAlertForCoreOrder(sql, {
+            ordersCoreId: orders_core_id,
+            status: "ACCEPTED",
+            merchantStoreId: row.merchant_store_id ?? null,
+          })
+        )
+        .catch(() => undefined);
       return reply.send({ ok: true });
     } catch (err) {
       req.log.warn({ err }, "merchant-accept-notify failed");
@@ -488,6 +498,15 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
         refundAmount,
         refundEligible: refundAmount != null && refundAmount > 0.005 ? true : undefined,
       });
+      void import("../../lib/merchant-incoming-alert-stop.js")
+        .then(({ stopMerchantIncomingAlertForCoreOrder }) =>
+          stopMerchantIncomingAlertForCoreOrder(sql, {
+            ordersCoreId: orders_core_id,
+            status: "CANCELLED",
+            merchantStoreId: row.merchant_store_id ?? null,
+          })
+        )
+        .catch(() => undefined);
       return reply.send({ ok: true });
     } catch (err) {
       req.log.warn({ err }, "cancel-notify failed");

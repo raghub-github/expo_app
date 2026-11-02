@@ -110,12 +110,10 @@ export default function NotificationSetup() {
   applyIncomingPushRef.current = applyIncomingPush;
   const partnerRef = useRef<PartnerData | null>(partner);
   partnerRef.current = partner;
-  const { orders, upsertOrder, refetch: refetchOrders } = useOrders();
+  const { orders, upsertOrder } = useOrders();
   const { openIncomingOrderSheet } = useIncomingOrderSheet();
   const upsertOrderRef = useRef(upsertOrder);
   upsertOrderRef.current = upsertOrder;
-  const refetchOrdersRef = useRef(refetchOrders);
-  refetchOrdersRef.current = refetchOrders;
   const openIncomingOrderSheetRef = useRef(openIncomingOrderSheet);
   openIncomingOrderSheetRef.current = openIncomingOrderSheet;
   const { forceOpen, closePermissionGate, signalNotificationsGranted, setNotificationsGranted } =
@@ -428,7 +426,8 @@ export default function NotificationSetup() {
               if (order.status === "created" && !order.id.startsWith("core-")) {
                 openIncomingOrderSheetRef.current(order);
               }
-              void refetchOrdersRef.current();
+              // Targeted fetch already upserted — skip full-board refetch on every
+              // push (realtime + poll reconcile). Cuts resume/push radio heat.
             } catch {
               /* notification bridge + orders poll will retry */
             }
