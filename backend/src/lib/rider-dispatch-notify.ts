@@ -8,6 +8,7 @@
  */
 
 
+import { getSql } from "../db/client.js";
 import { publishRiderEvent } from "../modules/realtime/publish.js";
 import { send as sendNotification } from "../modules/notifications/notificationService.js";
 import type { DispatchOrderTarget, EligibleDispatchRider } from "./order-assignment-engine.js";
@@ -153,16 +154,47 @@ function needsDirectFcmFallback(skipReason: string | null | undefined): boolean 
 
 
 /** Notify one eligible rider via push + rider websocket channel. Never throws. */
+/**
+ * Pickup store name for the native alert card.
+ *
+ * A rider staring at a lock-screen card needs to know which restaurant they are
+ * being sent to; the card previously showed an order id and nothing actionable.
+ * Fail-open: a lookup problem must never cost the rider the offer, so this
+ * returns "" and the card simply omits the line.
+ */
+async function resolvePickupStoreName(orderCoreId: number): Promise<string> {
+  if (!Number.isFinite(orderCoreId) || orderCoreId <= 0) return "";
+  try {
+    const sql = getSql();
+    const rows = (await sql`
+      SELECT s.store_display_name AS name
+      FROM public.orders_core oc
+      JOIN public.merchant_stores s ON s.id = oc.merchant_store_id
+      WHERE oc.id = ${orderCoreId}
+      LIMIT 1
+    `) as unknown as Array<{ name: string | null }>;
+    return String(rows[0]?.name ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
 export async function notifyRiderDispatchOffer(
   target: DispatchOrderTarget,
   rider: EligibleDispatchRider,
-  opts?: { realert?: boolean; offerExpiresAtMs?: number | null }
+  opts?: {
+    realert?: boolean;
+    offerExpiresAtMs?: number | null;
+    /** Resolved once per wave, never per rider — see dispatchWaveToRiders. */
+    pickupStoreName?: string | null;
+  }
 ): Promise<void> {
   // A re-alert (GAP 3b) reuses the same wave but MUST carry a distinct idempotency key, otherwise
   // notificationService dedups it against the first offer and nothing is re-sent.
   const keySuffix = opts?.realert ? ":realert" : "";
   const assignment_notify_started_at = Date.now();
   const realert = opts?.realert === true;
+  const pickupStoreName = String(opts?.pickupStoreName ?? "").trim();
   try {
     const displayId = target.formattedOrderId?.trim() || target.orderId;
     const label = SERVICE_LABEL[target.serviceType];
@@ -319,6 +351,19 @@ export async function notifyRiderDispatchOffer(
           ...(cardEarnings?.tripDistanceKm
             ? { tripDistanceKm: String(cardEarnings.tripDistanceKm) }
             : {}),
+          // The rest of the distance strip the native card draws. Already
+          // computed for the payout, so this costs nothing extra. Each leg is
+          // omitted rather than zeroed when unknown — the card skips a missing
+          // leg, but a literal 0 would render as "Pickup 0 km".
+          ...(cardEarnings?.pickupDistanceKm
+            ? { toPickupKm: String(cardEarnings.pickupDistanceKm) }
+            : {}),
+          ...(cardEarnings?.totalDistanceKm
+            ? { overallKm: String(cardEarnings.totalDistanceKm) }
+            : {}),
+          // Where the rider is actually going. Without it the lock-screen card
+          // showed an order id and nothing a rider could act on.
+          ...(pickupStoreName ? { storeName: pickupStoreName } : {}),
         };
         const sharedOverrides = { title, body };
 
@@ -506,9 +551,14 @@ export async function notifyEligibleRidersDispatchOffer(
 
   // One read for the whole wave, off the per-rider critical path.
   const offerExpiresAtMs = await resolveOfferDeadlineMs(target.serviceType, Date.now());
+  // Same deal for the pickup store name the native card shows: one query per
+  // wave, not one per rider, and a failure never blocks the offer.
+  const pickupStoreName = await resolvePickupStoreName(target.orderCoreId);
 
   const results = await Promise.allSettled(
-    riders.map((rider) => notifyRiderDispatchOffer(target, rider, { offerExpiresAtMs }))
+    riders.map((rider) =>
+      notifyRiderDispatchOffer(target, rider, { offerExpiresAtMs, pickupStoreName })
+    )
   );
   return results.filter((r) => r.status === "fulfilled").length;
 }

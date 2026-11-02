@@ -20,6 +20,7 @@ public final class OrderAlertNativeTest {
     countdown();
     presentation();
     decisionLedger();
+    richCard();
 
     System.out.println("  " + passed + " passed, " + failed + " failed  [role=" + ROLE + "]");
     if (failed > 0) System.exit(1);
@@ -483,6 +484,67 @@ public final class OrderAlertNativeTest {
         !OrderAlertDecisionLedger.isSessionStale(1L, NOW, 0L));
     check("the watchdog window is inside the staleness bound",
         MAXAGE > (20L * 60L * 1000L));
+  }
+
+  // ----------------------------------------------------------- rich card
+
+  private static void richCard() {
+    // ---- kmLabel: the payload sends bare kilometres.
+    eq("km one decimal", "3.7", OrderAlertCardText.kmLabel("3.7").replace(" km", ""));
+    eq("km formats with unit", "3.7 km", OrderAlertCardText.kmLabel("3.7"));
+    eq("km drops a trailing .0", "4 km", OrderAlertCardText.kmLabel("4.0"));
+    eq("km rounds to one decimal", "7.4 km", OrderAlertCardText.kmLabel("7.44"));
+    eq("km passes through an already-formatted value", "5 km", OrderAlertCardText.kmLabel("5 km"));
+    // Zero / missing must not render - "0 km to pickup" is worse than no row.
+    eq("km zero is absent", "", OrderAlertCardText.kmLabel("0"));
+    eq("km negative is absent", "", OrderAlertCardText.kmLabel("-2"));
+    eq("km empty is absent", "", OrderAlertCardText.kmLabel(""));
+    eq("km null is absent", "", OrderAlertCardText.kmLabel(null));
+    eq("km garbage is absent, never raw payload text",
+        "", OrderAlertCardText.kmLabel("not-a-number"));
+    eq("km never renders the string null", "", OrderAlertCardText.kmLabel("null"));
+
+    // ---- itemCountLabel: singular vs plural.
+    eq("one item is singular", "1 item", OrderAlertCardText.itemCountLabel("1"));
+    eq("three items is plural", "3 items", OrderAlertCardText.itemCountLabel("3"));
+    eq("item count tolerates a float", "2 items", OrderAlertCardText.itemCountLabel("2.0"));
+    eq("zero items is absent", "", OrderAlertCardText.itemCountLabel("0"));
+    eq("negative items is absent", "", OrderAlertCardText.itemCountLabel("-1"));
+    eq("missing item count is absent", "", OrderAlertCardText.itemCountLabel(""));
+    eq("null item count is absent", "", OrderAlertCardText.itemCountLabel(null));
+    eq("garbage item count is absent", "", OrderAlertCardText.itemCountLabel("many"));
+
+    // ---- distanceSummary: partial payloads must still render cleanly.
+    eq("all three legs",
+        "Pickup 3.7 km  ·  Trip 3.7 km  ·  Total 7.4 km",
+        OrderAlertCardText.distanceSummary("3.7", "3.7", "7.4"));
+    eq("only the trip leg", "Trip 3.7 km",
+        OrderAlertCardText.distanceSummary("", "3.7", ""));
+    eq("pickup and total only", "Pickup 2 km  ·  Total 5 km",
+        OrderAlertCardText.distanceSummary("2", "", "5"));
+    eq("no legs known yields an empty row the caller can omit",
+        "", OrderAlertCardText.distanceSummary("", "", ""));
+    eq("all-zero legs are treated as unknown",
+        "", OrderAlertCardText.distanceSummary("0", "0", "0"));
+    eq("nulls do not crash or print",
+        "", OrderAlertCardText.distanceSummary(null, null, null));
+
+    // ---- role-dependent copy. The same field means different things.
+    if (RIDER) {
+      eq("rider sees their payout", "Total earnings", OrderAlertCardText.earningsCaption());
+      eq("rider sees the pickup store", "SWAAD SUTRA", OrderAlertCardText.storeLine("SWAAD SUTRA"));
+      eq("rider store line trims", "SWAAD SUTRA", OrderAlertCardText.storeLine("  SWAAD SUTRA "));
+      eq("rider store line tolerates null", "", OrderAlertCardText.storeLine(null));
+    } else {
+      eq("merchant sees the order total", "Order total", OrderAlertCardText.earningsCaption());
+      // A merchant already knows their own store; echoing it back is noise.
+      eq("merchant card omits the store line",
+          "", OrderAlertCardText.storeLine("SWAAD SUTRA"));
+    }
+
+    // ---- the money headline still refuses to print a worthless job.
+    eq("zero amount stays hidden", "", OrderAlertCardText.formatAmount("0"));
+    eq("real amount formats", "₹142", OrderAlertCardText.formatAmount("142"));
   }
 
   private static void check(String name, boolean ok) {

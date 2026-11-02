@@ -243,6 +243,13 @@ public final class OrderAlertController {
     String foodId = first(data, "foodOrderId", "food_order_id");
     String expires = first(data, "expiresAt", "expires_at", "acceptUntil");
     String tripKm = first(data, "tripDistanceKm", "trip_distance_km");
+    // Detail the rich card shows. Carried on the session row rather than as
+    // intent extras: buildCard already resolves the row, and both the overlay
+    // and the lock-screen activity call it, so one write feeds both surfaces.
+    String storeName = first(data, "storeName", "store_name", "restaurantName", "merchantName");
+    String itemCount = first(data, "itemCount", "item_count", "items");
+    String toPickupKm = first(data, "toPickupKm", "to_pickup_km", "pickupDistanceKm");
+    String overallKm = first(data, "overallKm", "overall_km", "totalDistanceKm");
     synchronized (LOCK) {
       JSONObject row = findSession(context, sessionId, "", "");
       if (row == null) return;
@@ -254,6 +261,10 @@ public final class OrderAlertController {
         if (foodId.length() > 0) row.put("foodOrderId", foodId);
         if (expires.length() > 0) row.put("expiresAt", expires);
         if (tripKm.length() > 0 && !"0".equals(tripKm)) row.put("tripDistanceKm", tripKm);
+        if (storeName.length() > 0) row.put("storeName", storeName);
+        if (itemCount.length() > 0) row.put("itemCount", itemCount);
+        if (toPickupKm.length() > 0 && !"0".equals(toPickupKm)) row.put("toPickupKm", toPickupKm);
+        if (overallKm.length() > 0 && !"0".equals(overallKm)) row.put("overallKm", overallKm);
         if (title != null && title.trim().length() > 0) row.put("title", title.trim());
         if (body != null && body.trim().length() > 0) row.put("body", body.trim());
         upsertSession(context, row);
