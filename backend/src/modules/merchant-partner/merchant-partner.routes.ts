@@ -9900,10 +9900,22 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
                 actorUserId: req.auth.sub,
               }
             );
-            if (newStatus === "ACCEPTED" || newStatus === "CANCELLED") {
-              void import("../../lib/merchant-push-notify.js")
-                .then(({ notifyMerchantOrderAlertStop }) =>
-                  notifyMerchantOrderAlertStop(sql, { storeId, foodOrderId: ordersFoodId })
+            if (
+              newStatus === "ACCEPTED" ||
+              newStatus === "CANCELLED" ||
+              newStatus === "REJECTED" ||
+              newStatus === "EXPIRED"
+            ) {
+              // Global stop for every Partner device — independent of which phone acted.
+              // eventBus also stops on status_changed; this is a direct path so FCM
+              // stop is not lost if the domain event handler lags.
+              void import("../../lib/merchant-incoming-alert-stop.js")
+                .then(({ stopMerchantIncomingAlertEverywhere }) =>
+                  stopMerchantIncomingAlertEverywhere(sql, {
+                    storeId,
+                    foodOrderId: ordersFoodId,
+                    status: newStatus,
+                  })
                 )
                 .catch(() => undefined);
             }

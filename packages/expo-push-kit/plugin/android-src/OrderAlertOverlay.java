@@ -500,6 +500,7 @@ public final class OrderAlertOverlay {
       countdown.setTypeface(Typeface.DEFAULT_BOLD);
       countdown.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
       countdown.setPadding(dp(context, 8), 0, dp(context, 8), 0);
+      countdown.setText(OrderAlertCardText.countdownClock(expiresAtMs, System.currentTimeMillis()));
       header.addView(countdown);
       startCountdown(context, countdown, sessionId, expiresAtMs);
     }
@@ -586,17 +587,40 @@ public final class OrderAlertOverlay {
     }
     // Amount is on the header row — do not repeat on a 3rd row.
 
-    String detail = firstNonEmpty(title, body);
-    boolean genericTitle = detail.length() == 0
-        || "NEW ORDER".equalsIgnoreCase(detail)
-        || detail.toLowerCase().contains("new order")
-        || detail.matches("(?i)^order\\s*#?\\s*\\d+$");
-    if (!genericTitle) {
-      TextView detailView = metaRow(context, detail);
-      detailView.setMaxLines(2);
-      card.addView(detailView);
+    String payment = active != null ? safeText(active.optString("paymentMethod", "")) : "";
+    if (payment.length() > 0) {
+      card.addView(metaRow(context, "Payment: " + payment));
     }
 
+    String itemsJson = active != null ? safeText(active.optString("itemsJson", "")) : "";
+    String[] itemLines = OrderAlertCardText.itemLines(itemsJson, 6);
+    if (itemLines.length > 0) {
+      TextView itemsHeading = metaRow(context, "ORDER ITEMS");
+      itemsHeading.setTextColor(Color.parseColor("#5EEAD4"));
+      itemsHeading.setTypeface(Typeface.DEFAULT_BOLD);
+      card.addView(itemsHeading);
+      for (String line : itemLines) {
+        if (line.length() == 0) continue;
+        card.addView(metaRow(context, line));
+      }
+    } else {
+      String detail = firstNonEmpty(title, body);
+      if (!OrderAlertCardText.isGenericDetail(detail)) {
+        TextView detailView = metaRow(context, detail);
+        detailView.setMaxLines(2);
+        card.addView(detailView);
+      }
+    }
+
+    String special = active != null ? safeText(active.optString("specialInstructions", "")) : "";
+    if (special.length() > 0) {
+      TextView specialView = metaRow(context, "⚠ " + special);
+      specialView.setTextColor(Color.parseColor("#FCA5A5"));
+      specialView.setMaxLines(3);
+      card.addView(specialView);
+    }
+
+    // Accept/Reject belong inside the secure in-app flow — floating card only opens.
     LinearLayout actions = new LinearLayout(context);
     actions.setOrientation(LinearLayout.HORIZONTAL);
     LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(
@@ -606,27 +630,21 @@ public final class OrderAlertOverlay {
     actionsLp.topMargin = dp(context, 12);
     actions.setLayoutParams(actionsLp);
 
-    Button reject = actionButton(context, "REJECT", Color.parseColor("#374151"), Color.parseColor("#F9FAFB"));
-    Button accept = actionButton(context, "ACCEPT", Color.parseColor("#059669"), Color.WHITE);
-    LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(0, dp(context, 44), 1f);
-    LinearLayout.LayoutParams rejectLp = new LinearLayout.LayoutParams(0, dp(context, 44), 1f);
-    rejectLp.rightMargin = dp(context, 8);
-    reject.setLayoutParams(rejectLp);
-    accept.setLayoutParams(btnLp);
-
-    reject.setOnClickListener(v -> {
+    Button open = actionButton(
+        context,
+        OrderAlertCardText.openToAcceptLabel(),
+        Color.parseColor("#0F766E"),
+        Color.WHITE
+    );
+    open.setLayoutParams(new LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        dp(context, 48)
+    ));
+    open.setOnClickListener(v -> {
       v.setEnabled(false);
-      accept.setEnabled(false);
-      OrderAlertActions.handle(context, "reject", sessionId);
+      OrderAlertActions.handle(context, "open", sessionId);
     });
-    accept.setOnClickListener(v -> {
-      v.setEnabled(false);
-      reject.setEnabled(false);
-      OrderAlertActions.handle(context, "accept", sessionId);
-    });
-
-    actions.addView(reject);
-    actions.addView(accept);
+    actions.addView(open);
     card.addView(actions);
     root.addView(card);
     return root;
@@ -657,7 +675,7 @@ public final class OrderAlertOverlay {
         }
         return;
       }
-      view.setText(OrderAlertCardText.countdownLabel(expiresAtMs, System.currentTimeMillis()));
+      view.setText(OrderAlertCardText.countdownClock(expiresAtMs, System.currentTimeMillis()));
       MAIN.postDelayed(tick[0], 1000L);
     };
     MAIN.post(tick[0]);

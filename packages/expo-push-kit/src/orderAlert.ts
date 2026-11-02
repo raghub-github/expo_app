@@ -46,6 +46,8 @@ type NativeOrderAlertModule = {
   stopAlert: (sessionId: string | null) => Promise<boolean>;
   getActiveAlert: () => Promise<NativeOrderAlert | null>;
   claimAlert: (sessionId: string) => Promise<NativeOrderAlert | null>;
+  muteAlert?: (sessionId: string | null) => Promise<NativeOrderAlert | null>;
+  muteAllAlerts?: () => Promise<boolean>;
   releaseAlert: (sessionId: string) => Promise<NativeOrderAlert | null>;
   canDrawOverlays?: () => Promise<boolean>;
   persistSoundSettings?: (
@@ -121,6 +123,35 @@ export async function claimNativeOrderAlert(
     return await Native.claimAlert(sid);
   } catch {
     return getActiveNativeOrderAlert();
+  }
+}
+
+/**
+ * Stop the looping buzzer when the app is opened / foregrounded.
+ * Keeps the alert session so the in-app pending card can still show.
+ */
+export async function muteNativeOrderAlert(
+  sessionId?: string | null
+): Promise<NativeOrderAlert | null> {
+  if (!Native?.muteAlert) return null;
+  try {
+    return await Native.muteAlert(String(sessionId ?? "").trim());
+  } catch {
+    return null;
+  }
+}
+
+/** Mute every active native order-alert session (AppState → active). */
+export async function muteAllNativeOrderAlerts(): Promise<void> {
+  if (!Native?.muteAllAlerts) {
+    const active = await getActiveNativeOrderAlert();
+    if (active?.sessionId) await muteNativeOrderAlert(active.sessionId);
+    return;
+  }
+  try {
+    await Native.muteAllAlerts();
+  } catch {
+    /* native optional */
   }
 }
 

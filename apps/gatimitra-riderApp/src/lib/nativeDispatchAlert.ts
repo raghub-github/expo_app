@@ -2,6 +2,8 @@ import {
   claimNativeOrderAlert,
   getActiveNativeOrderAlert,
   isNativeOrderAlertAvailable,
+  muteAllNativeOrderAlerts,
+  muteNativeOrderAlert,
   riderAlertSessionId,
   riderSoundTypeForService,
   startNativeOrderAlert,
@@ -70,4 +72,15 @@ export function stopRiderDispatchBuzzer(sessionOrOrderId?: string | null): void 
     if (active?.sessionId) await stopNativeOrderAlert(active.sessionId);
     else if (active?.orderId) await stopNativeOrderAlert(active.orderId);
   })();
+}
+
+/** App opened while a dispatch buzzer is playing — silence without retiring the offer. */
+export function muteRiderDispatchBuzzerOnAppOpen(sessionOrOrderId?: string | null): void {
+  stopOrderAlertSound();
+  const sid = String(sessionOrOrderId ?? lastSessionId ?? "").trim();
+  if (sid) {
+    void muteNativeOrderAlert(sid);
+    return;
+  }
+  void muteAllNativeOrderAlerts();
 }

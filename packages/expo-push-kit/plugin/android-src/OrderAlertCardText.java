@@ -203,6 +203,121 @@ public final class OrderAlertCardText {
     return ((leftMs + 999L) / 1000L) + "s";
   }
 
+  /** Premium lock-screen clock, e.g. "0:47" / "1:05". */
+  public static String countdownClock(long expiresAtMs, long nowMs) {
+    long leftMs = expiresAtMs - nowMs;
+    if (leftMs <= 0L) return "0:00";
+    long totalSec = (leftMs + 999L) / 1000L;
+    long mins = totalSec / 60L;
+    long secs = totalSec % 60L;
+    return mins + ":" + (secs < 10 ? "0" : "") + secs;
+  }
+
+  public static String openToAcceptLabel() {
+    return "OPEN TO ACCEPT →";
+  }
+
+  /**
+   * Parse a compact items payload into display lines.
+   * Accepts JSON array [{"q":1,"n":"Paneer Burger"}] or pipe form "1x A|2x B".
+   * Android-free (no org.json) so the plain-JVM suite can verify it.
+   */
+  public static String[] itemLines(String raw, int maxLines) {
+    String v = safe(raw);
+    if (v.length() == 0) return new String[0];
+    int cap = Math.max(1, Math.min(12, maxLines));
+    if (v.startsWith("[")) {
+      java.util.ArrayList<String> lines = new java.util.ArrayList<>();
+      int i = 0;
+      while (i < v.length() && lines.size() < cap) {
+        int objStart = v.indexOf('{', i);
+        if (objStart < 0) break;
+        int objEnd = v.indexOf('}', objStart);
+        if (objEnd < 0) break;
+        String obj = v.substring(objStart, objEnd + 1);
+        int q = Math.max(1, parseJsonInt(obj, "q", parseJsonInt(obj, "qty", 1)));
+        String name = parseJsonString(obj, "n");
+        if (name.length() == 0) name = parseJsonString(obj, "name");
+        if (name.length() == 0) name = "Item";
+        String variant = parseJsonString(obj, "v");
+        if (variant.length() == 0) variant = parseJsonString(obj, "variant");
+        lines.add(q + " × " + name + (variant.length() > 0 ? " (" + variant + ")" : ""));
+        i = objEnd + 1;
+      }
+      return lines.toArray(new String[0]);
+    }
+    String[] parts = v.split("\\|");
+    int n = Math.min(cap, parts.length);
+    String[] out = new String[n];
+    for (int j = 0; j < n; j++) out[j] = safe(parts[j]);
+    return out;
+  }
+
+  private static String parseJsonString(String obj, String key) {
+    String needle = "\"" + key + "\"";
+    int at = obj.indexOf(needle);
+    if (at < 0) return "";
+    int colon = obj.indexOf(':', at + needle.length());
+    if (colon < 0) return "";
+    int q1 = obj.indexOf('"', colon + 1);
+    if (q1 < 0) return "";
+    int q2 = obj.indexOf('"', q1 + 1);
+    if (q2 < 0) return "";
+    return safe(obj.substring(q1 + 1, q2));
+  }
+
+  private static int parseJsonInt(String obj, String key, int fallback) {
+    String needle = "\"" + key + "\"";
+    int at = obj.indexOf(needle);
+    if (at < 0) return fallback;
+    int colon = obj.indexOf(':', at + needle.length());
+    if (colon < 0) return fallback;
+    int i = colon + 1;
+    while (i < obj.length() && Character.isWhitespace(obj.charAt(i))) i++;
+    int j = i;
+    while (j < obj.length() && (Character.isDigit(obj.charAt(j)))) j++;
+    if (j == i) return fallback;
+    try {
+      return Integer.parseInt(obj.substring(i, j));
+    } catch (Throwable t) {
+      return fallback;
+    }
+  }
+
+  /** Shade / BigText body with order id, amount, and up to a few items. */
+  public static String shadeBody(
+      String displayOrderId,
+      String amountRaw,
+      String customer,
+      String itemsJson,
+      String fallback
+  ) {
+    StringBuilder sb = new StringBuilder();
+    String id = safe(displayOrderId);
+    String amount = formatAmount(amountRaw);
+    if (id.length() > 0) sb.append(id);
+    if (amount.length() > 0) {
+      if (sb.length() > 0) sb.append(" · ");
+      sb.append(amount);
+    }
+    String cust = safe(customer);
+    if (cust.length() > 0 && !"Customer".equalsIgnoreCase(cust)) {
+      if (sb.length() > 0) sb.append('\n');
+      sb.append(cust);
+    }
+    String[] lines = itemLines(itemsJson, 4);
+    for (String line : lines) {
+      if (line.length() == 0) continue;
+      if (sb.length() > 0) sb.append('\n');
+      sb.append(line);
+    }
+    if (sb.length() == 0) {
+      String fb = safe(fallback);
+      return fb.length() > 0 ? fb : "Open to accept";
+    }
+    return sb.toString();
+  }
+
   /**
    * True when the title/body adds nothing the card has not already shown in a
    * dedicated row, so the detail line can be dropped instead of repeating it.

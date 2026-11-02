@@ -379,6 +379,19 @@ export default function ProfileScreen() {
           <Text style={styles.warningText}>
             Renew to unlock the rest item to receive more orders.
           </Text>
+          <Pressable
+            onPress={navigate("plans")}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Renew subscription"
+            style={({ pressed }) => [
+              styles.warningRenewBtn,
+              pressed && styles.pressed,
+              GatiMitraMerchant.cursorPointer,
+            ]}
+          >
+            <Text style={styles.warningRenewBtnText}>Renew</Text>
+          </Pressable>
         </View>
       )}
 
@@ -643,14 +656,33 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    padding: 10,
+    paddingVertical: 12,
+    paddingLeft: 12,
+    paddingRight: 10,
     marginBottom: 14,
     backgroundColor: "#FEF3C7",
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#F59E0B",
   },
-  warningText: { flex: 1, fontSize: 12, fontWeight: "500", color: "#92400E" },
+  warningText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "500",
+    color: "#92400E",
+  },
+  warningRenewBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "#B45309",
+  },
+  warningRenewBtnText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#FFFBEB",
+  },
 
   sectionDivider: {
     marginHorizontal: -H_PADDING,

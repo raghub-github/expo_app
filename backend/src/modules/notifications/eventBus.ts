@@ -467,19 +467,30 @@ export function registerDomainEventHandlers(): void {
           /* inbox clear is best-effort */
         }
         try {
-          const { sendMerchantAlertControl } = await import("../../lib/critical-alert-control.js");
           const foodId = await lookupFoodOrderIdByCoreOrderText(getSql(), {
             orderIdText: e.orderId,
             merchantStoreId: e.merchantStoreId,
           });
-          const orderKey = foodId ?? e.orderId;
-          await sendMerchantAlertControl({
-            storeId: e.merchantStoreId,
-            action: "stop",
-            alertSessionId: `MERCHANT_NEW_ORDER:${orderKey}:${e.merchantStoreId}`,
-            orderId: e.orderId,
-            foodOrderId: foodId != null && Number.isFinite(Number(foodId)) ? Number(foodId) : null,
-          });
+          if (foodId != null && /^\d+$/.test(foodId)) {
+            const { stopMerchantIncomingAlertEverywhere } = await import(
+              "../../lib/merchant-incoming-alert-stop.js"
+            );
+            await stopMerchantIncomingAlertEverywhere(getSql(), {
+              storeId: e.merchantStoreId,
+              foodOrderId: Number(foodId),
+              status: e.toStatus,
+            });
+          } else {
+            const { sendMerchantAlertControl } = await import("../../lib/critical-alert-control.js");
+            const orderKey = foodId ?? e.orderId;
+            await sendMerchantAlertControl({
+              storeId: e.merchantStoreId,
+              action: "stop",
+              alertSessionId: `MERCHANT_NEW_ORDER:${orderKey}:${e.merchantStoreId}`,
+              orderId: e.orderId,
+              foodOrderId: null,
+            });
+          }
         } catch {
           /* native stop-alert is best-effort */
         }

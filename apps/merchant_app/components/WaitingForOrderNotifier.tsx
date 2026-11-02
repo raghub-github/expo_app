@@ -2,6 +2,9 @@
  * Keeps the waiting-for-order inbox row in sync when the store becomes idle.
  * Tray sticky is owned by LiveOrdersOngoingNotification (state machine + dedupe).
  * This component only ensures/deletes the inbox row — never posts duplicate tray alerts.
+ *
+ * Critical: cold start / remount must NOT call ensure again while already online+idle.
+ * Only real transitions (offline→online idle, or active→idle) create/ensure the inbox row.
  */
 
 import { useEffect, useMemo, useRef } from "react";
@@ -43,7 +46,7 @@ export default function WaitingForOrderNotifier() {
     void (async () => {
       try {
         if (!isOnline) {
-          if (prevOnlineRef.current !== false) {
+          if (prevOnlineRef.current === true) {
             await deleteWaitingForOrderNotifications(storeId, token);
             if (!cancelled) void refreshRef.current();
           }
@@ -52,19 +55,27 @@ export default function WaitingForOrderNotifier() {
         }
 
         if (activeCount > 0) {
-          await deleteWaitingForOrderNotifications(storeId, token);
-          if (!cancelled) void refreshRef.current();
+          if (prevActiveRef.current === 0 || prevActiveRef.current == null) {
+            // Entering active — clear idle inbox once.
+            await deleteWaitingForOrderNotifications(storeId, token);
+            if (!cancelled) void refreshRef.current();
+          } else if (prevActiveRef.current != null && prevActiveRef.current > 0) {
+            // Already had actives — keep cleared.
+            await deleteWaitingForOrderNotifications(storeId, token);
+          }
           lastEnsureKeyRef.current = "";
           return;
         }
 
-        // Online + zero active → ensure waiting-for-order inbox once per idle entry.
-        const becameIdle =
-          prevOnlineRef.current === false ||
-          (prevActiveRef.current != null && prevActiveRef.current > 0) ||
-          prevOnlineRef.current == null ||
-          prevActiveRef.current == null;
-        if (!becameIdle) return;
+        // Online + zero active.
+        // Only ensure on a real transition into idle — never on cold start / remount
+        // when we have no prior snapshot (that re-created inbox + felt like a new push).
+        const becameIdleFromOffline = prevOnlineRef.current === false;
+        const becameIdleFromActive =
+          prevActiveRef.current != null && prevActiveRef.current > 0;
+        if (!becameIdleFromOffline && !becameIdleFromActive) {
+          return;
+        }
 
         const ensureKey = `${storeId}:idle`;
         if (lastEnsureKeyRef.current === ensureKey || ensureInFlightRef.current) return;

@@ -23,6 +23,7 @@ import { HomeLocationHeader, HomeWeatherBanner } from "@/components/home/HomeScr
 import { HomeServicesRow } from "@/components/home/HomeServicesRow";
 import { HomePromoCarousel } from "@/components/home/HomePromoCarousel";
 import { HomeBrandBanner } from "@/components/home/HomeBrandBanner";
+import { HomeAdsStrip } from "@/components/HomeAdsStrip";
 import { WeatherDetailsSheet } from "@/components/weather";
 import { useHomeScreenLayout } from "@/hooks/useHomeScreenLayout";
 import { useFeaturedOffersHome } from "@/hooks/useFeaturedOffersHome";
@@ -262,6 +263,8 @@ export default function HomeScreen() {
           loading={coords != null && weatherFetching && !hasLiveWeather}
           onWeatherPress={() => setWeatherSheetVisible(true)}
         />
+
+        <HomeAdsStrip placement="home" />
 
         <HomePromoCarousel
           offers={featuredOffersData?.offers}

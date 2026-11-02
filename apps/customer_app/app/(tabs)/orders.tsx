@@ -75,6 +75,7 @@ import { resolveOrderCustomerPaidAmount } from "@/lib/orderBillBreakdown";
 import { textIncludes } from "@/lib/safe-text";
 import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 import { useTabScreenDebug } from "@/lib/tabNavDebug";
+import { HomeAdsStrip } from "@/components/HomeAdsStrip";
 
 const GREEN = GatiMitraColors.primaryMint;
 const ERROR = GatiMitraColors.errorRed;
@@ -1101,6 +1102,8 @@ export default function OrdersScreen() {
           onChangeText={setSearch}
         />
       </View>
+
+      <HomeAdsStrip placement="orders" />
 
       {showFullPageLoading ? (
         <View style={styles.centered}>

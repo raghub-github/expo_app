@@ -2,7 +2,7 @@
 
 Local-dev session from this machine. Use this as the production checklist. **Do not copy LAN IPs or local `.env` values into production.**
 
-Current local Wi‑Fi IP used only for phone/LAN testing: `10.15.120.181`  
+Current local Wi‑Fi IP used only for phone/LAN testing: `10.122.138.181`  
 Ports stayed as before: backend `:3000`, dashboard `:3001`, Metro `:8081`, ws-gateway `:4100`.
 
 ---
@@ -60,7 +60,7 @@ Same LAN-heal pattern in:
 - `apps/merchant_app/config/env.ts`
 - `apps/customer_app/app/(auth)/login.tsx` (placeholder IP only)
 
-**Production action:** Ship a new rider (and customer/merchant if you want the dead-Supabase + LAN-heal code). Production binaries must keep `EXPO_PUBLIC_API_BASE_URL=https://api.gatimitra.com` (or your real public API). Do **not** bake `10.15.120.181` into a store/EAS build.
+**Production action:** Ship a new rider (and customer/merchant if you want the dead-Supabase + LAN-heal code). Production binaries must keep `EXPO_PUBLIC_API_BASE_URL=https://api.gatimitra.com` (or your real public API). Do **not** bake `10.122.138.181` into a store/EAS build.
 
 ---
 
@@ -70,11 +70,11 @@ These are gitignored (or example-only). Local values were pointed at this PC so 
 
 | File | Keys touched locally | Production should stay |
 |---|---|---|
-| `apps/gatimitra-riderApp/.env.local` | `EXPO_PUBLIC_API_BASE_URL=http://10.15.120.181:3000`, `EXPO_PUBLIC_DEV_HOST=10.15.120.181` | `EXPO_PUBLIC_API_BASE_URL=https://api.gatimitra.com` (or current prod API). No `EXPO_PUBLIC_DEV_HOST`. |
+| `apps/gatimitra-riderApp/.env.local` | `EXPO_PUBLIC_API_BASE_URL=http://10.122.138.181:3000`, `EXPO_PUBLIC_DEV_HOST=10.122.138.181` | `EXPO_PUBLIC_API_BASE_URL=https://api.gatimitra.com` (or current prod API). No `EXPO_PUBLIC_DEV_HOST`. |
 | `apps/customer_app` `.env` / `.env.local` | same API host | public API URL |
 | `apps/merchant_app/.env` | same API host | public API URL |
-| backend `.env` / `.env.local` | `API_BASE_URL`, `TRACK_BASE_URL` → `http://10.15.120.181:3000` | `https://api.gatimitra.com` and `https://track.gatimitra.com/trip` (or current prod) |
-| dashboard `.env` / `.env.local` | `BACKEND_URL`, `NEXT_PUBLIC_BACKEND_URL`, `NEXT_PUBLIC_WS_BASE_URL=ws://10.15.120.181:4100` | public API + `wss://…` gateway |
+| backend `.env` / `.env.local` | `API_BASE_URL`, `TRACK_BASE_URL` → `http://10.122.138.181:3000` | `https://api.gatimitra.com` and `https://track.gatimitra.com/trip` (or current prod) |
+| dashboard `.env` / `.env.local` | `BACKEND_URL`, `NEXT_PUBLIC_BACKEND_URL`, `NEXT_PUBLIC_WS_BASE_URL=ws://10.122.138.181:4100` | public API + `wss://…` gateway |
 | `services/notification-worker/.env` | `BACKEND_URL` | docker/internal `http://backend:3000` or public API |
 | repo root `.env.local` | `BACKEND_URL` | prod URL |
 | rider-web `.env` | `BACKEND_API_URL`, `API_BASE_URL`, `NEXT_PUBLIC_API_BASE_URL` | prod URLs |
@@ -107,7 +107,7 @@ BACKEND_INTERNAL_URL=http://backend:3000
 
 ## 3. Git-tracked `env.example` files (LAN IP only — ignore for prod)
 
-These examples were updated from an older LAN IP (`10.74.247.181`) to `10.15.120.181`. **Production compose should keep docker/internal hosts, not this IP.**
+These examples were updated from an older LAN IP (`10.74.247.181`) to `10.122.138.181`. **Production compose should keep docker/internal hosts, not this IP.**
 
 - `backend/env.example` → `TRACK_BASE_URL`
 - `partnersite/.env.example` → `GATIMITRA_BACKEND_API_URL`
@@ -133,7 +133,7 @@ GATIMITRA_BACKEND_API_URL=https://api.gatimitra.com
 1. **Dashboard** — required for the admin selfie “Upload new” fix on `control.gatimitra.com`.
 2. **`@gatimitra/redis` + backend / ws-gateway / workers** — Redis stream errors.
 3. **Rider app** — duty toggle, stuck offer accept, boot assignments timeout, dead Supabase host.
-4. **Confirm production env is still public URLs**, not `10.15.120.181`.
+4. **Confirm production env is still public URLs**, not `10.122.138.181`.
 5. Optional: set `BACKEND_INTERNAL_URL` on ws-gateway if zone presence is missing in prod.
 
 ---

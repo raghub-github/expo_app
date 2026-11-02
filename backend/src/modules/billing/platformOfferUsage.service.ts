@@ -517,9 +517,13 @@ async function releaseUsages(
       (typeof meta.benefit_family === "string" && meta.benefit_family.trim()) ||
       null;
 
-    // First-order free delivery: release campaign budget, but NEVER restore
-    // customer lifetime eligibility (prevents cancel-and-reorder abuse).
-    if (family === FIRST_ORDER_FREE_DELIVERY_BENEFIT_FAMILY) {
+    const allow =
+      restoreFlag === "restoreOnCancel" ? row.restoreOnCancel !== false : row.restoreOnRefund !== false;
+
+    // First-order free delivery: Status Controls decide eligibility restore.
+    // Toggle OFF → release budget + permanent lifetime lock (anti cancel-reorder abuse).
+    // Toggle ON → normal cancel/refund restore so the customer can use the offer again.
+    if (family === FIRST_ORDER_FREE_DELIVERY_BENEFIT_FAMILY && !allow) {
       const wasConsumed = u.status === "consumed";
       const budgetToRestore = wasConsumed
         ? Number(u.consumedBudget ?? u.discountAmount ?? 0) || 0
@@ -591,8 +595,6 @@ async function releaseUsages(
       continue;
     }
 
-    const allow =
-      restoreFlag === "restoreOnCancel" ? row.restoreOnCancel !== false : row.restoreOnRefund !== false;
     if (!allow) continue;
 
     const wasConsumed = u.status === "consumed";
@@ -613,6 +615,9 @@ async function releaseUsages(
             audit_at: now.toISOString(),
             previous_status: u.status,
             budget_restored: budgetToRestore,
+            ...(family === FIRST_ORDER_FREE_DELIVERY_BENEFIT_FAMILY
+              ? { lifetime_eligibility_restored: true }
+              : {}),
           })}::jsonb`,
         })
         .where(
@@ -630,6 +635,34 @@ async function releaseUsages(
             updatedAt: now,
           })
           .where(eq(billingPlatformOffers.id, u.platformOfferId));
+      }
+
+      // Clear prior anti-abuse lifetime locks when Status Controls allow restore.
+      if (family === FIRST_ORDER_FREE_DELIVERY_BENEFIT_FAMILY && u.customerId != null) {
+        try {
+          await tx
+            .update(platformOfferUsages)
+            .set({
+              status: "cancelled",
+              cancelledAt: now,
+              updatedAt: now,
+              metadata: sql`COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify({
+                audit_event: "first_order_fd_lifetime_lock_cleared",
+                cleared_by_usage_id: u.id,
+                audit_at: now.toISOString(),
+              })}::jsonb`,
+            })
+            .where(
+              and(
+                eq(platformOfferUsages.customerId, u.customerId),
+                eq(platformOfferUsages.status, "consumed"),
+                eq(platformOfferUsages.benefitFamily, FIRST_ORDER_FREE_DELIVERY_BENEFIT_FAMILY),
+                sql`${platformOfferUsages.orderIdText} LIKE ${"lifetime-lock:" + family + ":%"}`
+              )
+            );
+        } catch {
+          /* pre-migration / race — eligibility still cleared via main row status */
+        }
       }
     });
   }

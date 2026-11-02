@@ -43,9 +43,11 @@ import {
   type ActiveOrdersBreakdown,
 } from "@/services/storeSettingsApi";
 
-const KITCHEN_POLL_MS = 30_000;
+const KITCHEN_POLL_MS = 60_000;
 /** Authoritative active-orders-count sync cadence (board drives sticky between hits). */
-const KITCHEN_API_EVERY_N = 4;
+const KITCHEN_API_EVERY_N = 3;
+/** Debounce board-driven sticky evaluates so order polls don't thrash the notification bridge. */
+const BOARD_EVAL_DEBOUNCE_MS = 800;
 const SESSION_KEY_PREFIX = "merchant_store_status_session_";
 
 function isExpoGo(): boolean {
@@ -246,6 +248,9 @@ export default function LiveOrdersOngoingNotification() {
         c.storeId != null &&
         ensuredIdleStoreRef.current !== c.storeId
       ) {
+        // Soft restore only: mark sticky allowed + sync in-memory signature.
+        // Do NOT schedule a new tray notification on every app open — that caused
+        // duplicate "Waiting for orders" pushes. The machine already decided NONE.
         ensuredIdleStoreRef.current = c.storeId;
         setKitchenStickyStoreMeta({ storeId: c.storeId, storeName: c.storeName, merchantId: c.merchantId });
         setKitchenStickyAllowed(true);
@@ -255,11 +260,13 @@ export default function LiveOrdersOngoingNotification() {
           storeId: c.storeId,
           merchantId: c.merchantId,
           storeName: c.storeName,
-          source: `${source}_IDLE_ENSURE`,
+          source: `${source}_IDLE_RESTORE`,
           bodyOverride: "Waiting for orders",
           force: false,
           playSound: false,
-          eventId: `IDLE_ENSURE:${c.storeId}:${next.idleSessionId ?? "restore"}`,
+          // Stable event id so restarts of the same idle session never re-alert.
+          eventId: `IDLE_SESSION:${c.storeId}:${next.idleSessionId ?? "restore"}`,
+          softEnsureOnly: true,
         });
         return;
       }
@@ -373,7 +380,10 @@ export default function LiveOrdersOngoingNotification() {
 
   useEffect(() => {
     if (!canRunLocalSticky()) return;
-    void evaluateRef.current("BOARD_CHANGE", { fetchApi: false });
+    const t = setTimeout(() => {
+      void evaluateRef.current("BOARD_CHANGE", { fetchApi: false });
+    }, BOARD_EVAL_DEBOUNCE_MS);
+    return () => clearTimeout(t);
   }, [orders]);
 
   // Poll + foreground are STATE SYNCS; API confirm is throttled (board fills the gaps).

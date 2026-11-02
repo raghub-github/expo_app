@@ -10,6 +10,7 @@ import {
 } from "@/store/appAssetsStore";
 import { MX, MX_WELCOME_SLIDE_KEYS } from "@/lib/appAssetKeys";
 import { prefetchWelcomeUris } from "@/lib/welcomeCriticalAssets";
+import { prefetchMerchantHomeAds } from "@/services/homeAdsApi";
 
 const RETRY_MS = 12_000;
 
@@ -81,6 +82,9 @@ export function AppAssetsPrefetch() {
 
   useEffect(() => {
     let cancelled = false;
+
+    // Warm Home Ads cache + images before Home/Orders mount (avoids late layout pop-in).
+    prefetchMerchantHomeAds();
 
     const load = async () => {
       if (cancelled) return;

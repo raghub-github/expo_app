@@ -15,8 +15,8 @@ const BRAND_GREEN = "#22C55E";
 const RING_PURPLE = "#7C3AED";
 const RING_BLUE = "#2563EB";
 const RING_DARK = "#312E81"; // dark blue-black
-const PULSE_DURATION = 1800;
-const STAGGER_MS = 600;
+const PULSE_DURATION = 2800;
+const STAGGER_MS = 900;
 
 type RadarLiveIndicatorProps = {
   /** Smaller footprint for list rows / dense UI */

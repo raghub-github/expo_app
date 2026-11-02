@@ -69,6 +69,7 @@ import { RejectFollowUpHost, useRejectFollowUp } from "@/components/order/Reject
 import type { MerchantCancellationReason } from "@/lib/merchantCancellationReasons";
 import { rejectReasonNeedsFollowUp } from "@/lib/merchantCancellationReasons";
 import { PastOrdersBanner } from "@/components/order/PastOrdersBanner";
+import { HomeAdsStrip } from "@/components/HomeAdsStrip";
 import { StoreClosedActiveOrdersNotice } from "@/components/order/StoreClosedActiveOrdersNotice";
 import {
   OrderDateRangeBar,
@@ -891,6 +892,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         showFilter
       />
       <PastOrdersBanner onPress={() => navPush("/order-history")} />
+      <HomeAdsStrip placement="orders" />
       <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
       <StatusTabs
         activeKey={filterKey as LiveFilterKey}

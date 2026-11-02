@@ -38,10 +38,13 @@ import NotificationSetup from "../components/NotificationSetup";
 import BackgroundOrderPermissionsGate from "../components/BackgroundOrderPermissionsGate";
 import NewOrderAutoOpenHandler from "../components/NewOrderAutoOpenHandler";
 import { AppAssetsPrefetch } from "@/components/AppAssetsPrefetch";
+import { useMerchantHomeAdsRealtime } from "@/hooks/useMerchantHomeAdsRealtime";
 import { ensureMerchantAppAssetsLoaded } from "@/store/appAssetsStore";
 import { hydrateMenuImageDiskCache } from "@/lib/menuImageDiskCache";
 import { hydrateMenuCatalogCache } from "@/lib/menuCatalogCache";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
+import OrderAlertAppOpenMute from "../components/OrderAlertAppOpenMute";
+import GlobalOrderAlertStopSync from "../components/GlobalOrderAlertStopSync";
 import BackgroundNewOrderLocalAlert from "../components/BackgroundNewOrderLocalAlert";
 import StoreStatusPushHandler from "../components/StoreStatusPushHandler";
 import WaitingForOrderNotifier from "../components/WaitingForOrderNotifier";
@@ -56,9 +59,8 @@ import {
 } from "@/components/MerchantBootstrapScreen";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 
-void SplashScreen.preventAutoHideAsync()
-  .then(() => SplashScreen.hideAsync())
-  .catch(() => {});
+/** Keep the native splash until MerchantBootstrapScreen has painted once. */
+void SplashScreen.preventAutoHideAsync().catch(() => {});
 
 // Expo Go (SDK 53+) cannot do remote push — suppress the package's console.error
 // if anything still touches expo-notifications during local development.
@@ -120,8 +122,11 @@ function MerchantStatusBarSync() {
 
 /** Don't hold splash forever if font download/cache stalls (common with --offline). */
 const FONTS_READY_FALLBACK_MS = 8000;
-/** Keep the branded splash on screen long enough to actually be read. */
-const MIN_SPLASH_VISIBLE_MS = 1200;
+/**
+ * Tiny settle only — do not artificially hold the splash after auth + fonts are ready.
+ * Essential session checks still gate appReady via AuthProvider.
+ */
+const MIN_SPLASH_VISIBLE_MS = 80;
 
 function MerchantStackRecovery({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -132,14 +137,22 @@ function MerchantStackRecovery({ children }: { children: ReactNode }) {
   );
 }
 
+function MerchantHomeAdsRealtimeHost() {
+  useMerchantHomeAdsRealtime(true);
+  return null;
+}
+
 function AuthenticatedAppHosts() {
   return (
     <AppErrorBoundary source="merchant-hosts" fallback={() => null}>
       <NotificationSetup />
       <AppAssetsPrefetch />
+      <MerchantHomeAdsRealtimeHost />
       <BackgroundOrderPermissionsGate />
       <NewOrderAutoOpenHandler />
       <OrderAlertPushHandler />
+      <OrderAlertAppOpenMute />
+      <GlobalOrderAlertStopSync />
       <BackgroundNewOrderLocalAlert />
       <StoreStatusPushHandler />
       <LiveOrdersStickyPushRefresh />

@@ -28,9 +28,10 @@ const DEFAULT_PROFILE: LocationEngineProfile = {
   accuracy: Location.Accuracy.High,
 };
 
+/** Turn-by-turn — frequent enough for smooth camera, not a 1Hz GPS hammer. */
 const NAV_PROFILE: LocationEngineProfile = {
-  timeIntervalMs: 1200,
-  distanceIntervalM: 5,
+  timeIntervalMs: 2000,
+  distanceIntervalM: 6,
   minAccuracyM: 80,
   accuracy: Location.Accuracy.High,
 };
@@ -46,6 +47,17 @@ const DUTY_IDLE_BG_PROFILE: LocationEngineProfile = {
   timeIntervalMs: 20000,
   distanceIntervalM: 40,
   minAccuracyM: 150,
+  accuracy: Location.Accuracy.Balanced,
+};
+
+/**
+ * Off-duty home "You" pin only. Continuous High/5s GPS while idle was a top
+ * thermal culprit; Balanced + long interval keeps the pin alive without heat.
+ */
+const HOME_MAP_IDLE_PROFILE: LocationEngineProfile = {
+  timeIntervalMs: 45_000,
+  distanceIntervalM: 80,
+  minAccuracyM: 200,
   accuracy: Location.Accuracy.Balanced,
 };
 
@@ -257,21 +269,25 @@ class SharedLocationEngine {
         }
       );
 
-      // Refine in background (Balanced is fast enough for home map).
-      void (async () => {
-        try {
-          const loc = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          });
-          const fix = normalizeFix(loc);
-          // Always accept refinement when we have no fix yet; otherwise respect accuracy gate.
-          if (!this.currentFix() || this.shouldAcceptFix(fix, merged.minAccuracyM)) {
-            this.emit({ status: "tracking", lastFix: fix });
+      // Refine only when the cached fix is missing/stale. Restarting the watch
+      // used to always fire getCurrentPositionAsync → cold GPS bursts + heat.
+      const existing = this.currentFix();
+      const existingAgeMs = existing ? Date.now() - existing.tsMs : Number.POSITIVE_INFINITY;
+      if (!existing || existingAgeMs > 45_000) {
+        void (async () => {
+          try {
+            const loc = await Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.Balanced,
+            });
+            const fix = normalizeFix(loc);
+            if (!this.currentFix() || this.shouldAcceptFix(fix, merged.minAccuracyM)) {
+              this.emit({ status: "tracking", lastFix: fix });
+            }
+          } catch {
+            /* watch continues */
           }
-        } catch {
-          /* watch continues */
-        }
-      })();
+        })();
+      }
     } finally {
       this.restarting = false;
       if (this.reconcileQueued) {
@@ -302,6 +318,7 @@ export const LOCATION_ENGINE_PROFILES = {
   nav: NAV_PROFILE,
   activeOrderBg: ACTIVE_ORDER_BG_PROFILE,
   dutyIdleBg: DUTY_IDLE_BG_PROFILE,
+  homeMapIdle: HOME_MAP_IDLE_PROFILE,
 } as const;
 
 let fgSeq = 0;

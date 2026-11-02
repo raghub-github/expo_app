@@ -41,6 +41,11 @@ export type StoreStatusNotifArgs = {
   bodyOverride?: string | null;
   /** One-shot system sound for real transitions (online idle / out of timings). */
   playSound?: boolean;
+  /**
+   * App restore / same idle session: sync memory + keep existing tray row.
+   * Never schedule a new notification if one is already present (or was shown this session).
+   */
+  softEnsureOnly?: boolean;
 };
 
 const OUT_OF_TIMINGS_REASONS = new Set([
@@ -60,6 +65,7 @@ function canPostLocalStoreStatus(): boolean {
 }
 
 function logStatus(fields: Record<string, string | number | boolean | null | undefined>): void {
+  if (!__DEV__) return;
   const parts = Object.entries(fields)
     .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${k}=${v ?? ""}`);
@@ -366,6 +372,7 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
     // user action, not a new event. So `!stillVisible` no longer forces a re-post; only an explicit
     // caller `force` (a genuine new transition/session or a real kitchen-body change) does.
     const force = args.force === true;
+    const soft = args.softEnsureOnly === true;
     if (eventKey && eventKey === lastEventKey && !force) {
       return;
     }
@@ -380,6 +387,7 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
     }
 
     const presented = await Notifications.getPresentedNotificationsAsync().catch(() => []);
+    const anyStoreStatusShowing = presented.some((n) => looksLikeStoreStatusNotification(n));
     const alreadyShowing = presented.some((n) => {
       if (!looksLikeStoreStatusNotification(n)) return false;
       const content = n.request?.content;
@@ -387,12 +395,34 @@ export async function postStoreStatusNotification(args: StoreStatusNotifArgs): P
       const shownBody = String(content?.body ?? "");
       return shownTitle === title && shownBody === body;
     });
-    if (alreadyShowing || (signature === lastSignature && args.state === "ONLINE" && body === "Waiting for orders")) {
+    if (
+      alreadyShowing ||
+      (soft && anyStoreStatusShowing) ||
+      (signature === lastSignature && args.state === "ONLINE" && body === "Waiting for orders")
+    ) {
+      // Soft restore / identical sticky: remember signature, never schedule again.
       lastSignature = signature;
       lastEventKey = eventKey;
       if (args.state === "ONLINE") lastOnlineKitchenBody = body;
+      await persistNativeSession({
+        active: true,
+        storeId,
+        merchantId: args.merchantId,
+        storeName: name,
+      });
+      if (soft) {
+        logStatus({
+          storeId,
+          action: "SOFT_ENSURE_SKIP",
+          source: args.source ?? "JS",
+          reason: alreadyShowing || anyStoreStatusShowing ? "ALREADY_SHOWING" : "SAME_SIGNATURE",
+        });
+      }
       return;
     }
+
+    // Soft restore with empty tray: post once silently (no sound / no force).
+    // Real POST_IDLE transitions still use force+sound via the state machine.
 
     await ensureChannel(Notifications);
     await dismissPresentedStoreStatus(Notifications, true);
@@ -508,7 +538,8 @@ export async function reconcileStoreStatusNotification(args: {
     await removeStoreStatusNotification(args.authenticated ? "NO_STORE" : "LOGOUT");
     return;
   }
-  const force = args.source === "APP_START" || args.source === "APP_RESUME";
+  // Never force-repost ONLINE on every app resume — that duplicated "Waiting for orders".
+  const force = false;
 
   if (args.isOnline) {
     await postStoreStatusNotification({
@@ -518,6 +549,7 @@ export async function reconcileStoreStatusNotification(args: {
       storeName: args.storeName,
       source: args.source ?? "RECONCILE",
       force,
+      softEnsureOnly: args.source === "APP_START" || args.source === "APP_RESUME",
       ...(lastOnlineKitchenBody ? { bodyOverride: lastOnlineKitchenBody } : {}),
     });
     return;

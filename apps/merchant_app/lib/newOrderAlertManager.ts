@@ -31,9 +31,18 @@ import {
   extractAlertSessionId,
   isNativeOrderAlertAvailable,
   merchantAlertSessionId,
+  muteAllNativeOrderAlerts,
+  muteNativeOrderAlert,
   startNativeOrderAlert,
   stopNativeOrderAlert,
 } from "@gatimitra/expo-push-kit";
+import {
+  isOrderAlertGloballyRetired,
+  isTerminalAlertStopReason,
+  retireTerminalOrderAlert,
+} from "@/lib/orderAlertTerminalRetirement";
+
+export { isOrderAlertGloballyRetired } from "@/lib/orderAlertTerminalRetirement";
 
 const SESSION_KEY = "merchant_new_order_alert_session_v1";
 const CONFIG_KEY = "merchant_new_order_alert_config_v1";
@@ -260,10 +269,50 @@ async function ensureNativeBuzzer(orderId: string, alertSessionId?: string | nul
     soundType: "notification",
   });
   if (!started?.sessionId) return false;
+  // Attach in-app UI ownership without muting — a genuinely new FG order must ring.
   if (AppState.currentState === "active") {
     await claimNativeOrderAlert(started.sessionId);
   }
   return true;
+}
+
+/**
+ * DEVICE-LOCAL mute only (Guarantee A).
+ * Stops audio on THIS installation when the app is opened / resumed.
+ * Does NOT retire the order, does NOT publish a global stop, and must never
+ * silence other phones logged into the same account.
+ */
+export async function muteNewOrderAlertOnAppOpen(orderId?: string | null): Promise<void> {
+  playGeneration += 1;
+  stopOrderAlertSound();
+  const id = String(orderId ?? session?.orderId ?? "").trim();
+  if (id) {
+    await muteNativeOrderAlert(
+      String(session?.alertSessionId || merchantAlertSessionId(id)).trim()
+    );
+  } else {
+    await muteAllNativeOrderAlerts();
+  }
+  // Keep session non-terminal so the in-app pending card can remain.
+  // Local mute ≠ accepted/rejected/cancelled.
+  if (session && (!id || session.orderId === id) && session.state === "playing") {
+    session.state = "queued";
+    await persistSession();
+  }
+}
+
+/**
+ * GLOBAL order termination (Guarantee B).
+ * Call when the backend confirms this order left the pending-accept state —
+ * regardless of which device or surface performed the action.
+ */
+export async function applyGlobalOrderAlertStop(
+  orderId: string | null | undefined,
+  reason: NewOrderAlertStopReason = "cancelled"
+): Promise<void> {
+  const id = String(orderId ?? "").trim();
+  if (!id) return;
+  await stopNewOrderAlert(id, reason);
 }
 
 function configFrom(
@@ -363,34 +412,23 @@ export async function hydrateNewOrderAlertManager(): Promise<void> {
         }
       }
       if (session && (session.state === "playing" || session.state === "queued")) {
-        // Do not invent a full "completed" from wall-clock alone — that silenced the
-        // Incoming modal after hydrate (especially Expo Go / stale SecureStore).
-        // Only credit elapsed time while background owned the tray; keep ≥1 for modal.
-        if (session.owner === "background") {
-          const completed = estimateCompletedRepeats({
-            startedAt: session.startedAt,
-            configuredRepeats: session.configuredRepeats,
-            clipMs: session.clipMs,
-            assumeOsPlayedOnce: true,
-          });
-          session.completedRepeats = Math.max(session.completedRepeats, completed);
-          // Leave at least one JS/modal pass when the sheet has not opened yet.
-          if (!session.orderOpened && session.completedRepeats >= session.configuredRepeats) {
-            session.completedRepeats = Math.max(0, session.configuredRepeats - 1);
-            session.state = "queued";
-          } else if (session.completedRepeats >= session.configuredRepeats) {
-            session.state = "completed";
-          }
-        }
+        // Never resurrect a buzzer from SecureStore after process death / reboot.
+        // Pending orders are re-validated from the backend and shown in-app without
+        // audio until a genuinely new authorized alert event arrives.
+        session.state = "stopped";
+        session.stopReason = "dismissed";
+        session.endedAt = Date.now();
         logAlert({
           orderId: session.orderId,
           sessionId: session.sessionId,
-          event: "HYDRATED",
+          event: "HYDRATED_MUTED",
           completedRepeats: session.completedRepeats,
           remainingRepeats: remainingRepeatsOf(session),
           state: session.state,
         });
         await persistSession();
+        stopOrderAlertSound();
+        void muteAllNativeOrderAlerts();
       }
     } catch {
       /* ignore */
@@ -658,6 +696,18 @@ export async function continueOrStartNewOrderAlert(args: ContinueArgs): Promise<
   const orderId = String(args.orderId || "").trim();
   if (!orderId) return null;
 
+  // Guarantee B: delayed START / stale tray after global terminate must never revive.
+  if (isOrderAlertGloballyRetired(orderId)) {
+    logAlert({
+      orderId,
+      event: "IGNORE_GLOBALLY_RETIRED",
+      source: args.source,
+    });
+    void stopNativeOrderAlert(merchantAlertSessionId(orderId));
+    void stopNativeOrderAlert(orderId);
+    return lookupSession(orderId);
+  }
+
   const eventId = String(args.eventId ?? "").trim() || `MERCHANT_NEW_ORDER:${orderId}`;
   if (knownEventIds.has(eventId) && session?.orderId === orderId) {
     logAlert({
@@ -711,7 +761,20 @@ export async function continueOrStartNewOrderAlert(args: ContinueArgs): Promise<
     parkedSessions.delete(orderId);
     session = existing;
     if (session.state === "stopped" || session.state === "completed") {
-      // Modal / tap must still chime — prior "completed" is often a false clock hydrate.
+      // Global terminate always wins over local modal/tap restart.
+      if (isTerminalAlertStopReason(session.stopReason)) {
+        retireTerminalOrderAlert(orderId, session.stopReason);
+        logAlert({
+          orderId,
+          sessionId: session.sessionId,
+          event: "IGNORE_TERMINAL",
+          reason: session.stopReason,
+          source: args.source,
+        });
+        await persistSession();
+        return session;
+      }
+      // Modal / tap may still chime after hydrate "dismissed" when order is still pending.
       if (args.source === "MODAL" || args.source === "NOTIFICATION_TAP") {
         const liveCfg = resolveConfig(args.settings, args.device) ?? cfg;
         session.completedRepeats = 0;
@@ -803,6 +866,12 @@ export async function handleNewOrderNotificationTap(args: {
   if (!isMerchantNewOrderPushData(args.data)) return;
   const orderId = extractNewOrderIdFromPush(args.data);
   if (!orderId) return;
+  if (isOrderAlertGloballyRetired(orderId)) {
+    await dismissNativeNewOrderAlerts(orderId);
+    void stopNativeOrderAlert(merchantAlertSessionId(orderId));
+    void stopNativeOrderAlert(orderId);
+    return;
+  }
   const eventId = extractNewOrderEventId(args.data, orderId);
   const startedAt = startedAtFromPush(args.data, args.notificationDate);
   await dismissNativeNewOrderAlerts(orderId);
@@ -822,41 +891,23 @@ export async function handleNewOrderNotificationTap(args: {
     session.orderOpened = true;
     const alertSessionId = extractAlertSessionId(args.data) || session.alertSessionId;
     if (alertSessionId) session.alertSessionId = alertSessionId;
-    await ensureNativeBuzzer(orderId, session.alertSessionId);
-    if (session.state === "playing" && isOrderAlertSoundPlaying()) {
-      logAlert({
-        orderId,
-        sessionId: session.sessionId,
-        event: "NOTIFICATION_TAPPED",
-        remainingRepeats: remaining,
-        action: "TRANSFER_TO_FOREGROUND",
-      });
-      await persistSession();
-      return;
+    // Opening from a notification must silence the buzzer immediately.
+    await muteNewOrderAlertOnAppOpen(orderId);
+    if (isNativeOrderAlertAvailable()) {
+      try {
+        await claimNativeOrderAlert(session.alertSessionId || merchantAlertSessionId(orderId));
+      } catch {
+        /* optional */
+      }
     }
     logAlert({
       orderId,
       sessionId: session.sessionId,
       event: "NOTIFICATION_TAPPED",
       remainingRepeats: remaining,
-      action: "CONTINUE_REMAINING",
+      action: "MUTE_AND_OPEN",
     });
     await persistSession();
-    if (session.state !== "stopped" && session.state !== "completed") {
-      await startPlayback("NOTIFICATION_TAP", {
-        settings: args.settings,
-        device: args.device,
-      });
-    } else if (session.state === "completed" || session.state === "stopped") {
-      session.completedRepeats = 0;
-      session.state = "queued";
-      session.stopReason = undefined;
-      await persistSession();
-      await startPlayback("NOTIFICATION_TAP", {
-        settings: args.settings,
-        device: args.device,
-      });
-    }
     return;
   }
 
@@ -884,17 +935,18 @@ export async function handleNewOrderNotificationTap(args: {
   }
 }
 
-/** Incoming Order Modal is showing this order — always ensure the selected chime plays. */
+/**
+ * Incoming Order Modal is showing this order.
+ * Native FGS owns audio when present — attach UI only; never restart a muted
+ * or background-originated buzzer from the modal. Expo Go falls back to JS.
+ */
 export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<void> {
   await hydrateNewOrderAlertManager();
   const orderId = String(args.orderId || "").trim();
   if (!orderId) return;
   await dismissNativeNewOrderAlerts(orderId);
-  // dismissNativeNewOrderAlerts only clears tray notifications. Claiming is what
-  // retires the floating native card, which otherwise stays on screen underneath
-  // the Incoming sheet now taking over the same order — two popups, one order.
-  // Claim rather than stop: the buzzer must keep ringing until the order is
-  // actually decided, and native still owns the audio.
+  // Claiming retires the floating native card under the Incoming sheet.
+  // Do not mute here: a genuinely new FG order may still be ringing.
   if (isNativeOrderAlertAvailable()) {
     try {
       await claimNativeOrderAlert(
@@ -905,6 +957,7 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
     }
   }
   const liveCfg = resolveConfig(args.settings, args.device);
+  const nativeOwns = isNativeOrderAlertAvailable();
 
   if (session && session.orderId !== orderId) {
     parkActiveSession();
@@ -917,18 +970,8 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
     }
   }
   if (session && session.orderId === orderId) {
-    // Only credit an OS pass when background owned the tray chime.
     if (session.owner === "background") {
       syncCompletedFromClock(session, true);
-      // Keep ≥1 JS pass for the open sheet when sound is still enabled.
-      if (
-        liveCfg?.soundEnabled !== false &&
-        session.completedRepeats >= session.configuredRepeats &&
-        !isOrderAlertSoundPlaying()
-      ) {
-        session.completedRepeats = Math.max(0, session.configuredRepeats - 1);
-        session.state = "queued";
-      }
     }
     session.owner = "modal";
     session.orderOpened = true;
@@ -939,7 +982,20 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
       session.volume01 = liveCfg.volume01;
       session.ringInSilent = liveCfg.ringInSilent;
     }
-    // Stale completed/stopped sessions must not mute the Incoming sheet.
+    const remaining = remainingRepeatsOf(session);
+    logAlert({
+      orderId,
+      sessionId: session.sessionId,
+      event: "MODAL_TAKEOVER",
+      remainingRepeats: remaining,
+      state: session.state,
+      nativeOwns: nativeOwns ? 1 : 0,
+    });
+    await persistSession();
+    // Native owns the buzzer — modal never starts a second JS player.
+    if (nativeOwns) return;
+    if (isOrderAlertSoundPlaying() && session.state === "playing") return;
+    if (session.state === "stopped" && liveCfg?.soundEnabled === false) return;
     if (
       (session.state === "stopped" || session.state === "completed" || remainingRepeatsOf(session) <= 0) &&
       liveCfg?.soundEnabled !== false &&
@@ -949,21 +1005,14 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
       session.state = "queued";
       session.stopReason = undefined;
     }
-    const remaining = remainingRepeatsOf(session);
-    logAlert({
-      orderId,
-      sessionId: session.sessionId,
-      event: "MODAL_TAKEOVER",
-      remainingRepeats: remaining,
-      state: session.state,
-    });
-    await persistSession();
-    if (isOrderAlertSoundPlaying() && session.state === "playing") return;
-    if (session.state === "stopped" && liveCfg?.soundEnabled === false) return;
     await startPlayback("MODAL", { settings: args.settings, device: args.device });
     return;
   }
 
+  if (nativeOwns) {
+    await continueOrStartNewOrderAlert({ ...args, source: "MODAL" });
+    return;
+  }
   await continueOrStartNewOrderAlert({ ...args, source: "MODAL" });
 }
 
@@ -989,6 +1038,10 @@ export async function stopNewOrderAlert(
       if (t) void stopNativeOrderAlert(t);
     }
   };
+
+  if (isTerminalAlertStopReason(reason) && id) {
+    retireTerminalOrderAlert(id, reason);
+  }
 
   if (parked) {
     parked.state = "stopped";
@@ -1044,6 +1097,14 @@ export function peekNewOrderAlertSessionId(orderId: string | null | undefined): 
   if (parked?.alertSessionId) return String(parked.alertSessionId);
   if (session?.orderId === id && session.alertSessionId) return String(session.alertSessionId);
   return merchantAlertSessionId(id);
+}
+
+/** True only when this install has a live or parked JS session for the order. */
+export function hasLocalNewOrderAlertSession(orderId: string | null | undefined): boolean {
+  const id = String(orderId ?? "").trim();
+  if (!id) return false;
+  if (session?.orderId === id) return true;
+  return parkedSessions.has(id);
 }
 
 export function isNewOrderPushPayload(data: Record<string, unknown> | null | undefined): boolean {

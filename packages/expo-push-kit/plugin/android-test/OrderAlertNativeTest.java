@@ -167,6 +167,30 @@ public final class OrderAlertNativeTest {
     // the backend is the one that actually retires the assignment either way.
     eq("a device clock ahead of the server expires early",
         "0s", OrderAlertCardText.countdownLabel(now, now + 60_000));
+
+    eq("clock form for lock screen", "0:47",
+        OrderAlertCardText.countdownClock(now + 47_000, now));
+    eq("clock form with minutes", "1:05",
+        OrderAlertCardText.countdownClock(now + 65_000, now));
+    eq("clock expired", "0:00", OrderAlertCardText.countdownClock(now, now));
+    eq("open to accept label", "OPEN TO ACCEPT →", OrderAlertCardText.openToAcceptLabel());
+
+    String[] items = OrderAlertCardText.itemLines(
+        "[{\"q\":1,\"n\":\"Paneer Burger\"},{\"q\":2,\"n\":\"Butter Naan\"}]", 6);
+    eq("item line count", 2, items.length);
+    eq("item line format", "1 × Paneer Burger", items[0]);
+    eq("item line qty", "2 × Butter Naan", items[1]);
+
+    check(
+        "shade body includes items",
+        OrderAlertCardText.shadeBody(
+            "GMF100058",
+            "142",
+            "Aakash",
+            "[{\"q\":1,\"n\":\"Paneer Burger\"}]",
+            ""
+        ).contains("Paneer Burger")
+    );
   }
 
   // ---------------------------------------------------------- presentation

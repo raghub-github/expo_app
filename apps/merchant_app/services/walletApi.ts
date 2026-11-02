@@ -25,6 +25,58 @@ export type PayoutSettlementSummary = MerchantPayoutSettlementClient;
 
 const walletSummaryInFlight = new Map<string, Promise<WalletSummary>>();
 
+type TimedCache<T> = { at: number; data: T };
+const walletSummaryCache = new Map<number, TimedCache<WalletSummary>>();
+const payoutCyclesCache = new Map<number, TimedCache<unknown>>();
+const payoutRequestsCache = new Map<string, TimedCache<unknown>>();
+const ledgerCache = new Map<string, TimedCache<LedgerResponse>>();
+
+/** Instant home/earnings paint — last good wallet (may be slightly stale). */
+export function peekWalletSummary(storeId: number): WalletSummary | null {
+  return walletSummaryCache.get(storeId)?.data ?? null;
+}
+
+export function peekPayoutCycles(storeId: number): PayoutCycleCard[] | null {
+  const data = payoutCyclesCache.get(storeId)?.data;
+  return Array.isArray(data) ? (data as PayoutCycleCard[]) : null;
+}
+
+export function peekPayoutRequests(
+  storeId: number,
+  limit = 20,
+): { summary: PayoutRequestsSummary; recent: PayoutRequestListItem[] } | null {
+  const data = payoutRequestsCache.get(`${storeId}:${limit}`)?.data;
+  return data
+    ? (data as { summary: PayoutRequestsSummary; recent: PayoutRequestListItem[] })
+    : null;
+}
+
+export function peekLedger(
+  storeId: number,
+  opts?: { limit?: number; offset?: number; from?: string; to?: string; direction?: string; category?: string },
+): LedgerResponse | null {
+  const key = `${storeId}:${opts?.limit ?? 50}:${opts?.offset ?? 0}:${opts?.from ?? ""}:${opts?.to ?? ""}:${opts?.direction ?? ""}:${opts?.category ?? ""}`;
+  return ledgerCache.get(key)?.data ?? null;
+}
+
+export function invalidateWalletCaches(storeId?: number): void {
+  if (storeId == null) {
+    walletSummaryCache.clear();
+    payoutCyclesCache.clear();
+    payoutRequestsCache.clear();
+    ledgerCache.clear();
+    return;
+  }
+  walletSummaryCache.delete(storeId);
+  payoutCyclesCache.delete(storeId);
+  for (const key of [...payoutRequestsCache.keys()]) {
+    if (key.startsWith(`${storeId}:`)) payoutRequestsCache.delete(key);
+  }
+  for (const key of [...ledgerCache.keys()]) {
+    if (key.startsWith(`${storeId}:`)) ledgerCache.delete(key);
+  }
+}
+
 export async function fetchWalletSummary(storeId: number, token: string): Promise<WalletSummary> {
   const key = `${storeId}:${token.slice(-24)}`;
   const existing = walletSummaryInFlight.get(key);
@@ -38,7 +90,9 @@ export async function fetchWalletSummary(storeId: number, token: string): Promis
       throw new Error((err as any).error || "Failed to load wallet");
     }
     const data = await res.json();
-    return data as WalletSummary;
+    const summary = data as WalletSummary;
+    walletSummaryCache.set(storeId, { at: Date.now(), data: summary });
+    return summary;
   })();
   walletSummaryInFlight.set(key, run);
   try {
@@ -79,6 +133,7 @@ export async function fetchLedger(
   token: string,
   opts?: { limit?: number; offset?: number; from?: string; to?: string; direction?: string; category?: string }
 ): Promise<LedgerResponse> {
+  const cacheKey = `${storeId}:${opts?.limit ?? 50}:${opts?.offset ?? 0}:${opts?.from ?? ""}:${opts?.to ?? ""}:${opts?.direction ?? ""}:${opts?.category ?? ""}`;
   const params = new URLSearchParams();
   if (opts?.limit) params.set("limit", String(opts.limit));
   if (opts?.offset) params.set("offset", String(opts.offset));
@@ -103,7 +158,9 @@ export async function fetchLedger(
       created_at: created ? created.toISOString() : String(e.created_at ?? e.createdAt ?? ""),
     };
   });
-  return { entries, total: (data as { total?: number }).total ?? entries.length };
+  const result = { entries, total: (data as { total?: number }).total ?? entries.length };
+  ledgerCache.set(cacheKey, { at: Date.now(), data: result });
+  return result;
 }
 
 export async function fetchPayoutSettlement(
@@ -168,7 +225,9 @@ export async function fetchPayoutCycles(
     throw new Error((err as { error?: string }).error || "Failed to load payout cycles");
   }
   const data = await res.json();
-  return ((data as { cycles?: PayoutCycleCard[] }).cycles ?? []) as PayoutCycleCard[];
+  const cycles = ((data as { cycles?: PayoutCycleCard[] }).cycles ?? []) as PayoutCycleCard[];
+  payoutCyclesCache.set(storeId, { at: Date.now(), data: cycles });
+  return cycles;
 }
 
 export async function fetchPayoutQuote(storeId: number, amount: number, token: string): Promise<PayoutQuote> {
@@ -246,8 +305,10 @@ export async function fetchPayoutRequests(
     throw new Error((err as { error?: string }).error || "Failed to load payouts");
   }
   const data = await res.json();
-  return {
+  const result = {
     summary: (data as { summary: PayoutRequestsSummary }).summary,
     recent: (data as { recent: PayoutRequestListItem[] }).recent ?? [],
   };
+  payoutRequestsCache.set(`${storeId}:${limit}`, { at: Date.now(), data: result });
+  return result;
 }

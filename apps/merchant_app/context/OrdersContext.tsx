@@ -50,10 +50,10 @@ import {
 import { presentLocalLifecycleAlert } from "@/lib/presentLocalNewOrderAlert";
 
 /** Pending accept: realtime + FCM are primary; poll is a safety net only. */
-const POLL_FAST_MS = 18_000;
-const POLL_NORMAL_MS = 40_000;
-const POLL_IDLE_MS = 55_000;
-const POLL_BACKOFF_MS = 75_000;
+const POLL_FAST_MS = 30_000;
+const POLL_NORMAL_MS = 50_000;
+const POLL_IDLE_MS = 75_000;
+const POLL_BACKOFF_MS = 90_000;
 /** Reviews hydrate for delivered cards — once per store, not on every board poll. */
 const REVIEWS_CACHE_MS = 5 * 60_000;
 /** Avoid stampeding the API when managing many outlets at once. */
@@ -516,8 +516,6 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     [orders]
   );
 
-  const ordersTabHot = hasPendingAccept || hasActivePipeline || activeTab === "orders";
-
   useEffect(() => {
     if (!token || orderStoreIds.length === 0) {
       setLoading(false);
@@ -531,12 +529,13 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(watchdog);
   }, [refetch, token, orderStoreIds.length]);
 
+  // Realtime + FCM cover kitchen updates; keep HTTP poll light unless accepting / on Orders tab.
   const pollIntervalMs =
     pollFailStreak >= 2
       ? POLL_BACKOFF_MS
       : hasPendingAccept
         ? POLL_FAST_MS
-        : ordersTabHot
+        : activeTab === "orders" || hasActivePipeline
           ? POLL_NORMAL_MS
           : POLL_IDLE_MS;
 
@@ -587,11 +586,14 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     [orderStoreIds]
   );
 
-  /** Fuse expiry: tick every second, hide instantly, then sync cancel + refund on server. */
+  /** Fuse expiry: wake near deadlines (not a perpetual 1s loop), hide instantly, then sync. */
   const expiredCreatedSyncRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     if (!token || orderStoreIds.length === 0) return;
     if (!hasPendingAccept) return;
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
 
     const flushExpired = () => {
       if (!isAppForeground()) return;
@@ -638,9 +640,45 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       }
     };
 
-    flushExpired();
-    const id = setInterval(flushExpired, 1000);
-    return () => clearInterval(id);
+    const schedule = () => {
+      if (cancelled) return;
+      if (timer != null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (!isAppForeground()) {
+        // Don't spin a 2.5s JS timer while backgrounded — FCM/realtime own expiry.
+        timer = setTimeout(schedule, 30_000);
+        return;
+      }
+      flushExpired();
+      const now = Date.now();
+      let soonestMs = Infinity;
+      for (const o of ordersRef.current) {
+        if (o.status !== "created" || o.id.startsWith("core-")) continue;
+        const leftSec = acceptSecondsLeft(
+          o.createdAt,
+          acceptanceWindowMinutes,
+          now,
+          o.merchantResponseDeadlineAt
+        );
+        if (leftSec <= 0) continue;
+        soonestMs = Math.min(soonestMs, leftSec * 1000);
+      }
+      if (soonestMs === Infinity) return;
+      // Far from deadline → wake every 10s (was 5s — idle heat); near zero → ≤1s.
+      const wakeIn =
+        soonestMs > 30_000
+          ? Math.min(soonestMs, 10_000)
+          : Math.min(Math.max(soonestMs, 250), 1_000);
+      timer = setTimeout(schedule, wakeIn);
+    };
+
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer != null) clearTimeout(timer);
+    };
   }, [
     token,
     orderStoreIds,

@@ -7,6 +7,7 @@ import { getRiderAppConfig, resolveUrlForDevice } from "@/src/config/env";
 import { ingestIncomingDispatchOffer, cancelIncomingDispatchOffer } from "@/src/lib/ingestIncomingDispatchOffer";
 import { riderDispatchLog, riderDispatchWarn } from "@/src/lib/rider-dispatch-log";
 import { acquireAndCommitRiderLocation } from "@/src/services/location/riderLocationController";
+import { getSharedLocationEngine } from "@/src/services/location/locationTracker";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import { pingLocation } from "@/src/services/location/locationPinger";
 import { useRiderWsStore } from "@/src/stores/riderWsStore";
@@ -23,6 +24,10 @@ const RECONNECT_MAX_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const STALE_CONNECTION_MS = 75_000;
 const GATEWAY_DOWN_LOG_COOLDOWN_MS = 120_000;
+/** Avoid stacking Highest-accuracy GPS bursts when dispatch wakes often. */
+const LOCATION_WAKE_MIN_GAP_MS = 5_000;
+const LOCATION_WAKE_FRESH_MS = 2_000;
+let lastLocationWakeAtMs = 0;
 
 /** ws://host:4100 → http://host:4100/healthz */
 function wsOriginToHealthUrl(wsOrigin: string): string {
@@ -256,15 +261,33 @@ export function RiderDispatchRealtime() {
               }
               return;
             }
-            // P2 "wake + fresh ping": dispatch is about to offer an order to THIS rider and
-            // wants a <2s-fresh location to price/route the pre-pickup leg. Capture GPS and
-            // push it immediately; best-effort (dispatch falls back to the last point).
+            // P2 "wake + fresh ping": dispatch wants a <2s-fresh location.
+            // Prefer the shared watch fix (already running on-duty) over a Highest
+            // accuracy cold session — that was a major heat spike on frequent wakes.
             if (payload.type === "location_wake") {
               void (async () => {
                 try {
+                  const now = Date.now();
+                  if (now - lastLocationWakeAtMs < LOCATION_WAKE_MIN_GAP_MS) return;
+                  lastLocationWakeAtMs = now;
+
+                  const sharedFix = getSharedLocationEngine().getLastFix();
+                  const sharedAge =
+                    sharedFix != null ? now - sharedFix.tsMs : Number.POSITIVE_INFINITY;
+                  if (sharedFix && sharedAge <= LOCATION_WAKE_FRESH_MS) {
+                    const deviceId = await getOrCreateDeviceId();
+                    await pingLocation({
+                      session,
+                      deviceId,
+                      fix: sharedFix,
+                      force: true,
+                    });
+                    return;
+                  }
+
                   const result = await acquireAndCommitRiderLocation({
                     assumeReady: true,
-                    requireFresh: true,
+                    preferFast: true,
                   });
                   if (!result.ok) return;
                   const deviceId = await getOrCreateDeviceId();
@@ -277,6 +300,7 @@ export function RiderDispatchRealtime() {
                       lng: result.coords.longitude,
                       accuracyM: result.coords.accuracy ?? undefined,
                     },
+                    force: true,
                   });
                 } catch {
                   // Non-blocking — dispatch uses the existing (still-fresh) point on timeout.

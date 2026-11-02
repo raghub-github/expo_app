@@ -383,7 +383,30 @@ export type MerchantVisibleOrderNotify = {
   amount: number;
   itemCount: number;
   customerName: string;
+  /** Compact JSON for native lock-screen card: [{"q":1,"n":"Paneer Burger","v":"Half"}] */
+  itemsJson: string;
+  specialInstructions: string;
 };
+
+/** Cap FCM data size while still showing a useful kitchen list. */
+export function merchantNotifyItemsJson(
+  items: Array<{ qty?: number; name?: string; variant?: string | null; variantName?: string | null }>
+): string {
+  const rows = items
+    .slice(0, 8)
+    .map((it) => {
+      const q = Math.max(1, Math.floor(Number(it.qty) || 1));
+      const n = String(it.name ?? "").trim() || "Item";
+      const v = String(it.variant ?? it.variantName ?? "").trim();
+      return v ? { q, n, v } : { q, n };
+    })
+    .filter((r) => r.n.length > 0);
+  try {
+    return JSON.stringify(rows);
+  } catch {
+    return "";
+  }
+}
 
 /**
  * Same merchant order value as merchant app incoming modal (pricing.total / merchantOrderBillTotal).
@@ -449,8 +472,28 @@ export async function resolveMerchantVisibleOrderNotify(
 
   const itemCount = merchantNotifyItemCount(items);
   const customerName = "Customer";
+  const itemsJson = merchantNotifyItemsJson(
+    items.map((it) => {
+      const row = it as MerchantOrderItemLike & {
+        variant?: string | null;
+        variantName?: string | null;
+      };
+      return {
+        qty: row.qty,
+        name: row.name,
+        variant: row.variant ?? row.variantName ?? null,
+      };
+    })
+  );
+  const specialInstructions = items
+    .map((it) => String((it as { special_instructions?: string | null }).special_instructions ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join("; ");
   const wrap = (amount: number | null): MerchantVisibleOrderNotify | null =>
-    amount != null && amount > 0.005 ? { amount: round2(amount), itemCount, customerName } : null;
+    amount != null && amount > 0.005
+      ? { amount: round2(amount), itemCount, customerName, itemsJson, specialInstructions }
+      : null;
 
   const frozenTotalCtm = num(core.total_ctm);
   if (frozenTotalCtm > 0.005) return wrap(frozenTotalCtm);

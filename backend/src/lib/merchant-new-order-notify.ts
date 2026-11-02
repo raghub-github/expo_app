@@ -64,17 +64,39 @@ export async function notifyMerchantStoreNewOrder(
   });
   const href = merchantAppHomeNewOrdersHref();
 
-  const foodRows = await sql`
-    SELECT f.formatted_order_id
-    FROM orders_food f
-    INNER JOIN orders_core c ON c.id = f.order_id
-    WHERE f.merchant_store_id = ${merchantStoreId}
-      AND c.order_id = ${orderIdText}
-    ORDER BY f.id DESC
-    LIMIT 1
-  `;
-  const food = foodRows[0] as { formatted_order_id?: string } | undefined;
-  const displayId = (food?.formatted_order_id as string | undefined) ?? orderIdText;
+  let displayId = orderIdText;
+  let expiresAt = "";
+  try {
+    const foodRows = await sql`
+      SELECT f.formatted_order_id, f.merchant_acceptance_deadline_at
+      FROM orders_food f
+      INNER JOIN orders_core c ON c.id = f.order_id
+      WHERE f.merchant_store_id = ${merchantStoreId}
+        AND c.order_id = ${orderIdText}
+      ORDER BY f.id DESC
+      LIMIT 1
+    `;
+    const food = foodRows[0] as {
+      formatted_order_id?: string;
+      merchant_acceptance_deadline_at?: Date | string | null;
+    } | undefined;
+    displayId = (food?.formatted_order_id as string | undefined) ?? orderIdText;
+    if (food?.merchant_acceptance_deadline_at != null) {
+      expiresAt = new Date(food.merchant_acceptance_deadline_at).toISOString();
+    }
+  } catch {
+    const foodRows = await sql`
+      SELECT f.formatted_order_id
+      FROM orders_food f
+      INNER JOIN orders_core c ON c.id = f.order_id
+      WHERE f.merchant_store_id = ${merchantStoreId}
+        AND c.order_id = ${orderIdText}
+      ORDER BY f.id DESC
+      LIMIT 1
+    `;
+    const food = foodRows[0] as { formatted_order_id?: string } | undefined;
+    displayId = (food?.formatted_order_id as string | undefined) ?? orderIdText;
+  }
 
   const title = "New order";
   const body = displayId ? `${displayId} is waiting for acceptance.` : "A new order is waiting for acceptance.";
@@ -89,6 +111,8 @@ export async function notifyMerchantStoreNewOrder(
           total: Math.round(merchantNotify.amount * 100) / 100,
           itemCount: Math.max(1, merchantNotify.itemCount),
           customerName: merchantNotify.customerName || "Customer",
+          itemsJson: merchantNotify.itemsJson || "",
+          specialInstructions: merchantNotify.specialInstructions || "",
         };
       }
       return null;
@@ -102,6 +126,8 @@ export async function notifyMerchantStoreNewOrder(
   let total: number | null = priced?.total ?? null;
   let itemCount = priced?.itemCount ?? 1;
   let customerName = priced?.customerName ?? "Customer";
+  let itemsJson = priced?.itemsJson ?? "";
+  let specialInstructions = priced?.specialInstructions ?? "";
 
   const push_dispatch_started_at = Date.now();
   console.info(
@@ -131,6 +157,9 @@ export async function notifyMerchantStoreNewOrder(
     itemCount,
     amount: total ?? 0,
     customerName,
+    itemsJson,
+    specialInstructions,
+    expiresAt,
   })
     .then(() => {
       console.info(
@@ -154,6 +183,8 @@ export async function notifyMerchantStoreNewOrder(
       total = priced.total;
       itemCount = priced.itemCount;
       customerName = priced.customerName;
+      itemsJson = priced.itemsJson || itemsJson;
+      specialInstructions = priced.specialInstructions || specialInstructions;
     }
 
     await Promise.allSettled([

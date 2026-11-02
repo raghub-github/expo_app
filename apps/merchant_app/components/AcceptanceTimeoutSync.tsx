@@ -57,10 +57,11 @@ export default function AcceptanceTimeoutSync() {
 
   useEffect(() => {
     if (!hasPendingCreated) return undefined;
+    // OrdersContext owns near-deadline UI hide; this is a slow server reconcile only.
     const id = setInterval(() => {
       if (!isAppForeground()) return;
       void runSync({ force: true });
-    }, 15_000);
+    }, 45_000);
     return () => clearInterval(id);
   }, [hasPendingCreated, runSync]);
 

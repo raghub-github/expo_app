@@ -7,6 +7,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
+  cancelAnimation,
   Easing,
   runOnJS,
   useAnimatedStyle,
@@ -314,11 +315,12 @@ export function FloatingLiveSupportTicket() {
       return;
     }
     pulse.value = withRepeat(
-      withTiming(1, { duration: 900, easing: Easing.inOut(Easing.ease) }),
+      withTiming(1, { duration: 1400, easing: Easing.inOut(Easing.ease) }),
       -1,
       true
     );
     return () => {
+      cancelAnimation(pulse);
       pulse.value = 0.4;
     };
   }, [fabVisible, pulse]);

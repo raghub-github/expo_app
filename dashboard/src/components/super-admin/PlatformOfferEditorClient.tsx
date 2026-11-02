@@ -487,7 +487,8 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       conditions.first_ride_only = true;
     }
 
-    // First-order FREE_DELIVERY: shared benefit family + no cancel/refund restore.
+    // First-order FREE_DELIVERY: shared benefit family (anti double-claim across aliases).
+    // Restore-on-cancel / refund follow Status Controls toggles — do not force off.
     const isFirstOrderFreeDelivery =
       form.offer_kind === "FREE_DELIVERY" &&
       (String(form.customer_segment).toUpperCase() === "NEW" ||
@@ -558,8 +559,8 @@ export function PlatformOfferEditorClient({ mode, offerId }: Props) {
       max_uses_per_day: maxUsesPerDay,
       max_uses_per_month: maxUsesPerMonth,
       consume_mode: form.consume_mode === "ON_DELIVERED" ? "ON_DELIVERED" : "ON_PLACED",
-      restore_on_cancel: isFirstOrderFreeDelivery ? false : form.restore_on_cancel,
-      restore_on_refund: isFirstOrderFreeDelivery ? false : form.restore_on_refund,
+      restore_on_cancel: form.restore_on_cancel === true,
+      restore_on_refund: form.restore_on_refund === true,
       is_stackable: isFirstOrderFreeDelivery ? false : form.is_stackable,
       discount_type: form.discount_type,
       value_numeric: valueNumeric,

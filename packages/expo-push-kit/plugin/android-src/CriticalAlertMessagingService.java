@@ -16,7 +16,7 @@ public class CriticalAlertMessagingService extends ExpoFirebaseMessagingService 
 
   @Override
   public void onMessageReceived(RemoteMessage remoteMessage) {
-    boolean controlOnly = false;
+    boolean nativeOwns = false;
     try {
       OrderAlertOverlay.debug(
           this,
@@ -29,12 +29,13 @@ public class CriticalAlertMessagingService extends ExpoFirebaseMessagingService 
               : "",
           "from=" + (remoteMessage != null ? remoteMessage.getFrom() : "")
       );
-      controlOnly = OrderAlertController.handleRemoteMessage(this, remoteMessage);
+      // true ⇒ native FGS/HeadsUp owns the tray; Expo must not post a twin.
+      nativeOwns = OrderAlertController.handleRemoteMessage(this, remoteMessage);
     } catch (Throwable t) {
       Log.w(TAG, "handleRemoteMessage failed: " + t.getMessage());
     }
-    if (controlOnly) {
-      Log.i(TAG, "consumed control FCM, skip Expo renderer");
+    if (nativeOwns) {
+      Log.i(TAG, "consumed critical/control FCM, skip Expo renderer");
       return;
     }
     super.onMessageReceived(remoteMessage);

@@ -12,8 +12,8 @@ const appJson = require("./app.json");
 // EAS Android builds provide the real file, so FCM stays wired there.
 const googleServicesFile = path.resolve(__dirname, "google-services.json");
 const hasGoogleServices = fs.existsSync(googleServicesFile);
-/** Match MerchantBootstrapScreen so the native-to-React handoff has no white flash. */
-const MERCHANT_SPLASH_BG = "#F6FBF9";
+/** Match MerchantBootstrapScreen so the native-to-React handoff has no flash. */
+const MERCHANT_SPLASH_BG = "#026F68";
 
 module.exports = ({ config }) => ({
   ...appJson,
@@ -24,9 +24,10 @@ module.exports = ({ config }) => ({
     scheme: config?.expo?.scheme || appJson.expo.scheme || "gatimitra-merchant",
     // Partner launcher: assets/mxappicon.png is the single canonical icon.
     icon: "./assets/mxappicon.png",
-    // image required: Android release fails linking without drawable/splashscreen_logo.
+    // Solid brand-color drawable only — branding lives in MerchantBootstrapScreen (Lora).
+    // Avoids a second splash logo / "Partner Control" flash before JS paints.
     splash: {
-      image: "./assets/images/splash-logo.png",
+      image: "./assets/images/splash-blank.png",
       resizeMode: "contain",
       backgroundColor: MERCHANT_SPLASH_BG,
     },

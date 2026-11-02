@@ -63,6 +63,7 @@ import { extractApiErrorMessage } from "@/src/services/http";
 import { shouldSkipCoalescedFix, COALESCE_IDLE_HOME_MOVE_M, COALESCE_IDLE_HOME_HEADING_DEG, type CoalesceFixSnapshot } from "@/src/lib/coalesceLocationUi";
 import { useHomeMapLocationStore } from "@/src/stores/homeMapLocationStore";
 import { HomeDutyMap } from "@/src/components/home/HomeDutyMap";
+import { HomeAdsStrip } from "@/src/components/HomeAdsStrip";
 import { mapLog } from "@/src/lib/map-debug";
 import { useRiderBottomDockStore } from "@/src/stores/riderBottomDockStore";
 import { isUsableMapCoordinate, readLatestRiderGps, rememberMapCameraCenter } from "@/src/lib/readLatestRiderGps";
@@ -78,13 +79,20 @@ export default function OrdersScreen() {
   const homeFocused = useIsFocused();
   const { setDuty, isPending: dutyPending, dutyGoOnBlocked, onboardingReviewBlocksDuty } =
     useDutyToggle();
+  const queryClient = useQueryClient();
+  const { data: availableOrders = [] } = useAvailableOrders();
+  const { data: activeOrders = [] } = useActiveOrders();
+  /** Duty / active delivery need hotter GPS; off-duty home pin must stay cool. */
+  const needsDispatchGps = isOnDuty || activeOrders.length > 0;
   const tracker = useMemo(
     () =>
       createForegroundLocationTracker({
         profileId: "orders-map",
-        ...LOCATION_ENGINE_PROFILES.dutyIdleBg,
+        ...(needsDispatchGps
+          ? LOCATION_ENGINE_PROFILES.dutyIdleBg
+          : LOCATION_ENGINE_PROFILES.homeMapIdle),
       }),
-    []
+    [needsDispatchGps]
   );
   const [state, setState] = useState<LocationTrackerState>(tracker.getState());
   const [checkingLocation, setCheckingLocation] = useState(false);
@@ -93,10 +101,6 @@ export default function OrdersScreen() {
   const stickyFixRef = useRef<
     NonNullable<Extract<LocationTrackerState, { status: "tracking" }>["lastFix"]> | undefined
   >(undefined);
-
-  const queryClient = useQueryClient();
-  const { data: availableOrders = [] } = useAvailableOrders();
-  const { data: activeOrders = [] } = useActiveOrders();
   const { data: ridePaymentHolds = [] } = useRidePaymentHolds();
   const { data: earnings } = useEarningsSummary();
   const { data: dutyStatus } = useDutyStatus();
@@ -583,11 +587,16 @@ export default function OrdersScreen() {
     }
   }, []);
 
-  // Keep GPS watch for the home "You" pin whether on or off duty — only after OS grant.
-  // Duty server pings stay gated in useRiderDutyLocationPing (on-duty / active order only).
+  // Home "You" pin GPS — after OS grant only.
+  // Off-duty + leaving the Home tab: release the watch (duty-ping owns on-duty GPS).
+  // Off-duty + Home focused: cool homeMapIdle profile, not High/5s.
   const fgLocationPhase = useForegroundLocationPermissionStore((s) => s.phase);
   useEffect(() => {
     if (fgLocationPhase !== "GRANTED") {
+      void tracker.stop();
+      return;
+    }
+    if (!homeFocused && !needsDispatchGps) {
       void tracker.stop();
       return;
     }
@@ -595,7 +604,7 @@ export default function OrdersScreen() {
     return () => {
       void tracker.stop();
     };
-  }, [tracker, fgLocationPhase]);
+  }, [tracker, fgLocationPhase, homeFocused, needsDispatchGps]);
 
   // Foreground resume: refresh without tearing down the shared watch (keeps last fix).
   useEffect(() => {
@@ -678,7 +687,8 @@ export default function OrdersScreen() {
         /* ignore transient errors */
       }
     };
-    const intervalId = setInterval(recover, 2500);
+    // 8s is enough to notice shade/Settings GPS toggles without a 2.5s CPU loop.
+    const intervalId = setInterval(recover, 8_000);
     const sub = AppState.addEventListener("change", (s) => {
       if (s === "active") void recover();
     });
@@ -750,6 +760,7 @@ export default function OrdersScreen() {
     <View style={styles.container}>
       {/* HomeMapHeader lives in (tabs)/_layout chrome slot — avoids jump on tab focus. */}
       <View style={styles.bannerHost}>
+        <HomeAdsStrip placement="home" />
         <HomeAlertBannerCarousel slides={homeBannerSlides} />
       </View>
 

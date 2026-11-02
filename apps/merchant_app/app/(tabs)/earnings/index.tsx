@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, FlatList, Pressable, ActivityIndicator, Alert, TextInput, RefreshControl, Modal } from "react-native";
-import { useRouter, useFocusEffect } from "expo-router";
+import { useRouter, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
   GatiMitraMerchant,
@@ -13,6 +13,7 @@ import { useAuth } from "@/context/AuthContext";
 import {
   fetchWalletSummary, fetchLedger, createPayoutRequest, fetchPayoutSettlement, fetchPayoutRequests,
   fetchPayoutCycles,
+  peekWalletSummary, peekPayoutCycles, peekPayoutRequests, peekLedger, invalidateWalletCaches,
   type WalletSummary, type LedgerEntry, type PayoutRequestsSummary, type PayoutRequestListItem,
 } from "@/services/walletApi";
 import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
@@ -107,25 +108,40 @@ function timeAgo(dateStr: string): string {
 
 export default function EarningsScreen() {
   const router = useRouter();
+  const { tab: tabParam } = useLocalSearchParams<{ tab?: string }>();
   const scrollBottom = TAB_BAR_SCROLL_CONTENT_PADDING_LOOSE;
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
   const storeId = selectedStore?.id ?? null;
   const liveFreeze = useMerchantWalletFreezeState(storeId);
 
-  const [activeTab, setActiveTab] = useState<"payouts" | "transactions">("payouts");
-  const [wallet, setWallet] = useState<WalletSummary | null>(null);
-  const [payoutSummary, setPayoutSummary] = useState<PayoutRequestsSummary | null>(null);
+  const cachedWallet = storeId != null ? peekWalletSummary(storeId) : null;
+  const cachedCycles = storeId != null ? peekPayoutCycles(storeId) : null;
+  const cachedPayouts = storeId != null ? peekPayoutRequests(storeId, 20) : null;
+
+  const [activeTab, setActiveTab] = useState<"payouts" | "transactions">(() =>
+    String(tabParam ?? "").toLowerCase() === "transactions" ? "transactions" : "payouts"
+  );
+  const [wallet, setWallet] = useState<WalletSummary | null>(() => cachedWallet);
+  const [payoutSummary, setPayoutSummary] = useState<PayoutRequestsSummary | null>(
+    () => cachedPayouts?.summary ?? null
+  );
   const [ledger, setLedger] = useState<LedgerEntry[]>([]);
   const [duesDetail, setDuesDetail] = useState<LedgerEntry | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [cyclesReady, setCyclesReady] = useState(false);
+  const [loading, setLoading] = useState(() => cachedWallet == null);
+  const [cyclesReady, setCyclesReady] = useState(() => cachedCycles != null);
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [txFilter, setTxFilter] = useState<TxFilter>("all");
   const ledgerLoadedForRef = useRef<string | null>(null);
   const loadGenRef = useRef(0);
-  const hasWalletRef = useRef(false);
+  const hasWalletRef = useRef(cachedWallet != null);
+  const [cycleCards, setCycleCards] = useState<PayoutCard[] | null>(() =>
+    cachedCycles && cachedCycles.length > 0 ? buildPayoutCardsFromCycles(cachedCycles) : null
+  );
+  const [recentPayoutRequests, setRecentPayoutRequests] = useState<PayoutRequestListItem[]>(
+    () => cachedPayouts?.recent ?? []
+  );
 
   const [showWithdraw, setShowWithdraw] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState("");
@@ -140,8 +156,6 @@ export default function EarningsScreen() {
    *  The settlement call below is the only fresh source for the live count. */
   const [currentCycleOrders, setCurrentCycleOrders] = useState<number | null>(null);
   const [successSheet, setSuccessSheet] = useState<{ amountLabel: string } | null>(null);
-  const [cycleCards, setCycleCards] = useState<PayoutCard[] | null>(null);
-  const [recentPayoutRequests, setRecentPayoutRequests] = useState<PayoutRequestListItem[]>([]);
   const [holdReasonModal, setHoldReasonModal] = useState<PayoutCard | null>(null);
   const [clearingDues, setClearingDues] = useState(false);
   const [duesRazorpayVisible, setDuesRazorpayVisible] = useState(false);
@@ -154,13 +168,21 @@ export default function EarningsScreen() {
 
   hasWalletRef.current = wallet != null;
 
+  // Home wallet card → Earnings with Payouts (or Transactions) selected.
+  useEffect(() => {
+    const t = String(tabParam ?? "").toLowerCase();
+    if (t === "transactions") setActiveTab("transactions");
+    else if (t === "payouts" || t === "payout") setActiveTab("payouts");
+  }, [tabParam]);
+
   /** Payouts tab core — wallet + cycles + requests. Never blocked on ledger. */
   const loadPayoutsCore = useCallback(async (isRefresh = false) => {
     if (!storeId || !token) return;
     const gen = ++loadGenRef.current;
     if (isRefresh) setRefreshing(true);
     else if (!hasWalletRef.current) setLoading(true);
-    if (!isRefresh) setCyclesReady(false);
+    // Keep cached list visible while refreshing — never blank the payouts tab.
+    if (isRefresh && !hasWalletRef.current) setCyclesReady(false);
     try {
       const walletPromise = fetchWalletSummary(storeId, token).then((w) => {
         if (gen !== loadGenRef.current) return;
@@ -214,7 +236,14 @@ export default function EarningsScreen() {
     if (!storeId || !token) return;
     const key = `${storeId}:${JSON.stringify(ledgerQuery)}`;
     if (!force && ledgerLoadedForRef.current === key) return;
-    setLedgerLoading(true);
+    const peeked = peekLedger(storeId, { limit: 50, ...ledgerQuery });
+    if (peeked && !force) {
+      setLedger(peeked.entries.filter(isMerchantVisibleLedgerEntry));
+      ledgerLoadedForRef.current = key;
+      setLedgerLoading(false);
+    } else if (!peeked) {
+      setLedgerLoading(true);
+    }
     try {
       const l = await fetchLedger(storeId, token, { limit: 50, ...ledgerQuery });
       setLedger(l.entries.filter(isMerchantVisibleLedgerEntry));
@@ -228,16 +257,17 @@ export default function EarningsScreen() {
 
   const load = useCallback(async (isRefresh = false) => {
     ledgerLoadedForRef.current = null;
+    if (isRefresh && storeId != null) invalidateWalletCaches(storeId);
     await loadPayoutsCore(isRefresh);
     if (activeTab === "transactions") {
       await loadLedger(true);
     }
-  }, [loadPayoutsCore, loadLedger, activeTab]);
+  }, [loadPayoutsCore, loadLedger, activeTab, storeId]);
 
-  // Single focus-driven load (avoids mount useEffect + focus double-fetch).
+  // Silent focus refresh — never treat cached wallet as pull-to-refresh.
   useFocusEffect(
     useCallback(() => {
-      void loadPayoutsCore(hasWalletRef.current);
+      void loadPayoutsCore(false);
     }, [loadPayoutsCore])
   );
 
@@ -416,8 +446,9 @@ export default function EarningsScreen() {
       setShowWithdraw(false);
       setWithdrawAmount("");
       setSuccessSheet({ amountLabel });
+      invalidateWalletCaches(storeId);
       requestMerchantDashboardStatsRefresh();
-      await load();
+      await load(true);
     } catch (e) {
       Alert.alert("Failed", e instanceof Error ? e.message : "Try again");
     } finally { setWithdrawing(false); }

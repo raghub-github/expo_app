@@ -16,7 +16,8 @@ const HEARTBEAT_INTERVAL_MS = 20_000;
 const STALE_CONNECTION_MS = 75_000;
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 60_000;
-const APPROACH_REFRESH_MS = 15_000;
+/** WS-connected approach/ETA soft refresh — avoid hammering while pin moves live. */
+const APPROACH_REFRESH_MS = 25_000;
 
 export type RiderTrackingSnapshot = {
   data: MerchantRiderTrackingPayload | null;
