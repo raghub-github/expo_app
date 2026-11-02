@@ -33,7 +33,7 @@ public final class OrderAlertController {
   private static final String PREFS = "gatimitra_order_alert_v1";
   private static final String KEY_SESSIONS = "sessions";
   private static final String KEY_PRIMARY = "primarySessionId";
-  private static final String KEY_RETIRED = "retiredSessions";
+  private static final String KEY_DECISIONS = "decidedAlerts";
   private static final String APP_ROLE = "{{ROLE}}";
   static final String ACTION_STOP = "{{PACKAGE}}.ORDER_ALERT_STOP";
   static final String EXTRA_SESSION_ID = "alertSessionId";
@@ -49,7 +49,6 @@ public final class OrderAlertController {
   static final String STATE_ACTIVE = "active";
   static final String STATE_MUTED = "muted";
   static final String STATE_TERMINAL = "terminal";
-  private static final long RETIRED_TTL_MS = 24L * 60L * 60L * 1000L;
 
   private static final Object LOCK = new Object();
   private static MediaPlayer player;
@@ -58,6 +57,98 @@ public final class OrderAlertController {
   private static String playingSessionId;
 
   private OrderAlertController() {}
+
+  /**
+   * Decision ledger: "this alert is already accepted/rejected, never ring for
+   * it again". See OrderAlertDecisionLedger for why an edge-triggered
+   * start/stop pair cannot hold that guarantee on its own.
+   *
+   * This replaced an earlier retireSession/isRetired pair that keyed on the
+   * ORDER token for every role and additionally substring-scanned the retired
+   * map. For a rider that silently killed work: rejecting wave 1 of ORD9
+   * retired "ORD9", and wave 2's RIDER_NEW_ORDER:ORD9:4:2 extracted "ORD9" and
+   * was refused, so no later wave for that order could ever ring again. The
+   * ledger is role-aware - merchant decisions are terminal and key on the order,
+   * rider decisions key on the wave-scoped session id - and it is executed by
+   * the native test harness rather than trusted on inspection.
+   */
+  private static String[] decisionKeys(String sessionId, String orderId, String offerId) {
+    return OrderAlertDecisionLedger.decisionKeys(APP_ROLE, sessionId, orderId, offerId, "");
+  }
+
+  private static boolean isDecided(Context context, String[] keys) {
+    if (context == null || keys == null || keys.length == 0) return false;
+    try {
+      String ledger = prefs(context).getString(KEY_DECISIONS, "");
+      return OrderAlertDecisionLedger.isDecided(
+          ledger, keys, System.currentTimeMillis(), OrderAlertDecisionLedger.DEFAULT_TTL_MS);
+    } catch (Throwable t) {
+      // A broken ledger must never block a real order.
+      return false;
+    }
+  }
+
+  private static void recordDecision(Context context, String[] keys) {
+    if (context == null || keys == null || keys.length == 0) return;
+    try {
+      SharedPreferences sp = prefs(context);
+      String next = OrderAlertDecisionLedger.record(
+          sp.getString(KEY_DECISIONS, ""),
+          keys,
+          System.currentTimeMillis(),
+          OrderAlertDecisionLedger.DEFAULT_TTL_MS);
+      // commit, not apply: the process is often killed moments after an accept,
+      // and a decision lost to an async write is a buzzer that comes back.
+      sp.edit().putString(KEY_DECISIONS, next).commit();
+    } catch (Throwable ignored) {
+    }
+  }
+
+  /**
+   * Drop sessions too old to be legitimately alerting. Without this a row left
+   * behind by a missed stop is immortal, and every later service start - pill,
+   * app launch, START_STICKY restart - resurrects its buzzer.
+   */
+  private static void pruneStaleSessions(Context context) {
+    JSONArray arr = listSessions(context);
+    if (arr.length() == 0) return;
+    long now = System.currentTimeMillis();
+    JSONArray next = new JSONArray();
+    int dropped = 0;
+    for (int i = 0; i < arr.length(); i++) {
+      try {
+        JSONObject cur = arr.getJSONObject(i);
+        if (OrderAlertDecisionLedger.isSessionStale(
+            cur.optLong("startedAt", 0L), now, OrderAlertDecisionLedger.DEFAULT_SESSION_MAX_AGE_MS)) {
+          dropped++;
+          continue;
+        }
+        next.put(cur);
+      } catch (Exception ignored) {
+      }
+    }
+    if (dropped > 0) {
+      saveSessions(context, next);
+      if (next.length() == 0) putPrimary(context, "");
+      Log.i(TAG, "pruned " + dropped + " stale session(s)");
+    }
+  }
+
+  /**
+   * The session a specific id refers to, or null.
+   *
+   * Accept/Reject must act on the alert the user actually tapped. Resolving it
+   * through getActive() instead returns the PRIMARY session, so with two orders
+   * queued a merchant could accept one and leave the other one buzzing.
+   */
+  public static JSONObject getSessionById(Context context, String sessionId) {
+    if (context == null) return null;
+    String sid = sessionId == null ? "" : sessionId.trim();
+    if (sid.length() == 0) return null;
+    synchronized (LOCK) {
+      return findSession(context, sid, "", "");
+    }
+  }
 
   /**
    * @return true when native owns this message end-to-end (Expo/FCM tray must not
@@ -100,21 +191,18 @@ public final class OrderAlertController {
       } else if (orderId.length() > 0) {
         stop(context, orderId);
       }
-      // Always retire payload order tokens so a delayed START cannot revive
-      // after the session row was already removed.
-      if (orderId.length() > 0) {
-        retireSession(context, orderId);
-        retireSession(context, "merchant-order-" + orderId);
-        retireSession(context, "rider-offer-" + orderId);
-      }
-      if (sessionId.length() > 0) {
-        retireSession(context, sessionId);
-        String extracted = extractOrderToken(sessionId);
-        if (extracted.length() > 0) {
-          retireSession(context, extracted);
-          retireSession(context, "merchant-order-" + extracted);
-        }
-      }
+      // Ledger the decision under every id this order is known by, even when no
+      // local session matched, so a delayed START cannot revive it. Role-aware:
+      // a merchant order is terminal, while a rider's next wave carries a
+      // different session id and must still be allowed to ring.
+      recordDecision(
+          context,
+          OrderAlertDecisionLedger.decisionKeys(
+              APP_ROLE,
+              sessionId,
+              orderId,
+              first(data, "offerId", "offer_id"),
+              first(data, "foodOrderId", "food_order_id")));
       return true;
     }
 
@@ -135,7 +223,14 @@ public final class OrderAlertController {
     if (sessionId.length() == 0) return controlOnly;
 
     // Accepted / rejected / expired sessions must never resurrect from delayed FCM.
-    if (isRetired(context, sessionId)) {
+    if (isDecided(
+        context,
+        OrderAlertDecisionLedger.decisionKeys(
+            APP_ROLE,
+            sessionId,
+            first(data, "orderId", "order_id", "foodOrderId", "food_order_id"),
+            first(data, "offerId", "offer_id"),
+            first(data, "foodOrderId", "food_order_id")))) {
       AlertEngineLog.log(context, "ALERT_IGNORED_RETIRED", sessionId, previewOrder, null);
       return true;
     }
@@ -303,12 +398,16 @@ public final class OrderAlertController {
     String dropText = drop == null ? "" : drop.trim();
     String typeText = orderType == null ? "" : orderType.trim();
 
-    if (isRetired(context, sid)) {
-      AlertEngineLog.log(context, "ALERT_IGNORED_RETIRED", sid, oid, "start");
+    // Already accepted/rejected -> never ring again. This is what makes start
+    // idempotent against a replayed, queued or out-of-order FCM "start".
+    if (isDecided(context, decisionKeys(sid, oid, offer))) {
+      AlertEngineLog.log(context, "ALERT_START_REFUSED_DECIDED", sid, oid, "role=" + APP_ROLE);
+      Log.i(TAG, "start refused - already decided sessionId=" + sid + " orderId=" + oid);
       return;
     }
 
     synchronized (LOCK) {
+      pruneStaleSessions(context);
       JSONObject existing = findSession(context, sid, oid, offer);
       if (existing != null) {
         String existingId = existing.optString("sessionId", sid);
@@ -389,16 +488,24 @@ public final class OrderAlertController {
     OrderAlertPill.onOrderClosed(context, sid);
     boolean empty;
     synchronized (LOCK) {
+      // Record BEFORE removing: the row carries the other id forms this order is
+      // known by, and a stop that arrives before any start must still block it.
+      // resolveDecisionSessionId prefers the ROW's session id over the needle,
+      // because callers legitimately stop by order id - the rider app passes
+      // activeOrderIdRef - and a rider decision is keyed on the wave-scoped
+      // session id.
       JSONObject doomed = findSession(context, sid, sid, sid);
-      if (doomed != null) {
-        retireSession(context, doomed.optString("sessionId", sid));
-        String oid = doomed.optString("foodOrderId", "");
-        if (oid.length() == 0) oid = doomed.optString("orderId", "");
-        if (oid.length() > 0) retireSession(context, oid);
-        retireSession(context, "merchant-order-" + oid);
-      } else {
-        retireSession(context, sid);
+      String doomedOrderId = doomed != null ? doomed.optString("foodOrderId", "") : "";
+      if (doomedOrderId.length() == 0 && doomed != null) {
+        doomedOrderId = doomed.optString("orderId", "");
       }
+      recordDecision(
+          context,
+          decisionKeys(
+              OrderAlertDecisionLedger.resolveDecisionSessionId(
+                  sid, doomed != null ? doomed.optString("sessionId", "") : ""),
+              doomedOrderId,
+              doomed != null ? doomed.optString("offerId", "") : ""));
       removeSession(context, sid);
       empty = listSessions(context).length() == 0;
       if (empty) {
@@ -452,13 +559,9 @@ public final class OrderAlertController {
   public static void stopAll(Context context) {
     if (context == null) return;
     synchronized (LOCK) {
-      JSONArray all = listSessions(context);
-      for (int i = 0; i < all.length(); i++) {
-        try {
-          retireSession(context, all.getJSONObject(i).optString("sessionId", ""));
-        } catch (Exception ignored) {
-        }
-      }
+      // Deliberately records NO decision. stopAll is the 20-minute watchdog and
+      // the tray Stop action; a watchdog timeout is not the merchant deciding
+      // anything, and retiring the order here would refuse a legitimate re-push.
       clearSessions(context);
       putPrimary(context, "");
     }
@@ -544,6 +647,7 @@ public final class OrderAlertController {
 
   public static JSONObject getActive(Context context) {
     synchronized (LOCK) {
+      pruneStaleSessions(context);
       String primary = prefs(context).getString(KEY_PRIMARY, "");
       JSONObject row = findSession(context, primary, "", "");
       if (row == null) {
@@ -688,8 +792,8 @@ public final class OrderAlertController {
 
   private static void ensureAudio(Context context, String sessionId, String soundType) {
     synchronized (LOCK) {
-      if (isRetired(context, sessionId)) {
-        AlertEngineLog.log(context, "BUZZER_START", sessionId, "", "skipped=retired");
+      if (isDecided(context, decisionKeys(sessionId, "", ""))) {
+        AlertEngineLog.log(context, "BUZZER_START", sessionId, "", "skipped=decided");
         return;
       }
       JSONObject row = findSession(context, sessionId, sessionId, sessionId);
@@ -1178,60 +1282,9 @@ public final class OrderAlertController {
     prefs(context).edit().putString(KEY_PRIMARY, sessionId == null ? "" : sessionId).apply();
   }
 
-  private static void retireSession(Context context, String token) {
-    String t = token == null ? "" : token.trim();
-    if (t.length() == 0) return;
-    try {
-      JSONObject map = readRetired(context);
-      map.put(t, System.currentTimeMillis());
-      // Bound growth: drop entries older than TTL.
-      java.util.Iterator<String> keys = map.keys();
-      java.util.ArrayList<String> drop = new java.util.ArrayList<>();
-      long now = System.currentTimeMillis();
-      while (keys.hasNext()) {
-        String k = keys.next();
-        if (now - map.optLong(k, 0L) > RETIRED_TTL_MS) drop.add(k);
-      }
-      for (String k : drop) map.remove(k);
-      prefs(context).edit().putString(KEY_RETIRED, map.toString()).apply();
-    } catch (Exception ignored) {
-    }
-  }
 
-  private static boolean isRetired(Context context, String token) {
-    String t = token == null ? "" : token.trim();
-    if (t.length() == 0 || context == null) return false;
-    try {
-      JSONObject map = readRetired(context);
-      if (nowFresh(map.optLong(t, 0L))) return true;
-      String extracted = extractOrderToken(t);
-      if (extracted.length() == 0) return false;
-      if (nowFresh(map.optLong(extracted, 0L))) return true;
-      if (nowFresh(map.optLong("merchant-order-" + extracted, 0L))) return true;
-      if (nowFresh(map.optLong("rider-offer-" + extracted, 0L))) return true;
-      java.util.Iterator<String> keys = map.keys();
-      while (keys.hasNext()) {
-        String k = keys.next();
-        if (k.contains(extracted) && nowFresh(map.optLong(k, 0L))) return true;
-      }
-      return false;
-    } catch (Exception ignored) {
-      return false;
-    }
-  }
 
-  private static boolean nowFresh(long at) {
-    return at > 0L && System.currentTimeMillis() - at <= RETIRED_TTL_MS;
-  }
 
-  private static JSONObject readRetired(Context context) {
-    try {
-      String raw = prefs(context).getString(KEY_RETIRED, "{}");
-      return new JSONObject(raw == null || raw.length() == 0 ? "{}" : raw);
-    } catch (Exception e) {
-      return new JSONObject();
-    }
-  }
 
   private static String first(Map<String, String> data, String... keys) {
     if (data == null) return "";

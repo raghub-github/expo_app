@@ -188,7 +188,13 @@ if [[ -n "$target_id" && ${#fresh[@]} -ge 1 && ${#stale[@]} -ge 1 ]]; then
     retire ${doomed[@]+"${doomed[@]}"}
     reload_nginx
     echo "▶ deploy: $svc — pruning dangling images"
-    docker image prune -f >/dev/null
+    # Housekeeping only. By this point the new replica is healthy, the old one is
+    # retired and nginx has been reloaded - the release is already live. A prune
+    # that is slow (many dangling layers) or stuck must therefore never fail the
+    # deploy: one backend roll burned its entire 20-minute job budget here AFTER a
+    # fully successful release, reported failure, and skipped the public-endpoint
+    # verification that would have shown the deploy was fine.
+    timeout 90 docker image prune -f >/dev/null 2>&1 || echo "⚠ deploy: $svc — image prune skipped (slow or unavailable); release is unaffected"
     echo "✔ deploy: $svc — done (recovered an interrupted deploy)"
     exit 0
   fi
@@ -256,6 +262,12 @@ retire "${old_cids[@]}"
 reload_nginx
 
 echo "▶ deploy: $svc — pruning dangling images"
-docker image prune -f >/dev/null
+# Housekeeping only. By this point the new replica is healthy, the old one is
+# retired and nginx has been reloaded - the release is already live. A prune
+# that is slow (many dangling layers) or stuck must therefore never fail the
+# deploy: one backend roll burned its entire 20-minute job budget here AFTER a
+# fully successful release, reported failure, and skipped the public-endpoint
+# verification that would have shown the deploy was fine.
+timeout 90 docker image prune -f >/dev/null 2>&1 || echo "⚠ deploy: $svc — image prune skipped (slow or unavailable); release is unaffected"
 
 echo "✔ deploy: $svc — done"

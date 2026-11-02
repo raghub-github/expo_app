@@ -19,6 +19,8 @@ public final class OrderAlertNativeTest {
     cardText();
     countdown();
     presentation();
+    decisionLedger();
+    richCard();
 
     System.out.println("  " + passed + " passed, " + failed + " failed  [role=" + ROLE + "]");
     if (failed > 0) System.exit(1);
@@ -250,6 +252,324 @@ public final class OrderAlertNativeTest {
   }
 
   // --------------------------------------------------------------- harness
+
+  // ------------------------------------------------------- decision ledger
+
+  private static void decisionLedger() {
+    final long TTL = OrderAlertDecisionLedger.DEFAULT_TTL_MS;
+    final long NOW = 1_700_000_000_000L;
+
+    // ---- canonicalisation: every id shape must reduce to one order token.
+    eq("canonical from merchant session id",
+        "100058", OrderAlertDecisionLedger.canonicalToken("MERCHANT_NEW_ORDER:100058:12"));
+    eq("canonical from native session id",
+        "100058", OrderAlertDecisionLedger.canonicalToken("merchant-order-100058"));
+    eq("canonical from raw id",
+        "100058", OrderAlertDecisionLedger.canonicalToken("100058"));
+    eq("canonical from rider session id",
+        "ORD9", OrderAlertDecisionLedger.canonicalToken("RIDER_NEW_ORDER:ORD9:4:1"));
+    eq("canonical trims", "100058", OrderAlertDecisionLedger.canonicalToken("  100058 "));
+    eq("canonical of null is empty", "", OrderAlertDecisionLedger.canonicalToken(null));
+    eq("canonical of blank is empty", "", OrderAlertDecisionLedger.canonicalToken("   "));
+
+    // ---- merchant keys unify the two id forms the backend mints.
+    String[] startKeys = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:100058:12", "100058", "", "100058");
+    String[] stopByCoreId = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:100058:12", "ord_abc", "", "100058");
+    check("merchant keys are order-scoped", startKeys.length > 0);
+
+    // THE CORE GUARANTEE: accept -> a replayed start for that order is refused.
+    String led = OrderAlertDecisionLedger.record("", startKeys, NOW, TTL);
+    check("decided right after accept",
+        OrderAlertDecisionLedger.isDecided(led, startKeys, NOW, TTL));
+
+    // The reported bug: phone off, FCM queues the start, the stop lands first or
+    // is lost, the start arrives on power-on hours later. It must not beep.
+    long afterReboot = NOW + (6L * 60L * 60L * 1000L);
+    check("queued start after a reboot is still refused",
+        OrderAlertDecisionLedger.isDecided(led, startKeys, afterReboot, TTL));
+
+    // A stop keyed on the core order id must block a start keyed on the food id.
+    String ledCore = OrderAlertDecisionLedger.record("", stopByCoreId, NOW, TTL);
+    check("stop by a different id form still blocks the start",
+        OrderAlertDecisionLedger.isDecided(ledCore, startKeys, NOW, TTL));
+
+    // A stop that arrives BEFORE any start must still block it (FCM ordering).
+    check("stop-before-start blocks the later start",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopByCoreId, NOW, TTL),
+            startKeys, NOW + 5_000L, TTL));
+
+    // ---- a different order is untouched.
+    String[] other = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:100059:12", "100059", "", "100059");
+    check("a different order is NOT decided",
+        !OrderAlertDecisionLedger.isDecided(led, other, NOW, TTL));
+
+    // ---- expiry: the ledger must not grow forever.
+    check("decision expires after the ttl",
+        !OrderAlertDecisionLedger.isDecided(led, startKeys, NOW + TTL + 1L, TTL));
+    eq("expired entries are pruned away",
+        0, OrderAlertDecisionLedger.size(
+            OrderAlertDecisionLedger.prune(led, NOW + TTL + 1L, TTL)));
+    eq("live entries survive a prune",
+        OrderAlertDecisionLedger.size(led),
+        OrderAlertDecisionLedger.size(OrderAlertDecisionLedger.prune(led, NOW, TTL)));
+    check("ttl of zero never expires",
+        OrderAlertDecisionLedger.isDecided(led, startKeys, NOW + (99L * TTL), 0L));
+
+    // ---- empty / malformed input must never throw or false-positive.
+    check("empty ledger decides nothing",
+        !OrderAlertDecisionLedger.isDecided("", startKeys, NOW, TTL));
+    check("null ledger decides nothing",
+        !OrderAlertDecisionLedger.isDecided(null, startKeys, NOW, TTL));
+    check("no keys decides nothing",
+        !OrderAlertDecisionLedger.isDecided(led, new String[0], NOW, TTL));
+    check("null keys decides nothing",
+        !OrderAlertDecisionLedger.isDecided(led, null, NOW, TTL));
+    check("garbage ledger decides nothing",
+        !OrderAlertDecisionLedger.isDecided("not-a-ledger|x@|@5", startKeys, NOW, TTL));
+    eq("recording nothing on an empty ledger stays empty",
+        "", OrderAlertDecisionLedger.record("", new String[0], NOW, TTL));
+
+    // ---- separators can never corrupt an entry.
+    String[] nasty = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "", "10|00@58", "", "");
+    String nastyLed = OrderAlertDecisionLedger.record("", nasty, NOW, TTL);
+    eq("a token carrying separators yields exactly one entry", 1,
+        OrderAlertDecisionLedger.size(nastyLed));
+    check("the sanitised token round-trips",
+        OrderAlertDecisionLedger.isDecided(nastyLed, nasty, NOW, TTL));
+
+    // ---- re-recording the same order must not duplicate it.
+    String twice = OrderAlertDecisionLedger.record(led, startKeys, NOW + 1_000L, TTL);
+    eq("re-deciding does not grow the ledger",
+        OrderAlertDecisionLedger.size(led), OrderAlertDecisionLedger.size(twice));
+
+    // ---- bounded growth: oldest decisions are evicted, newest survive.
+    String big = "";
+    for (int i = 0; i < OrderAlertDecisionLedger.MAX_ENTRIES + 50; i++) {
+      big = OrderAlertDecisionLedger.record(
+          big,
+          OrderAlertDecisionLedger.decisionKeys("merchant", "", "ord" + i, "", ""),
+          NOW + i,
+          TTL);
+    }
+    eq("ledger is capped", OrderAlertDecisionLedger.MAX_ENTRIES,
+        OrderAlertDecisionLedger.size(big));
+    check("the newest decision survives the cap",
+        OrderAlertDecisionLedger.isDecided(
+            big,
+            OrderAlertDecisionLedger.decisionKeys(
+                "merchant", "", "ord" + (OrderAlertDecisionLedger.MAX_ENTRIES + 49), "", ""),
+            NOW + 10_000L,
+            TTL));
+    check("the oldest decision was evicted",
+        !OrderAlertDecisionLedger.isDecided(
+            big,
+            OrderAlertDecisionLedger.decisionKeys("merchant", "", "ord0", "", ""),
+            NOW + 10_000L,
+            TTL));
+
+    // ---- ROLE SPLIT. A rider's next wave must still ring; a merchant's
+    // accepted order must not. Keying riders on the order id would silently
+    // cost them work, so this split is load-bearing, not cosmetic.
+    String[] wave1 = OrderAlertDecisionLedger.decisionKeys(
+        "rider", "RIDER_NEW_ORDER:ORD9:4:1", "ORD9", "ORD9", "");
+    String[] wave2 = OrderAlertDecisionLedger.decisionKeys(
+        "rider", "RIDER_NEW_ORDER:ORD9:4:2", "ORD9", "ORD9", "");
+    String riderLed = OrderAlertDecisionLedger.record("", wave1, NOW, TTL);
+    check("rider wave 1 is decided",
+        OrderAlertDecisionLedger.isDecided(riderLed, wave1, NOW, TTL));
+    check("rider wave 2 for the SAME order still alerts",
+        !OrderAlertDecisionLedger.isDecided(riderLed, wave2, NOW, TTL));
+    check("rider keys are session-scoped, not order-scoped",
+        !OrderAlertDecisionLedger.isDecided(
+            riderLed,
+            OrderAlertDecisionLedger.decisionKeys(
+                "rider", "RIDER_NEW_ORDER:ORD9:7:1", "ORD9", "ORD9", ""),
+            NOW, TTL));
+    String merchLed = OrderAlertDecisionLedger.record(
+        "", OrderAlertDecisionLedger.decisionKeys(
+            "merchant", "MERCHANT_NEW_ORDER:555:3", "555", "", "555"), NOW, TTL);
+    check("merchant re-push of a decided order is blocked",
+        OrderAlertDecisionLedger.isDecided(
+            merchLed,
+            OrderAlertDecisionLedger.decisionKeys(
+                "merchant", "MERCHANT_NEW_ORDER:555:3", "555", "", "555"),
+            NOW + 60_000L, TTL));
+    check("rider with an empty session id yields no keys",
+        OrderAlertDecisionLedger.decisionKeys("rider", "", "ORD9", "ORD9", "").length == 0);
+
+    // ---- THE INVARIANT THE WHOLE FIX RESTS ON.
+    // Both payloads are built from the same two ids:
+    //   start: orderId = core text ("GM100..."), foodOrderId = numeric,
+    //          alertSessionId = MERCHANT_NEW_ORDER:<foodId ?? coreText>:<store>
+    //   stop : the same, from order.status_changed
+    // The food-order lookup can resolve on one side and not the other, so the
+    // session ids can legitimately differ. Because BOTH always also carry the
+    // core order id, their key sets always intersect on it. Verified against
+    // production: orders_core.order_id is always "GM..."-prefixed (0 purely
+    // numeric rows) and never collides with an orders_food.id, so the numeric
+    // and GM namespaces cannot cross-silence a different order.
+    final String CORE = "GM10000419";
+    final String FOOD = "100058";
+    final String STORE = "12";
+
+    String[] startLookupOk = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:" + FOOD + ":" + STORE, CORE, CORE, FOOD);
+    String[] startLookupFailed = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:" + CORE + ":" + STORE, CORE, CORE, "");
+    String[] stopLookupOk = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:" + FOOD + ":" + STORE, CORE, "", FOOD);
+    String[] stopLookupFailed = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "MERCHANT_NEW_ORDER:" + CORE + ":" + STORE, CORE, "", "");
+
+    // All four lookup combinations must silence the start. Any single one of
+    // these failing is a buzzer that never stops.
+    check("stop(lookup ok) blocks start(lookup ok)",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopLookupOk, NOW, TTL), startLookupOk, NOW, TTL));
+    check("stop(lookup ok) blocks start(lookup FAILED)",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopLookupOk, NOW, TTL), startLookupFailed, NOW, TTL));
+    check("stop(lookup FAILED) blocks start(lookup ok)",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopLookupFailed, NOW, TTL), startLookupOk, NOW, TTL));
+    check("stop(lookup FAILED) blocks start(lookup FAILED)",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopLookupFailed, NOW, TTL), startLookupFailed, NOW, TTL));
+
+    // The numeric food id of one order must never silence a different order.
+    check("a food id does not collide with another order's core id",
+        !OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopLookupOk, NOW, TTL),
+            OrderAlertDecisionLedger.decisionKeys(
+                "merchant", "MERCHANT_NEW_ORDER:999999:" + STORE, "GM10000420", "", "999999"),
+            NOW, TTL));
+
+    // ---- resolveDecisionSessionId: stopping by ORDER id must still record the
+    // real wave. stopRiderDispatchBuzzer passes activeOrderIdRef, not a session
+    // id, so without this a rider decision was filed under `s:<orderId>` - a key
+    // no RIDER_NEW_ORDER:<order>:<rider>:<wave> id can ever match, leaving riders
+    // with no replay protection at all.
+    final String W1 = "RIDER_NEW_ORDER:ORD9:4:1";
+    final String W2 = "RIDER_NEW_ORDER:ORD9:4:2";
+
+    eq("prefers the row's session id over an order-id needle",
+        W1, OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", W1));
+    eq("falls back to the needle when no row was found",
+        "ORD9", OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", ""));
+    eq("falls back when the row has no session id",
+        "ORD9", OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", "   "));
+    eq("null row session id falls back to the needle",
+        "ORD9", OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", null));
+    eq("both blank resolves to empty",
+        "", OrderAlertDecisionLedger.resolveDecisionSessionId(null, null));
+    eq("trims the resolved id", W1,
+        OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", "  " + W1 + " "));
+
+    // End to end for the rider: stop arrives by ORDER id, the row is found, so
+    // wave 1 is suppressed and wave 2 still rings.
+    String riderByOrderId = OrderAlertDecisionLedger.record(
+        "",
+        OrderAlertDecisionLedger.decisionKeys(
+            "rider",
+            OrderAlertDecisionLedger.resolveDecisionSessionId("ORD9", W1),
+            "ORD9", "ORD9", ""),
+        NOW, TTL);
+    check("rider stop by order id suppresses the wave it belongs to",
+        OrderAlertDecisionLedger.isDecided(
+            riderByOrderId,
+            OrderAlertDecisionLedger.decisionKeys("rider", W1, "ORD9", "ORD9", ""),
+            NOW, TTL));
+    check("rider stop by order id still lets the NEXT wave ring",
+        !OrderAlertDecisionLedger.isDecided(
+            riderByOrderId,
+            OrderAlertDecisionLedger.decisionKeys("rider", W2, "ORD9", "ORD9", ""),
+            NOW, TTL));
+
+    // ---- stale-session guard: what stops a persisted row being resurrected.
+    final long MAXAGE = OrderAlertDecisionLedger.DEFAULT_SESSION_MAX_AGE_MS;
+    check("a fresh session is not stale",
+        !OrderAlertDecisionLedger.isSessionStale(NOW, NOW + 1_000L, MAXAGE));
+    check("a session at the limit is not stale",
+        !OrderAlertDecisionLedger.isSessionStale(NOW, NOW + MAXAGE, MAXAGE));
+    check("a session past the limit is stale",
+        OrderAlertDecisionLedger.isSessionStale(NOW, NOW + MAXAGE + 1L, MAXAGE));
+    check("a day-old session is stale",
+        OrderAlertDecisionLedger.isSessionStale(NOW, NOW + (24L * 60L * 60L * 1000L), MAXAGE));
+    check("a row with no startedAt is stale, not immortal",
+        OrderAlertDecisionLedger.isSessionStale(0L, NOW, MAXAGE));
+    check("a future startedAt (clock skew) is not stale",
+        !OrderAlertDecisionLedger.isSessionStale(NOW + 60_000L, NOW, MAXAGE));
+    check("maxAge of zero disables the staleness guard",
+        !OrderAlertDecisionLedger.isSessionStale(1L, NOW, 0L));
+    check("the watchdog window is inside the staleness bound",
+        MAXAGE > (20L * 60L * 1000L));
+  }
+
+  // ----------------------------------------------------------- rich card
+
+  private static void richCard() {
+    // ---- kmLabel: the payload sends bare kilometres.
+    eq("km one decimal", "3.7", OrderAlertCardText.kmLabel("3.7").replace(" km", ""));
+    eq("km formats with unit", "3.7 km", OrderAlertCardText.kmLabel("3.7"));
+    eq("km drops a trailing .0", "4 km", OrderAlertCardText.kmLabel("4.0"));
+    eq("km rounds to one decimal", "7.4 km", OrderAlertCardText.kmLabel("7.44"));
+    eq("km passes through an already-formatted value", "5 km", OrderAlertCardText.kmLabel("5 km"));
+    // Zero / missing must not render - "0 km to pickup" is worse than no row.
+    eq("km zero is absent", "", OrderAlertCardText.kmLabel("0"));
+    eq("km negative is absent", "", OrderAlertCardText.kmLabel("-2"));
+    eq("km empty is absent", "", OrderAlertCardText.kmLabel(""));
+    eq("km null is absent", "", OrderAlertCardText.kmLabel(null));
+    eq("km garbage is absent, never raw payload text",
+        "", OrderAlertCardText.kmLabel("not-a-number"));
+    eq("km never renders the string null", "", OrderAlertCardText.kmLabel("null"));
+
+    // ---- itemCountLabel: singular vs plural.
+    eq("one item is singular", "1 item", OrderAlertCardText.itemCountLabel("1"));
+    eq("three items is plural", "3 items", OrderAlertCardText.itemCountLabel("3"));
+    eq("item count tolerates a float", "2 items", OrderAlertCardText.itemCountLabel("2.0"));
+    eq("zero items is absent", "", OrderAlertCardText.itemCountLabel("0"));
+    eq("negative items is absent", "", OrderAlertCardText.itemCountLabel("-1"));
+    eq("missing item count is absent", "", OrderAlertCardText.itemCountLabel(""));
+    eq("null item count is absent", "", OrderAlertCardText.itemCountLabel(null));
+    eq("garbage item count is absent", "", OrderAlertCardText.itemCountLabel("many"));
+
+    // ---- distanceSummary: partial payloads must still render cleanly.
+    eq("all three legs",
+        "Pickup 3.7 km  ·  Trip 3.7 km  ·  Total 7.4 km",
+        OrderAlertCardText.distanceSummary("3.7", "3.7", "7.4"));
+    eq("only the trip leg", "Trip 3.7 km",
+        OrderAlertCardText.distanceSummary("", "3.7", ""));
+    eq("pickup and total only", "Pickup 2 km  ·  Total 5 km",
+        OrderAlertCardText.distanceSummary("2", "", "5"));
+    eq("no legs known yields an empty row the caller can omit",
+        "", OrderAlertCardText.distanceSummary("", "", ""));
+    eq("all-zero legs are treated as unknown",
+        "", OrderAlertCardText.distanceSummary("0", "0", "0"));
+    eq("nulls do not crash or print",
+        "", OrderAlertCardText.distanceSummary(null, null, null));
+
+    // ---- role-dependent copy. The same field means different things.
+    if (RIDER) {
+      eq("rider sees their payout", "Total earnings", OrderAlertCardText.earningsCaption());
+      eq("rider sees the pickup store", "SWAAD SUTRA", OrderAlertCardText.storeLine("SWAAD SUTRA"));
+      eq("rider store line trims", "SWAAD SUTRA", OrderAlertCardText.storeLine("  SWAAD SUTRA "));
+      eq("rider store line tolerates null", "", OrderAlertCardText.storeLine(null));
+    } else {
+      eq("merchant sees the order total", "Order total", OrderAlertCardText.earningsCaption());
+      // A merchant already knows their own store; echoing it back is noise.
+      eq("merchant card omits the store line",
+          "", OrderAlertCardText.storeLine("SWAAD SUTRA"));
+    }
+
+    // ---- the money headline still refuses to print a worthless job.
+    eq("zero amount stays hidden", "", OrderAlertCardText.formatAmount("0"));
+    eq("real amount formats", "₹142", OrderAlertCardText.formatAmount("142"));
+  }
 
   private static void check(String name, boolean ok) {
     if (ok) {

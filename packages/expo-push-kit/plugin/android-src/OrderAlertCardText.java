@@ -48,6 +48,92 @@ public final class OrderAlertCardText {
     return RIDER ? "You earn " + amount : amount;
   }
 
+  /**
+   * Distance as "3.7 km", or "" when there is nothing useful to show.
+   *
+   * The payload sends kilometres as a bare number. Zero and negatives are
+   * treated as absent rather than printed: "0 km to pickup" is worse than no
+   * row at all, and a missing field must never render as "null km".
+   */
+  public static String kmLabel(String raw) {
+    String v = safe(raw);
+    if (v.length() == 0) return "";
+    if (v.toLowerCase().endsWith("km")) return v;
+    try {
+      double n = Double.parseDouble(v);
+      if (!(n > 0)) return "";
+      // One decimal, and no trailing ".0" - "4 km" reads better than "4.0 km".
+      double rounded = Math.rint(n * 10.0) / 10.0;
+      if (Math.abs(rounded - Math.rint(rounded)) < 0.001) {
+        return ((long) Math.rint(rounded)) + " km";
+      }
+      return rounded + " km";
+    } catch (Throwable t) {
+      return "";
+    }
+  }
+
+  /** "1 item" / "3 items", or "" when the count is missing or not positive. */
+  public static String itemCountLabel(String raw) {
+    String v = safe(raw);
+    if (v.length() == 0) return "";
+    try {
+      double n = Double.parseDouble(v);
+      long count = (long) Math.rint(n);
+      if (count <= 0) return "";
+      return count == 1 ? "1 item" : count + " items";
+    } catch (Throwable t) {
+      return "";
+    }
+  }
+
+  /**
+   * Label for the money headline on the card.
+   *
+   * A rider is shown what the job pays them; a merchant is shown what the
+   * order is worth. Same field, different sentence - keep it in one place so
+   * the two cards cannot drift apart.
+   */
+  public static String earningsCaption() {
+    return RIDER ? "Total earnings" : "Order total";
+  }
+
+  /**
+   * Store / counterparty line under the heading.
+   *
+   * A rider needs to know which restaurant to collect from. A merchant already
+   * knows their own store, so showing it back to them is noise - they get the
+   * customer instead, which the card adds separately.
+   */
+  public static String storeLine(String storeName) {
+    if (!RIDER) return "";
+    return safe(storeName);
+  }
+
+  /**
+   * One compact "to pickup / trip / overall" summary, skipping any leg the
+   * payload did not send so a partial payload still renders cleanly.
+   *
+   * Returns "" when no leg is known, so the caller can omit the whole row
+   * rather than draw an empty strip.
+   */
+  public static String distanceSummary(String toPickupKm, String tripKm, String overallKm) {
+    String a = kmLabel(toPickupKm);
+    String b = kmLabel(tripKm);
+    String c = kmLabel(overallKm);
+    StringBuilder sb = new StringBuilder();
+    if (a.length() > 0) sb.append("Pickup ").append(a);
+    if (b.length() > 0) {
+      if (sb.length() > 0) sb.append("  ·  ");
+      sb.append("Trip ").append(b);
+    }
+    if (c.length() > 0) {
+      if (sb.length() > 0) sb.append("  ·  ");
+      sb.append("Total ").append(c);
+    }
+    return sb.toString();
+  }
+
   public static String displayOrderType(String raw) {
     String v = safe(raw).toLowerCase();
     if (v.length() == 0) return "";

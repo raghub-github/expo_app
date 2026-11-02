@@ -13,7 +13,7 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useFocusEffect, useRouter } from "expo-router";
-import { fetchRiderHomeAds, type HomeAd } from "@/services/homeAdsApi";
+import { fetchRiderHomeAds, type HomeAd } from "@/src/services/homeAdsApi";
 
 type Props = { placement: "home" | "orders" };
 

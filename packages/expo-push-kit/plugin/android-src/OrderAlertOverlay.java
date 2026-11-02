@@ -518,6 +518,26 @@ public final class OrderAlertOverlay {
     header.addView(close);
     card.addView(header);
 
+    // Who the job is for, and how big it is. A rider needs the restaurant name
+    // to know where they are going; a merchant already knows their own store, so
+    // storeLine() returns "" for them and the row is skipped entirely.
+    String storeName = OrderAlertCardText.storeLine(
+        active != null ? active.optString("storeName", "") : ""
+    );
+    String itemsLabel = OrderAlertCardText.itemCountLabel(
+        active != null ? active.optString("itemCount", "") : ""
+    );
+    String storeLine = storeName;
+    if (itemsLabel.length() > 0) {
+      storeLine = storeLine.length() > 0 ? storeLine + "  ·  " + itemsLabel : itemsLabel;
+    }
+    if (storeLine.length() > 0) {
+      TextView storeView = metaRow(context, storeLine);
+      storeView.setTextColor(Color.parseColor("#F9FAFB"));
+      storeView.setTypeface(Typeface.DEFAULT_BOLD);
+      card.addView(storeView);
+    }
+
     String typeLabel = displayOrderType(orderType);
     if (typeLabel.length() > 0) {
       card.addView(metaRow(context, "Order type: " + typeLabel));
@@ -533,9 +553,18 @@ public final class OrderAlertOverlay {
       card.addView(metaRow(context, "Drop: " + dropLabel));
     }
 
-    String tripKm = active != null ? safeText(active.optString("tripDistanceKm", "")) : "";
-    if (tripKm.length() > 0 && !"0".equals(tripKm)) {
-      card.addView(metaRow(context, "Trip: " + tripKm + " km"));
+    // One distance strip instead of a lone "Trip: n km" row. Any leg the payload
+    // did not send is skipped, so a partial payload still renders cleanly rather
+    // than drawing an empty strip or printing "null km".
+    String distances = OrderAlertCardText.distanceSummary(
+        active != null ? active.optString("toPickupKm", "") : "",
+        active != null ? active.optString("tripDistanceKm", "") : "",
+        active != null ? active.optString("overallKm", "") : ""
+    );
+    if (distances.length() > 0) {
+      TextView distanceView = metaRow(context, distances);
+      distanceView.setTextColor(Color.parseColor("#A7F3D0"));
+      card.addView(distanceView);
     }
 
     if (displayId.length() > 0) {

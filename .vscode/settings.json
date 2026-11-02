@@ -20,5 +20,30 @@
     "**/platform-tools-latest-windows": true
   },
   "typescript.tsserver.maxTsServerMemory": 4096,
-  "typescript.disableAutomaticTypeAcquisition": true
+  "typescript.disableAutomaticTypeAcquisition": true,
+
+  // packages/expo-push-kit/plugin/android-{src,test} are Java TEMPLATES, not
+  // Java sources: line 1 of every file is literally `package {{PACKAGE}};`,
+  // and the config plugin substitutes {{PACKAGE}}/{{ROLE}} when it injects
+  // them into the Android project. The language server cannot parse the
+  // placeholder, so it reports a bogus "Syntax error on token PACKAGE" on
+  // line 1 and then cascades a phantom missing-brace error at the end of the
+  // file. Keep it from indexing them.
+  //
+  // These files ARE compiled and executed for real, by
+  // `npm -w @gatimitra/expo-push-kit run test:native`, which templates them
+  // first and then runs javac. That script is the authority on whether they
+  // are valid - not the editor.
+  "java.import.exclusions": [
+    "**/node_modules/**",
+    "**/.metadata/**",
+    "**/archetype-resources/**",
+    "**/META-INF/maven/**",
+    "**/packages/expo-push-kit/plugin/android-src/**",
+    "**/packages/expo-push-kit/plugin/android-test/**"
+  ],
+  "files.associations": {
+    "**/packages/expo-push-kit/plugin/android-src/*.java": "plaintext",
+    "**/packages/expo-push-kit/plugin/android-test/*.java": "plaintext"
+  }
 }

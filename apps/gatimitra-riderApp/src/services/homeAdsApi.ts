@@ -1,4 +1,4 @@
-import { getConfig } from "@/config/env";
+import { getRiderAppConfig } from "@/src/config/env";
 
 export type HomeAdCtaAction = "bottom_sheet" | "share" | "redirect";
 
@@ -51,7 +51,7 @@ export async function fetchRiderHomeAds(
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.ads;
 
-  const base = getConfig().apiBaseUrl.replace(/\/$/, "");
+  const base = getRiderAppConfig().apiBaseUrl.replace(/\/+$/, "");
   const res = await fetch(
     `${base}/v1/home-ads/rider?placement=${placement}&_=${Date.now()}`,
     { headers: { Accept: "application/json" } }
