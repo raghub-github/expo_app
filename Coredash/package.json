@@ -6,7 +6,8 @@
     "dev": "next dev -p 3004",
     "build": "next build",
     "start": "next start -p 3004",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --import tsx --test src/lib/db/deadline.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1134.0",

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { cookies } from "next/headers";
-import { getSql, safeQuery } from "@/lib/db/client";
+import { getSql, requiredQuery, safeQuery } from "@/lib/db/client";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import {
   COREDASH_ACCESS_COOKIE,
@@ -62,7 +62,13 @@ export async function findActiveSuperAdminByEmail(emailRaw: string) {
   if (!email || !email.includes("@")) return null;
 
   const sql = getSql();
-  const rows = await safeQuery(
+  // requiredQuery, not safeQuery: swallowing a database fault here returns an
+  // empty list, which reads as "that email is not a super admin" and tells a
+  // legitimate admin they are Not Authorized while the real problem is that
+  // the database is unreachable. The caller turns a throw into a 503 instead,
+  // so this stays fail-closed - it never grants access - while saying
+  // something true.
+  const rows = await requiredQuery(
     "sa-by-email",
     () =>
       sql<{ id: number; primary_role: string; status: string }[]>`
@@ -70,8 +76,7 @@ export async function findActiveSuperAdminByEmail(emailRaw: string) {
         FROM system_users
         WHERE lower(trim(email)) = ${email} AND deleted_at IS NULL
         LIMIT 1
-      `,
-    []
+      `
   );
   const row = rows[0];
   if (!row) return null;

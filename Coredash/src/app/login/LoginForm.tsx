@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
+import { httpFailureMessage, isServerUnavailable, readJsonSafe } from "@/lib/http/readJson";
 import { getBrowserSupabase } from "@/lib/supabase/client";
 import Image from "next/image";
 import { Activity, Loader2, Mail, ShieldCheck, Store, Users } from "lucide-react";
@@ -52,21 +53,28 @@ export default function LoginForm() {
         refresh_token: refreshToken,
       }),
     });
-    const json = (await res.json()) as {
+    const json = await readJsonSafe<{
       success?: boolean;
       error?: string;
       userId?: string;
       email?: string;
-    };
+    }>(res);
+
+    // An unreachable server is not a refusal: do not wipe a good session, and
+    // do not tell the admin they are Not Authorized.
+    if (isServerUnavailable(res) || (!res.ok && json === null)) {
+      throw new Error(httpFailureMessage(res, json));
+    }
+
     const expected = expectedEmail.trim().toLowerCase();
     if (
       !res.ok ||
-      !json.success ||
+      !json?.success ||
       json.userId !== expectedUserId ||
       (json.email || "").trim().toLowerCase() !== expected
     ) {
       await wipeCoredashBrowserAuth(expectedUserId);
-      throw new Error(json.error || NOT_AUTHORIZED);
+      throw new Error(json?.error || NOT_AUTHORIZED);
     }
     logAuthEvent("LOGIN", {
       userId: json.userId,
@@ -117,8 +125,14 @@ export default function LoginForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.trim().toLowerCase() }),
       });
-      const json = (await gate.json()) as { success?: boolean; error?: string };
-      if (!gate.ok || !json.success) {
+      const json = await readJsonSafe<{ success?: boolean; error?: string }>(gate);
+      if (isServerUnavailable(gate) || (!gate.ok && json === null)) {
+        // Previously this said "Not Authorized" whenever the backend was down,
+        // which sent admins hunting for a permissions problem that did not exist.
+        toast.error(httpFailureMessage(gate, json));
+        return;
+      }
+      if (!gate.ok || !json?.success) {
         toastNotAuthorized();
         return;
       }
