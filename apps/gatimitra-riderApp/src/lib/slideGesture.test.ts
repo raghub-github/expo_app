@@ -77,3 +77,31 @@ describe("shouldCompleteSlide", () => {
     assert.equal(shouldCompleteSlide(Number.POSITIVE_INFINITY, MAX, SLIDE_COMPLETE_RATIO), false);
   });
 });
+
+describe("shouldClaimSlide: the slop is what stops the slider hijacking a scroll", () => {
+  it("ignores sub-slop jitter, so a finger resting on the track does not claim it", () => {
+    // With no slop the slider swallowed the parent list's vertical scroll the
+    // instant a finger touched the track.
+    for (const dx of [0, 1, 2, 3, 4, 5, SLIDE_HORIZONTAL_SLOP]) {
+      assert.equal(
+        shouldClaimSlide({ dx, dy: 0 }, false),
+        false,
+        `dx=${dx} is within the slop and must not claim the gesture`
+      );
+    }
+  });
+
+  it("claims once travel clears the slop", () => {
+    assert.equal(shouldClaimSlide({ dx: SLIDE_HORIZONTAL_SLOP + 1, dy: 0 }, false), true);
+  });
+
+  it("ignores sub-slop jitter in either direction", () => {
+    assert.equal(shouldClaimSlide({ dx: -3, dy: 0 }, false), false);
+    assert.equal(shouldClaimSlide({ dx: 3, dy: -1 }, false), false);
+  });
+
+  it("still refuses a sub-slop move even when it is purely horizontal", () => {
+    // Direction alone must never be enough; distance is the second gate.
+    assert.equal(shouldClaimSlide({ dx: 5, dy: 0 }, false), false);
+  });
+});

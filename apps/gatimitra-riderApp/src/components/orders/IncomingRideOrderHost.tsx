@@ -1,4 +1,3 @@
-// @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, InteractionManager } from "react-native";
 import { router } from "expo-router";
@@ -66,6 +65,7 @@ import {
 } from "@/src/stores/riderPendingActionStore";
 import { detectNewOfferIds, mergeIncomingOfferLists } from "@/src/lib/incomingDispatchOffers";
 import { useIncomingDispatchOfferStore } from "@/src/stores/incomingDispatchOfferStore";
+import { acceptOrderRefs, findAcceptedOrder } from "@/src/lib/acceptRecovery";
 import { riderDispatchLog } from "@/src/lib/rider-dispatch-log";
 import { cancelIncomingDispatchOffer } from "@/src/lib/ingestIncomingDispatchOffer";
 import {
@@ -701,11 +701,9 @@ export function IncomingRideOrderHost() {
               void (async () => {
                 try {
                   const active = await riderApi.getActiveOrders();
-                  const hit = active.find(
-                    (o) =>
-                      o.id === id ||
-                      o.id === acceptRef ||
-                      (snap.formattedOrderId && o.formattedOrderId === snap.formattedOrderId)
+                  const hit = findAcceptedOrder(
+                    active,
+                    acceptOrderRefs(id, acceptRef, snap.formattedOrderId)
                   );
                   if (hit) {
                     finishAccept();
@@ -747,11 +745,9 @@ export function IncomingRideOrderHost() {
 
             try {
               const active = await riderApi.getActiveOrders();
-              const hit = active.find(
-                (o) =>
-                  o.id === id ||
-                  o.id === acceptRef ||
-                  (snap.formattedOrderId && o.formattedOrderId === snap.formattedOrderId)
+              const hit = findAcceptedOrder(
+                active,
+                acceptOrderRefs(id, acceptRef, snap.formattedOrderId)
               );
               if (hit) {
                 finishAccept();
@@ -815,11 +811,9 @@ export function IncomingRideOrderHost() {
     if (!id || !snap) return;
     const active =
       queryClient.getQueryData<RiderOrderSummary[]>(RIDER_ACTIVE_ORDERS_QUERY_KEY) ?? [];
-    const hit = active.find(
-      (o) =>
-        o.id === id ||
-        o.id === snap.formattedOrderId ||
-        (snap.formattedOrderId && o.formattedOrderId === snap.formattedOrderId)
+    const hit = findAcceptedOrder(
+      active,
+      acceptOrderRefs(id, snap.formattedOrderId)
     );
     if (hit) {
       seedRiderOrderDetailCache(queryClient, hit, [id, snap.formattedOrderId ?? ""]);

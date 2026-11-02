@@ -60,3 +60,48 @@ describe("decideOverlayRemount", () => {
     }
   });
 });
+
+describe("decideOverlayRemount: the cap is what stops a crash loop", () => {
+  it("stops remounting once the attempts are exhausted", () => {
+    // Without a cap a deterministic crash remounts forever, burning battery
+    // and flooding the logs while the rider sees nothing.
+    const d = decideOverlayRemount({
+      failureCount: OVERLAY_MAX_REMOUNTS + 1,
+      msSincePreviousFailure: 100,
+    });
+    assert.equal(d.remount, false);
+    assert.equal(d.remount === false && d.reason, "exhausted");
+  });
+
+  it("remounts up to the cap and refuses beyond it", () => {
+    for (let n = 1; n <= OVERLAY_MAX_REMOUNTS; n += 1) {
+      const d = decideOverlayRemount({ failureCount: n, msSincePreviousFailure: 100 });
+      assert.equal(d.remount, true, `attempt ${n} of ${OVERLAY_MAX_REMOUNTS} must still retry`);
+    }
+    for (const n of [OVERLAY_MAX_REMOUNTS + 1, OVERLAY_MAX_REMOUNTS + 10, 1000]) {
+      const d = decideOverlayRemount({ failureCount: n, msSincePreviousFailure: 100 });
+      assert.equal(d.remount, false, `attempt ${n} is past the cap and must give up`);
+    }
+  });
+
+  it("backs off further on each successive failure", () => {
+    const delays: number[] = [];
+    for (let n = 1; n <= OVERLAY_MAX_REMOUNTS; n += 1) {
+      const d = decideOverlayRemount({ failureCount: n, msSincePreviousFailure: 100 });
+      assert.equal(d.remount, true);
+      if (d.remount) delays.push(d.delayMs);
+    }
+    for (let i = 1; i < delays.length; i += 1) {
+      assert.ok(delays[i] > delays[i - 1], "each retry must wait longer than the last");
+    }
+  });
+
+  it("forgives an old failure, so a crash long ago does not exhaust the budget", () => {
+    const d = decideOverlayRemount({
+      failureCount: OVERLAY_MAX_REMOUNTS + 50,
+      msSincePreviousFailure: OVERLAY_FAILURE_FORGET_MS + 1,
+    });
+    assert.equal(d.remount, true, "a fresh incident must get a full budget again");
+    assert.equal(d.remount === true && d.delayMs, OVERLAY_REMOUNT_DELAY_MS);
+  });
+});
