@@ -134,10 +134,16 @@ public class OrderAlertForegroundService extends Service {
     // Lock screen: FSI LockActivity hosts the floating card + turns screen on.
     // Unlocked home: WindowManager overlay. Never both (duplicate flash).
     // In-app: RN IncomingOrderModal owns Accept/Reject — hide native card.
+    // Heads-up is always posted as the lock-screen / shade fallback — FSI is not
+    // guaranteed on every OEM even when USE_FULL_SCREEN_INTENT is declared.
     if (OrderAlertVisibility.shouldSuppressOverlayWindow(this)) {
       OrderAlertOverlay.hideAll(this);
     } else {
       OrderAlertOverlay.show(this, sessionId, orderId, offerId, title, body, pickup, drop, orderType);
+    }
+    try {
+      OrderAlertHeadsUp.show(this, sessionId);
+    } catch (Throwable ignored) {
     }
     if (isLocked()) {
       // Help the FSI LockActivity turn the panel on even if the OEM delays FSI.
@@ -195,6 +201,10 @@ public class OrderAlertForegroundService extends Service {
   private void stopInternal() {
     handler.removeCallbacks(watchdog);
     OrderAlertOverlay.hideAll(this);
+    try {
+      OrderAlertHeadsUp.cancel(this);
+    } catch (Throwable ignored) {
+    }
     OrderAlertController.onServiceDestroy();
     if (OrderAlertPill.isEnabled(this) && OrderAlertOverlay.canDraw(this)) {
       OrderAlertPill.apply(this);

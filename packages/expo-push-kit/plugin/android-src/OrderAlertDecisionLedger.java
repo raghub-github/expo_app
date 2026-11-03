@@ -118,16 +118,61 @@ public final class OrderAlertDecisionLedger {
       String offerId,
       String foodOrderId
   ) {
-    boolean rider = "rider".equals(role);
+    return decisionKeys(role, sessionId, orderId, offerId, foodOrderId, "");
+  }
+
+  /**
+   * As above, plus the human-facing order id.
+   *
+   * A stop can arrive carrying only the display id (`GMF-10058`): the Partner
+   * Website and the eventBus fan-out build their session string from whatever
+   * the order row gave them, which is not always the numeric food order id the
+   * ringing session was keyed on. Canonicalising it into the same `o:` space
+   * lets such a stop block a start that uses the numeric id.
+   *
+   * It stays an ORDER key, so riders are unaffected: their keys remain the
+   * wave-scoped session id alone, and a display id must never retire a rider's
+   * next wave.
+   */
+  public static String[] decisionKeys(
+      String role,
+      String sessionId,
+      String orderId,
+      String offerId,
+      String foodOrderId,
+      String formattedOrderId
+  ) {
+    return decisionKeys(
+        role,
+        sessionId,
+        new String[] {orderId, offerId, foodOrderId, formattedOrderId});
+  }
+
+  /**
+   * The general form: a session id plus every other id this order answers to.
+   *
+   * One order reaches the device under four or five different names - numeric
+   * food id, core order id, offer id, display id, and whichever of them the
+   * backend happened to bake into the session string. They are minted in
+   * several independent places, so which one a given START or STOP carries is
+   * not something this layer can assume. Canonicalising all of them into one
+   * `o:` key space is what lets a stop keyed on any single form block a start
+   * keyed on another.
+   *
+   * Riders are deliberately exempt: their key is the wave-scoped session id
+   * alone, because the same order is legitimately re-offered in a later wave
+   * and an order-scoped key would silently retire every wave after the first.
+   */
+  public static String[] decisionKeys(String role, String sessionId, String[] orderIds) {
     java.util.LinkedHashSet<String> keys = new java.util.LinkedHashSet<String>();
-    if (rider) {
+    if ("rider".equals(role)) {
       String sid = sanitize(sessionId);
       if (sid.length() > 0) keys.add("s:" + sid);
-    } else {
-      addOrderKey(keys, sessionId);
-      addOrderKey(keys, orderId);
-      addOrderKey(keys, offerId);
-      addOrderKey(keys, foodOrderId);
+      return keys.toArray(new String[0]);
+    }
+    addOrderKey(keys, sessionId);
+    if (orderIds != null) {
+      for (int i = 0; i < orderIds.length; i++) addOrderKey(keys, orderIds[i]);
     }
     return keys.toArray(new String[0]);
   }

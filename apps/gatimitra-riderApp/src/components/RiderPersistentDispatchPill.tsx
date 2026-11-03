@@ -1,16 +1,15 @@
 /**
  * Rider native floating card. Count is the live offer pool (available + pending),
  * not notification history. The native window hides itself while this app is foreground.
+ *
+ * Effective visibility = Appear-on-top permission && saved preference && !sessionDismissed.
+ * Dismissal is process-scoped in native OrderAlertPill — never permanent storage.
  */
 import { useEffect, useMemo } from "react";
-import { AppState, NativeModules, Platform } from "react-native";
+import { AppState, DeviceEventEmitter, NativeModules, Platform } from "react-native";
 import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  canDrawNativeOverlays,
-  consumePersistentPillLaunch,
-  setPersistentOrderPill,
-} from "@gatimitra/expo-push-kit";
+import { consumePersistentPillLaunch, setPersistentOrderPill } from "@gatimitra/expo-push-kit";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useIncomingDispatchOfferStore } from "@/src/stores/incomingDispatchOfferStore";
 import {
@@ -21,6 +20,10 @@ import {
 } from "@/src/hooks/useOrders";
 import { mergeIncomingOfferLists } from "@/src/lib/incomingDispatchOffers";
 import { riderFacingOrderId } from "@/src/lib/rider-cancellation-display";
+import {
+  HOME_OVERLAY_CHANGED_EVENT,
+  syncHomeOverlayNativePill,
+} from "@/src/lib/homeOverlayOrderCount";
 
 const nativePill = NativeModules.GatimitraOrderAlert?.setPersistentPill != null;
 
@@ -56,23 +59,33 @@ export function RiderPersistentDispatchPill() {
     let cancelled = false;
     const sync = async () => {
       if (!authenticated) {
-        await setPersistentOrderPill(false, 0, "");
+        try {
+          await setPersistentOrderPill(false, 0, "");
+        } catch {
+          /* ignore */
+        }
         return;
       }
-      const allowed = nativePill ? await canDrawNativeOverlays() : null;
-      if (cancelled) return;
       // An empty default before the offer queries have run would wipe a count
       // the native FCM path just incremented.
       if (!offerPoolReady) return;
-      await setPersistentOrderPill(allowed === true && nativePill, count, focusId);
+      if (cancelled) return;
+      await syncHomeOverlayNativePill(
+        nativePill ? count : 0,
+        nativePill ? focusId : ""
+      );
     };
     void sync();
-    const sub = AppState.addEventListener("change", () => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") void sync();
+    });
+    const prefSub = DeviceEventEmitter.addListener(HOME_OVERLAY_CHANGED_EVENT, () => {
       void sync();
     });
     return () => {
       cancelled = true;
       sub.remove();
+      prefSub.remove();
     };
   }, [authenticated, count, focusId, offerPoolReady]);
 

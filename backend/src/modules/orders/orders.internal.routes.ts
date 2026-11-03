@@ -404,16 +404,26 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
         merchantStoreId: row.merchant_store_id ?? null,
         merchantName: row.store_name ?? "Store",
       });
-      // Direct FCM stop — do not rely solely on eventBus timing / foodId lookup.
-      void import("../../lib/merchant-incoming-alert-stop.js")
-        .then(({ stopMerchantIncomingAlertForCoreOrder }) =>
+      // Wait for the FCM + WS stop so a Partner Website accept cannot return
+      // before ringing devices are told to kill the buzzer (fire-and-forget
+      // raced the JS freeze) - bounded, because an unbounded FCM send on the
+      // request path would trade a buzzer bug for a hung accept.
+      try {
+        const { stopMerchantIncomingAlertForCoreOrder, awaitAlertStopWithin } =
+          await import("../../lib/merchant-incoming-alert-stop.js");
+        const outcome = await awaitAlertStopWithin(
           stopMerchantIncomingAlertForCoreOrder(sql, {
             ordersCoreId: orders_core_id,
             status: "ACCEPTED",
             merchantStoreId: row.merchant_store_id ?? null,
           })
-        )
-        .catch(() => undefined);
+        );
+        if (outcome === "timed-out") {
+          req.log.warn({ orders_core_id }, "merchant_accept_alert_stop_slow");
+        }
+      } catch (stopErr) {
+        req.log.warn({ err: stopErr }, "merchant-accept-notify alert stop failed");
+      }
       return reply.send({ ok: true });
     } catch (err) {
       req.log.warn({ err }, "merchant-accept-notify failed");
@@ -498,15 +508,22 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
         refundAmount,
         refundEligible: refundAmount != null && refundAmount > 0.005 ? true : undefined,
       });
-      void import("../../lib/merchant-incoming-alert-stop.js")
-        .then(({ stopMerchantIncomingAlertForCoreOrder }) =>
+      try {
+        const { stopMerchantIncomingAlertForCoreOrder, awaitAlertStopWithin } =
+          await import("../../lib/merchant-incoming-alert-stop.js");
+        const outcome = await awaitAlertStopWithin(
           stopMerchantIncomingAlertForCoreOrder(sql, {
             ordersCoreId: orders_core_id,
             status: "CANCELLED",
             merchantStoreId: row.merchant_store_id ?? null,
           })
-        )
-        .catch(() => undefined);
+        );
+        if (outcome === "timed-out") {
+          req.log.warn({ orders_core_id }, "merchant_cancel_alert_stop_slow");
+        }
+      } catch (stopErr) {
+        req.log.warn({ err: stopErr }, "cancel-notify alert stop failed");
+      }
       return reply.send({ ok: true });
     } catch (err) {
       req.log.warn({ err }, "cancel-notify failed");

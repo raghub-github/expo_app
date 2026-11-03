@@ -6,7 +6,7 @@
  * res/raw (then the system ringtone). Opening Manage Communication is never required.
  */
 import * as FileSystem from "expo-file-system/legacy";
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 import { persistNativeAlertSound } from "@gatimitra/expo-push-kit";
 import { resolvePlayableAlertSoundUrl, resolveAlertSoundUrl } from "@/lib/resolveAlertSoundUrl";
 

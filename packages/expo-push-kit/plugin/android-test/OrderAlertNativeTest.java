@@ -301,6 +301,72 @@ public final class OrderAlertNativeTest {
             OrderAlertDecisionLedger.record("", stopByCoreId, NOW, TTL),
             startKeys, NOW + 5_000L, TTL));
 
+    // ---- the display id ("GMF-100058") is a fourth id form the stop may carry.
+    //
+    // Partner Website / eventBus stops build their session string from whatever
+    // the order row gave them, which is not always the numeric food order id the
+    // ringing session was keyed on.
+    String[] stopByDisplayId = OrderAlertDecisionLedger.decisionKeys(
+        "merchant", "", "", "", "", "100058");
+    check("a stop carrying only the display id blocks the numeric start",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopByDisplayId, NOW, TTL),
+            startKeys, NOW, TTL));
+    check("the display id does not decide a different order",
+        !OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", stopByDisplayId, NOW, TTL),
+            OrderAlertDecisionLedger.decisionKeys(
+                "merchant", "", "100059", "", "100059"),
+            NOW, TTL));
+    eq("the 5-arg form is the 6-arg form with no display id",
+        java.util.Arrays.toString(
+            OrderAlertDecisionLedger.decisionKeys(
+                "merchant", "MERCHANT_NEW_ORDER:100058:12", "100058", "", "100058")),
+        java.util.Arrays.toString(
+            OrderAlertDecisionLedger.decisionKeys(
+                "merchant", "MERCHANT_NEW_ORDER:100058:12", "100058", "", "100058", "")));
+
+    // THE RIDER GUARD, restated for the display id: an order-shaped id must
+    // never leak into a rider's keys, or wave 2 of that order stops ringing.
+    String[] riderWave1 = OrderAlertDecisionLedger.decisionKeys(
+        "rider", "RIDER_NEW_ORDER:ORD9:4:1", "ORD9", "ORD9", "", "GMF-ORD9");
+    String[] riderWave2 = OrderAlertDecisionLedger.decisionKeys(
+        "rider", "RIDER_NEW_ORDER:ORD9:4:2", "ORD9", "ORD9", "", "GMF-ORD9");
+    eq("a rider still gets exactly one wave-scoped key", 1, riderWave1.length);
+    check("a rider key is session-scoped, not order-scoped",
+        riderWave1[0].startsWith("s:"));
+    check("rejecting rider wave 1 leaves wave 2 free to ring",
+        !OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", riderWave1, NOW, TTL),
+            riderWave2, NOW, TTL));
+
+    // ---- the array form unifies every id a payload can name the order by,
+    // including the core order id, which START sends and STOP does not.
+    String[] startAllIds = OrderAlertDecisionLedger.decisionKeys(
+        "merchant",
+        "MERCHANT_NEW_ORDER:100058:12",
+        new String[] {"100058", "", "100058", "ord_abc", "GMF100058"});
+    check("a stop keyed on the core order id alone blocks the start",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record(
+                "",
+                OrderAlertDecisionLedger.decisionKeys(
+                    "merchant", "", new String[] {"ord_abc"}),
+                NOW, TTL),
+            startAllIds, NOW, TTL));
+    check("the array form is a superset of the 5-arg form",
+        OrderAlertDecisionLedger.isDecided(
+            OrderAlertDecisionLedger.record("", startKeys, NOW, TTL),
+            startAllIds, NOW, TTL));
+    eq("null ids are tolerated", 1,
+        OrderAlertDecisionLedger.decisionKeys(
+            "merchant", "100058", (String[]) null).length);
+    eq("a rider ignores the whole id array", 1,
+        OrderAlertDecisionLedger.decisionKeys(
+            "rider",
+            "RIDER_NEW_ORDER:ORD9:4:1",
+            new String[] {"ORD9", "ORD9", "", "ord_abc", "GMF-ORD9"}).length);
+
     // ---- a different order is untouched.
     String[] other = OrderAlertDecisionLedger.decisionKeys(
         "merchant", "MERCHANT_NEW_ORDER:100059:12", "100059", "", "100059");

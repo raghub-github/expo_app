@@ -1,4 +1,4 @@
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 
 export type StoredLiveSupportTicket = {
   ticketId: number;

@@ -3,7 +3,7 @@ import { createContext, useContext, useState, useCallback, useEffect, useMemo, u
 import { Alert, AppState, type AppStateStatus } from "react-native";
 import { useRouter } from "expo-router";
 import { isAppForeground } from "@/lib/appForeground";
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import {

@@ -764,8 +764,8 @@ function OrdersPageContent() {
       setLoading(false);
     }
     const loadOnce = async (sid: string) => {
-      // Board only needs recent rows; 200+ with heavy enrich was timing out at 40s.
-      const url = `/api/food-orders?store_id=${encodeURIComponent(sid)}&limit=80`;
+      // Board only needs recent rows; skip heavy ordinal/selfie enrich so list stays under gateway timeout.
+      const url = `/api/food-orders?store_id=${encodeURIComponent(sid)}&limit=80&skip_compensation=1&skip_heavy_enrich=1`;
       const res = await fetch(url, { cache: 'no-store' });
       const data = await res.json().catch(() => ({ error: 'bad_json', orders: [] }));
       return { res, data, sid };
@@ -773,11 +773,14 @@ function OrdersPageContent() {
     try {
       const batches = await Promise.all(
         ids.map(async (sid) => {
-          for (let attempt = 0; attempt < 3; attempt++) {
+          for (let attempt = 0; attempt < 2; attempt++) {
             try {
-              return await loadOnce(sid);
+              const result = await loadOnce(sid);
+              // Don't retry gateway timeouts — that piles more load on an already slow path.
+              if (result.res.status === 504 || result.data?.error === 'timeout') return result;
+              return result;
             } catch (err) {
-              if (attempt >= 2) throw err;
+              if (attempt >= 1) throw err;
               await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
             }
           }

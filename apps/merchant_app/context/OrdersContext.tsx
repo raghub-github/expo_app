@@ -31,6 +31,7 @@ import { useOrderAcceptanceSettings } from "@/hooks/useOrderAcceptanceSettings";
 import { useMerchantOrdersRealtime } from "@/hooks/useMerchantOrdersRealtime";
 import { requestMerchantDashboardStatsRefresh } from "@/lib/merchantDashboardStatsBus";
 import {
+  apiStatusToStage,
   mapApiOrder,
   attachStoreRatingsFromReviews,
   mergeOrderRecordPreferringMerchantLinePricing,
@@ -53,7 +54,8 @@ import { presentLocalLifecycleAlert } from "@/lib/presentLocalNewOrderAlert";
 const POLL_FAST_MS = 30_000;
 const POLL_NORMAL_MS = 50_000;
 const POLL_IDLE_MS = 75_000;
-const POLL_BACKOFF_MS = 90_000;
+/** After a timeout, back off hard so aborted sockets can drain. */
+const POLL_BACKOFF_MS = 120_000;
 /** Reviews hydrate for delivered cards — once per store, not on every board poll. */
 const REVIEWS_CACHE_MS = 5 * 60_000;
 /** Avoid stampeding the API when managing many outlets at once. */
@@ -200,7 +202,8 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   const ordersCountRef = useRef(0);
   ordersCountRef.current = orders.length;
   const refetchInFlightRef = useRef<Promise<void> | null>(null);
-  const refetchStartedAtRef = useRef(0);
+  /** Set while a full refetch is running so late callers coalesce into one follow-up pass. */
+  const refetchDirtyRef = useRef(false);
   const transitionInFlightRef = useRef<Set<string>>(new Set());
   const fastFetchInFlightRef = useRef<Set<number>>(new Set());
   /** Consecutive food-orders failures — slow the poll so we don't stampede a recovering API. */
@@ -266,149 +269,193 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
-    const inFlightAge = Date.now() - refetchStartedAtRef.current;
-    if (refetchInFlightRef.current && inFlightAge < 16_000) {
+    // Never start a parallel full-list fetch — the old 16s escape hatch stacked
+    // aborted sockets and caused cascading "Request timed out" storms.
+    if (refetchInFlightRef.current) {
+      refetchDirtyRef.current = true;
       await refetchInFlightRef.current;
       return;
     }
 
-    const run = (async () => {
-      setError(null);
-      if (ordersCountRef.current === 0) {
-        const cachedRows = orderStoreIds.flatMap((sid) => {
-          const list = getCachedFoodOrdersForStore(sid);
-          return list
-            .filter((row) => row != null && (row.orders_core_id != null || row.orders_food_id != null))
-            .map((row) => mapWithStore(row, sid));
-        });
-        if (cachedRows.length > 0) {
-          cachedRows.sort(
-            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          );
-          ordersRef.current = cachedRows;
-          ordersCountRef.current = cachedRows.length;
-          setOrders(cachedRows);
-          setLoading(false);
-        }
-      }
+    let gate!: Promise<void>;
+    gate = (async () => {
       try {
-        if (__DEV__) {
-          console.log(`[orders] fetching food-orders stores=${orderStoreIds.join(",")}`);
-        }
-        const batches = await mapInBatches(orderStoreIds, ORDERS_FETCH_CONCURRENCY, async (sid) => {
-          const list = await fetchFoodOrders(sid, token, { limit: 40 });
-          cacheFoodOrders(sid, list);
-          let mapped = list
-            .filter((row) => row != null && (row.orders_core_id != null || row.orders_food_id != null))
-            .map((row) => mapWithStore(row, sid));
-          const missingDeliveredRating = mapped.some(
-            (order) => order.status === "delivered" && order.storeRating == null
-          );
-          if (missingDeliveredRating) {
-            try {
-              const cached = reviewsCacheRef.current.get(sid);
-              const now = Date.now();
-              let reviewRows = cached && now - cached.at < REVIEWS_CACHE_MS ? cached.reviews : null;
-              if (reviewRows == null) {
-                const from = new Date();
-                from.setDate(from.getDate() - 45);
-                const reviews = await fetchStoreReviews({
-                  token,
-                  storeId: sid,
-                  from: from.toISOString(),
-                  to: new Date().toISOString(),
-                });
-                reviewRows = reviews.data ?? [];
-                reviewsCacheRef.current.set(sid, { at: now, reviews: reviewRows });
+        do {
+          refetchDirtyRef.current = false;
+          setError(null);
+          if (ordersCountRef.current === 0) {
+            const cachedRows = orderStoreIds.flatMap((sid) => {
+              const list = getCachedFoodOrdersForStore(sid);
+              return list
+                .filter((row) => row != null && (row.orders_core_id != null || row.orders_food_id != null))
+                .map((row) => mapWithStore(row, sid));
+            });
+            if (cachedRows.length > 0) {
+              cachedRows.sort(
+                (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+              );
+              ordersRef.current = cachedRows;
+              ordersCountRef.current = cachedRows.length;
+              setOrders(cachedRows);
+              setLoading(false);
+            }
+          }
+          try {
+            if (__DEV__) {
+              console.log(`[orders] fetching food-orders stores=${orderStoreIds.join(",")}`);
+            }
+            const batches = await mapInBatches(orderStoreIds, ORDERS_FETCH_CONCURRENCY, async (sid) => {
+              const list = await fetchFoodOrders(sid, token, {
+                limit: 40,
+                allowRetry: fetchFailStreakRef.current === 0,
+              });
+              cacheFoodOrders(sid, list);
+              let mapped = list
+                .filter((row) => row != null && (row.orders_core_id != null || row.orders_food_id != null))
+                .map((row) => mapWithStore(row, sid));
+              const missingDeliveredRating = mapped.some(
+                (order) => order.status === "delivered" && order.storeRating == null
+              );
+              if (missingDeliveredRating) {
+                try {
+                  const cached = reviewsCacheRef.current.get(sid);
+                  const now = Date.now();
+                  let reviewRows = cached && now - cached.at < REVIEWS_CACHE_MS ? cached.reviews : null;
+                  if (reviewRows == null) {
+                    const from = new Date();
+                    from.setDate(from.getDate() - 45);
+                    const reviews = await fetchStoreReviews({
+                      token,
+                      storeId: sid,
+                      from: from.toISOString(),
+                      to: new Date().toISOString(),
+                    });
+                    reviewRows = reviews.data ?? [];
+                    reviewsCacheRef.current.set(sid, { at: now, reviews: reviewRows });
+                  }
+                  mapped = attachStoreRatingsFromReviews(mapped, reviewRows ?? []);
+                } catch {
+                  /* Reviews hydrate is best-effort — board still renders. */
+                }
               }
-              mapped = attachStoreRatingsFromReviews(mapped, reviewRows ?? []);
-            } catch {
-              /* Reviews hydrate is best-effort — board still renders. */
-            }
-          }
-          return mapped;
-        });
-        const merged = batches.flat();
-        // Newest first across stores
-        merged.sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-        if (__DEV__) {
-          console.log(`[orders] food-orders ok count=${merged.length}`);
-        }
-        setOrders((current) => {
-          const withPricing = merged.map((serverRow) => {
-            const local = current.find(
-              (o) => o.id === serverRow.id || o.ordersCoreId === serverRow.ordersCoreId
+              return mapped;
+            });
+            const merged = batches.flat();
+            // Newest first across stores
+            merged.sort(
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
             );
-            return applyResolvedCreatedGuard(serverRow, local);
-          });
-          const next = mergePendingOptimistic(withPricing);
-          if (transitionInFlightRef.current.size === 0) return next;
-          // Keep local optimistic status while a mark-ready / accept PATCH is in flight
-          // so a concurrent poll can't snap the card back to Preparing.
-          return next.map((serverRow) => {
-            if (!transitionInFlightRef.current.has(serverRow.id)) return serverRow;
-            const local = current.find(
-              (o) => o.id === serverRow.id || o.ordersCoreId === serverRow.ordersCoreId
-            );
-            return local ?? serverRow;
-          });
-        });
-        const recovering = fetchFailStreakRef.current > 0;
-        fetchFailStreakRef.current = 0;
-        setPollFailStreak(0);
-        lastFetchAtRef.current = Date.now();
-        for (const sid of orderStoreIds) {
-          const slice = merged.filter((o) => o.merchantStoreId === sid);
-          prefetchMenuItemsForOrders(
-            sid,
-            token,
-            slice.flatMap((o) => o.lineItems)
-          );
-          // Prefetch at most one live timeline — skip while recovering from timeouts
-          // so we don't re-stampede the device HTTP pool.
-          if (recovering) continue;
-          const liveForPrefetch = slice
-            .filter(
-              (o) =>
-                !o.id.startsWith("core-") &&
-                o.status !== "delivered" &&
-                o.status !== "rejected" &&
-                o.status !== "rto"
-            )
-            .slice(0, 1);
-          for (const row of liveForPrefetch) {
-            const foodId = parseInt(row.id, 10);
-            if (Number.isFinite(foodId)) {
-              prefetchOrderTimeline(sid, foodId, token);
+            if (__DEV__) {
+              console.log(`[orders] food-orders ok count=${merged.length}`);
             }
+            setOrders((current) => {
+              const withPricing = merged.map((serverRow) => {
+                const local = current.find(
+                  (o) => o.id === serverRow.id || o.ordersCoreId === serverRow.ordersCoreId
+                );
+                return applyResolvedCreatedGuard(serverRow, local);
+              });
+              const next = mergePendingOptimistic(withPricing);
+              if (transitionInFlightRef.current.size === 0) return next;
+              // Keep local optimistic status while a mark-ready / accept PATCH is in flight
+              // so a concurrent poll can't snap the card back to Preparing.
+              return next.map((serverRow) => {
+                if (!transitionInFlightRef.current.has(serverRow.id)) return serverRow;
+                const local = current.find(
+                  (o) => o.id === serverRow.id || o.ordersCoreId === serverRow.ordersCoreId
+                );
+                return local ?? serverRow;
+              });
+            });
+            const recovering = fetchFailStreakRef.current > 0;
+            fetchFailStreakRef.current = 0;
+            setPollFailStreak(0);
+            lastFetchAtRef.current = Date.now();
+            for (const sid of orderStoreIds) {
+              const slice = merged.filter((o) => o.merchantStoreId === sid);
+              prefetchMenuItemsForOrders(
+                sid,
+                token,
+                slice.flatMap((o) => o.lineItems)
+              );
+              // Prefetch at most one live timeline — skip while recovering from timeouts
+              // so we don't re-stampede the device HTTP pool.
+              if (recovering) continue;
+              const liveForPrefetch = slice
+                .filter(
+                  (o) =>
+                    !o.id.startsWith("core-") &&
+                    o.status !== "delivered" &&
+                    o.status !== "rejected" &&
+                    o.status !== "rto"
+                )
+                .slice(0, 1);
+              for (const row of liveForPrefetch) {
+                const foodId = parseInt(row.id, 10);
+                if (Number.isFinite(foodId)) {
+                  prefetchOrderTimeline(sid, foodId, token);
+                }
+              }
+            }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Failed to load orders";
+            if (__DEV__) {
+              console.warn(`[orders] food-orders failed:`, msg);
+            }
+            fetchFailStreakRef.current += 1;
+            setPollFailStreak(fetchFailStreakRef.current);
+            // Keep last good board on timeout/network blips; only show error when empty.
+            if (ordersRef.current.length === 0) setError(msg);
+          } finally {
+            setLoading(false);
           }
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "Failed to load orders";
-        if (__DEV__) {
-          console.warn(`[orders] food-orders failed:`, msg);
-        }
-        fetchFailStreakRef.current += 1;
-        setPollFailStreak(fetchFailStreakRef.current);
-        // Keep last good board on timeout/network blips; only show error when empty.
-        if (ordersRef.current.length === 0) setError(msg);
+        } while (refetchDirtyRef.current);
       } finally {
-        setLoading(false);
+        if (refetchInFlightRef.current === gate) {
+          refetchInFlightRef.current = null;
+        }
       }
     })();
 
-    refetchStartedAtRef.current = Date.now();
-    refetchInFlightRef.current = run;
-    try {
-      await run;
-    } finally {
-      if (refetchInFlightRef.current === run) {
-        refetchInFlightRef.current = null;
-      }
-    }
+    refetchInFlightRef.current = gate;
+    await gate;
   }, [token, orderStoreIds, mergePendingOptimistic, mapWithStore]);
+
+  /** Paint status from realtime payload immediately; hydrate full row in the background. */
+  const applyRealtimeStatusHint = useCallback(
+    (foodId: number, orderStatus: string) => {
+      if (transitionInFlightRef.current.has(String(foodId))) return;
+      const pipeline = orderStatus.trim().toUpperCase();
+      if (!pipeline) return;
+      const stage = apiStatusToStage(pipeline);
+      setOrders((list) => {
+        const idx = list.findIndex((o) => o.id === String(foodId));
+        if (idx < 0) return list;
+        const existing = list[idx];
+        if (existing.pipelineStatus === pipeline && existing.status === stage) return list;
+        const next = list.slice();
+        next[idx] = {
+          ...existing,
+          status: stage,
+          pipelineStatus: pipeline,
+        };
+        ordersRef.current = next;
+        if (stage !== "created") {
+          pendingOptimisticRef.current.delete(existing.ordersCoreId);
+          markIncomingOrderResolved({
+            orderCoreId: existing.ordersCoreId,
+            foodId: existing.id,
+          });
+        }
+        const sid = existing.merchantStoreId;
+        if (sid != null) {
+          patchCachedFoodOrderStatus(sid, foodId, pipeline);
+        }
+        return next;
+      });
+    },
+    []
+  );
 
   /**
    * Fast path: a single orders_food row changed in realtime. Fetch just that
@@ -462,7 +509,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
           }
           if (idx < 0) return [resolved, ...list];
           const next = list.slice();
-          next[idx] = resolved;
+          next[idx] = preferProgressedOrderRecord(resolved, existing);
           ordersRef.current = next;
           return next;
         });
@@ -531,7 +578,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
 
   // Realtime + FCM cover kitchen updates; keep HTTP poll light unless accepting / on Orders tab.
   const pollIntervalMs =
-    pollFailStreak >= 2
+    pollFailStreak >= 1
       ? POLL_BACKOFF_MS
       : hasPendingAccept
         ? POLL_FAST_MS
@@ -546,8 +593,20 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     onOrdersStale: () => {
       void refetch();
     },
-    onFoodRowChange: (foodId, merchantStoreId) => {
+    onFoodRowChange: (foodId, merchantStoreId, orderStatus) => {
+      if (orderStatus) applyRealtimeStatusHint(foodId, orderStatus);
       void applyRealtimeFoodRow(foodId, merchantStoreId);
+    },
+    onCoreRowChange: (coreId, merchantStoreId) => {
+      const local = ordersRef.current.find((o) => o.ordersCoreId === coreId);
+      if (!local || local.id.startsWith("core-")) return false;
+      const foodId = parseInt(local.id, 10);
+      if (!Number.isFinite(foodId)) return false;
+      void applyRealtimeFoodRow(
+        foodId,
+        merchantStoreId ?? local.merchantStoreId ?? null
+      );
+      return true;
     },
   });
 

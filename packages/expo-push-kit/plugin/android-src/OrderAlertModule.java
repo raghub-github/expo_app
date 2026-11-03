@@ -203,6 +203,8 @@ public class OrderAlertModule extends ReactContextBaseJavaModule {
     map.putString("offerId", row.optString("offerId", ""));
     map.putString("soundType", row.optString("soundType", ""));
     map.putString("owner", row.optString("owner", "native"));
+    // active | muted | terminal — JS uses this for bg→in-app audio handoff.
+    map.putString("alertState", row.optString("alertState", "active"));
     map.putDouble("startedAt", row.optLong("startedAt", 0L));
     return map;
   }

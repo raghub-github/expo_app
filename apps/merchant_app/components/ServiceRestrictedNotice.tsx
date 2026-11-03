@@ -18,7 +18,7 @@ import {
   Easing,
   LayoutChangeEvent,
 } from "react-native";
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 import { Ionicons } from "@expo/vector-icons";
 import { AppText as Text } from "@/components/AppText";
 import { GatiMitraMerchant } from "@/constants/theme";

@@ -56,7 +56,6 @@ if (!isExpoGo()) {
         // Never hide from shade in any state. Mute OS when native FGS owns
         // audio, or for dispatch while the rider is in the app.
         return {
-          shouldShowAlert: true,
           shouldPlaySound: !(nativeOwns || (isDispatchOffer && appActive)),
           shouldSetBadge: true,
           shouldShowBanner: true,

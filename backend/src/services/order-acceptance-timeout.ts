@@ -412,6 +412,23 @@ async function finalizeCancelledRow(
             ? Number(refund.refundAmount)
             : Number(row.grand_total ?? 0) || null,
       });
+      // Direct awaited stop — do not rely solely on eventBus lag for multi-device buzzers.
+      try {
+        const { stopMerchantIncomingAlertEverywhere } = await import(
+          "../lib/merchant-incoming-alert-stop.js"
+        );
+        await stopMerchantIncomingAlertEverywhere(sql, {
+          storeId,
+          foodOrderId: foodId,
+          coreId,
+          status: "CANCELLED",
+        });
+      } catch (stopErr) {
+        log.error(
+          { err: stopErr, foodId, storeId, coreId },
+          "order_acceptance_timeout_alert_stop_failed"
+        );
+      }
     } catch {
       /* notification fan-out is best-effort */
     }

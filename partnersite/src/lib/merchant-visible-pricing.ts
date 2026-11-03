@@ -57,26 +57,39 @@ export function merchantSubtotalFromSnapshots(lines: ItemCommissionSnapshot[]): 
 export async function loadSnapshotsByOrderTexts(
   db: SupabaseClient,
   orderTexts: string[],
-  storeId?: number
+  storeId?: number,
+  /** When callers already loaded orders_core, skip the duplicate id↔text lookup. */
+  preloadedCoreIdToText?: Map<number, string>
 ): Promise<Map<string, ItemCommissionSnapshot[]>> {
   const unique = [...new Set(orderTexts.map((t) => String(t ?? '').trim()).filter(Boolean))];
   const out = new Map<string, ItemCommissionSnapshot[]>();
   if (unique.length === 0) return out;
 
-  const { data: coreRows } = await db
-    .from('orders_core')
-    .select('id, order_id')
-    .in('order_id', unique);
-  if (!coreRows?.length) return out;
-
   const coreIdToText = new Map<number, string>();
   const coreIds: number[] = [];
-  for (const c of coreRows as Array<{ id: number; order_id: string }>) {
-    const id = Number(c.id);
-    const text = String(c.order_id ?? '').trim();
-    if (!Number.isFinite(id) || !text) continue;
-    coreIds.push(id);
-    coreIdToText.set(id, text);
+
+  if (preloadedCoreIdToText && preloadedCoreIdToText.size > 0) {
+    const wanted = new Set(unique);
+    for (const [id, text] of preloadedCoreIdToText) {
+      if (!wanted.has(text)) continue;
+      if (!Number.isFinite(id) || !text) continue;
+      coreIds.push(id);
+      coreIdToText.set(id, text);
+    }
+  } else {
+    const { data: coreRows } = await db
+      .from('orders_core')
+      .select('id, order_id')
+      .in('order_id', unique);
+    if (!coreRows?.length) return out;
+
+    for (const c of coreRows as Array<{ id: number; order_id: string }>) {
+      const id = Number(c.id);
+      const text = String(c.order_id ?? '').trim();
+      if (!Number.isFinite(id) || !text) continue;
+      coreIds.push(id);
+      coreIdToText.set(id, text);
+    }
   }
   if (coreIds.length === 0) return out;
 

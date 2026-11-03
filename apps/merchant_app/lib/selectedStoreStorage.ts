@@ -1,4 +1,4 @@
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 
 const LAST_SELECTED_STORE_KEY = "gatimitra_merchant_last_selected_store";
 const MANAGED_STORES_KEY = "gatimitra_merchant_managed_stores";

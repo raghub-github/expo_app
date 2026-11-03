@@ -36,7 +36,6 @@ export function isForeignAppPush(
 
 /** Foreground presentation when this notification belongs to another app. */
 export const FOREIGN_APP_NOTIFICATION_PRESENTATION = {
-  shouldShowAlert: false,
   shouldPlaySound: false,
   shouldSetBadge: false,
   shouldShowBanner: false,

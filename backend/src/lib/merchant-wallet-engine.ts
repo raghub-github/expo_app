@@ -329,33 +329,46 @@ export async function calculateMerchantWithdrawableBalance(storeId: number): Pro
 
 // ─── Ledger query (V2 — includes balance_before, gst, commission, tds, order_id) ─
 
+/** Avoid stampeding backfills when wallet + ledger open together. */
+const ledgerBackfillStartedAt = new Map<number, number>();
+const LEDGER_BACKFILL_COOLDOWN_MS = 60_000;
+
+function kickLedgerMaintenance(storeId: number, sql: ReturnType<typeof getSql>): void {
+  const last = ledgerBackfillStartedAt.get(storeId) ?? 0;
+  if (Date.now() - last < LEDGER_BACKFILL_COOLDOWN_MS) return;
+  ledgerBackfillStartedAt.set(storeId, Date.now());
+  void (async () => {
+    try {
+      const {
+        backfillMissingDeliveredOrderCredits,
+        backfillMissingCancelledOrderLedger,
+        repairErroneousZeroCompensationCancellationDebits,
+        repairCancellationLedgerWithdrawableMetadata,
+      } = await import("./backfill-merchant-wallet-credits.js");
+      await backfillMissingDeliveredOrderCredits(sql, storeId);
+      await backfillMissingCancelledOrderLedger(sql, storeId);
+      await repairErroneousZeroCompensationCancellationDebits(sql, storeId);
+      const walletForRepair = await getOrCreateWallet(storeId);
+      await repairCancellationLedgerWithdrawableMetadata(sql, walletForRepair.id);
+    } catch (e) {
+      console.warn("[queryLedger] background backfill/repair:", e);
+    }
+  })();
+}
+
 export async function queryLedger(
   storeId: number,
   opts: LedgerQueryOptions = { limit: WALLET_CONSTANTS.DEFAULT_LEDGER_PAGE_SIZE, offset: 0 }
 ): Promise<{ entries: LedgerEntry[]; total: number }> {
   const sql = getSql();
 
-  try {
-    const { backfillMissingDeliveredOrderCredits, backfillMissingCancelledOrderLedger, repairErroneousZeroCompensationCancellationDebits } =
-      await import("./backfill-merchant-wallet-credits.js");
-    await backfillMissingDeliveredOrderCredits(sql, storeId);
-    await backfillMissingCancelledOrderLedger(sql, storeId);
-    await repairErroneousZeroCompensationCancellationDebits(sql, storeId);
-  } catch (e) {
-    console.warn("[queryLedger] backfill:", e);
-  }
+  // Partner Site / wallet summary: backfills never block the read path.
+  // Awaiting them here made Transactions tab spin for 10–30s then look empty
+  // when the app client timed out.
+  kickLedgerMaintenance(storeId, sql);
 
   const wallet = await getOrCreateWallet(storeId);
   const walletId = wallet.id;
-
-  try {
-    const { repairCancellationLedgerWithdrawableMetadata } = await import(
-      "./backfill-merchant-wallet-credits.js"
-    );
-    await repairCancellationLedgerWithdrawableMetadata(sql, walletId);
-  } catch (e) {
-    console.warn("[queryLedger] repair withdrawable metadata:", e);
-  }
   const limit = Math.min(opts.limit ?? WALLET_CONSTANTS.DEFAULT_LEDGER_PAGE_SIZE, WALLET_CONSTANTS.MAX_LEDGER_PAGE_SIZE);
   const offset = opts.offset ?? 0;
 

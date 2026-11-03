@@ -17,6 +17,7 @@ import {
   ActivityIndicator,
   LayoutChangeEvent,
   FlatList,
+  SectionList,
   Alert,
   useWindowDimensions,
 } from "react-native";
@@ -27,6 +28,11 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
+
+/** Sticky section headers must live on the list itself (not a wrapping Animated.View). */
+const AnimatedSectionList = Animated.createAnimatedComponent(
+  SectionList<OrderRecord, { key: string; data: OrderRecord[] }>
+);
 import { AppText as Text } from "@/components/AppText";
 import { Ionicons } from "@expo/vector-icons";
 import { useNowMs } from "@/hooks/useNowMs";
@@ -796,7 +802,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     ({ viewableItems }: { viewableItems: Array<{ item: OrderRecord }> }) => {
       const ids: number[] = [];
       for (const row of viewableItems) {
-        const n = parseInt(String(row.item.id), 10);
+        const n = parseInt(String(row.item?.id), 10);
         if (Number.isFinite(n) && n > 0) ids.push(n);
       }
       setVisibleRiderTrackingOrderIds(ids);
@@ -871,6 +877,15 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
 
   const activeFilterCount = countActiveFilters(sheetFilters);
 
+  /** Past-orders CTA only on Completed + RTO — never on live active stages. */
+  const showPastOrdersBanner =
+    !isHistory && (filterKey === "completed" || filterKey === "rto");
+
+  /**
+   * Live scroll stack via SectionList sticky section headers:
+   * Search (fixed) → Ads (ListHeader, scrolls under search) →
+   * Status tabs (sticky section header) → Order cards (scroll under tabs).
+   */
   const listHeader = isHistory ? (
     <>
       <SearchBar
@@ -881,7 +896,33 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       />
       <OrderDateRangeBar range={dateRange} onPress={() => setDateSheetOpen(true)} />
     </>
-  ) : null;
+  ) : (
+    <View style={styles.scrollChrome}>
+      {showPastOrdersBanner ? (
+        <PastOrdersBanner onPress={() => navPush("/order-history")} />
+      ) : null}
+      <HomeAdsStrip placement="orders" />
+      <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
+    </View>
+  );
+
+  const liveSections = useMemo(
+    () => [{ key: "live-orders", data: filteredOrders }],
+    [filteredOrders]
+  );
+
+  const renderStickyStatusTabs = useCallback(
+    () => (
+      <View style={styles.stickyTabsChrome}>
+        <StatusTabs
+          activeKey={filterKey as LiveFilterKey}
+          counts={liveCounts}
+          onChange={handleFilterChange}
+        />
+      </View>
+    ),
+    [filterKey, liveCounts, handleFilterChange]
+  );
 
   const liveFixedChrome = !isHistory ? (
     <View style={styles.fixedChrome}>
@@ -891,16 +932,48 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         onFilterPress={() => setFilterSheetOpen(true)}
         showFilter
       />
-      <PastOrdersBanner onPress={() => navPush("/order-history")} />
-      <HomeAdsStrip placement="orders" />
-      <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
-      <StatusTabs
-        activeKey={filterKey as LiveFilterKey}
-        counts={liveCounts}
-        onChange={handleFilterChange}
-      />
     </View>
   ) : null;
+
+  const liveEmptyBody =
+    listLoading && sourceOrders.length === 0 ? (
+      <View style={styles.loadingWrap}>
+        <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
+        <Text style={styles.loadingText}>Loading orders…</Text>
+      </View>
+    ) : (
+      (() => {
+        const emptyStage =
+          filterKey !== "all" ? liveFilterToEmptyStage(filterKey as LiveFilterKey) : null;
+        if (emptyStage && !search.trim()) {
+          const stageMessage =
+            filterKey === "completed"
+              ? "No completed orders in the last 24 hours"
+              : filterKey === "rto"
+                ? "No RTO orders in the last 24 hours"
+                : filterKey === "scheduled"
+                  ? "No scheduled orders right now"
+                  : undefined;
+          return (
+            <OrdersStageEmptyState stage={emptyStage} message={stageMessage} />
+          );
+        }
+        return (
+          <View style={styles.emptyWrap}>
+            <Ionicons
+              name="receipt-outline"
+              size={40}
+              color={GatiMitraMerchant.textTertiary}
+            />
+            <Text style={styles.emptyText}>
+              {search.trim()
+                ? "No orders match your search"
+                : `No orders in ${String(filterKey).replace("_", " ")}`}
+            </Text>
+          </View>
+        );
+      })()
+    );
 
   if (listError && !listLoading && sourceOrders.length === 0) {
     return (
@@ -975,21 +1048,80 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       />
       {liveFixedChrome}
       <GestureDetector gesture={tabSwipeGesture}>
-        <Animated.View
-          style={[
-            styles.listSwipeArea,
-            !isHistory ? swipeAreaStyle : null,
-          ]}
-        >
-          <FlatList
-            data={filteredOrders}
+        {/*
+          Apply swipe translate on the list itself — wrapping in Animated.View
+          with overflow:hidden breaks sticky section headers (CTA disappeared).
+        */}
+        {isHistory ? (
+          <Animated.View style={[styles.listSwipeArea]}>
+            <FlatList
+              data={filteredOrders}
+              keyExtractor={(item) => item.id}
+              renderItem={renderOrder}
+              keyboardShouldPersistTaps="handled"
+              ListHeaderComponent={listHeader}
+              contentContainerStyle={[
+                styles.listContent,
+                { paddingBottom: scrollBottomPadding },
+              ]}
+              ItemSeparatorComponent={() => <View style={styles.separator} />}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  colors={[GatiMitraMerchant.primary]}
+                  tintColor={GatiMitraMerchant.primary}
+                />
+              }
+              ListEmptyComponent={
+                listLoading && sourceOrders.length === 0 ? (
+                  <View style={styles.loadingWrap}>
+                    <ActivityIndicator
+                      size="large"
+                      color={GatiMitraMerchant.primary}
+                    />
+                    <Text style={styles.loadingText}>Loading orders…</Text>
+                  </View>
+                ) : (
+                  <View style={styles.emptyWrap}>
+                    <Ionicons
+                      name="receipt-outline"
+                      size={40}
+                      color={GatiMitraMerchant.textTertiary}
+                    />
+                    <Text style={styles.emptyText}>
+                      {search.trim()
+                        ? "No orders match your search"
+                        : activeFilterCount > 0
+                          ? "No orders match your filters in this date range"
+                          : "No completed, rejected, or RTO orders in this date range"}
+                    </Text>
+                  </View>
+                )
+              }
+              showsVerticalScrollIndicator={false}
+              initialNumToRender={8}
+              windowSize={5}
+              maxToRenderPerBatch={8}
+              updateCellsBatchingPeriod={50}
+              removeClippedSubviews={Platform.OS === "android"}
+              onViewableItemsChanged={onViewableItemsChanged}
+              viewabilityConfig={viewabilityConfig}
+            />
+          </Animated.View>
+        ) : (
+          <AnimatedSectionList
+            style={[styles.listSwipeArea, swipeAreaStyle]}
+            sections={liveSections}
             keyExtractor={(item) => item.id}
             renderItem={renderOrder}
+            renderSectionHeader={renderStickyStatusTabs}
+            stickySectionHeadersEnabled
             keyboardShouldPersistTaps="handled"
             ListHeaderComponent={listHeader}
             contentContainerStyle={[
               styles.listContent,
-              !isHistory ? styles.listContentUnderChrome : null,
+              styles.listContentUnderChrome,
               listShowsStageEmpty ? styles.listContentStageEmpty : null,
               { paddingBottom: scrollBottomPadding },
             ]}
@@ -1002,64 +1134,18 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
                 tintColor={GatiMitraMerchant.primary}
               />
             }
-            ListEmptyComponent={
-              listLoading && sourceOrders.length === 0 ? (
-                <View style={styles.loadingWrap}>
-                  <ActivityIndicator
-                    size="large"
-                    color={GatiMitraMerchant.primary}
-                  />
-                  <Text style={styles.loadingText}>Loading orders…</Text>
-                </View>
-              ) : (
-                (() => {
-                  const emptyStage =
-                    !isHistory && filterKey !== "all" ? liveFilterToEmptyStage(filterKey) : null;
-                  if (emptyStage && !search.trim()) {
-                    const stageMessage =
-                      filterKey === "completed"
-                        ? "No completed orders in the last 24 hours"
-                        : filterKey === "rto"
-                          ? "No RTO orders in the last 24 hours"
-                          : filterKey === "scheduled"
-                            ? "No scheduled orders right now"
-                            : undefined;
-                    return (
-                      <OrdersStageEmptyState stage={emptyStage} message={stageMessage} />
-                    );
-                  }
-                  return (
-                <View style={styles.emptyWrap}>
-                  <Ionicons
-                    name="receipt-outline"
-                    size={40}
-                    color={GatiMitraMerchant.textTertiary}
-                  />
-                  <Text style={styles.emptyText}>
-                    {search.trim()
-                      ? "No orders match your search"
-                      : isHistory
-                        ? activeFilterCount > 0
-                          ? "No orders match your filters in this date range"
-                          : "No completed, rejected, or RTO orders in this date range"
-                        : `No orders in ${filterKey.replace("_", " ")}`}
-                  </Text>
-                </View>
-                  );
-                })()
-              )
-            }
+            ListEmptyComponent={liveEmptyBody}
             showsVerticalScrollIndicator={false}
             initialNumToRender={8}
             windowSize={5}
             maxToRenderPerBatch={8}
             updateCellsBatchingPeriod={50}
-            removeClippedSubviews={Platform.OS === "android"}
-            extraData={filterKey}
+            removeClippedSubviews={false}
+            extraData={`${filterKey}:${liveCounts.preparing}:${liveCounts.ready}:${liveCounts.picked_up}:${liveCounts.completed}:${liveCounts.rto}`}
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={viewabilityConfig}
           />
-        </Animated.View>
+        )}
       </GestureDetector>
     </View>
   );
@@ -1080,9 +1166,19 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.surfaceWarm,
     zIndex: 2,
   },
+  /** Scrollable block under sticky search — Past Orders + ads (tabs stick separately). */
+  scrollChrome: {
+    marginBottom: 4,
+  },
+  /** Sticky section header — solid bg so order cards slide underneath cleanly. */
+  stickyTabsChrome: {
+    backgroundColor: GatiMitraMerchant.surfaceWarm,
+    paddingBottom: 4,
+    paddingTop: 2,
+    zIndex: 3,
+  },
   listSwipeArea: {
     flex: 1,
-    overflow: "hidden",
   },
   listContent: {
     paddingHorizontal: H_PADDING,

@@ -12,6 +12,11 @@ import android.os.Looper;
 /**
  * Shows the persistent pill only while GatiMitra Partner is not the foreground app.
  * A short delay avoids flicker when activities hand off inside the same app.
+ *
+ * Also remounts the incoming-order WindowManager card after background/unlock.
+ * Without that remount, the small order-count pill can remain while the full
+ * NEW ORDER card is missing — process importance often still reports FOREGROUND
+ * briefly after onPause, which used to skip OrderAlertOverlay.show().
  */
 public final class OrderAlertVisibility {
   private static final Handler MAIN = new Handler(Looper.getMainLooper());
@@ -19,6 +24,11 @@ public final class OrderAlertVisibility {
   private static int resumed;
   private static boolean registered;
   private static Runnable pendingShow;
+  /**
+   * Set after the pause delay when resumed==0. Lets remount trust the lifecycle
+   * counter instead of a lagging ActivityManager.IMPORTANCE_FOREGROUND reading.
+   */
+  private static volatile boolean forcedBackground;
 
   private OrderAlertVisibility() {}
 
@@ -34,6 +44,7 @@ public final class OrderAlertVisibility {
         if (!samePackage(activity)) return;
         // Lock-screen FSI activity is not "Partner open" — keep its card + overlay.
         if (activity instanceof OrderAlertLockActivity) return;
+        forcedBackground = false;
         resumed++;
         MAIN.removeCallbacks(pendingShow);
         Context appCtx = activity.getApplicationContext();
@@ -43,27 +54,23 @@ public final class OrderAlertVisibility {
       }
       @Override public void onActivityPaused(Activity activity) {
         if (!samePackage(activity)) return;
-        if (activity instanceof OrderAlertLockActivity) return;
+        if (activity instanceof OrderAlertLockActivity) {
+          // Lock activity finishing (unlock / dismiss) must remount home card.
+          MAIN.removeCallbacks(pendingShow);
+          final Context appCtx = activity.getApplicationContext();
+          pendingShow = () -> remountIncomingCardIfNeeded(appCtx);
+          MAIN.postDelayed(pendingShow, SHOW_DELAY_MS);
+          return;
+        }
         resumed = Math.max(0, resumed - 1);
         if (resumed > 0) return;
         MAIN.removeCallbacks(pendingShow);
         final Context appCtx = activity.getApplicationContext();
         pendingShow = () -> {
           if (resumed != 0) return;
+          forcedBackground = true;
           OrderAlertPill.setPartnerForeground(appCtx, false);
-          // Re-show home-screen overlay only when unlocked + session still active.
-          try {
-            if (isDeviceLocked(appCtx)) return;
-            org.json.JSONObject active = OrderAlertController.getActive(appCtx);
-            if (active == null) return;
-            String sid = active.optString("sessionId", "");
-            if (OrderAlertOverlay.isCardDismissed(appCtx, sid)) return;
-            // The app is gone from the screen, so whatever it claimed it can no
-            // longer present. Take the card back before showing it, or the
-            // js_attached gate in show() would keep the rider with nothing.
-            OrderAlertController.release(appCtx, sid);
-          } catch (Throwable ignored) {
-          }
+          remountIncomingCardIfNeeded(appCtx);
         };
         MAIN.postDelayed(pendingShow, SHOW_DELAY_MS);
       }
@@ -71,6 +78,48 @@ public final class OrderAlertVisibility {
       @Override public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
       @Override public void onActivityDestroyed(Activity activity) {}
     });
+  }
+
+  /**
+   * After unlock or app background: release JS claim and mount the floating card
+   * when an alert session is still active. Idempotent.
+   */
+  static void remountIncomingCardIfNeeded(Context context) {
+    if (context == null) return;
+    final Context appCtx = context.getApplicationContext();
+    try {
+      if (isDeviceLocked(appCtx)) {
+        // Keep heads-up / FSI path; do not mount WM twin over the keyguard.
+        OrderAlertHeadsUp.show(appCtx, "");
+        return;
+      }
+      org.json.JSONObject active = OrderAlertController.getActive(appCtx);
+      if (active == null) return;
+      String sid = active.optString("sessionId", "");
+      if (sid.length() == 0) return;
+      if (OrderAlertOverlay.isCardDismissed(appCtx, sid)) return;
+      // Accepted / rejected / stopped elsewhere: never redraw the card. The
+      // audio guards already refuse to ring, so without this the merchant would
+      // get a silent NEW ORDER card for an order that is already gone.
+      if (OrderAlertController.isSessionDecided(appCtx, sid, active.optString("orderId", ""))) {
+        return;
+      }
+      // App is not presenting — reclaim ownership before WM show.
+      // Also re-arms FGS audio when the session was only locally muted by app-open
+      // handoff (alertState=muted). Global terminal sessions stay retired.
+      OrderAlertController.release(appCtx, sid);
+      OrderAlertController.rearmAfterLocalMuteIfNeeded(appCtx, sid);
+      forcedBackground = resumed == 0;
+      org.json.JSONObject refreshed = OrderAlertController.getActive(appCtx);
+      if (refreshed != null) {
+        OrderAlertOverlay.show(appCtx, refreshed);
+      } else {
+        OrderAlertOverlay.show(appCtx, active);
+      }
+      OrderAlertHeadsUp.show(appCtx, sid);
+      OrderAlertPill.apply(appCtx);
+    } catch (Throwable ignored) {
+    }
   }
 
   /**
@@ -92,7 +141,13 @@ public final class OrderAlertVisibility {
    * foreground and wrongly suppress the card.
    */
   static boolean shouldHideBecausePartnerIsOpen(Context context) {
-    if (resumed > 0) return true;
+    if (resumed > 0) {
+      forcedBackground = false;
+      return true;
+    }
+    // After a confirmed pause with no resumed activities, trust lifecycle over
+    // a lagging process-importance reading so the home floating card remounts.
+    if (forcedBackground) return false;
     return processLooksForeground(context);
   }
 

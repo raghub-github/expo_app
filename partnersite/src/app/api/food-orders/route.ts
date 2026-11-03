@@ -40,7 +40,10 @@ function getSupabase() {
 }
 
 /** Resolve public store_id or internal merchant_stores.id to internal bigint id */
-async function resolveStoreId(db: ReturnType<typeof getSupabase>, storeIdParam: string): Promise<{ id: number } | null> {
+async function resolveStoreId(
+  db: ReturnType<typeof getSupabase>,
+  storeIdParam: string
+): Promise<{ id: number; store_name: string | null } | null> {
   const trimmed = String(storeIdParam ?? '').trim();
   if (!trimmed) return null;
 
@@ -49,7 +52,12 @@ async function resolveStoreId(db: ReturnType<typeof getSupabase>, storeIdParam: 
     .select('id, store_name')
     .eq('store_id', trimmed)
     .maybeSingle();
-  if (byPublic?.id != null) return { id: byPublic.id as number };
+  if (byPublic?.id != null) {
+    return {
+      id: byPublic.id as number,
+      store_name: (byPublic as { store_name?: string | null }).store_name ?? null,
+    };
+  }
 
   if (/^\d+$/.test(trimmed)) {
     const { data: byInternal } = await db
@@ -57,7 +65,12 @@ async function resolveStoreId(db: ReturnType<typeof getSupabase>, storeIdParam: 
       .select('id, store_name')
       .eq('id', parseInt(trimmed, 10))
       .maybeSingle();
-    if (byInternal?.id != null) return { id: byInternal.id as number };
+    if (byInternal?.id != null) {
+      return {
+        id: byInternal.id as number,
+        store_name: (byInternal as { store_name?: string | null }).store_name ?? null,
+      };
+    }
   }
 
   return null;
@@ -73,7 +86,9 @@ type FoodRow = Record<string, unknown>;
  */
 export async function GET(req: NextRequest) {
   try {
-    return await withRouteTimeout('food-orders.get', 90_000, async () => {
+    // Stay under nginx ~60s gateway timeout so the app can return a clean 504
+    // instead of an opaque upstream hang (was 90s and lost that race).
+    return await withRouteTimeout('food-orders.get', 45_000, async () => {
     const { searchParams } = new URL(req.url);
     const storeId = searchParams.get('store_id') || searchParams.get('storeId');
     const status = searchParams.get('status');
@@ -90,6 +105,11 @@ export async function GET(req: NextRequest) {
     const skipCompensation =
       searchParams.get('skip_compensation') === '1' ||
       (isListQuery && searchParams.get('include_compensation') !== '1');
+    // Correlated ordinals + rider document selfie fallbacks are detail-path work.
+    // On the live board they routinely burned 25s+ and pushed past the gateway.
+    const skipHeavyEnrich =
+      searchParams.get('skip_heavy_enrich') === '1' ||
+      (isListQuery && searchParams.get('include_heavy_enrich') !== '1');
 
     if (!storeId) {
       return NextResponse.json({ error: 'store_id is required' }, { status: 400 });
@@ -101,8 +121,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Store not found' }, { status: 404 });
     }
 
-    const storeNameRow = await db.from('merchant_stores').select('store_name').eq('id', store.id).single();
-    const defaultStoreName = (storeNameRow.data as { store_name?: string } | null)?.store_name ?? null;
+    const defaultStoreName = store.store_name;
 
     let coreRows: CoreRow[] = [];
     let foodByCoreId = new Map<number, FoodRow>();
@@ -284,18 +303,29 @@ export async function GET(req: NextRequest) {
 
     if (customerIds.length > 0) {
       try {
-        const [{ storeByCustomer, platformByCustomer }, ordinals] = await Promise.all([
-          loadCustomerOrderCounts(store.id, customerIds),
-          loadOrderOrdinalsByCoreId(
+        // Counts are cheap GROUP BYs; ordinals are correlated COUNTs over full
+        // customer history and previously timed out the board — detail fetches only.
+        if (skipHeavyEnrich) {
+          const { storeByCustomer, platformByCustomer } = await loadCustomerOrderCounts(
             store.id,
-            coreRows.map((c) => Number(c.id)),
             customerIds
-          ),
-        ]);
-        for (const [cid, cnt] of storeByCustomer) customerOrderCountById.set(cid, cnt);
-        for (const [cid, cnt] of platformByCustomer) customerPlatformCountById.set(cid, cnt);
-        for (const [id, ord] of ordinals.storeOrdinalByCoreId) storeOrdinalByCoreId.set(id, ord);
-        for (const [id, ord] of ordinals.platformOrdinalByCoreId) platformOrdinalByCoreId.set(id, ord);
+          );
+          for (const [cid, cnt] of storeByCustomer) customerOrderCountById.set(cid, cnt);
+          for (const [cid, cnt] of platformByCustomer) customerPlatformCountById.set(cid, cnt);
+        } else {
+          const [{ storeByCustomer, platformByCustomer }, ordinals] = await Promise.all([
+            loadCustomerOrderCounts(store.id, customerIds),
+            loadOrderOrdinalsByCoreId(
+              store.id,
+              coreRows.map((c) => Number(c.id)),
+              customerIds
+            ),
+          ]);
+          for (const [cid, cnt] of storeByCustomer) customerOrderCountById.set(cid, cnt);
+          for (const [cid, cnt] of platformByCustomer) customerPlatformCountById.set(cid, cnt);
+          for (const [id, ord] of ordinals.storeOrdinalByCoreId) storeOrdinalByCoreId.set(id, ord);
+          for (const [id, ord] of ordinals.platformOrdinalByCoreId) platformOrdinalByCoreId.set(id, ord);
+        }
       } catch (statsErr) {
         // Pool/auth timeouts here must not fail the whole orders board (500 / "Internal server error").
         console.warn('[food-orders GET] customer order stats skipped:', statsErr);
@@ -317,26 +347,45 @@ export async function GET(req: NextRequest) {
     const orderTexts = coreRows
       .map((c) => String((c as CoreRow).order_id ?? '').trim())
       .filter(Boolean);
+    const coreIdToOrderText = new Map<number, string>();
+    for (const c of coreRows) {
+      const id = Number((c as CoreRow).id);
+      const text = String((c as CoreRow).order_id ?? '').trim();
+      if (Number.isFinite(id) && text) coreIdToOrderText.set(id, text);
+    }
 
-    const [rawItemsByOrderTextId, riderSelfieById, ridersResult, snapshotsByOrderText, uniformByCoreId] =
+    const [rawItemsByOrderTextId, ridersResult, snapshotsByOrderText, uniformByCoreId] =
       await Promise.all([
         loadCoreDbItemsByOrderTextIds(db, orderIdTexts),
-        riderIds.length > 0
-          ? buildRiderSelfieUrlMap(db, riderIds)
-          : Promise.resolve(new Map<number, string | null>()),
         riderIds.length > 0
           ? db
               .from('riders')
               .select('id, name, mobile, selfie_url, status, city, lat, lon')
               .in('id', riderIds)
           : Promise.resolve({ data: [] as unknown[] }),
-        loadSnapshotsByOrderTexts(db, orderTexts, store.id),
+        loadSnapshotsByOrderTexts(db, orderTexts, store.id, coreIdToOrderText),
         loadMerchantRiderUniformByOrderCoreIds(db, coreIds),
       ]);
 
     const riderById = new Map<number, Record<string, unknown>>();
     for (const r of ridersResult.data || []) {
       riderById.set(Number((r as { id: number }).id), r as Record<string, unknown>);
+    }
+
+    // List/board: resolve selfie from riders.selfie_url only (no per-rider document N+1).
+    // Detail: fall back through rider_documents when the column is empty.
+    let riderSelfieById = new Map<number, string | null>();
+    if (riderIds.length > 0) {
+      if (skipHeavyEnrich) {
+        for (const [id, row] of riderById) {
+          riderSelfieById.set(
+            id,
+            resolveRiderSelfieFromStored((row.selfie_url as string | null | undefined) ?? null)
+          );
+        }
+      } else {
+        riderSelfieById = await buildRiderSelfieUrlMap(db, riderIds);
+      }
     }
 
     const ordersWithDetails = await Promise.all(
@@ -752,7 +801,7 @@ export async function GET(req: NextRequest) {
       : await enrichOrdersWithCancellationCompensation(ordersEnriched);
 
     console.log(
-      `[food-orders GET] ${ordersWithCompensation.length} partner orders (orders_core–centric) for store_id=${storeId}`
+      `[food-orders GET] ${ordersWithCompensation.length} partner orders (orders_core–centric) for store_id=${storeId} list=${isListQuery} skipHeavy=${skipHeavyEnrich}`
     );
 
     return NextResponse.json({ orders: ordersWithCompensation });

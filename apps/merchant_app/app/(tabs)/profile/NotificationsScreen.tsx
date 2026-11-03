@@ -1,27 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { AppState, View, StyleSheet, ScrollView, Switch, ActivityIndicator, Alert, TextInput, Pressable, Platform } from "react-native";
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 import { GatiMitraMerchant, H_PADDING } from "@/constants/theme";
 import { useStoreSettings } from "@/context/StoreSettingsContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { getOutlet, updateOutlet } from "@/services/outletApi";
 import {
-  openMerchantDisplayOverAppsSettings,
-  readMerchantOverlayAllowed,
-} from "@/lib/androidBackgroundPermissions";
+  disableHomeOverlay,
+  readHomeOverlaySnapshot,
+  reconcileHomeOverlayAfterSettingsReturn,
+  requestEnableHomeOverlay,
+} from "@/lib/homeOverlayOrderCount";
 
 /** Small gap below MerchantHeader on profile sub-screens. */
 const CONTENT_TOP = 10;
 const FLOATING_DEVICE_KEY = "mx_floating_live_orders_device_v1";
-const HOME_OVERLAY_DEVICE_KEY = "mx_home_overlay_orders_device_v1";
 
 export default function NotificationsScreen() {
   const { selectedStore } = useSelectedStore();
   const { settings, loading, saving } = useStoreSettings();
   const [localValue, setLocalValue] = useState(settings.show_floating_orders);
-  const [homeOverlayOn, setHomeOverlayOn] = useState(true);
+  /** null until preference + native permission are hydrated (avoids ON→OFF flicker). */
+  const [homeOverlayOn, setHomeOverlayOn] = useState<boolean | null>(null);
   const { token } = useAuth();
 
   const [detailsLoading, setDetailsLoading] = useState(false);
@@ -110,9 +112,9 @@ export default function NotificationsScreen() {
       if (cancelled || raw == null) return;
       setLocalValue(raw === "1");
     });
-    void SecureStore.getItemAsync(HOME_OVERLAY_DEVICE_KEY).then((raw) => {
-      if (cancelled || raw == null) return;
-      setHomeOverlayOn(raw === "1");
+    void readHomeOverlaySnapshot().then((snap) => {
+      if (cancelled) return;
+      setHomeOverlayOn(snap.toggleOn);
     });
     return () => {
       cancelled = true;
@@ -135,34 +137,31 @@ export default function NotificationsScreen() {
     }
   };
 
-  const applyHomeOverlay = async (on: boolean) => {
-    setHomeOverlayOn(on);
-    await SecureStore.setItemAsync(HOME_OVERLAY_DEVICE_KEY, on ? "1" : "0");
-  };
-
-  const syncHomeOverlayWithPermission = async () => {
-    if (Platform.OS !== "android") return;
-    const allowed = await readMerchantOverlayAllowed();
-    if (awaitingOverlayGrant.current) {
-      awaitingOverlayGrant.current = false;
-      if (allowed) {
-        await applyHomeOverlay(true);
-        showToast("Appear on top is on. Home screen order count is enabled.");
-      } else {
-        await applyHomeOverlay(false);
-        showToast("Appear on top is still off, so the home screen count stays hidden.");
-      }
+  const refreshHomeOverlayToggle = async (opts?: { awaitingGrant?: boolean }) => {
+    if (Platform.OS !== "android") {
+      const snap = await readHomeOverlaySnapshot();
+      setHomeOverlayOn(snap.toggleOn);
       return;
     }
-    const stored = await SecureStore.getItemAsync(HOME_OVERLAY_DEVICE_KEY);
-    if (stored === "1" && !allowed) {
-      await applyHomeOverlay(false);
+    const snap = await reconcileHomeOverlayAfterSettingsReturn({
+      awaitingGrant: opts?.awaitingGrant === true,
+    });
+    setHomeOverlayOn(snap.toggleOn);
+    if (opts?.awaitingGrant) {
+      if (snap.toggleOn) {
+        showToast("Appear on top is on. Home screen order count is enabled.");
+      } else {
+        showToast("Appear on top is still off, so the home screen count stays hidden.");
+      }
     }
   };
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
-      if (state === "active") void syncHomeOverlayWithPermission();
+      if (state !== "active") return;
+      const awaiting = awaitingOverlayGrant.current;
+      if (awaiting) awaitingOverlayGrant.current = false;
+      void refreshHomeOverlayToggle({ awaitingGrant: awaiting });
     });
     return () => sub.remove();
   }, []);
@@ -171,40 +170,35 @@ export default function NotificationsScreen() {
     if (!next) {
       awaitingOverlayGrant.current = false;
       try {
-        await applyHomeOverlay(false);
+        await disableHomeOverlay();
+        setHomeOverlayOn(false);
         showToast("Home screen order count hidden on this device.");
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Failed to update preference";
         Alert.alert("Could not save preference", msg);
-        setHomeOverlayOn(true);
+        const snap = await readHomeOverlaySnapshot();
+        setHomeOverlayOn(snap.toggleOn);
       }
       return;
     }
-    if (Platform.OS !== "android") {
-      await applyHomeOverlay(true);
-      return;
-    }
-    const allowed = await readMerchantOverlayAllowed();
-    if (allowed) {
-      try {
-        await applyHomeOverlay(true);
-        showToast("Home screen order count enabled on this device.");
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "Failed to update preference";
-        Alert.alert("Could not save preference", msg);
-        setHomeOverlayOn(false);
-      }
-      return;
-    }
-    setHomeOverlayOn(false);
-    awaitingOverlayGrant.current = true;
-    showToast("Turn on Appear on top for this app, then come back.");
     try {
-      await openMerchantDisplayOverAppsSettings();
+      const result = await requestEnableHomeOverlay();
+      if (result.toggleOn) {
+        setHomeOverlayOn(true);
+        showToast("Home screen order count enabled on this device.");
+        return;
+      }
+      setHomeOverlayOn(false);
+      if (result.openedSettings) {
+        awaitingOverlayGrant.current = true;
+        showToast("Turn on Appear on top for this app, then come back.");
+      }
     } catch (e) {
       awaitingOverlayGrant.current = false;
       const msg = e instanceof Error ? e.message : "Could not open Appear on top";
-      Alert.alert("Could not open settings", msg);
+      Alert.alert("Could not update preference", msg);
+      const snap = await readHomeOverlaySnapshot();
+      setHomeOverlayOn(snap.toggleOn);
     }
   };
 
@@ -430,8 +424,9 @@ export default function NotificationsScreen() {
               </Text>
             </View>
             <Switch
-              value={homeOverlayOn}
+              value={homeOverlayOn === true}
               onValueChange={handleHomeOverlayToggle}
+              disabled={homeOverlayOn === null}
               trackColor={{
                 false: "#4B5563",
                 true: GatiMitraMerchant.primary,

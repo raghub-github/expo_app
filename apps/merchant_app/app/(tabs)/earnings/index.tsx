@@ -131,9 +131,11 @@ export default function EarningsScreen() {
   const [loading, setLoading] = useState(() => cachedWallet == null);
   const [cyclesReady, setCyclesReady] = useState(() => cachedCycles != null);
   const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [ledgerError, setLedgerError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [txFilter, setTxFilter] = useState<TxFilter>("all");
   const ledgerLoadedForRef = useRef<string | null>(null);
+  const ledgerLoadGenRef = useRef(0);
   const loadGenRef = useRef(0);
   const hasWalletRef = useRef(cachedWallet != null);
   const [cycleCards, setCycleCards] = useState<PayoutCard[] | null>(() =>
@@ -236,22 +238,30 @@ export default function EarningsScreen() {
     if (!storeId || !token) return;
     const key = `${storeId}:${JSON.stringify(ledgerQuery)}`;
     if (!force && ledgerLoadedForRef.current === key) return;
+    const gen = ++ledgerLoadGenRef.current;
     const peeked = peekLedger(storeId, { limit: 50, ...ledgerQuery });
     if (peeked && !force) {
       setLedger(peeked.entries.filter(isMerchantVisibleLedgerEntry));
       ledgerLoadedForRef.current = key;
       setLedgerLoading(false);
+      setLedgerError(null);
     } else if (!peeked) {
+      // Keep previous rows visible while refetching a new filter — only spin when empty.
       setLedgerLoading(true);
+      setLedgerError(null);
     }
     try {
       const l = await fetchLedger(storeId, token, { limit: 50, ...ledgerQuery });
+      if (gen !== ledgerLoadGenRef.current) return;
       setLedger(l.entries.filter(isMerchantVisibleLedgerEntry));
       ledgerLoadedForRef.current = key;
+      setLedgerError(null);
     } catch {
-      /* keep previous ledger */
+      if (gen !== ledgerLoadGenRef.current) return;
+      // Do not wipe a good list on failure; surface retry when empty.
+      setLedgerError("Couldn’t load transactions. Pull to refresh or try again.");
     } finally {
-      setLedgerLoading(false);
+      if (gen === ledgerLoadGenRef.current) setLedgerLoading(false);
     }
   }, [storeId, token, ledgerQuery]);
 
@@ -834,6 +844,24 @@ export default function EarningsScreen() {
             ledgerLoading ? (
               <View style={s.loadingBlock}>
                 <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
+              </View>
+            ) : ledgerError ? (
+              <View style={s.emptyCard}>
+                <Text style={s.emptyTitle}>Transactions unavailable</Text>
+                <Text style={s.emptyText}>{ledgerError}</Text>
+                <Pressable
+                  onPress={() => void loadLedger(true)}
+                  style={{
+                    marginTop: 12,
+                    alignSelf: "center",
+                    paddingHorizontal: 16,
+                    paddingVertical: 10,
+                    borderRadius: 10,
+                    backgroundColor: GatiMitraMerchant.primary,
+                  }}
+                >
+                  <Text style={{ color: "#fff", fontWeight: "700" }}>Retry</Text>
+                </Pressable>
               </View>
             ) : (
               <View style={s.emptyCard}>

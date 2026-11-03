@@ -6,7 +6,7 @@
  *   • App BACKGROUND — shade + channel sound (handler still runs while process alive).
  *   • App KILLED — this handler does not run; FCM notification block + channel sound.
  *
- * Never gate shouldShowAlert / shouldShowBanner on FloatingInAppBannerHost.
+ * Never gate shouldShowBanner / shouldShowList on FloatingInAppBannerHost.
  */
 import { AppState } from "react-native";
 import {
@@ -63,7 +63,6 @@ export async function installRiderForegroundNotificationHandler(): Promise<void>
         // or while the in-app modal will play that same chime.
         const suppressOsSound = nativeOwns || (isDispatch && appActive);
         return {
-          shouldShowAlert: true,
           shouldPlaySound: !suppressOsSound,
           shouldSetBadge: true,
           shouldShowBanner: true,
