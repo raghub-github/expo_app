@@ -24,6 +24,7 @@ export interface LedgerResponse {
 export type PayoutSettlementSummary = MerchantPayoutSettlementClient;
 
 const walletSummaryInFlight = new Map<string, Promise<WalletSummary>>();
+const ledgerInFlight = new Map<string, Promise<LedgerResponse>>();
 
 type TimedCache<T> = { at: number; data: T };
 const walletSummaryCache = new Map<number, TimedCache<WalletSummary>>();
@@ -134,33 +135,45 @@ export async function fetchLedger(
   opts?: { limit?: number; offset?: number; from?: string; to?: string; direction?: string; category?: string }
 ): Promise<LedgerResponse> {
   const cacheKey = `${storeId}:${opts?.limit ?? 50}:${opts?.offset ?? 0}:${opts?.from ?? ""}:${opts?.to ?? ""}:${opts?.direction ?? ""}:${opts?.category ?? ""}`;
-  const params = new URLSearchParams();
-  if (opts?.limit) params.set("limit", String(opts.limit));
-  if (opts?.offset) params.set("offset", String(opts.offset));
-  if (opts?.from) params.set("from", opts.from);
-  if (opts?.to) params.set("to", opts.to);
-  if (opts?.direction) params.set("direction", opts.direction);
-  if (opts?.category) params.set("category", opts.category);
-  const qs = params.toString();
-  const res = await authFetch(
-    `${getBase()}/v1/merchant-partner/stores/${storeId}/wallet/ledger${qs ? `?${qs}` : ""}`,
-    token,
-    { timeoutMs: 12_000 },
-  );
-  if (!res.ok) throw new Error("Failed to load ledger");
-  const data = await res.json();
-  const rawEntries = (data as { entries?: unknown[] }).entries ?? [];
-  const entries = rawEntries.map((row) => {
-    const e = row as LedgerEntry & { createdAt?: unknown };
-    const created = parsePgTimestamp(e.created_at ?? e.createdAt);
-    return {
-      ...e,
-      created_at: created ? created.toISOString() : String(e.created_at ?? e.createdAt ?? ""),
-    };
-  });
-  const result = { entries, total: (data as { total?: number }).total ?? entries.length };
-  ledgerCache.set(cacheKey, { at: Date.now(), data: result });
-  return result;
+  const existing = ledgerInFlight.get(cacheKey);
+  if (existing) return existing;
+
+  const run = (async (): Promise<LedgerResponse> => {
+    const params = new URLSearchParams();
+    if (opts?.limit) params.set("limit", String(opts.limit));
+    if (opts?.offset) params.set("offset", String(opts.offset));
+    if (opts?.from) params.set("from", opts.from);
+    if (opts?.to) params.set("to", opts.to);
+    if (opts?.direction) params.set("direction", opts.direction);
+    if (opts?.category) params.set("category", opts.category);
+    const qs = params.toString();
+    const res = await authFetch(
+      `${getBase()}/v1/merchant-partner/stores/${storeId}/wallet/ledger${qs ? `?${qs}` : ""}`,
+      token,
+      { timeoutMs: 20_000 },
+    );
+    if (!res.ok) throw new Error("Failed to load ledger");
+    const data = await res.json();
+    const rawEntries = (data as { entries?: unknown[] }).entries ?? [];
+    const entries = rawEntries.map((row) => {
+      const e = row as LedgerEntry & { createdAt?: unknown };
+      const created = parsePgTimestamp(e.created_at ?? e.createdAt);
+      return {
+        ...e,
+        created_at: created ? created.toISOString() : String(e.created_at ?? e.createdAt ?? ""),
+      };
+    });
+    const result = { entries, total: (data as { total?: number }).total ?? entries.length };
+    ledgerCache.set(cacheKey, { at: Date.now(), data: result });
+    return result;
+  })();
+
+  ledgerInFlight.set(cacheKey, run);
+  try {
+    return await run;
+  } finally {
+    if (ledgerInFlight.get(cacheKey) === run) ledgerInFlight.delete(cacheKey);
+  }
 }
 
 export async function fetchPayoutSettlement(

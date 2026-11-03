@@ -346,12 +346,17 @@ export async function PATCH(
         console.warn('[food-orders PATCH] merchant CTM freeze failed:', ctmErr);
       }
 
-      // Backend-driven customer push: Order Confirmed by the Store
-      void notifyCustomerMerchantAccepted({
-        ordersCoreId: existing.order_id as number,
-        fromStatus: currentStatus,
-        storeName: null,
-      });
+      // Await backend accept-notify so FCM global buzzer stop is sent before
+      // this serverless handler can freeze after returning the HTTP response.
+      try {
+        await notifyCustomerMerchantAccepted({
+          ordersCoreId: existing.order_id as number,
+          fromStatus: currentStatus,
+          storeName: null,
+        });
+      } catch (acceptNotifyErr) {
+        console.warn('[food-orders PATCH] merchant-accept-notify failed:', acceptNotifyErr);
+      }
     }
 
     if (newStatus === 'CANCELLED') {
@@ -432,11 +437,17 @@ export async function PATCH(
           })
         );
       }
-      void notifyOrderCancelled({
-        ordersCoreId: existing.order_id as number,
-        fromStatus: currentStatus,
-        reason: displayReason,
-      });
+      // Await cancel-notify so FCM global buzzer stop is sent before this
+      // serverless handler can freeze after returning the HTTP response.
+      try {
+        await notifyOrderCancelled({
+          ordersCoreId: existing.order_id as number,
+          fromStatus: currentStatus,
+          reason: displayReason,
+        });
+      } catch (cancelNotifyErr) {
+        console.warn('[food-orders PATCH] cancel-notify failed:', cancelNotifyErr);
+      }
     }
 
     if (newStatus === 'RTO') {

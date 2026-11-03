@@ -1,6 +1,6 @@
 import { getConfig } from "@/config/env";
 import { authFetch } from "@/services/authFetch";
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 
 function getBase(): string {
   try {

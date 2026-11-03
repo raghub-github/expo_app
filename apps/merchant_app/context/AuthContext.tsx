@@ -11,7 +11,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 import { getConfig } from "@/config/env";
 import { resetSessionRevokedFlag } from "@/services/sessionEvents";
 import {

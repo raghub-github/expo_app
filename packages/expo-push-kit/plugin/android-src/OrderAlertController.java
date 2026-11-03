@@ -93,6 +93,13 @@ public final class OrderAlertController {
     if ("stop".equalsIgnoreCase(action)) {
       String sessionId = resolveSessionId(data);
       String orderId = first(data, "foodOrderId", "food_order_id", "orderId", "order_id", "offerId", "offer_id");
+      String formattedId = first(
+          data,
+          "formattedOrderId",
+          "formatted_order_id",
+          "displayOrderId",
+          "display_order_id"
+      );
       if (sessionId.length() > 0) {
         // Session-scoped stop. Merchant sessions include food id; rider waves use
         // distinct session ids so a stop does not kill a newer wave.
@@ -100,12 +107,22 @@ public final class OrderAlertController {
       } else if (orderId.length() > 0) {
         stop(context, orderId);
       }
+      // Sweep remaining rows that share the same food/order token — protects
+      // Partner Website / eventBus stops whose session string used a GMF id
+      // while the ringing session was keyed by numeric foodOrderId (or vice versa).
+      sweepStopByOrderToken(context, orderId);
+      sweepStopByOrderToken(context, formattedId);
+      sweepStopByOrderToken(context, extractOrderToken(sessionId));
       // Always retire payload order tokens so a delayed START cannot revive
       // after the session row was already removed.
       if (orderId.length() > 0) {
         retireSession(context, orderId);
         retireSession(context, "merchant-order-" + orderId);
         retireSession(context, "rider-offer-" + orderId);
+      }
+      if (formattedId.length() > 0) {
+        retireSession(context, formattedId);
+        retireSession(context, "merchant-order-" + formattedId);
       }
       if (sessionId.length() > 0) {
         retireSession(context, sessionId);
@@ -145,8 +162,13 @@ public final class OrderAlertController {
       return true;
     }
 
-    String orderId = first(data, "orderId", "order_id", "foodOrderId", "food_order_id");
-    String offerId = first(data, "offerId", "offer_id", "orderId", "order_id");
+    // Prefer numeric foodOrderId so START session tokens match STOP (GMF text is display-only).
+    String foodOrderId = first(data, "foodOrderId", "food_order_id");
+    String orderId = foodOrderId.length() > 0
+        ? foodOrderId
+        : first(data, "orderId", "order_id");
+    String offerId = first(data, "offerId", "offer_id");
+    if (offerId.length() == 0) offerId = orderId;
     String soundType = resolveSoundType(data);
     String title = first(data, "title");
     String body = first(data, "body", "message");
@@ -224,8 +246,11 @@ public final class OrderAlertController {
       if (row != null) {
         if (OrderAlertVisibility.shouldSuppressOverlayWindow(context)) {
           OrderAlertOverlay.hideAll(context);
+          // Lock / in-app: still post heads-up so lock screen / shade is not empty.
+          OrderAlertHeadsUp.show(context, row.optString("sessionId", sessionId));
         } else {
           OrderAlertOverlay.show(context, row);
+          OrderAlertHeadsUp.show(context, row.optString("sessionId", sessionId));
         }
         ensureService(
             context,
@@ -378,6 +403,34 @@ public final class OrderAlertController {
     OrderAlertPill.onNewOrder(context, sid);
     AlertEngineLog.log(context, "ALERT_SESSION_CREATED", sid, oid, "sound=" + sound + " type=" + typeText);
     Log.i(TAG, "start sessionId=" + sid + " orderId=" + oid + " sound=" + sound);
+  }
+
+  /**
+   * Stop every active session whose food/order token matches. Used after a
+   * primary stop so a mismatched session id cannot leave the MediaPlayer looping.
+   */
+  private static void sweepStopByOrderToken(Context context, String token) {
+    String t = token == null ? "" : token.trim();
+    if (t.length() == 0 || context == null) return;
+    String extracted = extractOrderToken(t);
+    if (extracted.length() == 0) extracted = t;
+    java.util.ArrayList<String> doomed = new java.util.ArrayList<>();
+    synchronized (LOCK) {
+      JSONArray all = listSessions(context);
+      for (int i = 0; i < all.length(); i++) {
+        try {
+          JSONObject cur = all.getJSONObject(i);
+          if (matches(cur, t) || matches(cur, extracted)) {
+            String sid = cur.optString("sessionId", "");
+            if (sid.length() > 0) doomed.add(sid);
+          }
+        } catch (Exception ignored) {
+        }
+      }
+    }
+    for (String sid : doomed) {
+      stop(context, sid);
+    }
   }
 
   public static void stop(Context context, String sessionId) {
@@ -618,6 +671,52 @@ public final class OrderAlertController {
     } catch (Throwable ignored) {
     }
     return result;
+  }
+
+  /**
+   * After Partner backgrounds following a LOCAL app-open mute, restore FGS
+   * audio for a still-active (non-retired) session. Must never revive a
+   * globally stopped / terminal order.
+   */
+  public static void rearmAfterLocalMuteIfNeeded(Context context, String sessionId) {
+    if (context == null) return;
+    String sid = sessionId == null ? "" : sessionId.trim();
+    if (sid.length() == 0) return;
+    if (isRetired(context, sid)) return;
+    JSONObject row;
+    synchronized (LOCK) {
+      row = findSession(context, sid, sid, sid);
+      if (row == null) return;
+      String state = row.optString("alertState", STATE_ACTIVE);
+      if (!STATE_MUTED.equals(state)) return;
+      if (STATE_TERMINAL.equals(state)) return;
+      try {
+        row.put("alertState", STATE_ACTIVE);
+        row.put("owner", "native");
+        upsertSession(context, row);
+        putPrimary(context, row.optString("sessionId", sid));
+      } catch (Exception ignored) {
+      }
+    }
+    ensureService(
+        context,
+        row.optString("sessionId", sid),
+        row.optString("orderId", ""),
+        row.optString("offerId", ""),
+        row.optString("soundType", defaultSound()),
+        row.optString("title", ""),
+        row.optString("body", ""),
+        row.optString("pickup", ""),
+        row.optString("drop", ""),
+        row.optString("orderType", "")
+    );
+    AlertEngineLog.log(
+        context,
+        "ALERT_REARMED",
+        row.optString("sessionId", sid),
+        row.optString("orderId", ""),
+        "after_local_mute=1"
+    );
   }
 
   static void onServiceStart(Context context, Intent intent) {

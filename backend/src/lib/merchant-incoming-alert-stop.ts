@@ -33,11 +33,29 @@ export async function stopMerchantIncomingAlertEverywhere(
   if (!Number.isInteger(foodOrderId) || foodOrderId < 1) return;
   const status = String(args.status ?? "").trim().toUpperCase() || "TERMINAL";
   const stopAtMs = args.stopAtMs ?? Date.now();
+  let formattedOrderId: string | null = null;
+  try {
+    const rows = await sql`
+      SELECT COALESCE(
+        NULLIF(TRIM(oc.formatted_order_id), ''),
+        NULLIF(TRIM(oc.order_id), '')
+      ) AS formatted_order_id
+      FROM orders_food f
+      JOIN orders_core oc ON oc.id = f.order_id
+      WHERE f.id = ${foodOrderId}
+      LIMIT 1
+    `;
+    const raw = (rows[0] as { formatted_order_id?: string | null } | undefined)?.formatted_order_id;
+    formattedOrderId = raw != null && String(raw).trim() ? String(raw).trim() : null;
+  } catch {
+    /* optional identity enrichment */
+  }
 
   await Promise.allSettled([
     notifyMerchantOrderAlertStop(sql, {
       storeId,
       foodOrderId,
+      formattedOrderId,
       stopAtMs,
       status,
     }),

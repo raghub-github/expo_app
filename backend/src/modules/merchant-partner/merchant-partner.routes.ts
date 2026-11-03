@@ -9906,18 +9906,20 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               newStatus === "REJECTED" ||
               newStatus === "EXPIRED"
             ) {
-              // Global stop for every Partner device — independent of which phone acted.
-              // eventBus also stops on status_changed; this is a direct path so FCM
-              // stop is not lost if the domain event handler lags.
-              void import("../../lib/merchant-incoming-alert-stop.js")
-                .then(({ stopMerchantIncomingAlertEverywhere }) =>
-                  stopMerchantIncomingAlertEverywhere(sql, {
-                    storeId,
-                    foodOrderId: ordersFoodId,
-                    status: newStatus,
-                  })
-                )
-                .catch(() => undefined);
+              // Await global stop so this device's HTTP success cannot race ahead
+              // of FCM/WS delivery to other logged-in Partner phones.
+              try {
+                const { stopMerchantIncomingAlertEverywhere } = await import(
+                  "../../lib/merchant-incoming-alert-stop.js"
+                );
+                await stopMerchantIncomingAlertEverywhere(sql, {
+                  storeId,
+                  foodOrderId: ordersFoodId,
+                  status: newStatus,
+                });
+              } catch {
+                /* eventBus status_changed remains a second stop path */
+              }
             }
             return reply.send({ order });
           } catch (e) {

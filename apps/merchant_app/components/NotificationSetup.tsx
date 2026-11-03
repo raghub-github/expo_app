@@ -33,7 +33,7 @@ import {
 import { PermissionBottomSheetShell } from "@/components/permissions/PermissionBottomSheetShell";
 import { useNotificationPermissionGate } from "@/context/NotificationPermissionGateContext";
 import type { PartnerData } from "@/context/AuthContext";
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 import { useMerchantWalletFreezeLive } from "@/hooks/useMerchantWalletFreezeLive";
 import { useMerchantStoreDelistLive } from "@/hooks/useMerchantStoreDelistLive";
 import { installMerchantForegroundNotificationHandler } from "@/lib/merchantNotificationHandler";

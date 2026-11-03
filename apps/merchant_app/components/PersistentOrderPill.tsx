@@ -1,11 +1,15 @@
 /**
  * Native overlay when the Partner build includes it.
  * Expo Go has no WindowManager overlay, so the same pill is drawn inside the app.
+ *
+ * Dismissal is session-scoped (module memory) — never SecureStore.
+ * Preference + Android Appear-on-top are separate; effective = both && !dismissed.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   AppState,
+  DeviceEventEmitter,
   NativeModules,
   PanResponder,
   Platform,
@@ -13,24 +17,21 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import * as SecureStore from "expo-secure-store";
 import { router } from "expo-router";
 import { AppText as Text } from "@/components/AppText";
 import { getTextHost } from "@/lib/textHost";
 import { MerchantFonts } from "@/constants/typography";
+import { consumePersistentPillLaunch, setPersistentOrderPill } from "@gatimitra/expo-push-kit";
 import {
-  canDrawNativeOverlays,
-  consumePersistentPillLaunch,
-  setPersistentOrderPill,
-} from "@gatimitra/expo-push-kit";
-import { readMerchantOverlayAllowed } from "@/lib/androidBackgroundPermissions";
+  HOME_OVERLAY_CHANGED_EVENT,
+  markHomeOverlaySessionDismissed,
+  syncHomeOverlayNativePill,
+} from "@/lib/homeOverlayOrderCount";
 import { useAuth } from "@/context/AuthContext";
 import { useOrders } from "@/hooks/useOrders";
 import { useIncomingOrderSheetOptional } from "@/context/IncomingOrderSheetContext";
 
 const nativePill = NativeModules.GatimitraOrderAlert?.setPersistentPill != null;
-const HOME_OVERLAY_DEVICE_KEY = "mx_home_overlay_orders_device_v1";
-const IN_APP_PILL_DISMISSED_KEY = "mx_in_app_order_pill_dismissed_v1";
 /** Premium dark-black circle (matches native OrderAlertPill). */
 const PILL_FILL = "#111111";
 const PILL_SIZE = 62;
@@ -48,7 +49,6 @@ export default function PersistentOrderPill() {
   const pendingOrders = orders.filter((o) => o.status === "created");
   const pending = pendingOrders.length;
   const focusId = pending === 1 ? String(pendingOrders[0]?.id ?? "") : "";
-  const prevPendingRef = useRef(pending);
 
   const initialX = Math.max(10, screenW - 72);
   const initialY = screenH * 0.46;
@@ -79,42 +79,33 @@ export default function PersistentOrderPill() {
         setOverlayAllowed(false);
         setNativeOverlay(false);
         setDismissed(false);
-        await setPersistentOrderPill(false, 0, "");
+        try {
+          await setPersistentOrderPill(false, 0, "");
+        } catch {
+          /* ignore */
+        }
         return;
       }
-      const homePref = await SecureStore.getItemAsync(HOME_OVERLAY_DEVICE_KEY);
-      const homeOverlayOn = homePref !== "0";
-      const dismissedPref = await SecureStore.getItemAsync(IN_APP_PILL_DISMISSED_KEY);
-      const nativeAllowed = nativePill ? await canDrawNativeOverlays() : null;
-      const osAllowed = await readMerchantOverlayAllowed();
-      const allowed = homeOverlayOn && (nativeAllowed === true || osAllowed === true);
+      const snap = await syncHomeOverlayNativePill(pending, focusId);
       if (cancelled) return;
-      const on = allowed === true;
-      setOverlayAllowed(on);
-      setNativeOverlay(on && nativePill);
-      setDismissed(dismissedPref === "1");
-      // Event-driven only — never poll SecureStore / start FGS on a 1s timer.
-      await setPersistentOrderPill(on && nativePill, pending, focusId);
+      setOverlayAllowed(snap.toggleOn);
+      setNativeOverlay(snap.toggleOn && nativePill);
+      setDismissed(snap.sessionDismissed);
+      if (!snap.sessionDismissed) pillOpacity.setValue(1);
     };
     void sync();
     const sub = AppState.addEventListener("change", (state) => {
       if (state === "active") void sync();
     });
+    const prefSub = DeviceEventEmitter.addListener(HOME_OVERLAY_CHANGED_EVENT, () => {
+      void sync();
+    });
     return () => {
       cancelled = true;
       sub.remove();
+      prefSub.remove();
     };
-  }, [isAuthenticated, pending, focusId]);
-
-  // New pending order clears an in-app dismiss so the pill can return when needed.
-  useEffect(() => {
-    if (pending > prevPendingRef.current) {
-      void SecureStore.deleteItemAsync(IN_APP_PILL_DISMISSED_KEY);
-      setDismissed(false);
-      pillOpacity.setValue(1);
-    }
-    prevPendingRef.current = pending;
-  }, [pending, pillOpacity]);
+  }, [isAuthenticated, pending, focusId, pillOpacity]);
 
   useEffect(() => {
     if (Platform.OS !== "android" || !isAuthenticated || !nativePill) return;
@@ -147,10 +138,10 @@ export default function PersistentOrderPill() {
       useNativeDriver: true,
     }).start(({ finished }) => {
       if (!finished) return;
+      markHomeOverlaySessionDismissed();
       setDismissed(true);
       setDragging(false);
       setOverDismiss(false);
-      void SecureStore.setItemAsync(IN_APP_PILL_DISMISSED_KEY, "1");
     });
   }, [pillOpacity]);
 

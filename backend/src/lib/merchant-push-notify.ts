@@ -924,8 +924,12 @@ export async function notifyMerchantStoreNewOrderPush(
       event: "NEW_ORDER",
       template_code: "MERCHANT_NEW_ORDER",
       gmType: "MERCHANT_NEW_ORDER",
-      orderId: args.orderIdText,
+      // Canonical native session key = numeric food id when known (matches STOP).
+      orderId:
+        args.foodOrderId != null ? String(args.foodOrderId) : args.orderIdText,
       foodOrderId: args.foodOrderId != null ? String(args.foodOrderId) : "",
+      coreOrderId: args.orderIdText,
+      formattedOrderId: args.displayId,
       displayOrderId: args.displayId,
       orderShortId: args.displayId,
       title: args.title,
@@ -957,6 +961,7 @@ export async function notifyMerchantOrderAlertStop(
   args: {
     storeId: number;
     foodOrderId: number;
+    formattedOrderId?: string | null;
     stopAtMs?: number;
     status?: string;
   }
@@ -969,6 +974,7 @@ export async function notifyMerchantOrderAlertStop(
   if (tokens.length === 0) return;
   const stopAtMs = args.stopAtMs ?? Date.now();
   const status = String(args.status ?? "TERMINAL").trim().toUpperCase() || "TERMINAL";
+  const formatted = String(args.formattedOrderId ?? "").trim();
   const { sendCriticalAlertControlFcm } = await import("./critical-alert-control.js");
   await sendCriticalAlertControlFcm({
     tokens,
@@ -981,7 +987,14 @@ export async function notifyMerchantOrderAlertStop(
       event: "STOP_ALERT",
       foodOrderId: String(args.foodOrderId),
       storeId: String(args.storeId),
+      // Canonical numeric food id — also echoed as orderId for older native parsers.
       orderId: String(args.foodOrderId),
+      ...(formatted
+        ? {
+            formattedOrderId: formatted,
+            displayOrderId: formatted,
+          }
+        : {}),
       alertStopAt: String(stopAtMs),
       alertEventVersion: String(stopAtMs),
       terminalStatus: status,

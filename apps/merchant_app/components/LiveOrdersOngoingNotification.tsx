@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { AppState, Platform, type AppStateStatus } from "react-native";
 import Constants from "expo-constants";
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useStoreStatus } from "@/context/StoreStatusContext";

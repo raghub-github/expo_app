@@ -1,6 +1,7 @@
 package {{PACKAGE}};
 
 import android.app.Activity;
+import android.content.Context;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
@@ -188,6 +189,15 @@ public class OrderAlertLockActivity extends Activity {
     try {
       OrderAlertLockActivity cur = live != null ? live.get() : null;
       if (cur == this) live = null;
+    } catch (Throwable ignored) {
+    }
+    // Unlock / FSI finish often never resumes MainActivity — remount home card.
+    try {
+      final Context app = getApplicationContext();
+      new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+          () -> OrderAlertVisibility.remountIncomingCardIfNeeded(app),
+          350L
+      );
     } catch (Throwable ignored) {
     }
     super.onDestroy();

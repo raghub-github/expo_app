@@ -168,33 +168,48 @@ export async function fetchRealtimeAuthToken(
   };
 }
 
+function isOrdersClientTimeout(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /timed out|timeout|aborted/i.test(msg);
+}
+
 export async function fetchFoodOrders(
   storeId: number,
   token: string,
-  opts?: { limit?: number; from?: string; to?: string }
+  opts?: { limit?: number; from?: string; to?: string; allowRetry?: boolean }
 ): Promise<ApiFoodOrder[]> {
   const q = new URLSearchParams();
   if (opts?.limit) q.set("limit", String(opts.limit));
   if (opts?.from) q.set("from", opts.from);
   if (opts?.to) q.set("to", opts.to);
   const qs = q.toString();
-  // Live board races at 12s server-side; history dated queries get 20s.
-  const HARD_TIMEOUT_MS = opts?.from && opts?.to ? 22_000 : 15_000;
-  const res = await authFetch(
-    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders${qs ? `?${qs}` : ""}`,
-    token,
-    { timeoutMs: HARD_TIMEOUT_MS }
-  );
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    const code = (err as { error?: string }).error;
-    if (code === "orders_load_timeout") {
-      throw new Error("Orders took too long to load. Pull to refresh and try again.");
+  // Soft client abort — keep under Android's ~6 connections/host budget.
+  const HARD_TIMEOUT_MS = 18_000;
+  const url = `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders${qs ? `?${qs}` : ""}`;
+
+  const once = async (): Promise<ApiFoodOrder[]> => {
+    const res = await authFetch(url, token, { timeoutMs: HARD_TIMEOUT_MS });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const code = (err as { error?: string }).error;
+      if (code === "orders_load_timeout") {
+        throw new Error("Orders took too long to load. Pull to refresh and try again.");
+      }
+      throw new Error(code || "Failed to load orders");
     }
-    throw new Error(code || "Failed to load orders");
+    const data = (await res.json()) as { orders?: ApiFoodOrder[] };
+    return Array.isArray(data.orders) ? data.orders : [];
+  };
+
+  try {
+    return await once();
+  } catch (first) {
+    // Skip retry while recovering — immediate double-fetch worsens pool starvation.
+    if (opts?.allowRetry === false) throw first;
+    if (!isOrdersClientTimeout(first)) throw first;
+    await new Promise((r) => setTimeout(r, 1_200));
+    return once();
   }
-  const data = (await res.json()) as { orders?: ApiFoodOrder[] };
-  return Array.isArray(data.orders) ? data.orders : [];
 }
 
 /** Cancel unaccepted orders past the acceptance window (portal-open flush). */
@@ -235,7 +250,8 @@ export async function fetchFoodOrder(
   ordersFoodId: number,
   token: string
 ): Promise<ApiFoodOrder> {
-  const HARD_TIMEOUT_MS = 20_000;
+  // Targeted realtime hydrate must stay short so it never pins the host pool.
+  const HARD_TIMEOUT_MS = 12_000;
   const res = await authFetch(
     `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}`,
     token,

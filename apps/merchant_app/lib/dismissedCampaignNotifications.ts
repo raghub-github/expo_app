@@ -3,7 +3,7 @@
  * be deleted server-side. Persist the merchant's dismissals per device so a
  * deleted row does not reappear on the next inbox fetch.
  */
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 
 const STORAGE_KEY = "merchant_dismissed_campaign_notifications_v1";
 const MAX_TRACKED = 500;
