@@ -44,6 +44,60 @@ compose=(docker compose -f "$compose_file")
 
 # --- helpers ---------------------------------------------------------------
 
+# Serialise docker IMAGE operations across every deploy on this box.
+#
+# A merge that touches several services fires several deploy workflows at once,
+# and they all land on this one VPS within seconds of each other. Docker's image
+# store does not tolerate that:
+#
+#   failed to extract layer ... to overlayfs: failed call to UtimesNanoAt for
+#   /var/lib/containerd/.../fs/app/node_modules/.bin: no such file or directory
+#
+# Files disappearing mid-extract is one deploy's `docker image prune` deleting
+# layers another deploy is still pulling - a partially pulled image looks
+# dangling. It has broken a deploy on three separate merges, and the workaround
+# each time was to re-run the failed jobs one at a time by hand.
+#
+# So take a lock around pull and prune only. The health wait and the container
+# swap are per-service and safe to overlap, which keeps deploys mostly parallel;
+# only the few seconds that actually touch the shared image store queue up.
+#
+# Fail-open by design: if flock is missing or the lock file cannot be created,
+# run the command unlocked rather than fail a deploy over a lock.
+DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-/tmp/gatimitra-deploy-images.lock}"
+DEPLOY_LOCK_WAIT="${DEPLOY_LOCK_WAIT:-900}"
+
+with_image_lock() {
+  if ! command -v flock >/dev/null 2>&1; then
+    "$@"
+    return $?
+  fi
+  if ! : >>"$DEPLOY_LOCK_FILE" 2>/dev/null; then
+    echo "⚠ deploy: $svc — cannot open $DEPLOY_LOCK_FILE; running unlocked"
+    "$@"
+    return $?
+  fi
+  local started waited rc=0
+  started=$(date +%s)
+  # -w, not a blocking wait: a deploy killed mid-pull would otherwise leave
+  # every later deploy hanging until its own job timeout.
+  {
+    if ! flock -w "$DEPLOY_LOCK_WAIT" 9; then
+      # Report what actually elapsed, not the budget: flock can also fail fast
+      # for reasons that have nothing to do with contention, and a log line
+      # claiming a 900s wait that never happened sends the next reader hunting
+      # a stall that was not there.
+      waited=$(( $(date +%s) - started ))
+      echo "⚠ deploy: $svc — image lock not acquired after ${waited}s (budget ${DEPLOY_LOCK_WAIT}s); proceeding anyway"
+    else
+      waited=$(( $(date +%s) - started ))
+      [[ $waited -ge 5 ]] && echo "▶ deploy: $svc — waited ${waited}s for the image lock"
+    fi
+    "$@" || rc=$?
+  } 9>>"$DEPLOY_LOCK_FILE"
+  return $rc
+}
+
 # Image id a container was actually started from (not the tag, which moves).
 container_image_id() {
   docker inspect --format '{{.Image}}' "$1" 2>/dev/null || true
@@ -130,7 +184,7 @@ if [[ "$svc" == "nginx" ]]; then
 fi
 
 echo "▶ deploy: $svc — pulling new image"
-"${compose[@]}" pull "$svc"
+with_image_lock "${compose[@]}" pull "$svc"
 
 # Snapshot existing container(s) BEFORE scaling. There may be 0 (first
 # deploy) or 1 (steady state). On a clean first deploy, just bring it up.
@@ -194,7 +248,7 @@ if [[ -n "$target_id" && ${#fresh[@]} -ge 1 && ${#stale[@]} -ge 1 ]]; then
     # deploy: one backend roll burned its entire 20-minute job budget here AFTER a
     # fully successful release, reported failure, and skipped the public-endpoint
     # verification that would have shown the deploy was fine.
-    timeout 90 docker image prune -f >/dev/null 2>&1 || echo "⚠ deploy: $svc — image prune skipped (slow or unavailable); release is unaffected"
+    with_image_lock timeout 90 docker image prune -f >/dev/null 2>&1 || echo "⚠ deploy: $svc — image prune skipped (slow or unavailable); release is unaffected"
     echo "✔ deploy: $svc — done (recovered an interrupted deploy)"
     exit 0
   fi
@@ -268,6 +322,6 @@ echo "▶ deploy: $svc — pruning dangling images"
 # deploy: one backend roll burned its entire 20-minute job budget here AFTER a
 # fully successful release, reported failure, and skipped the public-endpoint
 # verification that would have shown the deploy was fine.
-timeout 90 docker image prune -f >/dev/null 2>&1 || echo "⚠ deploy: $svc — image prune skipped (slow or unavailable); release is unaffected"
+with_image_lock timeout 90 docker image prune -f >/dev/null 2>&1 || echo "⚠ deploy: $svc — image prune skipped (slow or unavailable); release is unaffected"
 
 echo "✔ deploy: $svc — done"

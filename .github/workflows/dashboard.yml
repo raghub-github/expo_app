@@ -41,7 +41,13 @@ concurrency:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 45, not 25. The retry step below is allowed 12 minutes with
+    # max_attempts: 6, so a 25-minute job could never fit a second attempt -
+    # the retry budget was decorative. Seen on merge adb5d0f2: attempt 1 died
+    # at 18 minutes on a corrupted image pull, attempt 2 was cancelled by the
+    # job timeout 4 minutes in, and the deploy reported "cancelled" with no
+    # usable error.
+    timeout-minutes: 45
     # GITHUB_TOKEN needs `packages: write` to push the built image to GHCR
     # under this repository's owner. `contents: read` is the default but is
     # made explicit here so the SSH deploy step can still git-fetch on the VPS.
