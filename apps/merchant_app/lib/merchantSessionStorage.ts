@@ -1,4 +1,4 @@
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 
 export const MERCHANT_TOKEN_KEY = "gatimitra_merchant_access_token";
 export const MERCHANT_EXPIRES_AT_KEY = "gatimitra_merchant_token_expires_at";

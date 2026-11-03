@@ -63,7 +63,7 @@ async function fetchWalletForStore(storeId: string, lite = true): Promise<Wallet
 
 async function fetchFoodOrdersForStore(storeId: string) {
   const res = await prefetchFetch(
-    `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=200&skip_compensation=1`,
+    `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=80&skip_compensation=1&skip_heavy_enrich=1`,
   );
   if (!res?.ok) return [];
   const data = await res.json().catch(() => ({}));
@@ -73,7 +73,7 @@ async function fetchFoodOrdersForStore(storeId: string) {
 
 async function fetchOrderHistoryForStore(storeId: string) {
   const res = await prefetchFetch(
-    `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=200&skip_compensation=1`,
+    `/api/food-orders?store_id=${encodeURIComponent(storeId)}&limit=80&skip_compensation=1&skip_heavy_enrich=1`,
   );
   if (!res?.ok) return [];
   const data = await res.json().catch(() => ({}));

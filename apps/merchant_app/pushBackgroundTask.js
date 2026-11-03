@@ -100,7 +100,6 @@ if (!isExpoGo()) {
         // Legacy kitchen sticky id only — never suppress STORE_STATUS updates.
         if (t === "live_orders") {
           return {
-            shouldShowAlert: false,
             shouldPlaySound: false,
             shouldSetBadge: false,
             shouldShowBanner: false,
@@ -125,7 +124,6 @@ if (!isExpoGo()) {
             state === "RECONNECT" ||
             state === "RECONNECT_REQUIRED";
           return {
-            shouldShowAlert: true,
             shouldPlaySound: headsUp,
             shouldSetBadge: false,
             shouldShowBanner: headsUp || !appActive,
@@ -148,7 +146,6 @@ if (!isExpoGo()) {
           (isNewOrder && appActive) ||
           (isNewOrder && !!cachedUri);
         return {
-          shouldShowAlert: true,
           shouldPlaySound: !suppressOsSound,
           shouldSetBadge: true,
           shouldShowBanner: true,

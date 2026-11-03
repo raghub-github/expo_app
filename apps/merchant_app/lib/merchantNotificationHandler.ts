@@ -3,7 +3,7 @@
  * shade. Only the legacy `live_orders` id is suppressed (migrated to STORE_STATUS).
  *
  * In-app floating pills are intentionally disabled for Partner. That must never
- * suppress shouldShowAlert / FCM — shade presentation is independent of pill UI.
+ * suppress shouldShowBanner / shouldShowList / FCM — shade is independent of pill UI.
  *
  * NEW_ORDER sound ownership (production):
  *   • App OPEN (active) — mute OS channel; Incoming Order modal / JS chime only.
@@ -38,7 +38,6 @@ export async function installMerchantForegroundNotificationHandler(): Promise<vo
         // Legacy kitchen id only — STORE_STATUS is the live sticky now.
         if (isMerchantIdleStatusNotification(data) || t === "live_orders") {
           return {
-            shouldShowAlert: false,
             shouldPlaySound: false,
             shouldSetBadge: false,
             shouldShowBanner: false,
@@ -66,7 +65,6 @@ export async function installMerchantForegroundNotificationHandler(): Promise<vo
             state === "RECONNECT" ||
             state === "RECONNECT_REQUIRED";
           return {
-            shouldShowAlert: true,
             shouldPlaySound: headsUp,
             shouldSetBadge: false,
             // Offline heads-up; ONLINE sticky must still land in the shade while open.
@@ -88,7 +86,6 @@ export async function installMerchantForegroundNotificationHandler(): Promise<vo
         const suppressOsSound =
           isOffline || nativeOwns || (isNewOrder && (appActive || hasCachedCustom));
         return {
-          shouldShowAlert: true,
           shouldPlaySound: !suppressOsSound,
           shouldSetBadge: !isOffline,
           shouldShowBanner: true,

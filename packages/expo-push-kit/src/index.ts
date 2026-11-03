@@ -100,6 +100,7 @@ export {
 
 export {
   isNativeOrderAlertAvailable,
+  isNativeOrderAlertAudiblyActive,
   startNativeOrderAlert,
   stopNativeOrderAlert,
   getActiveNativeOrderAlert,

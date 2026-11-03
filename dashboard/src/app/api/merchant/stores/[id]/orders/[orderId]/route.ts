@@ -337,7 +337,7 @@ export async function PATCH(
         console.warn("[orders PATCH] merchant CTM freeze failed:", ctmErr);
       }
       // Global Partner-device alert stop (FCM) — same path as Partner Website accept.
-      void notifyMerchantAccepted({
+      await notifyMerchantAccepted({
         ordersCoreId: existing.order_id as number,
         fromStatus: currentStatus,
       });
@@ -393,11 +393,17 @@ export async function PATCH(
       } catch (cancelRowErr) {
         console.warn("[orders PATCH] order_cancellation_reasons failed:", cancelRowErr);
       }
-      void notifyOrderCancelled({
-        ordersCoreId: existing.order_id as number,
-        fromStatus: currentStatus,
-        reason: displayReason,
-      });
+      // Await cancel-notify so FCM global buzzer stop reaches Partner devices
+      // before this serverless handler freezes after the HTTP response.
+      try {
+        await notifyOrderCancelled({
+          ordersCoreId: existing.order_id as number,
+          fromStatus: currentStatus,
+          reason: displayReason,
+        });
+      } catch (cancelNotifyErr) {
+        console.warn("[orders PATCH] cancel-notify failed:", cancelNotifyErr);
+      }
     }
 
     if (newStatus === "RTO") {

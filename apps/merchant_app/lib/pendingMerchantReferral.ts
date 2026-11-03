@@ -2,7 +2,7 @@
  * Deferred merchant referral attribution from deep link / landing page.
  */
 
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 
 const KEY = "merchant_pending_referral_v1";
 

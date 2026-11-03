@@ -20,15 +20,17 @@ import android.widget.TextView;
 /**
  * One compact persistent "Orders N" window. Hidden while Partner is foreground.
  * Count 0 still shows the pill. Drag is device-local. Dragging onto the
- * bottom-center dismiss target hides the view only; it does not turn off push
- * or the Appear-on-top setting.
+ * bottom-center dismiss target hides the view only for this process session;
+ * it does not turn off push, the Appear-on-top setting, or the saved preference.
+ * A fresh app process clears sessionDismissed automatically (static field).
  */
 public final class OrderAlertPill {
   static final String PREFS = "gatimitra_order_pill_v1";
   static final String KEY_ENABLED = "enabled";
   static final String KEY_COUNT = "count";
   static final String KEY_ORDER_ID = "orderId";
-  static final String KEY_DISMISSED = "dismissed";
+  /** Legacy permanent dismiss flag — no longer read; stripped on write. */
+  static final String KEY_DISMISSED_LEGACY = "dismissed";
   static final String KEY_X = "x";
   static final String KEY_Y = "y";
   static final String KEY_POS = "hasPos";
@@ -52,6 +54,11 @@ public final class OrderAlertPill {
   private static boolean partnerForeground;
   private static boolean pendingAttention;
   private static GradientDrawable pillBackground;
+  /**
+   * Process-scoped only. Survives Activity recreation and screen navigation.
+   * Resets when the app process is killed / restarted.
+   */
+  private static volatile boolean sessionDismissed;
 
   private OrderAlertPill() {}
 
@@ -73,36 +80,38 @@ public final class OrderAlertPill {
   static void setState(Context context, boolean enabled, int count, String orderId) {
     if (context == null) return;
     SharedPreferences p = prefs(context);
-    int prev = Math.max(0, p.getInt(KEY_COUNT, 0));
     boolean wasEnabled = p.getBoolean(KEY_ENABLED, false);
     int n = Math.max(0, count);
     SharedPreferences.Editor ed = p.edit()
         .putBoolean(KEY_ENABLED, enabled)
         .putInt(KEY_COUNT, n)
-        .putString(KEY_ORDER_ID, orderId == null ? "" : orderId);
+        .putString(KEY_ORDER_ID, orderId == null ? "" : orderId)
+        .remove(KEY_DISMISSED_LEGACY);
     if (!enabled) {
-      ed.putBoolean(KEY_DISMISSED, false).commit();
+      // Preference off → hide now; clear session dismiss so a later enable shows immediately.
+      sessionDismissed = false;
+      ed.commit();
       hide(context);
       return;
     }
-    // New enable or a higher pending count → allow the pill again after a user dismiss.
-    if ((!wasEnabled) || n > prev) ed.putBoolean(KEY_DISMISSED, false);
+    // Only a fresh preference enable clears a prior session dismiss — not count bumps / FCM.
+    if (!wasEnabled) sessionDismissed = false;
     ed.commit();
     apply(context);
   }
 
-  /** One shake and one count step per new alert session. Repeat FCM does not call this. */
+  /**
+   * One shake and one count step per new alert session. Repeat FCM does not call this.
+   * Never force-enables the pill against the saved JS preference (KEY_ENABLED).
+   * Never clears session dismiss — realtime must not resurrect a dismissed circle.
+   */
   static void onNewOrder(Context context, String sessionId) {
     if (context == null || sessionId == null || sessionId.length() == 0) return;
     if (!markOnce(context, "seen_new", sessionId)) return;
     SharedPreferences p = prefs(context);
     int next = Math.max(0, p.getInt(KEY_COUNT, 0)) + 1;
-    SharedPreferences.Editor ed = p.edit().putInt(KEY_COUNT, next);
-    if (OrderAlertOverlay.canDraw(context)) {
-      ed.putBoolean(KEY_ENABLED, true).putBoolean(KEY_DISMISSED, false);
-    }
-    ed.commit();
-    pendingAttention = true;
+    p.edit().putInt(KEY_COUNT, next).remove(KEY_DISMISSED_LEGACY).commit();
+    if (isEnabled(context)) pendingAttention = true;
     apply(context);
     MAIN.postDelayed(() -> pendingAttention = false, 1500L);
   }
@@ -437,7 +446,12 @@ public final class OrderAlertPill {
   }
 
   private static void dismissSmooth(Context context) {
-    prefs(context).edit().putBoolean(KEY_DISMISSED, true).commit();
+    sessionDismissed = true;
+    // Drop any legacy permanent flag so process restart can show the pill again.
+    try {
+      prefs(context).edit().remove(KEY_DISMISSED_LEGACY).commit();
+    } catch (Throwable ignored) {
+    }
     final FrameLayout pill = view;
     if (pill == null) {
       hide(context);
@@ -491,7 +505,7 @@ public final class OrderAlertPill {
   }
 
   private static boolean isDismissed(Context context) {
-    return prefs(context).getBoolean(KEY_DISMISSED, false);
+    return sessionDismissed;
   }
 
   private static GradientDrawable normalBackground(Context context) {

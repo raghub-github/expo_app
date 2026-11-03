@@ -70,35 +70,6 @@ export async function loadCoreDbItemsByOrderTextIds(
 
   const addonsByItemId = new Map<number, CoreAddonRow[]>();
   const cartByOrderText = new Map<string, Record<string, unknown>[]>();
-  if (unique.length > 0) {
-    const { data: pendingRows } = await db
-      .from('pending_orders')
-      .select('finalized_order_id, items_snapshot')
-      .in('finalized_order_id', unique);
-    for (const p of pendingRows || []) {
-      const key = String((p as { finalized_order_id?: string }).finalized_order_id ?? '').trim();
-      if (!key) continue;
-      const lines = extractItemsArray((p as { items_snapshot?: unknown }).items_snapshot).map(
-        (r) => (r && typeof r === 'object' ? (r as Record<string, unknown>) : {})
-      );
-      if (lines.length > 0) cartByOrderText.set(key, lines);
-    }
-  }
-
-  if (itemIds.length > 0) {
-    const { data: addonRows } = await db
-      .from('orders_core_item_addons')
-      .select('order_item_id, addon_name, quantity, addon_price')
-      .in('order_item_id', itemIds);
-    for (const a of addonRows || []) {
-      const itemId = Number((a as { order_item_id: number }).order_item_id);
-      if (!Number.isFinite(itemId)) continue;
-      const list = addonsByItemId.get(itemId) ?? [];
-      list.push(a as CoreAddonRow);
-      addonsByItemId.set(itemId, list);
-    }
-  }
-
   const ctmByItemId = new Map<
     number,
     {
@@ -109,36 +80,71 @@ export async function loadCoreDbItemsByOrderTextIds(
       merchant_offer_name: string | null;
     }
   >();
-  if (itemIds.length > 0) {
-    const { data: ctmRows, error: ctmErr } = await db
-      .from('merchant_ctm_pricing_snapshot')
-      .select(
-        'order_item_id, gross_value, merchant_offer_discount, net_ctm_value, merchant_offer_type, merchant_offer_name'
-      )
-      .in('order_item_id', itemIds);
-    if (!ctmErr && ctmRows?.length) {
-      for (const r of ctmRows) {
-        const id = Number((r as { order_item_id: number }).order_item_id);
-        if (!Number.isFinite(id)) continue;
-        ctmByItemId.set(id, {
-          gross_value: Number((r as { gross_value: unknown }).gross_value) || 0,
-          merchant_offer_discount:
-            Number((r as { merchant_offer_discount: unknown }).merchant_offer_discount) || 0,
-          net_ctm_value: Number((r as { net_ctm_value: unknown }).net_ctm_value) || 0,
-          merchant_offer_type:
-            ((r as { merchant_offer_type?: string | null }).merchant_offer_type as string | null) ??
-            null,
-          merchant_offer_name:
-            ((r as { merchant_offer_name?: string | null }).merchant_offer_name as string | null) ??
-            null,
-        });
-      }
-    } else if (ctmErr) {
-      console.error(
-        '[merchant-ctm] failed to load merchant_ctm_pricing_snapshot — reload PostgREST schema or check RLS:',
-        ctmErr.message ?? ctmErr
-      );
+
+  const [pendingResult, addonResult, ctmResult] = await Promise.all([
+    unique.length > 0
+      ? db
+          .from('pending_orders')
+          .select('finalized_order_id, items_snapshot')
+          .in('finalized_order_id', unique)
+      : Promise.resolve({ data: [] as unknown[] }),
+    itemIds.length > 0
+      ? db
+          .from('orders_core_item_addons')
+          .select('order_item_id, addon_name, quantity, addon_price')
+          .in('order_item_id', itemIds)
+      : Promise.resolve({ data: [] as unknown[] }),
+    itemIds.length > 0
+      ? db
+          .from('merchant_ctm_pricing_snapshot')
+          .select(
+            'order_item_id, gross_value, merchant_offer_discount, net_ctm_value, merchant_offer_type, merchant_offer_name'
+          )
+          .in('order_item_id', itemIds)
+      : Promise.resolve({ data: [] as unknown[], error: null as { message?: string } | null }),
+  ]);
+
+  for (const p of pendingResult.data || []) {
+    const key = String((p as { finalized_order_id?: string }).finalized_order_id ?? '').trim();
+    if (!key) continue;
+    const lines = extractItemsArray((p as { items_snapshot?: unknown }).items_snapshot).map(
+      (r) => (r && typeof r === 'object' ? (r as Record<string, unknown>) : {})
+    );
+    if (lines.length > 0) cartByOrderText.set(key, lines);
+  }
+
+  for (const a of addonResult.data || []) {
+    const itemId = Number((a as { order_item_id: number }).order_item_id);
+    if (!Number.isFinite(itemId)) continue;
+    const list = addonsByItemId.get(itemId) ?? [];
+    list.push(a as CoreAddonRow);
+    addonsByItemId.set(itemId, list);
+  }
+
+  const ctmErr = (ctmResult as { error?: { message?: string } | null }).error;
+  const ctmRows = ctmResult.data || [];
+  if (!ctmErr && ctmRows.length) {
+    for (const r of ctmRows) {
+      const id = Number((r as { order_item_id: number }).order_item_id);
+      if (!Number.isFinite(id)) continue;
+      ctmByItemId.set(id, {
+        gross_value: Number((r as { gross_value: unknown }).gross_value) || 0,
+        merchant_offer_discount:
+          Number((r as { merchant_offer_discount: unknown }).merchant_offer_discount) || 0,
+        net_ctm_value: Number((r as { net_ctm_value: unknown }).net_ctm_value) || 0,
+        merchant_offer_type:
+          ((r as { merchant_offer_type?: string | null }).merchant_offer_type as string | null) ??
+          null,
+        merchant_offer_name:
+          ((r as { merchant_offer_name?: string | null }).merchant_offer_name as string | null) ??
+          null,
+      });
     }
+  } else if (ctmErr) {
+    console.error(
+      '[merchant-ctm] failed to load merchant_ctm_pricing_snapshot — reload PostgREST schema or check RLS:',
+      ctmErr.message ?? ctmErr
+    );
   }
 
   const grouped = new Map<string, CoreItemRow[]>();

@@ -3,10 +3,17 @@ import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import { getSupabaseAuth } from "@/lib/supabaseClient";
 import { fetchRealtimeAuthToken } from "@/services/ordersApi";
 
-const DEBOUNCE_MS = 250;
+/** Full-list refetch only when we cannot map a row — keep this slow to avoid HTTP stampedes. */
+const DEBOUNCE_MS = 900;
 
 function channelNameOf(topic: string): string {
   return topic.startsWith("realtime:") ? topic.slice("realtime:".length) : topic;
+}
+
+function readNumericId(raw: number | string | null | undefined): number | null {
+  if (raw == null || raw === "") return null;
+  const n = typeof raw === "string" ? parseInt(raw, 10) : Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 async function dropStoreOrderChannels(supabase: SupabaseClient, topicBase: string): Promise<void> {
@@ -28,14 +35,22 @@ export function useMerchantOrdersRealtime(options: {
   /** Merchant session token — used to mint the Supabase realtime auth token (RLS). */
   authToken: string | null;
   onOrdersStale: () => void;
-  onFoodRowChange?: (foodId: number, merchantStoreId: number | null) => void;
+  onFoodRowChange?: (
+    foodId: number,
+    merchantStoreId: number | null,
+    orderStatus?: string | null
+  ) => void;
+  /** Return true when the core row was handled via a targeted food fetch (skip full list). */
+  onCoreRowChange?: (coreId: number, merchantStoreId: number | null) => boolean;
 }) {
-  const { storeIds, enabled, authToken, onOrdersStale, onFoodRowChange } = options;
+  const { storeIds, enabled, authToken, onOrdersStale, onFoodRowChange, onCoreRowChange } = options;
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onStaleRef = useRef(onOrdersStale);
   onStaleRef.current = onOrdersStale;
   const onFoodRowChangeRef = useRef(onFoodRowChange);
   onFoodRowChangeRef.current = onFoodRowChange;
+  const onCoreRowChangeRef = useRef(onCoreRowChange);
+  onCoreRowChangeRef.current = onCoreRowChange;
 
   const scheduleRefetch = useCallback(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -45,24 +60,37 @@ export function useMerchantOrdersRealtime(options: {
     }, DEBOUNCE_MS);
   }, []);
 
+  const handleCoreRow = useCallback(
+    (payload: {
+      new?: {
+        id?: number | string;
+        merchant_store_id?: number | string | null;
+      } | null;
+    }) => {
+      const coreId = readNumericId(payload?.new?.id);
+      const merchantStoreId = readNumericId(payload?.new?.merchant_store_id ?? null);
+      if (coreId != null && onCoreRowChangeRef.current?.(coreId, merchantStoreId)) {
+        return;
+      }
+      scheduleRefetch();
+    },
+    [scheduleRefetch]
+  );
+
   const handleFoodRow = useCallback(
     (payload: {
-      new?: { id?: number | string; merchant_store_id?: number | string | null } | null;
+      new?: {
+        id?: number | string;
+        merchant_store_id?: number | string | null;
+        order_status?: string | null;
+      } | null;
     }) => {
-      const rawId = payload?.new?.id;
-      const foodId = typeof rawId === "string" ? parseInt(rawId, 10) : Number(rawId);
-      const rawStore = payload?.new?.merchant_store_id;
-      const merchantStoreId =
-        rawStore == null || rawStore === ""
-          ? null
-          : typeof rawStore === "string"
-            ? parseInt(rawStore, 10)
-            : Number(rawStore);
-      if (Number.isFinite(foodId) && foodId > 0) {
-        onFoodRowChangeRef.current?.(
-          foodId,
-          Number.isFinite(merchantStoreId as number) ? (merchantStoreId as number) : null
-        );
+      const foodId = readNumericId(payload?.new?.id);
+      const merchantStoreId = readNumericId(payload?.new?.merchant_store_id ?? null);
+      const orderStatus =
+        typeof payload?.new?.order_status === "string" ? payload.new.order_status : null;
+      if (foodId != null) {
+        onFoodRowChangeRef.current?.(foodId, merchantStoreId, orderStatus);
         // Single-row patch is enough — skip a full multi-store list refetch.
         if (onFoodRowChangeRef.current) return;
       }
@@ -107,7 +135,7 @@ export function useMerchantOrdersRealtime(options: {
           .on(
             "postgres_changes",
             { event: "*", schema: "public", table: "orders_core", filter },
-            scheduleRefetch
+            handleCoreRow
           )
           .on(
             "postgres_changes",
@@ -153,5 +181,5 @@ export function useMerchantOrdersRealtime(options: {
         channel = null;
       }
     };
-  }, [enabled, idsKey, authToken, scheduleRefetch, handleFoodRow]);
+  }, [enabled, idsKey, authToken, scheduleRefetch, handleCoreRow, handleFoodRow]);
 }

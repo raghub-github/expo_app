@@ -9906,18 +9906,31 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               newStatus === "REJECTED" ||
               newStatus === "EXPIRED"
             ) {
-              // Global stop for every Partner device — independent of which phone acted.
-              // eventBus also stops on status_changed; this is a direct path so FCM
-              // stop is not lost if the domain event handler lags.
-              void import("../../lib/merchant-incoming-alert-stop.js")
-                .then(({ stopMerchantIncomingAlertEverywhere }) =>
+              // Wait for the global stop so this device's HTTP success cannot
+              // race ahead of FCM/WS delivery to other logged-in Partner phones
+              // - but only up to a deadline. FCM has no timeout of its own, and
+              // a stalled send must not hold up the accept the merchant is
+              // staring at. On timeout the fan-out continues in the background
+              // and eventBus status_changed remains a second stop path.
+              try {
+                const { stopMerchantIncomingAlertEverywhere, awaitAlertStopWithin } =
+                  await import("../../lib/merchant-incoming-alert-stop.js");
+                const outcome = await awaitAlertStopWithin(
                   stopMerchantIncomingAlertEverywhere(sql, {
                     storeId,
                     foodOrderId: ordersFoodId,
                     status: newStatus,
                   })
-                )
-                .catch(() => undefined);
+                );
+                if (outcome === "timed-out") {
+                  req.log.warn(
+                    { storeId, ordersFoodId, newStatus },
+                    "merchant_alert_stop_slow_returning_anyway"
+                  );
+                }
+              } catch {
+                /* eventBus status_changed remains a second stop path */
+              }
             }
             return reply.send({ order });
           } catch (e) {

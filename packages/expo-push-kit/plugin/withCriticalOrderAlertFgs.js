@@ -150,6 +150,26 @@ function patchManifest(androidManifest, packageName) {
     "android:exported": "false",
   });
 
+  // Remount floating NEW ORDER card after unlock (pill alone is not enough).
+  const unlockName = `${packageName}.OrderAlertUnlockReceiver`;
+  if (!app.receiver) app.receiver = [];
+  if (!app.receiver.some((r) => r?.$?.["android:name"] === unlockName)) {
+    app.receiver.push({
+      $: {
+        "android:name": unlockName,
+        "android:exported": "false",
+      },
+      "intent-filter": [
+        {
+          action: [
+            { $: { "android:name": "android.intent.action.USER_PRESENT" } },
+            { $: { "android:name": "android.intent.action.SCREEN_ON" } },
+          ],
+        },
+      ],
+    });
+  }
+
   if (!app.activity) app.activity = [];
   const lockName = `${packageName}.OrderAlertLockActivity`;
   if (!app.activity.some((a) => a?.$?.["android:name"] === lockName)) {

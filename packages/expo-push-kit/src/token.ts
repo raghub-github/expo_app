@@ -35,7 +35,6 @@ export async function setNotificationHandlerDefaults(): Promise<void> {
   if (!Notifications) return;
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
-      shouldShowAlert: true,
       shouldPlaySound: true,
       shouldSetBadge: true,
       shouldShowBanner: true,

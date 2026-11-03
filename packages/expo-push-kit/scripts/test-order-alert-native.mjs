@@ -125,16 +125,87 @@ function checkSessionRowFields(sources) {
   return [...new Set(problems)];
 }
 
+/**
+ * Split an argument list into top-level arguments.
+ *
+ * `open` is the index just after the opening paren. Returns the argument count
+ * and the index past the matching close paren, or null when the parens never
+ * balance (a truncated or malformed source).
+ */
+function splitArgs(text, open) {
+  let depth = 0;
+  let commas = 0;
+  let sawToken = false;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"' || c === "'") {
+      const quote = c;
+      i++;
+      while (i < text.length && text[i] !== quote) {
+        if (text[i] === "\\") i++;
+        i++;
+      }
+      sawToken = true;
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "*") {
+      const close = text.indexOf("*/", i + 2);
+      if (close < 0) return null;
+      i = close + 1;
+      continue;
+    }
+    if (c === "(" || c === "[" || c === "{") {
+      depth++;
+      sawToken = true;
+      continue;
+    }
+    if (c === "]" || c === "}") {
+      depth--;
+      continue;
+    }
+    if (c === ")") {
+      if (depth === 0) return { count: sawToken ? commas + 1 : 0, end: i + 1 };
+      depth--;
+      continue;
+    }
+    if (c === "," && depth === 0) {
+      commas++;
+      continue;
+    }
+    if (!/\s/.test(c)) sawToken = true;
+  }
+  return null;
+}
+
+/**
+ * Every call the Android-dependent sources make into a pure class must name a
+ * method that exists AND pass a count of arguments some overload accepts.
+ *
+ * The arity half matters because only the pure classes are compiled here; the
+ * controller is parse-checked only. A call whose shape stops matching its
+ * target therefore compiles nowhere until the EAS build runs, hours later and
+ * on someone else's machine. Adding the sixth `decisionKeys` parameter is
+ * exactly the change that could have left a stale call behind.
+ */
 function checkPureApiUsage(sources) {
   const declared = new Map();
   for (const [file, text] of sources) {
     const cls = file.replace(/\.java$/, "");
     if (!PURE.includes(file)) continue;
-    const names = new Set();
-    for (const m of text.matchAll(/\b(?:public|static|\s)+[\w<>\[\]]+\s+(\w+)\s*\(/g)) {
-      names.add(m[1]);
+    const arities = new Map();
+    for (const m of text.matchAll(
+      /\b(?:public|protected|private|static|final|synchronized|\s)+[\w<>\[\],.\s]+?\s+(\w+)\s*\(/g
+    )) {
+      const parsed = splitArgs(text, m.index + m[0].length);
+      if (!parsed) continue;
+      if (!arities.has(m[1])) arities.set(m[1], new Set());
+      arities.get(m[1]).add(parsed.count);
     }
-    declared.set(cls, names);
+    declared.set(cls, arities);
   }
   const problems = [];
   for (const [file, text] of sources) {
@@ -142,12 +213,22 @@ function checkPureApiUsage(sources) {
     const pureClasses = PURE.map((f) => f.replace(/\.java$/, "")).join("|");
     for (const m of text.matchAll(new RegExp(`\\b(${pureClasses})\\.(\\w+)\\s*\\(`, "g"))) {
       const [, cls, method] = m;
-      if (!declared.get(cls)?.has(method)) {
+      const arities = declared.get(cls)?.get(method);
+      if (!arities) {
         problems.push(`${file}: ${cls}.${method}() is not declared on ${cls}`);
+        continue;
+      }
+      const parsed = splitArgs(text, m.index + m[0].length);
+      if (!parsed) continue;
+      if (!arities.has(parsed.count)) {
+        problems.push(
+          `${file}: ${cls}.${method}() called with ${parsed.count} arg(s); ` +
+            `${cls} declares ${[...arities].sort((a, b) => a - b).join("/")}`
+        );
       }
     }
   }
-  return problems;
+  return [...new Set(problems)];
 }
 
 /**

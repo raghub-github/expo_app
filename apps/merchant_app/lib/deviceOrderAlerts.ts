@@ -10,7 +10,7 @@
  *
  * This store is NEVER used as a global order-stop signal.
  */
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 import { persistNativeAlertSound } from "@gatimitra/expo-push-kit";
 import { getCachedMerchantAlertSoundUri } from "@/lib/merchantAlertSoundCache";
 import { getOrCreateMerchantDeviceId } from "@/lib/merchantDeviceId";

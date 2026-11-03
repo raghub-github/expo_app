@@ -3,13 +3,13 @@
  *
  * OWNERSHIP MODEL
  * ---------------
- * Native OrderAlertForegroundService is the SINGLE audio owner whenever the
- * Android native module is present (dev-client / production APK).
+ * BACKGROUND / KILLED: Native OrderAlertForegroundService owns looping audio.
+ * FOREGROUND HANDOFF (local only): muteAlert stops THIS device's FGS player;
+ * JS Incoming chime may take over for still-actionable orders. That mute must
+ * NEVER publish a global stop — other phones keep ringing.
  *
- * JS expo-audio / expo-av is FALLBACK only (Expo Go, iOS, or missing native).
- *
- * claimAlert attaches UI to an existing alertSessionId without starting a second
- * player. stopAlert stops native and should be paired with the JS stop helper.
+ * claimAlert attaches UI without starting a second native player.
+ * stopAlert is for GLOBAL order termination (paired with JS stop).
  */
 import { NativeModules, Platform } from "react-native";
 import type { NativeOrderAlertSoundType } from "./orderAlertIds";
@@ -31,6 +31,8 @@ export type NativeOrderAlert = {
   offerId: string;
   soundType: string;
   owner: string;
+  /** active | muted | terminal — absent on older native builds → treat as active. */
+  alertState?: string;
   startedAt: number;
 };
 
@@ -71,6 +73,15 @@ const Native = NativeModules.GatimitraOrderAlert as NativeOrderAlertModule | und
 
 export function isNativeOrderAlertAvailable(): boolean {
   return Platform.OS === "android" && Native != null;
+}
+
+/** True only while native FGS audio is actually supposed to be looping. */
+export function isNativeOrderAlertAudiblyActive(
+  active: NativeOrderAlert | null | undefined
+): boolean {
+  if (!active?.sessionId) return false;
+  const state = String(active.alertState ?? "active").trim().toLowerCase();
+  return state === "active" || state === "";
 }
 
 export async function startNativeOrderAlert(args: {

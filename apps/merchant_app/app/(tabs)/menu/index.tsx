@@ -57,7 +57,7 @@ import {
 import { resolveImageUrl } from "@/services/outletApi";
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { useProfileNav } from "@/context/ProfileNavContext";
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 import { OutOfStockModal, type OutOfStockPayload } from "@/components/OutOfStockModal";
 import {
   CatalogCustItemsPanel,

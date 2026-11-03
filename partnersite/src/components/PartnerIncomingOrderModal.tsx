@@ -785,7 +785,7 @@ export function PartnerIncomingOrderModal({ restaurantId }: { restaurantId?: str
         if (pending == null || pending <= 0) continue;
 
         const res = await fetch(
-          `/api/food-orders?store_id=${encodeURIComponent(sid)}&limit=${FALLBACK_SCAN_LIMIT}&skip_compensation=1`
+          `/api/food-orders?store_id=${encodeURIComponent(sid)}&limit=${FALLBACK_SCAN_LIMIT}&skip_compensation=1&skip_heavy_enrich=1`
         );
         const text = await res.text();
         let data: { orders?: OrdersFoodRow[] } = {};

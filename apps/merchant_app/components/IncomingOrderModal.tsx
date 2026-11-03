@@ -83,7 +83,7 @@ import { MerchantFonts } from "@/constants/typography";
 import { getTextHost } from "@/lib/textHost";
 import { fetchStoreProfile } from "@/services/menuApi";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 import {
   hydrateIncomingOrderDismissedLocal,
   isIncomingOrderResolved,

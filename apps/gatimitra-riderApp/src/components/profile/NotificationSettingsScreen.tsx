@@ -1,5 +1,5 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -8,6 +8,9 @@ import {
   StyleSheet,
   Switch,
   ActivityIndicator,
+  AppState,
+  Platform,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -26,6 +29,12 @@ import {
   requestNotificationPermissions,
 } from "@/src/services/permissions/notificationsWrapper";
 import { runRiderPushRefresh } from "@/src/lib/riderPushRefresh";
+import {
+  disableHomeOverlay,
+  readHomeOverlaySnapshot,
+  reconcileHomeOverlayAfterSettingsReturn,
+  requestEnableHomeOverlay,
+} from "@/src/lib/homeOverlayOrderCount";
 
 const TEAL = colors.primary[600];
 const PAGE_BG = "#F4F6F8";
@@ -102,6 +111,9 @@ export function NotificationSettingsScreen() {
 
   const [liveGranted, setLiveGranted] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
+  /** null until preference + native overlay permission are hydrated. */
+  const [homeOverlayOn, setHomeOverlayOn] = useState<boolean | null>(null);
+  const awaitingOverlayGrant = useRef(false);
 
   const permissionOk = liveGranted ?? systemGranted;
 
@@ -114,15 +126,83 @@ export function NotificationSettingsScreen() {
     }
   }, [refreshPermissions]);
 
+  const refreshHomeOverlayToggle = useCallback(async (opts?: { awaitingGrant?: boolean }) => {
+    if (Platform.OS !== "android") {
+      const snap = await readHomeOverlaySnapshot();
+      setHomeOverlayOn(snap.toggleOn);
+      return;
+    }
+    const snap = await reconcileHomeOverlayAfterSettingsReturn({
+      awaitingGrant: opts?.awaitingGrant === true,
+    });
+    setHomeOverlayOn(snap.toggleOn);
+  }, []);
+
   useEffect(() => {
     void hydrate();
+    void readHomeOverlaySnapshot().then((snap) => setHomeOverlayOn(snap.toggleOn));
   }, [hydrate]);
 
   useFocusEffect(
     useCallback(() => {
       void syncPermission();
-    }, [syncPermission]),
+      void refreshHomeOverlayToggle();
+    }, [syncPermission, refreshHomeOverlayToggle]),
   );
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      const awaiting = awaitingOverlayGrant.current;
+      if (awaiting) awaitingOverlayGrant.current = false;
+      void refreshHomeOverlayToggle({ awaitingGrant: awaiting });
+    });
+    return () => sub.remove();
+  }, [refreshHomeOverlayToggle]);
+
+  const handleHomeOverlayToggle = async (next: boolean) => {
+    if (!next) {
+      awaitingOverlayGrant.current = false;
+      try {
+        await disableHomeOverlay();
+        setHomeOverlayOn(false);
+      } catch (e) {
+        Alert.alert(
+          t("common.error", "Error"),
+          e instanceof Error ? e.message : "Failed to update preference",
+        );
+        const snap = await readHomeOverlaySnapshot();
+        setHomeOverlayOn(snap.toggleOn);
+      }
+      return;
+    }
+    try {
+      const result = await requestEnableHomeOverlay();
+      if (result.toggleOn) {
+        setHomeOverlayOn(true);
+        return;
+      }
+      setHomeOverlayOn(false);
+      if (result.openedSettings) {
+        awaitingOverlayGrant.current = true;
+        Alert.alert(
+          t("profile.notificationSettings.overlayPermissionTitle", "Appear on top"),
+          t(
+            "profile.notificationSettings.overlayPermissionBody",
+            "Turn on Appear on top for this app, then come back.",
+          ),
+        );
+      }
+    } catch (e) {
+      awaitingOverlayGrant.current = false;
+      Alert.alert(
+        t("common.error", "Error"),
+        e instanceof Error ? e.message : "Could not open Appear on top settings",
+      );
+      const snap = await readHomeOverlaySnapshot();
+      setHomeOverlayOn(snap.toggleOn);
+    }
+  };
 
   const handleMasterToggle = async (enabled: boolean) => {
     if (!enabled) {
@@ -266,6 +346,40 @@ export function NotificationSettingsScreen() {
             disabled={busy || (!permissionOk && !prefs.pushEnabled)}
           />
         </View>
+
+        {Platform.OS === "android" ? (
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={[styles.cardHeaderIcon, { backgroundColor: "#FEE2E2" }]}>
+                <Ionicons name="home-outline" size={18} color="#DC2626" />
+              </View>
+              <View style={styles.cardHeaderCopy}>
+                <Text style={styles.cardTitle}>
+                  {t("profile.notificationSettings.homeOverlayTitle", "Home screen order count")}
+                </Text>
+                <Text style={styles.cardSub}>
+                  {t(
+                    "profile.notificationSettings.homeOverlaySub",
+                    "Display a floating counter on your home screen to track orders in real-time. Off hides it.",
+                  )}
+                </Text>
+              </View>
+            </View>
+            <ToggleRow
+              icon="layers-outline"
+              iconColor="#DC2626"
+              iconBg="#FEE2E2"
+              title={t("profile.notificationSettings.homeOverlayToggle", "Home screen order count")}
+              subtitle={t(
+                "profile.notificationSettings.homeOverlayToggleSub",
+                "Requires Appear on top / Display over other apps",
+              )}
+              value={homeOverlayOn === true}
+              onValueChange={(v) => void handleHomeOverlayToggle(v)}
+              disabled={homeOverlayOn === null}
+            />
+          </View>
+        ) : null}
 
         <View style={styles.card}>
           <View style={styles.cardHeader}>

@@ -4,14 +4,13 @@
  * but playback never restarts from zero.
  *
  * Sound ownership:
- *   Native OrderAlertForegroundService owns the looping buzzer on Android
- *   production / dev-client builds (foreground, background, killed).
- *   JS Incoming chime is Expo Go / iOS fallback only.
- *   OPEN / MODAL / TAP — attach to alertSessionId; never start a second player.
- *   BACKGROUND         — native FGS if the process is alive; else OS channel once.
- *   KILLED             — FCM → native FGS (this module never starts audio).
+ *   BACKGROUND / KILLED — native FGS owns the looping buzzer (prod / dev-client).
+ *   APP OPEN (local)    — mute native on THIS device only, then JS Incoming chime
+ *                         for still-actionable CREATED orders (handoff).
+ *   GLOBAL TERMINAL     — stopNative + retire; never confused with local mute.
+ *   Expo Go / iOS       — JS chime only.
  */
-import * as SecureStore from "expo-secure-store";
+import * as SecureStore from "@/lib/secureStore";
 import { AppState } from "react-native";
 import type { OrderAcceptanceSettings } from "@/services/orderAcceptanceApi";
 import type { DeviceOrderAlerts } from "@/lib/deviceOrderAlerts";
@@ -29,6 +28,8 @@ import { isMerchantNewOrderPushData } from "@/lib/merchantNewOrderChannel";
 import {
   claimNativeOrderAlert,
   extractAlertSessionId,
+  getActiveNativeOrderAlert,
+  isNativeOrderAlertAudiblyActive,
   isNativeOrderAlertAvailable,
   merchantAlertSessionId,
   muteAllNativeOrderAlerts,
@@ -261,6 +262,18 @@ export function resolveMerchantAlertSessionId(
 
 async function ensureNativeBuzzer(orderId: string, alertSessionId?: string | null): Promise<boolean> {
   if (!isNativeOrderAlertAvailable()) return false;
+  // While Partner is foregrounded after a local mute, JS owns audio — do not
+  // re-arm FGS (which would fight the in-app chime and leave other devices alone).
+  if (AppState.currentState === "active") {
+    try {
+      const active = await getActiveNativeOrderAlert();
+      if (active && !isNativeOrderAlertAudiblyActive(active)) {
+        return false;
+      }
+    } catch {
+      /* fall through to start attempt */
+    }
+  }
   const sid = String(alertSessionId || merchantAlertSessionId(orderId)).trim();
   if (!sid) return false;
   const started = await startNativeOrderAlert({
@@ -269,6 +282,13 @@ async function ensureNativeBuzzer(orderId: string, alertSessionId?: string | nul
     soundType: "notification",
   });
   if (!started?.sessionId) return false;
+  // Muted sessions still resolve from startAlert — treat as "native not audible".
+  if (!isNativeOrderAlertAudiblyActive(started)) {
+    if (AppState.currentState === "active") {
+      await claimNativeOrderAlert(started.sessionId);
+    }
+    return false;
+  }
   // Attach in-app UI ownership without muting — a genuinely new FG order must ring.
   if (AppState.currentState === "active") {
     await claimNativeOrderAlert(started.sessionId);
@@ -299,6 +319,38 @@ export async function muteNewOrderAlertOnAppOpen(orderId?: string | null): Promi
     session.state = "queued";
     await persistSession();
   }
+}
+
+/**
+ * Background → in-app audio handoff on THIS device only.
+ * Stops native FGS buzzer, then starts the JS Incoming chime for a still-
+ * actionable session. Other phones keep ringing until a GLOBAL stop.
+ */
+export async function handoffBackgroundAlertToInApp(args?: {
+  orderId?: string | null;
+  settings?: AlertSettings | null;
+  device?: DeviceOrderAlerts | null;
+}): Promise<void> {
+  await hydrateNewOrderAlertManager();
+  const id = String(args?.orderId ?? session?.orderId ?? "").trim();
+  await muteNewOrderAlertOnAppOpen(id || null);
+  if (!session) return;
+  if (id && session.orderId !== id) return;
+  if (isOrderAlertGloballyRetired(session.orderId)) return;
+  if (session.state === "stopped" || session.state === "completed") return;
+  session.owner = "modal";
+  session.orderOpened = true;
+  if (session.state === "playing") {
+    session.state = "queued";
+  }
+  // Reset completed-clock only when mute interrupted mid-loop so handoff rings.
+  if (remainingRepeatsOf(session) <= 0 && args?.device?.soundAlertsEnabled !== false) {
+    session.completedRepeats = 0;
+    session.state = "queued";
+    session.stopReason = undefined;
+  }
+  await persistSession();
+  await startPlayback("MODAL", { settings: args?.settings, device: args?.device });
 }
 
 /**
@@ -944,20 +996,37 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
   await hydrateNewOrderAlertManager();
   const orderId = String(args.orderId || "").trim();
   if (!orderId) return;
+  if (isOrderAlertGloballyRetired(orderId)) {
+    await dismissNativeNewOrderAlerts(orderId);
+    void stopNativeOrderAlert(merchantAlertSessionId(orderId));
+    void stopNativeOrderAlert(orderId);
+    return;
+  }
   await dismissNativeNewOrderAlerts(orderId);
-  // Claiming retires the floating native card under the Incoming sheet.
-  // Do not mute here: a genuinely new FG order may still be ringing.
+
+  let nativeAudible = false;
   if (isNativeOrderAlertAvailable()) {
     try {
-      await claimNativeOrderAlert(
-        String(args.alertSessionId || "").trim() || merchantAlertSessionId(orderId)
-      );
+      const active = await getActiveNativeOrderAlert();
+      nativeAudible = isNativeOrderAlertAudiblyActive(active);
+      // Local handoff: app is open with Incoming sheet — stop THIS device's FGS
+      // audio so JS can own the chime. Does not publish a global stop.
+      if (nativeAudible && AppState.currentState === "active") {
+        await muteNativeOrderAlert(
+          String(args.alertSessionId || active?.sessionId || "").trim() ||
+            merchantAlertSessionId(orderId)
+        );
+        nativeAudible = false;
+      } else {
+        await claimNativeOrderAlert(
+          String(args.alertSessionId || "").trim() || merchantAlertSessionId(orderId)
+        );
+      }
     } catch {
       /* native optional */
     }
   }
   const liveCfg = resolveConfig(args.settings, args.device);
-  const nativeOwns = isNativeOrderAlertAvailable();
 
   if (session && session.orderId !== orderId) {
     parkActiveSession();
@@ -989,11 +1058,11 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
       event: "MODAL_TAKEOVER",
       remainingRepeats: remaining,
       state: session.state,
-      nativeOwns: nativeOwns ? 1 : 0,
+      nativeOwns: nativeAudible ? 1 : 0,
     });
     await persistSession();
-    // Native owns the buzzer — modal never starts a second JS player.
-    if (nativeOwns) return;
+    // Native still looping (rare race) — do not start a second player.
+    if (nativeAudible) return;
     if (isOrderAlertSoundPlaying() && session.state === "playing") return;
     if (session.state === "stopped" && liveCfg?.soundEnabled === false) return;
     if (
@@ -1009,10 +1078,6 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
     return;
   }
 
-  if (nativeOwns) {
-    await continueOrStartNewOrderAlert({ ...args, source: "MODAL" });
-    return;
-  }
   await continueOrStartNewOrderAlert({ ...args, source: "MODAL" });
 }
 
