@@ -24,6 +24,10 @@ import {
 import type { OrderPaymentDetail, OrderPaymentRecord } from "@/lib/orders/order-payment-types";
 import { resolveCustomerCtcPaidAmount } from "@/lib/orders/customer-ctc";
 import { settledRefundTotal } from "@/lib/orders/refund-status";
+import {
+  readRiderPayoutSnapshotFromBilling,
+  resolveRiderPayoutTotalForDisplay,
+} from "@/lib/riders/rider-payout-snapshot";
 
 export type { OrderPaymentDetail, OrderPaymentRecord } from "@/lib/orders/order-payment-types";
 export {
@@ -123,13 +127,21 @@ function taxesFromBilling(
   billing: Record<string, unknown> | null,
   core: Record<string, unknown>
 ): number | null {
+  const gstTotals =
+    billing?.gst_totals != null && typeof billing.gst_totals === "object"
+      ? (billing.gst_totals as Record<string, unknown>)
+      : billing?.gstTotals != null && typeof billing.gstTotals === "object"
+        ? (billing.gstTotals as Record<string, unknown>)
+        : null;
   const fromBilling =
     asNum(billing?.tax_total) ??
     asNum(billing?.taxTotal) ??
     asNum(billing?.gst_total) ??
     asNum(billing?.gstTotal) ??
     asNum(billing?.total_tax) ??
-    asNum(billing?.totalTax);
+    asNum(billing?.totalTax) ??
+    asNum(gstTotals?.total_tax) ??
+    asNum(gstTotals?.totalTax);
   if (fromBilling != null && fromBilling > 0.005) return round2(fromBilling);
 
   const fromCore =
@@ -148,6 +160,37 @@ function taxesFromBilling(
   }
   if (sum > 0.005) return round2(sum);
   return null;
+}
+
+/**
+ * Parcel Delivery Fee extras: what the rider was offered at dispatch/accept,
+ * vs what we will pay them after complete (core.rider_earning can rise with waiting).
+ */
+function resolveParcelRiderPayoutDisplay(input: {
+  riderEarning: number | null;
+  billing: Record<string, unknown> | null;
+  acceptPayoutSnapshot: unknown;
+}): { dispatchOffer: number | null; payAfterComplete: number | null } {
+  const acceptTotal = resolveRiderPayoutTotalForDisplay({
+    acceptPayoutSnapshot: input.acceptPayoutSnapshot,
+  });
+  const billingTotal = readRiderPayoutSnapshotFromBilling(input.billing)?.totalEarning ?? null;
+  const earning =
+    input.riderEarning != null && input.riderEarning > 0.005
+      ? round2(input.riderEarning)
+      : null;
+
+  const dispatchOffer =
+    (acceptTotal != null && acceptTotal > 0.005 ? round2(acceptTotal) : null) ??
+    (billingTotal != null && billingTotal > 0.005 ? round2(billingTotal) : null) ??
+    earning;
+
+  const payAfterComplete =
+    earning ??
+    (billingTotal != null && billingTotal > 0.005 ? round2(billingTotal) : null) ??
+    (acceptTotal != null && acceptTotal > 0.005 ? round2(acceptTotal) : null);
+
+  return { dispatchOffer, payAfterComplete };
 }
 
 async function fetchDiscountFromOrderTables(input: {
@@ -648,6 +691,11 @@ export async function fetchOrderPaymentDetail(input: {
   // None of these reads depends on another — precedence is decided purely by the
   // merge order below — so they go out as one batch. Serially this was seven
   // round-trips and made the payment card land well after the rest of the page.
+  const isParcelOrderInput =
+    String(input.orderType ?? "")
+      .trim()
+      .toLowerCase() === "parcel";
+
   const [
     coreRows,
     settlementRows,
@@ -657,6 +705,7 @@ export async function fetchOrderPaymentDetail(input: {
     paymentEventRows,
     timelineRows,
     refundLedgerRows,
+    parcelAcceptRows,
   ] = await Promise.all([
     safeRows(
       db.execute(sql`
@@ -674,7 +723,8 @@ export async function fetchOrderPaymentDetail(input: {
         payment_method,
         payment_status,
         order_source,
-        merchant_precision_discount
+        merchant_precision_discount,
+        rider_earning::text AS rider_earning
       FROM orders_core
       WHERE id = ${orderCoreId}
       LIMIT 1
@@ -758,6 +808,16 @@ export async function fetchOrderPaymentDetail(input: {
       WHERE order_id = ${orderCoreId}
     `)
     ),
+    isParcelOrderInput
+      ? safeRows(
+          db.execute(sql`
+        SELECT accept_payout_snapshot
+        FROM orders_parcel
+        WHERE order_id = ${orderCoreId}
+        LIMIT 1
+      `)
+        )
+      : Promise.resolve([] as Record<string, unknown>[]),
   ]);
 
   const core: Record<string, unknown> = coreRows[0] ?? {};
@@ -900,8 +960,30 @@ export async function fetchOrderPaymentDetail(input: {
     null;
 
   const deliveryResolved = resolveDeliveryFee(billing, core, settlementDelivery);
-  const deliveryFee = deliveryResolved.fee;
+  const isParcelOrder = isParcelOrderInput;
+  // Parcel puts the courier slab in item_total / parcel_fare; billing delivery_fee is 0.
+  let deliveryFee = deliveryResolved.fee;
+  if (isParcelOrder && (deliveryFee == null || deliveryFee <= 0.005)) {
+    const parcelDelivery =
+      asNum(billing?.parcel_fare) ??
+      asNum(billing?.fare_amount) ??
+      asNum(billing?.item_total) ??
+      asNum(core.fare_amount) ??
+      asNum(core.item_total) ??
+      asNum(input.itemTotal);
+    if (parcelDelivery != null && parcelDelivery > 0.005) {
+      deliveryFee = round2(parcelDelivery);
+    }
+  }
   const taxes = taxesFromBilling(billing, core);
+
+  const parcelRiderPayout = isParcelOrder
+    ? resolveParcelRiderPayoutDisplay({
+        riderEarning: asNum(core.rider_earning),
+        billing,
+        acceptPayoutSnapshot: parcelAcceptRows[0]?.accept_payout_snapshot,
+      })
+    : { dispatchOffer: null, payAfterComplete: null };
 
   // CTM and the discount fallback both only need `core` / `billing`, which are
   // already resolved — run them together rather than back to back.
@@ -1061,6 +1143,8 @@ export async function fetchOrderPaymentDetail(input: {
     deliveryFee,
     deliveryFeeQuoted: deliveryResolved.quoted,
     deliveryFeeWaived: deliveryResolved.waived,
+    riderDispatchOffer: parcelRiderPayout.dispatchOffer,
+    riderPayAfterComplete: parcelRiderPayout.payAfterComplete,
     taxes,
     source: paymentSourceDisplay,
     paymentMode: paymentModeDisplay,

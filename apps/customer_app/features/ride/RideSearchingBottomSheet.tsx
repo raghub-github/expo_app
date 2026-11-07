@@ -62,7 +62,10 @@ function truncateText(text: string, max = 34): string {
 }
 
 function formatKmValue(km: number | null | undefined): string {
-  if (km == null || !Number.isFinite(km) || km <= 0) return "—";
+  if (km == null || !Number.isFinite(km) || km < 0) return "—";
+  if (km === 0) return "0";
+  // Sub-100 m used to render as "0.0" and looked like a broken engine.
+  if (km > 0 && km < 0.1) return km.toFixed(2);
   return km < 10 ? km.toFixed(1) : String(Math.round(km * 10) / 10);
 }
 
@@ -229,9 +232,14 @@ export function RideSearchingBottomSheet({
 }: Props) {
   const isError = phase === "error";
   const rideKm = tripKm ?? null;
-  const pickupKm = pickupDistanceKm ?? 0;
+  const pickupKm =
+    pickupDistanceKm != null && Number.isFinite(pickupDistanceKm) && pickupDistanceKm >= 0
+      ? pickupDistanceKm
+      : null;
   const totalKm =
-    rideKm != null && pickupKm > 0 ? Math.round((rideKm + pickupKm) * 10) / 10 : rideKm;
+    rideKm != null && pickupKm != null && pickupKm > 0
+      ? Math.round((rideKm + pickupKm) * 10) / 10
+      : rideKm;
   const mitraSathiPool = activeMitraSathiCount ?? nearbyRidersCount;
   const showStrike =
     listFare != null && Number.isFinite(listFare) && Number.isFinite(fare) && listFare > fare;

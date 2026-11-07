@@ -925,6 +925,11 @@ export type RiderLedgerEntryDetailDto = RiderLedgerEntryDto & {
   processedAt: string | null;
   refundStatus: string | null;
   refundId: string | null;
+  /** Backend settlement transparency from earning metadata (never invent in app). */
+  settlementDifferenceReason: string | null;
+  settlementDifferenceAmount: number | null;
+  settlementDispatchOfferAmount: number | null;
+  settlementFinalAmount: number | null;
 };
 
 function metaString(meta: Record<string, unknown>, key: string): string | null {
@@ -1007,6 +1012,19 @@ export async function getRiderLedgerEntryDetail(
     (row.ref_type === "negative_wallet_recovery" ? "negative_wallet_recovery" : null) ||
     (mapped.entryType === "penalty" ? "penalty" : null);
 
+  const settlementRaw =
+    meta.settlement != null && typeof meta.settlement === "object"
+      ? (meta.settlement as Record<string, unknown>)
+      : null;
+  const settlementDifferenceReason =
+    (settlementRaw && typeof settlementRaw.difference_reason_text === "string"
+      ? settlementRaw.difference_reason_text.trim()
+      : null) || null;
+  const numOrNull = (v: unknown): number | null => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+  };
+
   return {
     ...mapped,
     purpose,
@@ -1019,5 +1037,15 @@ export async function getRiderLedgerEntryDetail(
     processedAt: payment?.updated_at ? new Date(payment.updated_at).toISOString() : null,
     refundStatus: payment?.refund_status?.trim() || null,
     refundId: payment?.refund_id?.trim() || null,
+    settlementDifferenceReason,
+    settlementDifferenceAmount: settlementRaw
+      ? numOrNull(settlementRaw.difference_amount)
+      : null,
+    settlementDispatchOfferAmount: settlementRaw
+      ? numOrNull(settlementRaw.dispatch_offer_amount)
+      : null,
+    settlementFinalAmount: settlementRaw
+      ? numOrNull(settlementRaw.final_settlement_amount)
+      : null,
   };
 }

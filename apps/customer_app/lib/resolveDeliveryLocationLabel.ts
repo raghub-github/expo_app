@@ -64,13 +64,66 @@ function formatReverseGeocodeLabel(address: ReverseGeocodeResult): string | null
   return null;
 }
 
+export type LocationLabelPermission =
+  | "granted"
+  | "denied"
+  | "undetermined"
+  | "services_off"
+  | "timeout"
+  | "error"
+  | null
+  | undefined;
+
 export function resolveDeliveryLocationLabel(options: {
   locationSource: LocationSource | null;
   address: ReverseGeocodeResult | null;
   addresses?: Address[];
   coords?: { latitude: number; longitude: number } | null;
+  /** Optional UI state — never invent a place name when GPS/permission is missing. */
+  permissionStatus?: LocationLabelPermission;
+  locationLoading?: boolean;
+  locationError?: string | null;
+  /** After watchdog — stop endless Detecting… */
+  detectingTimedOut?: boolean;
 }): string {
-  const { locationSource, address, addresses = [], coords = null } = options;
+  const {
+    locationSource,
+    address,
+    addresses = [],
+    coords = null,
+    permissionStatus,
+    locationLoading,
+    locationError,
+    detectingTimedOut,
+  } = options;
+
+  // Never show "Enable location" on the home pin — keep detecting until we have a label
+  // (tap still opens permission / picker via the header handler).
+  if (permissionStatus === "services_off") return "Detecting address…";
+  if (
+    (permissionStatus === "denied" || permissionStatus === "undetermined") &&
+    !coords &&
+    !address &&
+    detectingTimedOut !== true
+  ) {
+    return "Detecting address…";
+  }
+  // Granted + still fetching — never show Tap-to-set; keep detecting.
+  if (
+    (permissionStatus === "granted" || locationLoading) &&
+    detectingTimedOut !== true &&
+    !address &&
+    !coords
+  ) {
+    return "Detecting address…";
+  }
+  if (permissionStatus === "timeout") return "Tap to set location";
+  if (detectingTimedOut) {
+    return permissionStatus === "granted"
+      ? "Tap to retry location"
+      : "Tap to set location";
+  }
+  if (permissionStatus === "error" || locationError) return "Location unavailable — tap to retry";
 
   if (locationSource === "selected" && coords && addresses.length > 0) {
     const nearId = matchSavedAddressIdNearCoords(
@@ -108,5 +161,9 @@ export function resolveDeliveryLocationLabel(options: {
     return "Detecting address…";
   }
 
-  return "Detecting location…";
+  if (locationLoading || permissionStatus === "undetermined" || permissionStatus == null) {
+    return "Detecting address…";
+  }
+
+  return "Detecting address…";
 }

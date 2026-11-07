@@ -489,6 +489,8 @@ export async function getRoadDistance(
   let res: Response;
   try {
     res = await fetch(url, { signal: controller.signal });
+  } catch (err) {
+    throw err instanceof Error ? err : new Error("Mapbox directions network failed");
   } finally {
     clearTimeout(timer);
   }
@@ -560,13 +562,17 @@ export async function geocodeAddressToCoord(
   const encoded = encodeURIComponent(trimmed);
   const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encoded}.json?access_token=${encodeURIComponent(mapboxAccessToken)}&limit=1&country=${COUNTRY_INDIA}&types=address,place,locality,neighborhood&language=en`;
 
-  const res = await fetch(url);
-  if (!res.ok) return null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
 
-  const data = (await res.json()) as { features?: Array<{ center?: [number, number] }> };
-  const center = data.features?.[0]?.center;
-  if (!center || center.length < 2) return null;
-  return { longitude: center[0], latitude: center[1] };
+    const data = (await res.json()) as { features?: Array<{ center?: [number, number] }> };
+    const center = data.features?.[0]?.center;
+    if (!center || center.length < 2) return null;
+    return { longitude: center[0], latitude: center[1] };
+  } catch {
+    return null;
+  }
 }
 
 /**

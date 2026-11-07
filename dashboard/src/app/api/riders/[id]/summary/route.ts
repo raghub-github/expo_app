@@ -278,6 +278,7 @@ export async function GET(
       logoutSession,
       activeBankAccount,
       subscriptionDuesRow,
+      gmitraMaxActiveRow,
     ] = await Promise.all([
       fetchRiderRecentOrders(db, riderId, orderFilters),
       db
@@ -403,6 +404,27 @@ export async function GET(
           return (rows?.[0] as Record<string, unknown> | undefined) ?? null;
         } catch {
           return null;
+        }
+      })(),
+      (async () => {
+        try {
+          const sqlClient = getSql();
+          const rows = await sqlClient`
+            SELECT p.code
+            FROM rider_subscriptions s
+            JOIN subscription_plans p ON p.id = s.plan_id
+            WHERE s.rider_id = ${riderId}
+              AND s.status = 'active'
+              AND p.code = 'GMITRA_MAX'
+              AND (
+                s.end_date > NOW()
+                OR COALESCE(s.auto_wallet_deduction, FALSE) = TRUE
+              )
+            LIMIT 1
+          `;
+          return Array.isArray(rows) && rows.length > 0;
+        } catch {
+          return false;
         }
       })(),
     ]);
@@ -881,6 +903,7 @@ export async function GET(
             order.displayOrderId?.trim() ||
             formatRiderOrderDisplayId(order),
         })),
+        gmitraMaxActive: gmitraMaxActiveRow === true,
         subscriptionDues: (() => {
           const walletBal = walletRow ? Number(walletRow.totalBalance ?? 0) : 0;
           const duesOutstanding = Number(
@@ -931,6 +954,7 @@ export async function GET(
           fuelType: activeVehicle.fuelType,
           vehicleCategory: activeVehicle.vehicleCategory,
           acType: activeVehicle.acType,
+          seatingCapacity: activeVehicle.seatingCapacity ?? null,
           serviceTypes: activeVehicle.serviceTypes || [],
           verified: activeVehicle.verified,
         } : null,

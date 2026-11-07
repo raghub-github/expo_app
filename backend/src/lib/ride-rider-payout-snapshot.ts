@@ -1,6 +1,6 @@
 import { eq, and, isNull } from "drizzle-orm";
 import { getDb, getSql } from "../db/client.js";
-import { ordersCore, ordersRide, riders } from "../db/schema.js";
+import { ordersCore, ordersParcel, ordersRide, riders } from "../db/schema.js";
 import { resolveOrderRiderPayoutBreakdown } from "./resolve-order-rider-payout.js";
 import {
   resolveRiderDeliveryFeeFromCore,
@@ -287,15 +287,31 @@ async function freezeAcceptPayoutSnapshotIfMissing(
   snapshot: RideRiderPayoutSnapshot
 ): Promise<void> {
   const db = getDb();
-  await db
-    .update(ordersRide)
-    .set({
-      acceptPayoutSnapshot: snapshot,
-      updatedAt: new Date(),
-    })
-    .where(
-      and(eq(ordersRide.orderId, orderCorePk), isNull(ordersRide.acceptPayoutSnapshot))
-    );
+  // Ride + parcel both own accept_payout_snapshot. Food freezes via billing only.
+  // Writing both isNull-guarded updates is cheap and avoids a pre-read of order_type.
+  await Promise.all([
+    db
+      .update(ordersRide)
+      .set({
+        acceptPayoutSnapshot: snapshot,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(eq(ordersRide.orderId, orderCorePk), isNull(ordersRide.acceptPayoutSnapshot))
+      ),
+    db
+      .update(ordersParcel)
+      .set({
+        acceptPayoutSnapshot: snapshot,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(ordersParcel.orderId, orderCorePk),
+          isNull(ordersParcel.acceptPayoutSnapshot)
+        )
+      ),
+  ]);
 }
 
 /** Generic despite the name — safe for any order type (the ordersRide join degrades to fareAmount fallback). */
@@ -580,6 +596,7 @@ async function persistDeliveryRiderAcceptPayoutSnapshot(
       dropLat: ordersCore.dropLat,
       dropLon: ordersCore.dropLon,
       distanceKm: ordersCore.distanceKm,
+      checkoutMetadata: ordersCore.checkoutMetadata,
       billingSnapshot: ordersCore.billingSnapshot,
       tipAmount: ordersCore.tipAmount,
       fareAmount: ordersCore.fareAmount,
@@ -604,9 +621,14 @@ async function persistDeliveryRiderAcceptPayoutSnapshot(
   const pickupLng = parseCoord(row.pickupLon);
   const dropLat = parseCoord(row.dropLat);
   const dropLng = parseCoord(row.dropLon);
-  const tripKm = roundRideTripDistanceKm(
-    row.distanceKm != null ? Number(row.distanceKm) : undefined
-  );
+  // Same trip-km precedence as buildDispatchOfferRiderEarnings: checkout road km
+  // first (parcel/ride quote), then orders_core.distance_km. Do not freeze a
+  // Haversine-only core distance when the offer used routeDistanceKm.
+  const tripKm =
+    rideTripDistanceFromCheckoutMetadata(row.checkoutMetadata) ??
+    roundRideTripDistanceKm(
+      row.distanceKm != null ? Number(row.distanceKm) : undefined
+    );
 
   const riderLat = parseCoord(riderRow?.lat);
   const riderLng = parseCoord(riderRow?.lon);

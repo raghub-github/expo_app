@@ -53,12 +53,22 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            retry: 2,
+            // One retry on weak networks; fail-fast on timeout / offline so screens
+            // do not sit on spinners for ~75s (2 × 25s query timeout).
+            retry: (failureCount, error) => {
+              if (failureCount >= 1) return false;
+              const msg = String((error as Error)?.message ?? "").toLowerCase();
+              if (msg.includes("timeout") || msg.includes("network request failed") || msg.includes("offline")) {
+                return false;
+              }
+              return true;
+            },
             staleTime: 15_000,
             refetchOnWindowFocus: false,
             refetchOnReconnect: true,
           },
           mutations: {
+            // Critical writes must never auto-retry — use idempotent action runtime.
             retry: 0,
           },
         },

@@ -504,48 +504,87 @@ function intersectServices(
 }
 
 /** duty ON selection ∩ vehicle capabilities ∩ profile rules ∩ account restrictions. */
+/** Short TTL + single-flight — /orders/available polls every few seconds and this path
+ *  was ~6–8s (unified eligibility). Without coalesce, parallel available+pending doubled it. */
+/** 30s — duty/service changes invalidate via recordRiderDutyLog; poll interval is often ≥15s. */
+const ELIGIBLE_SERVICES_TTL_MS = 30_000;
+const eligibleServicesCache = new Map<
+  number,
+  {
+    at: number;
+    value: DispatchServiceType[] | null;
+    inflight: Promise<DispatchServiceType[] | null> | null;
+  }
+>();
+
+const ASSIGNMENT_CTX_TTL_MS = 15_000;
+const assignmentCtxCache = new Map<
+  string,
+  {
+    at: number;
+    value: RiderAssignmentContext | null;
+    inflight: Promise<RiderAssignmentContext | null> | null;
+  }
+>();
+
 export async function computeRiderEligibleDispatchServices(
   riderId: number
 ): Promise<DispatchServiceType[] | null> {
-  const db = getDb();
+  const cached = eligibleServicesCache.get(riderId);
+  if (cached?.inflight) return cached.inflight;
+  if (cached && Date.now() - cached.at < ELIGIBLE_SERVICES_TTL_MS) return cached.value;
 
-  const [latestDuty] = await db
-    .select({ status: dutyLogs.status, serviceTypes: dutyLogs.serviceTypes })
-    .from(dutyLogs)
-    .where(eq(dutyLogs.riderId, riderId))
-    .orderBy(desc(dutyLogs.timestamp))
-    .limit(1);
+  const inflight = (async (): Promise<DispatchServiceType[] | null> => {
+    const t0 = Date.now();
+    const marks: Record<string, number> = {};
+    const mark = (k: string) => {
+      marks[k] = Date.now() - t0;
+    };
+    const db = getDb();
 
-  if (latestDuty?.status !== "ON") return null;
+    const [latestDuty] = await db
+      .select({ status: dutyLogs.status, serviceTypes: dutyLogs.serviceTypes })
+      .from(dutyLogs)
+      .where(eq(dutyLogs.riderId, riderId))
+      .orderBy(desc(dutyLogs.timestamp))
+      .limit(1);
+    mark("duty");
 
-  try {
-    const { getSql } = await import("../db/client.js");
-    const { countActiveRiderDeviceSessions } = await import("./rider-device-sessions.js");
-    if ((await countActiveRiderDeviceSessions(getSql(), riderId)) === 0) {
-      try {
-        const { recordRiderDutyOffIfOnline } = await import("./rider-duty-log.service.js");
-        await recordRiderDutyOffIfOnline(riderId, "logout", {
-          metadata: { via: "no_active_device_session" },
-        });
-      } catch {
-        /* assignment still treats the rider as offline */
+    if (latestDuty?.status !== "ON") return null;
+
+    try {
+      const { getSql } = await import("../db/client.js");
+      const { countActiveRiderDeviceSessions } = await import("./rider-device-sessions.js");
+      if ((await countActiveRiderDeviceSessions(getSql(), riderId)) === 0) {
+        try {
+          const { recordRiderDutyOffIfOnline } = await import("./rider-duty-log.service.js");
+          await recordRiderDutyOffIfOnline(riderId, "logout", {
+            metadata: { via: "no_active_device_session" },
+          });
+        } catch {
+          /* assignment still treats the rider as offline */
+        }
+        return null;
       }
-      return null;
+    } catch {
+      /* fail-open if session table is unavailable — GPS freshness still gates new offers */
     }
-  } catch {
-    /* fail-open if session table is unavailable — GPS freshness still gates new offers */
-  }
+    mark("sessions");
 
-  const dutyServices = normalizeDispatchServices(latestDuty.serviceTypes);
-  if (dutyServices.length === 0) return null;
+    const dutyServices = normalizeDispatchServices(latestDuty.serviceTypes);
+    if (dutyServices.length === 0) return null;
 
-  const vehicleProfile = await getRiderActiveVehicleProfile(riderId);
-  const { eligibilityEnforcementMode, filterServicesByUnifiedEligibility } = await import(
-    "../modules/rider-eligibility/riderEligibility.service.js"
-  );
+    const vehicleProfile = await getRiderActiveVehicleProfile(riderId);
+    mark("vehicleProfile");
+    const { eligibilityEnforcementMode } = await import(
+      "../modules/rider-eligibility/riderEligibility.service.js"
+    );
 
-  let vehicleServices: DispatchServiceType[];
-  if (eligibilityEnforcementMode() === "off") {
+    // ALWAYS use the fast vehicle-assignment path for duty-pool eligibility.
+    // Unified eligibility (`RIDER_ELIGIBILITY_MODE=enforce`) is enforced at
+    // accept/assign via assertRiderEligibleForOrderAccept — running it here
+    // made /orders/available take 10–20s and time out (empty offers + stuck accept).
+    const mode = eligibilityEnforcementMode();
     const { resolveAssignedDispatchServicesForProfile } = await import(
       "./rider-vehicle-type-service-assignments.js"
     );
@@ -553,32 +592,53 @@ export async function computeRiderEligibleDispatchServices(
     const hasVehicleProfile =
       vehicleProfile.vehicleTypes.some((v) => v.trim().length > 0) ||
       vehicleProfile.vehicleCategories.some((c) => c.trim().length > 0);
-    vehicleServices = hasVehicleProfile
+    const vehicleServices: DispatchServiceType[] = hasVehicleProfile
       ? assignmentServices
       : assignmentServices.length > 0
         ? assignmentServices
         : await getActiveVehicleServiceTypes(riderId);
-  } else {
-    const live = await loadRiderGps(riderId).catch(() => null);
-    const lastKnown = live ? null : await loadRiderGpsLastKnown(riderId).catch(() => null);
-    const gps =
-      live ??
-      (lastKnown && lastKnown.freshness !== "UNKNOWN" ? lastKnown : null);
-    vehicleServices = await filterServicesByUnifiedEligibility({
-      riderId,
-      requested: ["food", "parcel", "person_ride"],
-      lat: gps?.lat ?? null,
-      lng: gps?.lng ?? null,
-    });
+    mark(`vehicleServices:fast:${mode}`);
+    if (vehicleServices.length === 0) return null;
+
+    const intersected = intersectServices(dutyServices, vehicleServices);
+    const profileFiltered = filterDispatchServicesForRiderProfile(intersected, vehicleProfile);
+    const restrictionSnapshot = await getRiderDispatchBlockSnapshot(riderId);
+    mark("restrictions");
+    const unrestricted = filterUnrestrictedDispatchServices(profileFiltered, restrictionSnapshot);
+
+    console.info(
+      "[dispatch] computeRiderEligibleDispatchServices",
+      JSON.stringify({ riderId, ms: Date.now() - t0, marks })
+    );
+    return unrestricted.length > 0 ? unrestricted : null;
+  })();
+
+  eligibleServicesCache.set(riderId, {
+    at: 0,
+    value: null,
+    inflight,
+  });
+  try {
+    const value = await inflight;
+    eligibleServicesCache.set(riderId, { at: Date.now(), value, inflight: null });
+    return value;
+  } catch (err) {
+    eligibleServicesCache.delete(riderId);
+    throw err;
   }
-  if (vehicleServices.length === 0) return null;
+}
 
-  const intersected = intersectServices(dutyServices, vehicleServices);
-  const profileFiltered = filterDispatchServicesForRiderProfile(intersected, vehicleProfile);
-  const restrictionSnapshot = await getRiderDispatchBlockSnapshot(riderId);
-  const unrestricted = filterUnrestrictedDispatchServices(profileFiltered, restrictionSnapshot);
-
-  return unrestricted.length > 0 ? unrestricted : null;
+/** Drop cached eligible services / assignment context after duty changes. */
+export function invalidateRiderEligibleDispatchServicesCache(riderId?: number): void {
+  if (riderId == null) {
+    eligibleServicesCache.clear();
+    assignmentCtxCache.clear();
+    return;
+  }
+  eligibleServicesCache.delete(riderId);
+  for (const key of [...assignmentCtxCache.keys()]) {
+    if (key.startsWith(`${riderId}:`)) assignmentCtxCache.delete(key);
+  }
 }
 
 export function riderHasEligibleDispatchService(
@@ -1059,6 +1119,15 @@ export async function evaluateRiderDispatchEligibility(
     logDecision?: boolean;
     /** Admin force-assign: use last-known GPS even if older than the NEW-offer window. */
     allowStaleGps?: boolean;
+    /**
+     * Idle-rider /available pool scan: reuse the context already resolved for
+     * this request so we do not re-hit duty/GPS/subscription per candidate.
+     */
+    preloadedCtx?: RiderAssignmentContext;
+    /** Caller already verified service is in the rider's eligible set. */
+    skipServiceEligiblePrefetch?: boolean;
+    /** Caller already verified subscription wallet is not blocking dispatch. */
+    skipSubscriptionCheck?: boolean;
   }
 ): Promise<EligibleDispatchRider | null> {
   const reject = (reason: string, extra?: Partial<DispatchRiderTrace>): null => {
@@ -1077,16 +1146,22 @@ export async function evaluateRiderDispatchEligibility(
     return null;
   };
 
-  const preEligible = await computeRiderEligibleDispatchServices(riderId);
-  if (!preEligible?.includes(target.serviceType)) return reject("SERVICE_NOT_ELIGIBLE");
+  if (!options?.skipServiceEligiblePrefetch) {
+    const preEligible = await computeRiderEligibleDispatchServices(riderId);
+    if (!preEligible?.includes(target.serviceType)) return reject("SERVICE_NOT_ELIGIBLE");
+  }
 
-  const { isRiderSubscriptionDispatchBlocked } = await import("./rider-subscription-wallet.js");
-  if (await isRiderSubscriptionDispatchBlocked(riderId)) return reject("SUBSCRIPTION_REQUIRED");
+  if (!options?.skipSubscriptionCheck) {
+    const { isRiderSubscriptionDispatchBlocked } = await import("./rider-subscription-wallet.js");
+    if (await isRiderSubscriptionDispatchBlocked(riderId)) return reject("SUBSCRIPTION_REQUIRED");
+  }
 
-  const ctx = await resolveRiderAssignmentContext(riderId, {
-    skipAssignmentCheck: true,
-    allowStaleGps: options?.allowStaleGps === true,
-  });
+  const ctx =
+    options?.preloadedCtx ??
+    (await resolveRiderAssignmentContext(riderId, {
+      skipAssignmentCheck: true,
+      allowStaleGps: options?.allowStaleGps === true,
+    }));
   if (!ctx) {
     const dutyOn = (await computeRiderEligibleDispatchServices(riderId)) != null;
     if (!dutyOn) return reject("RIDER_OFFLINE");
@@ -1511,6 +1586,24 @@ export async function listEligibleRidersForDispatchOrder(
   return ordered;
 }
 
+function assignmentCtxCacheKey(
+  riderId: number,
+  options?: {
+    serviceTypeForDispatch?: DispatchServiceType;
+    skipAssignmentCheck?: boolean;
+    allowStaleGps?: boolean;
+    ignoreActiveOrder?: boolean;
+  }
+): string {
+  return [
+    riderId,
+    options?.serviceTypeForDispatch ?? "-",
+    options?.skipAssignmentCheck ? "1" : "0",
+    options?.allowStaleGps ? "1" : "0",
+    options?.ignoreActiveOrder ? "1" : "0",
+  ].join(":");
+}
+
 /**
  * Resolves full rider assignment context: on-duty, service eligibility, fresh GPS.
  * Returns null when the rider cannot receive any dispatch offers.
@@ -1528,51 +1621,74 @@ export async function resolveRiderAssignmentContext(
     ignoreActiveOrder?: boolean;
   }
 ): Promise<RiderAssignmentContext | null> {
-  const db = getDb();
+  // Idle /available polls hit this every few seconds with the same flags — coalesce + TTL
+  // so a cold ~6s eligible-services resolve is not paid on every recovery tick.
+  const cacheKey = assignmentCtxCacheKey(riderId, options);
+  const cached = assignmentCtxCache.get(cacheKey);
+  if (cached?.inflight) return cached.inflight;
+  if (cached && Date.now() - cached.at < ASSIGNMENT_CTX_TTL_MS) return cached.value;
 
-  const [rider] = await db
-    .select({ status: riders.status, onboardingStage: riders.onboardingStage })
-    .from(riders)
-    .where(eq(riders.id, riderId))
-    .limit(1);
+  const inflight = (async (): Promise<RiderAssignmentContext | null> => {
+    const db = getDb();
 
-  if (!rider || rider.status === "BLOCKED" || rider.status === "BANNED") return null;
+    const [rider] = await db
+      .select({ status: riders.status, onboardingStage: riders.onboardingStage })
+      .from(riders)
+      .where(eq(riders.id, riderId))
+      .limit(1);
 
-  if (!options?.ignoreActiveOrder && !options?.skipAssignmentCheck) {
-    if (options?.serviceTypeForDispatch) {
-      const allowed = await canRiderReceiveDispatchOffer(riderId, options.serviceTypeForDispatch);
-      if (!allowed) return null;
-    } else if (await riderHasActiveDispatchOrder(riderId)) {
+    if (!rider || rider.status === "BLOCKED" || rider.status === "BANNED") return null;
+
+    if (!options?.ignoreActiveOrder && !options?.skipAssignmentCheck) {
+      if (options?.serviceTypeForDispatch) {
+        const allowed = await canRiderReceiveDispatchOffer(riderId, options.serviceTypeForDispatch);
+        if (!allowed) return null;
+      } else if (await riderHasActiveDispatchOrder(riderId)) {
+        return null;
+      }
+    }
+
+    // Eligible services + GPS are independent on the shadow/off pool path — run together.
+    const [eligibleServices, gpsLive] = await Promise.all([
+      computeRiderEligibleDispatchServices(riderId),
+      loadRiderGps(riderId).catch(() => null),
+    ]);
+    if (!eligibleServices || eligibleServices.length === 0) return null;
+
+    if (
+      options?.serviceTypeForDispatch &&
+      !riderHasEligibleDispatchService(eligibleServices, options.serviceTypeForDispatch)
+    ) {
       return null;
     }
+
+    const gps =
+      gpsLive ??
+      (options?.allowStaleGps ? await loadRiderGpsLastKnown(riderId) : null);
+    if (!gps) return null;
+
+    return {
+      riderId,
+      isOnDuty: true,
+      eligibleServices,
+      lat: gps.lat,
+      lng: gps.lng,
+      locationUpdatedAt: gps.updatedAt,
+      freshness: gps.freshness,
+      accuracyM: gps.accuracyM,
+      gpsAgeSeconds: gps.gpsAgeSeconds,
+    };
+  })();
+
+  assignmentCtxCache.set(cacheKey, { at: 0, value: null, inflight });
+  try {
+    const value = await inflight;
+    assignmentCtxCache.set(cacheKey, { at: Date.now(), value, inflight: null });
+    return value;
+  } catch (err) {
+    assignmentCtxCache.delete(cacheKey);
+    throw err;
   }
-
-  const eligibleServices = await computeRiderEligibleDispatchServices(riderId);
-  if (!eligibleServices || eligibleServices.length === 0) return null;
-
-  if (
-    options?.serviceTypeForDispatch &&
-    !riderHasEligibleDispatchService(eligibleServices, options.serviceTypeForDispatch)
-  ) {
-    return null;
-  }
-
-  const gps =
-    (await loadRiderGps(riderId)) ??
-    (options?.allowStaleGps ? await loadRiderGpsLastKnown(riderId) : null);
-  if (!gps) return null;
-
-  return {
-    riderId,
-    isOnDuty: true,
-    eligibleServices,
-    lat: gps.lat,
-    lng: gps.lng,
-    locationUpdatedAt: gps.updatedAt,
-    freshness: gps.freshness,
-    accuracyM: gps.accuracyM,
-    gpsAgeSeconds: gps.gpsAgeSeconds,
-  };
 }
 
 /** Validates rider + pickup point against DB-configured pickup radius (accept flow). */
@@ -1822,29 +1938,31 @@ async function fetchParcelPoolRows(): Promise<DispatchPoolOrderRow[]> {
 export async function listDispatchPoolOrdersForRider(
   riderId: number
 ): Promise<DispatchPoolOrderRow[]> {
+  const t0 = Date.now();
   const baseCtx = await resolveRiderAssignmentContext(riderId, {
     skipAssignmentCheck: true,
     allowStaleGps: true,
   });
   if (!baseCtx) return [];
+  const tCtx = Date.now();
 
-  const [canFood, canParcel, canRide] = await Promise.all([
-    canRiderReceiveDispatchOffer(riderId, "food"),
-    canRiderReceiveDispatchOffer(riderId, "parcel"),
-    canRiderReceiveDispatchOffer(riderId, "person_ride"),
+  // Duty-context eligibleServices already encodes ON-duty + vehicle + restriction
+  // filters. Per-order canRiderReceiveDispatchOffer / blacklist / batch gates still
+  // run inside evaluateRiderDispatchEligibility for nearby rows — do NOT triple the
+  // assignment-audit path here (that alone was multi-second on every poll).
+  const wantRide = baseCtx.eligibleServices.includes("person_ride");
+  const wantFood = baseCtx.eligibleServices.includes("food");
+  const wantParcel = baseCtx.eligibleServices.includes("parcel");
+
+  // Fetch service pools in parallel — sequential food→parcel→ride added multi-second
+  // latency on every /orders/available poll and tripped available_orders_timeout.
+  const [rideRows, foodRows, parcelRows] = await Promise.all([
+    wantRide ? fetchPersonRidePoolRows() : Promise.resolve([] as DispatchPoolOrderRow[]),
+    wantFood ? fetchFoodPoolRows() : Promise.resolve([] as DispatchPoolOrderRow[]),
+    wantParcel ? fetchParcelPoolRows() : Promise.resolve([] as DispatchPoolOrderRow[]),
   ]);
-
-  const candidates: DispatchPoolOrderRow[] = [];
-
-  if (canRide && baseCtx.eligibleServices.includes("person_ride")) {
-    candidates.push(...(await fetchPersonRidePoolRows()));
-  }
-  if (canFood && baseCtx.eligibleServices.includes("food")) {
-    candidates.push(...(await fetchFoodPoolRows()));
-  }
-  if (canParcel && baseCtx.eligibleServices.includes("parcel")) {
-    candidates.push(...(await fetchParcelPoolRows()));
-  }
+  const candidates: DispatchPoolOrderRow[] = [...rideRows, ...foodRows, ...parcelRows];
+  const tPools = Date.now();
 
   const { fetchExcludedOrderCoreIdsForRider } = await import("./rider-dispatch-order-exclusion.js");
   const excludedCoreIds = await fetchExcludedOrderCoreIdsForRider(
@@ -1876,64 +1994,116 @@ export async function listDispatchPoolOrdersForRider(
     }
   }
 
-  const { isOrderDispatchManualHold } = await import("./order-dispatch-manual-hold.js");
+  const { fetchManualHoldCoreIds } = await import("./order-dispatch-manual-hold.js");
   const { isDispatchOrderBlockedByPrevent } = await import(
     "../modules/prevent-services/preventServices.engine.js"
   );
-  for (const order of candidates) {
-    if (excludedCoreIds.has(order.orderCoreId)) continue;
-    if (await isOrderDispatchManualHold(order.orderCoreId)) continue;
 
-    // Area-level Prevent Services: only hide orders whose pickup/drop sits
-    // inside an active block. Never removes the rider from duty.
-    if (
-      await isDispatchOrderBlockedByPrevent({
-        serviceType: order.serviceType,
-        pickupLat: order.pickupLat,
-        pickupLng: order.pickupLng,
-        dropLat: order.dropLat,
-        dropLng: order.dropLng,
-      })
-    ) {
-      continue;
-    }
+  // Drop excluded + manual-hold ids in one batch (was N sequential SELECTs).
+  const holdIds = await fetchManualHoldCoreIds(
+    candidates.filter((o) => !excludedCoreIds.has(o.orderCoreId)).map((o) => o.orderCoreId)
+  );
 
-    // Use the order's CURRENT wave radius, not the max — polling must obey the same per-wave
-    // distance rule as the push so orders never reach riders beyond the configured radius.
+  const afterHold = candidates.filter(
+    (o) => !excludedCoreIds.has(o.orderCoreId) && !holdIds.has(o.orderCoreId)
+  );
+
+  // Prefetch every distinct service:wave radius in parallel before the per-order loop.
+  const radiusJobs = new Map<string, Promise<number | null>>();
+  for (const order of afterHold) {
     const currentWave = waveByOrder.get(order.orderCoreId) ?? 1;
     const radiusKey = `${order.serviceType}:${currentWave}`;
-    let radiusMeters = radiusByWave.get(radiusKey);
-    if (radiusMeters == null) {
-      try {
-        radiusMeters = await fetchEffectiveDispatchRadiusMeters(order.serviceType, currentWave);
-        radiusByWave.set(radiusKey, radiusMeters);
-      } catch (err) {
-        console.warn(
-          "[dispatch] pickup radius lookup failed",
-          order.serviceType,
-          order.orderId,
-          currentWave,
-          (err as Error).message
+    if (radiusByWave.has(radiusKey) || radiusJobs.has(radiusKey)) continue;
+    radiusJobs.set(
+      radiusKey,
+      fetchEffectiveDispatchRadiusMeters(order.serviceType, currentWave)
+        .then((m) => {
+          radiusByWave.set(radiusKey, m);
+          return m;
+        })
+        .catch((err) => {
+          console.warn(
+            "[dispatch] pickup radius lookup failed",
+            order.serviceType,
+            order.orderId,
+            currentWave,
+            (err as Error).message
+          );
+          return null;
+        })
+    );
+  }
+  await Promise.all(radiusJobs.values());
+
+  // Cheap haversine gate FIRST — full evaluateRiderDispatchEligibility does multiple DB
+  // round-trips *before* the distance check, which made /orders/available exceed 12s and
+  // return [] (hiding rides even when Person was selected alongside Parcel).
+  type NearbyCandidate = { order: DispatchPoolOrderRow; radiusMeters: number };
+  const nearby: NearbyCandidate[] = [];
+  for (const order of afterHold) {
+    const currentWave = waveByOrder.get(order.orderCoreId) ?? 1;
+    const radiusMeters = radiusByWave.get(`${order.serviceType}:${currentWave}`);
+    if (radiusMeters == null || radiusMeters <= 0) continue;
+    const dist = haversineDistanceMeters(
+      baseCtx.lat,
+      baseCtx.lng,
+      order.pickupLat,
+      order.pickupLng
+    );
+    if (!Number.isFinite(dist) || dist > radiusMeters) continue;
+    nearby.push({ order, radiusMeters });
+  }
+
+  const POOL_EVAL_CONCURRENCY = 4;
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(POOL_EVAL_CONCURRENCY, Math.max(1, nearby.length)) },
+    async () => {
+      while (cursor < nearby.length) {
+        const idx = cursor++;
+        const item = nearby[idx];
+        if (!item) continue;
+        const { order, radiusMeters } = item;
+
+        if (
+          await isDispatchOrderBlockedByPrevent({
+            serviceType: order.serviceType,
+            pickupLat: order.pickupLat,
+            pickupLng: order.pickupLng,
+            dropLat: order.dropLat,
+            dropLng: order.dropLng,
+          })
+        ) {
+          continue;
+        }
+
+        const personRideVehicleTypes =
+          order.serviceType === "person_ride"
+            ? await resolvePersonRideVehicleTypesForOrder(order.orderCoreId)
+            : undefined;
+
+        const eligible = await evaluateRiderDispatchEligibility(
+          riderId,
+          {
+            serviceType: order.serviceType,
+            pickup: toPickupPoint(order.pickupLat, order.pickupLng),
+            effectiveRadiusMeters: radiusMeters,
+            orderCoreId: order.orderCoreId,
+            orderId: order.orderId,
+            personRideVehicleTypes,
+          },
+          {
+            logDecision: false,
+            preloadedCtx: baseCtx,
+            skipServiceEligiblePrefetch: true,
+            skipSubscriptionCheck: true,
+          }
         );
-        continue;
+        if (eligible) withinRadius.push(order);
       }
     }
-
-    const personRideVehicleTypes =
-      order.serviceType === "person_ride"
-        ? await resolvePersonRideVehicleTypesForOrder(order.orderCoreId)
-        : undefined;
-
-    const eligible = await evaluateRiderDispatchEligibility(riderId, {
-      serviceType: order.serviceType,
-      pickup: toPickupPoint(order.pickupLat, order.pickupLng),
-      effectiveRadiusMeters: radiusMeters,
-      orderCoreId: order.orderCoreId,
-      orderId: order.orderId,
-      personRideVehicleTypes,
-    });
-    if (eligible) withinRadius.push(order);
-  }
+  );
+  if (nearby.length > 0) await Promise.all(workers);
 
   const sorted = withinRadius
     .sort((a, b) => {
@@ -1945,6 +2115,21 @@ export async function listDispatchPoolOrdersForRider(
       return a.createdAt.getTime() - b.createdAt.getTime();
     })
     .slice(0, 15);
+
+  console.info(
+    "[dispatch] listDispatchPoolOrdersForRider",
+    JSON.stringify({
+      riderId,
+      msTotal: Date.now() - t0,
+      msCtx: tCtx - t0,
+      msPools: tPools - tCtx,
+      msFilter: Date.now() - tPools,
+      candidates: candidates.length,
+      nearby: nearby.length,
+      withinRadius: withinRadius.length,
+      services: { wantRide, wantFood, wantParcel },
+    })
+  );
 
   try {
     const { appendForceAssignmentPoolRow } = await import("./force-assignment.service.js");

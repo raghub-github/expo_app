@@ -48,18 +48,33 @@ if (!isExpoGo()) {
         const appActive = AppState.currentState === "active";
         let nativeOwns = false;
         try {
-          const { isNativeOrderAlertAvailable } = require("@gatimitra/expo-push-kit");
+          const {
+            isNativeOrderAlertAvailable,
+            rememberPushPresented,
+            pushPresentationKey,
+          } = require("@gatimitra/expo-push-kit");
           nativeOwns = isDispatchOffer && isNativeOrderAlertAvailable();
+          if (isDispatchOffer) {
+            const orderId = String(
+              data?.orderId ?? data?.order_id ?? data?.offerId ?? ""
+            ).trim();
+            rememberPushPresented(
+              pushPresentationKey({
+                templateCode: "RIDER_NEW_ORDER",
+                orderId,
+                event: "NEW_ORDER",
+              })
+            );
+          }
         } catch {
           nativeOwns = false;
         }
-        // Never hide from shade in any state. Mute OS when native FGS owns
-        // audio, or for dispatch while the rider is in the app.
+        // FCM (+ native HeadsUp) owns the tray for dispatch — Expo must not twin.
         return {
           shouldPlaySound: !(nativeOwns || (isDispatchOffer && appActive)),
           shouldSetBadge: true,
-          shouldShowBanner: true,
-          shouldShowList: true,
+          shouldShowBanner: !isDispatchOffer,
+          shouldShowList: !isDispatchOffer,
         };
       },
     });

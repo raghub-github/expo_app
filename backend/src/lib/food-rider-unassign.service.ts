@@ -7,7 +7,7 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { getDb } from "../db/client.js";
 
 type DbTx = PostgresJsDatabase<Record<string, unknown>>;
-import { ordersCore, ordersFood } from "../db/schema.js";
+import { ordersCore, ordersFood, ordersParcel } from "../db/schema.js";
 import {
   pauseOrderDispatchForManualAssignment,
   restartOrderDispatch,
@@ -21,6 +21,7 @@ import {
   recordFoodRiderUnassigned,
 } from "./rider-ride-assignment.js";
 import { applyRiderUnassignWalletPolicy } from "./rider-delivery-wallet-eligibility.js";
+import { appendOrderTimeline, type AppendTimelineInput } from "./order-placement-timeline.js";
 
 export type UnassignFoodRiderInput = {
   orderCorePk: number;
@@ -163,7 +164,14 @@ export async function adminCancelFoodRiderFromOrder(
       reasonCode: input.reasonCode,
       reasonText: input.reasonText,
       removedBy: input.removedBy,
-      actorType: input.actorType ?? "admin",
+      actorType:
+        input.actorType === "agent" ||
+        input.actorType === "customer" ||
+        input.actorType === "rider" ||
+        input.actorType === "store" ||
+        input.actorType === "system"
+          ? input.actorType
+          : "admin",
       actorId: input.actorId,
       cancelledBy: input.removedBy ?? input.actorId ?? null,
       foodStatus: foodSt,
@@ -290,6 +298,15 @@ export async function manualAssignRiderForFoodOrder(orderCorePk: number): Promis
   started: boolean;
   eligible: number;
 }> {
+  const db = getDb();
+  const [meta] = await db
+    .select({ orderType: ordersCore.orderType })
+    .from(ordersCore)
+    .where(eq(ordersCore.id, orderCorePk))
+    .limit(1);
+  const serviceType =
+    String(meta?.orderType ?? "").trim().toLowerCase() === "parcel" ? "parcel" : "food";
+
   const started = await restartOrderDispatch(orderCorePk);
   if (!started) {
     throw Object.assign(new Error("Order is not ready for rider assignment"), {
@@ -300,7 +317,7 @@ export async function manualAssignRiderForFoodOrder(orderCorePk: number): Promis
 
   let maxWave = 1;
   try {
-    const settings = await fetchDispatchWaveSettings("food");
+    const settings = await fetchDispatchWaveSettings(serviceType);
     maxWave = Math.max(1, settings.maxWaves);
   } catch {
     maxWave = 1;
@@ -316,4 +333,166 @@ export async function manualAssignRiderForFoodOrder(orderCorePk: number): Promis
   }
 
   return { started: true, eligible };
+}
+
+async function clearParcelRiderAssignment(
+  input: UnassignFoodRiderInput,
+  recordFn: (tx: DbTx, previousStatus: string, now: Date) => Promise<void>
+): Promise<string> {
+  const db = getDb();
+  const now = new Date();
+
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({
+        currentStatus: ordersCore.currentStatus,
+        riderId: ordersCore.riderId,
+        cancelledAt: ordersParcel.cancelledAt,
+      })
+      .from(ordersCore)
+      .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+      .where(
+        and(eq(ordersCore.id, input.orderCorePk), eq(ordersCore.riderId, input.riderId))
+      )
+      .limit(1);
+
+    if (!row) {
+      throw new Error("Parcel order not found or rider not assigned");
+    }
+
+    const previousStatus = String(row.currentStatus ?? "").trim().toUpperCase();
+    if (
+      row.cancelledAt != null ||
+      ["DELIVERED", "CANCELLED", "COMPLETED", "FAILED"].includes(previousStatus)
+    ) {
+      throw new Error("Cannot cancel rider on a delivered or cancelled parcel");
+    }
+
+    await tx
+      .update(ordersCore)
+      .set({
+        riderId: null,
+        status: "assigned",
+        currentStatus: "SEARCHING_RIDER",
+        actualPickupTime: null,
+        updatedAt: now,
+      })
+      .where(and(eq(ordersCore.id, input.orderCorePk), eq(ordersCore.riderId, input.riderId)));
+
+    await tx
+      .update(ordersParcel)
+      .set({
+        assignedRiderId: null,
+        riderAssignedAt: null,
+        riderReachedPickupAt: null,
+        pickupWaitSeconds: null,
+        updatedAt: now,
+      })
+      .where(eq(ordersParcel.orderId, input.orderCorePk));
+
+    await recordFn(tx, previousStatus || "RIDER_ASSIGNED", now);
+    return previousStatus || "RIDER_ASSIGNED";
+  });
+}
+
+/** Agent cancels assigned parcel rider — hold for manual assign or instantly re-dispatch. */
+export async function adminCancelParcelRiderFromOrder(
+  input: AdminCancelFoodRiderInput
+): Promise<void> {
+  const now = new Date();
+  const previousStatus = await clearParcelRiderAssignment(input, async (tx, prevStatus, occurredAt) => {
+    await recordFoodRiderAdminCancelled(tx, {
+      orderCorePk: input.orderCorePk,
+      orderIdText: input.orderIdText,
+      riderId: input.riderId,
+      reasonCode: input.reasonCode,
+      reasonText: input.reasonText,
+      removedBy: input.removedBy,
+      actorType:
+        input.actorType === "agent" ||
+        input.actorType === "customer" ||
+        input.actorType === "rider" ||
+        input.actorType === "store" ||
+        input.actorType === "system"
+          ? input.actorType
+          : "admin",
+      actorId: input.actorId,
+      cancelledBy: input.removedBy ?? input.actorId ?? null,
+      foodStatus: prevStatus,
+      occurredAt,
+    });
+
+    await appendOrderTimeline(tx, {
+      orderCorePk: input.orderCorePk,
+      status: "SEARCHING_RIDER",
+      previousStatus: prevStatus,
+      actorType:
+        input.actorType === "agent" ||
+        input.actorType === "customer" ||
+        input.actorType === "rider" ||
+        input.actorType === "store" ||
+        input.actorType === "system"
+          ? input.actorType
+          : "admin",
+      actorId:
+        input.actorId && Number.isFinite(Number(input.actorId))
+          ? Number(input.actorId)
+          : null,
+      actorName:
+        input.removedBy ??
+        (typeof input.actorId === "string" ? input.actorId : "admin"),
+      statusMessage: input.reasonText?.trim() || "Rider cancelled by admin",
+      occurredAt,
+      metadata: {
+        serviceType: "parcel",
+        reasonCode: input.reasonCode,
+        mode: input.mode,
+      },
+    });
+  });
+
+  await recordRiderDispatchExclusion({
+    orderCoreId: input.orderCorePk,
+    orderId: input.orderIdText,
+    riderId: input.riderId,
+    exclusionSource: "admin_unassign",
+    reasonCode: input.reasonCode,
+    reasonText: input.reasonText ?? input.reasonCode,
+    actorType: input.actorType ?? "admin",
+    actorId: input.actorId ?? input.removedBy ?? null,
+    metadata: { previousStatus, serviceType: "parcel", mode: input.mode },
+  });
+
+  await recordDispatchAssignmentAudit({
+    orderCoreId: input.orderCorePk,
+    orderId: input.orderIdText,
+    riderId: input.riderId,
+    eventType: "cancelled",
+    unassignedAt: now,
+    removedBy: input.removedBy ?? input.actorId ?? null,
+    removalReason: input.reasonText ?? input.reasonCode,
+    actorType: input.actorType ?? "admin",
+    actorId: input.actorId ?? input.removedBy ?? null,
+    metadata: {
+      previousStatus,
+      serviceType: "parcel",
+      reasonCode: input.reasonCode,
+      mode: input.mode,
+    },
+    occurredAt: now,
+  });
+
+  await applyRiderUnassignWalletPolicy({
+    orderCorePk: input.orderCorePk,
+    orderIdText: input.orderIdText,
+    riderId: input.riderId,
+    actorType: input.actorType ?? "admin",
+    reasonCode: input.reasonCode,
+  });
+
+  if (input.mode === "reassign") {
+    await restartOrderDispatch(input.orderCorePk);
+  } else {
+    await pauseOrderDispatchForManualAssignment(input.orderCorePk);
+  }
 }

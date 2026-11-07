@@ -46,6 +46,10 @@ export default function OnboardingLayout() {
           name="language"
           options={{ contentStyle: { flex: 1, width: "100%", backgroundColor: RIDER_AUTH_BG } }}
         />
+        <Stack.Screen
+          name="welcome"
+          options={{ contentStyle: { flex: 1, width: "100%", backgroundColor: RIDER_AUTH_BG } }}
+        />
         <Stack.Screen name="payment" options={{ title: "GMitra Prime" }} />
         {/* help is a redirect — no top bar needed. */}
         <Stack.Screen name="help" options={{ headerShown: false }} />

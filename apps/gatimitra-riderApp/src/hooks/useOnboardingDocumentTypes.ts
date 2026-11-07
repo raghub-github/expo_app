@@ -10,8 +10,12 @@ import {
 
 const API_BASE = () => getRiderAppConfig().apiBaseUrl;
 
+/** One Metro warn per session — avoid 4× identical 30s timeout spam on cold boot. */
+let warnedDocumentTypesFailure = false;
+
 export function useOnboardingDocumentTypes(captureGroup?: OnboardingCaptureGroup) {
   const session = useSessionStore((s) => s.session);
+  const hydrated = useSessionStore((s) => s.hydrated);
 
   return useQuery({
     queryKey: ["rider", "onboarding", "document-types", captureGroup ?? "all"],
@@ -26,18 +30,30 @@ export function useOnboardingDocumentTypes(captureGroup?: OnboardingCaptureGroup
         if (captureGroup) qs.set("captureGroup", captureGroup);
         const res = await getJson<{ rows: OnboardingDocumentTypeDef[] }>(
           `${API_BASE()}/v1/onboarding/document-types?${qs.toString()}`,
-          { headers: { authorization: `Bearer ${session.accessToken}` } }
+          {
+            // Boot path — fail fast to local fallback instead of hanging 30s when API is down.
+            timeout: 12_000,
+            headers: { authorization: `Bearer ${session.accessToken}` },
+          }
         );
         if (res.rows?.length) return res.rows;
       } catch (e) {
-        console.warn("[useOnboardingDocumentTypes] fetch failed, using fallback", e);
+        if (__DEV__ && !warnedDocumentTypesFailure) {
+          warnedDocumentTypesFailure = true;
+          console.warn(
+            "[useOnboardingDocumentTypes] fetch failed, using fallback",
+            e instanceof Error ? e.message : e
+          );
+        }
       }
       return captureGroup
         ? FALLBACK_ONBOARDING_DOCUMENT_TYPES.filter((d) => d.captureGroup === captureGroup)
         : FALLBACK_ONBOARDING_DOCUMENT_TYPES;
     },
-    enabled: Boolean(session?.accessToken),
+    // Wait for session hydrate so this does not fight boot traffic / dead backend.
+    enabled: hydrated && Boolean(session?.accessToken),
     staleTime: 5 * 60_000,
+    retry: 0,
     placeholderData: captureGroup
       ? FALLBACK_ONBOARDING_DOCUMENT_TYPES.filter((d) => d.captureGroup === captureGroup)
       : FALLBACK_ONBOARDING_DOCUMENT_TYPES,

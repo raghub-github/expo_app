@@ -7,6 +7,8 @@ import {
   fetchPendingOffersForDispatch,
 } from "@/src/lib/riderDispatchFetch";
 import { executeRiderAction } from "@/src/lib/riderActionRuntime";
+import { isActiveRiderOrder } from "@/src/lib/active-order-display";
+import { dismissRiderSearchingNotification } from "@/src/lib/riderSearchingNotification";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export const RIDER_ORDER_DETAIL_QUERY_KEY = (orderId: string) =>
@@ -48,7 +50,23 @@ export function seedRiderOrderDetailCache(
     if (trimmed) keys.add(trimmed);
   }
   for (const key of keys) {
-    queryClient.setQueryData(RIDER_ORDER_DETAIL_QUERY_KEY(key), order);
+    const prev = queryClient.getQueryData<RiderOrderSummary>(RIDER_ORDER_DETAIL_QUERY_KEY(key));
+    // Never clobber a richer detail payload with a thin list/offer seed
+    // (e.g. missing parcel customerName / payAt).
+    const merged: RiderOrderSummary =
+      prev && prev.id === order.id
+        ? {
+            ...prev,
+            ...order,
+            customerName: order.customerName?.trim() || prev.customerName,
+            receiverName: order.receiverName?.trim() || prev.receiverName,
+            payAt: order.payAt ?? prev.payAt,
+            cashCollected: order.cashCollected ?? prev.cashCollected,
+            paymentMethod: order.paymentMethod ?? prev.paymentMethod,
+            paymentRequired: order.paymentRequired ?? prev.paymentRequired,
+          }
+        : order;
+    queryClient.setQueryData(RIDER_ORDER_DETAIL_QUERY_KEY(key), merged);
   }
 }
 
@@ -232,10 +250,11 @@ export function useAcceptOrder() {
       seedRiderOrderDetailCache(queryClient, data, [orderId]);
       queryClient.setQueryData<RiderOrderSummary[]>(RIDER_ACTIVE_ORDERS_QUERY_KEY, (prev) => {
         const list = Array.isArray(prev) ? prev : [];
-        if (list.some((o) => o.id === data.id)) {
-          return list.map((o) => (o.id === data.id ? data : o));
-        }
-        return [data, ...list];
+        const next = list.some((o) => o.id === data.id)
+          ? list.map((o) => (o.id === data.id ? data : o))
+          : [data, ...list];
+        persistLastActiveOrders(next);
+        return next;
       });
       const drop = (list: RiderOrderSummary[] | undefined) =>
         Array.isArray(list)
@@ -248,23 +267,40 @@ export function useAcceptOrder() {
           : list;
       queryClient.setQueryData(RIDER_AVAILABLE_ORDERS_QUERY_KEY, drop);
       queryClient.setQueryData(RIDER_PENDING_OFFERS_QUERY_KEY, drop);
+      void dismissRiderSearchingNotification();
     },
   });
 }
 
 /**
- * Hook to reject an order
+ * Hook to reject an order — same idempotent runtime as accept (no false success).
  */
 export function useRejectOrder() {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: (args: { orderId: string; reasonCode: string; reasonText?: string }) =>
-      riderApi.rejectOrder(args.orderId, {
-        reasonCode: args.reasonCode,
-        reasonText: args.reasonText,
+      executeRiderAction({
+        orderId: args.orderId,
+        actionType: "reject",
+        payload: {
+          reasonCode: args.reasonCode,
+          reasonText: args.reasonText,
+        },
+        send: (actionId) =>
+          riderApi.rejectOrder(
+            args.orderId,
+            { reasonCode: args.reasonCode, reasonText: args.reasonText },
+            { actionId },
+          ),
       }),
-    onSuccess: () => {
+    retry: false,
+    networkMode: "always",
+    onSuccess: (_data, args) => {
+      const drop = (list: RiderOrderSummary[] | undefined) =>
+        Array.isArray(list) ? list.filter((o) => o.id !== args.orderId) : list;
+      queryClient.setQueryData(RIDER_AVAILABLE_ORDERS_QUERY_KEY, drop);
+      queryClient.setQueryData(RIDER_PENDING_OFFERS_QUERY_KEY, drop);
       void queryClient.invalidateQueries({ queryKey: ["rider", "orders"] });
     },
   });
@@ -285,10 +321,11 @@ export function useMissOrderOffer() {
 }
 
 function syncDetailIntoActiveList(queryClient: QueryClient, data: RiderOrderSummary) {
+  if (!isActiveRiderOrder(data)) return;
   queryClient.setQueryData<RiderOrderSummary[]>(RIDER_ACTIVE_ORDERS_QUERY_KEY, (prev) => {
-    if (!Array.isArray(prev) || prev.length === 0) return prev;
+    const list = Array.isArray(prev) ? prev : [];
     let changed = false;
-    const next = prev.map((o) => {
+    const next = list.map((o) => {
       if (
         o.id === data.id ||
         (data.formattedOrderId && o.formattedOrderId === data.formattedOrderId)
@@ -298,7 +335,13 @@ function syncDetailIntoActiveList(queryClient: QueryClient, data: RiderOrderSumm
       }
       return o;
     });
-    return changed ? next : prev;
+    if (changed) {
+      persistLastActiveOrders(next);
+      return next;
+    }
+    const upserted = [data, ...list];
+    persistLastActiveOrders(upserted);
+    return upserted;
   });
 }
 
@@ -476,11 +519,19 @@ export function useVerifyPickupOtp() {
       lat?: number;
       lng?: number;
       deviceTimestamp?: string;
+      pickupImageUrl?: string;
+      pickupImageR2Key?: string;
     }) =>
       executeRiderAction({
         orderId: args.orderId,
         actionType: "verify_pickup_otp",
-        payload: { otp: args.otp, lat: args.lat, lng: args.lng },
+        payload: {
+          otp: args.otp,
+          lat: args.lat,
+          lng: args.lng,
+          ...(args.pickupImageUrl ? { pickupImageUrl: args.pickupImageUrl } : {}),
+          ...(args.pickupImageR2Key ? { pickupImageR2Key: args.pickupImageR2Key } : {}),
+        },
         send: (actionId) =>
           riderApi.verifyPickupOtp(
             args.orderId,
@@ -489,6 +540,8 @@ export function useVerifyPickupOtp() {
               lat: args.lat,
               lng: args.lng,
               deviceTimestamp: args.deviceTimestamp,
+              pickupImageUrl: args.pickupImageUrl,
+              pickupImageR2Key: args.pickupImageR2Key,
             },
             { actionId }
           ),

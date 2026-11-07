@@ -3316,6 +3316,14 @@ export const ordersParcel = pgTable(
     cancellationReasonText: text("cancellation_reason_text"),
     cashCollectedAt: timestamp("cash_collected_at", { withTimezone: true }),
     cashCollectedByRiderId: integer("cash_collected_by_rider_id"),
+    /** Parcel item photo at sender handover — required with pickup OTP. */
+    pickupProofImageUrl: text("pickup_proof_image_url"),
+    pickupProofR2Key: text("pickup_proof_r2_key"),
+    pickupProofAt: timestamp("pickup_proof_at", { withTimezone: true }),
+    /** Parcel item photo at receiver handover — required with delivery OTP. */
+    deliveryProofImageUrl: text("delivery_proof_image_url"),
+    deliveryProofR2Key: text("delivery_proof_r2_key"),
+    deliveryProofAt: timestamp("delivery_proof_at", { withTimezone: true }),
     acceptPayoutSnapshot: jsonb("accept_payout_snapshot"),
     placementSnapshot: jsonb("placement_snapshot").notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true })

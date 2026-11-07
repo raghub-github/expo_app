@@ -52,13 +52,17 @@ export async function fetchCustomerHomeAds(
   if (hit && Date.now() - hit.at < TTL_MS) return hit.ads;
 
   const base = getConfig().apiBaseUrl.replace(/\/$/, "");
-  const res = await fetch(
-    `${base}/v1/home-ads/customer?placement=${placement}&_=${Date.now()}`,
-    { headers: { Accept: "application/json" } }
-  );
-  if (!res.ok) return hit?.ads ?? [];
-  const json = (await res.json()) as { ads?: Record<string, unknown>[] };
-  const ads = Array.isArray(json.ads) ? json.ads.map(normalizeAd) : [];
-  cache.set(key, { at: Date.now(), ads });
-  return ads;
+  try {
+    const res = await fetch(
+      `${base}/v1/home-ads/customer?placement=${placement}&_=${Date.now()}`,
+      { headers: { Accept: "application/json" } }
+    );
+    if (!res.ok) return hit?.ads ?? [];
+    const json = (await res.json()) as { ads?: Record<string, unknown>[] };
+    const ads = Array.isArray(json.ads) ? json.ads.map(normalizeAd) : [];
+    cache.set(key, { at: Date.now(), ads });
+    return ads;
+  } catch {
+    return hit?.ads ?? [];
+  }
 }

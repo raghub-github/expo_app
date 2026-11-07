@@ -12,6 +12,8 @@ import { AppState } from "react-native";
 import {
   FOREIGN_APP_NOTIFICATION_PRESENTATION,
   isForeignAppPush,
+  pushPresentationKey,
+  rememberPushPresented,
 } from "@gatimitra/expo-push-kit";
 import { isRiderDispatchOfferPushData } from "@/src/lib/riderDispatchOfferChannel";
 import { startRiderDispatchBuzzer } from "@/src/lib/nativeDispatchAlert";
@@ -38,6 +40,9 @@ export async function startDispatchBuzzerFromPush(
       waveNumber: pushField(data, "waveNumber", "wave_number") || null,
       serviceType: pushField(data, "serviceType", "service_type", "category") || null,
       alertSessionId: pushField(data, "alertSessionId", "alert_session_id") || null,
+      expiresAt:
+        pushField(data, "expiresAt", "expires_at", "acceptUntil", "accept_until", "acceptDeadlineAt") ||
+        null,
     });
   } catch {
     return false;
@@ -58,15 +63,26 @@ export async function installRiderForegroundNotificationHandler(): Promise<void>
         let nativeOwns = false;
         if (isDispatch) {
           nativeOwns = await startDispatchBuzzerFromPush(data);
+          const orderId = pushField(data, "orderId", "order_id", "offerId", "offer_id");
+          // FCM already posted a tagged tray card; Expo must not add a twin.
+          rememberPushPresented(
+            pushPresentationKey({
+              templateCode: "RIDER_NEW_ORDER",
+              orderId,
+              event: "NEW_ORDER",
+            })
+          );
         }
         // Mute the tray tone only after the accept-modal buzzer is playing,
         // or while the in-app modal will play that same chime.
         const suppressOsSound = nativeOwns || (isDispatch && appActive);
+        // Dispatch tray is owned by FCM (+ native HeadsUp on production builds).
+        const suppressExpoShade = isDispatch;
         return {
           shouldPlaySound: !suppressOsSound,
           shouldSetBadge: true,
-          shouldShowBanner: true,
-          shouldShowList: true,
+          shouldShowBanner: !suppressExpoShade,
+          shouldShowList: !suppressExpoShade,
         };
       },
     });

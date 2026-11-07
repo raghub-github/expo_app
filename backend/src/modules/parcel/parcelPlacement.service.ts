@@ -189,7 +189,9 @@ export async function placeParcelOrder(input: PlaceParcelOrderInput): Promise<Pl
       vehicleType: pricingVehicle,
     });
     if (quote.ok && quote.eligible && quote.finalFare > 0) {
-      fare = Math.round(quote.finalFare);
+      // Keep 2-dp slab (same as quote-batch). Integer rounding before billing
+      // shifted platform-fee % / GST bases vs the book-screen quote.
+      fare = Math.round(Number(quote.finalFare) * 100) / 100;
       fareQuoteMeta = {
         baseFare: quote.baseFare,
         distanceFare: quote.distanceFare,

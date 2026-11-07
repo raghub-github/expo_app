@@ -454,14 +454,20 @@ interface PaymentDetailsModalProps {
   recoveryRecords?: OrderRecoveryRecordForDisplay[];
   refundIntentPending?: boolean;
   orderItemTotals?: Map<number, number>;
+  /** Parcel order page: CTM → Platform Margin; delivery = courier slab. */
+  isParcelOrder?: boolean;
   summary: {
     totalAmount: number | null;
     totalCtm: number | null;
+    /** Parcel: platform margin (CTC − delivery fee − taxes). Food: merchant CTM. */
+    platformMargin?: number | null;
     deliveryFee: number | null;
     deliveryFeeQuoted?: number | null;
     deliveryFeeWaived?: boolean;
     taxes?: number | null;
     gatiCashUsed?: number | null;
+    riderDispatchOffer?: number | null;
+    riderPayAfterComplete?: number | null;
   };
 }
 
@@ -603,6 +609,7 @@ function PaymentDetailsModal({
   recoveryRecords = [],
   refundIntentPending = false,
   orderItemTotals = new Map(),
+  isParcelOrder = false,
   summary,
 }: PaymentDetailsModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
@@ -704,8 +711,10 @@ function PaymentDetailsModal({
                 <th className={TH}>Amount (CTC)</th>
                 <th className={TH}>Cashin</th>
                 <th className={TH}>GatiCash Used</th>
-                <th className={TH}>CTM</th>
-                <th className={TH}>Delivery Fee</th>
+                <th className={TH}>{isParcelOrder ? "Platform Margin" : "CTM"}</th>
+                <th className={TH}>
+                  {isParcelOrder ? "Customer courier fee" : "Delivery Fee"}
+                </th>
                 <th className={TH}>Taxes</th>
                 <th className={TH}>PG Name</th>
                 <th className={TH}>PG Transaction Id</th>
@@ -762,15 +771,55 @@ function PaymentDetailsModal({
                     {formatNum(gati)}
                   </td>
                   <td className={`${TD} tabular-nums font-medium text-emerald-800`}>
-                    {formatNum(record.ctm)}
+                    {formatNum(
+                      isParcelOrder
+                        ? (summary.platformMargin ?? record.ctm)
+                        : record.ctm
+                    )}
                   </td>
                   <td className={`${TD} tabular-nums`}>
-                    <DeliveryFeeAmount
-                      charged={record.deliveryFee}
-                      quoted={summary.deliveryFeeQuoted}
-                      waived={summary.deliveryFeeWaived}
-                      className="text-[11px] text-gray-900"
-                    />
+                    <div className="space-y-0.5">
+                      <DeliveryFeeAmount
+                        charged={
+                          isParcelOrder
+                            ? (summary.deliveryFee ?? record.deliveryFee)
+                            : record.deliveryFee
+                        }
+                        quoted={isParcelOrder ? null : summary.deliveryFeeQuoted}
+                        waived={isParcelOrder ? false : summary.deliveryFeeWaived}
+                        className="text-[11px] text-gray-900"
+                      />
+                      {isParcelOrder &&
+                      ((summary.riderDispatchOffer != null &&
+                        summary.riderDispatchOffer > 0.005) ||
+                        (summary.riderPayAfterComplete != null &&
+                          summary.riderPayAfterComplete > 0.005)) ? (
+                        <div className="text-[10px] leading-snug text-slate-500">
+                          <div>
+                            Rider offer{" "}
+                            <span className="font-semibold text-emerald-700">
+                              {formatNum(
+                                summary.riderDispatchOffer != null &&
+                                  summary.riderDispatchOffer > 0.005
+                                  ? summary.riderDispatchOffer
+                                  : summary.riderPayAfterComplete
+                              )}
+                            </span>
+                          </div>
+                          <div>
+                            Rider pay{" "}
+                            <span className="font-semibold text-emerald-700">
+                              {formatNum(
+                                summary.riderPayAfterComplete != null &&
+                                  summary.riderPayAfterComplete > 0.005
+                                  ? summary.riderPayAfterComplete
+                                  : summary.riderDispatchOffer
+                              )}
+                            </span>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
                   </td>
                   <td className={`${TD} tabular-nums`}>
                     {formatNum(record.taxes ?? summary.taxes)}
@@ -848,9 +897,15 @@ function PaymentDetailsModal({
               </div>
             </div>
             <div className="bg-white p-3 rounded-md border border-emerald-200">
-              <p className="text-[11px] font-medium text-emerald-800">Merchant amount (CTM)</p>
+              <p className="text-[11px] font-medium text-emerald-800">
+                {isParcelOrder ? "Platform Margin" : "Merchant amount (CTM)"}
+              </p>
               <p className="text-lg font-bold text-emerald-900 mt-1">
-                {formatCurrency(summary.totalCtm)}
+                {formatCurrency(
+                  isParcelOrder
+                    ? (summary.platformMargin ?? summary.totalCtm)
+                    : summary.totalCtm
+                )}
               </p>
             </div>
             {showGatiCash ? (
@@ -1308,6 +1363,8 @@ export default function PaymentDetails({
         deliveryFee: delivery.amount,
         deliveryFeeQuoted: delivery.quoted,
         deliveryFeeWaived: delivery.waived,
+        riderDispatchOffer: paymentDetail.riderDispatchOffer ?? null,
+        riderPayAfterComplete: paymentDetail.riderPayAfterComplete ?? null,
         taxes: taxesResolved,
         source,
         paymentMode,
@@ -1350,6 +1407,8 @@ export default function PaymentDetails({
       deliveryFee: delivery.amount,
       deliveryFeeQuoted: delivery.quoted,
       deliveryFeeWaived: delivery.waived,
+      riderDispatchOffer: null,
+      riderPayAfterComplete: null,
       taxes: taxesFromItems != null && taxesFromItems > 0 ? taxesFromItems : null,
       source,
       paymentMode,
@@ -1394,6 +1453,41 @@ export default function PaymentDetails({
     refunds: orderRefunds,
   });
 
+  const isParcelOrder = String(order.orderType ?? "")
+    .trim()
+    .toLowerCase() === "parcel";
+
+  // Parcel-only display: courier slab as Delivery Fee; Platform Margin = CTC − fee − taxes.
+  const parcelDeliveryFee = (() => {
+    if (!isParcelOrder) return null;
+    const fromApi =
+      resolved.deliveryFeeWaived === true
+        ? 0
+        : Number(resolved.deliveryFee);
+    if (Number.isFinite(fromApi) && fromApi > 0.005) {
+      return Math.round(fromApi * 100) / 100;
+    }
+    for (const raw of [order.fareAmount, order.itemTotal]) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0.005) return Math.round(n * 100) / 100;
+    }
+    return Number.isFinite(fromApi) ? Math.round(Math.max(0, fromApi) * 100) / 100 : 0;
+  })();
+
+  const parcelTaxes = (() => {
+    if (!isParcelOrder) return 0;
+    const n = Number(resolved.taxes);
+    return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0;
+  })();
+
+  const parcelPlatformMargin = (() => {
+    if (!isParcelOrder) return null;
+    const total = Number(resolved.totalAmount);
+    const delivery = Number(parcelDeliveryFee) || 0;
+    if (!Number.isFinite(total)) return null;
+    return Math.round((total - delivery - parcelTaxes) * 100) / 100;
+  })();
+
   return (
     <>
       <div className="bg-white rounded-lg px-3 py-2 shadow-sm border border-[#e5e5e5] transition-all hover:shadow-md hover:border-gati-primary/20 h-full flex flex-col">
@@ -1427,7 +1521,31 @@ export default function PaymentDetails({
               <i className="bi bi-exclamation-triangle-fill text-[12px]" />
               Refund failed
             </span>
-          ) : null}
+          ) : (() => {
+              const paidStatuses = new Set([
+                "PAID",
+                "CAPTURED",
+                "SUCCESS",
+                "COMPLETED",
+                "COMPLETE",
+                "CAPTURE",
+              ]);
+              const statusCandidates = [
+                order.paymentStatus,
+                resolved.records?.[0]?.paymentStatus,
+                paymentDetail?.records?.[0]?.paymentStatus,
+              ];
+              const isPaid = statusCandidates.some((s) =>
+                paidStatuses.has(String(s ?? "").trim().toUpperCase())
+              );
+              if (!isPaid) return null;
+              return (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                  <i className="bi bi-check-circle-fill text-[12px]" />
+                  Payment Paid
+                </span>
+              );
+            })()}
         </div>
         <div className="space-y-1.5 flex-1">
           {(() => {
@@ -1483,71 +1601,145 @@ export default function PaymentDetails({
               </div>
             );
           })()}
-          <p className={paymentDetailRowClass}>
-            <span className="text-gati-text-secondary font-medium shrink-0">Merchant amount (CTM):</span>
-            <span className="text-gati-text-primary font-semibold orders-num shrink-0">
-              {formatCurrency(resolved.totalCtm)}
-            </span>
-          </p>
-          {(() => {
-            const merchOffer = Number(resolved.merchantStoreOfferDiscount ?? 0) || 0;
-            const customerOffer = Number(resolved.totalDiscountGranted ?? 0) || 0;
-            const showMerchant = merchOffer > 0.005;
-            const showCustomerVsList =
-              showMerchant && customerOffer > 0.005 && Math.abs(customerOffer - merchOffer) > 0.01;
-            const offerPill = resolved.discountOfferSource ? (
-              <span
-                className={`inline-flex shrink-0 items-center rounded-full border px-1.5 py-px text-[9px] font-semibold leading-none ${discountOfferPillClass(resolved.discountOfferSource)}`}
-              >
-                {resolved.discountOfferSource}
+          {isParcelOrder ? (
+            <p className={paymentDetailRowClass}>
+              <span className="text-gati-text-secondary font-medium shrink-0">
+                Platform Margin:
               </span>
-            ) : null;
-            return (
-              <>
-                {showMerchant ? (
-                  <p className={paymentDetailRowClass}>
-                    <span className="text-gati-text-secondary font-medium shrink-0">
-                      Restaurant store offer (CTM):
+              <span className="text-gati-text-primary font-semibold orders-num shrink-0">
+                {formatCurrency(parcelPlatformMargin)}
+              </span>
+            </p>
+          ) : (
+            <p className={paymentDetailRowClass}>
+              <span className="text-gati-text-secondary font-medium shrink-0">
+                Merchant amount (CTM):
+              </span>
+              <span className="text-gati-text-primary font-semibold orders-num shrink-0">
+                {formatCurrency(resolved.totalCtm)}
+              </span>
+            </p>
+          )}
+          {isParcelOrder ? (
+            <p className={paymentDetailRowClass}>
+              <span className="text-gati-text-secondary font-medium shrink-0">
+                Total Discount Granted on Ord:
+              </span>
+              <span className="text-gati-text-primary font-medium orders-num shrink-0">
+                {formatCurrency(Number(resolved.totalDiscountGranted ?? 0) || 0)}
+              </span>
+            </p>
+          ) : (
+            (() => {
+              const merchOffer = Number(resolved.merchantStoreOfferDiscount ?? 0) || 0;
+              const customerOffer = Number(resolved.totalDiscountGranted ?? 0) || 0;
+              const showMerchant = merchOffer > 0.005;
+              const showCustomerVsList =
+                showMerchant &&
+                customerOffer > 0.005 &&
+                Math.abs(customerOffer - merchOffer) > 0.01;
+              const offerPill = resolved.discountOfferSource ? (
+                <span
+                  className={`inline-flex shrink-0 items-center rounded-full border px-1.5 py-px text-[9px] font-semibold leading-none ${discountOfferPillClass(resolved.discountOfferSource)}`}
+                >
+                  {resolved.discountOfferSource}
+                </span>
+              ) : null;
+              return (
+                <>
+                  {showMerchant ? (
+                    <p className={paymentDetailRowClass}>
+                      <span className="text-gati-text-secondary font-medium shrink-0">
+                        Restaurant store offer (CTM):
+                      </span>
+                      <span className="text-gati-text-primary font-medium orders-num shrink-0">
+                        {formatCurrency(merchOffer)}
+                      </span>
+                      {offerPill}
+                    </p>
+                  ) : (
+                    <p className={paymentDetailRowClass}>
+                      <span className="text-gati-text-secondary font-medium shrink-0">
+                        Total Discount Granted on Ord:
+                      </span>
+                      <span className="text-gati-text-primary font-medium orders-num shrink-0">
+                        {formatCurrency(customerOffer)}
+                      </span>
+                      {offerPill}
+                    </p>
+                  )}
+                  {showCustomerVsList ? (
+                    <p className={paymentDetailRowClass}>
+                      <span className="text-gati-text-secondary font-medium shrink-0">
+                        Customer discount vs list (CTC):
+                      </span>
+                      <span className="text-gati-text-primary font-medium orders-num shrink-0">
+                        {formatCurrency(customerOffer)}
+                      </span>
+                    </p>
+                  ) : null}
+                </>
+              );
+            })()
+          )}
+          {isParcelOrder ? (
+            <div className="text-[12px] min-w-0 space-y-0.5">
+              {/*
+                Customer courier slab (CTC component) ≠ rider dispatch offer.
+                Rider pay uses independent rider_leg_pricing — never compare these
+                two as the same “delivery fee” field.
+              */}
+              <p className={paymentDetailRowClass}>
+                <span className="text-gati-text-secondary font-medium shrink-0">
+                  Customer courier fee:
+                </span>
+                <span className="text-gati-text-primary font-medium inline-flex shrink-0 items-center">
+                  <DeliveryFeeAmount charged={parcelDeliveryFee} quoted={null} waived={false} />
+                </span>
+              </p>
+              {(resolved.riderDispatchOffer != null &&
+                Number(resolved.riderDispatchOffer) > 0.005) ||
+              (resolved.riderPayAfterComplete != null &&
+                Number(resolved.riderPayAfterComplete) > 0.005) ? (
+                <p className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pl-0 text-[11px] text-gati-text-secondary">
+                  <span className="inline-flex items-baseline gap-1 whitespace-nowrap">
+                    <span>Rider dispatch offer</span>
+                    <span className="orders-num font-semibold text-emerald-700">
+                      {formatCurrency(
+                        Number(resolved.riderDispatchOffer) > 0.005
+                          ? Number(resolved.riderDispatchOffer)
+                          : Number(resolved.riderPayAfterComplete)
+                      )}
                     </span>
-                    <span className="text-gati-text-primary font-medium orders-num shrink-0">
-                      {formatCurrency(merchOffer)}
+                  </span>
+                  <span className="text-slate-300" aria-hidden>
+                    ·
+                  </span>
+                  <span className="inline-flex items-baseline gap-1 whitespace-nowrap">
+                    <span>Rider pay after complete</span>
+                    <span className="orders-num font-semibold text-emerald-700">
+                      {formatCurrency(
+                        Number(resolved.riderPayAfterComplete) > 0.005
+                          ? Number(resolved.riderPayAfterComplete)
+                          : Number(resolved.riderDispatchOffer)
+                      )}
                     </span>
-                    {offerPill}
-                  </p>
-                ) : (
-                  <p className={paymentDetailRowClass}>
-                    <span className="text-gati-text-secondary font-medium shrink-0">
-                      Total Discount Granted on Ord:
-                    </span>
-                    <span className="text-gati-text-primary font-medium orders-num shrink-0">
-                      {formatCurrency(customerOffer)}
-                    </span>
-                    {offerPill}
-                  </p>
-                )}
-                {showCustomerVsList ? (
-                  <p className={paymentDetailRowClass}>
-                    <span className="text-gati-text-secondary font-medium shrink-0">
-                      Customer discount vs list (CTC):
-                    </span>
-                    <span className="text-gati-text-primary font-medium orders-num shrink-0">
-                      {formatCurrency(customerOffer)}
-                    </span>
-                  </p>
-                ) : null}
-              </>
-            );
-          })()}
-          <p className={paymentDetailRowClass}>
-            <span className="text-gati-text-secondary font-medium shrink-0">Delivery Fee:</span>
-            <span className="text-gati-text-primary font-medium inline-flex shrink-0 items-center">
-              <DeliveryFeeAmount
-                charged={resolved.deliveryFeeWaived ? 0 : resolved.deliveryFee}
-                quoted={resolved.deliveryFeeQuoted}
-                waived={resolved.deliveryFeeWaived}
-              />
-            </span>
-          </p>
+                  </span>
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <p className={paymentDetailRowClass}>
+              <span className="text-gati-text-secondary font-medium shrink-0">Delivery Fee:</span>
+              <span className="text-gati-text-primary font-medium inline-flex shrink-0 items-center">
+                <DeliveryFeeAmount
+                  charged={resolved.deliveryFeeWaived ? 0 : resolved.deliveryFee}
+                  quoted={resolved.deliveryFeeQuoted}
+                  waived={resolved.deliveryFeeWaived}
+                />
+              </span>
+            </p>
+          )}
           <p className={paymentDetailRowClass}>
             <span className="text-gati-text-secondary font-medium shrink-0">Source:</span>
             <span className="text-gati-text-primary font-medium shrink-0">{resolved.source ?? '—'}</span>
@@ -1614,14 +1806,24 @@ export default function PaymentDetails({
         recoveryRecords={recoveryRecords}
         refundIntentPending={refundIntentPending}
         orderItemTotals={orderItemTotals}
+        isParcelOrder={isParcelOrder}
         summary={{
           totalAmount: resolved.totalAmount,
           totalCtm: resolved.totalCtm,
-          deliveryFee: resolved.deliveryFeeWaived ? 0 : resolved.deliveryFee,
-          deliveryFeeQuoted: resolved.deliveryFeeQuoted,
-          deliveryFeeWaived: resolved.deliveryFeeWaived,
+          platformMargin: isParcelOrder ? parcelPlatformMargin : null,
+          deliveryFee: isParcelOrder
+            ? parcelDeliveryFee
+            : resolved.deliveryFeeWaived
+              ? 0
+              : resolved.deliveryFee,
+          deliveryFeeQuoted: isParcelOrder ? null : resolved.deliveryFeeQuoted,
+          deliveryFeeWaived: isParcelOrder ? false : resolved.deliveryFeeWaived,
           taxes: resolved.taxes,
           gatiCashUsed: resolved.gatiCashUsed,
+          riderDispatchOffer: isParcelOrder ? resolved.riderDispatchOffer ?? null : null,
+          riderPayAfterComplete: isParcelOrder
+            ? resolved.riderPayAfterComplete ?? null
+            : null,
         }}
       />
     </>

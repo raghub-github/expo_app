@@ -27,6 +27,12 @@ export function installErrorSuppression() {
     "TypeError: Network request failed",
     "expo-notifications",
     "Push notifications (remote notifications) functionality provided by expo-notifications was removed from Expo Go",
+    // Metro HMR flap / LAN blip — handled by installBundleLoadDiagnostics (reload Alert).
+    "LoadBundleFromServerRequestError",
+    "LoadBundleFromServerError",
+    "Could not load bundle",
+    "NetworkTimeoutError",
+    "Request timed out after",
   ]);
 
   const rejectionHandler = (event: PromiseRejectionEvent) => {
@@ -92,6 +98,23 @@ export function installErrorSuppression() {
       message.includes("BiometricAuth is undefined") ||
       message.includes("Biometric check error") ||
       message.includes("Native module not linked properly")
+    ) {
+      return;
+    }
+
+    // Metro packager flap — diagnostics already Alert + preventDefault the rejection.
+    if (
+      message.includes("LoadBundleFromServerRequestError") ||
+      message.includes("LoadBundleFromServerError") ||
+      message.includes("Could not load bundle")
+    ) {
+      return;
+    }
+
+    // Available-orders poll timeout — dispatch already falls back to [] / pending.
+    if (
+      message.includes("NetworkTimeoutError") ||
+      message.includes("Request timed out after")
     ) {
       return;
     }

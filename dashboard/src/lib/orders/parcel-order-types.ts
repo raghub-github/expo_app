@@ -37,4 +37,10 @@ export type ParcelOrderDetail = {
   cancellationReasonCode: string | null;
   cancellationReasonText: string | null;
   instructions: string | null;
+  /** Dashboard-relative `/api/attachments/proxy?key=…` when available. */
+  pickupProofImageUrl: string | null;
+  pickupProofAt: string | null;
+  deliveryProofImageUrl: string | null;
+  deliveryProofAt: string | null;
+  cashCollectedAt: string | null;
 };

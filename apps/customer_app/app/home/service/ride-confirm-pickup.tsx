@@ -1,5 +1,7 @@
 /**
- * Confirm pickup – Rapido-style map pin + nearby snap points before booking.
+ * Confirm pickup – map center pin before booking.
+ * Green snap dots only render when buildNearbyPickupSnaps returns real backend records
+ * (currently empty — no synthetic/random markers in production).
  */
 
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
@@ -70,14 +72,6 @@ function PickupCenterPin() {
   );
 }
 
-function SnapPointMarker({ selected }: { selected: boolean }) {
-  return (
-    <View style={[styles.snapOuter, selected && styles.snapOuterSelected]}>
-      <View style={[styles.snapInner, selected && styles.snapInnerSelected]} />
-    </View>
-  );
-}
-
 export default function RideConfirmPickupScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -137,8 +131,9 @@ export default function RideConfirmPickupScreen() {
   const lastGeocodedRef = useRef({ latitude: initialLat, longitude: initialLng });
   selectedSnapIdRef.current = selectedSnapId;
 
+  // Person Ride: only service-eligible DB pickup points (none fabricated).
   const snapPoints = useMemo(
-    () => buildNearbyPickupSnaps(initialLat, initialLng),
+    () => buildNearbyPickupSnaps(initialLat, initialLng, 0, "person_ride"),
     [initialLat, initialLng]
   );
 
@@ -432,7 +427,11 @@ export default function RideConfirmPickupScreen() {
           </View>
           <View style={styles.sheetIntroText}>
             <AppText style={styles.sheetTitle}>Check your pickup point</AppText>
-            <AppText style={styles.sheetSubtitle}>Select a nearby point for easier pickup</AppText>
+            <AppText style={styles.sheetSubtitle}>
+              {snapPoints.length > 0
+                ? "Select a nearby registered pickup point"
+                : "Drag the map to fine-tune your pickup"}
+            </AppText>
           </View>
         </View>
 
@@ -517,29 +516,6 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "#FFFFFF",
     marginTop: -14,
-  },
-  snapOuter: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: "rgba(34, 197, 94, 0.35)",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#FFFFFF",
-  },
-  snapOuterSelected: {
-    backgroundColor: "rgba(34, 197, 94, 0.55)",
-    transform: [{ scale: 1.15 }],
-  },
-  snapInner: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: GatiMitraColors.primaryMint,
-  },
-  snapInnerSelected: {
-    backgroundColor: "#15803D",
   },
   fab: {
     position: "absolute",

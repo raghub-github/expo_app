@@ -22,7 +22,9 @@ function parseOrderId(param: string | undefined): number | null {
 }
 
 async function requireOrderFoodAccess(request?: Pick<NextRequest, "signal">) {
-  const auth = await requireOrderApiAuth(request, { access: ["ORDER_FOOD"] });
+  const auth = await requireOrderApiAuth(request, {
+    access: ["ORDER_FOOD", "ORDER_PARCEL"],
+  });
   if (!auth.ok) {
     return { error: orderAuthFailureResponse(auth) };
   }

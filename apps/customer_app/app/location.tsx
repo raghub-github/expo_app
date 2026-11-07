@@ -637,7 +637,10 @@ export default function SelectLocationScreen() {
       if (!hasLocationAccess) {
         void profileService.updateProfile({ location_permission: false }).catch(() => {});
       }
-      Alert.alert("Location not found", "We couldn't detect your location. Try again or search manually.");
+      Alert.alert(
+        "Location not found",
+        "We couldn't detect your location. Try again or search manually."
+      );
       return;
     }
 
@@ -829,22 +832,21 @@ export default function SelectLocationScreen() {
     setPendingNearbyPlace(place);
   };
 
-  const applySavedAddress = async (addr: Address) => {
+  const applySavedAddress = (addr: Address) => {
+    // Instant: local pin + navigate back. Backend sync is fire-and-forget inside apply.
     setSavedAddressLoading(addr.id);
-    try {
-      const { applySelectedDeliveryAddress } = await import(
-        "@/lib/applySelectedDeliveryAddress"
-      );
-      await applySelectedDeliveryAddress(addr, queryClient);
-      safeBack();
-    } catch {
-      Alert.alert(
-        "Could not select address",
-        "Please check your connection and try again."
-      );
-    } finally {
-      setSavedAddressLoading(null);
-    }
+    void import("@/lib/applySelectedDeliveryAddress")
+      .then(({ applySelectedDeliveryAddress }) =>
+        applySelectedDeliveryAddress(addr, queryClient)
+      )
+      .catch(() => {
+        Alert.alert(
+          "Could not select address",
+          "Please check your connection and try again."
+        );
+      })
+      .finally(() => setSavedAddressLoading(null));
+    safeBack();
   };
 
   const handleSelectSaved = (addr: Address) => {
@@ -853,7 +855,7 @@ export default function SelectLocationScreen() {
       setConfirmAddress(addr);
       return;
     }
-    void applySavedAddress(addr);
+    applySavedAddress(addr);
   };
 
   const showSearchSection = searchQuery.trim().length >= 2;

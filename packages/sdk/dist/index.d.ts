@@ -4,6 +4,11 @@ export declare class ApiError extends Error {
     readonly payload: unknown;
     constructor(message: string, status: number, payload: unknown);
 }
+/** Fetch aborted by a bounded client timeout — not a business failure. */
+export declare class NetworkTimeoutError extends Error {
+    readonly timeoutMs: number;
+    constructor(timeoutMs: number);
+}
 export type ApiClientOptions = {
     baseUrl: string;
     getAccessToken?: () => Promise<string | null> | string | null;
@@ -17,6 +22,9 @@ export declare class ApiClient {
     request<T>(path: string, init?: RequestInit & {
         responseSchema?: z.ZodSchema<T>;
         idempotencyKey?: string;
+        onBeforeFetch?: () => void;
+        /** Abort the request after this many ms. Unset = no client timeout. */
+        timeoutMs?: number;
     }): Promise<T>;
 }
 //# sourceMappingURL=index.d.ts.map

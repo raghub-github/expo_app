@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { AppState, Platform } from "react-native";
+import { usePathname } from "expo-router";
 import { useDutyStore } from "@/src/stores/dutyStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useActiveOrders } from "@/src/hooks/useOrders";
@@ -10,6 +11,16 @@ import {
   showRiderSearchingNotification,
 } from "@/src/lib/riderSearchingNotification";
 
+function isOnActiveOrderRoute(pathname: string | null | undefined): boolean {
+  const path = String(pathname ?? "");
+  return (
+    path.includes("/active-food/") ||
+    path.includes("/active-ride/") ||
+    path.includes("/ride-payment-wait") ||
+    path.includes("/food-pick-order")
+  );
+}
+
 /**
  * Posts the idle "Searching for orders" tray notification while the rider is
  * on duty and has no active order. Clears it when duty ends or a trip starts.
@@ -19,11 +30,19 @@ export function RiderSearchingNotification() {
   const isOnDuty = useDutyStore((s) => s.isOnDuty);
   const { data: activeOrders = [] } = useActiveOrders();
   const incomingOfferId = useIncomingDispatchOfferStore((s) => s.lastOfferId);
+  const pathname = usePathname();
+  const onActiveRoute = isOnActiveOrderRoute(pathname);
+  const hasActiveOrder = useMemo(
+    () => activeOrders.some(isActiveRiderOrder),
+    [activeOrders]
+  );
+
   const idle =
     signedIn &&
     isOnDuty &&
-    !activeOrders.some(isActiveRiderOrder) &&
-    !incomingOfferId;
+    !hasActiveOrder &&
+    !incomingOfferId &&
+    !onActiveRoute;
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
@@ -42,8 +61,10 @@ export function RiderSearchingNotification() {
   }, [idle]);
 
   useEffect(() => {
-    if (!signedIn) void dismissRiderSearchingNotification();
-  }, [signedIn]);
+    if (!signedIn || hasActiveOrder || onActiveRoute) {
+      void dismissRiderSearchingNotification();
+    }
+  }, [signedIn, hasActiveOrder, onActiveRoute]);
 
   return null;
 }

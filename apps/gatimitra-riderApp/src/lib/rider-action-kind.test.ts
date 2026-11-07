@@ -51,9 +51,10 @@ describe("isRetryableRiderActionFailure", () => {
 });
 
 describe("riderActionRetryDelayMs", () => {
-  it("caps at 15s", () => {
-    assert.ok(riderActionRetryDelayMs(8) <= 15_400);
-    assert.ok(riderActionRetryDelayMs(0) >= 1_000);
+  it("caps at 8s with snappy first retry", () => {
+    assert.ok(riderActionRetryDelayMs(8) <= 8_400);
+    assert.ok(riderActionRetryDelayMs(0) >= 400);
+    assert.ok(riderActionRetryDelayMs(0) < 1_000);
   });
 });
 

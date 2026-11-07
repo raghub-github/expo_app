@@ -35,10 +35,7 @@ import {
   RIDER_DISPATCH_RIDE_SOUND,
   isRiderDispatchOfferPushData,
 } from "@/src/lib/riderDispatchOfferChannel";
-import {
-  installRiderForegroundNotificationHandler,
-  startDispatchBuzzerFromPush,
-} from "@/src/lib/riderNotificationHandler";
+import { installRiderForegroundNotificationHandler } from "@/src/lib/riderNotificationHandler";
 import {
   parseRiderNumericId,
   useRiderWalletFreezeLive,
@@ -129,7 +126,8 @@ export function RiderPushSetup() {
 
       if (isRiderDispatchOfferPushData(payload.data ?? {})) {
         // New-order offers: OS shade + accept modal only — never local inbox / bell badge.
-        void startDispatchBuzzerFromPush(payload.data ?? {});
+        // Buzzer starts in installRiderForegroundNotificationHandler (setNotificationHandler)
+        // — do not start again here or FCM + Host will fight for audio sessions.
         ingestIncomingDispatchOffer(
           queryClient,
           typeof payload.data?.orderId === "string" ? payload.data.orderId : undefined,

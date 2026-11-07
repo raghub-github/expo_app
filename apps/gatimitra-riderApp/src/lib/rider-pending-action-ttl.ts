@@ -18,7 +18,9 @@ export const ACCEPT_ACTION_TTL_MS = 2 * 60 * 1000;
 export const DEFAULT_ACTION_TTL_MS = 24 * 60 * 60 * 1000;
 
 export function riderActionTtlMs(actionType: RiderActionType): number {
-  return actionType === "accept" ? ACCEPT_ACTION_TTL_MS : DEFAULT_ACTION_TTL_MS;
+  // Accept/reject only make sense while the offer window is open.
+  if (actionType === "accept" || actionType === "reject") return ACCEPT_ACTION_TTL_MS;
+  return DEFAULT_ACTION_TTL_MS;
 }
 
 export type ExpirableRiderAction = {

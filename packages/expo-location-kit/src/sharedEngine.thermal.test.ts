@@ -13,8 +13,10 @@ describe("location engine thermal profiles (source contract)", () => {
     "utf8"
   );
 
-  it("defines a cool homeMapIdle profile (≥45s)", () => {
-    assert.match(src, /HOME_MAP_IDLE_PROFILE[\s\S]*timeIntervalMs:\s*45_000/);
+  it("defines a cool homeMapIdle profile (Balanced, not High/5s)", () => {
+    assert.match(src, /HOME_MAP_IDLE_PROFILE[\s\S]*timeIntervalMs:\s*8_000/);
+    assert.match(src, /HOME_MAP_IDLE_PROFILE[\s\S]*distanceIntervalM:\s*15/);
+    assert.match(src, /HOME_MAP_IDLE_PROFILE[\s\S]*Accuracy\.Balanced/);
     assert.match(src, /homeMapIdle:\s*HOME_MAP_IDLE_PROFILE/);
   });
 

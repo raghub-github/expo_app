@@ -333,31 +333,37 @@ export function FloatingOrderTrackingPill({
           onOpenDirections={openPickupDirections}
         />
       ) : (
-        <TouchableOpacity
-          activeOpacity={0.92}
+        <Pressable
           onPress={onPress}
-          style={styles.cta}
+          style={({ pressed }) => [styles.cta, pressed && styles.ctaPressed]}
+          android_ripple={{ color: "rgba(255,255,255,0.22)", foreground: true }}
+          accessibilityRole="button"
           accessibilityLabel={a11yLabel}
         >
-          <View style={styles.ctaFill} pointerEvents="none">
-            <Animated.View
-              style={[
-                styles.ctaSlide,
-                {
-                  opacity: wipeOpacity,
-                  transform: [{ translateY: wipeY }],
-                },
-              ]}
+          {({ pressed }) => (
+            <View
+              style={[styles.ctaFill, pressed && styles.ctaFillPressed]}
+              pointerEvents="none"
             >
-              <StoreText style={styles.ctaTitle} bold numberOfLines={1}>
-                {ctaTitle}
-              </StoreText>
-              <StoreText style={styles.ctaSub} bold numberOfLines={1}>
-                {ctaSub}
-              </StoreText>
-            </Animated.View>
-          </View>
-        </TouchableOpacity>
+              <Animated.View
+                style={[
+                  styles.ctaSlide,
+                  {
+                    opacity: wipeOpacity,
+                    transform: [{ translateY: wipeY }],
+                  },
+                ]}
+              >
+                <StoreText style={styles.ctaTitle} bold numberOfLines={1}>
+                  {ctaTitle}
+                </StoreText>
+                <StoreText style={styles.ctaSub} bold numberOfLines={1}>
+                  {ctaSub}
+                </StoreText>
+              </Animated.View>
+            </View>
+          )}
+        </Pressable>
       )}
     </View>
   );
@@ -454,6 +460,9 @@ const styles = StyleSheet.create({
     maxWidth: 118,
     flexShrink: 0,
   },
+  ctaPressed: {
+    transform: [{ scale: 0.96 }],
+  },
   ctaFill: {
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -463,6 +472,10 @@ const styles = StyleSheet.create({
     backgroundColor: FLOAT_CART_GREEN,
     borderRadius: FLOAT_CART_RADIUS,
     overflow: "hidden",
+  },
+  ctaFillPressed: {
+    backgroundColor: "#0F5F38",
+    opacity: 0.92,
   },
   ctaSlide: {
     alignItems: "center",

@@ -705,6 +705,60 @@ export async function postOnlineRideSettlement(
     payload: { settlementId, paymentMode },
   });
 
+  // Transparent offer-vs-settlement breakdown for Rider App (paid ride SSOT).
+  try {
+    const {
+      buildRiderSettlementBreakdown,
+      persistRiderSettlementBreakdown,
+      resolveAcceptedPayoutSnapshot,
+    } = await import("../../../lib/rider-settlement-breakdown.js");
+    const { getDb } = await import("../../../db/client.js");
+    const { ordersCore, ordersRide } = await import("../../../db/schema.js");
+    const { eq } = await import("drizzle-orm");
+    const db = getDb();
+    const [row] = await db
+      .select({
+        billingSnapshot: ordersCore.billingSnapshot,
+        acceptPayoutSnapshot: ordersRide.acceptPayoutSnapshot,
+      })
+      .from(ordersCore)
+      .leftJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
+      .where(eq(ordersCore.id, input.orderCoreId))
+      .limit(1);
+    const acceptSnap = resolveAcceptedPayoutSnapshot({
+      billingSnapshot: row?.billingSnapshot,
+      acceptPayoutSnapshot: row?.acceptPayoutSnapshot,
+    });
+    const breakdown = buildRiderSettlementBreakdown({
+      acceptedSnapshot: acceptSnap,
+      finalSnapshot: acceptSnap
+        ? {
+            ...acceptSnap,
+            totalEarning: Math.round(result.riderEarnings),
+            baseEarning: Math.round(result.riderEarnings - (acceptSnap.waitingEarning || 0)),
+          }
+        : {
+            baseEarning: Math.round(result.riderEarnings),
+            waitingEarning: 0,
+            surgeEarning: 0,
+            appliedSurges: [],
+            totalEarning: Math.round(result.riderEarnings),
+            snapshottedAt: new Date().toISOString(),
+          },
+      walletCreditedAmount: result.walletCredit,
+      paidRideSettlementEngine: true,
+      settlementId,
+      quoteId: `ride:${input.orderCoreId}`,
+    });
+    await persistRiderSettlementBreakdown(input.orderCoreId, breakdown);
+  } catch (err) {
+    console.warn(
+      "[postOnlineRideSettlement] settlement breakdown failed:",
+      input.orderCoreId,
+      (err as Error)?.message ?? err
+    );
+  }
+
   return {
     settlementId,
     paymentMode,

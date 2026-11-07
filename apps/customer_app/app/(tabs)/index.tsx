@@ -50,6 +50,8 @@ import { prioritizeVisibleMerchantBanners } from "@/lib/prefetchMerchantBanners"
 import { resetFoodHomeListScrollGuard } from "@/lib/foodHomeScrollGuard";
 import { warmFoodHomeEntry } from "@/lib/navigateToFoodHome";
 import { useTabScreenDebug } from "@/lib/tabNavDebug";
+import { markInitialShellReady } from "@/lib/startupShellReady";
+import { startupLaunchLog, startupProcessAgeMs } from "@/lib/startupPerf";
 
 const PAGE_BG = GatiMitraColors.softBackground;
 const STATUS_CHROME = GatiMitraColors.softBackground;
@@ -58,6 +60,13 @@ export default function HomeScreen() {
   const insets = useAppSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const shellMarkedRef = useRef(false);
+
+  const onHomeShellLayout = useCallback(() => {
+    if (shellMarkedRef.current) return;
+    shellMarkedRef.current = true;
+    markInitialShellReady("home");
+  }, []);
   const [refreshing, setRefreshing] = useState(false);
   const [weatherSheetVisible, setWeatherSheetVisible] = useState(false);
   /** Remount service grid after idle/resume — Android ScrollView+RefreshControl can eat taps. */
@@ -70,8 +79,29 @@ export default function HomeScreen() {
   const locationSource = useLocationStore((s) => s.locationSource);
   const coords = useLocationStore((s) => s.coords);
   const address = useLocationStore((s) => s.address);
+  const permissionStatus = useLocationStore((s) => s.permissionStatus);
+  const locationLoading = useLocationStore((s) => s.loading);
+  const locationError = useLocationStore((s) => s.error);
+  const detectingTimedOut = useLocationStore((s) => s.detectingTimedOut);
   const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
   const refetchLocation = useLocationStore((s) => s.refetchLocation);
+
+  useEffect(() => {
+    startupLaunchLog("HOME_MOUNT");
+    startupLaunchLog("HOME_FIRST_RENDER");
+    const raf = requestAnimationFrame(() => {
+      startupLaunchLog("HOME_FIRST_USABLE_FRAME");
+      const ageMs = startupProcessAgeMs();
+      if (ageMs > 8000) {
+        startupLaunchLog("STARTUP_BLOCKER", {
+          stage: "home_first_usable_late",
+          durationMs: ageMs,
+          budgetMs: 8000,
+        });
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -134,6 +164,10 @@ export default function HomeScreen() {
       address,
       addresses,
       coords,
+      permissionStatus,
+      locationLoading,
+      locationError,
+      detectingTimedOut,
     });
     if (
       resolved &&
@@ -142,8 +176,33 @@ export default function HomeScreen() {
     ) {
       return resolved.length > 42 ? `${resolved.slice(0, 41)}…` : resolved;
     }
+    if (
+      resolved.toLowerCase().startsWith("detecting") ||
+      resolved.startsWith("Enable") ||
+      resolved.startsWith("Turn") ||
+      resolved.startsWith("Location") ||
+      resolved.startsWith("Tap to set")
+    ) {
+      return resolved;
+    }
     return resolveHomeLocationPrimary(address);
-  }, [locationSource, address, addresses, coords]);
+  }, [
+    locationSource,
+    address,
+    addresses,
+    coords,
+    permissionStatus,
+    locationLoading,
+    locationError,
+    detectingTimedOut,
+  ]);
+
+  useEffect(() => {
+    if (!locationPrimary) return;
+    if (locationPrimary.toLowerCase().startsWith("detecting")) return;
+    startupLaunchLog("HOME_LOCATION_UPDATED", { label: locationPrimary.slice(0, 48) });
+  }, [locationPrimary]);
+
   const locationSecondary = resolveHomeLocationSecondary(
     address,
     locationPrimary,
@@ -223,13 +282,25 @@ export default function HomeScreen() {
   }, []);
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} onLayout={onHomeShellLayout}>
       {/* Location header only — plain sticky, no shadow. Weather scrolls with body. */}
       <View style={styles.stickyHeader} pointerEvents="box-none">
         <HomeLocationHeader
           locationPrimary={locationPrimary}
           locationSecondary={locationSecondary}
-          onLocationPress={() => router.push("/location")}
+          onLocationPress={() => {
+            const loc = useLocationStore.getState();
+            // Permission / GPS off → show enable popup; otherwise open location picker.
+            if (
+              loc.permissionStatus !== "granted" ||
+              loc.showPermissionModal ||
+              (!loc.coords && loc.detectingTimedOut)
+            ) {
+              loc.setShowPermissionModal(true);
+              return;
+            }
+            router.push("/location");
+          }}
           onNotificationPress={() => router.push("/notifications")}
         />
       </View>

@@ -312,6 +312,24 @@ try {
       writeFileSync(join(pkgPath, file), text, "utf8");
     }
 
+    // Appear-on-Top pill fill must stay app-specific after {{ROLE}} substitution.
+    {
+      const pill = rendered.get("OrderAlertPill.java") ?? "";
+      const roleOk = pill.includes(`APP_ROLE = "${target.role}"`);
+      const fillOk = /"rider"\.equals\(APP_ROLE\)\s*\?\s*"#0F766E"\s*:\s*"#111111"/.test(
+        pill,
+      );
+      const strokeOk = /"rider"\.equals\(APP_ROLE\)\s*\?\s*"#22C55E"\s*:\s*"#FFFFFF"/.test(
+        pill,
+      );
+      if (!roleOk || !fillOk || !strokeOk) {
+        failures += 1;
+        console.log(
+          `  ${target.role}: OrderAlertPill ROLE/fill/stroke template mismatch`,
+        );
+      }
+    }
+
     // 0. The seam javac cannot check once the Android SDK is missing.
     const apiProblems = checkPureApiUsage(rendered);
     if (apiProblems.length > 0) {

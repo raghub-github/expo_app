@@ -126,6 +126,37 @@
   letter-spacing: 0.01em;
 }
 
+/* Parcel order detail — Lora Bold copy, Poppins for digits / IDs / money */
+.parcel-order-typo {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: 0.005em;
+  color: #121212;
+}
+
+.parcel-order-typo .orders-num,
+.parcel-order-typo .pr-num,
+.parcel-order-typo .tabular-nums,
+.parcel-order-typo .font-mono,
+.parcel-order-typo input,
+.parcel-order-typo textarea,
+.parcel-order-typo select {
+  font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  font-optical-sizing: auto;
+  font-weight: 600;
+}
+
+.parcel-order-typo .pr-body,
+.parcel-order-typo .pr-heading {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-weight: 700;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     /* Dashboard UI is light-only; avoid black overscroll gaps on Windows dark mode. */

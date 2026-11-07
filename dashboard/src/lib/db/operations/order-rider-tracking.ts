@@ -1,4 +1,4 @@
-import { getSql } from "../client";
+import { getSql, withPgRetry } from "../client";
 import {
   getRiderSelfieViewUrl,
   resolveRiderSelfieFromStored,
@@ -55,6 +55,17 @@ export async function getOrderRiderTracking(
 
   if (!Number.isFinite(orderCoreId)) return empty;
 
+  return withPgRetry(
+    () => loadOrderRiderTracking(orderCoreId, empty),
+    "getOrderRiderTracking",
+    3
+  );
+}
+
+async function loadOrderRiderTracking(
+  orderCoreId: number,
+  empty: OrderRiderTrackingPayload
+): Promise<OrderRiderTrackingPayload> {
   const sql = getSql();
 
   const [orderRow] = await sql`

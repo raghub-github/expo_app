@@ -35,6 +35,7 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { PROFILE_QUERY_KEY, writeCachedProfile } from "@/lib/profileCache";
+import { markInitialShellReady } from "@/lib/startupShellReady";
 
 const PROFILE_GENDERS = GENDERS.filter((g) => g.value !== "others");
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -91,6 +92,10 @@ export default function OnboardingProfileScreen() {
   const router = useRouter();
   const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
   const resetStatusBarBackground = useScreenChromeStore((s) => s.resetStatusBarBackground);
+
+  useEffect(() => {
+    markInitialShellReady("onboarding");
+  }, []);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [ageGroup, setAgeGroup] = useState("");

@@ -33,7 +33,11 @@ export function AuthPrimaryButton({ label, onPress, disabled, loading }: Props) 
       }}
       accessibilityRole="button"
       accessibilityState={{ disabled: isInactive }}
-      style={[styles.btn, Boolean(disabled) && !isLoading && styles.btnDisabled]}
+      style={[
+        styles.btn,
+        Boolean(disabled) && !isLoading && styles.btnDisabled,
+        isLoading && styles.btnLoading,
+      ]}
     >
       {isLoading ? (
         <View style={styles.loadingRow}>
@@ -77,6 +81,10 @@ const styles = StyleSheet.create({
   btnDisabled: {
     backgroundColor: RIDER_AUTH_DISABLED,
     borderColor: "#94A3B8",
+  },
+  /** Keep brand green while submitting, but fade so the disabled state is obvious. */
+  btnLoading: {
+    opacity: 0.72,
   },
   label: {
     fontFamily: RiderFonts.loraBold,

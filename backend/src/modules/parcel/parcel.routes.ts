@@ -113,10 +113,13 @@ export const parcelRoutes: FastifyPluginAsync = async (app) => {
                 Math.round(Number(b.final_amount) * 100) / 100
               );
               if (!(payable > 0)) return;
+              // finalFare = full billing payable (booking fee + taxes + active charges).
+              // platform_fee aggregate is the PARCEL "Booking fee" rule — never rename for UI here.
               quotes[code] = {
                 ...q,
                 finalFare: payable,
                 slabFare,
+                bookingFee: Math.max(0, Number(b.platform_fee) || 0),
                 platformFee: Math.max(0, Number(b.platform_fee) || 0),
                 convenienceFee: Math.max(0, Number(b.convenience_fee) || 0),
                 surgeFee: Math.max(0, Number(b.surge_fee) || 0),
@@ -130,6 +133,18 @@ export const parcelRoutes: FastifyPluginAsync = async (app) => {
         } catch (billErr) {
           req.log.warn({ err: billErr }, "parcel quote-batch billing enrich skipped");
         }
+        const summary = Object.fromEntries(
+          Object.entries(quotes).map(([code, q]) => [
+            code,
+            q && q.ok === true
+              ? { eligible: q.eligible, finalFare: q.finalFare, geo: q.pricingGeoLevel }
+              : { ok: false, code: q && "code" in q ? q.code : "unknown" },
+          ])
+        );
+        req.log.info(
+          { tripKm: parsed.data.tripKm, paymentMode: parsed.data.paymentMode ?? null, summary },
+          "parcel quote-batch ok"
+        );
         return reply.send({ ok: true, quotes });
       } catch (e) {
         req.log.error({ err: e }, "parcel quote-batch failed");

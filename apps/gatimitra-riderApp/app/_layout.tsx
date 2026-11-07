@@ -52,7 +52,7 @@ import { bootstrapRiderAppAssets } from "@/src/lib/riderAppAssetsDisk";
 import { hydrateRiderSubscriptionCache } from "@/src/lib/rider-subscription-cache";
 
 /** Local icon glyphs — short wait so lang/bell/tabs never paint as empty squares. */
-const ICON_FONT_TIMEOUT_MS = 1_200;
+const ICON_FONT_TIMEOUT_MS = 400;
 
 if (Platform.OS !== "web") {
   try {

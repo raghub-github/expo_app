@@ -49,7 +49,8 @@ export async function POST(
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD")) ||
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PARCEL"));
 
     if (!allowed) {
       return NextResponse.json(
@@ -124,14 +125,21 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Order not found" }, { status: 404 });
     }
 
-    if (orderRow.orderType !== "food") {
+    const orderType = String(orderRow.orderType ?? "")
+      .trim()
+      .toLowerCase();
+    if (orderType !== "food" && orderType !== "parcel") {
       return NextResponse.json(
-        { success: false, error: "Rider management is only supported for food orders" },
+        {
+          success: false,
+          error: "Rider management is only supported for food and parcel orders",
+        },
         { status: 400 }
       );
     }
 
     const takeawayNoRider =
+      orderType === "food" &&
       isSelfPickupFulfillmentOrder(
         orderRow.deliveryType,
         orderRow.billingSnapshot,

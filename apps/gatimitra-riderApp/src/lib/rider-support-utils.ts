@@ -55,8 +55,27 @@ export function isNonOrderHelpGroup(group: {
   );
 }
 
+/**
+ * Internal CX queue for onboarding document verification — never offered as a
+ * rider self-serve Raise a Ticket category.
+ */
+export function isRiderOnboardingPendingHelpGroup(group: {
+  group_code?: string | null;
+  group_name?: string | null;
+}): boolean {
+  const code = (group.group_code ?? "").toUpperCase().replace(/-/g, "_");
+  if (code === "RIDER_ONBOARDING_PENDING") return true;
+  if (code.includes("ONBOARDING_PENDING")) return true;
+  const name = (group.group_name ?? "").toLowerCase().replace(/\s+/g, "-");
+  return (
+    name.includes("rider-onboarding-pending") ||
+    name.includes("onboarding-pending")
+  );
+}
+
 /** Order / earnings groups hidden on pre-login raise-ticket hub. */
 export function isPreLoginExcludedHelpGroup(group: RiderHelpGroup): boolean {
+  if (isRiderOnboardingPendingHelpGroup(group)) return true;
   if (isOrderHelpGroup(group.group_code, group.ticket_category)) return true;
   const code = group.group_code.toUpperCase();
   const cat = (group.ticket_category ?? "").toUpperCase();

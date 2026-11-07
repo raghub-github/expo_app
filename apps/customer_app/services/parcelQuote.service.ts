@@ -56,7 +56,7 @@ export async function getParcelFareQuoteBatch(params: {
           }
         | { ok: false; code: string; message: string }
       >;
-    }>(`${PARCEL_PREFIX}/quote-batch`, body, { signal: params.signal, timeout: 8_000 });
+    }>(`${PARCEL_PREFIX}/quote-batch`, body, { signal: params.signal, timeout: 20_000 });
 
     if (!data?.ok || !data.quotes) return { ok: false, error: "Quote batch unavailable" };
 
@@ -86,9 +86,21 @@ export async function getParcelFareQuoteBatch(params: {
     return { ok: true, quotes };
   } catch (err: unknown) {
     if (isAbortError(err)) return { ok: false, error: "aborted", code: "ABORTED" };
-    const axiosErr = err as { response?: { data?: { error?: string; code?: string } } };
-    const message = axiosErr.response?.data?.error ?? "Could not fetch parcel fare";
-    const code = axiosErr.response?.data?.code;
+    const axiosErr = err as {
+      code?: string;
+      message?: string;
+      response?: { data?: { error?: string; code?: string }; status?: number };
+    };
+    const message =
+      axiosErr.response?.data?.error ??
+      (axiosErr.code === "ECONNABORTED" || /timeout/i.test(String(axiosErr.message ?? ""))
+        ? "Quote timed out"
+        : /network/i.test(String(axiosErr.message ?? ""))
+          ? "Network Error"
+          : "Could not fetch parcel fare");
+    const code =
+      axiosErr.response?.data?.code ??
+      (axiosErr.code === "ECONNABORTED" ? "ECONNABORTED" : undefined);
     return { ok: false, error: message, code };
   }
 }

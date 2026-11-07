@@ -130,6 +130,8 @@ export type OnboardingData = {
   cachedOnboardingStatus?: string;
   cachedAccountStatus?: string;
   cachedApprovalStatus?: string;
+  /** Paid pending-approval riders need this to unlock Home tabs before status refetch. */
+  cachedPaymentCompleted?: boolean;
 };
 
 type OnboardingState = {
@@ -215,7 +217,9 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
 
   bindOwner: async (ownerId) => {
     const normalized = ownerId?.trim() || null;
-    if (normalized === get().boundOwnerId && get().hydrated) {
+    // Same owner already attached — never wipe in-memory cache (login seeds status
+    // fields that AppProviders would otherwise clear mid-flight via a re-bind).
+    if (normalized === get().boundOwnerId) {
       return;
     }
 
@@ -229,7 +233,9 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     }
 
     // Clear previous rider from memory immediately so UI cannot flash foreign drafts.
-    set({ data: { riderId: normalized }, boundOwnerId: normalized, hydrated: false });
+    // Keep hydrated=true — flipping it false blocked the splash gate forever when
+    // AsyncStorage/migration was slow or a stale bind aborted mid-load.
+    set({ data: { riderId: normalized }, boundOwnerId: normalized, hydrated: true });
 
     const { data: blob, migration } = await resolveOnboardingBlobForOwner(normalized, {
       generation: () => (bindGeneration === gen ? expectedOwnerForGeneration : null),
@@ -243,12 +249,19 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
           migration,
         });
       }
+      // Never leave the store unhydrated if we are still the active bind target.
+      if (get().boundOwnerId === normalized && !get().hydrated) {
+        set({ hydrated: true });
+      }
       return;
     }
 
+    // Keep any fields seeded while disk load was in flight (e.g. login status cache).
+    const live = get().data;
+
     if (!blob) {
       set({
-        data: { riderId: normalized },
+        data: { ...live, riderId: normalized },
         boundOwnerId: normalized,
         hydrated: true,
       });
@@ -259,7 +272,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     if (stamped && stamped !== normalized) {
       // Defense in depth — never hydrate foreign stamp.
       set({
-        data: { riderId: normalized },
+        data: { ...live, riderId: normalized },
         boundOwnerId: normalized,
         hydrated: true,
       });
@@ -267,7 +280,7 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     }
 
     set({
-      data: { ...(blob as OnboardingData), riderId: normalized },
+      data: { ...(blob as OnboardingData), ...live, riderId: normalized },
       boundOwnerId: normalized,
       hydrated: true,
     });

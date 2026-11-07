@@ -77,6 +77,8 @@ const BORDER = GatiMitraColors.border;
 const TEXT = GatiMitraColors.textPrimaryNew;
 const MUTED = GatiMitraColors.textSecondary;
 const MINT = GatiMitraColors.primaryMint;
+/** Matches rider ParcelFareCollectBanner — light purple + white copy. */
+const PAY_BANNER_BG = "#8B5CF6";
 
 const { height: SCREEN_H } = Dimensions.get("window");
 const MAP_HEIGHT = Math.min(220, Math.round(SCREEN_H * 0.28));
@@ -184,8 +186,21 @@ export function ParcelLiveTrackingScreen({
       rideStarted: liveDetail.rideStarted ?? false,
       riderReachedPickupAt: liveDetail.riderReachedPickupAt ?? null,
       rider: liveDetail.rider ?? order.rider,
+      payAt: liveDetail.payAt ?? null,
+      cashCollected: liveDetail.cashCollected === true,
+      paymentStatus: liveDetail.paymentStatus ?? order.paymentStatus ?? null,
+      paymentMethod: liveDetail.paymentMethod ?? order.paymentMethod ?? null,
+      totalAmount: liveDetail.totalAmount ?? order.totalAmount,
     });
-  }, [liveDetail, order.orderId, order.rider, queryClient]);
+  }, [
+    liveDetail,
+    order.orderId,
+    order.rider,
+    order.paymentMethod,
+    order.paymentStatus,
+    order.totalAmount,
+    queryClient,
+  ]);
 
   const merged: OrderDetail = {
     ...order,
@@ -218,15 +233,84 @@ export function ParcelLiveTrackingScreen({
   });
   const showDeliveryOtp = shouldShowCustomerDeliveryOtp(orderStatus, merged.deliveryOtp);
 
+  const metaEarly = merged.checkoutMetadata ?? {};
+  const paymentMethodRaw = String(
+    merged.paymentMethod ??
+      (typeof metaEarly.paymentMethod === "string" ? metaEarly.paymentMethod : "") ??
+      ""
+  )
+    .trim()
+    .toLowerCase();
+  const isCashParcel =
+    paymentMethodRaw === "cash" ||
+    paymentMethodRaw === "cod" ||
+    paymentMethodRaw.includes("cash") ||
+    paymentMethodRaw.includes("cod");
+  const metaPayAt = String(metaEarly.payAt ?? "").trim().toLowerCase();
+  const apiPayAt = String(merged.payAt ?? "").trim().toLowerCase();
+  const parcelPayAt: "pickup" | "drop" | null =
+    apiPayAt === "drop" || apiPayAt === "pickup"
+      ? apiPayAt
+      : metaPayAt === "drop" || metaPayAt === "pickup"
+        ? metaPayAt
+        : isCashParcel
+          ? "pickup"
+          : null;
+  const paymentCompleted = [
+    "paid",
+    "completed",
+    "complete",
+    "captured",
+    "capture",
+    "success",
+  ].includes(
+    String(merged.paymentStatus ?? "")
+      .trim()
+      .toLowerCase()
+  );
+  const cashCollected = merged.cashCollected === true || paymentCompleted;
+  const showPayAtPickupUi =
+    parcelPayAt === "pickup" &&
+    !cashCollected &&
+    !rideStarted &&
+    !isTerminalOrderStatus(orderStatus);
+  const showPayAtDropUi =
+    parcelPayAt === "drop" &&
+    !cashCollected &&
+    rideStarted &&
+    !isTerminalOrderStatus(orderStatus);
+  const showParcelPayUi = showPayAtPickupUi || showPayAtDropUi;
+  const showPaymentPaidBanner = cashCollected && !showParcelPayUi;
+  // Keep paisa — GST lines are rarely whole rupees (e.g. ₹48.38). Do not Math.round.
+  const payableAmount =
+    merged.totalAmount != null && Number.isFinite(Number(merged.totalAmount))
+      ? Math.max(0, Math.round(Number(merged.totalAmount) * 100) / 100)
+      : null;
+  const payableLabel =
+    payableAmount != null
+      ? `₹${payableAmount.toLocaleString("en-IN", {
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 2,
+        })}`
+      : "the fare";
+
   const headline = parcelHeadline(orderStatus, rideStarted, hasRider);
   const reassurance = showPickupOtp
-    ? "Share this pickup OTP with the captain only at handover"
+    ? showPayAtPickupUi
+      ? "Pay cash to the captain, then share this pickup OTP only at handover"
+      : "Share this pickup OTP with the captain only at handover"
     : showDeliveryOtp
-      ? "Share delivery OTP only after receiving the parcel"
+      ? showPayAtDropUi
+        ? "Pay cash to the captain, then share delivery OTP after receiving the parcel"
+        : "Share delivery OTP only after receiving the parcel"
       : rideStarted
-        ? "Captain is heading to your drop location"
+        ? showPayAtDropUi
+          ? "Pay cash to the captain at drop before handover"
+          : "Captain is heading to your drop location"
         : hasRider
-          ? "Captain is on the way to pickup"
+          ? showPayAtPickupUi
+            ? "Keep cash ready — pay the captain at pickup"
+            : "Captain is on the way to pickup"
           : "We're matching a captain near your pickup";
 
   const { pickupLat, pickupLng, deliveryLat, deliveryLng } = resolveOrderTrackingMapSnapshots({
@@ -376,7 +460,7 @@ export function ParcelLiveTrackingScreen({
   ]);
 
   const displayOrderId = merged.formattedOrderId ?? merged.orderId;
-  const meta = merged.checkoutMetadata ?? {};
+  const meta = metaEarly;
   const senderName =
     (typeof meta.senderName === "string" && meta.senderName.trim()) || "Sender";
   const senderPhone =
@@ -538,6 +622,49 @@ export function ParcelLiveTrackingScreen({
         ) : null}
       </LinearGradient>
 
+      {showParcelPayUi ? (
+        <View
+          style={styles.payBanner}
+          accessibilityRole="text"
+          accessibilityLabel={
+            showPayAtPickupUi
+              ? `Pay at Pickup. Hand ${payableLabel} cash to the captain before handover.`
+              : `Pay at Drop. Hand ${payableLabel} cash to the captain before delivery.`
+          }
+        >
+          <CheckoutText style={styles.payBannerTitle} numberOfLines={1}>
+            {showPayAtPickupUi ? "Pay at Pickup" : "Pay at Drop"}
+          </CheckoutText>
+          <CheckoutText style={styles.payBannerBody} numberOfLines={2}>
+            {showPayAtPickupUi
+              ? `Hand ${payableLabel} cash to the captain before pickup handover.`
+              : `Hand ${payableLabel} cash to the captain before delivery.`}
+          </CheckoutText>
+        </View>
+      ) : showPaymentPaidBanner ? (
+        <View
+          style={styles.paidBanner}
+          accessibilityRole="text"
+          accessibilityLabel={
+            payableAmount != null
+              ? `Payment Paid. ${payableLabel}`
+              : "Payment Paid"
+          }
+        >
+          <View style={styles.paidBannerRow}>
+            <Ionicons name="checkmark-circle" size={18} color="#1D4ED8" />
+            <CheckoutText style={styles.paidBannerTitle} numberOfLines={1}>
+              Payment Paid
+            </CheckoutText>
+            {payableAmount != null ? (
+              <CheckoutText style={styles.paidBannerAmount} numberOfLines={1}>
+                {payableLabel}
+              </CheckoutText>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 24 }}
@@ -595,6 +722,48 @@ export function ParcelLiveTrackingScreen({
         ) : null}
 
         <View style={styles.cardsSection}>
+          {showParcelPayUi ? (
+            <View style={styles.payCard}>
+              <View style={styles.payCardTop}>
+                <View style={styles.payIconWrap}>
+                  <Ionicons name="cash-outline" size={22} color="#5B21B6" />
+                </View>
+                <View style={styles.payCardCopy}>
+                  <CheckoutText style={styles.payCardEyebrow}>
+                    {showPayAtPickupUi ? "PAYMENT AT PICKUP" : "PAYMENT AT DROP"}
+                  </CheckoutText>
+                  <CheckoutText style={styles.payCardTitle}>
+                    Pay {payableLabel}
+                  </CheckoutText>
+                  <CheckoutText style={styles.payCardBody}>
+                    {showPayAtPickupUi
+                      ? "Pay online now, or hand cash to the captain only at pickup handover."
+                      : "Pay online now, or hand cash to the captain only at drop handover."}
+                  </CheckoutText>
+                </View>
+              </View>
+              <View style={styles.payAmountRow}>
+                <CheckoutText style={styles.payAmountLabel}>Amount due</CheckoutText>
+                <CheckoutText style={styles.payAmountValue}>{payableLabel}</CheckoutText>
+              </View>
+              <TouchableOpacity
+                style={styles.payOnlineBtn}
+                activeOpacity={0.88}
+                onPress={() =>
+                  router.push({
+                    pathname: "/checkout/parcel-fare",
+                    params: { orderId: order.orderId },
+                  })
+                }
+              >
+                <Ionicons name="card-outline" size={18} color="#fff" />
+                <CheckoutText style={styles.payOnlineBtnText}>
+                  Pay online — UPI / GatiCash
+                </CheckoutText>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
           {merged.rider ? (
             <DeliveryPartnerTrackingCard
               riderName={riderName}
@@ -782,6 +951,112 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.22)",
   },
   etaPillText: { color: "#fff", fontSize: 13, fontWeight: "700" },
+  payBanner: {
+    backgroundColor: PAY_BANNER_BG,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  payBannerTitle: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+    letterSpacing: -0.1,
+  },
+  payBannerBody: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "400",
+    marginTop: 2,
+    opacity: 0.95,
+  },
+  /** Blue strip — distinct from mint header so it doesn't blend in. */
+  paidBanner: {
+    backgroundColor: "#EFF6FF",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#BFDBFE",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  paidBannerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  paidBannerTitle: {
+    color: "#1E40AF",
+    fontSize: 14,
+    fontWeight: "800",
+    letterSpacing: -0.1,
+    flex: 1,
+  },
+  paidBannerAmount: {
+    color: "#1D4ED8",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  payCard: {
+    backgroundColor: CARD,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#DDD6FE",
+    padding: 14,
+    gap: 12,
+  },
+  payCardTop: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  payIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#EDE9FE",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  payCardCopy: { flex: 1, gap: 2 },
+  payCardEyebrow: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#7C3AED",
+    letterSpacing: 0.4,
+  },
+  payCardTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: TEXT,
+  },
+  payCardBody: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: MUTED,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  payAmountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#F5F3FF",
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  payAmountLabel: { fontSize: 13, fontWeight: "600", color: MUTED },
+  payAmountValue: { fontSize: 18, fontWeight: "800", color: "#5B21B6" },
+  payOnlineBtn: {
+    marginTop: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: HEADER_GREEN,
+    borderRadius: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 12,
+  },
+  payOnlineBtnText: { color: "#fff", fontSize: 14, fontWeight: "800" },
   scroll: { flex: 1 },
   mapWrap: {
     marginTop: 10,

@@ -51,8 +51,94 @@ import { getParcelFareQuoteBatch } from "@/services/parcelQuote.service";
 import { useNearbyRideAvailability } from "@/hooks/useNearbyRideAvailability";
 import { useFeaturedOffersParcel } from "@/hooks/useFeaturedOffersParcel";
 import { estimateMatchingRidePlatformOffer, mapFeaturedOffersToRideBookOffers } from "@/lib/ride-offers";
+import { normalizeGeoHint } from "@/lib/ride-geo-hints";
+import { getCachedParcelFares, setCachedParcelFares } from "@/lib/parcelQuoteCache";
 
 const HERO_MINT = GatiMitraColors.mintSoft;
+const FARE_QUOTE_MAX_ATTEMPTS = 4;
+/** Short gap between quick failures; network/timeouts use the longer backoff below. */
+const FARE_QUOTE_RETRY_MS = 900;
+const FARE_QUOTE_NETWORK_RETRY_MS = 2_500;
+/** Match ride-book — coalesce haversine→road km churn before hammering quote-batch. */
+const FARE_QUOTE_DEBOUNCE_MS = 320;
+/**
+ * Ignore only tiny GPS/route jitter (≈50 m). Was 0.8 km and kept stale fares while
+ * the UI showed a newer distance — billing must track displayed trip km.
+ */
+const FARE_KM_REQUOTE_DELTA = 0.05;
+
+const INDIA_STATE_HINTS = new Set(
+  [
+    "andhra pradesh",
+    "arunachal pradesh",
+    "assam",
+    "bihar",
+    "chhattisgarh",
+    "goa",
+    "gujarat",
+    "haryana",
+    "himachal pradesh",
+    "jharkhand",
+    "karnataka",
+    "kerala",
+    "madhya pradesh",
+    "maharashtra",
+    "manipur",
+    "meghalaya",
+    "mizoram",
+    "nagaland",
+    "odisha",
+    "punjab",
+    "rajasthan",
+    "sikkim",
+    "tamil nadu",
+    "telangana",
+    "tripura",
+    "uttar pradesh",
+    "uttarakhand",
+    "west bengal",
+    "delhi",
+    "nct of delhi",
+    "jammu and kashmir",
+    "ladakh",
+    "chandigarh",
+    "puducherry",
+  ].map((s) => s.toLowerCase())
+);
+
+function geoHintsFromParcelStop(stop: {
+  fullAddress?: string | null;
+  primary?: string | null;
+} | null): { pickupPincode?: string; pickupState?: string } {
+  if (!stop) return {};
+  const text = `${stop.fullAddress ?? ""} ${stop.primary ?? ""}`.trim();
+  const pin = text.match(/\b(\d{6})\b/)?.[1];
+  let state: string | undefined;
+  for (const part of text.split(",")) {
+    const t = part.trim();
+    if (t && INDIA_STATE_HINTS.has(t.toLowerCase())) {
+      state = t;
+      break;
+    }
+  }
+  return {
+    ...(pin ? { pickupPincode: pin } : {}),
+    ...(normalizeGeoHint(state) ? { pickupState: normalizeGeoHint(state) } : {}),
+  };
+}
+
+async function waitForQuoteRetry(ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return false;
+  await new Promise<void>((resolve) => {
+    const t = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      resolve();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  return !signal.aborted;
+}
 
 type ParcelVehicleOption = {
   id: ParcelVehicleCategoryCode;
@@ -87,22 +173,31 @@ export function ParcelBookScreen() {
   const pickup = useParcelBookingStore((s) => s.pickup);
   const drop = useParcelBookingStore((s) => s.drop);
 
-  /** Empty until assignments load — avoid flashing all FALLBACK categories. */
-  const [vehicleCodes, setVehicleCodes] = useState<ParcelVehicleCategoryCode[]>([]);
-  const [vehicleCodesReady, setVehicleCodesReady] = useState(false);
+  /** Seed fallback immediately so quote-batch can start without waiting on assignments API. */
+  const [vehicleCodes, setVehicleCodes] = useState<ParcelVehicleCategoryCode[]>([
+    ...FALLBACK_PARCEL_CATEGORY_CODES,
+  ]);
+  const [vehicleCodesReady, setVehicleCodesReady] = useState(true);
   const [selectedVehicleId, setSelectedVehicleId] = useState<ParcelVehicleCategoryCode | null>(
     null
   );
   const [fareByVehicle, setFareByVehicle] = useState<Record<string, number>>({});
   const [faresLoading, setFaresLoading] = useState(false);
   const [faresSettled, setFaresSettled] = useState(false);
+  /** Bumped after a network quote failure so we quietly re-hit quote-batch. */
+  const [fareRetryTick, setFareRetryTick] = useState(0);
   const [serviceUnavailableVisible, setServiceUnavailableVisible] = useState(false);
   const [receiverSheetOpen, setReceiverSheetOpen] = useState(false);
   const [payAt, setPayAt] = useState<"pickup" | "drop">("pickup");
   const [paymentMode, setPaymentMode] = useState<ParcelPaymentMode>("cash");
   const [paymentSheetOpen, setPaymentSheetOpen] = useState(false);
   const [offersSheetOpen, setOffersSheetOpen] = useState(false);
-  const bookAfterReceiverRef = useRef(false);
+  const lastOkQuoteKeyRef = useRef<string | null>(null);
+  const fareQuoteRequestRef = useRef(0);
+  const fareQuoteAbortRef = useRef<AbortController | null>(null);
+  const committedFareKmRef = useRef<number | null>(null);
+  const vehicleCodesRef = useRef(vehicleCodes);
+  vehicleCodesRef.current = vehicleCodes;
   const [bottomSheetHeight, setBottomSheetHeight] = useState(
     Math.round(Dimensions.get("window").height * RIDE_BOOK_SHEET_HEIGHT_RATIO)
   );
@@ -175,14 +270,55 @@ export function ParcelBookScreen() {
     );
   }, [routeTripKm, pickupPoint, dropPoint]);
 
-  const fareTripKm = useMemo(() => {
+  /** Same 2-dp km as place-order / searching — must match billed distance. */
+  const fareTripKmRaw = useMemo(() => {
     if (tripKm == null || !(tripKm > 0)) return null;
-    return Math.round(tripKm * 10) / 10;
+    return Math.round(tripKm * 100) / 100;
   }, [tripKm]);
+
+  /** Stable fare km — absorb haversine→road jitter so quote-batch is not restarted. */
+  const [fareTripKm, setFareTripKm] = useState<number | null>(null);
+
+  useEffect(() => {
+    committedFareKmRef.current = null;
+    lastOkQuoteKeyRef.current = null;
+  }, [
+    pickupPoint?.latitude,
+    pickupPoint?.longitude,
+    dropPoint?.latitude,
+    dropPoint?.longitude,
+  ]);
+
+  useEffect(() => {
+    if (fareTripKmRaw == null) {
+      setFareTripKm(null);
+      return;
+    }
+    const committed = committedFareKmRef.current;
+    if (
+      committed != null &&
+      Math.abs(committed - fareTripKmRaw) < FARE_KM_REQUOTE_DELTA
+    ) {
+      setFareTripKm(committed);
+      return;
+    }
+    committedFareKmRef.current = fareTripKmRaw;
+    setFareTripKm(fareTripKmRaw);
+  }, [fareTripKmRaw]);
+
+  // When endpoints change, also clear sticky fares so we don't show the previous trip's price.
+  useEffect(() => {
+    setFareByVehicle({});
+    setFaresSettled(false);
+  }, [
+    pickupPoint?.latitude,
+    pickupPoint?.longitude,
+    dropPoint?.latitude,
+    dropPoint?.longitude,
+  ]);
 
   const {
     data: availability,
-    isLoading: availabilityLoading,
     isFetched: availabilityFetched,
   } = useNearbyRideAvailability(
     pickupPoint?.latitude ?? null,
@@ -218,62 +354,154 @@ export function ParcelBookScreen() {
     return next;
   }, [allVehicles, routeEtaMins, tripKm, nearbyRiders]);
 
+  const pickupGeoHints = useMemo(() => geoHintsFromParcelStop(pickup), [pickup]);
+
   useEffect(() => {
-    if (!pickupPoint || fareTripKm == null || vehicleCodes.length === 0) {
+    if (!pickupPoint || vehicleCodesKey.length === 0) {
+      return;
+    }
+    if (fareTripKm == null) {
+      // Haversine unavailable — keep fare slot in loading (not a permanent empty).
+      setFaresLoading(true);
       return;
     }
     // Absurd long-haul (e.g. 1000+ km) — skip quote-batch hammering; show unavailable fast.
     if (fareTripKm > 500) {
+      lastOkQuoteKeyRef.current = null;
       setFareByVehicle({});
       setFaresLoading(false);
       setFaresSettled(true);
       return;
     }
-    const ac = new AbortController();
-    setFaresLoading(true);
-    setFaresSettled(false);
-    void (async () => {
-      const result = await getParcelFareQuoteBatch({
-        pickupLat: pickupPoint.latitude,
-        pickupLng: pickupPoint.longitude,
-        tripKm: fareTripKm,
-        vehicleTypes: vehicleCodes,
-        paymentMode,
-        signal: ac.signal,
-      });
-      if (ac.signal.aborted) return;
-      if (!result.ok) {
-        if (result.code === "ABORTED") return;
-        setFareByVehicle({});
-        setFaresLoading(false);
-        setFaresSettled(true);
-        return;
-      }
-      const next: Record<string, number> = {};
-      for (const [code, q] of Object.entries(result.quotes)) {
-        // finalFare already includes active PARCEL billing charges (platform/surge/tax/…).
-        next[code] = Math.round(q.finalFare);
-      }
-      setFareByVehicle(next);
+
+    const quoteKey = [
+      pickupPoint.latitude.toFixed(5),
+      pickupPoint.longitude.toFixed(5),
+      fareTripKm,
+      vehicleCodesKey,
+      paymentMode,
+      pickupGeoHints.pickupPincode ?? "",
+      pickupGeoHints.pickupState ?? "",
+    ].join("\u0000");
+
+    if (quoteKey === lastOkQuoteKeyRef.current) {
       setFaresLoading(false);
       setFaresSettled(true);
-    })();
-    return () => ac.abort();
+      return;
+    }
+
+    const cached = getCachedParcelFares(quoteKey);
+    if (cached) {
+      lastOkQuoteKeyRef.current = quoteKey;
+      setFareByVehicle(cached);
+      setFaresLoading(false);
+      setFaresSettled(true);
+      return;
+    }
+
+    const abort = new AbortController();
+    fareQuoteAbortRef.current?.abort();
+    fareQuoteAbortRef.current = abort;
+    const requestId = ++fareQuoteRequestRef.current;
+    const codes = vehicleCodesRef.current;
+    // Sticky: keep prior fares visible; only spin cards that have no fare yet.
+    setFaresLoading(true);
+
+    const timer = setTimeout(() => {
+      if (abort.signal.aborted || requestId !== fareQuoteRequestRef.current) return;
+      void (async () => {
+        let lastError: string | null = null;
+        for (let attempt = 0; attempt < FARE_QUOTE_MAX_ATTEMPTS; attempt++) {
+          if (abort.signal.aborted || requestId !== fareQuoteRequestRef.current) return;
+          const result = await getParcelFareQuoteBatch({
+            pickupLat: pickupPoint.latitude,
+            pickupLng: pickupPoint.longitude,
+            tripKm: fareTripKm,
+            vehicleTypes: codes,
+            pickupPincode: pickupGeoHints.pickupPincode,
+            pickupState: pickupGeoHints.pickupState,
+            paymentMode,
+            signal: abort.signal,
+          });
+          if (abort.signal.aborted || requestId !== fareQuoteRequestRef.current) return;
+          if (!result.ok) {
+            if (result.code === "ABORTED") return;
+            lastError = result.error;
+            const networkish =
+              /network|timeout|econn|unavailable|fetch/i.test(String(result.error ?? "")) ||
+              result.code === "PARCEL_QUOTE_FAILED" ||
+              result.code === "ECONNABORTED";
+            if (attempt + 1 < FARE_QUOTE_MAX_ATTEMPTS) {
+              const delay = networkish ? FARE_QUOTE_NETWORK_RETRY_MS : FARE_QUOTE_RETRY_MS;
+              const shouldRetry = await waitForQuoteRetry(delay, abort.signal);
+              if (!shouldRetry) return;
+              continue;
+            }
+            if (__DEV__) {
+              // eslint-disable-next-line no-console
+              console.warn("[parcel-book] fare quote failed", {
+                error: lastError,
+                code: result.code,
+                tripKm: fareTripKm,
+                vehicles: codes,
+              });
+            }
+            // Keep sticky fares if we had any; unlock sheet without wiping supply.
+            if (requestId === fareQuoteRequestRef.current) {
+              setFaresLoading(false);
+              setFaresSettled(false);
+              if (networkish && fareRetryTick < 2) {
+                setTimeout(() => setFareRetryTick((n) => n + 1), 4_000);
+              }
+            }
+            return;
+          }
+          const next: Record<string, number> = {};
+          for (const [code, q] of Object.entries(result.quotes)) {
+            // finalFare already includes active PARCEL billing charges (platform/surge/tax/…).
+            next[code] = Math.round(q.finalFare);
+          }
+          if (__DEV__ && Object.keys(next).length === 0) {
+            // eslint-disable-next-line no-console
+            console.warn("[parcel-book] fare quote returned no eligible vehicles", {
+              tripKm: fareTripKm,
+              vehicles: codes,
+              rawKeys: Object.keys(result.quotes),
+              geo: pickupGeoHints,
+            });
+          }
+          if (requestId !== fareQuoteRequestRef.current) return;
+          lastOkQuoteKeyRef.current = quoteKey;
+          setCachedParcelFares(quoteKey, next);
+          setFareByVehicle(next);
+          setFaresLoading(false);
+          setFaresSettled(true);
+          if (fareRetryTick !== 0) setFareRetryTick(0);
+          return;
+        }
+      })();
+    }, FARE_QUOTE_DEBOUNCE_MS);
+
+    return () => {
+      clearTimeout(timer);
+      abort.abort();
+    };
   }, [
     pickupPoint?.latitude,
     pickupPoint?.longitude,
     fareTripKm,
     vehicleCodesKey,
     paymentMode,
+    pickupGeoHints.pickupPincode,
+    pickupGeoHints.pickupState,
+    fareRetryTick,
   ]);
 
   /**
    * Unlock once catalog + nearby supply are known.
-   * Do NOT wait on quote-batch — Network Error / slow billing was leaving
-   * "Finding available vehicles…" forever even when captains were online.
+   * Do NOT wait on quote-batch or availability *refetch* (tripKm road update).
    */
-  const vehiclesFilterReady =
-    vehicleCodesReady && availabilityFetched && !availabilityLoading;
+  const vehiclesFilterReady = vehicleCodesReady && availabilityFetched;
 
   // Only nearby on-duty parcel categories. Fare filter applies after quotes settle.
   const displayVehicles = useMemo(() => {
@@ -338,7 +566,8 @@ export function ParcelBookScreen() {
   }, [fareTripKm]);
 
   useEffect(() => {
-    if (displayVehicles.length > 0 || hasCaptainSupply) {
+    // Captains nearby without a payable fare still means the book sheet is unusable.
+    if (displayVehicles.length > 0) {
       setServiceUnavailableVisible(false);
       return;
     }
@@ -346,7 +575,7 @@ export function ParcelBookScreen() {
     // Short delay so brief refetch flicker doesn't flash the sheet.
     const t = setTimeout(() => setServiceUnavailableVisible(true), 280);
     return () => clearTimeout(t);
-  }, [displayVehicles.length, hasCaptainSupply, noVehiclesAvailable]);
+  }, [displayVehicles.length, noVehiclesAvailable]);
 
   useEffect(() => {
     if (displayVehicles.length === 0) return;
@@ -433,7 +662,12 @@ export function ParcelBookScreen() {
         ...(offerPreview.offerId != null && offerPreview.discount >= 1
           ? { selectedPlatformOfferId: String(offerPreview.offerId) }
           : { forceNoAutoOffer: "true" }),
-        ...(tripKm != null ? { tripKm: String(Math.round(tripKm * 100) / 100) } : {}),
+        // Pass the same km the quote used so searching distance + place payload match fare.
+        ...(fareTripKm != null
+          ? { tripKm: String(fareTripKm) }
+          : tripKm != null
+            ? { tripKm: String(Math.round(tripKm * 100) / 100) }
+            : {}),
         ...(selectedEtaMins != null ? { routeEtaMins: String(selectedEtaMins) } : {}),
         payAt,
         paymentMethod: paymentMode,
@@ -446,6 +680,7 @@ export function ParcelBookScreen() {
     fareByVehicle,
     nearbyRiders,
     parcelFeaturedOffers,
+    fareTripKm,
     tripKm,
     selectedEtaMins,
     payAt,
@@ -538,10 +773,7 @@ export function ParcelBookScreen() {
           {receiver ? (
             <TouchableOpacity
               style={styles.receiverRow}
-              onPress={() => {
-                bookAfterReceiverRef.current = false;
-                setReceiverSheetOpen(true);
-              }}
+              onPress={() => setReceiverSheetOpen(true)}
               activeOpacity={0.85}
             >
               <View style={styles.receiverIcon}>
@@ -728,8 +960,8 @@ export function ParcelBookScreen() {
             activeOpacity={0.9}
             disabled={!selectedVehicle || !(selectedFare != null && selectedFare > 0)}
             onPress={() => {
+              // Receiver confirm must NOT auto-book — user taps Book again after confirm.
               if (!receiver) {
-                bookAfterReceiverRef.current = true;
                 setReceiverSheetOpen(true);
                 return;
               }
@@ -768,20 +1000,15 @@ export function ParcelBookScreen() {
 
       <ParcelReceiverDetailsBottomSheet
         visible={receiverSheetOpen}
-        onClose={() => {
-          bookAfterReceiverRef.current = false;
-          setReceiverSheetOpen(false);
-        }}
+        onClose={() => setReceiverSheetOpen(false)}
         vehicleName={selectedVehicle?.name ?? "Parcel"}
         initialName={receiver?.name ?? drop?.contactName ?? ""}
         initialMobile={receiver?.mobile ?? drop?.contactMobile ?? ""}
         onConfirm={({ name, mobile }) => {
           setReceiver({ name, mobile });
           setReceiverSheetOpen(false);
-          if (bookAfterReceiverRef.current) {
-            bookAfterReceiverRef.current = false;
-            requestAnimationFrame(() => goToParcelSearching());
-          }
+          // Stay on book sheet — booking starts only when user taps
+          // "Book Parcel on {vehicle}" again.
         }}
       />
     </View>

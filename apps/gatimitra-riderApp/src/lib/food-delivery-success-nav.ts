@@ -31,8 +31,14 @@ export function buildFoodDeliverySuccessParams(
   const surge = Math.round(Number(order.surgeEarning) || 0);
   const total = resolveRiderDisplayedEarning(order);
 
-  const km =
-    order.totalDistanceKm ?? order.tripDistanceKm ?? order.distanceKm ?? order.pickupDistanceKm;
+  // Trip Distance = pickup → drop only. Never use totalDistanceKm here:
+  // after pickup the live "pickupDistanceKm" is rider(at drop)→pickup and
+  // total ≈ 2× trip. Never fall back to pickupDistanceKm alone either.
+  const km = order.tripDistanceKm ?? order.distanceKm;
+  const distanceKm =
+    km != null && Number.isFinite(Number(km)) && Number(km) > 0
+      ? String(Math.round(Number(km) * 10) / 10)
+      : "";
 
   return {
     orderId: order.id,
@@ -46,7 +52,7 @@ export function buildFoodDeliverySuccessParams(
     waitingEarning: String(waiting),
     surgeEarning: String(surge),
     appliedSurgesJson: JSON.stringify(order.appliedSurges ?? []),
-    distanceKm: km != null && Number.isFinite(Number(km)) ? String(Number(km)) : "",
+    distanceKm,
     tripMinutes: String(tripMinutes),
   };
 }

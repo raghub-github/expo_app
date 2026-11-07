@@ -4,6 +4,7 @@ import * as Location from "expo-location";
 import Constants from "expo-constants";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useDutyStore } from "@/src/stores/dutyStore";
+import { isDutyGpsAuthorized } from "@/src/lib/dutySyncAuthority";
 import { useActiveOrders } from "@/src/hooks/useOrders";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
 import {
@@ -47,10 +48,12 @@ function resolveClientPingIntervalMs(args: {
  */
 export function useRiderDutyLocationPing(): void {
   const session = useSessionStore((s) => s.session);
-  const isOnDuty = useDutyStore((s) => s.isOnDuty);
+  const syncPhase = useDutyStore((s) => s.syncPhase);
+  const dutyGpsAuthorized = isDutyGpsAuthorized(syncPhase);
   const { data: activeOrders = [], isFetched: activeOrdersFetched } = useActiveOrders();
   const hasActiveOrder = activeOrders.length > 0;
-  const shouldTrack = isOnDuty || hasActiveOrder;
+  // Cached ON-duty must not start GPS — wait for server_on (or active delivery).
+  const shouldTrack = dutyGpsAuthorized || hasActiveOrder;
   const tracker = useMemo(
     () =>
       createForegroundLocationTracker({
@@ -66,11 +69,9 @@ export function useRiderDutyLocationPing(): void {
 
   useEffect(() => {
     if (Constants.appOwnership === "expo") return;
-    // Cold start: active orders may still be loading — never stop BG until we know.
-    if (!activeOrdersFetched && !isOnDuty) {
-      void import("@/src/services/location/riderBackgroundLocationTask").then((m) =>
-        m.ensureRiderBackgroundLocationRunning()
-      );
+    // Cold start while duty GPS not yet authorized: wait for sync / active orders.
+    // Process-recreation restore lives in the mount-only ensure effect below.
+    if (!activeOrdersFetched && !dutyGpsAuthorized) {
       return;
     }
     if (!shouldTrack) {
@@ -87,15 +88,16 @@ export function useRiderDutyLocationPing(): void {
     return () => {
       void tracker.stop();
     };
-  }, [shouldTrack, hasActiveOrder, activeOrdersFetched, isOnDuty, tracker]);
+  }, [shouldTrack, hasActiveOrder, activeOrdersFetched, dutyGpsAuthorized, tracker]);
 
-  // Process recreation / cold start: restore BG updates from persisted mode flag.
+  // Process recreation / cold start: restore BG only when duty is server-confirmed
+  // (or mode is active_order — handled inside ensure).
   useEffect(() => {
     if (Constants.appOwnership === "expo") return;
     void import("@/src/services/location/riderBackgroundLocationTask").then((m) =>
       m.ensureRiderBackgroundLocationRunning()
     );
-  }, []);
+  }, [syncPhase]);
 
   useEffect(() => {
     if (!shouldTrack || !session) return;

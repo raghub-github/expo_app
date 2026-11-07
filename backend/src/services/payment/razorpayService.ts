@@ -516,11 +516,16 @@ export async function fetchRazorpayAccountMethods(): Promise<unknown> {
 }
 
 export interface CreateQrCodeParams {
-  /** Fixed amount in paise (₹100 = 10000). */
+  /** Fixed amount in paise (₹100 = 10000). Never send rupees here. */
   amountPaise: number;
+  /** Label shown on Razorpay dashboard / QR entity. */
+  name?: string;
   /** Human-readable description shown to the payer. */
   description: string;
-  /** Epoch SECONDS after which the QR auto-closes (must be in the future). */
+  /**
+   * Preferred expiry (epoch seconds). Applied only when Razorpay accepts
+   * `single_use` (close_by is single_use-only). Clamped to [now+2m, now+2h].
+   */
   closeBy: number;
   /** Reference id echoed back on the qr_code.credited webhook (notes). */
   notes: Record<string, string>;
@@ -532,52 +537,235 @@ export interface CreateQrCodeResponse {
   image_url: string;
   payment_amount: number;
   status: string;
-  close_by: number;
+  close_by: number | null;
   notes: Record<string, string>;
+  /** Actual Razorpay usage that was accepted for this QR. */
+  usage: "single_use" | "multiple_use";
+  fixed_amount: boolean;
+}
+
+type RazorpayQrErrorBody = {
+  error?: {
+    code?: string;
+    description?: string;
+    reason?: string;
+    source?: string;
+    step?: string;
+    metadata?: Record<string, unknown>;
+  };
+};
+
+function razorpayBasicAuth(): string {
+  const env = getEnv();
+  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+    throw Object.assign(new Error("Razorpay credentials not configured"), {
+      statusCode: 503,
+      code: "RAZORPAY_NOT_CONFIGURED",
+    });
+  }
+  return Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString(
+    "base64"
+  );
+}
+
+function clampQrCloseBy(preferredCloseBy: number): number {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const minClose = nowSec + 2 * 60;
+  const maxClose = nowSec + 2 * 60 * 60;
+  const rounded = Math.round(preferredCloseBy);
+  if (!Number.isFinite(rounded)) return maxClose;
+  return Math.min(maxClose, Math.max(minClose, rounded));
+}
+
+function throwQrCreateFailed(
+  status: number,
+  text: string,
+  requestId: string | null,
+  usageAttempted: string
+): never {
+  let parsed: RazorpayQrErrorBody | null = null;
+  try {
+    parsed = JSON.parse(text) as RazorpayQrErrorBody;
+  } catch {
+    parsed = null;
+  }
+  const code = String(parsed?.error?.code ?? "QR_CREATE_FAILED");
+  const description = String(
+    parsed?.error?.description ?? text.slice(0, 200) ?? "QR create failed"
+  );
+  // Never log secrets — only status, Razorpay error code, and request id.
+  console.warn(
+    "[createRazorpayQrCode] failed",
+    JSON.stringify({
+      httpStatus: status,
+      razorpayCode: code,
+      description: description.slice(0, 160),
+      requestId,
+      usageAttempted,
+    })
+  );
+  throw Object.assign(
+    new Error(`Razorpay QR ${status}: ${JSON.stringify(parsed?.error ?? { description })}`),
+    {
+      statusCode: status === 400 || status === 401 || status === 403 ? status : 502,
+      code: "QR_CREATE_FAILED",
+      razorpayCode: code,
+      razorpayRequestId: requestId,
+    }
+  );
+}
+
+async function postRazorpayQrCode(
+  body: Record<string, unknown>
+): Promise<{ res: Response; text: string; requestId: string | null }> {
+  const res = await fetch("https://api.razorpay.com/v1/payments/qr_codes", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${razorpayBasicAuth()}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text().catch(() => "");
+  const requestId =
+    res.headers.get("x-razorpay-request-id") ||
+    res.headers.get("x-request-id") ||
+    null;
+  return { res, text, requestId };
 }
 
 /**
- * Create a Razorpay single-use, fixed-amount dynamic UPI QR tied to one ride.
+ * Create a Razorpay fixed-amount dynamic UPI QR for exact fare collection.
  *
- * The passenger scans it and pays EXACTLY payment_amount — they cannot alter the
- * amount or the ride reference (§29–30). Settlement is finalized only by the
- * `qr_code.credited` webhook (backend-authoritative), never by the client.
+ * Preferred: `usage=single_use` + `fixed_amount=true` + `close_by` (docs).
+ * Observed on this merchant (test keys): Razorpay returns HTTP 500 SERVER_ERROR
+ * for every `single_use` create, while `multiple_use` + `fixed_amount=true` succeeds.
+ * We therefore fall back to multiple_use with the same fixed `payment_amount`, and
+ * callers MUST close the QR after the first captured credit (see closeRazorpayQrCode).
  *
- * Requires the "QR Codes" API to be enabled on the Razorpay account. If it is not,
- * this throws and the caller should fall back to a UPI payment link.
+ * Settlement is finalized only by `qr_code.credited` / reconciler — never by the client.
  */
 export async function createRazorpayQrCode(
   params: CreateQrCodeParams
 ): Promise<CreateQrCodeResponse> {
-  const env = getEnv();
-  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
-    throw new Error("Razorpay credentials not configured");
+  const amountPaise = Math.round(params.amountPaise);
+  if (!Number.isFinite(amountPaise) || amountPaise < 100) {
+    throw Object.assign(new Error("QR amount must be at least ₹1 (100 paise)"), {
+      statusCode: 400,
+      code: "INVALID_QR_AMOUNT",
+    });
   }
-  const auth = Buffer.from(
-    `${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`
-  ).toString("base64");
 
-  const res = await fetch("https://api.razorpay.com/v1/payments/qr_codes", {
-    method: "POST",
-    headers: { Authorization: `Basic ${auth}`, "content-type": "application/json" },
-    body: JSON.stringify({
-      type: "upi_qr",
+  const notes: Record<string, string> = {};
+  for (const [k, v] of Object.entries(params.notes ?? {})) {
+    if (!k || v == null) continue;
+    notes[String(k).slice(0, 256)] = String(v).slice(0, 256);
+  }
+
+  const base = {
+    type: "upi_qr" as const,
+    name: (params.name || "GatiMitra").slice(0, 50),
+    fixed_amount: true,
+    payment_amount: amountPaise,
+    description: params.description.slice(0, 200),
+    notes,
+  };
+
+  const closeBy = clampQrCloseBy(params.closeBy);
+
+  // 1) Preferred single_use (auto-closes after one payment).
+  {
+    const { res, text, requestId } = await postRazorpayQrCode({
+      ...base,
       usage: "single_use",
-      fixed_amount: true,
-      payment_amount: Math.round(params.amountPaise),
-      description: params.description.slice(0, 200),
-      close_by: Math.round(params.closeBy),
-      notes: params.notes,
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw Object.assign(
-      new Error(`Razorpay QR ${res.status}: ${text.slice(0, 240)}`),
-      { statusCode: res.status === 400 ? 400 : 502, code: "QR_CREATE_FAILED" }
+      close_by: closeBy,
+    });
+    if (res.ok) {
+      const json = JSON.parse(text) as CreateQrCodeResponse;
+      return {
+        ...json,
+        usage: "single_use",
+        fixed_amount: true,
+        close_by: json.close_by ?? closeBy,
+      };
+    }
+    // Only fall through on Razorpay-side 5xx / SERVER_ERROR — client errors stay hard fails.
+    let razorpayCode = "";
+    try {
+      razorpayCode = String(
+        (JSON.parse(text) as RazorpayQrErrorBody)?.error?.code ?? ""
+      );
+    } catch {
+      razorpayCode = "";
+    }
+    const retryable =
+      res.status >= 500 || razorpayCode === "SERVER_ERROR";
+    if (!retryable) {
+      throwQrCreateFailed(res.status, text, requestId, "single_use");
+    }
+    console.warn(
+      "[createRazorpayQrCode] single_use rejected by Razorpay; using multiple_use+fixed_amount+close-after-credit",
+      JSON.stringify({ httpStatus: res.status, razorpayCode, requestId })
     );
   }
-  return (await res.json()) as CreateQrCodeResponse;
+
+  // 2) Production workaround: fixed-amount multiple_use (close after first credit).
+  {
+    const { res, text, requestId } = await postRazorpayQrCode({
+      ...base,
+      usage: "multiple_use",
+    });
+    if (!res.ok) {
+      throwQrCreateFailed(res.status, text, requestId, "multiple_use");
+    }
+    const json = JSON.parse(text) as CreateQrCodeResponse;
+    if (!json.id || !json.image_url) {
+      throw Object.assign(new Error("Razorpay QR response missing id/image_url"), {
+        statusCode: 502,
+        code: "QR_CREATE_FAILED",
+      });
+    }
+    return {
+      ...json,
+      usage: "multiple_use",
+      fixed_amount: true,
+      close_by: null,
+      payment_amount: Number(json.payment_amount ?? amountPaise),
+    };
+  }
+}
+
+/**
+ * Close a Razorpay QR so it cannot accept further payments.
+ * Used after the first captured credit when usage was multiple_use.
+ */
+export async function closeRazorpayQrCode(qrId: string): Promise<void> {
+  const id = String(qrId ?? "").trim();
+  if (!id || id.startsWith("dummy_")) return;
+  const res = await fetch(
+    `https://api.razorpay.com/v1/payments/qr_codes/${encodeURIComponent(id)}/close`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${razorpayBasicAuth()}`,
+        "content-type": "application/json",
+      },
+    }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    // Razorpay does not allow closing multiple_use QRs; single_use may already be closed/paid.
+    if (
+      res.status === 400 &&
+      /already|closed|paid|multiple use|cannot be closed/i.test(text)
+    ) {
+      return;
+    }
+    console.warn(
+      "[closeRazorpayQrCode] failed",
+      JSON.stringify({ qrId: id, httpStatus: res.status, body: text.slice(0, 160) })
+    );
+  }
 }
 
 export type RazorpayQrCapturedPayment = {

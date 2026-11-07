@@ -82,40 +82,99 @@ export function isGenericRideLocationLabel(value?: string | null): boolean {
   );
 }
 
-function firstMeaningfulAddressPart(fullAddress: string): string | undefined {
+/**
+ * Short saved-place nicknames (Home / Work / Office) — fine for customer UI,
+ * but riders need a street-level address on the offer sheet.
+ */
+export function isSavedPlaceNickname(value?: string | null): boolean {
+  if (!value?.trim()) return false;
+  const trimmed = value.trim();
+  if (isGenericRideLocationLabel(trimmed)) return false;
+  if (trimmed.includes(",")) return false;
+  if (trimmed.length > 28) return false;
+  const lower = trimmed.toLowerCase();
+  const known = new Set([
+    "home",
+    "work",
+    "office",
+    "gym",
+    "school",
+    "college",
+    "hostel",
+    "pg",
+    "apartment",
+    "flat",
+    "house",
+    "mom",
+    "dad",
+    "parents",
+  ]);
+  if (known.has(lower)) return true;
+  // Single short token without digits — treat as nickname (e.g. "HOME", "Ravi").
+  if (!/\d/.test(trimmed) && !/\s/.test(trimmed) && trimmed.length <= 16) return true;
+  return false;
+}
+
+/** Prefer a multi-segment street snippet over a lone city name. */
+export function meaningfulAddressSnippet(fullAddress: string): string | undefined {
   const parts = fullAddress
     .split(",")
     .map((p) => p.trim())
     .filter(Boolean);
+  const kept: string[] = [];
   for (const part of parts) {
     if (isGenericRideLocationLabel(part)) continue;
     if (/^\d{6}$/.test(part)) continue;
     if (part.toLowerCase() === "india") continue;
-    return part;
+    if (isCoordinateLikeAddressText(part)) continue;
+    kept.push(part);
+    if (kept.length >= 3) break;
   }
-  return undefined;
+  if (kept.length === 0) return undefined;
+  return kept.join(", ");
 }
 
-/** Rider-facing ride stop label — never "Current location" when a real address exists. */
+function pickBestAddressCandidate(raw: string): string | null {
+  const t = raw.trim();
+  if (!t || isGenericRideLocationLabel(t) || isCoordinateLikeAddressText(t)) return null;
+  if (isSavedPlaceNickname(t)) return null;
+  // Already a multi-part / street-like string — keep (trim very long lines).
+  if (t.includes(",")) {
+    return meaningfulAddressSnippet(t) ?? t.slice(0, 120);
+  }
+  // Single line with house/road cues.
+  if (/\d/.test(t) || /\b(road|rd|street|st|sector|near|marg|nagar|colony|lane)\b/i.test(t)) {
+    return t.length > 120 ? t.slice(0, 117) + "…" : t;
+  }
+  // Lone city/village token — weak, but better than nothing if no fuller string exists.
+  return t;
+}
+
+/** Rider-facing ride stop label — street/area first, never just "HOME". */
 export function resolveRideAddressDisplayLabel(args: {
   label?: string | null;
   fullAddress?: string | null;
   fallbacks?: (string | null | undefined)[];
   defaultLabel: string;
 }): string {
-  const label = args.label?.trim();
-  if (label && !isGenericRideLocationLabel(label)) return label;
-
-  const full = args.fullAddress?.trim();
-  if (full && !isGenericRideLocationLabel(full)) {
-    return firstMeaningfulAddressPart(full) ?? full;
-  }
-
+  const candidates: string[] = [];
+  if (args.fullAddress?.trim()) candidates.push(args.fullAddress.trim());
   for (const c of args.fallbacks ?? []) {
-    const t = c?.trim();
-    if (!t || isGenericRideLocationLabel(t) || isCoordinateLikeAddressText(t)) continue;
-    return t;
+    if (c?.trim()) candidates.push(c.trim());
   }
+  // Saved nickname last — only if nothing street-like exists.
+  const label = args.label?.trim();
+  if (label && !isGenericRideLocationLabel(label) && !isSavedPlaceNickname(label)) {
+    candidates.push(label);
+  }
+
+  for (const c of candidates) {
+    const picked = pickBestAddressCandidate(c);
+    if (picked) return picked;
+  }
+
+  // Last resort: show nickname rather than "Pickup" when that is all we have.
+  if (label && !isGenericRideLocationLabel(label)) return label;
 
   return args.defaultLabel;
 }

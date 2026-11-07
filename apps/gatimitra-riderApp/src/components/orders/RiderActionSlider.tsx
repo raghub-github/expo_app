@@ -33,7 +33,10 @@ import {
   SLIDE_THUMB_W,
   SLIDE_TRACK_H,
 } from "@/src/theme/slideAction";
-import { SLIDE_COMPLETE_RATIO } from "@/src/lib/slideCompleteThreshold";
+import {
+  SLIDE_COMPLETE_MIN_PX,
+  SLIDE_COMPLETE_RATIO,
+} from "@/src/lib/slideCompleteThreshold";
 import { shouldClaimSlide, shouldCompleteSlide } from "@/src/lib/slideGesture";
 import { beginSlideAction, markSlideAction } from "@/src/lib/slideActionLatency";
 import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
@@ -65,6 +68,12 @@ export type RiderActionSliderProps = {
   style?: StyleProp<ViewStyle>;
   sideInset?: number;
   hapticOnComplete?: boolean;
+  /**
+   * Offer footer sits outside a ScrollView — claim the touch immediately so
+   * Android/Expo Go does not drop the gesture before horizontal slop.
+   * Keep false when the slider shares a scrollable parent.
+   */
+  claimOnTouchStart?: boolean;
 };
 
 /**
@@ -90,6 +99,7 @@ export const RiderActionSlider = memo(function RiderActionSlider({
   style,
   sideInset = SLIDE_SIDE_INSET,
   hapticOnComplete = true,
+  claimOnTouchStart = false,
 }: RiderActionSliderProps) {
   const { rf, isCompactWidth, layoutFontScale } = useResponsiveLayout();
   const labelFontSize = rf(isCompactWidth || layoutFontScale > 1.15 ? 15 : 17, {
@@ -205,6 +215,12 @@ export const RiderActionSlider = memo(function RiderActionSlider({
         return true;
       }
       const max = maxDrag();
+      // Layout race: onLayout never set width — still allow a deliberate swipe.
+      if (max <= 0) {
+        if (dx < SLIDE_COMPLETE_MIN_PX * 1.5) return false;
+        fireComplete();
+        return true;
+      }
       if (!shouldCompleteSlide(dx, max, SLIDE_COMPLETE_RATIO)) return false;
       translateX.value = withSpring(max, SNAP_SPRING);
       fireComplete();
@@ -213,16 +229,20 @@ export const RiderActionSlider = memo(function RiderActionSlider({
     [fireComplete, translateX]
   );
 
+  const claimOnStartRef = useRef(claimOnTouchStart);
+  claimOnStartRef.current = claimOnTouchStart;
+
   const pan = useMemo(() => {
     const shouldClaim = (g: { dx: number; dy: number }) =>
       shouldClaimSlide(g, ignoreRef.current);
 
     return PanResponder.create({
-      // Deliberately do NOT claim on touch-down. A slide has to prove itself
-      // with horizontal movement, so a vertical drag that happens to start on
-      // the track still scrolls the page behind it.
-      onStartShouldSetPanResponder: () => false,
-      onStartShouldSetPanResponderCapture: () => false,
+      // Offer footer (claimOnTouchStart): claim immediately. Elsewhere wait for
+      // horizontal slop so parent ScrollViews still scroll.
+      onStartShouldSetPanResponder: () =>
+        claimOnStartRef.current && !ignoreRef.current,
+      onStartShouldSetPanResponderCapture: () =>
+        claimOnStartRef.current && !ignoreRef.current,
       onMoveShouldSetPanResponder: (_, g) => shouldClaim(g),
       onMoveShouldSetPanResponderCapture: (_, g) => shouldClaim(g),
       // Once a slide is genuinely under way it must not be yanked away
@@ -240,11 +260,19 @@ export const RiderActionSlider = memo(function RiderActionSlider({
       onPanResponderMove: (_, g) => {
         if (firedJsRef.current) return;
         const max = maxDrag();
-        translateX.value = Math.max(0, Math.min(g.dx, max));
+        const cap = max > 0 ? max : Math.max(g.dx, SLIDE_COMPLETE_MIN_PX * 3);
+        translateX.value = Math.max(0, Math.min(g.dx, cap));
+        // Fire as soon as the threshold is crossed — do not wait for finger-up.
+        // tryComplete / fireComplete are single-flight via firedJsRef.
+        if (tryComplete(g.dx)) {
+          activeDragRef.current = false;
+          isDragging.value = 0;
+        }
       },
       onPanResponderRelease: (_, g) => {
         activeDragRef.current = false;
         isDragging.value = 0;
+        // Already fired mid-drag: release is a no-op (tryComplete short-circuits).
         if (!tryComplete(g.dx)) {
           translateX.value = withSpring(0, RESET_SPRING);
         }

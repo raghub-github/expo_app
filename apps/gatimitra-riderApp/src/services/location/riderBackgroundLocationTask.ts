@@ -252,9 +252,24 @@ export async function stopRiderBackgroundLocation(): Promise<void> {
 /**
  * After process death / Doze kill: if the mode flag says we should still track,
  * restore GPS. Foreground uses the shared watch; background uses OS updates.
+ *
+ * Duty mode is restored only after backend-confirmed ON duty — a stale local
+ * cache must not restart GPS before sync completes. Active-order mode still
+ * restores immediately (mid-delivery safety).
  */
 export async function ensureRiderBackgroundLocationRunning(): Promise<void> {
   const mode = await readBgMode();
   if (mode === "off") return;
+  if (mode === "duty") {
+    try {
+      const { useDutyStore } = await import("@/src/stores/dutyStore");
+      const { isDutyGpsAuthorized } = await import("@/src/lib/dutySyncAuthority");
+      if (!isDutyGpsAuthorized(useDutyStore.getState().syncPhase)) {
+        return;
+      }
+    } catch {
+      return;
+    }
+  }
   await startRiderBackgroundLocation(mode);
 }

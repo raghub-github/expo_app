@@ -269,7 +269,7 @@ export default function MealsUnderPriceScreen() {
   useLayoutEffect(() => {
     prefetchMealsUnder250HeroMedia(syncLayout);
     if (heroImageUri) {
-      void Image.prefetch(heroImageUri, { cachePolicy: "memory-disk" });
+      void Image.prefetch(heroImageUri, { cachePolicy: "memory-disk" }).catch(() => {});
     }
   }, [syncLayout, heroImageUri]);
 

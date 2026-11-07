@@ -386,7 +386,7 @@ export function RidePaymentWaitingScreen() {
     }
   }, [isCashRide, qrInfo, qrMutation.isPending, selectMutation]);
 
-  const handleCashCompleted = useCallback(() => {
+  const handleCashCompleted = useCallback((_method?: "cash" | "online") => {
     if (cashMutation.isPending) return;
     cashMutation.mutate();
   }, [cashMutation]);
@@ -701,6 +701,7 @@ export function RidePaymentWaitingScreen() {
         onDismiss={() => setCashSheetOpen(false)}
         amountLabel={formatFare(fareAmount)}
         loading={cashMutation.isPending}
+        enableMethodSelector={false}
         onConfirm={handleCashCompleted}
       />
 

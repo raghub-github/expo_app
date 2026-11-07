@@ -43,6 +43,39 @@ const OrderSummarySchema = z.object({
     .array(z.object({ name: z.string(), amount: z.number() }))
     .optional(),
   totalEarning: z.number().optional(),
+  settlementBreakdown: z
+    .object({
+      dispatchOfferAmount: z.number(),
+      acceptedQuoteAmount: z.number(),
+      dispatchQuotedDistanceKm: z.number().nullable(),
+      acceptedDistanceKm: z.number().nullable(),
+      finalBillableDistanceKm: z.number().nullable(),
+      finalBaseEarning: z.number(),
+      finalDistanceEarning: z.number(),
+      waitingCharge: z.number(),
+      additionalEarning: z.number(),
+      deductions: z.number(),
+      cancellationAdjustment: z.number(),
+      finalSettlementAmount: z.number(),
+      walletCreditedAmount: z.number(),
+      differenceAmount: z.number(),
+      differenceReasonCode: z.string(),
+      differenceReasonText: z.string(),
+      pricingVersion: z.string().nullable(),
+      quoteId: z.string().nullable(),
+      settlementId: z.string().nullable(),
+      investigationRequired: z.boolean(),
+      components: z.array(
+        z.object({
+          code: z.string(),
+          label: z.string(),
+          amount: z.number(),
+        })
+      ),
+      generatedAt: z.string(),
+    })
+    .nullable()
+    .optional(),
   higherDispatchPriority: z.boolean().optional(),
   merchantName: z.string().nullable().optional(),
   itemCount: z.number().optional(),
@@ -82,6 +115,10 @@ const OrderSummarySchema = z.object({
   customerPhoneMasked: z.string().nullable().optional(),
   customerPrimaryPhoneMasked: z.string().nullable().optional(),
   customerAlternatePhoneMasked: z.string().nullable().optional(),
+  /** Parcel cash/COD collection point. */
+  payAt: z.enum(["pickup", "drop"]).nullable().optional(),
+  cashCollected: z.boolean().optional(),
+  receiverName: z.string().nullable().optional(),
   pickupAddressGeocoded: z.string().optional(),
   dropAddressGeocoded: z.string().optional(),
   foodItems: z
@@ -467,6 +504,10 @@ const RiderLedgerEntryDetailSchema = z.object({
   processedAt: z.string().nullable(),
   refundStatus: z.string().nullable(),
   refundId: z.string().nullable(),
+  settlementDifferenceReason: z.string().nullable().optional(),
+  settlementDifferenceAmount: z.number().nullable().optional(),
+  settlementDispatchOfferAmount: z.number().nullable().optional(),
+  settlementFinalAmount: z.number().nullable().optional(),
 });
 
 export type RiderLedgerEntryDetail = z.infer<typeof RiderLedgerEntryDetailSchema>;
@@ -612,6 +653,8 @@ type RiderRequestInit<T> = RequestInit & {
 };
 
 const RIDER_MUTATION_TIMEOUT_MS = 20_000;
+/** Accept claim can briefly outlast other mutations while GPS/GAP-2 runs — keep above p99 claim. */
+const RIDER_ACCEPT_TIMEOUT_MS = 35_000;
 const RIDER_QUERY_TIMEOUT_MS = 25_000;
 
 function apiErrorBody(err: ApiError): string | undefined {
@@ -821,7 +864,7 @@ export const riderApi = {
         body: "{}",
         responseSchema: OrderSummarySchema,
         idempotencyKey: opts?.actionId,
-        timeoutMs: RIDER_MUTATION_TIMEOUT_MS,
+        timeoutMs: RIDER_ACCEPT_TIMEOUT_MS,
         onBeforeFetch: () => {
           markAcceptLatency("T3_REQUEST_SENT");
         },
@@ -832,11 +875,12 @@ export const riderApi = {
   },
 
   /**
-   * Reject an order
+   * Reject an order — idempotency key prevents double-submit on weak networks.
    */
   async rejectOrder(
     orderId: string,
-    body: { reasonCode: string; reasonText?: string }
+    body: { reasonCode: string; reasonText?: string },
+    opts?: { actionId?: string }
   ) {
     const client = createApiClient();
     return client.request<{ ok: true }>(
@@ -845,6 +889,8 @@ export const riderApi = {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
+        idempotencyKey: opts?.actionId,
+        timeoutMs: RIDER_MUTATION_TIMEOUT_MS,
       }
     );
   },
@@ -1089,7 +1135,14 @@ export const riderApi = {
 
   async verifyPickupOtp(
     orderId: string,
-    payload: { otp: string; lat?: number; lng?: number; deviceTimestamp?: string },
+    payload: {
+      otp: string;
+      lat?: number;
+      lng?: number;
+      deviceTimestamp?: string;
+      pickupImageUrl?: string;
+      pickupImageR2Key?: string;
+    },
     opts?: { actionId?: string }
   ) {
     return slidePost(
@@ -1193,6 +1246,24 @@ export const riderApi = {
     );
   },
 
+  /** Parcel fare collect (pickup or drop). Idempotent. method = how customer paid. */
+  async confirmParcelCashCollected(
+    orderId: string,
+    opts?: { method?: "cash" | "online" }
+  ) {
+    const client = createApiClient();
+    const method = opts?.method === "online" ? "online" : "cash";
+    return client.request<RiderOrderSummary>(
+      `/v1/rider/orders/${orderId}/parcel/confirm-cash-collected`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method }),
+        responseSchema: OrderSummarySchema,
+      }
+    );
+  },
+
   /**
    * Rider picks how the passenger will pay for a COMPLETED ride (cash or online).
    * Records the choice on the order so the correct settlement path runs next.
@@ -1235,6 +1306,54 @@ export const riderApi = {
     });
     return client.request<z.infer<typeof responseSchema>>(
       `/v1/rider/orders/${orderId}/ride/online-qr`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        responseSchema,
+      }
+    );
+  },
+
+  /** Parcel fare collect QR (pickup/drop) — real Razorpay fixed-amount UPI QR. */
+  async createParcelOnlineQr(orderId: string) {
+    const client = createApiClient();
+    const responseSchema = z.object({
+      ok: z.literal(true),
+      orderId: z.string(),
+      qrId: z.string(),
+      qrImageUrl: z.string(),
+      amount: z.number(),
+      amountPaise: z.number().optional(),
+      currency: z.string().optional(),
+      expiresAt: z.string().nullable().optional(),
+      reused: z.boolean(),
+    });
+    return client.request<z.infer<typeof responseSchema>>(
+      `/v1/rider/orders/${orderId}/parcel/online-qr`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        responseSchema,
+      }
+    );
+  },
+
+  /**
+   * Backend-authoritative parcel QR payment status (Razorpay reconcile).
+   * Never use a local tap alone as proof of payment.
+   */
+  async checkParcelOnlineQrStatus(orderId: string) {
+    const client = createApiClient();
+    const responseSchema = z.object({
+      ok: z.literal(true),
+      status: z.enum(["paid", "pending", "expired", "failed", "not_started"]),
+      orderId: z.string(),
+      qrId: z.string().nullable(),
+      amountPaid: z.number().nullable(),
+      cashCollected: z.boolean(),
+    });
+    return client.request<z.infer<typeof responseSchema>>(
+      `/v1/rider/orders/${orderId}/parcel/online-qr/status`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1432,13 +1551,25 @@ export const riderApi = {
 
   /**
    * Read duty status from server (dispatch eligibility source of truth).
+   * Single-flight lives on dutyStore.syncFromServer; useDutyStatus shares via React Query.
    */
   async getDutyStatus() {
+    const self = riderApi as typeof riderApi & {
+      _dutyStatusFlight?: Promise<z.infer<typeof DutyStatusSchema>> | null;
+    };
+    if (self._dutyStatusFlight) return self._dutyStatusFlight;
     const client = createApiClient();
-    return client.request<z.infer<typeof DutyStatusSchema>>("/v1/rider/duty", {
-      method: "GET",
-      responseSchema: DutyStatusSchema,
-    });
+    self._dutyStatusFlight = client
+      .request<z.infer<typeof DutyStatusSchema>>("/v1/rider/duty", {
+        method: "GET",
+        responseSchema: DutyStatusSchema,
+        // Backend sync can take 5–8s under load; aborting at 8s caused false sync_failed.
+        timeoutMs: 15_000,
+      })
+      .finally(() => {
+        self._dutyStatusFlight = null;
+      });
+    return self._dutyStatusFlight;
   },
 
   /**

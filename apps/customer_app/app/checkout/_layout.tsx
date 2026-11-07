@@ -95,6 +95,12 @@ export default function CheckoutLayout() {
         }}
       />
       <Stack.Screen
+        name="parcel-fare"
+        options={{
+          headerShown: false,
+        }}
+      />
+      <Stack.Screen
         name="ride-fare-success"
         options={{
           headerShown: false,

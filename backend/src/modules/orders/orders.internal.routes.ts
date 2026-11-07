@@ -75,30 +75,36 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
     try {
       const sql = getSql();
       const rows = (await sql`
-        SELECT oc.id, oc.order_id AS "orderIdText"
+        SELECT oc.id, oc.order_id AS "orderIdText", oc.order_type AS "orderType"
         FROM orders_core oc
         WHERE oc.id = ${body.orders_core_id}
         LIMIT 1
-      `) as Array<{ id: number; orderIdText: string }>;
+      `) as Array<{ id: number; orderIdText: string; orderType: string | null }>;
       const row = rows[0];
       if (!row?.orderIdText) {
         return reply.code(404).send({ ok: false, error: "order_not_found" });
       }
 
-      const { adminCancelFoodRiderFromOrder } = await import(
-        "../../lib/food-rider-unassign.service.js"
-      );
-      await adminCancelFoodRiderFromOrder({
+      const {
+        adminCancelFoodRiderFromOrder,
+        adminCancelParcelRiderFromOrder,
+      } = await import("../../lib/food-rider-unassign.service.js");
+      const cancelInput = {
         orderCorePk: body.orders_core_id,
         orderIdText: String(row.orderIdText),
         riderId: body.rider_id,
         reasonCode: body.reason_code,
         reasonText: body.reason_text ?? null,
         removedBy: body.actor_email ?? body.actor_id ?? null,
-        actorType: "admin",
+        actorType: "admin" as const,
         actorId: body.actor_id ?? body.actor_email ?? undefined,
-        mode: "hold",
-      });
+        mode: "hold" as const,
+      };
+      if (String(row.orderType ?? "").toLowerCase() === "parcel") {
+        await adminCancelParcelRiderFromOrder(cancelInput);
+      } else {
+        await adminCancelFoodRiderFromOrder(cancelInput);
+      }
       return reply.send({ ok: true });
     } catch (err) {
       req.log.warn({ err, body }, "rider-cancel-only failed");
@@ -118,30 +124,36 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
     try {
       const sql = getSql();
       const rows = (await sql`
-        SELECT oc.id, oc.order_id AS "orderIdText"
+        SELECT oc.id, oc.order_id AS "orderIdText", oc.order_type AS "orderType"
         FROM orders_core oc
         WHERE oc.id = ${body.orders_core_id}
         LIMIT 1
-      `) as Array<{ id: number; orderIdText: string }>;
+      `) as Array<{ id: number; orderIdText: string; orderType: string | null }>;
       const row = rows[0];
       if (!row?.orderIdText) {
         return reply.code(404).send({ ok: false, error: "order_not_found" });
       }
 
-      const { adminCancelFoodRiderFromOrder } = await import(
-        "../../lib/food-rider-unassign.service.js"
-      );
-      await adminCancelFoodRiderFromOrder({
+      const {
+        adminCancelFoodRiderFromOrder,
+        adminCancelParcelRiderFromOrder,
+      } = await import("../../lib/food-rider-unassign.service.js");
+      const cancelInput = {
         orderCorePk: body.orders_core_id,
         orderIdText: String(row.orderIdText),
         riderId: body.rider_id,
         reasonCode: body.reason_code,
         reasonText: body.reason_text ?? null,
         removedBy: body.actor_email ?? body.actor_id ?? null,
-        actorType: "admin",
+        actorType: "admin" as const,
         actorId: body.actor_id ?? body.actor_email ?? undefined,
-        mode: "reassign",
-      });
+        mode: "reassign" as const,
+      };
+      if (String(row.orderType ?? "").toLowerCase() === "parcel") {
+        await adminCancelParcelRiderFromOrder(cancelInput);
+      } else {
+        await adminCancelFoodRiderFromOrder(cancelInput);
+      }
       return reply.send({ ok: true });
     } catch (err) {
       req.log.warn({ err, body }, "rider-cancel-reassign failed");

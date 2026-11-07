@@ -94,3 +94,62 @@ export function shouldKeepPushRecipient(input: {
   if (input.platform !== "android") return true;
   return !input.sameUserHasAndroidFcm;
 }
+
+/**
+ * Token rows sometimes omit role (legacy / partial register). Match the
+ * requested audience and treat null/blank as belonging to that audience when
+ * we already scoped the lookup to known customer/rider/merchant ids.
+ */
+export function pushTokenRoleMatches(
+  storedRole: string | null | undefined,
+  audienceRole: string,
+): boolean {
+  const want = String(audienceRole ?? "")
+    .trim()
+    .toLowerCase();
+  if (!want || want === "all") return true;
+  const got = String(storedRole ?? "")
+    .trim()
+    .toLowerCase();
+  if (!got) return true;
+  return got === want;
+}
+
+/**
+ * Prefer the campaign audience role when the DB role is missing so
+ * audience isolation does not drop otherwise-valid tokens as role="all".
+ */
+export function effectivePushRecipientRole(
+  storedRole: string | null | undefined,
+  audienceRole?: string | null,
+): string {
+  const got = String(storedRole ?? "")
+    .trim()
+    .toLowerCase();
+  if (got) return got;
+  const want = String(audienceRole ?? "")
+    .trim()
+    .toLowerCase();
+  return want && want !== "all" ? want : "all";
+}
+
+/**
+ * Collapse GM / numeric customer aliases so inbox merge does not double-count
+ * the same person who already received a push on another id form.
+ */
+export function customerAudienceCoverKey(userId: string): string {
+  const raw = String(userId ?? "").trim();
+  if (!raw) return "";
+  const gm = /^GM(\d+)$/i.exec(raw);
+  if (gm && !/^GMMP/i.test(raw)) {
+    const n = Number(gm[1]);
+    if (Number.isFinite(n) && n > 0) {
+      return `pk:${n >= 100000 ? n - 100000 : n}`;
+    }
+  }
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return `pk:${n}`;
+  }
+  return `id:${raw.toLowerCase()}`;
+}

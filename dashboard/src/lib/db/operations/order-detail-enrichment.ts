@@ -58,6 +58,8 @@ export type OrderDetailEnrichment = {
   riderId: number | null;
   customerTrustTierLabel: string | null;
   customerAccountStatus: string | null;
+  /** customers.trust_score — used as sender/passenger overall rating fallback. */
+  customerTrustScore: number | null;
   /** Trust tier label from `customers` — shown as User Type on customer card. */
   customerUserType: string | null;
   /** Populated when customer trust tier is FRAUD. */
@@ -1371,6 +1373,10 @@ export async function getOrderDetailEnrichment(
       customerTrustTierLabel,
       customerAccountStatus:
         base.accountStatus != null ? String(base.accountStatus) : null,
+      customerTrustScore: (() => {
+        const n = Number(base.trustScore);
+        return Number.isFinite(n) && n > 0 ? Math.round(n * 10) / 10 : null;
+      })(),
       customerUserType: customerTrustTierLabel,
       customerFraudReasons,
       riderInstructionsList,

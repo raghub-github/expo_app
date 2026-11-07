@@ -153,32 +153,63 @@ function needsDirectFcmFallback(skipReason: string | null | undefined): boolean 
 }
 
 
-/** Notify one eligible rider via push + rider websocket channel. Never throws. */
+export type OrderCardLocations = {
+  storeName: string;
+  pickupAddress: string;
+  dropAddress: string;
+};
+
+function shortenAddress(raw: string, max = 72): string {
+  const s = String(raw ?? "").replace(/\s+/g, " ").trim();
+  if (!s) return "";
+  if (s.length <= max) return s;
+  return `${s.slice(0, Math.max(24, max - 1)).trim()}…`;
+}
+
 /**
- * Pickup store name for the native alert card.
- *
- * A rider staring at a lock-screen card needs to know which restaurant they are
- * being sent to; the card previously showed an order id and nothing actionable.
- * Fail-open: a lookup problem must never cost the rider the offer, so this
- * returns "" and the card simply omits the line.
+ * One wave-level lookup for lock-screen / overlay card copy (store + addresses).
+ * Fail-open: never block the offer if addresses cannot be resolved.
  */
-async function resolvePickupStoreName(orderCoreId: number): Promise<string> {
-  if (!Number.isFinite(orderCoreId) || orderCoreId <= 0) return "";
+async function resolveOrderCardLocations(orderCoreId: number): Promise<OrderCardLocations> {
+  if (!Number.isFinite(orderCoreId) || orderCoreId <= 0) {
+    return { storeName: "", pickupAddress: "", dropAddress: "" };
+  }
   try {
     const sql = getSql();
     const rows = (await sql`
-      SELECT s.store_display_name AS name
+      SELECT
+        COALESCE(NULLIF(btrim(s.store_display_name), ''), NULLIF(btrim(s.store_name), '')) AS store_name,
+        COALESCE(
+          NULLIF(btrim(oc.pickup_address_normalized), ''),
+          NULLIF(btrim(oc.pickup_address_raw), ''),
+          NULLIF(btrim(s.full_address), '')
+        ) AS pickup_address,
+        COALESCE(
+          NULLIF(btrim(oc.drop_address_normalized), ''),
+          NULLIF(btrim(oc.drop_address_raw), ''),
+          NULLIF(btrim(oc.delivery_address), '')
+        ) AS drop_address
       FROM public.orders_core oc
-      JOIN public.merchant_stores s ON s.id = oc.merchant_store_id
+      LEFT JOIN public.merchant_stores s ON s.id = oc.merchant_store_id
       WHERE oc.id = ${orderCoreId}
       LIMIT 1
-    `) as unknown as Array<{ name: string | null }>;
-    return String(rows[0]?.name ?? "").trim();
+    `) as unknown as Array<{
+      store_name: string | null;
+      pickup_address: string | null;
+      drop_address: string | null;
+    }>;
+    const row = rows[0];
+    return {
+      storeName: String(row?.store_name ?? "").trim(),
+      pickupAddress: shortenAddress(String(row?.pickup_address ?? "")),
+      dropAddress: shortenAddress(String(row?.drop_address ?? "")),
+    };
   } catch {
-    return "";
+    return { storeName: "", pickupAddress: "", dropAddress: "" };
   }
 }
 
+/** Notify one eligible rider via push + rider websocket channel. Never throws. */
 export async function notifyRiderDispatchOffer(
   target: DispatchOrderTarget,
   rider: EligibleDispatchRider,
@@ -187,6 +218,8 @@ export async function notifyRiderDispatchOffer(
     offerExpiresAtMs?: number | null;
     /** Resolved once per wave, never per rider — see dispatchWaveToRiders. */
     pickupStoreName?: string | null;
+    pickupAddress?: string | null;
+    dropAddress?: string | null;
   }
 ): Promise<void> {
   // A re-alert (GAP 3b) reuses the same wave but MUST carry a distinct idempotency key, otherwise
@@ -195,11 +228,15 @@ export async function notifyRiderDispatchOffer(
   const assignment_notify_started_at = Date.now();
   const realert = opts?.realert === true;
   const pickupStoreName = String(opts?.pickupStoreName ?? "").trim();
+  const pickupAddress = String(opts?.pickupAddress ?? "").trim();
+  const dropAddress = String(opts?.dropAddress ?? "").trim();
   try {
     const displayId = target.formattedOrderId?.trim() || target.orderId;
     const label = SERVICE_LABEL[target.serviceType];
     const dist = formatDistanceKm(rider.distanceMeters);
     const distanceKmNum = Math.round((rider.distanceMeters / 1000) * 10) / 10;
+    const toPickupKmStr =
+      Number.isFinite(distanceKmNum) && distanceKmNum > 0 ? String(distanceKmNum) : "";
 
 
     console.info(
@@ -258,9 +295,15 @@ export async function notifyRiderDispatchOffer(
     };
 
 
-    // Distance-only body — earnings must not delay the critical alert.
-    const title = "🔔 New order received";
-    const body = `${label} · ${displayId} · ${dist} to pickup — tap to accept`;
+    // Rich shade copy — earnings may still enrich after CARD_ENRICHMENT_BUDGET.
+    const title = `GatiMitra · ${label}`;
+    const bodyParts = [
+      displayId,
+      pickupStoreName || pickupAddress || null,
+      dropAddress ? `Drop: ${dropAddress}` : null,
+      `${dist} to pickup`,
+    ].filter((p): p is string => Boolean(p && String(p).trim()));
+    const body = `${bodyParts.join(" · ")} — tap to accept`;
 
 
     const push_dispatch_started_at = Date.now();
@@ -317,12 +360,12 @@ export async function notifyRiderDispatchOffer(
           pickupDistance: dist,
           serviceType: target.serviceType,
           waveNumber: target.waveNumber,
-          estimatedEarning: "",
-          earningAmount: "",
-          payout: "",
+          estimatedEarning: riderPayout != null ? String(riderPayout) : "",
+          earningAmount: riderPayout != null ? String(riderPayout) : "",
+          payout: riderPayout != null ? String(riderPayout) : "",
           distanceKm: distanceKmNum,
-          merchantName: "",
-          dropArea: "",
+          merchantName: pickupStoreName,
+          dropArea: dropAddress,
         };
         const sharedMetadata = {
           type: "dispatch_offer",
@@ -332,38 +375,34 @@ export async function notifyRiderDispatchOffer(
           pickupDistanceMeters: String(Math.round(rider.distanceMeters)),
           serviceType: String(target.serviceType),
           category: toCategory(target.serviceType),
+          orderType: String(target.serviceType),
           skip_in_app_banner: true,
           realert: realert ? "1" : "0",
           alertStartedAt: String(assignment_notify_started_at),
           alertSessionId: `RIDER_NEW_ORDER:${target.orderId}:${rider.riderId}:${target.waveNumber}`,
           gmAlertAction: "start",
           // --- fields the native alert card renders when JS is dead ---
-          // Pre-formatted: the card has no locale/unit logic of its own, and the
-          // raw pickupDistanceMeters above renders as a bare "1430 m".
           pickupDistance: dist,
-          // Without this the card falls back to scraping an id out of the body
-          // text, which only ever matched food orders.
           formattedOrderId: target.formattedOrderId ?? "",
-          // Omitted, not zeroed, when unknown — the card hides the row rather
-          // than showing a timer at zero or a payout of ₹0.
+          // Omitted, not zeroed, when unknown — the card hides empty rows.
           ...(offerExpiresAtMs != null ? { expiresAt: String(offerExpiresAtMs) } : {}),
           ...(riderPayout != null ? { amount: String(riderPayout) } : {}),
           ...(cardEarnings?.tripDistanceKm
             ? { tripDistanceKm: String(cardEarnings.tripDistanceKm) }
             : {}),
-          // The rest of the distance strip the native card draws. Already
-          // computed for the payout, so this costs nothing extra. Each leg is
-          // omitted rather than zeroed when unknown — the card skips a missing
-          // leg, but a literal 0 would render as "Pickup 0 km".
+          // Prefer authoritative earnings pickup km; fall back to live GPS→pickup.
           ...(cardEarnings?.pickupDistanceKm
             ? { toPickupKm: String(cardEarnings.pickupDistanceKm) }
-            : {}),
+            : toPickupKmStr
+              ? { toPickupKm: toPickupKmStr }
+              : {}),
           ...(cardEarnings?.totalDistanceKm
             ? { overallKm: String(cardEarnings.totalDistanceKm) }
             : {}),
-          // Where the rider is actually going. Without it the lock-screen card
-          // showed an order id and nothing a rider could act on.
           ...(pickupStoreName ? { storeName: pickupStoreName } : {}),
+          // Address lines — distinct from distance so the card can show both.
+          ...(pickupAddress ? { pickupAddress } : {}),
+          ...(dropAddress ? { dropAddress, dropArea: dropAddress } : {}),
         };
         const sharedOverrides = { title, body };
 
@@ -541,13 +580,17 @@ export async function notifyEligibleRidersDispatchOffer(
 
   // One read for the whole wave, off the per-rider critical path.
   const offerExpiresAtMs = await resolveOfferDeadlineMs(target.serviceType, Date.now());
-  // Same deal for the pickup store name the native card shows: one query per
-  // wave, not one per rider, and a failure never blocks the offer.
-  const pickupStoreName = await resolvePickupStoreName(target.orderCoreId);
+  // Store + addresses for the native card: one query per wave, never per rider.
+  const cardLocations = await resolveOrderCardLocations(target.orderCoreId);
 
   const results = await Promise.allSettled(
     riders.map((rider) =>
-      notifyRiderDispatchOffer(target, rider, { offerExpiresAtMs, pickupStoreName })
+      notifyRiderDispatchOffer(target, rider, {
+        offerExpiresAtMs,
+        pickupStoreName: cardLocations.storeName,
+        pickupAddress: cardLocations.pickupAddress,
+        dropAddress: cardLocations.dropAddress,
+      })
     )
   );
   return results.filter((r) => r.status === "fulfilled").length;

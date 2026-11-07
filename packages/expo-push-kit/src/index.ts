@@ -68,6 +68,7 @@ export {
   markClickedRemote,
   markReadRemote,
   markAllReadRemote,
+  clearAllRemote,
   loadPreferences,
   setPreference,
   type InboxItem,

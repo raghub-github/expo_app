@@ -508,7 +508,7 @@ export function ParcelLocationSearchScreen() {
       <ScrollView
         style={styles.list}
         contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
-        keyboardShouldPersistTaps="handled"
+        keyboardShouldPersistTaps="always"
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
       >

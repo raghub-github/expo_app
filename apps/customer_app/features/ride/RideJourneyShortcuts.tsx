@@ -1,7 +1,7 @@
 /**
  * Horizontal Recent rides + Favorite journeys rows (IRCTC-style tap-to-book).
  */
-import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { AppText } from "@/components/AppText";
 import {
@@ -37,27 +37,48 @@ function JourneyCard({
   const fromCode = placeCode(journey.pickup?.primary ?? "");
   const toCode = placeCode(journey.drop?.primary ?? "");
   return (
-    <TouchableOpacity style={styles.card} onPress={onSelect} activeOpacity={0.88}>
+    <View style={styles.card}>
       <View style={styles.cardTop}>
-        <View style={styles.codeCol}>
-          <AppText style={styles.code}>{fromCode}</AppText>
-          <AppText style={styles.city} numberOfLines={1}>
-            {journey.pickup?.primary ?? "Pickup"}
-          </AppText>
-        </View>
-        <Ionicons name="arrow-forward" size={14} color="#9CA3AF" style={styles.arrow} />
-        <View style={styles.codeCol}>
-          <AppText style={styles.code}>{toCode}</AppText>
-          <AppText style={styles.city} numberOfLines={1}>
-            {journey.drop?.primary ?? "Drop"}
-          </AppText>
-        </View>
-        <TouchableOpacity onPress={onToggleFavorite} hitSlop={10} style={styles.heartBtn}>
-          <Ionicons name={favorited ? "heart" : "heart-outline"} size={16} color={favorited ? "#E11D48" : "#9CA3AF"} />
-        </TouchableOpacity>
+        <Pressable
+          style={styles.cardBody}
+          onPress={onSelect}
+          accessibilityRole="button"
+          accessibilityLabel={`Book ride from ${fromCode} to ${toCode}`}
+        >
+          <View style={styles.codeCol}>
+            <AppText style={styles.code}>{fromCode}</AppText>
+            <AppText style={styles.city} numberOfLines={1}>
+              {journey.pickup?.primary ?? "Pickup"}
+            </AppText>
+          </View>
+          <Ionicons name="arrow-forward" size={14} color="#9CA3AF" style={styles.arrow} />
+          <View style={styles.codeCol}>
+            <AppText style={styles.code}>{toCode}</AppText>
+            <AppText style={styles.city} numberOfLines={1}>
+              {journey.drop?.primary ?? "Drop"}
+            </AppText>
+          </View>
+        </Pressable>
+        <Pressable
+          onPress={onToggleFavorite}
+          hitSlop={12}
+          style={styles.heartBtn}
+          accessibilityRole="button"
+          accessibilityLabel={favorited ? "Remove favorite journey" : "Save journey"}
+        >
+          <Ionicons
+            name={favorited ? "heart" : "heart-outline"}
+            size={16}
+            color={favorited ? "#E11D48" : "#9CA3AF"}
+          />
+        </Pressable>
       </View>
-      {meta ? <AppText style={styles.meta}>{meta}</AppText> : null}
-    </TouchableOpacity>
+      {meta ? (
+        <Pressable onPress={onSelect} accessibilityRole="button">
+          <AppText style={styles.meta}>{meta}</AppText>
+        </Pressable>
+      ) : null}
+    </View>
   );
 }
 
@@ -82,11 +103,10 @@ export function RideJourneyShortcuts({
           <View style={styles.headingRow}>
             <AppText style={styles.heading}>{recentTitle}</AppText>
             {onClearRecent ? (
-              <TouchableOpacity
+              <Pressable
                 onPress={onClearRecent}
                 disabled={!clearEnabled}
                 hitSlop={8}
-                activeOpacity={0.7}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: !clearEnabled }}
                 accessibilityLabel="Clear recent rides"
@@ -94,10 +114,16 @@ export function RideJourneyShortcuts({
                 <AppText style={[styles.clearText, !clearEnabled && styles.clearTextDisabled]}>
                   Clear
                 </AppText>
-              </TouchableOpacity>
+              </Pressable>
             ) : null}
           </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.row}
+            keyboardShouldPersistTaps="always"
+            nestedScrollEnabled
+          >
             {recentOnly.map((journey, index) => (
               <JourneyCard
                 key={`r-${index}-${journey.savedAt}`}
@@ -115,7 +141,13 @@ export function RideJourneyShortcuts({
       {favoriteJourneys.length > 0 ? (
         <View style={styles.section}>
           <AppText style={styles.heading}>{favoriteTitle}</AppText>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.row}
+            keyboardShouldPersistTaps="always"
+            nestedScrollEnabled
+          >
             {favoriteJourneys.map((journey, index) => (
               <JourneyCard
                 key={`f-${index}-${journey.savedAt}`}
@@ -177,6 +209,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
   },
+  cardBody: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    minWidth: 0,
+  },
   codeCol: {
     flex: 1,
     minWidth: 0,
@@ -197,8 +235,12 @@ const styles = StyleSheet.create({
     marginHorizontal: 6,
   },
   heartBtn: {
-    paddingLeft: 4,
-    paddingTop: 2,
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 2,
+    marginTop: -6,
   },
   meta: {
     marginTop: 10,

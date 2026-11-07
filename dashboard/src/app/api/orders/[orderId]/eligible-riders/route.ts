@@ -30,7 +30,8 @@ export async function GET(
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD")) ||
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PARCEL"));
 
     if (!allowed) {
       return NextResponse.json({ success: false, error: "Insufficient permissions" }, { status: 403 });

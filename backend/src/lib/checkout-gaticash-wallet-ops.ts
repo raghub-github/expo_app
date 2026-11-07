@@ -97,7 +97,7 @@ async function resolveOrderGatiCashTxnId(
   return generateGatiCashTxnId();
 }
 
-/** Debit GatiCash toward post-delivery ride fare payment. Idempotent by txn id. */
+/** Debit GatiCash toward post-delivery ride / parcel fare payment. Idempotent by txn id. */
 export async function debitCustomerGatiCashForRideFare(
   sql: Sql,
   args: {
@@ -106,6 +106,9 @@ export async function debitCustomerGatiCashForRideFare(
     amount: number;
     /** Optional pre-issued unique GatiCash txn id. */
     gatiCashTxnId?: string | null;
+    /** Wallet ledger source — defaults to ride_fare_payment. */
+    source?: "ride_fare_payment" | "parcel_fare_payment";
+    note?: string;
   }
 ): Promise<string | null> {
   const amount = Math.round((Number(args.amount) || 0) * 100) / 100;
@@ -116,11 +119,25 @@ export async function debitCustomerGatiCashForRideFare(
     (args.gatiCashTxnId && isModernGatiCashTxnId(args.gatiCashTxnId)
       ? args.gatiCashTxnId.trim()
       : null) ?? generateGatiCashTxnId();
+  const source = args.source ?? "ride_fare_payment";
+  const note =
+    args.note ??
+    (source === "parcel_fare_payment"
+      ? "GatiCash applied on parcel fare"
+      : "GatiCash applied on ride fare");
+  const rideLegacy = `ride_gaticash_${args.orderIdText}`.slice(0, 120);
+  const parcelLegacy = `parcel_gaticash_${args.orderIdText}`.slice(0, 120);
 
+  // Retry-safe: same GC txn, legacy keys, or any prior fare debit for this order.
   const existingDebit = await sql`
     SELECT id, transaction_id FROM public.customer_wallet_transactions
     WHERE transaction_id = ${debitKey}
-       OR transaction_id = ${`ride_gaticash_${args.orderIdText}`.slice(0, 120)}
+       OR transaction_id = ${rideLegacy}
+       OR transaction_id = ${parcelLegacy}
+       OR (
+         reference_id = ${args.orderIdText}
+         AND COALESCE(reference_type, '') IN ('ride_fare_payment', 'parcel_fare_payment')
+       )
     LIMIT 1
   `;
   if (existingDebit.length > 0) {
@@ -133,10 +150,10 @@ export async function debitCustomerGatiCashForRideFare(
       ${amount},
       'DEBIT'::public.wallet_transaction_type,
       ${args.orderIdText},
-      ${"ride_fare_payment"},
-      ${"GatiCash applied on ride fare"},
+      ${source},
+      ${note},
       ${debitKey},
-      ${JSON.stringify({ orderId: args.orderIdText, gatiCashTxnId: debitKey })}::text::jsonb,
+      ${JSON.stringify({ orderId: args.orderIdText, gatiCashTxnId: debitKey, source })}::text::jsonb,
       FALSE
     )
   `;

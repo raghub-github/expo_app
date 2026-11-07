@@ -2,12 +2,8 @@ import { useEffect, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { acquireAndCommitRiderLocation } from "@/src/services/location/riderLocationController";
 import { useRiderLocationStore } from "@/src/stores/riderLocationStore";
-import { useDutyStore } from "@/src/stores/dutyStore";
-import { useSessionStore } from "@/src/stores/sessionStore";
 import { getDeviceLocationReadiness } from "@gatimitra/expo-location-kit";
 import { getSharedLocationEngine } from "@/src/services/location/locationTracker";
-import { getOrCreateDeviceId } from "@/src/utils/deviceId";
-import { pingLocation } from "@/src/services/location/locationPinger";
 import {
   reconcileForegroundLocationPermission,
   wireForegroundLocationPermissionAppStateOnce,
@@ -22,6 +18,9 @@ const ENGINE_FRESH_MS = 45_000;
  * Root lifecycle: seed the global location store on cold start and foreground.
  * Idle Home must not start a Highest-accuracy GPS burst — the shared duty watch
  * (or a fast last-known) is enough. Navigation uses the High profile (not Highest).
+ *
+ * Does NOT HTTP-ping the backend. Location POST ownership is exclusive to
+ * useRiderDutyLocationPing (+ background task) to prevent duplicate pings.
  */
 export function RiderLocationLifecycle() {
   const hydrateReadiness = useRiderLocationStore((s) => s.hydrateReadiness);
@@ -78,32 +77,11 @@ export function RiderLocationLifecycle() {
           return;
         }
 
-        const result = await acquireAndCommitRiderLocation({
+        // Local store seed only — no backend ping (duty pipeline owns HTTP).
+        await acquireAndCommitRiderLocation({
           assumeReady: true,
           preferFast: true,
         });
-        if (!result.ok) return;
-
-        // Push fresh coords to backend immediately so customers/merchants see the new position.
-        const session = useSessionStore.getState().session;
-        const isOnDuty = useDutyStore.getState().isOnDuty;
-        if (session && isOnDuty) {
-          try {
-            const deviceId = await getOrCreateDeviceId();
-            await pingLocation({
-              session,
-              deviceId,
-              fix: {
-                tsMs: Date.now(),
-                lat: result.coords.latitude,
-                lng: result.coords.longitude,
-                accuracyM: result.coords.accuracy ?? undefined,
-              },
-            });
-          } catch {
-            // Non-blocking — continuous duty ping still runs.
-          }
-        }
       } catch {
         // Non-blocking — duty ping / navigation still use their own trackers.
       } finally {

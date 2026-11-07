@@ -1711,11 +1711,14 @@ export async function riderRoutes(app: FastifyInstance) {
         };
       }
       const riderId = parseInt(riderIdMatch[1]!, 10);
-      const { syncRiderDutyWithRestrictions } = await import(
+      const { readRiderDutyStatusFast, syncRiderDutyWithRestrictions } = await import(
         "../../lib/rider-account-restrictions.js"
       );
 
-      const duty = await syncRiderDutyWithRestrictions(riderId);
+      // Fast duty_logs read so cold-start sync is not starved by eligibility/app-assets.
+      const duty = await readRiderDutyStatusFast(riderId);
+      // Align restrictions in the background — do not block the GET.
+      void syncRiderDutyWithRestrictions(riderId).catch(() => undefined);
 
       return {
         isOnDuty: duty.isOnDuty,
@@ -3903,6 +3906,39 @@ export async function riderRoutes(app: FastifyInstance) {
       .array(z.object({ name: z.string(), amount: z.number() }))
       .optional(),
     totalEarning: z.number().optional(),
+    settlementBreakdown: z
+      .object({
+        dispatchOfferAmount: z.number(),
+        acceptedQuoteAmount: z.number(),
+        dispatchQuotedDistanceKm: z.number().nullable(),
+        acceptedDistanceKm: z.number().nullable(),
+        finalBillableDistanceKm: z.number().nullable(),
+        finalBaseEarning: z.number(),
+        finalDistanceEarning: z.number(),
+        waitingCharge: z.number(),
+        additionalEarning: z.number(),
+        deductions: z.number(),
+        cancellationAdjustment: z.number(),
+        finalSettlementAmount: z.number(),
+        walletCreditedAmount: z.number(),
+        differenceAmount: z.number(),
+        differenceReasonCode: z.string(),
+        differenceReasonText: z.string(),
+        pricingVersion: z.string().nullable(),
+        quoteId: z.string().nullable(),
+        settlementId: z.string().nullable(),
+        investigationRequired: z.boolean(),
+        components: z.array(
+          z.object({
+            code: z.string(),
+            label: z.string(),
+            amount: z.number(),
+          })
+        ),
+        generatedAt: z.string(),
+      })
+      .nullable()
+      .optional(),
     higherDispatchPriority: z.boolean().optional(),
     merchantName: z.string().nullable().optional(),
     itemCount: z.number().optional(),
@@ -3939,6 +3975,10 @@ export async function riderRoutes(app: FastifyInstance) {
     customerPhoneMasked: z.string().nullable().optional(),
     customerPrimaryPhoneMasked: z.string().nullable().optional(),
     customerAlternatePhoneMasked: z.string().nullable().optional(),
+    /** Parcel cash/COD: collect at pickup or drop. */
+    payAt: z.enum(["pickup", "drop"]).nullable().optional(),
+    cashCollected: z.boolean().optional(),
+    receiverName: z.string().nullable().optional(),
     pickupAddressGeocoded: z.string().optional(),
     dropAddressGeocoded: z.string().optional(),
     foodItems: z
@@ -4058,14 +4098,20 @@ export async function riderRoutes(app: FastifyInstance) {
       const started = Date.now();
       req.log.info({ riderId }, "AVAILABLE_QUERY start");
       try {
-        const result = await withDbSlot(() =>
-          Promise.race([
-            getAvailableOrdersForRider(riderId),
-            new Promise<never>((_, reject) => {
-              setTimeout(() => reject(new Error("available_orders_timeout")), 12_000);
-            }),
-          ]),
-        );
+        let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+        // Hard ceiling outside the DB-slot wait so a saturated pool cannot blow
+        // the rider client's 25s NetworkTimeoutError.
+        const result = await Promise.race([
+          withDbSlot(() => getAvailableOrdersForRider(riderId)),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(
+              () => reject(new Error("available_orders_timeout")),
+              8_000
+            );
+          }),
+        ]).finally(() => {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+        });
         req.log.info(
           { riderId, count: result.length, ms: Date.now() - started },
           "AVAILABLE_QUERY"
@@ -4628,6 +4674,8 @@ export async function riderRoutes(app: FastifyInstance) {
           lat: z.number().finite().optional(),
           lng: z.number().finite().optional(),
           deviceTimestamp: z.string().optional(),
+          pickupImageUrl: z.string().min(8).max(2048).optional(),
+          pickupImageR2Key: z.string().min(3).max(512).optional(),
         }),
         response: {
           200: RiderOrderSummarySchema,
@@ -4649,6 +4697,8 @@ export async function riderRoutes(app: FastifyInstance) {
         lat?: number;
         lng?: number;
         deviceTimestamp?: string;
+        pickupImageUrl?: string;
+        pickupImageR2Key?: string;
       };
       const receivedAt = logRiderSlideReceived(req, "verify_pickup_otp", riderId, id);
       try {
@@ -4955,6 +5005,48 @@ export async function riderRoutes(app: FastifyInstance) {
     }
   );
 
+  app.post(
+    "/orders/:id/parcel/confirm-cash-collected",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: z
+          .object({ method: z.enum(["cash", "online"]).optional() })
+          .optional()
+          .default({}),
+        response: {
+          200: RiderOrderSummarySchema,
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      const body = (req.body ?? {}) as { method?: "cash" | "online" };
+      try {
+        const { confirmParcelCashCollectedForRider } = await import("./rider.orders.service.js");
+        return await confirmParcelCashCollectedForRider(riderId, id, {
+          method: body.method === "online" ? "online" : "cash",
+        });
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        const status = err.statusCode ?? 500;
+        const payload: { error: string; code?: string } = {
+          error: err.message || "Could not confirm cash",
+        };
+        if (err.code) payload.code = err.code;
+        return reply.status(status as 409).send(payload);
+      }
+    }
+  );
+
   // Rider picks CASH or ONLINE at the collect-payment step of a completed ride.
   // Records the choice on orders_core.payment_method so the correct settlement path
   // runs next (cash → confirm-cash-collected; online → rider-presented QR). Frozen
@@ -5045,6 +5137,102 @@ export async function riderRoutes(app: FastifyInstance) {
         const status = err.statusCode ?? 500;
         const payload: { error: string; code?: string } = {
           error: err.message || "Could not create payment QR",
+        };
+        if (err.code) payload.code = err.code;
+        return reply.status(status as 409).send(payload);
+      }
+    }
+  );
+
+  // Parcel fare collect (pickup/drop) — real Razorpay fixed-amount UPI QR.
+  app.post(
+    "/orders/:id/parcel/online-qr",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            orderId: z.string(),
+            qrId: z.string(),
+            qrImageUrl: z.string(),
+            amount: z.number(),
+            amountPaise: z.number().optional(),
+            currency: z.string().optional(),
+            expiresAt: z.string().nullable().optional(),
+            reused: z.boolean(),
+          }),
+          400: z.object({ error: z.string(), code: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+          502: z.object({ error: z.string(), code: z.string().optional() }),
+          503: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      try {
+        const { createParcelOnlineQr } = await import("../parcel/parcel-online-qr.service.js");
+        return await createParcelOnlineQr({ riderId, orderRef: id });
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        const status = err.statusCode ?? 500;
+        const payload: { error: string; code?: string } = {
+          error: err.message || "Could not create payment QR",
+        };
+        if (err.code) payload.code = err.code;
+        return reply.status(status as 409).send(payload);
+      }
+    }
+  );
+
+  // Backend-authoritative status check / Razorpay reconcile for parcel online QR.
+  // Rider app must never mark fare collected from a local "Payment received" tap alone.
+  app.post(
+    "/orders/:id/parcel/online-qr/status",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            status: z.enum(["paid", "pending", "expired", "failed", "not_started"]),
+            orderId: z.string(),
+            qrId: z.string().nullable(),
+            amountPaid: z.number().nullable(),
+            cashCollected: z.boolean(),
+          }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+          502: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      try {
+        const { reconcileParcelOnlineQrForRider } = await import(
+          "../parcel/parcel-online-qr.service.js"
+        );
+        return await reconcileParcelOnlineQrForRider({ riderId, orderRef: id });
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        const status = err.statusCode ?? 500;
+        const payload: { error: string; code?: string } = {
+          error: err.message || "Could not check payment status",
         };
         if (err.code) payload.code = err.code;
         return reply.status(status as 409).send(payload);

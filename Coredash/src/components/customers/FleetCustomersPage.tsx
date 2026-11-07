@@ -588,8 +588,8 @@ export function FleetCustomersPage() {
     setDetailError(null);
     (async () => {
       try {
-        const params = new URLSearchParams(searchParams.toString());
-        if (!params.get("period")) params.set("period", period);
+        const params = new URLSearchParams();
+        params.set("period", period || searchParams.get("period") || "7d");
         const res = await fetch(`/api/customers/${encodeURIComponent(selectedId)}?${params}`, {
           credentials: "include",
           cache: "no-store",

@@ -17,11 +17,12 @@ describe("recoveryIntervalMs", () => {
   it("uses a slower HTTP fallback while WS is down than a fetch round-trip", () => {
     assert.equal(recoveryIntervalMs(false), WS_DOWN_RECOVERY_MS);
     assert.ok(WS_DOWN_RECOVERY_MS < WS_CONNECTED_RECOVERY_MS);
-    assert.ok(WS_DOWN_RECOVERY_MS >= 10_000);
+    assert.ok(WS_DOWN_RECOVERY_MS >= 8_000);
   });
 
-  it("backs off further after consecutive empty recoveries", () => {
+  it("backs off only softly after consecutive empty recoveries while WS is down", () => {
     assert.equal(recoveryIntervalMs(false, EMPTY_RECOVERY_BACKOFF_AFTER), WS_DOWN_IDLE_BACKOFF_MS);
+    assert.ok(WS_DOWN_IDLE_BACKOFF_MS <= 20_000);
     assert.equal(recoveryIntervalMs(true, 99), WS_CONNECTED_RECOVERY_MS);
   });
 });

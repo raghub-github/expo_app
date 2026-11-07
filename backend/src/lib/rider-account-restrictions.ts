@@ -510,15 +510,107 @@ export function filterUnrestrictedDispatchServices<T extends RiderDispatchServic
   return services.filter((service) => !blocked.has(service));
 }
 
-/** Align duty_logs with current restrictions (strip blocked services or go OFF). */
-export async function syncRiderDutyWithRestrictions(riderId: number): Promise<{
+type DutyRestrictionSyncResult = {
   isOnDuty: boolean;
   allowedServiceTypes: RiderDispatchService[];
   blockedServiceTypes: RiderDispatchService[];
   accountRestricted: boolean;
   allServicesBlacklisted: boolean;
   lastUpdated: string;
-}> {
+};
+
+/** Collapse concurrent GET /duty stampede onto one sync per rider. */
+const dutyRestrictionSyncInFlight = new Map<number, Promise<DutyRestrictionSyncResult>>();
+
+type DutyFastCache = { at: number; value: DutyRestrictionSyncResult };
+const dutyFastCache = new Map<number, DutyFastCache>();
+const DUTY_FAST_TTL_MS = 3_000;
+const dutyFastInFlight = new Map<number, Promise<DutyRestrictionSyncResult>>();
+
+/**
+ * Fast path for GET /v1/rider/duty — one duty_logs read, no eligibility engine.
+ * Full syncRiderDutyWithRestrictions still runs on PUT /duty and admin paths.
+ */
+export async function readRiderDutyStatusFast(
+  riderId: number
+): Promise<DutyRestrictionSyncResult> {
+  const cached = dutyFastCache.get(riderId);
+  if (cached && Date.now() - cached.at < DUTY_FAST_TTL_MS) {
+    return cached.value;
+  }
+  const existing = dutyFastInFlight.get(riderId);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    const db = getDb();
+    const latest = await db
+      .select({
+        status: dutyLogs.status,
+        serviceTypes: dutyLogs.serviceTypes,
+        timestamp: dutyLogs.timestamp,
+      })
+      .from(dutyLogs)
+      .where(eq(dutyLogs.riderId, riderId))
+      .orderBy(desc(dutyLogs.timestamp))
+      .limit(1);
+
+    const row = latest[0];
+    const lastUpdated =
+      row?.timestamp instanceof Date
+        ? row.timestamp.toISOString()
+        : row?.timestamp
+          ? new Date(String(row.timestamp)).toISOString()
+          : new Date().toISOString();
+
+    const isOnDuty = row?.status === "ON";
+    const allowedServiceTypes = isOnDuty
+      ? normalizeBlockedServiceList(
+          Array.isArray(row?.serviceTypes)
+            ? row!.serviceTypes.map((service) => String(service))
+            : []
+        )
+      : [];
+
+    const value: DutyRestrictionSyncResult = {
+      isOnDuty,
+      allowedServiceTypes,
+      blockedServiceTypes: [],
+      accountRestricted: false,
+      allServicesBlacklisted: false,
+      lastUpdated,
+    };
+    dutyFastCache.set(riderId, { at: Date.now(), value });
+    return value;
+  })().finally(() => {
+    dutyFastInFlight.delete(riderId);
+  });
+
+  dutyFastInFlight.set(riderId, promise);
+  return promise;
+}
+
+/** Align duty_logs with current restrictions (strip blocked services or go OFF). */
+export async function syncRiderDutyWithRestrictions(
+  riderId: number
+): Promise<DutyRestrictionSyncResult> {
+  const existing = dutyRestrictionSyncInFlight.get(riderId);
+  if (existing) return existing;
+
+  const promise = syncRiderDutyWithRestrictionsUncached(riderId)
+    .then((value) => {
+      dutyFastCache.set(riderId, { at: Date.now(), value });
+      return value;
+    })
+    .finally(() => {
+      dutyRestrictionSyncInFlight.delete(riderId);
+    });
+  dutyRestrictionSyncInFlight.set(riderId, promise);
+  return promise;
+}
+
+async function syncRiderDutyWithRestrictionsUncached(
+  riderId: number
+): Promise<DutyRestrictionSyncResult> {
   const db = getDb();
   const [restrictions, latest] = await Promise.all([
     getRiderAccountRestrictions(riderId),

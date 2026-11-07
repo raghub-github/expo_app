@@ -35,7 +35,8 @@ export async function GET(
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD")) ||
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PARCEL"));
 
     if (!allowed) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -45,9 +46,21 @@ export async function GET(
     return NextResponse.json(data);
   } catch (error) {
     console.error("[GET /api/orders/[orderId]/rider-tracking] Error:", error);
+    const code =
+      error != null && typeof error === "object"
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+    const transient =
+      code === "ECONNRESET" ||
+      code === "ECONNREFUSED" ||
+      code === "ETIMEDOUT" ||
+      /ECONNRESET|connection (?:terminated|reset)/i.test(
+        error instanceof Error ? error.message : ""
+      );
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
+      // Transient pooler drops — client map poll should retry, not treat as hard failure.
+      { status: transient ? 503 : 500 }
     );
   }
 }
