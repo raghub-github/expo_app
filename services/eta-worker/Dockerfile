@@ -36,6 +36,9 @@ RUN addgroup -S app && adduser -S app -G app \
 USER app
 
 WORKDIR /repo/services/eta-worker
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# Every probe boots a whole node process + Redis client. At 30s/5s that was a
+# steady CPU tax on a 2-vCPU VPS, and probes killed at the 5s timeout piled up
+# as zombies (1,300+ on Nov 7). Informational only (autoheal watches backend).
+HEALTHCHECK --interval=120s --timeout=30s --start-period=60s --retries=3 \
   CMD node --input-type=module -e "import('@gatimitra/redis').then(async m => { const c = m.getRedis(); await c.connect(); await c.ping(); process.exit(0); }).catch(()=>process.exit(1))" || exit 1
 CMD ["npx", "tsx", "src/index.ts"]

@@ -119,7 +119,7 @@ export async function GET(request: NextRequest) {
     // `response`. Returning it (not a fresh redirect) is what makes the clear reach the
     // browser; otherwise the leftover session + code-verifier break the next sign-in with
     // "invalid flow state". Also wipe any verifier chunks explicitly.
-    await supabase.auth.signOut();
+    await supabase.auth.signOut({ scope: "local" });
     clearSupabaseAuthCookies(request, response);
     console.warn("[auth/callback] Merchant validation failed:", validation.error);
     return redirectVia(

@@ -45,7 +45,19 @@ export async function POST(request: NextRequest) {
     // After successful OTP verification, validate user exists in system_users and has roles
     if (data?.user?.email) {
       const validation = await validateUserForLogin(data.user.email);
-      
+
+      // DB unreachable: the user was not judged — keep the session, ask to retry.
+      if (validation.transient) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Service temporarily unavailable. Please try again in a moment.",
+            code: "SERVICE_UNAVAILABLE",
+          },
+          { status: 503 }
+        );
+      }
+
       if (!validation.isValid) {
         await recordFailedLogin(
           data.user.email,
@@ -53,8 +65,8 @@ export async function POST(request: NextRequest) {
           getIpAddress(request),
           getUserAgent(request)
         );
-        // Sign out the user from Supabase since they're not valid
-        await supabase.auth.signOut();
+        // Sign out this session only (default "global" would hit every device).
+        await supabase.auth.signOut({ scope: "local" });
         
         return NextResponse.json(
           { 

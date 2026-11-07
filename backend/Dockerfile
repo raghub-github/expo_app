@@ -175,7 +175,12 @@ COPY --from=build --chown=fastify:nodejs /repo/backend/assets        ./assets
 USER fastify
 EXPOSE 3000
 
-HEALTHCHECK --interval=20s --timeout=4s --start-period=15s --retries=3 \
+# start-period 150s, not 15s: boot takes ~55s on an idle VPS and far longer under
+# load. With 15s, a slow boot went "unhealthy" at ~75s and autoheal restarted it
+# mid-boot, forever (the Nov 7 deploy's new replica was restarted at 09:46 this
+# way and rolled back). Failures inside the start period don't count; the first
+# success ends it, so a healthy boot is unaffected.
+HEALTHCHECK --interval=20s --timeout=4s --start-period=150s --retries=3 \
   CMD wget -qO- http://127.0.0.1:3000/v1/health || exit 1
 
 # Node 20 propagates SIGTERM correctly when invoked directly on Alpine.

@@ -100,6 +100,8 @@ services:
       context: ../..
       dockerfile: services/notification-worker/Dockerfile
     restart: unless-stopped
+    # PID 1 is npx/tsx, which never reaps orphans; tini does (zombie leak).
+    init: true
     env_file:
       - ../../services/notification-worker/.env
     environment:
@@ -116,6 +118,8 @@ services:
       context: ../..
       dockerfile: services/payment-worker/Dockerfile
     restart: unless-stopped
+    # PID 1 is npx/tsx, which never reaps orphans; tini does (zombie leak).
+    init: true
     env_file:
       - ../../services/payment-worker/.env
     environment:
@@ -131,6 +135,8 @@ services:
       context: ../..
       dockerfile: services/ws-gateway/Dockerfile
     restart: unless-stopped
+    # PID 1 is npx/tsx, which never reaps orphans; tini does (zombie leak).
+    init: true
     env_file:
       - ../../services/ws-gateway/.env
     environment:
@@ -145,6 +151,8 @@ services:
       context: ../..
       dockerfile: services/eta-worker/Dockerfile
     restart: unless-stopped
+    # PID 1 is npx/tsx, which never reaps orphans; tini does (zombie leak).
+    init: true
     env_file:
       - ../../services/eta-worker/.env
     environment:
@@ -159,6 +167,8 @@ services:
       context: ../..
       dockerfile: services/financial-rule-worker/Dockerfile
     restart: unless-stopped
+    # PID 1 is npx/tsx, which never reaps orphans; tini does (zombie leak).
+    init: true
     env_file:
       - ../../services/financial-rule-worker/.env
     environment:
@@ -174,6 +184,8 @@ services:
       context: ../..
       dockerfile: services/outbox-relay/Dockerfile
     restart: unless-stopped
+    # PID 1 is npx/tsx, which never reaps orphans; tini does (zombie leak).
+    init: true
     env_file:
       - ../../services/outbox-relay/.env
     environment:

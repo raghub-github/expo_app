@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
 
     const validation = await validateMerchantForLogin(data.user.email);
     if (!validation.isValid) {
-      await supabase.auth.signOut();
+      await supabase.auth.signOut({ scope: "local" });
       return NextResponse.json(
         { success: false, error: validation.error || "Not authorized for merchant dashboard." },
         { status: 403 }

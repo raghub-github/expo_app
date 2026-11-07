@@ -45,7 +45,9 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    await supabase.auth.signOut();
+    // "local": the default global sign-out also ended this admin's sessions on
+    // every device and on the other GatiMitra sites sharing this Supabase project.
+    await supabase.auth.signOut({ scope: "local" });
   } catch {
     /* still clear below */
   }

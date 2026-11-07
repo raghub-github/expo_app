@@ -387,7 +387,7 @@ export default function RegisterPage() {
       const checkRes = await fetch(`/api/auth/check-existing?email=${encodeURIComponent(em)}`);
       const checkData = await checkRes.json();
       if (checkData.exists) {
-        await supabase.auth.signOut();
+        await supabase.auth.signOut({ scope: "local" });
         setError("This email is already registered. Please login to proceed.");
         setLoading(false);
         return;
@@ -492,7 +492,7 @@ export default function RegisterPage() {
       const checkRes = await fetch(`/api/auth/check-existing?phone=${encodeURIComponent(ten)}`);
       const checkData = await checkRes.json();
       if (checkData.exists) {
-        await supabase.auth.signOut();
+        await supabase.auth.signOut({ scope: "local" });
         setError("This mobile number is already registered. Please login to proceed.");
         setLoading(false);
         return;
@@ -555,7 +555,7 @@ export default function RegisterPage() {
       const checkRes = await fetch(`/api/auth/check-existing?phone=${encodeURIComponent(ten)}`);
       const checkData = await checkRes.json();
       if (checkData.exists) {
-        await supabase.auth.signOut();
+        await supabase.auth.signOut({ scope: "local" });
         setError("This mobile number is already registered. Please login to proceed.");
         setLoading(false);
         return;

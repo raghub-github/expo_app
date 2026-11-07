@@ -211,7 +211,7 @@ function AuthCallbackContent() {
             "app_handoff"
           );
           if (!result.ok) {
-            await supabase.auth.signOut().catch(() => {});
+            await supabase.auth.signOut({ scope: "local" }).catch(() => {});
             fail(result.error);
             return;
           }
@@ -240,7 +240,7 @@ function AuthCallbackContent() {
             }
             const result = await setCookieAndRedirect(accessToken, refreshToken, next, "google");
             if (!result.ok) {
-              await supabase.auth.signOut().catch(() => {});
+              await supabase.auth.signOut({ scope: "local" }).catch(() => {});
               fail(result.error);
               return;
             }
@@ -284,7 +284,7 @@ function AuthCallbackContent() {
             "google"
           );
           if (!result.ok) {
-            await supabase.auth.signOut().catch(() => {});
+            await supabase.auth.signOut({ scope: "local" }).catch(() => {});
             fail(result.error);
             return;
           }
@@ -317,7 +317,7 @@ function AuthCallbackContent() {
             next
           );
           if (!result.ok) {
-            await supabase.auth.signOut().catch(() => {});
+            await supabase.auth.signOut({ scope: "local" }).catch(() => {});
             fail(result.error);
             return;
           }

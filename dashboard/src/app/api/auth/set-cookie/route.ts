@@ -29,6 +29,37 @@ import {
 
 export const runtime = "nodejs";
 
+/**
+ * nginx gives up on this route at 60s (proxy_read_timeout) and the browser sees
+ * a bare 504. Bound each DB step so we always answer first, with a 503 the login
+ * page treats as "try again" — never as "not authorized".
+ */
+const VALIDATE_DEADLINE_MS = 20_000;
+const BOOKKEEPING_DEADLINE_MS = 5_000;
+
+function withDeadline<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`${label} request timeout after ${ms}ms`);
+      err.name = "TimeoutError";
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+}
+
+function serviceUnavailable() {
+  return NextResponse.json(
+    {
+      success: false,
+      error: "Service temporarily unavailable. Please try again in a moment.",
+      code: "SERVICE_UNAVAILABLE",
+    },
+    { status: 503 }
+  );
+}
+
 export async function POST(request: NextRequest) {
   try {
     let body: { access_token?: string; refresh_token?: string } | null = null;
@@ -104,19 +135,36 @@ export async function POST(request: NextRequest) {
 
     if (data.session?.user?.email) {
       const email = data.session.user.email;
-      const validation = await validateUserForLogin(email);
+      const validation = await withDeadline(
+        validateUserForLogin(email),
+        VALIDATE_DEADLINE_MS,
+        "validateUserForLogin"
+      );
+
+      // Could not reach the DB: the user was not judged. Signing out here (it used
+      // to be a GLOBAL sign-out) logged the admin out of every browser and every
+      // GatiMitra site sharing this Supabase project whenever the DB was slow.
+      if (validation.transient) {
+        console.warn("[set-cookie] Validation unavailable; answering 503:", validation.error);
+        return serviceUnavailable();
+      }
 
       if (!validation.isValid) {
-        await recordFailedLogin(
-          email,
-          validation.error || "Unauthorized",
-          getIpAddress(request),
-          getUserAgent(request)
-        );
+        await withDeadline(
+          recordFailedLogin(
+            email,
+            validation.error || "Unauthorized",
+            getIpAddress(request),
+            getUserAgent(request)
+          ),
+          BOOKKEEPING_DEADLINE_MS,
+          "recordFailedLogin"
+        ).catch(() => undefined);
 
         try {
           const supabase = await createServerSupabaseClient();
-          await supabase.auth.signOut();
+          // Only the session this request just created — never every device.
+          await supabase.auth.signOut({ scope: "local" });
         } catch {
           // ignore
         }
@@ -165,36 +213,37 @@ export async function POST(request: NextRequest) {
 
       if (data.session.user?.email && systemUserId) {
         const provider = data.session.user.app_metadata?.provider || "unknown";
-        const systemUser = await getSystemUserById(systemUserId);
-        const canTogglePortal = Boolean(systemUser?.canTogglePortal);
-        response.cookies.set("gm_portal_toggle_access", canTogglePortal ? "1" : "0", {
-          path: "/",
-          httpOnly: true,
-          sameSite: "lax",
-          secure: process.env.NODE_ENV === "production",
-          maxAge: 60 * 60 * 24 * 7,
-        });
+        // Bookkeeping must not hold a valid login hostage to a slow DB. If the
+        // lookup misses its deadline the cookie is left unset; /api/auth/bootstrap
+        // (called right after login) sets it from permissions.
+        const systemUser = await withDeadline(
+          getSystemUserById(systemUserId),
+          BOOKKEEPING_DEADLINE_MS,
+          "getSystemUserById"
+        ).catch(() => undefined);
+        if (systemUser !== undefined) {
+          const canTogglePortal = Boolean(systemUser?.canTogglePortal);
+          response.cookies.set("gm_portal_toggle_access", canTogglePortal ? "1" : "0", {
+            path: "/",
+            httpOnly: true,
+            sameSite: "lax",
+            secure: process.env.NODE_ENV === "production",
+            maxAge: 60 * 60 * 24 * 7,
+          });
+        }
 
-        await recordLogin(
-          systemUserId,
-          provider,
-          getIpAddress(request),
-          getUserAgent(request)
-        );
+        await withDeadline(
+          recordLogin(systemUserId, provider, getIpAddress(request), getUserAgent(request)),
+          BOOKKEEPING_DEADLINE_MS,
+          "recordLogin"
+        ).catch((err) => console.warn("[set-cookie] recordLogin skipped:", err instanceof Error ? err.message : err));
       }
     }
 
     return response;
   } catch (e: unknown) {
     if (isTimeoutOrAbortError(e) || isNetworkOrTransientError(e) || isTransientAuthError(e)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Service temporarily unavailable",
-          code: "SERVICE_UNAVAILABLE",
-        },
-        { status: 503 }
-      );
+      return serviceUnavailable();
     }
     console.error("[set-cookie] FATAL ERROR:", e);
 

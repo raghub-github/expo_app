@@ -215,7 +215,7 @@ export function useLogout() {
       clearDashboardAuthCaches();
 
       try {
-        await supabase.auth.signOut();
+        await supabase.auth.signOut({ scope: "local" });
       } catch {
         // non-fatal — server cookies already cleared
       }
