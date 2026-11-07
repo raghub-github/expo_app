@@ -126,14 +126,16 @@ export async function POST(request: NextRequest) {
       console.log("[set-cookie] validate in", Date.now() - t1, "ms, valid:", validation.isValid);
     } catch (validateErr) {
       console.error("[set-cookie] validateMerchantFromSession threw:", validateErr);
-      await supabase.auth.signOut().catch(() => {});
+      // Could not verify (DB/network fault) — the merchant was not rejected. Keep
+      // the session: signing out here (globally, by default) logged them out of
+      // every device whenever the DB was slow. 503 = the login page retries.
       return NextResponse.json(
-        { success: false, error: "Unable to verify your account. Please try again.", code: "VALIDATION_ERROR" },
-        { status: 500 }
+        { success: false, error: "Unable to verify your account. Please try again.", code: "SERVICE_UNAVAILABLE" },
+        { status: 503 }
       );
     }
     if (!validation.isValid) {
-      await supabase.auth.signOut().catch(() => {});
+      await supabase.auth.signOut({ scope: "local" }).catch(() => {});
       return NextResponse.json(
         {
           success: false,

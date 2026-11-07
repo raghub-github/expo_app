@@ -7,7 +7,18 @@ import {
 import { safeParseJson } from "@/lib/utils";
 import { hydrateBrowserSupabaseFromCookies, syncClientStorageFromServerSession } from "@/lib/auth/hydrate-browser-supabase";
 
-export type SetCookieResult = { ok: true } | { ok: false; error: string };
+/**
+ * `transient`: the server could not answer (502/503/504, network error) — the
+ * user was not rejected. Callers must show "try again", not "not authorized".
+ */
+export type SetCookieResult = { ok: true } | { ok: false; error: string; transient?: boolean };
+
+/** Gateway / availability statuses: the request never got a real verdict. */
+function isTransientStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+const TRANSIENT_LOGIN_ERROR = "The server is busy right now. Please try again in a moment.";
 const SERVER_COOKIE_SYNCED_KEY = "gm_server_cookie_synced_v1";
 const SERVER_COOKIE_SYNC_TTL_MS = 30 * 60 * 1000;
 
@@ -46,16 +57,26 @@ export async function postSetCookieWithTokens(
   const retryDelaysMs = [600, 1200];
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const res = await fetch("/api/auth/set-cookie", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify({
-        access_token: accessToken,
-        refresh_token: refreshToken,
-      }),
-    });
-    const text = await res.text();
+    let res: Response;
+    let text: string;
+    try {
+      res = await fetch("/api/auth/set-cookie", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        }),
+      });
+      text = await res.text();
+    } catch {
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
+        continue;
+      }
+      return { ok: false, error: TRANSIENT_LOGIN_ERROR, transient: true };
+    }
     if (res.ok) {
       markServerCookieSynced();
       void syncClientStorageFromServerSession();
@@ -76,14 +97,18 @@ export async function postSetCookieWithTokens(
         // keep default
       }
     }
-    if (res.status === 503 && attempt < maxAttempts) {
-      await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
-      continue;
+    if (isTransientStatus(res.status)) {
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1] ?? 1000));
+        continue;
+      }
+      // A 504 body is nginx HTML, not a reason — never surface it as one.
+      return { ok: false, error: TRANSIENT_LOGIN_ERROR, transient: true };
     }
     return { ok: false, error: errorMessage };
   }
 
-  return { ok: false, error: "Authentication failed" };
+  return { ok: false, error: TRANSIENT_LOGIN_ERROR, transient: true };
 }
 
 let inFlightSync: Promise<boolean> | null = null;

@@ -55,7 +55,10 @@ export async function POST(request: NextRequest) {
 
     // Try to sign out from Supabase
     // If session is already gone, that's okay - we'll still clear cookies
-    const { error } = await supabase.auth.signOut();
+    // "local" = this browser's session only. The default ("global") revoked the
+    // admin's sessions on every device and every site sharing this Supabase
+    // project. Use /api/auth/force-logout to end sessions everywhere.
+    const { error } = await supabase.auth.signOut({ scope: "local" });
 
     if (error && !error.message.includes("session missing") && !error.message.includes("Auth session missing")) {
       // Only log non-critical errors (session already gone is expected sometimes)

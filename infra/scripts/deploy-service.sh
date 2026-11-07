@@ -301,8 +301,11 @@ if [[ $healthy -ne 1 ]]; then
   echo "===== FAILED CONTAINER LOGS ====="
   docker logs "$new_cid" --tail 500 || true
 
-  echo "===== FAILED CONTAINER INSPECT ====="
-  docker inspect "$new_cid" || true
+  # State + health probe history only. NEVER a bare `docker inspect`: it dumps
+  # Config.Env (every secret from the service's .env) into the Actions log, and
+  # this repo is public — that leaked the full backend .env on Nov 1, 3 and 7.
+  echo "===== FAILED CONTAINER STATE ====="
+  docker inspect --format '{{json .State}}' "$new_cid" || true
 
   docker stop "$new_cid" >/dev/null || true
   docker rm   "$new_cid" >/dev/null || true

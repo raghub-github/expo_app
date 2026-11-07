@@ -125,7 +125,7 @@ export async function POST(request: NextRequest) {
         { requirePreferred }
       );
       if (!validation.isValid) {
-        await supabase.auth.signOut().catch(() => {});
+        await supabase.auth.signOut({ scope: "local" }).catch(() => {});
         return NextResponse.json(
           { success: false, error: validation.error || "Not authorized.", code: "FORBIDDEN" },
           { status: 403 }

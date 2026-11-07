@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { getSql, safeQuery } from "@/lib/db/client";
+import { getSql, requiredQuery } from "@/lib/db/client";
 import { systemUserIsSuperAdmin } from "@/lib/auth/session";
 import { COREDASH_ACCESS_COOKIE, NOT_AUTHORIZED, accessCookieOptions } from "@/lib/auth/access";
 import { expireCoredashCookies } from "@/lib/auth/clear";
@@ -42,31 +42,51 @@ export async function POST(request: NextRequest) {
     });
     if (sessionError || !sessionData.session?.user?.id || sessionData.session.user.id !== user.id) {
       logAuthEvent("LOGIN_REJECT", { userId: user.id, reason: "setSession_mismatch" });
-      await supabase.auth.signOut().catch(() => undefined);
+      await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
       return deny(request, 401, sessionError?.message || "Invalid session");
     }
 
     const email = user.email.trim().toLowerCase();
     const sql = getSql();
-    const rows = await safeQuery(
-      "login-user",
-      () =>
-        sql<{ id: number; status: string; primary_role: string }[]>`
-          SELECT id, status::text AS status, primary_role::text AS primary_role
-          FROM system_users
-          WHERE lower(trim(email)) = ${email} AND deleted_at IS NULL
-          LIMIT 1
-        `,
-      []
-    );
-    const row = rows[0];
+    // requiredQuery + 503: a DB fault used to read as "no such user" → 403 and a
+    // (global) sign-out of a legitimate super admin. Keep the session; retry later.
+    let row: { id: number; status: string; primary_role: string } | undefined;
+    let isSuperAdmin = false;
+    try {
+      const rows = await requiredQuery(
+        "login-user",
+        () =>
+          sql<{ id: number; status: string; primary_role: string }[]>`
+            SELECT id, status::text AS status, primary_role::text AS primary_role
+            FROM system_users
+            WHERE lower(trim(email)) = ${email} AND deleted_at IS NULL
+            LIMIT 1
+          `
+      );
+      row = rows[0];
+      if (row && String(row.status).toUpperCase() === "ACTIVE") {
+        isSuperAdmin = await systemUserIsSuperAdmin(Number(row.id), row.primary_role);
+      }
+    } catch {
+      logAuthEvent("LOGIN_REJECT", { userId: user.id, reason: "db_unavailable" });
+      const res = NextResponse.json(
+        {
+          success: false,
+          error: "Service temporarily unavailable. Please try again in a moment.",
+          code: "SERVICE_UNAVAILABLE",
+        },
+        { status: 503 }
+      );
+      res.headers.set("Cache-Control", "no-store, private");
+      return res;
+    }
     if (!row || String(row.status).toUpperCase() !== "ACTIVE") {
-      await supabase.auth.signOut().catch(() => undefined);
+      await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
       return deny(request, 403, NOT_AUTHORIZED);
     }
 
-    if (!(await systemUserIsSuperAdmin(Number(row.id), row.primary_role))) {
-      await supabase.auth.signOut().catch(() => undefined);
+    if (!isSuperAdmin) {
+      await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
       return deny(request, 403, NOT_AUTHORIZED);
     }
 

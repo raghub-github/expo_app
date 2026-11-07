@@ -8,7 +8,7 @@
  * 3. Have a role assigned (either primary_role in system_users OR entries in user_roles table)
  */
 
-import { getSystemUserByEmail } from "./user-mapping";
+import { getSystemUserByEmailStrict } from "./user-mapping";
 import { getSql } from "../db/client";
 
 export interface UserValidationResult {
@@ -18,6 +18,12 @@ export interface UserValidationResult {
   email?: string;
   hasRoles?: boolean;
   primaryRole?: string;
+  /**
+   * True when validation could not be completed (DB unreachable, timeout, pool
+   * error) — the user was NOT judged unauthorized. Callers must answer 503 and
+   * must never sign the user out or record a failed login for it.
+   */
+  transient?: boolean;
 }
 
 /**
@@ -30,20 +36,21 @@ export async function validateUserForLogin(
     console.log("[validateUserForLogin] ===== START ===== Email:", email);
 
     // 1. Check if user exists in system_users
-    let systemUser: Awaited<ReturnType<typeof getSystemUserByEmail>>;
+    let systemUser: Awaited<ReturnType<typeof getSystemUserByEmailStrict>>;
     try {
-      systemUser = await getSystemUserByEmail(email);
+      systemUser = await getSystemUserByEmailStrict(email);
     } catch (dbError: unknown) {
-      if (dbError instanceof Error && dbError.message.includes("Database connection error")) {
-        console.error("[validateUserForLogin] ===== DATABASE ERROR ===== Database connection failed:", dbError.message);
-        return {
-          isValid: false,
-          error: "Unable to verify your account due to a database connection issue. Please try again in a moment.",
-          email,
-        };
-      }
-      // Re-throw if it's not a connection error
-      throw dbError;
+      // Any failure to READ the user is "could not verify", never "not authorized".
+      console.error(
+        "[validateUserForLogin] ===== DATABASE ERROR ===== lookup failed:",
+        dbError instanceof Error ? dbError.message : dbError
+      );
+      return {
+        isValid: false,
+        transient: true,
+        error: "Unable to verify your account due to a database connection issue. Please try again in a moment.",
+        email,
+      };
     }
 
     if (!systemUser) {
@@ -111,21 +118,15 @@ export async function validateUserForLogin(
       // But if no primary_role, we need to know if they have roles
       console.error("[validateUserForLogin] Error querying user_roles table:", rolesError);
       
-      // If it's a connection error, return server error
-      if (rolesError instanceof Error && 
-          (rolesError.message.includes('CONNECT_TIMEOUT') ||
-           rolesError.message.includes('Database connection error'))) {
-        return {
-          isValid: false,
-          error: "Unable to verify your roles due to a database connection issue. Please try again in a moment.",
-          systemUserId: systemUser.id,
-          email: systemUser.email,
-        };
-      }
-      
-      // For other errors, assume no roles (since we can't verify)
-      console.warn("[validateUserForLogin] Assuming no roles due to query error");
-      roleCount = 0;
+      // A failed query is "could not verify". Treating it as "no roles" turned a
+      // statement timeout into a hard denial (and a global sign-out).
+      return {
+        isValid: false,
+        transient: true,
+        error: "Unable to verify your roles due to a database connection issue. Please try again in a moment.",
+        systemUserId: systemUser.id,
+        email: systemUser.email,
+      };
     }
 
     if (roleCount === 0) {
@@ -156,6 +157,7 @@ export async function validateUserForLogin(
     console.error("[validateUserForLogin] ===== ERROR ===== Validation error:", error);
     return {
       isValid: false,
+      transient: true,
       error: "An error occurred during account validation. Please try again later.",
       email,
     };
