@@ -43,6 +43,32 @@ const fix = (lat = 29.68, lon = 76.99, accuracy: number | null = 12, timestamp =
   timestamp,
 });
 
+test("device options are unchanged unless a caller opts out of the settings dialog", async () => {
+  const getFastPosition = await load();
+  reset();
+  const seen: unknown[] = [];
+  currentImpl = async (arg) => {
+    seen.push(arg);
+    return fix();
+  };
+  await getFastPosition();
+  // The Rider app calls with no option: these must stay exactly what it has always sent.
+  assert.ok(seen.length > 0);
+  for (const arg of seen) assert.deepEqual(Object.keys(arg as object), ["accuracy"]);
+
+  reset();
+  seen.length = 0;
+  currentImpl = async (arg) => {
+    seen.push(arg);
+    return fix();
+  };
+  await getFastPosition({ mayShowUserSettingsDialog: false });
+  assert.ok(seen.length > 0);
+  for (const arg of seen) {
+    assert.equal((arg as { mayShowUserSettingsDialog?: boolean }).mayShowUserSettingsDialog, false);
+  }
+});
+
 test("returns OS last-known FIRST without a live GPS call", async () => {
   const getFastPosition = await load();
   reset();

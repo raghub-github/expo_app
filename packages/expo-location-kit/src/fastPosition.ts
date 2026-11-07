@@ -7,10 +7,11 @@ async function liveQuickFix(
   source: FastPositionSource,
   timeoutMs: number,
   log: FastPositionOptions["log"],
-  event: string
+  event: string,
+  deviceOptions: { mayShowUserSettingsDialog?: false }
 ): Promise<FastPosition> {
   const loc = await withTimeout(
-    Location.getCurrentPositionAsync({ accuracy }),
+    Location.getCurrentPositionAsync({ accuracy, ...deviceOptions }),
     timeoutMs
   );
   const v = validateCoords(loc);
@@ -56,6 +57,10 @@ export async function getFastPosition(
   const lastKnownMaxAgeMs = options?.lastKnownMaxAgeMs ?? DEFAULTS.lastKnownMaxAgeMs;
   const quickTimeoutMs = options?.quickTimeoutMs ?? DEFAULTS.quickTimeoutMs;
   const log = options?.log;
+  const deviceOptions =
+    options?.mayShowUserSettingsDialog === false
+      ? ({ mayShowUserSettingsDialog: false } as const)
+      : {};
 
   // 1) OS last-known — usually resolves in a few ms when the device has any recent fix.
   try {
@@ -81,9 +86,9 @@ export async function getFastPosition(
 
   // 2) Race Lowest + Low + Balanced — first usable fix wins (network/cell is often instant).
   const liveRace: Array<Promise<FastPosition>> = [
-    liveQuickFix(Location.Accuracy.Lowest, "low", quickTimeoutMs, log, "fast-lowest"),
-    liveQuickFix(Location.Accuracy.Low, "low", quickTimeoutMs, log, "fast-low"),
-    liveQuickFix(Location.Accuracy.Balanced, "balanced", quickTimeoutMs, log, "fast-balanced"),
+    liveQuickFix(Location.Accuracy.Lowest, "low", quickTimeoutMs, log, "fast-lowest", deviceOptions),
+    liveQuickFix(Location.Accuracy.Low, "low", quickTimeoutMs, log, "fast-low", deviceOptions),
+    liveQuickFix(Location.Accuracy.Balanced, "balanced", quickTimeoutMs, log, "fast-balanced", deviceOptions),
   ];
 
   try {

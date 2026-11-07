@@ -5,14 +5,29 @@
 
 import { getConfig } from "@/config/env";
 import {
+  mapboxGeocodeForward,
   mapboxSearchSuggest,
+  signalWithDeadline,
   type MapboxSearchSessionContext,
 } from "@/services/mapboxSearch.service";
-import { finalizeRapidoSuggestions, primaryMatchScore } from "@/lib/location-search-ranking";
+import {
+  finalizeRapidoSuggestions,
+  mergeProviderResults,
+  primaryMatchScore,
+  simplifySearchQuery,
+} from "@/lib/location-search-ranking";
 
 const COUNTRY_INDIA = "IN";
-const CACHE_TTL_MS = 30_000;
-const CACHE_MAX_ENTRIES = 50;
+const CACHE_TTL_MS = 5 * 60_000;
+const CACHE_MAX_ENTRIES = 100;
+/** Each search provider gets this long before it counts as failed. */
+const PROVIDER_TIMEOUT_MS = 3_500;
+/** Once one provider has results, how long to hold them for the other before showing. */
+const SECOND_PROVIDER_GRACE_MS = 1_000;
+/** Backend suggestions are a fallback and must not hold up an answer. */
+const LOCAL_SUGGESTIONS_TIMEOUT_MS = 1_500;
+/** Retry delay when every provider failed outright (not merely found nothing). */
+const PROVIDER_RETRY_DELAY_MS = 250;
 const MAPBOX_CONFIDENCE_THRESHOLD = 0.45;
 
 /** Rule 1: 6-digit numeric input → PINCODE_SEARCH_MODE (exact match only, no fuzzy). */
@@ -41,9 +56,10 @@ const INDIA_LOCALITY_KEYWORDS = [
 type CacheEntry = { results: EnrichedPlaceResult[]; ts: number };
 const searchCache = new Map<string, CacheEntry>();
 
-function cacheKey(query: string, proximity?: string): string {
+/** Proximity is rounded to ~1 km: a GPS wobble must not miss the cache. */
+function cacheKey(query: string, proximity?: { longitude: number; latitude: number }): string {
   const q = query.trim().toLowerCase().slice(0, 120);
-  const p = proximity ?? "";
+  const p = proximity ? `${proximity.longitude.toFixed(2)},${proximity.latitude.toFixed(2)}` : "";
   return `${q}|${p}`;
 }
 
@@ -53,7 +69,9 @@ function getCached(key: string): EnrichedPlaceResult[] | null {
   return entry.results;
 }
 
+/** Only real answers are cached. An empty one may be a blip, and must be free to retry. */
 function setCache(key: string, results: EnrichedPlaceResult[]) {
+  if (results.length === 0) return;
   if (searchCache.size >= CACHE_MAX_ENTRIES) {
     const oldest = [...searchCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
     if (oldest) searchCache.delete(oldest[0]);
@@ -313,7 +331,7 @@ function buildMapboxPincodeUrl(encodedPincode: string, token: string): string {
   return `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodedPincode}.json?${p.toString()}`;
 }
 
-/** Rule 2: Exact pincode only – filter to features where postcode exactly equals entered. */
+/** Rule 2: Exact pincode only – filter to features where postcode exactly equals entered. Rejects if unreachable. */
 function fetchMapboxPincodeExact(
   pincode: string,
   signal: AbortSignal | undefined,
@@ -322,7 +340,10 @@ function fetchMapboxPincodeExact(
   const encoded = encodeURIComponent(pincode);
   const url = buildMapboxPincodeUrl(encoded, token);
   return fetch(url, { signal })
-    .then((res) => (res.ok ? res.json() : { features: [] }))
+    .then((res) => {
+      if (!res.ok) throw new Error(`Mapbox pincode failed: ${res.status}`);
+      return res.json();
+    })
     .then((data: { features?: MapboxFeature[] }) => {
       const features = data.features ?? [];
       const exact = pincode.trim();
@@ -331,8 +352,7 @@ function fetchMapboxPincodeExact(
         const postcodeText = (ctx.pincode ?? f.text ?? "").trim();
         return postcodeText === exact;
       });
-    })
-    .catch(() => []);
+    });
 }
 
 /** Rule 3: Format for pincode suggestions – "Area Name, City" / "Pincode: XXXXX" / State. */
@@ -431,7 +451,20 @@ async function fetchMapboxForward(
   return data.features ?? [];
 }
 
+/** Every search source failed (network, not "no matches"). Lets the UI say so honestly. */
+export class LocationSearchUnavailableError extends Error {
+  constructor() {
+    super("Location search is unavailable");
+    this.name = "LocationSearchUnavailableError";
+  }
+}
+
 export type LocationSearchOptions = {
+  /**
+   * Called with the first provider's results while the other is still running, so the
+   * list fills as fast as the fastest provider. The returned promise has the final list.
+   */
+  onPartialResults?: (results: EnrichedPlaceResult[]) => void;
   signal?: AbortSignal;
   proximity?: { longitude: number; latitude: number };
   recentLocationKeys?: Set<string>;
@@ -523,8 +556,136 @@ function sortByDeliveryPriority(
 }
 
 /**
- * Main entry: multi-layer search (Mapbox → local fallback → fuzzy → city→areas).
- * Strict match guarantee: if any source returns results, we return them.
+ * Run both Mapbox search sources side by side and merge them. Resolves when both have
+ * answered, SECOND_PROVIDER_GRACE_MS after the first non-empty answer, or at the provider
+ * deadline. `failed` is true only when NEITHER answered, as opposed to answering with nothing.
+ */
+function searchMapboxProviders(
+  query: string,
+  options: LocationSearchOptions | undefined,
+  userCoords: { latitude: number; longitude: number } | undefined,
+  emitPartial: boolean
+): Promise<{ results: EnrichedPlaceResult[]; failed: boolean }> {
+  return new Promise((resolve) => {
+    const searchBoxDeadline = signalWithDeadline(options?.signal, PROVIDER_TIMEOUT_MS);
+    const geocodingDeadline = signalWithDeadline(options?.signal, PROVIDER_TIMEOUT_MS);
+    let searchBox: EnrichedPlaceResult[] = [];
+    let geocoding: EnrichedPlaceResult[] = [];
+    let answered = 0;
+    let successes = 0;
+    let finished = false;
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    // Settles this search itself: an abort is only a request, and a source that ignored
+    // one would otherwise leave the spinner up forever.
+    const hardStop = setTimeout(() => finish(), PROVIDER_TIMEOUT_MS + 100);
+
+    const merged = () => mergeProviderResults(searchBox, geocoding, userCoords);
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      if (graceTimer) clearTimeout(graceTimer);
+      clearTimeout(hardStop);
+      // Stop whichever source is still running: its answer can no longer be used.
+      searchBoxDeadline.abort();
+      geocodingDeadline.abort();
+      searchBoxDeadline.done();
+      geocodingDeadline.done();
+      resolve({ results: merged(), failed: successes === 0 });
+    };
+    const onAnswered = () => {
+      answered += 1;
+      if (finished) return;
+      if (answered === 2) {
+        finish();
+        return;
+      }
+      if (merged().length > 0) {
+        if (emitPartial && !options?.signal?.aborted) {
+          options?.onPartialResults?.(finalizeRapidoSuggestions(merged(), query));
+        }
+        graceTimer = setTimeout(finish, SECOND_PROVIDER_GRACE_MS);
+      }
+    };
+
+    mapboxSearchSuggest(query, {
+      signal: searchBoxDeadline.signal,
+      proximity: userCoords,
+      sessionContext: options?.sessionContext ?? "location-picker",
+    }).then(
+      (r) => {
+        searchBox = r;
+        successes += 1;
+        onAnswered();
+      },
+      () => onAnswered()
+    );
+    mapboxGeocodeForward(query, {
+      signal: geocodingDeadline.signal,
+      proximity: userCoords,
+    }).then(
+      (r) => {
+        geocoding = r;
+        successes += 1;
+        onAnswered();
+      },
+      () => onAnswered()
+    );
+  });
+}
+
+/** Pincode lookup: Geocoding v6 first, the older v5 endpoint as a fallback. Exact PIN only. */
+async function searchPincode(
+  pincode: string,
+  signal: AbortSignal | undefined,
+  token: string
+): Promise<EnrichedPlaceResult[]> {
+  const deadline = signalWithDeadline(signal, PROVIDER_TIMEOUT_MS);
+  try {
+    const hits = await mapboxGeocodeForward(pincode, {
+      signal: deadline.signal,
+      types: "postcode",
+      limit: 5,
+      autocomplete: false,
+    });
+    const exact = hits.filter((h) => h.primary.trim() === pincode);
+    if (exact.length > 0) {
+      return exact.map((h) => {
+        const area = h.area ?? h.city;
+        const primary = [area, area !== h.city ? h.city : null].filter(Boolean).join(", ") || pincode;
+        return {
+          ...h,
+          primary,
+          secondary: `Pincode: ${pincode}`,
+          fullAddress: h.state ? `${primary}, ${pincode}, ${h.state}` : `${primary}, ${pincode}`,
+          pincode,
+          confidenceScore: 1,
+          matchText: pincode,
+          isPincodeResult: true,
+        };
+      });
+    }
+  } catch {
+    // fall through to v5
+  } finally {
+    deadline.done();
+  }
+  if (signal?.aborted) return [];
+  const fallback = signalWithDeadline(signal, PROVIDER_TIMEOUT_MS);
+  try {
+    return parsePincodeResults(await fetchMapboxPincodeExact(pincode, fallback.signal, token), pincode);
+  } catch {
+    if (signal?.aborted) return [];
+    // Say so: the screen would otherwise tell them "we don't deliver here".
+    throw new LocationSearchUnavailableError();
+  } finally {
+    fallback.done();
+  }
+}
+
+/**
+ * Main entry: multi-layer search (Mapbox sources → simplified query → local fallback →
+ * city→areas). If any source returns results, we return them. Rejects with
+ * LocationSearchUnavailableError only when nothing could be reached at all.
  */
 export async function searchLocations(
   query: string,
@@ -534,62 +695,49 @@ export async function searchLocations(
   const trimmed = query.trim();
   if (!trimmed) return [];
 
-  const proximityStr = options?.proximity
-    ? `${options.proximity.longitude},${options.proximity.latitude}`
-    : undefined;
   const userCoords = options?.proximity
     ? { latitude: options.proximity.latitude, longitude: options.proximity.longitude }
     : undefined;
   const recentKeys = options?.recentLocationKeys ?? new Set<string>();
 
-  const cacheKeyStr = cacheKey(trimmed, proximityStr ?? "");
+  const cacheKeyStr = cacheKey(trimmed, options?.proximity);
   const cached = getCached(cacheKeyStr);
   if (cached) return cached;
 
   // Rule 1 & 2 & 5: Pincode mode – exact match only, no fuzzy, no proximity, no local/city fallback.
   if (isPincodeSearchMode(trimmed)) {
-    const pincode = trimmed;
-    let pincodeFeatures: MapboxFeature[] = [];
-    if (mapboxAccessToken) {
-      pincodeFeatures = await fetchMapboxPincodeExact(
-        pincode,
-        options?.signal,
-        mapboxAccessToken
-      );
-    }
+    if (!mapboxAccessToken) return [];
+    const results = await searchPincode(trimmed, options?.signal, mapboxAccessToken);
     if (options?.signal?.aborted) return [];
-    const results = parsePincodeResults(pincodeFeatures, pincode);
     setCache(cacheKeyStr, results);
     return results;
   }
 
   let results: EnrichedPlaceResult[] = [];
+  let providersFailed = false;
   if (mapboxAccessToken) {
-    try {
-      results = await mapboxSearchSuggest(trimmed, {
-        signal: options?.signal,
-        proximity: userCoords
-          ? { longitude: userCoords.longitude, latitude: userCoords.latitude }
-          : undefined,
-        sessionContext: options?.sessionContext ?? "location-picker",
-      });
-    } catch {
-      results = [];
+    let outcome = await searchMapboxProviders(trimmed, options, userCoords, true);
+    if (outcome.failed && !options?.signal?.aborted) {
+      await new Promise((r) => setTimeout(r, PROVIDER_RETRY_DELAY_MS));
+      if (!options?.signal?.aborted) {
+        outcome = await searchMapboxProviders(trimmed, options, userCoords, true);
+      }
     }
+    results = outcome.results;
+    providersFailed = outcome.failed;
 
-    if (results.length === 0) {
+    if (results.length === 0 && !providersFailed) {
       const normalized = normalizeQueryForFuzzy(trimmed);
-      if (normalized !== trimmed.toLowerCase()) {
-        try {
-          results = await mapboxSearchSuggest(normalized, {
-            signal: options?.signal,
-            proximity: userCoords
-              ? { longitude: userCoords.longitude, latitude: userCoords.latitude }
-              : undefined,
-            sessionContext: options?.sessionContext ?? "location-picker",
-          });
-        } catch {
-          results = [];
+      const variants = [
+        ...(normalized !== trimmed.toLowerCase() ? [normalized] : []),
+        ...simplifySearchQuery(trimmed),
+      ].slice(0, 3);
+      for (const variant of variants) {
+        if (options?.signal?.aborted) return [];
+        const next = await searchMapboxProviders(variant, options, userCoords, false);
+        if (next.results.length > 0) {
+          results = next.results;
+          break;
         }
       }
     }
@@ -615,7 +763,12 @@ export async function searchLocations(
     results.length === 0 || avgRelevance < MAPBOX_CONFIDENCE_THRESHOLD;
   if (needLocal && options?.getLocalSuggestions) {
     try {
-      const local = await options.getLocalSuggestions(trimmed);
+      const local = await Promise.race([
+        options.getLocalSuggestions(trimmed),
+        new Promise<LocalSuggestionInput[]>((_, reject) =>
+          setTimeout(() => reject(new Error("timeout")), LOCAL_SUGGESTIONS_TIMEOUT_MS)
+        ),
+      ]);
       if (options?.signal?.aborted) return [];
       const enrichedLocal = local.map((loc) =>
         localToEnriched(loc, userCoords, recentKeys)
@@ -667,6 +820,9 @@ export async function searchLocations(
   }
 
   const finalized = finalizeRapidoSuggestions(results, trimmed);
+  if (finalized.length === 0 && providersFailed) {
+    throw new LocationSearchUnavailableError();
+  }
   setCache(cacheKeyStr, finalized);
   return finalized;
 }

@@ -14,6 +14,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Contacts from "expo-contacts";
 import * as Location from "expo-location";
+import {
+  acquireProgressivePosition,
+  getFastPosition,
+  withTimeout,
+  type ProgressiveAcquisition,
+} from "@gatimitra/expo-location-kit";
 import { MapboxWebPannableMap, type MapRegion } from "@/components/maps/MapboxWebPannableMap";
 import type { CustomerMapRef } from "@/lib/customer-map-handle";
 import { addressService, type Address } from "@/services/address.service";
@@ -25,6 +31,8 @@ import {
   MAPBOX_SEARCH_DEBOUNCE_MS,
   isPincodeSearchMode,
   getRoadDistance,
+  getRoadDistancesFrom,
+  isUnresolvedReverseResult,
   type EnrichedPlaceResult,
   type ReverseGeocodeResult,
 } from "@/services/location.service";
@@ -42,6 +50,13 @@ import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { useCookingSheetKeyboardDock } from "@/hooks/useCookingSheetKeyboardDock";
 
 const NEARBY_RADIUS_METERS = 500;
+const CHECKOUT_QUOTE_WAIT_MS = 2_500;
+const PIN_UPDATE_WAIT_MS = 2_500;
+/** A better fix moves the pin only if it differs by at least this. */
+const USE_CURRENT_MIN_MOVE_M = 15;
+/** The pin counts as moved by the user once it leaves where we last put it by this much. */
+const USE_CURRENT_USER_MOVED_M = 30;
+const USE_CURRENT_FIRST_FIX_WAIT_MS = 8_000;
 const BRAND = GatiMitraColors.splashMint;
 /** Fixed map strip height inside the scrollable address sheet (not sticky/compact). */
 const MAP_STRIP_HEIGHT = 220;
@@ -430,6 +445,7 @@ export default function LocationAddressScreen() {
   const [locationSearchQuery, setLocationSearchQuery] = useState("");
   const [locationSearchResults, setLocationSearchResults] = useState<EnrichedPlaceResult[]>([]);
   const [locationSearchLoading, setLocationSearchLoading] = useState(false);
+  const [locationSearchUnavailable, setLocationSearchUnavailable] = useState(false);
   const [resolvingSearchPlace, setResolvingSearchPlace] = useState(false);
   const [resultRoadDistances, setResultRoadDistances] = useState<Record<string, number>>({});
   const [isCurrentLocationSheetLoading, setIsCurrentLocationSheetLoading] = useState(false);
@@ -524,6 +540,8 @@ export default function LocationAddressScreen() {
   ]);
   const locationSearchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locationSearchAbortRef = useRef<AbortController | null>(null);
+  const useCurrentSessionRef = useRef<ProgressiveAcquisition | null>(null);
+  const programmaticCenterRef = useRef<{ latitude: number; longitude: number } | null>(null);
   const roadDistanceInflightRef = useRef<Set<string>>(new Set());
   const {
     items: recentLocations,
@@ -615,6 +633,8 @@ export default function LocationAddressScreen() {
       reverseGeocode(mapCenter.longitude, mapCenter.latitude)
         .then((result) => {
           if (cancelled) return;
+          // No answer: leave what is on screen, the form can still be filled in by hand.
+          if (isUnresolvedReverseResult(result)) return;
           applyReverseResult(result);
           const lock = searchSelectionLockRef.current;
           const stillLocked =
@@ -638,7 +658,7 @@ export default function LocationAddressScreen() {
         .finally(() => {
           if (!cancelled) setGeocodeLoading(false);
         });
-    }, 280);
+    }, 150);
     return () => {
       cancelled = true;
       clearTimeout(timer);
@@ -734,45 +754,61 @@ export default function LocationAddressScreen() {
     return () => loop.stop();
   }, [shimmer]);
 
+  const locationSearchProximity =
+    distanceOrigin && isValidMapCoordinate(distanceOrigin.latitude, distanceOrigin.longitude)
+      ? { latitude: distanceOrigin.latitude, longitude: distanceOrigin.longitude }
+      : storeCoords && isValidMapCoordinate(storeCoords.latitude, storeCoords.longitude)
+        ? { latitude: storeCoords.latitude, longitude: storeCoords.longitude }
+        : isValidMapCoordinate(selectedLat, selectedLon)
+          ? { latitude: selectedLat, longitude: selectedLon }
+          : fallbackCenter;
+  const locationSearchProximityRef = useRef(locationSearchProximity);
+  locationSearchProximityRef.current = locationSearchProximity;
+  // Rounded: a GPS wobble or a map pan must not restart a search in flight.
+  const locationSearchProximityKey = `${locationSearchProximity.latitude.toFixed(2)},${locationSearchProximity.longitude.toFixed(2)}`;
+
   useEffect(() => {
     if (!locationSearchVisible) return;
     const query = locationSearchQuery.trim();
     const isPincode = isPincodeSearchMode(query);
     const minChars = isPincode ? 6 : 2;
+    setLocationSearchUnavailable(false);
 
     if (query.length < minChars) {
+      locationSearchAbortRef.current?.abort();
       setLocationSearchResults([]);
       setLocationSearchLoading(false);
       return;
     }
 
+    // Loading from the first keystroke, so "No location found" never flashes during debounce.
+    setLocationSearchLoading(true);
     if (locationSearchDebounceRef.current) clearTimeout(locationSearchDebounceRef.current);
     locationSearchDebounceRef.current = setTimeout(() => {
       locationSearchDebounceRef.current = null;
       locationSearchAbortRef.current?.abort();
       const controller = new AbortController();
       locationSearchAbortRef.current = controller;
-      setLocationSearchLoading(true);
 
       searchPlacesEnriched(query, {
         signal: controller.signal,
-        proximity:
-          distanceOrigin && isValidMapCoordinate(distanceOrigin.latitude, distanceOrigin.longitude)
-            ? { latitude: distanceOrigin.latitude, longitude: distanceOrigin.longitude }
-            : storeCoords && isValidMapCoordinate(storeCoords.latitude, storeCoords.longitude)
-              ? { latitude: storeCoords.latitude, longitude: storeCoords.longitude }
-              : isValidMapCoordinate(selectedLat, selectedLon)
-                ? { latitude: selectedLat, longitude: selectedLon }
-                : fallbackCenter,
+        proximity: locationSearchProximityRef.current,
         sessionContext: "add-address",
         recentLocationKeys: getRecentLocationKeys(),
+        getLocalSuggestions: (text) => addressService.getLocationSearchSuggestions(text, 10),
+        getCityAreas: (cityName) => addressService.getCityAreaSuggestions(cityName, 10),
+        onPartialResults: (partial) => {
+          if (!controller.signal.aborted) setLocationSearchResults(partial);
+        },
       })
         .then((results) => {
           if (controller.signal.aborted) return;
           setLocationSearchResults(results);
         })
         .catch(() => {
-          if (!controller.signal.aborted) setLocationSearchResults([]);
+          if (controller.signal.aborted) return;
+          setLocationSearchResults([]);
+          setLocationSearchUnavailable(true);
         })
         .finally(() => {
           if (!controller.signal.aborted) setLocationSearchLoading(false);
@@ -783,17 +819,7 @@ export default function LocationAddressScreen() {
       if (locationSearchDebounceRef.current) clearTimeout(locationSearchDebounceRef.current);
       locationSearchAbortRef.current?.abort();
     };
-  }, [
-    locationSearchVisible,
-    locationSearchQuery,
-    selectedLat,
-    selectedLon,
-    distanceOrigin?.latitude,
-    distanceOrigin?.longitude,
-    storeCoords?.latitude,
-    storeCoords?.longitude,
-    getRecentLocationKeys,
-  ]);
+  }, [locationSearchVisible, locationSearchQuery, locationSearchProximityKey, getRecentLocationKeys]);
 
   /** Baseline for "how far is this pin from the user": device GPS when allowed, else last coordinates in the app store. */
   useEffect(() => {
@@ -802,13 +828,11 @@ export default function LocationAddressScreen() {
       try {
         const { status } = await Location.getForegroundPermissionsAsync();
         if (status === "granted") {
-          const pos = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          });
+          const pos = await getFastPosition({ lastKnownMaxAgeMs: 120_000, quickTimeoutMs: 3_000, mayShowUserSettingsDialog: false });
           if (!cancelled) {
             setDistanceOrigin({
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
+              latitude: pos.latitude,
+              longitude: pos.longitude,
               label: "your current location",
             });
             return;
@@ -854,14 +878,9 @@ export default function LocationAddressScreen() {
         ) {
           const { status } = await Location.getForegroundPermissionsAsync();
           if (status === "granted") {
-            const last = await Location.getLastKnownPositionAsync();
-            const pos =
-              last ??
-              (await Location.getCurrentPositionAsync({
-                accuracy: Location.Accuracy.Balanced,
-              }));
-            lat = pos.coords.latitude;
-            lon = pos.coords.longitude;
+            const pos = await getFastPosition({ lastKnownMaxAgeMs: 120_000, quickTimeoutMs: 3_000, mayShowUserSettingsDialog: false });
+            lat = pos.latitude;
+            lon = pos.longitude;
             if (!cancelled && isValidMapCoordinate(lat, lon)) {
               setDistanceOrigin({
                 latitude: lat,
@@ -880,7 +899,7 @@ export default function LocationAddressScreen() {
           return;
         }
         const result = await reverseGeocode(lon, lat);
-        if (!cancelled) {
+        if (!cancelled && !isUnresolvedReverseResult(result)) {
           setSheetCurrentLocationLabel(
             formatCurrentLocationAddress(result) ?? instantLabel
           );
@@ -965,27 +984,32 @@ export default function LocationAddressScreen() {
         : recentLocations
             .filter((item) => isValidMapCoordinate(item.latitude, item.longitude))
             .slice(0, 7);
-    items.forEach((item) => {
-      if (!isValidMapCoordinate(item.latitude, item.longitude)) return;
+    // One Matrix request for the whole list, not a Directions call per row.
+    const pending = items.filter((item) => {
+      if (!isValidMapCoordinate(item.latitude, item.longitude)) return false;
       const key = getDistanceKey(item.latitude, item.longitude);
-      if (resultRoadDistances[key] != null || roadDistanceInflightRef.current.has(key)) return;
-      roadDistanceInflightRef.current.add(key);
-      getRoadDistance(
-        listDistanceOrigin.longitude,
-        listDistanceOrigin.latitude,
-        item.longitude,
-        item.latitude
-      )
-        .then(({ distanceMeters }) => {
-          setResultRoadDistances((prev) => ({ ...prev, [key]: distanceMeters }));
-        })
-        .catch(() => {
-          // Haversine still fills the label if routing is unavailable.
-        })
-        .finally(() => {
-          roadDistanceInflightRef.current.delete(key);
-        });
+      return resultRoadDistances[key] == null && !roadDistanceInflightRef.current.has(key);
     });
+    if (pending.length === 0) return;
+    const keys = pending.map((item) => getDistanceKey(item.latitude, item.longitude));
+    keys.forEach((key) => roadDistanceInflightRef.current.add(key));
+    void getRoadDistancesFrom(
+      listDistanceOrigin,
+      pending.map((item) => ({ longitude: item.longitude, latitude: item.latitude }))
+    )
+      .then((distances) => {
+        const found: Record<string, number> = {};
+        distances.forEach((meters, i) => {
+          // Haversine still fills the label when routing has no answer.
+          if (meters != null) found[keys[i]!] = meters;
+        });
+        if (Object.keys(found).length > 0) {
+          setResultRoadDistances((prev) => ({ ...prev, ...found }));
+        }
+      })
+      .finally(() => {
+        keys.forEach((key) => roadDistanceInflightRef.current.delete(key));
+      });
   }, [
     locationSearchVisible,
     locationSearchQuery,
@@ -1014,23 +1038,16 @@ export default function LocationAddressScreen() {
       .filter(Boolean)
       .join(", ");
 
+    // Straight-line, on purpose. This ran one Directions request per saved address,
+    // in sequence, before the save even started and with no spinner on screen.
     let savedWithin500m: Address | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
     for (const addr of savedAddresses) {
       if (isEditMode && addr.id === editAddressId) continue;
-      try {
-        const { distanceMeters } = await getRoadDistance(
-          selectedLon,
-          selectedLat,
-          addr.longitude,
-          addr.latitude
-        );
-        if (distanceMeters <= NEARBY_RADIUS_METERS && distanceMeters < bestDistance) {
-          bestDistance = distanceMeters;
-          savedWithin500m = addr;
-        }
-      } catch {
-        // Ignore route failures and continue checking others.
+      const distanceMeters = haversineMeters(selectedLat, selectedLon, addr.latitude, addr.longitude);
+      if (distanceMeters <= NEARBY_RADIUS_METERS && distanceMeters < bestDistance) {
+        bestDistance = distanceMeters;
+        savedWithin500m = addr;
       }
     }
 
@@ -1093,23 +1110,59 @@ export default function LocationAddressScreen() {
     }
   };
 
-  const uploadPendingDoorImage = async (addressId: number) => {
+  /**
+   * Runs after the address is saved and does not hold up leaving the screen. A failed
+   * photo must never report a successful save as failed: a retry would create a duplicate.
+   */
+  const uploadPendingDoorImage = (addressId: number) => {
     if (!doorImageLocalUri) return;
     const filename =
       doorImageLocalUri.split("/").pop() || `door-${Date.now()}.jpg`;
     setDoorImageUploading(true);
-    try {
-      const url = await addressService.uploadDoorImage(addressId, {
+    void addressService
+      .uploadDoorImage(addressId, {
         uri: doorImageLocalUri,
         name: filename,
         mimeType: "image/jpeg",
-      });
-      setDoorImageRemoteUrl(url);
-      setDoorImageLocalUri(null);
-    } finally {
-      setDoorImageUploading(false);
+      })
+      .then((url) => {
+        setDoorImageRemoteUrl(url);
+        setDoorImageLocalUri(null);
+        void queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      })
+      .catch(() => {
+        Alert.alert(
+          "Photo not uploaded",
+          "Your address was saved, but the door photo could not be uploaded. You can add it by editing the address."
+        );
+      })
+      .finally(() => setDoorImageUploading(false));
+  };
+
+  /** Lists refresh behind the navigation; the user should not wait on six refetches. */
+  const refreshAfterSave = () => {
+    for (const queryKey of [
+      ["addresses"],
+      ["active-location"],
+      ["store-delivery-quote"],
+      ["billing-calculate"],
+      ["billing-checkout-offers"],
+      ["checkout-route-distance"],
+    ]) {
+      void queryClient.invalidateQueries({ queryKey });
     }
   };
+
+  /**
+   * Wait for the server pin, so the refresh that follows reads the new address, but never
+   * for long and never failing: the save has already succeeded by this point.
+   */
+  const settlePinUpdate = (pending: Promise<unknown>) =>
+    withTimeout(pending, PIN_UPDATE_WAIT_MS).catch(() => undefined);
+
+  /** Checkout can quote the address itself, so a slow answer here is not worth waiting on. */
+  const settleServiceability = (pending: Promise<boolean | undefined>) =>
+    withTimeout(pending, CHECKOUT_QUOTE_WAIT_MS).catch(() => undefined);
 
   const doSave = async (
     finalLabel: string,
@@ -1159,18 +1212,22 @@ export default function LocationAddressScreen() {
           contactName: contactName.trim() || null,
           contactMobile: contactMobile.trim() || null,
         });
-        await uploadPendingDoorImage(editAddressId);
-        const activeLoc = await addressService.getActiveLocation().catch(() => null);
-        const isEditingActive =
-          activeLoc?.addressId === editAddressId ||
-          useLocationStore.getState().sessionBoundAddressId === editAddressId;
+        uploadPendingDoorImage(editAddressId);
+        const boundLocally = useLocationStore.getState().sessionBoundAddressId === editAddressId;
+        const activeLoc = boundLocally
+          ? null
+          : await addressService.getActiveLocation().catch(() => null);
+        const isEditingActive = boundLocally || activeLoc?.addressId === editAddressId;
         if (isEditingActive) {
-          await addressService.setActiveLocation({
-            latitude: selectedLat,
-            longitude: selectedLon,
-            address: fullAddress,
-            addressId: editAddressId,
-          });
+          // The edit itself is saved. A locked or failed pin update must not undo that.
+          await settlePinUpdate(
+            addressService.setActiveLocation({
+              latitude: selectedLat,
+              longitude: selectedLon,
+              address: fullAddress,
+              addressId: editAddressId,
+            })
+          );
           useLocationStore.getState().setAddressAndCoords(
             {
               primary: finalLabel,
@@ -1220,16 +1277,11 @@ export default function LocationAddressScreen() {
           useCheckoutAddressHandoffStore.getState().setPending({
             addressId: editAddressId,
             merchantId: checkoutMerchantId ?? null,
-            serviceable: await checkoutServiceabilityPromise,
+            serviceable: await settleServiceability(checkoutServiceabilityPromise),
             ts: Date.now(),
           });
         }
-        await queryClient.invalidateQueries({ queryKey: ["addresses"] });
-        await queryClient.invalidateQueries({ queryKey: ["active-location"] });
-        await queryClient.invalidateQueries({ queryKey: ["store-delivery-quote"] });
-        await queryClient.invalidateQueries({ queryKey: ["billing-calculate"] });
-        await queryClient.invalidateQueries({ queryKey: ["billing-checkout-offers"] });
-        await queryClient.invalidateQueries({ queryKey: ["checkout-route-distance"] });
+        refreshAfterSave();
         if (isEditingActive) {
           void invalidateFoodHomeLocationQueries(queryClient);
         }
@@ -1260,13 +1312,17 @@ export default function LocationAddressScreen() {
         contactName: contactName.trim() || null,
         contactMobile: contactMobile.trim() || null,
       });
-      await uploadPendingDoorImage(created.id);
-      await addressService.setActiveLocation({
-        latitude: selectedLat,
-        longitude: selectedLon,
-        address: fullAddress,
-        addressId: created.id,
-      });
+      uploadPendingDoorImage(created.id);
+      // The address now exists. A locked or failed pin update must not surface as a failed
+      // save: the user would retry and create a duplicate. The local pin applies regardless.
+      await settlePinUpdate(
+        addressService.setActiveLocation({
+          latitude: selectedLat,
+          longitude: selectedLon,
+          address: fullAddress,
+          addressId: created.id,
+        })
+      );
       const reverseResult: ReverseGeocodeResult = {
         primary: line1.trim(),
         secondary: line2.trim(),
@@ -1279,7 +1335,7 @@ export default function LocationAddressScreen() {
       useLocationStore.getState().setAddressAndCoords(
         reverseResult,
         { latitude: selectedLat, longitude: selectedLon },
-        { source: "selected" }
+        { source: "selected", boundAddressId: created.id }
       );
       const optimisticAddress: Address = {
         id: created.id,
@@ -1308,23 +1364,21 @@ export default function LocationAddressScreen() {
         useCheckoutAddressHandoffStore.getState().setPending({
           addressId: created.id,
           merchantId: checkoutMerchantId ?? null,
-          serviceable: await checkoutServiceabilityPromise,
+          serviceable: await settleServiceability(checkoutServiceabilityPromise),
           ts: Date.now(),
         });
       }
-      await queryClient.invalidateQueries({ queryKey: ["addresses"] });
-      await queryClient.invalidateQueries({ queryKey: ["active-location"] });
-      await queryClient.invalidateQueries({ queryKey: ["store-delivery-quote"] });
-      await queryClient.invalidateQueries({ queryKey: ["billing-calculate"] });
-      await queryClient.invalidateQueries({ queryKey: ["billing-checkout-offers"] });
-      await queryClient.invalidateQueries({ queryKey: ["checkout-route-distance"] });
+      refreshAfterSave();
       void invalidateFoodHomeLocationQueries(queryClient);
       finishAddressFlow();
     } catch (e: unknown) {
-      const msg =
-        (e as { response?: { data?: { message?: string } } })?.response?.data?.message ??
-        "Could not save address. Please try again.";
-      setError(msg);
+      const response = (e as { response?: { data?: { message?: string } } })?.response;
+      setError(
+        response?.data?.message ??
+          (response
+            ? "Could not save address. Please try again."
+            : "No connection. Please check your internet and try again.")
+      );
     } finally {
       setSubmitting(false);
       submittingRef.current = false;
@@ -1343,6 +1397,7 @@ export default function LocationAddressScreen() {
   });
   const handleUseCurrentLocationOnMap = async () => {
     setIsCurrentLocationSheetLoading(true);
+    useCurrentSessionRef.current?.stop();
     try {
       const permission = await Location.requestForegroundPermissionsAsync();
       if (permission.status !== "granted") {
@@ -1350,36 +1405,54 @@ export default function LocationAddressScreen() {
         return;
       }
       searchSelectionLockRef.current = null;
-      const latest = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Highest,
+      programmaticCenterRef.current = null;
+
+      // The pin moves on the first fix and sharpens as better ones arrive, unless the user
+      // has started dragging it. This used to block on one Highest-accuracy reading, with
+      // no timeout. The address labels follow from the map-center effect.
+      const session = acquireProgressivePosition({
+        lastKnownMaxAgeMs: 30_000,
+        onFix: (fix) => {
+          const placed = programmaticCenterRef.current;
+          if (placed) {
+            const center = mapCenterRef.current;
+            const userMoved =
+              haversineMeters(placed.latitude, placed.longitude, center.latitude, center.longitude) >
+              USE_CURRENT_USER_MOVED_M;
+            if (userMoved) {
+              session.stop();
+              return;
+            }
+            const improved =
+              haversineMeters(placed.latitude, placed.longitude, fix.latitude, fix.longitude) >=
+              USE_CURRENT_MIN_MOVE_M;
+            if (!improved) return;
+          }
+          const next = { latitude: fix.latitude, longitude: fix.longitude };
+          programmaticCenterRef.current = next;
+          setDistanceOrigin({ ...next, label: "your current location" });
+          setMapCenter(next);
+          if (isEditMode) setEditGeoLocked(false);
+          mapRef.current?.animateToRegion?.({
+            ...next,
+            latitudeDelta: 0.008,
+            longitudeDelta: 0.008,
+          });
+        },
       });
-      const nextLat = latest.coords.latitude;
-      const nextLon = latest.coords.longitude;
-      setDistanceOrigin({
-        latitude: nextLat,
-        longitude: nextLon,
-        label: "your current location",
-      });
-      setMapCenter({ latitude: nextLat, longitude: nextLon });
-      if (isEditMode) setEditGeoLocked(false);
-      mapRef.current?.animateToRegion?.({
-        latitude: nextLat,
-        longitude: nextLon,
-        latitudeDelta: 0.008,
-        longitudeDelta: 0.008,
-      });
-      const result = await reverseGeocode(nextLon, nextLat);
-      applyReverseResult(result);
-      const name = cleanDisplayName(result.primary);
-      const addr = cleanDisplayName(result.fullAddress);
-      if (name) setPinnedPlaceName(name);
-      if (addr) setPinnedPlaceAddress(addr);
+      useCurrentSessionRef.current = session;
+      const first = await withTimeout(session.firstFix, USE_CURRENT_FIRST_FIX_WAIT_MS).catch(() => null);
+      if (!first) {
+        setError("Could not get your location. Please try again or move the pin on the map.");
+      }
     } catch {
       setError("Could not fetch current location details.");
     } finally {
       setIsCurrentLocationSheetLoading(false);
     }
   };
+
+  useEffect(() => () => useCurrentSessionRef.current?.stop(), []);
 
   const handlePickFromContacts = async () => {
     setContactsModalVisible(true);
@@ -2020,7 +2093,11 @@ export default function LocationAddressScreen() {
                 ) : (
                   <View style={styles.emptyContactsWrap}>
                     <AppText style={styles.emptyContactsText}>
-                      {locationSearchQuery.trim().length >= 2 ? "No location found." : "No recent locations."}
+                      {locationSearchUnavailable
+                        ? "Couldn't search right now. Please check your connection."
+                        : locationSearchQuery.trim().length >= 2
+                          ? "No location found."
+                          : "No recent locations."}
                     </AppText>
                   </View>
                 )

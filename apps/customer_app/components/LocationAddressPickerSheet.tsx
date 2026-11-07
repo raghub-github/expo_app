@@ -56,6 +56,7 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
   const [resolvingPlace, setResolvingPlace] = useState(false);
   const searchInputRef = useRef<TextInput>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
   const addNavLockRef = useRef(false);
 
   useEffect(() => {
@@ -75,19 +76,33 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
     }
     setSearchLoading(true);
     debounceRef.current = setTimeout(() => {
+      // Cancel the previous search: a slow older answer must not replace a newer one.
+      searchAbortRef.current?.abort();
+      const controller = new AbortController();
+      searchAbortRef.current = controller;
+      const { coords } = useLocationStore.getState();
       void (async () => {
         try {
-          const results = await searchPlacesEnriched(q);
-          setSearchResults(results.slice(0, 8));
+          const results = await searchPlacesEnriched(q, {
+            signal: controller.signal,
+            proximity: coords ?? undefined,
+            sessionContext: "food-delivery",
+            getLocalSuggestions: (text) => addressService.getLocationSearchSuggestions(text, 8),
+            onPartialResults: (partial) => {
+              if (!controller.signal.aborted) setSearchResults(partial.slice(0, 8));
+            },
+          });
+          if (!controller.signal.aborted) setSearchResults(results.slice(0, 8));
         } catch {
-          setSearchResults([]);
+          if (!controller.signal.aborted) setSearchResults([]);
         } finally {
-          setSearchLoading(false);
+          if (!controller.signal.aborted) setSearchLoading(false);
         }
       })();
     }, MAPBOX_SEARCH_DEBOUNCE_MS);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      searchAbortRef.current?.abort();
     };
   }, [searchQuery]);
 
@@ -157,6 +172,8 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
         }
         const fullAddress = resolved.fullAddress || resolved.primary;
         await applySelection(resolved.primary, fullAddress, resolved.latitude, resolved.longitude);
+      } catch {
+        Alert.alert("Could not set location", "Please check your connection and try again.");
       } finally {
         setResolvingPlace(false);
       }

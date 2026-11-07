@@ -39,6 +39,8 @@ export type FastPositionOptions = {
   lastKnownMaxAgeMs?: number;
   /** Timeout for each raced live fix when no last-known is available (ms). Default 2200. */
   quickTimeoutMs?: number;
+  /** false: never raise the Android "improve accuracy" dialog. Default: the OS default. */
+  mayShowUserSettingsDialog?: boolean;
   /** Optional debug logger. */
   log?: (event: string, data: Record<string, unknown>) => void;
 };
@@ -57,5 +59,32 @@ export type BestEffortPositionOptions = {
   /** Max age for OS last-known fallback (ms). Default 60000. */
   lastKnownMaxAgeMs?: number;
   /** Optional debug logger. */
+  log?: (event: string, data: Record<string, unknown>) => void;
+};
+
+/** A fix from acquireProgressivePosition; "gps" came from the High-accuracy watch. */
+export type ProgressiveFix = Omit<FastPosition, "source"> & {
+  source: FastPositionSource | "gps";
+};
+
+export type ProgressiveAcquisition = {
+  /** Resolves with the first usable fix, or null if the session ended without one. */
+  firstFix: Promise<ProgressiveFix | null>;
+  /** Resolves with the best fix when the session ends. */
+  done: Promise<ProgressiveFix | null>;
+  /** End the session now and release the GPS. Idempotent. */
+  stop: () => void;
+  /** Best fix so far. */
+  best: () => ProgressiveFix | null;
+};
+
+export type ProgressivePositionOptions = {
+  /** Called for the first fix and each material improvement. */
+  onFix?: (fix: ProgressiveFix) => void;
+  goalAccuracyM?: number;
+  settleAccuracyM?: number;
+  settleMs?: number;
+  budgetMs?: number;
+  lastKnownMaxAgeMs?: number;
   log?: (event: string, data: Record<string, unknown>) => void;
 };

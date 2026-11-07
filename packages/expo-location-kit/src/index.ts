@@ -7,6 +7,9 @@ export type {
   FastPosition,
   FastPositionSource,
   FastPositionOptions,
+  ProgressiveFix,
+  ProgressiveAcquisition,
+  ProgressivePositionOptions,
 } from "./types";
 
 export {
@@ -26,6 +29,8 @@ export {
 export { getBestEffortPosition } from "./bestEffortPosition";
 
 export { getFastPosition } from "./fastPosition";
+
+export { acquireProgressivePosition, effectiveAccuracyM } from "./progressivePosition";
 
 export {
   createForegroundLocationTracker,

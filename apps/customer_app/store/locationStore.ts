@@ -16,13 +16,13 @@ import { create } from "zustand";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   LOCATION_SIGNIFICANT_MOVE_METERS,
+  acquireProgressivePosition,
   coordsMovedSignificantly,
-  getBestEffortPosition,
-  getFastPosition,
   getDeviceLocationReadiness,
   withTimeout,
   type LocationPermissionStatus,
   type DeviceLocationReadiness,
+  type ProgressiveFix,
 } from "@gatimitra/expo-location-kit";
 import {
   reverseGeocode,
@@ -37,7 +37,7 @@ import {
   type LocationFreshness,
   type PersistedDeviceLocation,
 } from "@/lib/lastKnownLocationCache";
-import { shouldReplaceFix } from "@/lib/locationFixSelection";
+import { metresBetween, pinStillHolds, shouldReplaceFix } from "@/lib/locationFixSelection";
 
 function isSmsBlockingLocationPrompts(): boolean {
   try {
@@ -124,14 +124,16 @@ export type LocationSource = "selected" | "current";
 export type SessionSelectionKind = "nearby" | "remote";
 
 /**
- * Monotonic token for live-GPS fetches. getDeviceCoords()+reverseGeocode() is async, so two
- * overlapping fetches can finish out of order; a fetch only commits its coords/address if its
- * token is still the latest — an older (slower) reverse-geocode can never overwrite a newer GPS fix.
+ * Monotonic token for live-GPS commits: an explicit address pick bumps it, so a fix still
+ * arriving from an in-flight GPS session can never overwrite that intentional choice.
  */
 let locationFetchSeq = 0;
 
-/** Per-commit token: only the newest committed coordinate's async geocode is applied. */
+/** Per-geocode token: only the newest coordinate's async geocode is applied. */
 let addressCommitSeq = 0;
+
+/** Where the visible address was resolved. The label only describes coords near this. */
+let addressAnchor: { latitude: number; longitude: number } | null = null;
 
 /** Dev-only performance metrics: app-action → each location milestone (section 26). */
 type LocationMetric =
@@ -168,34 +170,118 @@ function currentDeviceFix(): DeviceFix | null {
   };
 }
 
-/**
- * Commit device coordinates immediately — the coordinate is shown BEFORE reverse-geocoding
- * (section 10) — persist them, then reverse-geocode asynchronously and fill the address when
- * it resolves. A per-commit token guarantees only the latest coordinate's address is applied.
- */
-function isPlaceholderAddress(address: ReverseGeocodeResult | null | undefined): boolean {
+export function isPlaceholderAddress(address: ReverseGeocodeResult | null | undefined): boolean {
   if (!address) return true;
   const primary = (address.primary ?? "").trim().toLowerCase();
   return (
-    (primary === "" || primary === "current location") &&
+    (primary === "" || primary === "current location" || primary === DETECTING_ADDRESS.toLowerCase()) &&
     !address.city &&
     !address.state &&
     !address.pincode
   );
 }
 
-function commitDeviceFix(fix: DeviceFix, opts: { refining: boolean }): void {
+const DETECTING_ADDRESS = "Detecting address…";
+/** Below this the visible label still describes the point: no new geocode needed. */
+const ADDRESS_VALID_M = 25;
+/** Second chance for a failed geocode: mobile networks often recover within seconds. */
+const GEOCODE_RETRY_MS = 2_500;
+
+function namedPlaceholder(primary: string): ReverseGeocodeResult {
+  return { primary, secondary: "", fullAddress: primary, city: null, state: null, pincode: null };
+}
+
+/** Metres from `point` to where the visible address was resolved; Infinity when unknown. */
+export function distanceFromAddressAnchorM(point: { latitude: number; longitude: number }): number {
+  if (!addressAnchor) return Number.POSITIVE_INFINITY;
+  return metresBetween(
+    addressAnchor.latitude,
+    addressAnchor.longitude,
+    point.latitude,
+    point.longitude
+  );
+}
+
+/** For code outside the store that has just written a resolved address for this point. */
+export function noteAddressResolvedAt(point: { latitude: number; longitude: number }): void {
+  addressAnchor = { latitude: point.latitude, longitude: point.longitude };
+}
+
+/**
+ * Resolve the address for a device coordinate and apply it, unless a newer coordinate or
+ * an explicit pick has superseded it. Retries once. When it still fails, a label from a
+ * different place is dropped rather than left describing where the user no longer is.
+ */
+export function resolveDeviceAddress(point: {
+  latitude: number;
+  longitude: number;
+  accuracy?: number | null;
+  timestampMs?: number;
+  source?: PersistedDeviceLocation["source"];
+}): void {
+  const token = ++addressCommitSeq;
+  const startedAt = Date.now();
+  const superseded = () =>
+    token !== addressCommitSeq || useLocationStore.getState().locationSource === "selected";
+
+  void (async () => {
+    let address = await geocodeOrFallback(point.longitude, point.latitude);
+    if (superseded()) return;
+    if (isPlaceholderAddress(address)) {
+      await new Promise((resolve) => setTimeout(resolve, GEOCODE_RETRY_MS));
+      if (superseded()) return;
+      address = await geocodeOrFallback(point.longitude, point.latitude);
+      if (superseded()) return;
+    }
+    logMetric("reverse_geocode_ms", Date.now() - startedAt);
+
+    if (isPlaceholderAddress(address)) {
+      const visible = useLocationStore.getState().address;
+      const visibleStillTrue =
+        !isPlaceholderAddress(visible) && distanceFromAddressAnchorM(point) < LABEL_STILL_NEARBY_M;
+      useLocationStore.setState({
+        address: visibleStillTrue ? visible : namedPlaceholder("Current location"),
+        refining: false,
+      });
+      return;
+    }
+
+    addressAnchor = { latitude: point.latitude, longitude: point.longitude };
+    useLocationStore.setState({ address, refining: false });
+    saveLastKnownLocation({
+      lat: point.latitude,
+      lon: point.longitude,
+      accuracy: point.accuracy ?? useLocationStore.getState().coordsAccuracy,
+      updatedAt: point.timestampMs ?? Date.now(),
+      source: point.source ?? "accurate",
+      address,
+    });
+  })();
+}
+
+/** A failed geocode keeps the old label only if the user is still roughly in that place. */
+const LABEL_STILL_NEARBY_M = 300;
+
+/**
+ * Commit device coordinates immediately: the coordinate is live before its address is
+ * known, so listings react at once. The address follows asynchronously, and only when the
+ * user has actually moved away from where the current label was resolved.
+ */
+function commitDeviceFix(fix: DeviceFix): void {
   const prev = useLocationStore.getState();
-  // Honor an intentional saved pin — don't wipe the header with GPS placeholders.
-  if (prev.locationSource === "selected" && !opts.refining) {
-    return;
-  }
-  const addrToken = ++addressCommitSeq;
+  const wasSelected = prev.locationSource === "selected";
+  if (wasSelected) addressAnchor = null;
   AsyncStorage.removeItem(STORAGE_KEY).catch(() => {}); // drop any stale selected pin
-  const prevAddress = prev.address;
-  const keepVisibleAddress = !isPlaceholderAddress(prevAddress);
+
+  const labelIsReal = !wasSelected && !isPlaceholderAddress(prev.address);
+  // Same object when the pin holds: zustand subscribers and coordinate-keyed queries see
+  // no change, and only the accuracy and age below are updated.
+  const heldPin = !wasSelected && prev.coords && pinStillHolds(prev.coords, fix) ? prev.coords : null;
+  const needsGeocode =
+    !labelIsReal || (heldPin == null && distanceFromAddressAnchorM(fix) >= ADDRESS_VALID_M);
+
   useLocationStore.setState({
-    coords: { latitude: fix.latitude, longitude: fix.longitude },
+    coords: heldPin ?? { latitude: fix.latitude, longitude: fix.longitude },
     coordsAccuracy: fix.accuracy,
     coordsUpdatedAt: fix.timestampMs,
     coordsSource: fix.source,
@@ -204,129 +290,183 @@ function commitDeviceFix(fix: DeviceFix, opts: { refining: boolean }): void {
     sessionSelectionKind: null,
     sessionBoundAddressId: null,
     loading: false,
-    // Keep the last real label on screen while Mapbox runs — never flash "Updating…".
-    refining: keepVisibleAddress ? false : opts.refining,
+    refining: needsGeocode,
     error: null,
-    // Show detecting immediately when we have no real label yet (GPS is known).
-    address: keepVisibleAddress
-      ? prevAddress
-      : {
-          primary: "Detecting address…",
-          secondary: "",
-          fullAddress: "Detecting address…",
-          city: null,
-          state: null,
-          pincode: null,
-        },
+    // Keep the last real label on screen while the geocode runs: never flash a spinner
+    // over a usable address. A saved-address label ("Home") is never reused for GPS.
+    address: labelIsReal ? prev.address : namedPlaceholder(DETECTING_ADDRESS),
   });
+
+  // Persist the label only when it really describes this point, so the next cold start
+  // cannot paint (or seed the geocode cache with) an address from somewhere else.
   saveLastKnownLocation({
     lat: fix.latitude,
     lon: fix.longitude,
     accuracy: fix.accuracy,
     updatedAt: fix.timestampMs,
     source: fix.source,
-    address: prevAddress,
+    address: needsGeocode ? null : prev.address,
   });
-  const geoT0 = Date.now();
-  void (async () => {
-    const address = await geocodeOrFallback(fix.longitude, fix.latitude);
-    if (addrToken !== addressCommitSeq) return; // superseded by a newer fix
-    if (useLocationStore.getState().locationSource === "selected") return;
-    logMetric("reverse_geocode_ms", Date.now() - geoT0);
-    const prev = useLocationStore.getState().address;
-    // Timed-out / empty Mapbox must never replace a real street label with "Current location".
-    const nextAddress = isPlaceholderAddress(address) && !isPlaceholderAddress(prev) ? prev : address;
-    useLocationStore.setState({ address: nextAddress, refining: false });
-    saveLastKnownLocation({
-      lat: fix.latitude,
-      lon: fix.longitude,
-      accuracy: fix.accuracy,
-      updatedAt: fix.timestampMs,
-      source: fix.source,
-      address: nextAddress,
-    });
-  })();
+
+  if (needsGeocode) resolveDeviceAddress(fix);
 }
 
-/** In-flight progressive fetch — a second caller subscribes instead of starting another (section 15). */
-let deviceFetchInFlight: Promise<boolean> | null = null;
-
-/** Accuracy good enough to skip a blocking accurate GPS pass (metres). */
+/** Accuracy good enough that a fix under 2 minutes old needs no new GPS session (metres). */
 const ACCEPTABLE_ACCURACY_M = 100;
 
+/** How long a caller with nothing on screen waits for the first fix. */
+const FIRST_FIX_WAIT_MS = 6_000;
+
+/** A fix this sharp may drive decisions like un-binding a saved address (metres). */
+const TRUSTED_FIX_ACCURACY_M = 200;
+
 /**
- * True when we already have a usable "current" pin from hydrate / fast fix /
- * recent reconcile — home should not wait on another getBestEffortPosition.
+ * True when the store already has a just-acquired, sharp "current" pin, so a new GPS
+ * session would learn nothing (e.g. tab switches, a quick resume).
  */
 function hasFreshUsableCurrentCoords(): boolean {
   const s = useLocationStore.getState();
   if (s.locationSource === "selected") return false;
   if (!s.coords) return false;
-  if (s.locationFreshness !== "FRESH" && s.locationFreshness !== "RECENT") return false;
+  if (classifyFreshness(s.coordsUpdatedAt) !== "FRESH") return false;
   if (s.coordsAccuracy != null && s.coordsAccuracy > ACCEPTABLE_ACCURACY_M) return false;
   return true;
 }
 
-function hasPaintableCurrentPin(): boolean {
-  const s = useLocationStore.getState();
-  if (s.locationSource === "selected") return false;
-  return s.coords != null;
+function toDeviceFix(fix: ProgressiveFix): DeviceFix {
+  return {
+    latitude: fix.latitude,
+    longitude: fix.longitude,
+    accuracy: fix.accuracy,
+    // iOS reports fractional ms; the backend's capturedAtMs only accepts an integer.
+    timestampMs: Math.round(fix.timestampMs),
+    source: fix.source === "gps" ? "accurate" : fix.source,
+  };
 }
 
-/** Phase-2 accurate refine — never awaited by progressiveDeviceFetch callers. */
-function scheduleAccurateDeviceRefine(seq: number, t0: number): void {
-  // Do not flip refining=true here — that kept "Updating location…" on after the
-  // address already painted. Fast commit owns refining until reverse-geocode lands.
-  void (async () => {
-    try {
-      const best = await getBestEffortPosition({
-        log: logLocation,
-        // Customer home only needs a usable refine — don't burn 9–14s on Highest polls.
-        attemptTimeoutMs: 7_000,
-        stableWaitMs: 5_000,
-        maxAttempts: 2,
-        acceptableAccuracyM: 45,
-        repollGapMs: 400,
-      });
-      if (seq !== locationFetchSeq) return;
+function commitIfBetter(fix: DeviceFix): void {
+  const s = useLocationStore.getState();
+  // A saved/searched pin is not a device fix: comparing against it (or its timestamp)
+  // would reject the user's real position as an impossible jump.
+  if (s.locationSource !== "selected") {
+    const current = currentDeviceFix();
+    // An older reading than the one held. (Not if that one is dated in the future: a clock
+    // change must not freeze the pin.)
+    if (current && fix.timestampMs < current.timestampMs && current.timestampMs <= Date.now()) return;
+    if (!shouldReplaceFix(current, fix)) return;
+  }
+  commitDeviceFix(fix);
+}
+
+type DeviceAcquisition = {
+  firstFix: Promise<DeviceFix | null>;
+  done: Promise<DeviceFix | null>;
+  /** First fix accurate enough to decide on; null if the session ends without one. */
+  trusted: Promise<DeviceFix | null>;
+  best: () => DeviceFix | null;
+  /** Commits apply only while this matches locationFetchSeq. */
+  commitSeq: number;
+  /** May replace a selected pin: the user asked for "current location". */
+  force: boolean;
+};
+
+let activeAcquisition: DeviceAcquisition | null = null;
+let lastAcquisition: DeviceAcquisition | null = null;
+
+/**
+ * Start the one GPS session, or join the running one. App open fires several callers
+ * (bootstrap, reconcile, home, the permission host); they all share a single session
+ * rather than each holding the GPS.
+ */
+function startDeviceAcquisition(force: boolean): DeviceAcquisition {
+  if (activeAcquisition) {
+    activeAcquisition.commitSeq = ++locationFetchSeq;
+    activeAcquisition.force = activeAcquisition.force || force;
+    return activeAcquisition;
+  }
+  const t0 = Date.now();
+  let sawFirst = false;
+  let resolveTrusted!: (fix: DeviceFix | null) => void;
+  const trusted = new Promise<DeviceFix | null>((resolve) => (resolveTrusted = resolve));
+  const session = acquireProgressivePosition({
+    log: logLocation,
+    onFix: (raw) => {
+      const fix = toDeviceFix(raw);
+      if (fix.accuracy != null && fix.accuracy <= TRUSTED_FIX_ACCURACY_M) resolveTrusted(fix);
+      if (!sawFirst) {
+        sawFirst = true;
+        logMetric(
+          raw.source === "last-known" ? "last_known_location_ms" : "first_location_fix_ms",
+          Date.now() - t0
+        );
+      }
+      const owner = acquisition;
+      if (owner.commitSeq !== locationFetchSeq) return;
+      if (useLocationStore.getState().locationSource === "selected" && !owner.force) return;
+      commitIfBetter(fix);
+    },
+  });
+  const acquisition: DeviceAcquisition = {
+    firstFix: session.firstFix.then((fix) => (fix ? toDeviceFix(fix) : null)),
+    trusted,
+    best: () => {
+      const fix = session.best();
+      return fix ? toDeviceFix(fix) : null;
+    },
+    done: session.done.then((fix) => {
+      if (activeAcquisition === acquisition) activeAcquisition = null;
+      resolveTrusted(null);
       logMetric("accurate_location_fix_ms", Date.now() - t0);
-      const next: DeviceFix = {
-        latitude: best.latitude,
-        longitude: best.longitude,
-        accuracy: best.accuracy,
-        timestampMs: Date.now(),
-        source: "accurate",
-      };
-      if (useLocationStore.getState().locationSource === "selected") {
-        useLocationStore.setState({ refining: false });
-        return;
-      }
-      if (shouldReplaceFix(currentDeviceFix(), next)) {
-        commitDeviceFix(next, { refining: false });
-      } else {
-        useLocationStore.setState({ refining: false });
-      }
-    } catch {
-      useLocationStore.setState({ refining: false });
-    }
-  })();
+      return fix ? toDeviceFix(fix) : null;
+    }),
+    commitSeq: ++locationFetchSeq,
+    force,
+  };
+  activeAcquisition = acquisition;
+  lastAcquisition = acquisition;
+  return acquisition;
 }
 
 /**
- * Progressive device fetch (sections 4–5): FAST first fix → commit + async geocode →
- * ACCURATE refine in the background → replace only when materially better and not an
- * outlier. Returns true when any usable fix was committed. Deduplicated: concurrent
- * callers share the one in-flight run rather than each starting a fresh GPS session.
- *
- * Accurate GPS is never awaited here — callers (home fill, permission grant) unblock
- * as soon as a fast/cached pin is available.
+ * A live device fix for a caller that must not act on a stale coordinate: the store's
+ * own fix when it is just-acquired, otherwise the first fix of the shared GPS session,
+ * bounded by `timeoutMs`. Null when nothing arrives in time.
  */
-function progressiveDeviceFetch(): Promise<boolean> {
-  if (deviceFetchInFlight) return deviceFetchInFlight;
-  deviceFetchInFlight = runProgressiveDeviceFetch().finally(() => {
-    deviceFetchInFlight = null;
-  });
-  return deviceFetchInFlight;
+export async function awaitLiveDeviceFix(timeoutMs: number): Promise<DeviceFix | null> {
+  if (hasFreshUsableCurrentCoords()) return currentDeviceFix();
+  const { firstFix } = startDeviceAcquisition(false);
+  return withTimeout(firstFix, timeoutMs).catch(() => null);
+}
+
+/**
+ * Like awaitLiveDeviceFix, for decisions a rough fix could get wrong: waits for a fix
+ * within TRUSTED_FIX_ACCURACY_M, and at the deadline returns the best fix so far (which
+ * may be coarse: check with fixIsConclusive).
+ */
+export async function awaitTrustedDeviceFix(timeoutMs: number): Promise<DeviceFix | null> {
+  if (hasFreshUsableCurrentCoords()) return currentDeviceFix();
+  const acquisition = startDeviceAcquisition(false);
+  const trusted = await withTimeout(acquisition.trusted, timeoutMs).catch(() => null);
+  return trusted ?? acquisition.best();
+}
+
+/**
+ * Can this fix be believed over `reference`? A sharp one can. A coarse one (a cell tower
+ * can be kilometres out) only if it lands outside its own error radius of the reference:
+ * inside it, the fix is no evidence the user has gone anywhere.
+ */
+export function fixIsConclusive(
+  fix: { latitude: number; longitude: number; accuracy: number | null },
+  reference: { latitude: number; longitude: number }
+): boolean {
+  if (fix.accuracy != null && fix.accuracy <= TRUSTED_FIX_ACCURACY_M) return true;
+  const moved = metresBetween(reference.latitude, reference.longitude, fix.latitude, fix.longitude);
+  return moved > (fix.accuracy ?? TRUSTED_FIX_ACCURACY_M);
+}
+
+/** The best fix of the latest GPS session, once that session has ended. */
+export function awaitFinalDeviceFix(): Promise<DeviceFix | null> {
+  return lastAcquisition?.done ?? Promise.resolve(null);
 }
 
 async function paintCachedDeviceLocationIfEmpty(): Promise<void> {
@@ -342,6 +482,9 @@ async function paintCachedDeviceLocationIfEmpty(): Promise<void> {
   if (!cached) return;
   const next = useLocationStore.getState();
   if (next.locationSource === "selected" || next.coords) return;
+  if (!isPlaceholderAddress(cached.address)) {
+    addressAnchor = { latitude: cached.lat, longitude: cached.lon };
+  }
   useLocationStore.setState({
     coords: { latitude: cached.lat, longitude: cached.lon },
     address: cached.address,
@@ -355,65 +498,52 @@ async function paintCachedDeviceLocationIfEmpty(): Promise<void> {
   });
 }
 
-async function runProgressiveDeviceFetch(): Promise<boolean> {
-  const seq = ++locationFetchSeq;
+/**
+ * Show what we know instantly, and always go and check. The cached pin is only a
+ * placeholder: yesterday's address must not stand in for today's position.
+ *
+ * - Fix under 2 min old and sharp: nothing to do.
+ * - Anything on screen (cache): unblock the caller now, the session updates it in place.
+ * - Nothing on screen: the caller waits for the first fix, up to FIRST_FIX_WAIT_MS.
+ *
+ * Returns true when a usable pin is available.
+ */
+async function progressiveDeviceFetch(force = false): Promise<boolean> {
   const t0 = Date.now();
-
   await paintCachedDeviceLocationIfEmpty();
 
-  // Cached / hydrate pin is enough to unblock home — refine GPS in the background.
-  if (hasPaintableCurrentPin() || hasFreshUsableCurrentCoords()) {
-    if (__DEV__) {
-      // eslint-disable-next-line no-console
-      console.log("[location] progressive_skip_fresh_current", {
-        freshness: useLocationStore.getState().locationFreshness,
-        accuracy: useLocationStore.getState().coordsAccuracy,
-      });
-    }
-    scheduleAccurateDeviceRefine(seq, t0);
-    useLocationStore.setState({ loading: false });
-    logMetric("total_location_ready_ms", Date.now() - t0);
+  // A pin with no address (last session died before its geocode, or the network failed)
+  // gets one now. A new fix may never come, if the user has not moved.
+  const shown = useLocationStore.getState();
+  if (shown.coords && shown.locationSource === "current" && isPlaceholderAddress(shown.address)) {
+    resolveDeviceAddress(shown.coords);
+  }
+
+  if (hasFreshUsableCurrentCoords()) {
+    useLocationStore.setState({ loading: false, refining: false });
     return true;
   }
 
-  let committedAny = false;
+  const acquisition = startDeviceAcquisition(force);
+  const pinOnScreen = () => {
+    const s = useLocationStore.getState();
+    return s.locationSource !== "selected" && s.coords != null;
+  };
 
-  // Phase 1 — fast, usable fix (OS last-known → raced Balanced/Low).
-  try {
-    const fast = await getFastPosition({
-      log: logLocation,
-      // Prefer a slightly older OS cache over waiting on GPS warm-up.
-      lastKnownMaxAgeMs: 600_000,
-      quickTimeoutMs: 2_000,
-    });
-    if (seq !== locationFetchSeq) return committedAny;
-    logMetric(
-      fast.source === "last-known" ? "last_known_location_ms" : "first_location_fix_ms",
-      Date.now() - t0
-    );
-    commitDeviceFix(
-      {
-        latitude: fast.latitude,
-        longitude: fast.longitude,
-        accuracy: fast.accuracy,
-        timestampMs: fast.timestampMs,
-        source: fast.source,
-      },
-      { refining: true }
-    );
-    committedAny = true;
-  } catch {
-    // no fast fix — the accurate pass below may still succeed
+  if (!pinOnScreen()) {
+    await withTimeout(acquisition.firstFix, FIRST_FIX_WAIT_MS).catch(() => null);
   }
-
-  // Phase 2 — accurate refine in background (does not block return).
-  scheduleAccurateDeviceRefine(seq, t0);
-
-  if (committedAny) {
+  const ok = pinOnScreen();
+  if (ok) {
     useLocationStore.setState({ loading: false });
     logMetric("total_location_ready_ms", Date.now() - t0);
   }
-  return committedAny;
+  void acquisition.done.then(() => {
+    if (useLocationStore.getState().refining && !isPlaceholderAddress(useLocationStore.getState().address)) {
+      useLocationStore.setState({ refining: false });
+    }
+  });
+  return ok;
 }
 
 type LocationState = {
@@ -475,6 +605,9 @@ type LocationState = {
 const bootCachedLocation = peekLastKnownLocation();
 if (bootCachedLocation?.address) {
   seedReverseGeocodeCache(bootCachedLocation.lon, bootCachedLocation.lat, bootCachedLocation.address);
+  if (!isPlaceholderAddress(bootCachedLocation.address)) {
+    addressAnchor = { latitude: bootCachedLocation.lat, longitude: bootCachedLocation.lon };
+  }
 }
 
 export const useLocationStore = create<LocationState>((set, get) => ({
@@ -521,6 +654,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     }
     if (cached?.address) {
       seedReverseGeocodeCache(cached.lon, cached.lat, cached.address);
+      if (!addressAnchor && !isPlaceholderAddress(cached.address)) {
+        addressAnchor = { latitude: cached.lat, longitude: cached.lon };
+      }
     }
     const cur = get();
     const canApplyCache = cached != null && cur.locationSource !== "selected";
@@ -601,10 +737,15 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
   setAddressAndCoords: (address, coords, meta) => {
     const source: LocationSource = meta?.source ?? "selected";
-    // An explicit address set (user pick or reconcile pin) supersedes any in-flight
-    // progressive GPS fetch — bump the token so its background phases abort and never
-    // overwrite this newer, intentional choice.
-    locationFetchSeq++;
+    // A selected pin supersedes any in-flight GPS session: bump the token so its later
+    // fixes can never overwrite this intentional choice. A "current" write is the same
+    // live pin, and must not stop the session from sharpening it.
+    if (source === "selected") {
+      locationFetchSeq++;
+      addressAnchor = null;
+      // An earlier "use current location" no longer speaks for the user.
+      if (activeAcquisition) activeAcquisition.force = false;
+    }
     const prev = get();
     const selectionKind =
       source === "selected"
@@ -675,7 +816,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       // native permission round-trip; refine GPS in the background.
       if (get().coords && get().locationSource === "current") {
         set({ loading: false });
-        void progressiveDeviceFetch();
+        void progressiveDeviceFetch(forceDevice);
         return;
       }
       const permT0 = Date.now();
@@ -683,8 +824,8 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       logMetric("location_permission_ms", Date.now() - permT0);
       if (readiness.isReady) {
         set({ permissionStatus: "granted", showPermissionModal: false });
-        // Fast first fix → instant coords + async address → background accuracy refine.
-        const ok = await progressiveDeviceFetch();
+        // First fix → instant coords + async address → the session keeps sharpening it.
+        const ok = await progressiveDeviceFetch(forceDevice);
         if (!ok) set({ loading: false });
         return;
       }
@@ -731,7 +872,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     if (permissionStatus !== "granted") return;
     set({ loading: true, error: null });
     try {
-      const ok = await progressiveDeviceFetch();
+      const ok = await progressiveDeviceFetch(forceDevice);
       if (!ok) set({ loading: false, error: "Location error" });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Location error";

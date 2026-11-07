@@ -22,7 +22,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { useLocationStore } from "@/store/locationStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
-import { reverseGeocode } from "@/services/location.service";
+import { isUnresolvedReverseResult, reverseGeocode } from "@/services/location.service";
 import {
   isValidMapCoordinate,
   parseMapCoordParam,
@@ -41,7 +41,7 @@ const BORDER = "#E5E7EB";
 const DEFAULT_LAT = 20.5937;
 const DEFAULT_LNG = 78.9629;
 
-const GEOCODE_DEBOUNCE_MS = 500;
+const GEOCODE_DEBOUNCE_MS = 250;
 const PIN_RANGE_RADIUS_METERS = 120;
 /** Ignore map settle events within this distance of the last geocoded pin. */
 const GEOCODE_MIN_MOVE_METERS = 25;
@@ -103,6 +103,9 @@ export default function LocationMapScreen() {
   const initialCoordsRef = useRef({ latitude: lat, longitude: lng });
   const lastGeocodedRef = useRef<{ latitude: number; longitude: number } | null>(null);
   const [userHasMovedMap, setUserHasMovedMap] = useState(false);
+  // Read when a drag settles. The state above is one render behind at that moment, which
+  // left the old address on screen after the first drag.
+  const userHasMovedMapRef = useRef(false);
   const leavingConfirmedRef = useRef(false);
   const locationSnapshotRef = useRef(useLocationStore.getState());
 
@@ -119,30 +122,22 @@ export default function LocationMapScreen() {
   const updateAddressFromCoords = useCallback(async (latitude: number, longitude: number) => {
     const seq = ++geocodeSeqRef.current;
     setGeocoding(true);
-    try {
-      const result = await reverseGeocode(longitude, latitude);
-      if (seq !== geocodeSeqRef.current) return;
+    const result = await reverseGeocode(longitude, latitude);
+    if (seq !== geocodeSeqRef.current) return;
+    // No answer: keep the last name on screen, and leave the pin eligible for a retry.
+    if (!isUnresolvedReverseResult(result)) {
       setAddress(result);
       lastGeocodedRef.current = { latitude, longitude };
-    } catch {
-      if (seq !== geocodeSeqRef.current) return;
-      setAddress({
-        primary: "Selected location",
-        secondary: `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`,
-        fullAddress: `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`,
-      });
-      lastGeocodedRef.current = { latitude, longitude };
-    } finally {
-      if (seq === geocodeSeqRef.current) setGeocoding(false);
     }
+    setGeocoding(false);
   }, []);
 
   const shouldGeocodeCoords = useCallback((latitude: number, longitude: number) => {
-    if (!userHasMovedMap) return false;
+    if (!userHasMovedMapRef.current) return false;
     const last = lastGeocodedRef.current;
     if (!last) return true;
     return haversineMeters(last.latitude, last.longitude, latitude, longitude) >= GEOCODE_MIN_MOVE_METERS;
-  }, [userHasMovedMap]);
+  }, []);
 
   const scheduleGeocode = useCallback(
     (latitude: number, longitude: number) => {
@@ -189,7 +184,10 @@ export default function LocationMapScreen() {
           latitude,
           longitude
         ) >= GEOCODE_MIN_MOVE_METERS;
-      if (movedFromInitial) setUserHasMovedMap(true);
+      if (movedFromInitial) {
+        userHasMovedMapRef.current = true;
+        setUserHasMovedMap(true);
+      }
 
       applyCenterCoord(latitude, longitude);
       scheduleGeocode(latitude, longitude);
@@ -238,14 +236,22 @@ export default function LocationMapScreen() {
     setLoading(true);
     const { latitude, longitude } = centerCoordRef.current;
     try {
-      const result =
-        userHasMovedMap || !hasPassedAddress
-          ? await reverseGeocode(longitude, latitude)
-          : {
-              primary: address.primary,
-              secondary: address.secondary,
-              fullAddress: address.fullAddress || address.secondary,
-            };
+      const last = lastGeocodedRef.current;
+      const addressMatchesPin =
+        !!last &&
+        haversineMeters(last.latitude, last.longitude, latitude, longitude) < GEOCODE_MIN_MOVE_METERS;
+      let result: { primary: string; secondary?: string; fullAddress: string } = {
+        primary: address.primary,
+        secondary: address.secondary,
+        fullAddress: address.fullAddress || address.secondary,
+      };
+      if (!addressMatchesPin) {
+        const geocoded = await reverseGeocode(longitude, latitude);
+        // The next screen lets the user type the details, so a failed lookup never blocks.
+        result = isUnresolvedReverseResult(geocoded)
+          ? { primary: "Selected location", fullAddress: "" }
+          : geocoded;
+      }
       leavingConfirmedRef.current = true;
       addRecentLocation({
         latitude,
