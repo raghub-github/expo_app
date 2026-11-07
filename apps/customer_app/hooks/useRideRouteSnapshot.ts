@@ -5,6 +5,8 @@ import { useRideRouteStore } from "@/store/rideRouteStore";
 import type { LatLng } from "@/services/directions.service";
 
 const EMPTY_POLYLINE: LatLng[] = [];
+/** Stable default — never use `stops = []` (new array every render → effect churn / resolve_stale). */
+const EMPTY_STOPS: LatLng[] = [];
 
 type Args = {
   pickup: LatLng | null;
@@ -18,11 +20,19 @@ type Args = {
  * Single source of truth for ride distance/ETA/polyline.
  * Recalculates only when pickup, drop, or stops change — never on vehicle selection.
  */
-export function useRideRouteSnapshot({ pickup, drop, stops = [], enabled = true }: Args) {
+export function useRideRouteSnapshot({
+  pickup,
+  drop,
+  stops: stopsArg,
+  enabled = true,
+}: Args) {
+  const stops = stopsArg ?? EMPTY_STOPS;
   const storeKey = useRideRouteStore((s) => s.routeKey);
   const storeSnapshot = useRideRouteStore((s) => s.snapshot);
   const [loading, setLoading] = useState(false);
   const requestRef = useRef(0);
+  const stopsRef = useRef(stops);
+  stopsRef.current = stops;
 
   const pickupLat = pickup?.latitude ?? null;
   const pickupLng = pickup?.longitude ?? null;
@@ -33,7 +43,7 @@ export function useRideRouteSnapshot({ pickup, drop, stops = [], enabled = true 
       stops
         .map((s) => `${s.latitude.toFixed(6)},${s.longitude.toFixed(6)}`)
         .join("|"),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- serialized stop coords
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- serialized stop coords only
     [stops.map((s) => `${s.latitude},${s.longitude}`).join("|")]
   );
 
@@ -46,9 +56,9 @@ export function useRideRouteSnapshot({ pickup, drop, stops = [], enabled = true 
       pickupLng,
       dropLat,
       dropLng,
-      stops,
+      stops: stopsRef.current,
     });
-  }, [pickupLat, pickupLng, dropLat, dropLng, stopsKey, stops]);
+  }, [pickupLat, pickupLng, dropLat, dropLng, stopsKey]);
 
   const snapshot =
     routeKey && storeKey === routeKey && storeSnapshot ? storeSnapshot : null;
@@ -74,11 +84,12 @@ export function useRideRouteSnapshot({ pickup, drop, stops = [], enabled = true 
 
     const requestId = ++requestRef.current;
     setLoading(true);
+    const stopsForRequest = stopsRef.current;
     void fetchAndStoreRideRoute(
       {
         pickup: { latitude: pickupLat, longitude: pickupLng },
         drop: { latitude: dropLat, longitude: dropLng },
-        stops,
+        stops: stopsForRequest,
       },
       {
         isStale: () => requestId !== requestRef.current,
@@ -88,7 +99,8 @@ export function useRideRouteSnapshot({ pickup, drop, stops = [], enabled = true 
       .finally(() => {
         if (requestId === requestRef.current) setLoading(false);
       });
-  }, [enabled, pickupLat, pickupLng, dropLat, dropLng, routeKey, snapshot, stopsKey, stops]);
+    // Intentionally omit `stops` / `snapshot` object identity — routeKey + stopsKey + viaResolved gate.
+  }, [enabled, pickupLat, pickupLng, dropLat, dropLng, routeKey, stopsKey, snapshot]);
 
   const tripKm = snapshot?.routeDistanceKm ?? null;
   const routeEtaMins = snapshot?.routeEtaMinutes ?? null;

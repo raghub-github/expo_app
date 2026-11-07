@@ -102,10 +102,12 @@ public final class OrderAlertNativeTest {
     if (RIDER) {
       eq("a rider's figure is named as their earning",
           "You earn ₹120", OrderAlertCardText.amountLabel("120"));
-      eq("rider heading names the job",
-          "NEW RIDE REQUEST", OrderAlertCardText.headingFor("person_ride"));
-      eq("rider heading for food", "NEW FOOD REQUEST", OrderAlertCardText.headingFor("food"));
-      eq("rider heading without a type", "NEW ORDER REQUEST", OrderAlertCardText.headingFor(""));
+      eq("rider heading is NEW ORDER RECEIVED",
+          "NEW ORDER RECEIVED", OrderAlertCardText.headingFor("person_ride"));
+      eq("rider heading for food", "NEW ORDER RECEIVED", OrderAlertCardText.headingFor("food"));
+      eq("rider heading without a type", "NEW ORDER RECEIVED", OrderAlertCardText.headingFor(""));
+      eq("rider brand line", "GatiMitra Rider", OrderAlertCardText.brandLine());
+      eq("type line for food", "Food Delivery", OrderAlertCardText.typeLine("food"));
     } else {
       eq("a merchant's figure is the order total, unlabelled",
           "₹120", OrderAlertCardText.amountLabel("120"));
@@ -113,11 +115,13 @@ public final class OrderAlertNativeTest {
     }
     eq("no amount means no label", "", OrderAlertCardText.amountLabel("0"));
 
-    eq("food", "Food", OrderAlertCardText.displayOrderType("food"));
-    eq("parcel", "Parcel", OrderAlertCardText.displayOrderType("parcel"));
-    eq("person_ride reads as Ride", "Ride", OrderAlertCardText.displayOrderType("person_ride"));
+    eq("food", "Food Delivery", OrderAlertCardText.displayOrderType("food"));
+    eq("parcel", "Parcel Delivery", OrderAlertCardText.displayOrderType("parcel"));
+    eq("person_ride reads as Bike Ride", "Bike Ride", OrderAlertCardText.displayOrderType("person_ride"));
     eq("unknown type is title-cased", "Scooter", OrderAlertCardText.displayOrderType("scooter"));
     eq("absent type shows nothing", "", OrderAlertCardText.displayOrderType(null));
+    eq("accept within clock", "Accept within 0:25",
+        OrderAlertCardText.acceptWithinLabel(1_700_000_000_000L + 25_000L, 1_700_000_000_000L));
 
     eq("bare metres get a unit", "1430 m", OrderAlertCardText.displayPickup("1430"));
     eq("a formatted distance is left alone", "1.4 km", OrderAlertCardText.displayPickup("1.4 km"));
@@ -450,6 +454,18 @@ public final class OrderAlertNativeTest {
         OrderAlertDecisionLedger.isDecided(riderLed, wave1, NOW, TTL));
     check("rider wave 2 for the SAME order still alerts",
         !OrderAlertDecisionLedger.isDecided(riderLed, wave2, NOW, TTL));
+    // JS may stop with wave-less session id; FCM start uses wave-scoped — must still block.
+    String[] waveLess = OrderAlertDecisionLedger.decisionKeys(
+        "rider", "RIDER_NEW_ORDER:ORD9:4", "ORD9", "ORD9", "");
+    String waveLessLed = OrderAlertDecisionLedger.record("", waveLess, NOW, TTL);
+    check("wave-less JS stop blocks wave-scoped FCM start",
+        OrderAlertDecisionLedger.isDecided(waveLessLed, wave1, NOW, TTL));
+    check("wave-less related helper true for same order+rider",
+        OrderAlertDecisionLedger.riderSessionKeysRelated(
+            "s:RIDER_NEW_ORDER:ORD9:4", "s:RIDER_NEW_ORDER:ORD9:4:1"));
+    check("distinct waves are NOT related",
+        !OrderAlertDecisionLedger.riderSessionKeysRelated(
+            "s:RIDER_NEW_ORDER:ORD9:4:1", "s:RIDER_NEW_ORDER:ORD9:4:2"));
     check("rider keys are session-scoped, not order-scoped",
         !OrderAlertDecisionLedger.isDecided(
             riderLed,

@@ -27,7 +27,7 @@ export function navigateToMealsUnderPrice(
   const hero = opts?.heroImageUrl?.trim();
   if (hero) {
     const uri = toAbsoluteImageUrl(hero) ?? hero;
-    void Image.prefetch(uri, { cachePolicy: "memory-disk" });
+    void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => {});
   }
 
   const params: Record<string, string> = {};

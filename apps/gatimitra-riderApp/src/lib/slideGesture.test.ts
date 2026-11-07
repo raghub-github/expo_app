@@ -65,6 +65,14 @@ describe("shouldCompleteSlide", () => {
     assert.equal(shouldCompleteSlide(MAX * SLIDE_COMPLETE_RATIO, MAX, SLIDE_COMPLETE_RATIO), true);
   });
 
+  it("mid-drag threshold crossing uses the same predicate (no finger-up required)", () => {
+    // RiderActionSlider calls shouldCompleteSlide from onPanResponderMove so
+    // accept fires the instant travel crosses the ratio — release is not a gate.
+    const midDragDx = MAX * SLIDE_COMPLETE_RATIO;
+    assert.equal(shouldCompleteSlide(midDragDx - 0.01, MAX, SLIDE_COMPLETE_RATIO), false);
+    assert.equal(shouldCompleteSlide(midDragDx, MAX, SLIDE_COMPLETE_RATIO), true);
+  });
+
   it("completes past the threshold and beyond the track", () => {
     assert.equal(shouldCompleteSlide(MAX, MAX, SLIDE_COMPLETE_RATIO), true);
     assert.equal(shouldCompleteSlide(MAX + 80, MAX, SLIDE_COMPLETE_RATIO), true);

@@ -24,6 +24,7 @@ import {
   RiderDeliverySuccessLayout,
   type SuccessBreakdownRow,
 } from "@/src/components/orders/RiderDeliverySuccessLayout";
+import { RiderSettlementBreakdownCard } from "@/src/components/orders/RiderSettlementBreakdownCard";
 import { useRecordDeliverySuccessTipBaseline } from "@/src/hooks/useRecordDeliverySuccessTipBaseline";
 
 type Props = {
@@ -215,6 +216,9 @@ export function RideDeliverySuccessScreen({ params: rawParams }: Props) {
       onPrimaryCta={handlePrimaryCta}
       closeAccessibilityLabel={t("common.close", "Close")}
       ctaAccessibilityLabel={ctaLabel}
+      extraContent={
+        <RiderSettlementBreakdownCard breakdown={orderDetail?.settlementBreakdown} />
+      }
     />
   );
 }

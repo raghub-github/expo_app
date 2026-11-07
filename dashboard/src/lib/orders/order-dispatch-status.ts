@@ -31,6 +31,12 @@ const DISPATCHED_CUR = new Set([
   "ON_THE_WAY",
   "IN_TRANSIT",
   "PICKED_UP",
+  // Parcel / ride drop-leg milestones — still treat as out for delivery for admin complete.
+  "REACHED_CUSTOMER",
+  "ARRIVED_AT_DROP",
+  "NEAR_DROP",
+  "RIDER_AT_DROP",
+  "CAPTAIN_ARRIVED",
 ]);
 
 function normalizeKey(value: string | null | undefined): string {

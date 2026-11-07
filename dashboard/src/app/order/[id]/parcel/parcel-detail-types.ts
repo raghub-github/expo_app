@@ -4,6 +4,7 @@
 
 import type { ParcelOrderDetail } from "@/lib/orders/parcel-order-types";
 import type { OrderCustomerFeedback } from "@/lib/orders/order-customer-feedback";
+import type { OrderCancellationInfo } from "@/lib/merchant-cancellation-display";
 
 export type ParcelDetailOrder = {
   id: number;
@@ -21,6 +22,8 @@ export type ParcelDetailOrder = {
   tipAmount: number | null;
   billingSnapshot: Record<string, unknown> | null;
   routedToEmail: string | null;
+  /** Last agent email that applied a manual Dispatch Ready / Dispatched / Delivered update. */
+  manualStatusUpdatedByEmail: string | null;
   customerId: number | null;
   customerExternalId: string | null;
   customerName: string | null;
@@ -29,14 +32,20 @@ export type ParcelDetailOrder = {
   customerRiskFlag: string | null;
   customerAccountStatus: string | null;
   customerTrustTierLabel: string | null;
+  /** customers.trust_score — sender overall rating fallback. */
+  customerTrustScore: number | null;
   customerFraudReasons: string[];
   customerFeedback: OrderCustomerFeedback | null;
+  /** Cancellation / rejection audit — same shape as food order detail. */
+  cancellationInfo: OrderCancellationInfo | null;
   distanceMismatchFlagged: boolean;
   pickupAddressDeviationMeters: number | null;
   dropAddressDeviationMeters: number | null;
   riderId: number | null;
   riderName: string | null;
   riderMobile: string | null;
+  /** Delivery partner / provider label source (orders_core.delivered_by). */
+  deliveredBy: string | null;
   pickupAddressRaw: string | null;
   pickupAddressNormalized: string | null;
   pickupAddressGeocoded: string | null;
@@ -115,6 +124,12 @@ export function mapCoreRowToParcelDetail(row: Record<string, unknown>): ParcelDe
         : row.routed_to_email != null
           ? String(row.routed_to_email)
           : null,
+    manualStatusUpdatedByEmail:
+      row.manualStatusUpdatedByEmail != null
+        ? String(row.manualStatusUpdatedByEmail)
+        : row.manual_status_updated_by_email != null
+          ? String(row.manual_status_updated_by_email)
+          : null,
     customerId: (row.customerId as number | null) ?? null,
     customerExternalId:
       row.customerExternalId != null
@@ -133,6 +148,12 @@ export function mapCoreRowToParcelDetail(row: Record<string, unknown>): ParcelDe
         : row.customerUserType != null
           ? String(row.customerUserType)
           : null,
+    customerTrustScore: (() => {
+      const n = Number(
+        row.customerTrustScore ?? row.customer_trust_score ?? row.trustScore
+      );
+      return Number.isFinite(n) && n > 0 ? Math.round(n * 10) / 10 : null;
+    })(),
     customerFraudReasons: Array.isArray(row.customerFraudReasons)
       ? (row.customerFraudReasons as string[])
       : [],
@@ -140,12 +161,22 @@ export function mapCoreRowToParcelDetail(row: Record<string, unknown>): ParcelDe
       row.customerFeedback && typeof row.customerFeedback === "object"
         ? (row.customerFeedback as OrderCustomerFeedback)
         : null,
+    cancellationInfo:
+      row.cancellationInfo && typeof row.cancellationInfo === "object"
+        ? (row.cancellationInfo as OrderCancellationInfo)
+        : null,
     distanceMismatchFlagged: Boolean(row.distanceMismatchFlagged),
     pickupAddressDeviationMeters: num(row.pickupAddressDeviationMeters),
     dropAddressDeviationMeters: num(row.dropAddressDeviationMeters),
     riderId: (row.riderId as number | null) ?? null,
     riderName: (row.riderName as string | null) ?? null,
     riderMobile: (row.riderMobile as string | null) ?? null,
+    deliveredBy:
+      row.deliveredBy != null
+        ? String(row.deliveredBy)
+        : row.delivered_by != null
+          ? String(row.delivered_by)
+          : null,
     pickupAddressRaw: (row.pickupAddressRaw as string | null) ?? null,
     pickupAddressNormalized: (row.pickupAddressNormalized as string | null) ?? null,
     pickupAddressGeocoded:

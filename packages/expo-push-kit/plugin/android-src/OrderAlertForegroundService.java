@@ -32,11 +32,56 @@ public class OrderAlertForegroundService extends Service {
 
   private final Handler handler = new Handler(Looper.getMainLooper());
   private PowerManager.WakeLock wakeLock;
+  private String expirySessionId = "";
   private final Runnable watchdog = () -> {
     Log.w(TAG, "watchdog stop after " + MAX_ALERT_MS + "ms");
     OrderAlertController.stopAll(this);
     stopSelf();
   };
+  /** Offer-window expiry — independent of JS timers and overlay visibility. */
+  private final Runnable offerExpiry = () -> {
+    try {
+      JSONObject active = OrderAlertController.getActive(this);
+      if (active == null) return;
+      String sid = active.optString("sessionId", expirySessionId);
+      long expMs = parseExpiresAtMs(active.optString("expiresAt", ""));
+      if (expMs <= 0L) return;
+      if (System.currentTimeMillis() < expMs) {
+        long delay = Math.max(250L, expMs - System.currentTimeMillis());
+        handler.postDelayed(offerExpiry, delay);
+        return;
+      }
+      Log.i(TAG, "offer expiry stop sessionId=" + sid);
+      if (sid != null && sid.length() > 0) {
+        OrderAlertController.stop(this, sid);
+        String oid = active.optString("orderId", "");
+        if (oid.length() > 0) OrderAlertController.stop(this, oid);
+      }
+    } catch (Throwable t) {
+      Log.w(TAG, "offerExpiry failed: " + t.getMessage());
+    }
+  };
+
+  private static long parseExpiresAtMs(String raw) {
+    if (raw == null) return 0L;
+    String s = raw.trim();
+    if (s.length() == 0) return 0L;
+    try {
+      // epoch millis or seconds
+      if (s.matches("^\\d+$")) {
+        long n = Long.parseLong(s);
+        return n < 1_000_000_000_000L ? n * 1000L : n;
+      }
+      // ISO-8601
+      return java.time.Instant.parse(s).toEpochMilli();
+    } catch (Throwable ignored) {
+      try {
+        return java.time.OffsetDateTime.parse(s).toInstant().toEpochMilli();
+      } catch (Throwable ignored2) {
+        return 0L;
+      }
+    }
+  }
 
   @Override
   public void onCreate() {
@@ -152,6 +197,20 @@ public class OrderAlertForegroundService extends Service {
     OrderAlertPill.apply(this);
     handler.removeCallbacks(watchdog);
     handler.postDelayed(watchdog, MAX_ALERT_MS);
+    // Schedule authoritative offer-window stop when expiresAt is known (FCM/session).
+    handler.removeCallbacks(offerExpiry);
+    expirySessionId = sessionId;
+    try {
+      JSONObject row = OrderAlertController.getActive(this);
+      String expiresRaw = row != null ? row.optString("expiresAt", "") : "";
+      long expMs = parseExpiresAtMs(expiresRaw);
+      if (expMs > 0L) {
+        long delay = Math.max(250L, expMs - System.currentTimeMillis());
+        handler.postDelayed(offerExpiry, delay);
+        Log.i(TAG, "offer expiry scheduled in " + delay + "ms sessionId=" + sessionId);
+      }
+    } catch (Throwable ignored) {
+    }
     Log.i(TAG, "started sessionId=" + sessionId + " orderId=" + orderId);
     return START_STICKY;
   }
@@ -159,6 +218,7 @@ public class OrderAlertForegroundService extends Service {
   @Override
   public void onDestroy() {
     handler.removeCallbacks(watchdog);
+    handler.removeCallbacks(offerExpiry);
     OrderAlertOverlay.hideAll(this);
     // Pill is independent of FGS lifetime — keep WM overlay if still enabled.
     if (OrderAlertPill.isEnabled(this) && OrderAlertOverlay.canDraw(this)) {

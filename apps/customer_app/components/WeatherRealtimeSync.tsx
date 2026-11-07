@@ -224,6 +224,12 @@ export function WeatherRealtimeSync() {
         ws.onerror = () => {
           failureCountRef.current += 1;
         };
+      } catch {
+        // fetch()/ticket failures must not become uncaught rejections (whatwg-fetch).
+        failureCountRef.current += 1;
+        if (!cancelledRef.current && !suspendedRef.current) {
+          scheduleReconnect("connect_error");
+        }
       } finally {
         connectInFlightRef.current = false;
       }

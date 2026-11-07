@@ -7,7 +7,6 @@ import { View, StyleSheet, AppState } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { InboxScreen, type InboxItem, type NotificationApiConfig } from "@gatimitra/expo-push-kit";
-import { router } from "expo-router";
 import { getRiderAppConfig } from "@/src/config/env";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { colors } from "@/src/theme";
@@ -101,14 +100,6 @@ export function resolveRiderNotificationHref(
   return RIDER_FALLBACK;
 }
 
-function linkIsActionable(deepLink: string): boolean {
-  const raw = deepLink.trim();
-  if (!raw) return false;
-  if (raw.startsWith("http://") || raw.startsWith("https://")) return false;
-  const href = resolveRiderNotificationHref(raw);
-  return href !== "/notifications";
-}
-
 export function NotificationsScreen() {
   const apiConfig = useMemo<NotificationApiConfig>(
     () => ({
@@ -145,7 +136,7 @@ export function NotificationsScreen() {
     useNotificationInboxStore.getState().markAllRead();
     useNotificationInboxStore.setState({ items: [] });
     setUnread(0);
-    // Reconcile with dismissed storage + filtered API (after Clear all persist).
+    // Reconcile with server cutoff + filtered API after Clear all persists.
     refreshRiderInboxUnread();
   }, [setUnread]);
 
@@ -155,22 +146,6 @@ export function NotificationsScreen() {
   }, []);
 
   const closeDetail = useCallback(() => setDetail(null), []);
-
-  const openDetailLink = useCallback(() => {
-    if (!detail) return;
-    const link = (detail.deep_link ?? "").trim();
-    setDetail(null);
-    try {
-      const href = resolveRiderNotificationHref(link, detail);
-      router.push(href as never);
-    } catch {
-      try {
-        router.replace(RIDER_FALLBACK as never);
-      } catch {
-        /* ignore */
-      }
-    }
-  }, [detail]);
 
   return (
     <View style={styles.root}>
@@ -192,8 +167,6 @@ export function NotificationsScreen() {
         visible={detail != null}
         item={detail}
         onClose={closeDetail}
-        hasLink={!!detail && linkIsActionable(detail.deep_link ?? "")}
-        onOpenLink={openDetailLink}
       />
     </View>
   );

@@ -73,7 +73,8 @@ export async function listForceAssignmentRidersFromDb(
     .limit(1);
 
   if (!order) return [];
-  if (String(order.orderType ?? "").toLowerCase() !== "food") return [];
+  const orderType = String(order.orderType ?? "").toLowerCase();
+  if (orderType !== "food" && orderType !== "parcel") return [];
 
   const mxLat = parseCoord(order.pickupLat);
   const mxLng = parseCoord(order.pickupLon);

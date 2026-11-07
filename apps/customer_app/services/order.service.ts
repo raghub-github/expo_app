@@ -145,6 +145,10 @@ export type OrderDetail = OrderSummary & {
   distanceKm?: number | null;
   /** Estimated or actual ride duration in minutes. */
   rideDurationMinutes?: number | null;
+  /** Parcel cash COD: collect fare at pickup or drop. */
+  payAt?: "pickup" | "drop" | null;
+  /** Parcel: rider confirmed cash received. */
+  cashCollected?: boolean;
   /** Person ride: finalized pickup wait duration (seconds). */
   pickupWaitSeconds?: number | null;
   pickupWaitingChargePerMin?: number | null;
@@ -537,6 +541,50 @@ export const orderService = {
         : {}),
       ...(payload?.forceNoAutoOffer ? { forceNoAutoOffer: true } : {}),
     });
+    return data;
+  },
+
+  /** Parcel fare due (cash/COD can switch to online). */
+  async getParcelFareBill(
+    orderId: string
+  ): Promise<{
+    ok: true;
+    finalAmount: number;
+    parcelFare: number;
+    waitingCharge?: number;
+    platformFee?: number;
+    convenienceFee?: number;
+    surgeFee?: number;
+    smallOrderFee?: number;
+    miscFee?: number;
+    taxTotal?: number;
+    discountTotal?: number;
+    lines?: Array<{
+      key: string;
+      label: string;
+      amount: number;
+      kind: "fare" | "charge" | "waiting" | "tax" | "discount" | "total";
+    }>;
+    taxes?: Array<{ label: string; amount: number }>;
+    discounts?: Array<{ label: string; amount: number }>;
+    paymentMethod?: string | null;
+    payAt?: "pickup" | "drop" | null;
+  }> {
+    const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/parcel-fare-bill`, {});
+    return data;
+  },
+
+  /** Pay parcel fare online (UPI / GatiCash) even if booking was cash. */
+  async payParcelFare(
+    orderId: string,
+    payload: {
+      razorpayOrderId?: string;
+      razorpayPaymentId?: string;
+      razorpaySignature?: string;
+      gatiCashAmount?: number;
+    }
+  ): Promise<{ ok: true; amountPaid: number }> {
+    const { data } = await api.post(`${ORDERS_PREFIX}/${orderId}/parcel-fare-payment`, payload);
     return data;
   },
 

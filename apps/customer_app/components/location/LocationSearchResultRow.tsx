@@ -1,4 +1,4 @@
-import { View, TouchableOpacity, StyleSheet, Pressable } from "react-native";
+import { View, Pressable, StyleSheet } from "react-native";
 import { AppText } from "@/components/AppText";
 
 import { Ionicons } from "@expo/vector-icons";
@@ -27,7 +27,7 @@ type Props = {
   onToggleFavorite?: () => void;
 };
 
-/** Rapido-style row: pin + distance | title + address | heart */
+/** Rapido-style row: pin + distance | title + address | heart — non-overlapping press targets. */
 export function LocationSearchResultRow({
   item,
   query = "",
@@ -44,42 +44,50 @@ export function LocationSearchResultRow({
   const segments = highlightSegments(primary, query);
 
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.7}>
-      <View style={styles.leftCol}>
-        <Ionicons name="location-outline" size={20} color="#6B7280" />
-        {distanceLabel ? <AppText style={styles.distance}>{distanceLabel}</AppText> : null}
-      </View>
-
-      <View style={styles.content}>
-        <AppText style={styles.primary} numberOfLines={1}>
-          {segments.map((seg, i) => (
-            <AppText key={i} style={seg.match ? styles.match : styles.primarySegment}>
-              {seg.text}
-            </AppText>
-          ))}
-        </AppText>
-        <AppText style={styles.secondary} numberOfLines={2}>
-          {secondary}
-        </AppText>
-      </View>
-
+    <View style={styles.row}>
       <Pressable
-        style={styles.heartBtn}
-        hitSlop={10}
-        onPress={(e) => {
-          e?.stopPropagation?.();
-          onToggleFavorite?.();
-        }}
+        style={styles.mainPress}
+        onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel={favorited ? "Remove from favorites" : "Save location"}
+        accessibilityLabel={primary}
       >
-        <Ionicons
-          name={favorited ? "heart" : "heart-outline"}
-          size={20}
-          color={favorited ? "#EF4444" : "#94A3B8"}
-        />
+        <View style={styles.leftCol}>
+          <Ionicons name="location-outline" size={20} color="#6B7280" />
+          {distanceLabel ? <AppText style={styles.distance}>{distanceLabel}</AppText> : null}
+        </View>
+
+        <View style={styles.content}>
+          <AppText style={styles.primary} numberOfLines={1}>
+            {segments.map((seg, i) => (
+              <AppText key={i} style={seg.match ? styles.match : styles.primarySegment}>
+                {seg.text}
+              </AppText>
+            ))}
+          </AppText>
+          <AppText style={styles.secondary} numberOfLines={2}>
+            {secondary}
+          </AppText>
+        </View>
       </Pressable>
-    </TouchableOpacity>
+
+      {onToggleFavorite ? (
+        <Pressable
+          style={styles.heartBtn}
+          hitSlop={10}
+          onPress={onToggleFavorite}
+          accessibilityRole="button"
+          accessibilityLabel={favorited ? "Remove from favorites" : "Save location"}
+        >
+          <Ionicons
+            name={favorited ? "heart" : "heart-outline"}
+            size={20}
+            color={favorited ? "#EF4444" : "#94A3B8"}
+          />
+        </Pressable>
+      ) : (
+        <View style={styles.heartBtn} />
+      )}
+    </View>
   );
 }
 
@@ -92,6 +100,12 @@ const styles = StyleSheet.create({
     paddingRight: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E5E7EB",
+  },
+  mainPress: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    minWidth: 0,
     gap: 10,
   },
   leftCol: {
@@ -133,8 +147,8 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   heartBtn: {
-    width: 36,
-    height: 36,
+    width: 40,
+    height: 40,
     alignItems: "center",
     justifyContent: "center",
     marginTop: -4,

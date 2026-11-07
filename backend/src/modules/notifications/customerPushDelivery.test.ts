@@ -3,8 +3,11 @@ import { describe, it } from "node:test";
 import { isTerminalPushDeliveryError } from "../push/purgeInvalidPushTokens.js";
 import { DEFAULT_RETRY_DELAYS_SEC, planRetryDecision } from "./retryEngine.js";
 import {
+  customerAudienceCoverKey,
   dedupeNativeTokensForDispatch,
+  effectivePushRecipientRole,
   expandCustomerPushUserIds,
+  pushTokenRoleMatches,
   shouldKeepPushRecipient,
   tokenRetiredOnRegister,
   type NativeTokenCandidate,
@@ -115,6 +118,16 @@ describe("customer push token selection", () => {
       }),
       true,
     );
+  });
+
+  it("treats blank token roles as matching the campaign audience", () => {
+    assert.equal(pushTokenRoleMatches(null, "customer"), true);
+    assert.equal(pushTokenRoleMatches("", "customer"), true);
+    assert.equal(pushTokenRoleMatches("customer", "customer"), true);
+    assert.equal(pushTokenRoleMatches("rider", "customer"), false);
+    assert.equal(effectivePushRecipientRole(null, "customer"), "customer");
+    assert.equal(effectivePushRecipientRole("rider", "customer"), "rider");
+    assert.equal(customerAudienceCoverKey("GM100386"), customerAudienceCoverKey("386"));
   });
 });
 

@@ -164,6 +164,12 @@ export async function paymentRoutes(app: FastifyInstance) {
           const qrId = String(qrEntity?.id ?? "");
           const razorpayPaymentId = paymentEntity?.id ? String(paymentEntity.id) : null;
           const amountPaise = Number(paymentEntity?.amount ?? qrEntity?.payment_amount ?? 0);
+          const currency = paymentEntity?.currency
+            ? String(paymentEntity.currency)
+            : "INR";
+          const paymentStatus = paymentEntity?.status
+            ? String(paymentEntity.status)
+            : "captured";
           if (!qrId) {
             await logPaymentEvent(db, {
               eventType: "WEBHOOK_REJECTED_INVALID_PAYLOAD",
@@ -172,11 +178,33 @@ export async function paymentRoutes(app: FastifyInstance) {
             });
             return reply.status(400).send({ error: "invalid_payload" });
           }
-          const { finalizeRideOnlineQrPayment } = await import(
-            "../rides/ride-online-qr.service.js"
-          );
           try {
-            const res = await finalizeRideOnlineQrPayment({ qrId, razorpayPaymentId, amountPaise });
+            // Route by payment row source — parcel vs ride online QR.
+            const { ordersCorePayments } = await import("../../db/schema.js");
+            const { eq } = await import("drizzle-orm");
+            const [payLookup] = await db
+              .select({ gatewayResponse: ordersCorePayments.gatewayResponse })
+              .from(ordersCorePayments)
+              .where(eq(ordersCorePayments.transactionId, qrId))
+              .limit(1);
+            const source = String(
+              ((payLookup?.gatewayResponse ?? {}) as { source?: string }).source ?? ""
+            );
+            const isParcelQr = source === "parcel_online_qr";
+            const res = isParcelQr
+              ? await (
+                  await import("../parcel/parcel-online-qr.service.js")
+                ).finalizeParcelOnlineQrPayment({
+                  qrId,
+                  razorpayPaymentId,
+                  amountPaise,
+                  currency,
+                  paymentStatus,
+                })
+              : await (
+                  await import("../rides/ride-online-qr.service.js")
+                ).finalizeRideOnlineQrPayment({ qrId, razorpayPaymentId, amountPaise });
+            const handler = isParcelQr ? "parcel_online_qr" : "ride_online_qr";
             await markWebhookProcessed(db, eventId);
             await logPaymentEvent(db, {
               eventType: "WEBHOOK_HANDLED_OK",
@@ -185,9 +213,11 @@ export async function paymentRoutes(app: FastifyInstance) {
               payload: {
                 event,
                 eventId,
-                handler: "ride_online_qr",
+                handler,
                 orderId: res.orderId,
                 alreadyDone: res.alreadyDone,
+                amountPaise,
+                currency,
                 durationMs: Date.now() - startedAtMs,
               },
             });
@@ -197,11 +227,73 @@ export async function paymentRoutes(app: FastifyInstance) {
               source: "webhook",
               razorpayPaymentId: razorpayPaymentId ?? undefined,
               failureMessage: (err as Error)?.message ?? "unknown",
-              payload: { event, eventId, handler: "ride_online_qr", durationMs: Date.now() - startedAtMs },
+              payload: {
+                event,
+                eventId,
+                handler: "online_qr",
+                durationMs: Date.now() - startedAtMs,
+              },
             });
             // Do not 500 — ack so Razorpay stops retrying a payload we can't process;
             // reconciliation/admin can recover. (Matches the existing handlers' posture.)
           }
+          return reply.send({ ok: true });
+        }
+
+        // QR closed (paid / expired / on_demand) — mark mapping if still INITIATED and unpaid.
+        if (event === "qr_code.closed" || event === "qr_code.created") {
+          const qrNode = payloadEnvelope?.qr_code as Record<string, unknown> | undefined;
+          const qrEntity = (qrNode?.entity as Record<string, unknown> | undefined) ?? qrNode;
+          const qrId = String(qrEntity?.id ?? "");
+          if (qrId && event === "qr_code.closed") {
+            try {
+              const { ordersCorePayments } = await import("../../db/schema.js");
+              const { eq, and } = await import("drizzle-orm");
+              const [payLookup] = await db
+                .select({
+                  id: ordersCorePayments.id,
+                  paymentStatus: ordersCorePayments.paymentStatus,
+                  gatewayResponse: ordersCorePayments.gatewayResponse,
+                })
+                .from(ordersCorePayments)
+                .where(eq(ordersCorePayments.transactionId, qrId))
+                .limit(1);
+              if (
+                payLookup?.id &&
+                String(payLookup.paymentStatus ?? "").toUpperCase() === "INITIATED"
+              ) {
+                const closeReason = String(qrEntity?.close_reason ?? "");
+                // If closed because paid, reconciler/credited path owns finalization.
+                if (closeReason !== "paid") {
+                  await db
+                    .update(ordersCorePayments)
+                    .set({
+                      paymentStatus: "EXPIRED",
+                      gatewayResponse: {
+                        ...((payLookup.gatewayResponse ?? {}) as Record<string, unknown>),
+                        qrStatus: "closed",
+                        closeReason,
+                        paymentStatus: "EXPIRED",
+                      },
+                    })
+                    .where(
+                      and(
+                        eq(ordersCorePayments.id, payLookup.id),
+                        eq(ordersCorePayments.paymentStatus, "INITIATED")
+                      )
+                    );
+                }
+              }
+            } catch (err) {
+              req.log.warn({ err }, "qr_code.closed handler failed");
+            }
+          }
+          await markWebhookProcessed(db, eventId);
+          await logPaymentEvent(db, {
+            eventType: "WEBHOOK_HANDLED_OK",
+            source: "webhook",
+            payload: { event, eventId, qrId, durationMs: Date.now() - startedAtMs },
+          });
           return reply.send({ ok: true });
         }
 

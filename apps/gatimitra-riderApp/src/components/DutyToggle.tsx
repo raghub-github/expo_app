@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { useTranslation } from "react-i18next";
 import { useDutyToggle } from "@/src/hooks/useDutyToggle";
+import { useDutyStore } from "@/src/stores/dutyStore";
 import { useRiderSubscriptionStatus } from "@/src/hooks/useRiderSubscription";
 import { OffDutyConfirmModal } from "@/src/components/home/OffDutyConfirmModal";
 import { DutyVehicleSelectModal } from "@/src/components/duty/DutyVehicleSelectModal";
@@ -67,7 +68,9 @@ export function DutyToggle({
   const { t } = useTranslation();
   const { isOnDuty, setDuty, isPending, dutyGoOnBlocked, onboardingReviewBlocksDuty } =
     useDutyToggle();
-  const goOnLocked = dutyGoOnBlocked || onboardingReviewBlocksDuty;
+  const syncPhase = useDutyStore((s) => s.syncPhase);
+  const dutyVerifying = syncPhase === "unknown" || syncPhase === "syncing";
+  const goOnLocked = dutyGoOnBlocked || onboardingReviewBlocksDuty || dutyVerifying;
   const pickVehicles = useDutyVehiclePickStore((s) => s.vehicles);
   const pickInitial = useDutyVehiclePickStore((s) => s.initialId);
   const pickCancel = useDutyVehiclePickStore((s) => s.cancel);
@@ -104,6 +107,12 @@ export function DutyToggle({
   const requestToggle = useCallback(() => {
     if (isPending) return;
     bumpTouchFeedback();
+
+    // Sync failed — re-fetch authoritative duty before allowing toggle.
+    if (syncPhase === "sync_failed") {
+      void useDutyStore.getState().syncFromServer();
+      return;
+    }
 
     if (isOnDuty) {
       // Going OFF — confirm sheet gives immediate feedback.
@@ -144,6 +153,7 @@ export function DutyToggle({
     onboardingReviewBlocksDuty,
     refetchSubscription,
     setDuty,
+    syncPhase,
   ]);
 
   const handleConfirmOffDuty = useCallback(() => {
@@ -206,9 +216,39 @@ export function DutyToggle({
           accessibilityRole="switch"
           accessibilityState={{ checked: isOnDuty, disabled: goOnLocked }}
         >
-          <View style={[styles.statusDot, { backgroundColor: isOnDuty ? "#22C55E" : "#9CA3AF" }]} />
-          <Text style={[styles.statusText, { color: isOnDuty ? "#16A34A" : "#6B7280" }]}>
-            {isOnDuty ? t("topbar.online", "ONLINE") : t("topbar.offline", "OFFLINE")}
+          <View
+            style={[
+              styles.statusDot,
+              {
+                backgroundColor:
+                  syncPhase === "server_on"
+                    ? "#22C55E"
+                    : dutyVerifying
+                      ? "#F59E0B"
+                      : "#9CA3AF",
+              },
+            ]}
+          />
+          <Text
+            style={[
+              styles.statusText,
+              {
+                color:
+                  syncPhase === "server_on"
+                    ? "#16A34A"
+                    : dutyVerifying
+                      ? "#D97706"
+                      : "#6B7280",
+              },
+            ]}
+          >
+            {syncPhase === "server_on"
+              ? t("topbar.online", "ONLINE")
+              : dutyVerifying
+                ? t("topbar.dutySyncing", "SYNCING")
+                : syncPhase === "sync_failed"
+                  ? t("topbar.dutySyncFailed", "RETRY")
+                  : t("topbar.offline", "OFFLINE")}
           </Text>
         </Pressable>
         {modal}

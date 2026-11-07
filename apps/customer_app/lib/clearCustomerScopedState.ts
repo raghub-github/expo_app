@@ -41,6 +41,7 @@ import {
   DIETARY_PREFERENCE_STORAGE_KEY,
   useDietaryPreferenceStore,
 } from "@/store/dietaryPreferenceStore";
+import { resetSessionLocationBootstrap } from "@/lib/sessionLocationBootstrap";
 
 /** In-memory customer state: active orders, carts, checkout handoffs. */
 function clearInMemoryCustomerStores(): void {
@@ -114,6 +115,7 @@ async function clearPersistedCustomerCaches(): Promise<void> {
 export async function clearCustomerScopedState(
   nextCustomerId: string | null = null
 ): Promise<void> {
+  resetSessionLocationBootstrap();
   setActiveCustomerScopeId(nextCustomerId);
 
   try {

@@ -95,6 +95,22 @@ import {
 import { capturePlayInstallReferrerOnce } from "@/lib/playInstallReferrer";
 import { referralService } from "@/services/referral.service";
 import { extendStartupApiGate } from "@/lib/startup-api-gate";
+import { startupLaunchLog, startupMeasure } from "@/lib/startupPerf";
+import { resetInitialShellReady, useInitialShellReady } from "@/lib/startupShellReady";
+import {
+  ensureSplashHardDeadlineArmed,
+  isSplashExited,
+  markSplashArmed,
+  markSplashExited,
+  SPLASH_SHELL_SOFT_MS,
+  useSplashDeadlineHit,
+} from "@/lib/splashLifecycle";
+import {
+  bootstrapFreshDeviceLocation,
+  bootstrapLastKnownLocation,
+} from "@/lib/sessionLocationBootstrap";
+import { STORAGE_KEYS } from "@/constants";
+import { hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
 // Side-effect: sync-seed category metadata + last-good / local image maps before home mounts.
 import "@/lib/categoryImageLastGood";
 import "@/lib/categoryImageFileCache";
@@ -238,74 +254,118 @@ LogBox.ignoreLogs([
   "Push notifications (remote notifications) functionality provided by expo-notifications was removed from Expo Go",
 ]);
 
-void SplashScreen.preventAutoHideAsync()
-  .then(() => SplashScreen.hideAsync())
-  .catch(() => {});
+// Keep the native mint splash until the JS brand layer has laid out.
+// Do NOT hide here — early hide caused mint → black/blank → mint flashes.
+void SplashScreen.preventAutoHideAsync().catch(() => {});
+ensureSplashHardDeadlineArmed();
+startupLaunchLog("NATIVE_SPLASH_VISIBLE");
 
 // Singleton lives in @/lib/queryClient so logout/customer-scope teardown can
 // clear it from outside the React tree.
 
-
 export default function RootLayout() {
-  const [fontsLoaded] = useFonts({
-    ...Ionicons.font,
-    ...MaterialCommunityIcons.font,
+  // Brand fonts first — icon font maps are large and must not delay splash exit.
+  const [brandFontsLoaded] = useFonts({
     Lora_400Regular,
     Lora_700Bold,
     Poppins_600SemiBold,
     Poppins_700Bold,
   });
+  const [iconFontsLoaded] = useFonts({
+    ...Ionicons.font,
+    ...MaterialCommunityIcons.font,
+  });
+  // Keep icon font load warm; brand fonts alone drive splash typography polish.
+  void iconFontsLoaded;
+  const hardDeadlineHit = useSplashDeadlineHit();
+  // Never seed exited=true from a prior Metro session — that skipped the cover and
+  // flashed near-white softBackground for seconds before Home mounted.
   const [splashExited, setSplashExited] = useState(false);
   const [homeDataPrefetched, setHomeDataPrefetched] = useState(false);
   const [startupTimedOut, setStartupTimedOut] = useState(false);
 
+  // Only reset shell gate on a true cold construct — never after splash has left
+  // (globalThis flag survives Fast Refresh; module `let` did not).
+  const shellGateResetRef = useRef(false);
+  if (!shellGateResetRef.current) {
+    shellGateResetRef.current = true;
+    if (!isSplashExited()) {
+      resetInitialShellReady("root-layout-construct", { silent: true });
+    }
+  }
+  const initialShellReady = useInitialShellReady();
+
   const hydrated = useAuthStore((s) => s.hydrated);
   const session = useAuthStore((s) => s.session);
-  const cartHydrated = useCartStore((s) => s.hydrated);
   const assetsLoaded = useAppAssetsStore((s) => s.loaded);
   const homeImagesPrefetched = useAppAssetsStore((s) => s.homeImagesPrefetched);
   const hydrateAuth = useAuthStore((s) => s.hydrate);
   const hydrateCart = useCartStore((s) => s.hydrate);
   const hydrateRecentlyRemoved = useRecentlyRemovedStore((s) => s.hydrate);
   const hydrateLanguage = useLanguageStore((s) => s.hydrate);
-  const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
-  const promptLocationPermissionIfNeeded = useLocationStore((s) => s.promptLocationPermissionIfNeeded);
-  const hydrateLocation = useLocationStore((s) => s.hydrate);
   const hydrateRecentLocations = useRecentLocationStore((s) => s.hydrate);
   const hydrateFavoriteLocations = useFavoriteLocationsStore((s) => s.hydrate);
 
-  // Wait for fonts too — otherwise Login/AppText flash system → Lora/Poppins.
-  const criticalReady = hydrated && cartHydrated && fontsLoaded;
-  // Auth + cart are local; exit splash as soon as both hydrate — no network gate.
-  const appReady = criticalReady;
+  // Auth session restore alone unblocks the navigator. Cart / GPS / weather /
+  // fonts-of-icons / network must never gate Home.
+  const criticalReady = hydrated;
+  // ONLY reveal Home when a real destination has painted under the mint cover.
+  // Hard deadline / prior-session flags must NOT remove the cover into white.
+  const destinationReady = criticalReady && (initialShellReady || startupTimedOut);
+  const appReady = destinationReady;
+  /** Keep GatiMitra mint branding up until Home/Login is actually underneath. */
+  const showBrandedCover = !destinationReady || !splashExited;
+
+  const dismissBrandingSplash = useCallback((reason: string) => {
+    markSplashExited(reason);
+    setSplashExited(true);
+    startupMeasure("branding_splash_exit", "process_start");
+    startupMeasure("usable_home_ready", "process_start");
+    void SplashScreen.hideAsync().catch(() => {});
+    void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike")).catch(() => {});
+  }, []);
 
   const handleSplashReady = useCallback(() => {
-    // Native splash stays until Lora is on the JS wordmark — no thin-system-font flash.
-    if (!fontsLoaded) return;
+    startupMeasure("native_splash_hide", "process_start");
+    startupLaunchLog("NATIVE_SPLASH_VISIBLE", { phase: "js_brand_laid_out" });
+    // Native splash can hide once JS brand is up — JS mint cover still owns the frame.
     void SplashScreen.hideAsync().catch(() => {});
-  }, [fontsLoaded]);
-
-  useEffect(() => {
-    if (!fontsLoaded) return;
-    void SplashScreen.hideAsync().catch(() => {});
-  }, [fontsLoaded]);
+  }, []);
 
   const handleSplashExitComplete = useCallback(() => {
-    setSplashExited(true);
-    void SplashScreen.hideAsync().catch(() => {});
-    // Non-critical: warm ride-map marker after the first frame is interactive.
-    void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike")).catch(() => {});
+    dismissBrandingSplash("bootstrap_exit_complete");
+  }, [dismissBrandingSplash]);
+
+  useEffect(() => {
+    startupLaunchLog("ROOT_LAYOUT_READY");
   }, []);
 
   useEffect(() => {
     void (async () => {
+      startupLaunchLog("AUTH_RESTORE_START");
+      const authT0 = Date.now();
+      // Profile KV warm is parallel — never ahead-of-auth on the critical path.
+      void hydrateFastKvFromAsyncStorage([STORAGE_KEYS.PROFILE_CACHE]).catch(() => {});
       await hydrateAuth();
-      // Cart + recently-removed share the customer scope stamp; hydrate after
-      // auth so a cold start does not refuse a still-binding owner id.
-      await Promise.all([hydrateCart(), hydrateRecentlyRemoved()]);
+      const authMs = Date.now() - authT0;
+      startupLaunchLog("AUTH_RESTORE_DONE", { durationMs: authMs });
+      if (authMs > 1500) {
+        startupLaunchLog("STARTUP_BLOCKER", { stage: "auth_restore", durationMs: authMs });
+      }
+      // Cart after auth is published — never await before mounting navigator/Home.
+      void Promise.all([hydrateCart(), hydrateRecentlyRemoved()]).then(() => {
+        startupLaunchLog("CART_HYDRATE_DONE");
+      });
     })();
     hydrateLanguage();
-    void hydrateLocation();
+    // Stage A: last-known location — parallel with auth, never waits for splash/Home.
+    // Seed weather RQ from disk as soon as coords exist (before Home/WeatherPrefetch mounts).
+    void bootstrapLastKnownLocation().then(() => {
+      const { coords, address } = useLocationStore.getState();
+      if (coords) {
+        void restoreAndPrefetchLocationWeather(queryClient, address, coords);
+      }
+    });
     void hydrateRecentLocations();
     void hydrateFavoriteLocations();
   }, [
@@ -313,9 +373,9 @@ export default function RootLayout() {
     hydrateCart,
     hydrateRecentlyRemoved,
     hydrateLanguage,
-    hydrateLocation,
     hydrateRecentLocations,
     hydrateFavoriteLocations,
+    queryClient,
   ]);
 
   useEffect(() => {
@@ -340,13 +400,41 @@ export default function RootLayout() {
   }, [criticalReady, session]);
 
   useEffect(() => {
-    if (!criticalReady || !session) {
+    if (!criticalReady) {
       setStartupTimedOut(false);
       return;
     }
-    const timeout = setTimeout(() => setStartupTimedOut(true), 7_000);
+    // Safety if Home onLayout is slow (Metro) — still only after auth, never into white.
+    const timeout = setTimeout(() => {
+      startupMeasure("startup_shell_timeout", "process_start");
+      setStartupTimedOut(true);
+    }, Math.max(SPLASH_SHELL_SOFT_MS, 1_200));
     return () => clearTimeout(timeout);
-  }, [criticalReady, session]);
+  }, [criticalReady]);
+
+  // Wall-clock deadline only accelerates shell soft-timeout after auth — never
+  // strips the mint cover while the navigator is still empty.
+  useEffect(() => {
+    if (!hardDeadlineHit || !criticalReady || splashExited) return;
+    setStartupTimedOut(true);
+  }, [hardDeadlineHit, criticalReady, splashExited]);
+
+  useEffect(() => {
+    if (!criticalReady) return;
+    startupMeasure("critical_ready", "process_start");
+  }, [criticalReady]);
+
+  useEffect(() => {
+    if (!appReady) return;
+    markSplashArmed();
+    startupMeasure("splash_fade_armed", "process_start");
+  }, [appReady]);
+
+  // Dismiss only when destinationReady — Home/Login is mounted under the cover.
+  useEffect(() => {
+    if (!appReady || splashExited) return;
+    dismissBrandingSplash(hardDeadlineHit ? "hard_deadline_after_shell" : "app_ready");
+  }, [appReady, splashExited, hardDeadlineHit, dismissBrandingSplash]);
 
   useEffect(() => {
     if (!criticalReady || session) return;
@@ -363,68 +451,11 @@ export default function RootLayout() {
     }
   }, [hydrated]);
 
+  // Stage B: fresh GPS — starts with auth ready, in parallel with Home (not after splash).
   useEffect(() => {
-    if (!hydrated || !cartHydrated) return;
-    void (async () => {
-      await runExclusiveActiveLocationReconcile(async () => {
-        await hydrateLocation();
-        // SMS first on Android — never fire GPS / Location Accuracy over the SMS sheet.
-        if (useSmsPermissionStore.getState().allowInFlight) return "deferred";
-        if (useAuthStore.getState().session?.accessToken) {
-          const smsOk = await useSmsPermissionStore.getState().promptSmsPermissionIfNeeded();
-          if (!smsOk && useSmsPermissionStore.getState().blocksLocation) {
-            return "deferred";
-          }
-        }
-        // Permission only — do not push GPS as Current Location before reconcile.
-        await promptLocationPermissionIfNeeded({ force: true, skipDeviceFetch: true });
-        const readiness = await getDeviceLocationReadiness();
-        if (readiness.isReady) {
-          // Paint last-known + fast GPS immediately — do not wait on backend reconcile.
-          void requestPermissionAndFetch({ forceDevice: true });
-        }
-        if (!readiness.isReady) {
-          if (useAuthStore.getState().session) {
-            const { applyActiveLocationFromBackend } = await import(
-              "@/lib/applyActiveLocationFromBackend"
-            );
-            await applyActiveLocationFromBackend(queryClient);
-          }
-          return "done";
-        }
-        const before = useLocationStore.getState().coords;
-        let reconciled = null as Awaited<ReturnType<typeof reconcileActiveLocationFromGps>>;
-        if (useAuthStore.getState().session) {
-          // Backend is SoT: keep saved address within retention, else Current Location.
-          reconciled = await reconcileActiveLocationFromGps(queryClient);
-          if (__DEV__) {
-            console.log("[active-location] cold_start_decision", {
-              path: "RootLayout.bootstrap",
-              addressId: reconciled?.addressId ?? null,
-              source: reconciled?.source ?? null,
-              reason: reconciled?.reason ?? null,
-              distanceM: reconciled?.distanceM ?? null,
-              retentionRadiusM: reconciled?.retentionRadiusM ?? null,
-            });
-          }
-        } else {
-          await requestPermissionAndFetch({ forceDevice: true });
-        }
-        const { coords, address } = useLocationStore.getState();
-        if (coords) {
-          await restoreAndPrefetchLocationWeather(queryClient, address, coords);
-        }
-        if (
-          coordsMovedSignificantly(before, coords) ||
-          reconciled?.switchedToCurrent ||
-          reconciled?.source === "selected"
-        ) {
-          debouncedInvalidateFoodHomeListingQueries(queryClient);
-        }
-        return "done";
-      });
-    })();
-  }, [hydrated, cartHydrated, hydrateLocation, promptLocationPermissionIfNeeded, requestPermissionAndFetch, queryClient]);
+    if (!hydrated) return;
+    void bootstrapFreshDeviceLocation(queryClient);
+  }, [hydrated, queryClient]);
 
   const onLayoutRootView = useCallback(() => {
     if (criticalReady && splashExited) {
@@ -442,9 +473,10 @@ export default function RootLayout() {
           <View
             style={{
               flex: 1,
-              backgroundColor: splashExited
-                  ? GatiMitraColors.softBackground
-                  : SPLASH_CHROME_COLOR,
+              // Mint until branded cover is gone — softBackground here was the white flash.
+              backgroundColor: showBrandedCover
+                ? SPLASH_CHROME_COLOR
+                : GatiMitraColors.softBackground,
             }}
           >
             <AppAssetsPrefetch />
@@ -557,12 +589,11 @@ export default function RootLayout() {
                 </AppErrorBoundary>
               </>
             ) : null}
-            {!splashExited ? (
+            {showBrandedCover ? (
               <GatiMitraBootstrapScreen
                 variant="root"
                 appReady={appReady}
-                fontsReady={fontsLoaded}
-                statusMessage={startupTimedOut ? "Initializing GatiMitra..." : null}
+                fontsReady={brandFontsLoaded}
                 onSplashReady={handleSplashReady}
                 onExitComplete={handleSplashExitComplete}
               />

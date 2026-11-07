@@ -20,7 +20,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { RazorpayCheckoutModal, type RazorpayPaymentResult } from "@/components/RazorpayCheckoutModal";
-import { AppAlertModal } from "@/components/AppAlertModal";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
   RESTAURANT_RATING_TAGS,
@@ -31,11 +30,25 @@ import { FOOD_TIP_PRESETS } from "@/components/orders/FoodOrderTipSheet";
 import { paymentService } from "@/services/payment.service";
 import { orderService } from "@/services/order.service";
 import { useProfile } from "@/hooks/useProfile";
+import { useWalletBalance, WALLET_BALANCE_QUERY_KEY } from "@/hooks/useWalletBalance";
+import { useQueryClient } from "@tanstack/react-query";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { STORAGE_KEYS } from "@/constants";
 
 const GREEN = GatiMitraColors.primaryMint;
 const MINT_DARK = GatiMitraColors.deepMintStart;
-const TEXT = "#1C1C1C";
-const MUTED = "#828282";
+const TEXT = GatiMitraColors.textPrimaryNew;
+const MUTED = GatiMitraColors.textSecondary;
+const BORDER = "#E8EEEA";
+const CARD_BG = "#F7FAF8";
+
+type TipPayMethod = "upi" | "gaticash";
+
+/** Pay-method chips for tip (also keeps Fast Refresh from crashing on a stale TIP_PAY_METHODS ref). */
+const TIP_PAY_METHODS: ReadonlyArray<{ id: TipPayMethod; label: string }> = [
+  { id: "upi", label: "UPI" },
+  { id: "gaticash", label: "GatiCash" },
+];
 
 function StarRow({
   value,
@@ -58,7 +71,7 @@ function StarRow({
           >
             <Ionicons
               name={filled ? "star" : "star-outline"}
-              size={28}
+              size={30}
               color={filled ? "#F59E0B" : "#D1D5DB"}
             />
           </TouchableOpacity>
@@ -104,9 +117,12 @@ export type OrderDeliveryRatingSheetProps = {
   riderName?: string | null;
   /** Tip already paid at checkout or via tip sheet (₹). */
   existingTipAmount?: number;
+  /** @deprecated Tip pay method is chosen in-sheet; order method is not used as default. */
   paymentMethodLabel?: string;
   /** Self-pickup / takeaway — no rider to rate or tip. */
   hideDeliveryPartner?: boolean;
+  /** Parcel — rate delivery partner only (no restaurant). */
+  hideStoreRating?: boolean;
   submitting?: boolean;
   onClose: () => void;
   onTipPaid?: (amount: number) => void;
@@ -117,7 +133,7 @@ export type OrderDeliveryRatingSheetProps = {
     riderReviewText?: string;
     storeReviewTags?: string[];
     riderReviewTags?: string[];
-  }) => void;
+  }) => void | Promise<void>;
 };
 
 export function OrderDeliveryRatingSheet({
@@ -127,8 +143,8 @@ export function OrderDeliveryRatingSheet({
   storeBannerUri,
   riderName,
   existingTipAmount = 0,
-  paymentMethodLabel = "UPI",
   hideDeliveryPartner = false,
+  hideStoreRating = false,
   submitting = false,
   onClose,
   onTipPaid,
@@ -136,8 +152,14 @@ export function OrderDeliveryRatingSheet({
 }: OrderDeliveryRatingSheetProps) {
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
-  const sheetHeight = Math.round(winH * 0.86);
+  const sheetHeight = Math.round(winH * (hideStoreRating ? 0.78 : 0.86));
   const { data: profile } = useProfile();
+  const queryClient = useQueryClient();
+  const { data: wallet } = useWalletBalance();
+  const walletAvailable = Math.max(
+    0,
+    Number(wallet?.available_balance ?? wallet?.balance ?? 0)
+  );
 
   const [storeRating, setStoreRating] = useState(0);
   const [deliveryRating, setDeliveryRating] = useState(0);
@@ -149,6 +171,8 @@ export function OrderDeliveryRatingSheet({
   const [selectedTip, setSelectedTip] = useState<number>(FOOD_TIP_PRESETS[0]);
   const [customTipMode, setCustomTipMode] = useState(false);
   const [customTipAmount, setCustomTipAmount] = useState("");
+  const [saveTipForNext, setSaveTipForNext] = useState(true);
+  const [tipPayMethod, setTipPayMethod] = useState<TipPayMethod>("upi");
   const [tipPaying, setTipPaying] = useState(false);
   const [localTipPaid, setLocalTipPaid] = useState(0);
   const [razorpayVisible, setRazorpayVisible] = useState(false);
@@ -161,9 +185,12 @@ export function OrderDeliveryRatingSheet({
     orderId: string;
     amount: number;
   } | null>(null);
-  const [thankYouAlert, setThankYouAlert] = useState<{ title: string; message: string } | null>(
-    null
-  );
+  const [ratingSubmitted, setRatingSubmitted] = useState(false);
+  const [thankYouSheet, setThankYouSheet] = useState<{
+    title: string;
+    message: string;
+    ctaLabel: string;
+  } | null>(null);
 
   const paidTip = Math.max(existingTipAmount, localTipPaid);
   const canOfferTip = !hideDeliveryPartner && paidTip <= 0;
@@ -176,6 +203,8 @@ export function OrderDeliveryRatingSheet({
     return selectedTip;
   }, [customTipMode, customTipAmount, selectedTip]);
 
+  const canPayWithGatiCash = tipAmount > 0 && walletAvailable + 0.005 >= tipAmount;
+
   useEffect(() => {
     if (!visible) return;
     setStoreRating(0);
@@ -187,11 +216,31 @@ export function OrderDeliveryRatingSheet({
     setSelectedTip(FOOD_TIP_PRESETS[0]);
     setCustomTipMode(false);
     setCustomTipAmount("");
+    setSaveTipForNext(true);
+    setTipPayMethod("upi");
     setLocalTipPaid(0);
+    setRatingSubmitted(false);
+    setThankYouSheet(null);
     setRazorpayVisible(false);
     setRazorpayParams(null);
     setSimulatedPayment(null);
+    void AsyncStorage.getItem(STORAGE_KEYS.SAVED_DELIVERY_TIP).then((raw) => {
+      const saved = raw != null ? Math.round(Number(raw)) : FOOD_TIP_PRESETS[0];
+      if (FOOD_TIP_PRESETS.includes(saved as (typeof FOOD_TIP_PRESETS)[number])) {
+        setSelectedTip(saved as (typeof FOOD_TIP_PRESETS)[number]);
+        setCustomTipMode(false);
+      } else if (saved > 0) {
+        setCustomTipMode(true);
+        setCustomTipAmount(String(saved));
+      }
+    });
   }, [visible, orderId]);
+
+  useEffect(() => {
+    if (tipPayMethod === "gaticash" && !canPayWithGatiCash) {
+      setTipPayMethod("upi");
+    }
+  }, [tipPayMethod, canPayWithGatiCash]);
 
   const handleStoreRatingChange = (stars: number) => {
     setStoreRating(stars);
@@ -217,6 +266,25 @@ export function OrderDeliveryRatingSheet({
 
   const partnerLabel = riderName?.trim() || "Your GatiMitra rider";
 
+  const afterTipSuccess = useCallback(
+    async (amount: number) => {
+      if (saveTipForNext) {
+        await AsyncStorage.setItem(STORAGE_KEYS.SAVED_DELIVERY_TIP, String(amount));
+      }
+      setRazorpayVisible(false);
+      setRazorpayParams(null);
+      setSimulatedPayment(null);
+      setLocalTipPaid(amount);
+      onTipPaid?.(amount);
+      setThankYouSheet({
+        title: "Tip sent!",
+        message: `₹${amount} tip has been sent to ${partnerLabel.split(" ")[0] ?? "your delivery partner"}.`,
+        ctaLabel: "Done",
+      });
+    },
+    [saveTipForNext, onTipPaid, partnerLabel]
+  );
+
   const finalizeTip = useCallback(
     async (result: RazorpayPaymentResult) => {
       if (tipAmount <= 0) return;
@@ -224,19 +292,12 @@ export function OrderDeliveryRatingSheet({
       try {
         await orderService.submitRiderTip(orderId, {
           tipAmount,
+          paymentMethod: "upi",
           razorpayOrderId: result.razorpayOrderId,
           razorpayPaymentId: result.razorpayPaymentId,
           razorpaySignature: result.razorpaySignature,
         });
-        setRazorpayVisible(false);
-        setRazorpayParams(null);
-        setSimulatedPayment(null);
-        setLocalTipPaid(tipAmount);
-        onTipPaid?.(tipAmount);
-        setThankYouAlert({
-          title: "Thank you!",
-          message: `₹${tipAmount} tip has been sent to ${partnerLabel.split(" ")[0] ?? "your delivery partner"}.`,
-        });
+        await afterTipSuccess(tipAmount);
       } catch (e) {
         const msg =
           (e as { response?: { data?: { message?: string } } })?.response?.data?.message ??
@@ -246,8 +307,27 @@ export function OrderDeliveryRatingSheet({
         setTipPaying(false);
       }
     },
-    [tipAmount, orderId, onTipPaid, partnerLabel]
+    [tipAmount, orderId, afterTipSuccess]
   );
+
+  const selectTipPayMethod = (method: TipPayMethod) => {
+    if (method === "gaticash" && !canPayWithGatiCash) {
+      Alert.alert(
+        "Insufficient GatiCash",
+        tipAmount > 0
+          ? `You need ₹${tipAmount} in GatiCash (available ₹${Math.floor(walletAvailable)}).`
+          : "Add a tip amount first, then switch to GatiCash if balance is enough."
+      );
+      return;
+    }
+    setTipPayMethod(method);
+  };
+
+  const handleClearTip = () => {
+    setCustomTipMode(false);
+    setCustomTipAmount("");
+    setSelectedTip(FOOD_TIP_PRESETS[0]);
+  };
 
   const handlePayTip = useCallback(async () => {
     if (tipAmount <= 0) {
@@ -258,6 +338,36 @@ export function OrderDeliveryRatingSheet({
       Alert.alert("Tip already added", "You have already tipped for this order.");
       return;
     }
+
+    if (tipPayMethod === "gaticash") {
+      if (!canPayWithGatiCash) {
+        Alert.alert(
+          "Insufficient GatiCash",
+          "Your wallet balance is not enough for this tip. Pay with UPI instead."
+        );
+        setTipPayMethod("upi");
+        return;
+      }
+      setTipPaying(true);
+      try {
+        await orderService.submitRiderTip(orderId, {
+          tipAmount,
+          paymentMethod: "gaticash",
+        });
+        void queryClient.invalidateQueries({ queryKey: WALLET_BALANCE_QUERY_KEY });
+        await afterTipSuccess(tipAmount);
+      } catch (e) {
+        const msg =
+          (e as { response?: { data?: { message?: string } } })?.response?.data?.message ??
+          "Could not pay tip with GatiCash. Try UPI instead.";
+        Alert.alert("Tip failed", msg);
+        setTipPayMethod("upi");
+      } finally {
+        setTipPaying(false);
+      }
+      return;
+    }
+
     setTipPaying(true);
     try {
       const razorpayOrder = await paymentService.createRazorpayOrder({
@@ -281,34 +391,187 @@ export function OrderDeliveryRatingSheet({
     } finally {
       setTipPaying(false);
     }
-  }, [tipAmount, paidTip, orderId]);
+  }, [
+    tipAmount,
+    paidTip,
+    tipPayMethod,
+    canPayWithGatiCash,
+    orderId,
+    afterTipSuccess,
+    queryClient,
+  ]);
 
-  const hasStoreRating = storeRating >= 1;
+  const hasStoreRating = !hideStoreRating && storeRating >= 1;
   const hasDeliveryRating = !hideDeliveryPartner && deliveryRating >= 1;
-  const canSubmit = hideDeliveryPartner
-    ? hasStoreRating && !submitting
-    : (hasStoreRating || hasDeliveryRating) && !submitting && !tipPaying;
+  const canSubmit =
+    !ratingSubmitted &&
+    (hideDeliveryPartner
+      ? hasStoreRating && !submitting
+      : hideStoreRating
+        ? hasDeliveryRating && !submitting && !tipPaying
+        : (hasStoreRating || hasDeliveryRating) && !submitting && !tipPaying);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!canSubmit) return;
-    onSubmit({
-      ...(hasStoreRating ? { storeRating } : {}),
-      ...(hasDeliveryRating ? { deliveryRating } : {}),
-      reviewText: reviewText.trim() || undefined,
-      riderReviewText: hideDeliveryPartner ? undefined : riderReviewText.trim() || undefined,
-      ...(storeSelectedTags.length ? { storeReviewTags: storeSelectedTags } : {}),
-      ...(!hideDeliveryPartner && riderSelectedTags.length
-        ? { riderReviewTags: riderSelectedTags }
-        : {}),
-    });
+    try {
+      await Promise.resolve(
+        onSubmit({
+          ...(hasStoreRating ? { storeRating } : {}),
+          ...(hasDeliveryRating ? { deliveryRating } : {}),
+          reviewText: hideStoreRating ? undefined : reviewText.trim() || undefined,
+          riderReviewText: hideDeliveryPartner ? undefined : riderReviewText.trim() || undefined,
+          ...(!hideStoreRating && storeSelectedTags.length
+            ? { storeReviewTags: storeSelectedTags }
+            : {}),
+          ...(!hideDeliveryPartner && riderSelectedTags.length
+            ? { riderReviewTags: riderSelectedTags }
+            : {}),
+        })
+      );
+      setRatingSubmitted(true);
+      setThankYouSheet({
+        title: "Thank you!",
+        message: "Your rating helps us improve. You can still add a tip below, or close anytime.",
+        ctaLabel: canOfferTip ? "Continue" : "OK",
+      });
+    } catch {
+      // Parent already surfaces the error.
+    }
   };
+
+  const tipCard =
+    canOfferTip ? (
+      <View style={styles.tipCard}>
+        <AppText style={styles.tipTitle}>Tip your delivery partner</AppText>
+        <AppText style={styles.tipSub}>
+          Delivery partner will get notified instantly. The full tip is sent after delivery.
+        </AppText>
+
+        <View style={styles.tipRow}>
+          {FOOD_TIP_PRESETS.map((amount) => {
+            const active = !customTipMode && selectedTip === amount;
+            return (
+              <TouchableOpacity
+                key={amount}
+                style={[styles.tipChip, active && styles.tipChipActive]}
+                onPress={() => {
+                  setCustomTipMode(false);
+                  setSelectedTip(amount);
+                }}
+                activeOpacity={0.85}
+              >
+                <AppText style={[styles.tipChipText, active && styles.tipChipTextActive]}>
+                  ₹{amount}
+                </AppText>
+              </TouchableOpacity>
+            );
+          })}
+          <TouchableOpacity
+            style={[styles.tipChip, customTipMode && styles.tipChipActive]}
+            onPress={() => setCustomTipMode(true)}
+            activeOpacity={0.85}
+          >
+            <AppText style={[styles.tipChipText, customTipMode && styles.tipChipTextActive]}>
+              Other
+            </AppText>
+          </TouchableOpacity>
+        </View>
+
+        {customTipMode ? (
+          <View style={styles.customTipWrap}>
+            <AppText style={styles.customTipLabel}>Custom amount</AppText>
+            <TextInput
+              style={styles.customTipInput}
+              keyboardType="number-pad"
+              placeholder="Enter amount"
+              placeholderTextColor="#9CA3AF"
+              value={customTipAmount}
+              onChangeText={setCustomTipAmount}
+              maxLength={4}
+            />
+          </View>
+        ) : null}
+
+        <View style={styles.tipOptionsRow}>
+          <TouchableOpacity
+            style={styles.saveTipRow}
+            onPress={() => setSaveTipForNext((v) => !v)}
+            activeOpacity={0.85}
+          >
+            <Ionicons
+              name={saveTipForNext ? "checkbox" : "square-outline"}
+              size={20}
+              color={saveTipForNext ? GREEN : MUTED}
+            />
+            <AppText style={styles.saveTipText}>Save tip for next order</AppText>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleClearTip} hitSlop={8}>
+            <AppText style={styles.clearTipText}>Clear</AppText>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.payFooter}>
+          <TouchableOpacity
+            style={styles.payMethodCol}
+            onPress={() => {
+              const next =
+                TIP_PAY_METHODS.find((m) => m.id !== tipPayMethod)?.id ?? "upi";
+              selectTipPayMethod(next);
+            }}
+            activeOpacity={0.85}
+          >
+            <AppText style={styles.payUsing}>PAY USING</AppText>
+            <View style={styles.payMethodToggleRow}>
+              <AppText style={styles.payMethod}>
+                {TIP_PAY_METHODS.find((m) => m.id === tipPayMethod)?.label ?? "UPI"}
+              </AppText>
+              <Ionicons name="chevron-down" size={14} color={TEXT} />
+            </View>
+            {tipPayMethod === "gaticash" ? (
+              <AppText style={styles.walletHint}>Bal ₹{Math.floor(walletAvailable)}</AppText>
+            ) : canPayWithGatiCash ? (
+              <AppText style={styles.walletHint}>Tap to use GatiCash</AppText>
+            ) : (
+              <AppText style={styles.walletHintMuted}>GatiCash unavailable</AppText>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.payBtn, (tipPaying || tipAmount <= 0) && styles.payBtnDisabled]}
+            onPress={() => void handlePayTip()}
+            disabled={tipPaying || tipAmount <= 0}
+            activeOpacity={0.9}
+          >
+            <LinearGradient
+              colors={[MINT_DARK, GREEN]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.payBtnGradient}
+            >
+              {tipPaying ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <AppText style={styles.payBtnTotal}>₹{tipAmount} TOTAL</AppText>
+                  <AppText style={styles.payBtnCta}>Pay tip ›</AppText>
+                </>
+              )}
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+      </View>
+    ) : !hideDeliveryPartner && paidTip > 0 ? (
+      <View style={styles.tipPaidBanner}>
+        <Ionicons name="heart" size={15} color={GREEN} />
+        <AppText style={styles.tipPaidText}>You tipped ₹{Math.round(paidTip)}</AppText>
+      </View>
+    ) : null;
 
   return (
     <>
       <StoreBottomSheetShell
         visible={visible}
         onClose={onClose}
-        maxHeightRatio={0.92}
+        maxHeightRatio={hideStoreRating ? 0.82 : 0.92}
         flushBottom
         keyboardAvoiding
         sheetStyle={{ height: sheetHeight }}
@@ -317,197 +580,150 @@ export function OrderDeliveryRatingSheet({
           style={styles.scroll}
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingBottom: Math.max(insets.bottom, 16) + 12 },
+            { paddingBottom: Math.max(insets.bottom, 12) + 8 },
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.header}>
             <View style={styles.successIcon}>
-              <Ionicons name="checkmark-circle" size={26} color={GREEN} />
+              <Ionicons name="checkmark" size={22} color="#fff" />
             </View>
             <AppText style={styles.title}>
-              {hideDeliveryPartner ? "Order collected!" : "Order delivered!"}
+              {ratingSubmitted
+                ? "Thanks for your feedback!"
+                : hideDeliveryPartner
+                  ? "Order collected!"
+                  : hideStoreRating
+                    ? "Parcel delivered!"
+                    : "Order delivered!"}
             </AppText>
             <AppText style={styles.subtitle}>
-              {hideDeliveryPartner
-                ? "Rate the restaurant."
-                : "Rate the restaurant, delivery partner, or both — at least one is enough."}
+              {ratingSubmitted
+                ? canOfferTip
+                  ? "Add an optional tip below, or close anytime."
+                  : "You can close this sheet anytime."
+                : hideDeliveryPartner
+                  ? "Rate the restaurant."
+                  : hideStoreRating
+                    ? "How was your delivery partner?"
+                    : "Rate the restaurant, delivery partner, or both."}
             </AppText>
           </View>
 
-          <View style={styles.section}>
-            <AppText style={styles.sectionTitle}>Restaurant</AppText>
-            <View style={styles.entityRow}>
-              {storeBannerUri ? (
-                <Image source={{ uri: storeBannerUri }} style={styles.entityThumb} resizeMode="cover" />
-              ) : (
-                <View style={styles.entityThumbFallback}>
-                  <Ionicons name="restaurant-outline" size={20} color={MUTED} />
-                </View>
-              )}
-              <AppText style={styles.entityName} numberOfLines={2}>
-                {storeName}
-              </AppText>
-            </View>
-            <AppText style={styles.rateHint}>How was the food?</AppText>
-            <StarRow value={storeRating} onChange={handleStoreRatingChange} />
-            {storeRating >= 1 ? (
-              <RatingTags
-                tags={RESTAURANT_RATING_TAGS}
-                selected={storeSelectedTags}
-                onToggle={toggleStoreTag}
-              />
-            ) : null}
-            <AppText style={styles.reviewLabel}>Review restaurant (optional)</AppText>
-            <TextInput
-              style={styles.reviewInput}
-              placeholder={reviewText.length > 0 ? undefined : "Food quality, packaging, taste…"}
-              placeholderTextColor={MUTED}
-              value={reviewText}
-              onChangeText={setReviewText}
-              multiline
-              maxLength={500}
-              textAlignVertical="top"
-              underlineColorAndroid="transparent"
-              {...(Platform.OS === "android" ? { includeFontPadding: false } : null)}
-            />
-          </View>
-
-          {hideDeliveryPartner ? null : (
-          <View style={styles.section}>
-            <AppText style={styles.sectionTitle}>Delivery partner</AppText>
-            <View style={styles.entityRow}>
-              <View style={[styles.entityThumbFallback, styles.riderThumb]}>
-                <Ionicons name="bicycle" size={22} color={GREEN} />
-              </View>
-              <AppText style={styles.entityName} numberOfLines={1}>
-                {partnerLabel}
-              </AppText>
-            </View>
-            <AppText style={styles.rateHint}>How was the delivery?</AppText>
-            <StarRow value={deliveryRating} onChange={handleDeliveryRatingChange} />
-            {deliveryRating >= 1 ? (
-              <RatingTags
-                tags={DELIVERY_RATING_TAGS}
-                selected={riderSelectedTags}
-                onToggle={toggleRiderTag}
-              />
-            ) : null}
-            <AppText style={styles.reviewLabel}>Review delivery (optional)</AppText>
-            <TextInput
-              style={styles.reviewInput}
-              placeholder={
-                riderReviewText.length > 0 ? undefined : "Delivery speed, rider behaviour, handling…"
-              }
-              placeholderTextColor={MUTED}
-              value={riderReviewText}
-              onChangeText={setRiderReviewText}
-              multiline
-              maxLength={500}
-              textAlignVertical="top"
-              underlineColorAndroid="transparent"
-              {...(Platform.OS === "android" ? { includeFontPadding: false } : null)}
-            />
-
-            {canOfferTip ? (
-              <View style={styles.tipBlock}>
-                <AppText style={styles.tipTitle}>Tip your delivery partner</AppText>
-                <AppText style={styles.tipSub}>
-                  Paid securely via UPI / cards — 100% goes to the rider.
-                </AppText>
-                <View style={styles.tipRow}>
-                  {FOOD_TIP_PRESETS.map((amount) => {
-                    const active = !customTipMode && selectedTip === amount;
-                    return (
-                      <TouchableOpacity
-                        key={amount}
-                        style={[styles.tipChip, active && styles.tipChipActive]}
-                        onPress={() => {
-                          setCustomTipMode(false);
-                          setSelectedTip(amount);
-                        }}
-                        activeOpacity={0.85}
-                      >
-                        <AppText style={[styles.tipChipText, active && styles.tipChipTextActive]}>
-                          ₹{amount}
-                        </AppText>
-                      </TouchableOpacity>
-                    );
-                  })}
-                  <TouchableOpacity
-                    style={[styles.tipChip, customTipMode && styles.tipChipActive]}
-                    onPress={() => setCustomTipMode(true)}
-                    activeOpacity={0.85}
-                  >
-                    <AppText style={[styles.tipChipText, customTipMode && styles.tipChipTextActive]}>
-                      Other
-                    </AppText>
-                  </TouchableOpacity>
-                </View>
-                {customTipMode ? (
-                  <TextInput
-                    style={styles.customTipInput}
-                    keyboardType="number-pad"
-                    placeholder="Enter amount"
-                    placeholderTextColor="#9CA3AF"
-                    value={customTipAmount}
-                    onChangeText={setCustomTipAmount}
-                    maxLength={4}
+          {hideStoreRating ? null : (
+            <View style={styles.section}>
+              <AppText style={styles.sectionTitle}>Restaurant</AppText>
+              <View style={styles.entityRow}>
+                {storeBannerUri ? (
+                  <Image
+                    source={{ uri: storeBannerUri }}
+                    style={styles.entityThumb}
+                    resizeMode="cover"
                   />
-                ) : null}
-                <View style={styles.payFooter}>
-                  <View style={styles.payMethodCol}>
-                    <AppText style={styles.payUsing}>PAY USING</AppText>
-                    <AppText style={styles.payMethod}>
-                      {paymentMethodLabel.replace(/_/g, " ")}
-                    </AppText>
+                ) : (
+                  <View style={styles.entityThumbFallback}>
+                    <Ionicons name="restaurant-outline" size={18} color={MUTED} />
                   </View>
-                  <TouchableOpacity
-                    style={[styles.payBtn, (tipPaying || tipAmount <= 0) && styles.payBtnDisabled]}
-                    onPress={() => void handlePayTip()}
-                    disabled={tipPaying || tipAmount <= 0}
-                    activeOpacity={0.9}
-                  >
-                    <LinearGradient
-                      colors={[MINT_DARK, GREEN]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                      style={styles.payBtnGradient}
-                    >
-                      {tipPaying ? (
-                        <ActivityIndicator color="#fff" />
-                      ) : (
-                        <>
-                          <AppText style={styles.payBtnTotal}>₹{tipAmount} TOTAL</AppText>
-                          <AppText style={styles.payBtnCta}>Pay tip ›</AppText>
-                        </>
-                      )}
-                    </LinearGradient>
-                  </TouchableOpacity>
-                </View>
+                )}
+                <AppText style={styles.entityName} numberOfLines={2}>
+                  {storeName}
+                </AppText>
               </View>
-            ) : (
-              <View style={styles.tipPaidBanner}>
-                <Ionicons name="heart" size={16} color={GREEN} />
-                <AppText style={styles.tipPaidText}>You tipped ₹{Math.round(paidTip)}</AppText>
-              </View>
-            )}
-          </View>
+              <AppText style={styles.rateHint}>How was the food?</AppText>
+              <StarRow
+                value={storeRating}
+                onChange={ratingSubmitted ? () => {} : handleStoreRatingChange}
+              />
+              {storeRating >= 1 ? (
+                <RatingTags
+                  tags={RESTAURANT_RATING_TAGS}
+                  selected={storeSelectedTags}
+                  onToggle={ratingSubmitted ? () => {} : toggleStoreTag}
+                />
+              ) : null}
+              <AppText style={styles.reviewLabel}>Review restaurant (optional)</AppText>
+              <TextInput
+                style={styles.reviewInput}
+                placeholder={reviewText.length > 0 ? undefined : "Food quality, packaging, taste…"}
+                placeholderTextColor={MUTED}
+                value={reviewText}
+                onChangeText={setReviewText}
+                editable={!ratingSubmitted}
+                multiline
+                maxLength={500}
+                textAlignVertical="top"
+                underlineColorAndroid="transparent"
+                {...(Platform.OS === "android" ? { includeFontPadding: false } : null)}
+              />
+            </View>
           )}
 
-          <TouchableOpacity
-            style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
-            disabled={!canSubmit}
-            onPress={handleSubmit}
-            activeOpacity={0.9}
-          >
-            {submitting ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <AppText style={styles.submitBtnText}>Submit rating</AppText>
-            )}
-          </TouchableOpacity>
+          {hideDeliveryPartner ? null : (
+            <View style={styles.section}>
+              <AppText style={styles.sectionTitle}>Delivery partner</AppText>
+              <View style={styles.entityRow}>
+                <View style={[styles.entityThumbFallback, styles.riderThumb]}>
+                  <Ionicons name="bicycle" size={20} color={GREEN} />
+                </View>
+                <AppText style={styles.entityName} numberOfLines={1}>
+                  {partnerLabel}
+                </AppText>
+              </View>
+              <AppText style={styles.rateHint}>How was the delivery?</AppText>
+              <StarRow
+                value={deliveryRating}
+                onChange={ratingSubmitted ? () => {} : handleDeliveryRatingChange}
+              />
+              {deliveryRating >= 1 ? (
+                <RatingTags
+                  tags={DELIVERY_RATING_TAGS}
+                  selected={riderSelectedTags}
+                  onToggle={ratingSubmitted ? () => {} : toggleRiderTag}
+                />
+              ) : null}
+              <AppText style={styles.reviewLabel}>Add a note (optional)</AppText>
+              <TextInput
+                style={styles.reviewInput}
+                placeholder={
+                  riderReviewText.length > 0
+                    ? undefined
+                    : "Delivery speed, behaviour, handling…"
+                }
+                placeholderTextColor={MUTED}
+                value={riderReviewText}
+                onChangeText={setRiderReviewText}
+                editable={!ratingSubmitted}
+                multiline
+                maxLength={500}
+                textAlignVertical="top"
+                underlineColorAndroid="transparent"
+                {...(Platform.OS === "android" ? { includeFontPadding: false } : null)}
+              />
+            </View>
+          )}
+
+          {ratingSubmitted ? (
+            <View style={styles.submittedBanner}>
+              <Ionicons name="checkmark-circle" size={18} color={GREEN} />
+              <AppText style={styles.submittedBannerText}>Rating submitted</AppText>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={[styles.submitBtn, !canSubmit && styles.submitBtnDisabled]}
+              disabled={!canSubmit}
+              onPress={() => void handleSubmit()}
+              activeOpacity={0.9}
+            >
+              {submitting ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <AppText style={styles.submitBtnText}>Submit rating</AppText>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {tipCard}
 
           <TouchableOpacity
             style={styles.laterBtn}
@@ -515,7 +731,9 @@ export function OrderDeliveryRatingSheet({
             disabled={submitting || tipPaying}
             activeOpacity={0.8}
           >
-            <AppText style={styles.laterBtnText}>Maybe later</AppText>
+            <AppText style={styles.laterBtnText}>
+              {ratingSubmitted ? "Close" : "Maybe later"}
+            </AppText>
           </TouchableOpacity>
         </ScrollView>
       </StoreBottomSheetShell>
@@ -562,14 +780,49 @@ export function OrderDeliveryRatingSheet({
         </View>
       </Modal>
 
-      <AppAlertModal
-        visible={thankYouAlert != null}
-        title={thankYouAlert?.title ?? "Thank you!"}
-        message={thankYouAlert?.message ?? ""}
-        confirmLabel="OK"
-        variant="success"
-        onClose={() => setThankYouAlert(null)}
-      />
+      <Modal
+        visible={thankYouSheet != null}
+        transparent
+        animationType="slide"
+        statusBarTranslucent
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setThankYouSheet(null)}
+      >
+        <View style={styles.thanksRoot}>
+          <Pressable
+            style={styles.thanksBackdrop}
+            onPress={() => setThankYouSheet(null)}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss"
+          />
+          <View
+            style={[
+              styles.thanksSheet,
+              { paddingBottom: Math.max(insets.bottom, 16) + 8 },
+            ]}
+          >
+            <View style={styles.thanksHandle} />
+            <View style={styles.thanksCheck}>
+              <Ionicons name="checkmark" size={34} color="#fff" />
+            </View>
+            <AppText style={styles.thanksTitle}>
+              {thankYouSheet?.title ?? "Thank you!"}
+            </AppText>
+            <AppText style={styles.thanksMessage}>
+              {thankYouSheet?.message ?? ""}
+            </AppText>
+            <TouchableOpacity
+              style={styles.thanksCta}
+              onPress={() => setThankYouSheet(null)}
+              activeOpacity={0.9}
+            >
+              <AppText style={styles.thanksCtaText}>
+                {thankYouSheet?.ctaLabel ?? "OK"}
+              </AppText>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -577,68 +830,74 @@ export function OrderDeliveryRatingSheet({
 const styles = StyleSheet.create({
   scroll: { flex: 1 },
   scrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
+    paddingHorizontal: 18,
+    paddingTop: 4,
+    gap: 10,
   },
-  header: { alignItems: "center", marginBottom: 14 },
+  header: { alignItems: "center", marginBottom: 2 },
   successIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "#ECFDF5",
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: GREEN,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 8,
   },
-  title: { fontSize: 20, fontWeight: "700", color: TEXT, textAlign: "center" },
+  title: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: TEXT,
+    textAlign: "center",
+    letterSpacing: -0.2,
+  },
   subtitle: {
-    marginTop: 6,
+    marginTop: 4,
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: 17,
     color: MUTED,
     textAlign: "center",
-    paddingHorizontal: 4,
   },
   section: {
-    marginBottom: 12,
     padding: 12,
     borderRadius: 14,
-    backgroundColor: "#F8FAF9",
+    backgroundColor: CARD_BG,
     borderWidth: 1,
-    borderColor: "#E8F5EE",
+    borderColor: BORDER,
+    gap: 6,
   },
   sectionTitle: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "700",
     color: GREEN,
     textTransform: "uppercase",
-    letterSpacing: 0.4,
-    marginBottom: 8,
+    letterSpacing: 0.6,
+    marginBottom: 2,
   },
   entityRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    marginBottom: 10,
+    gap: 10,
+    marginBottom: 2,
   },
-  entityThumb: { width: 44, height: 44, borderRadius: 8 },
+  entityThumb: { width: 40, height: 40, borderRadius: 10 },
   entityThumbFallback: {
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-    backgroundColor: "#F0F0F0",
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: "#EEF2F0",
     alignItems: "center",
     justifyContent: "center",
   },
-  riderThumb: { backgroundColor: "#ECFDF5" },
-  entityName: { flex: 1, fontSize: 15, fontWeight: "600", color: TEXT },
-  rateHint: { fontSize: 13, fontWeight: "600", color: TEXT, marginBottom: 6 },
-  starRow: { flexDirection: "row", gap: 4, marginBottom: 8 },
-  tagsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
+  riderThumb: { backgroundColor: "#E8F8EF" },
+  entityName: { flex: 1, fontSize: 15, fontWeight: "700", color: TEXT },
+  rateHint: { fontSize: 13, fontWeight: "600", color: TEXT, marginTop: 2 },
+  starRow: { flexDirection: "row", gap: 6, marginVertical: 2 },
+  tagsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 2 },
   tagChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: "#D1D5DB",
     backgroundColor: "#fff",
@@ -649,87 +908,126 @@ const styles = StyleSheet.create({
   },
   tagChipText: { fontSize: 12, fontWeight: "600", color: TEXT },
   tagChipTextActive: { color: GatiMitraColors.warmOrange },
-  reviewLabel: { fontSize: 12, fontWeight: "600", color: MUTED, marginBottom: 6, marginTop: 2 },
+  reviewLabel: { fontSize: 12, fontWeight: "600", color: MUTED, marginTop: 4 },
   reviewInput: {
-    minHeight: 72,
-    maxHeight: 110,
+    minHeight: 64,
+    maxHeight: 96,
     borderWidth: 1,
-    borderColor: "#EBEBEB",
+    borderColor: BORDER,
     borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingTop: Platform.OS === "android" ? 12 : 10,
-    paddingBottom: 10,
+    paddingHorizontal: 11,
+    paddingTop: Platform.OS === "android" ? 10 : 9,
+    paddingBottom: 9,
     fontSize: 14,
-    lineHeight: 20,
+    lineHeight: 19,
+    color: TEXT,
+    backgroundColor: "#fff",
+  },
+  tipCard: {
+    paddingTop: 4,
+    paddingBottom: 2,
+    borderRadius: 14,
+    backgroundColor: "#fff",
+  },
+  tipTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: TEXT,
+    textAlign: "center",
+    paddingHorizontal: 8,
+  },
+  tipSub: {
+    fontSize: 13,
+    color: MUTED,
+    textAlign: "center",
+    lineHeight: 18,
+    marginTop: 6,
+    marginBottom: 14,
+    paddingHorizontal: 8,
+  },
+  tipRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 12,
+  },
+  tipChip: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: GatiMitraColors.border,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+    backgroundColor: "#fff",
+  },
+  tipChipActive: {
+    borderColor: GatiMitraColors.warmOrange,
+    backgroundColor: "#FFF7ED",
+  },
+  tipChipText: { fontSize: 15, fontWeight: "700", color: TEXT },
+  tipChipTextActive: { color: GatiMitraColors.warmOrange },
+  customTipWrap: { marginBottom: 10 },
+  customTipLabel: { fontSize: 12, fontWeight: "600", color: MUTED, marginBottom: 6 },
+  customTipInput: {
+    borderWidth: 1,
+    borderColor: GatiMitraColors.border,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    fontWeight: "700",
     color: TEXT,
     backgroundColor: "#FAFAFA",
   },
-  tipBlock: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#E8F5EE",
-  },
-  tipTitle: { fontSize: 14, fontWeight: "700", color: TEXT },
-  tipSub: { fontSize: 12, color: MUTED, marginTop: 2, marginBottom: 10, lineHeight: 16 },
-  tipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
-  tipChip: {
-    minWidth: 64,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: "#D1D5DB",
-    backgroundColor: "#fff",
+  tipOptionsRow: {
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 14,
   },
-  tipChipActive: {
-    borderColor: GREEN,
-    backgroundColor: "#ECFDF5",
-  },
-  tipChipText: { fontSize: 14, fontWeight: "700", color: TEXT },
-  tipChipTextActive: { color: GREEN },
-  customTipInput: {
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 15,
-    fontWeight: "600",
-    color: TEXT,
-    backgroundColor: "#fff",
-    marginBottom: 8,
-  },
+  saveTipRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  saveTipText: { fontSize: 13, color: TEXT, fontWeight: "500" },
+  clearTipText: { fontSize: 13, fontWeight: "700", color: GatiMitraColors.errorRed },
   payFooter: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    marginTop: 4,
+    gap: 12,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: GatiMitraColors.border,
   },
-  payMethodCol: { flexShrink: 0 },
+  payMethodCol: { flex: 1 },
   payUsing: { fontSize: 10, fontWeight: "700", color: MUTED, letterSpacing: 0.4 },
-  payMethod: { fontSize: 13, fontWeight: "700", color: TEXT, marginTop: 2, textTransform: "uppercase" },
-  payBtn: { flex: 1, borderRadius: 12, overflow: "hidden" },
-  payBtnDisabled: { opacity: 0.5 },
-  payBtnGradient: {
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: 48,
+  payMethodToggleRow: { flexDirection: "row", alignItems: "center", gap: 2, marginTop: 2 },
+  payMethod: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: TEXT,
+    textTransform: "capitalize",
   },
-  payBtnTotal: { color: "#fff", fontSize: 12, fontWeight: "600", opacity: 0.95 },
-  payBtnCta: { color: "#fff", fontSize: 15, fontWeight: "800" },
+  walletHint: { fontSize: 10, color: MINT_DARK, fontWeight: "600", marginTop: 2 },
+  walletHintMuted: { fontSize: 10, color: MUTED, marginTop: 2 },
+  payBtn: { borderRadius: 14, overflow: "hidden", minWidth: 152 },
+  payBtnDisabled: { opacity: 0.55 },
+  payBtnGradient: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 10,
+  },
+  payBtnTotal: { fontSize: 14, fontWeight: "800", color: "#fff" },
+  payBtnCta: { fontSize: 14, fontWeight: "700", color: "#fff" },
   tipPaidBanner: {
-    marginTop: 12,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     paddingVertical: 10,
     paddingHorizontal: 12,
-    borderRadius: 10,
+    borderRadius: 12,
     backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
   },
   tipPaidText: { fontSize: 13, fontWeight: "700", color: GREEN },
   submitBtn: {
@@ -739,12 +1037,77 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     minHeight: 48,
-    marginTop: 4,
   },
-  submitBtnDisabled: { opacity: 0.45 },
+  submitBtnDisabled: { opacity: 0.4 },
   submitBtnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
-  laterBtn: { marginTop: 10, paddingVertical: 10, alignItems: "center" },
+  submittedBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    minHeight: 48,
+    borderRadius: 12,
+    backgroundColor: "#ECFDF5",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+  },
+  submittedBannerText: { fontSize: 15, fontWeight: "700", color: GREEN },
+  laterBtn: { paddingVertical: 8, alignItems: "center" },
   laterBtnText: { fontSize: 14, fontWeight: "600", color: MUTED },
+  thanksRoot: { flex: 1, justifyContent: "flex-end" },
+  thanksBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.5)",
+  },
+  thanksSheet: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 22,
+    paddingTop: 10,
+    alignItems: "center",
+  },
+  thanksHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#E5E7EB",
+    marginBottom: 18,
+  },
+  thanksCheck: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: GREEN,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  thanksTitle: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: TEXT,
+    textAlign: "center",
+  },
+  thanksMessage: {
+    marginTop: 8,
+    fontSize: 14,
+    fontWeight: "500",
+    color: MUTED,
+    textAlign: "center",
+    lineHeight: 20,
+    paddingHorizontal: 8,
+  },
+  thanksCta: {
+    marginTop: 20,
+    alignSelf: "stretch",
+    backgroundColor: MINT_DARK,
+    borderRadius: 14,
+    paddingVertical: 15,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  thanksCtaText: { color: "#FFFFFF", fontSize: 16, fontWeight: "800" },
   simBackdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.45)",

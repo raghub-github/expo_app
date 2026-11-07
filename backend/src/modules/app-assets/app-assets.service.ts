@@ -55,16 +55,19 @@ function mapRow(r: Record<string, unknown>): AppStaticAssetRow {
 async function toClientItem(row: AppStaticAssetRow): Promise<AppStaticAssetClientItem> {
   const proxyUrl = row.proxyUrl?.trim() || null;
   const r2Key = row.r2Key?.trim() || null;
-  let url: string | null = null;
+  const fallback = toAbsoluteClientMediaUrl(proxyUrl);
+  let url: string | null = fallback;
   if (r2Key) {
     try {
-      url = await getR2SignedUrl(r2Key, CLIENT_SIGNED_URL_TTL_SEC);
+      // Cap R2 sign latency so one slow asset cannot stall the whole list (~20s).
+      url = await Promise.race([
+        getR2SignedUrl(r2Key, CLIENT_SIGNED_URL_TTL_SEC),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1_500)),
+      ]);
+      if (!url) url = fallback;
     } catch {
-      url = null;
+      url = fallback;
     }
-  }
-  if (!url) {
-    url = toAbsoluteClientMediaUrl(proxyUrl);
   }
   return {
     id: row.id,
@@ -114,14 +117,24 @@ export function ensureAppStaticAssetSeedsOnce(): Promise<void> {
 }
 
 export async function listAppStaticAssets(app: AppStaticAssetApp): Promise<AppStaticAssetRow[]> {
-  await ensureAppStaticAssetSeedsOnce().catch(() => undefined);
+  // Do not await seed on the hot path — sequential INSERTs starved the pool (~20s).
+  void ensureAppStaticAssetSeedsOnce().catch(() => undefined);
   const sql = getSql();
-  const rows = await sql`
+  let rows = await sql`
     SELECT id, app, section, label, description, r2_key, proxy_url, sort_order, updated_at
     FROM app_static_assets
     WHERE app = ${app}
     ORDER BY section ASC, sort_order ASC, id ASC
   `;
+  if ((rows as unknown[]).length === 0) {
+    await ensureAppStaticAssetSeedsOnce().catch(() => undefined);
+    rows = await sql`
+      SELECT id, app, section, label, description, r2_key, proxy_url, sort_order, updated_at
+      FROM app_static_assets
+      WHERE app = ${app}
+      ORDER BY section ASC, sort_order ASC, id ASC
+    `;
+  }
   return (rows as Record<string, unknown>[]).map(mapRow);
 }
 
@@ -137,11 +150,31 @@ export async function getAppStaticAssetById(id: string): Promise<AppStaticAssetR
   return row ? mapRow(row) : null;
 }
 
+type ClientAssetCache = { at: number; items: AppStaticAssetClientItem[] };
+const clientListCache = new Map<AppStaticAssetApp, ClientAssetCache>();
+const CLIENT_LIST_TTL_MS = 60_000;
+const clientListInFlight = new Map<AppStaticAssetApp, Promise<AppStaticAssetClientItem[]>>();
+
 export async function listAppStaticAssetsForClient(
   app: AppStaticAssetApp
 ): Promise<AppStaticAssetClientItem[]> {
-  const rows = await listAppStaticAssets(app);
-  return Promise.all(rows.map((row) => toClientItem(row)));
+  const cached = clientListCache.get(app);
+  if (cached && Date.now() - cached.at < CLIENT_LIST_TTL_MS) {
+    return cached.items;
+  }
+  const inflight = clientListInFlight.get(app);
+  if (inflight) return inflight;
+
+  const promise = (async () => {
+    const rows = await listAppStaticAssets(app);
+    const items = await Promise.all(rows.map((row) => toClientItem(row)));
+    clientListCache.set(app, { at: Date.now(), items });
+    return items;
+  })().finally(() => {
+    clientListInFlight.delete(app);
+  });
+  clientListInFlight.set(app, promise);
+  return promise;
 }
 
 export async function setAppStaticAssetImage(
@@ -160,7 +193,12 @@ export async function setAppStaticAssetImage(
     RETURNING id, app, section, label, description, r2_key, proxy_url, sort_order, updated_at
   `;
   const row = (rows as Record<string, unknown>[])[0];
-  return row ? mapRow(row) : null;
+  if (row) {
+    const mapped = mapRow(row);
+    clientListCache.delete(mapped.app);
+    return mapped;
+  }
+  return null;
 }
 
 export async function clearAppStaticAssetImage(id: string): Promise<AppStaticAssetRow | null> {
@@ -175,7 +213,12 @@ export async function clearAppStaticAssetImage(id: string): Promise<AppStaticAss
     RETURNING id, app, section, label, description, r2_key, proxy_url, sort_order, updated_at
   `;
   const row = (rows as Record<string, unknown>[])[0];
-  return row ? mapRow(row) : null;
+  if (row) {
+    const mapped = mapRow(row);
+    clientListCache.delete(mapped.app);
+    return mapped;
+  }
+  return null;
 }
 
 export function parseAppStaticAssetAppParam(value: string): AppStaticAssetApp | null {

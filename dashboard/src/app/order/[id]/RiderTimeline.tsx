@@ -12,6 +12,8 @@ export type RiderTimelineData = {
   reached_merchant_skipped?: boolean;
   picked_up_actor_type?: string | null;
   picked_up_actor_label?: string | null;
+  fare_collected_at?: string | null;
+  fare_payment_mode?: "Online" | "COD" | string | null;
   events?: Array<{
     event_type: string;
     occurred_at: string;
@@ -36,10 +38,16 @@ type TimelineStep = {
   label: string;
   distEventType: string;
   at: (data: RiderTimelineData) => string | null | undefined;
+  /** Shown under the timestamp (e.g. Online / COD for fare collect). */
+  sublabel?: (data: RiderTimelineData) => string | null | undefined;
 };
 
 function buildTimelineSteps(data: RiderTimelineData | null, orderType?: string | null): TimelineStep[] {
   const reachedSkipped = Boolean(data?.reached_merchant_skipped);
+  const ot = String(orderType ?? "")
+    .trim()
+    .toLowerCase();
+  const isParcel = ot === "parcel";
   const steps: TimelineStep[] = [
     {
       key: "assigned",
@@ -52,9 +60,23 @@ function buildTimelineSteps(data: RiderTimelineData | null, orderType?: string |
   if (!reachedSkipped) {
     steps.push({
       key: "reached_merchant",
-      label: "Reached Mx",
+      label: isParcel ? "At pickup" : "Reached Mx",
       distEventType: "reached_merchant",
       at: (d) => d.reached_merchant_at,
+    });
+  }
+
+  if (isParcel) {
+    steps.push({
+      key: "fare_collected",
+      label: "Fare collected",
+      distEventType: "fare_collected",
+      at: (d) => d.fare_collected_at,
+      sublabel: (d) => {
+        const mode = String(d.fare_payment_mode ?? "").trim();
+        if (!mode) return null;
+        return mode === "COD" || mode.toLowerCase() === "cod" ? "COD" : "Online";
+      },
     });
   }
 
@@ -341,6 +363,18 @@ export default function RiderTimeline({
                     <p className={`mt-0.5 text-[10px] font-medium leading-tight ${timeColor}`}>
                       {timeText}
                     </p>
+                    {(() => {
+                      const sub =
+                        hasRider && data && isComplete && step.sublabel
+                          ? step.sublabel(data)
+                          : null;
+                      if (!sub) return null;
+                      return (
+                        <p className="mt-0.5 text-[9px] font-semibold leading-tight text-violet-700">
+                          {sub}
+                        </p>
+                      );
+                    })()}
                   </>
                 )}
               </div>

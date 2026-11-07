@@ -23,6 +23,7 @@ import {
   gradientForHelpGroup,
   iconForHelpGroup,
   isPreLoginVisibleTopic,
+  isRiderOnboardingPendingHelpGroup,
 } from "@/src/lib/rider-support-utils";
 import { openRaiseTicketChat } from "@/src/lib/rider-support-navigation";
 import { riderSupportService } from "@/src/services/riderSupport.service";
@@ -93,7 +94,12 @@ export function RaiseTicketHubScreen() {
     });
   };
 
-  const postLoginGroups = groups.filter((g) => g.group_code && g.group_code !== "__UNGROUPED__");
+  const postLoginGroups = groups.filter(
+    (g) =>
+      g.group_code &&
+      g.group_code !== "__UNGROUPED__" &&
+      !isRiderOnboardingPendingHelpGroup(g),
+  );
 
   const preLoginTopicItems: SupportIssueOption[] = preLoginTopics.map((s) => ({
     key: String(s.ticket_title_id),

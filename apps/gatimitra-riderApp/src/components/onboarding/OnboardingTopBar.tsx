@@ -55,7 +55,9 @@ export function OnboardingTopBar({
   const routeName = routeNameProp ?? route?.name ?? "";
   const vehicleOnboardingFlow = useOnboardingStore((s) => s.data.vehicleOnboardingFlow);
   const showBack = canGoBackFromOnboardingRoute(routeName);
-  const pageBg = routeName === "language" ? RIDER_AUTH_BG : ONBOARDING_PAGE_BG;
+  // Welcome / language use the same mint as the page body — never a white strip.
+  const pageBg =
+    routeName === "language" || routeName === "welcome" ? RIDER_AUTH_BG : ONBOARDING_PAGE_BG;
   const headerTitle = title?.trim() || "";
 
   useEffect(() => {

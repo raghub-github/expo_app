@@ -382,7 +382,21 @@ export default function OrdersScreen() {
   /**
    * Keep the last GPS for the HDZ banner while ON duty. Do not drop it on
    * Date.now() checks in render — that remounts the panel and looks like a reload.
+   * Seed from shared GPS so the first hot-zones fetch does not wait on tracker start.
    */
+  if (!stickyFixRef.current) {
+    const seeded = readLatestRiderGps();
+    if (seeded) {
+      stickyFixRef.current = {
+        lat: seeded.lat,
+        lng: seeded.lng,
+        tsMs: seeded.tsMs,
+        accuracyM: seeded.accuracyM,
+        speedMps: seeded.speedMps,
+        headingDeg: seeded.headingDeg,
+      };
+    }
+  }
   const demandFix = stickyFixRef.current;
 
   // Real backend H3 hot zones — the SINGLE source for both the map layer and the side panel.

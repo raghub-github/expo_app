@@ -57,15 +57,18 @@ export function useNearbyGroceryAvailability() {
   // Veg preference must not hide the grocery tile — use non-veg list for presence.
   void vegOnly;
 
-  const groceryEnabled =
-    canQuery &&
-    ((query.data?.length ?? 0) > 0 ||
+  // While GPS/pin is still resolving, keep the Grocery tile fully visible (not washed).
+  // Presence check runs once listing coords exist.
+  const groceryEnabled = !canQuery
+    ? true
+    : (query.data?.length ?? 0) > 0 ||
       !query.isFetched ||
-      (query.isLoading && (cached?.length ?? 0) > 0));
+      query.isLoading ||
+      (cached?.length ?? 0) > 0;
 
   return {
     groceryEnabled,
-    isLoading: query.isLoading,
+    isLoading: !canQuery || query.isLoading,
     count: query.data?.length ?? 0,
   };
 }

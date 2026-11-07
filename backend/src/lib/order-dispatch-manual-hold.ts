@@ -5,27 +5,37 @@
 import { getSql } from "../db/client.js";
 
 export async function isOrderDispatchManualHold(orderCoreId: number): Promise<boolean> {
+  const held = await fetchManualHoldCoreIds([orderCoreId]);
+  return held.has(orderCoreId);
+}
+
+/**
+ * Batch variant for dispatch pool polls — one query instead of N round-trips.
+ * Returns the subset of ids that are currently on a manual dispatch hold.
+ */
+export async function fetchManualHoldCoreIds(orderCoreIds: number[]): Promise<Set<number>> {
+  const out = new Set<number>();
+  const ids = [...new Set(orderCoreIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (ids.length === 0) return out;
   const sql = getSql();
   try {
     const rows = (await sql`
-      SELECT dispatch_manual_hold, rider_id, cancelled_at
+      SELECT id
       FROM orders_core
-      WHERE id = ${orderCoreId}
-      LIMIT 1
-    `) as Array<{
-      dispatch_manual_hold: boolean | null;
-      rider_id: number | null;
-      cancelled_at: Date | string | null;
-    }>;
-    const row = rows[0];
-    if (!row?.dispatch_manual_hold) return false;
-    if (row.rider_id != null) return false;
-    if (row.cancelled_at != null) return false;
-    return true;
+      WHERE id = ANY(${ids}::bigint[])
+        AND dispatch_manual_hold IS TRUE
+        AND rider_id IS NULL
+        AND cancelled_at IS NULL
+    `) as Array<{ id: number | string }>;
+    for (const row of rows) {
+      const id = Number(row.id);
+      if (Number.isFinite(id) && id > 0) out.add(id);
+    }
   } catch (err: unknown) {
-    if ((err as { code?: string })?.code === "42703") return false;
+    if ((err as { code?: string })?.code === "42703") return out;
     throw err;
   }
+  return out;
 }
 
 export async function setOrderDispatchManualHold(

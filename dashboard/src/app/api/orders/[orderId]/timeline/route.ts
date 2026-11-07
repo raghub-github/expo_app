@@ -41,7 +41,8 @@ export async function GET(
 
     const allowed =
       (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD")) ||
+      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_PARCEL"));
 
     if (!allowed) {
       return NextResponse.json(
@@ -53,7 +54,10 @@ export async function GET(
       );
     }
 
-    const entries: OrderTimelineEntry[] = await getOrderTimelineEntriesWithFallback(orderId);
+    const entries: OrderTimelineEntry[] = await getOrderTimelineEntriesWithFallback(orderId, {
+      // Parcel / ride progress is rider-driven; keep those milestones on the bar.
+      includeRiderMilestones: true,
+    });
 
     return NextResponse.json({
       success: true,

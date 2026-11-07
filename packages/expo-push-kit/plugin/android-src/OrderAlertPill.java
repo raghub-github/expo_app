@@ -36,8 +36,16 @@ public final class OrderAlertPill {
   static final String KEY_POS = "hasPos";
   public static final String ACTION_PILL = "{{PACKAGE}}.ORDER_PILL_HOLD";
 
-  /** Premium dark-black circle fill (replaces mint/teal). */
-  private static final String PILL_FILL = "#111111";
+  /**
+   * App-specific pill fill (templated at prebuild via {{ROLE}}).
+   * Rider keeps the original mint/teal; Merchant keeps premium dark-black.
+   */
+  private static final String APP_ROLE = "{{ROLE}}";
+  private static final String PILL_FILL =
+      "rider".equals(APP_ROLE) ? "#0F766E" : "#111111";
+  /** Attention ring while shaking — rider mint accent; merchant white on black. */
+  private static final String ATTENTION_STROKE =
+      "rider".equals(APP_ROLE) ? "#22C55E" : "#FFFFFF";
   private static final String DISMISS_IDLE = "#B91C1C";
   private static final String DISMISS_HOT = "#DC2626";
 
@@ -519,7 +527,7 @@ public final class OrderAlertPill {
     if (view == null) return;
     // Stroke the circle only — never paint the oval onto the root (that covered the badge).
     if (pillBackground != null) {
-      pillBackground.setStroke(dp(context, 2), Color.parseColor("#FFFFFF"));
+      pillBackground.setStroke(dp(context, 2), Color.parseColor(ATTENTION_STROKE));
     }
     if (badge != null) badge.bringToFront();
     shake(0);

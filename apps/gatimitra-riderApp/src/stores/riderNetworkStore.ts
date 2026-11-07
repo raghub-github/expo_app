@@ -43,16 +43,32 @@ export function subscribeRiderNetworkRestored(fn: () => void): () => void {
 let wired = false;
 let netUnsub: (() => void) | null = null;
 
+/**
+ * Treat `isInternetReachable === null` as unknown — keep previous online state
+ * so captive-portal / first-paint nulls do not falsely mark ONLINE and flush
+ * pending critical actions.
+ */
+function resolveOnline(
+  state: { isConnected: boolean | null; isInternetReachable: boolean | null },
+  previousOnline: boolean,
+): boolean {
+  if (state.isConnected !== true) return false;
+  if (state.isInternetReachable === false) return false;
+  if (state.isInternetReachable === true) return true;
+  return previousOnline;
+}
+
 export function startRiderNetworkMonitor(): void {
   if (wired) return;
   wired = true;
   netUnsub = NetInfo.addEventListener((state) => {
-    const online = state.isConnected === true && state.isInternetReachable !== false;
-    useRiderNetworkStore.getState().setOnline(online);
+    const prev = useRiderNetworkStore.getState().online;
+    useRiderNetworkStore.getState().setOnline(resolveOnline(state, prev));
   });
   void NetInfo.fetch()
     .then((state) => {
-      const online = state.isConnected === true && state.isInternetReachable !== false;
+      const prev = useRiderNetworkStore.getState().online;
+      const online = resolveOnline(state, prev);
       if (online) riderNetworkLog("ONLINE");
       else riderNetworkLog("OFFLINE");
       useRiderNetworkStore.getState().setOnline(online);

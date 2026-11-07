@@ -2392,7 +2392,7 @@ export default function OrderDetailClient({
         </section>
 
         {/* Order progress timeline + ops action banner (separate rows) */}
-        <div className="mt-2 mb-4 space-y-2">
+        <div className="mt-2 mb-4 min-w-0 max-w-full space-y-2 overflow-hidden">
           <OrderTimeline
             orderId={order.id}
             initialEntries={timelineEntries}

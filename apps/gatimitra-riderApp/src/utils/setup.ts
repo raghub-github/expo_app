@@ -4,9 +4,11 @@
  */
 
 import { installErrorSuppression } from './errorSuppression';
+import { installBundleLoadDiagnostics } from './bundleLoadDiagnostics';
 
 try {
   installErrorSuppression();
+  installBundleLoadDiagnostics();
 } catch (error) {
   throw error;
 }

@@ -2,6 +2,7 @@ import { ApiError, NetworkTimeoutError } from "@gatimitra/sdk";
 
 export type RiderActionType =
   | "accept"
+  | "reject"
   | "reached_pickup"
   | "reached_drop"
   | "mark_pickup"
@@ -99,10 +100,10 @@ export function isWrongOtpError(err: unknown): boolean {
   return err instanceof ApiError && err.status === 403;
 }
 
-/** Bounded backoff with jitter. Caps at 15s. */
+/** Bounded backoff with jitter. Caps at 8s — keep retries snappy for slide actions. */
 export function riderActionRetryDelayMs(retryCount: number): number {
-  const base = Math.min(15_000, 1_000 * 2 ** Math.max(0, retryCount));
-  const jitter = Math.floor(Math.random() * Math.min(400, base * 0.2));
+  const base = Math.min(8_000, 400 * 2 ** Math.max(0, retryCount));
+  const jitter = Math.floor(Math.random() * Math.min(200, base * 0.2));
   return base + jitter;
 }
 

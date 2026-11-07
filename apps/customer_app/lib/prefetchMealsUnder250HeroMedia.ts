@@ -10,7 +10,7 @@ function prefetchUri(raw: string | null | undefined): void {
   const uri = toAbsoluteImageUrl(trimmed) ?? trimmed;
   if (prefetched.has(uri)) return;
   prefetched.add(uri);
-  void Image.prefetch(uri, { cachePolicy: "memory-disk" });
+  void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => {});
 }
 
 /** Warm under-₹250 tab + hero art before the inner page paints. */

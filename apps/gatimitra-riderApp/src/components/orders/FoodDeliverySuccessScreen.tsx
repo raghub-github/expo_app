@@ -25,6 +25,7 @@ import {
   RiderDeliverySuccessLayout,
   type SuccessBreakdownRow,
 } from "@/src/components/orders/RiderDeliverySuccessLayout";
+import { RiderSettlementBreakdownCard } from "@/src/components/orders/RiderSettlementBreakdownCard";
 import { useRecordDeliverySuccessTipBaseline } from "@/src/hooks/useRecordDeliverySuccessTipBaseline";
 
 type Props = {
@@ -105,10 +106,18 @@ export function FoodDeliverySuccessScreen({ params: rawParams }: Props) {
 
   const totalEarning = earningBreakdown.totalEarning;
   const tripMinutes = Number(params.tripMinutes) || 0;
-  const distanceKm = Number(params.distanceKm) || 0;
-  const distanceLabel = params.distanceKm
-    ? formatDistanceKm(distanceKm)
-    : "—";
+  // Prefer live order detail trip distance over nav params (params used to
+  // prefer totalDistanceKm ≈ 2× trip after delivery).
+  const distanceKm = useMemo(() => {
+    const fromDetail =
+      orderDetail?.tripDistanceKm ?? orderDetail?.distanceKm ?? null;
+    if (fromDetail != null && Number.isFinite(Number(fromDetail)) && Number(fromDetail) > 0) {
+      return Number(fromDetail);
+    }
+    const fromParams = Number(params.distanceKm);
+    return Number.isFinite(fromParams) && fromParams > 0 ? fromParams : 0;
+  }, [orderDetail?.tripDistanceKm, orderDetail?.distanceKm, params.distanceKm]);
+  const distanceLabel = distanceKm > 0 ? formatDistanceKm(distanceKm) : "—";
 
   const breakdownRows: SuccessBreakdownRow[] = useMemo(() => {
     const baseLabel = t("orders.deliverySuccess.deliveryFee", "Delivery Fee");
@@ -181,6 +190,9 @@ export function FoodDeliverySuccessScreen({ params: rawParams }: Props) {
       refreshing={isRefetching}
       closeAccessibilityLabel={t("common.close", "Close")}
       ctaAccessibilityLabel={ctaLabel}
+      extraContent={
+        <RiderSettlementBreakdownCard breakdown={orderDetail?.settlementBreakdown} />
+      }
     />
   );
 }

@@ -21,10 +21,36 @@ const clear =
   process.env.npm_config_c === "true" ||
   process.env.npm_config_c === "";
 
-const modeGo =
+const forceGo =
+  process.env.EXPO_FORCE_GO === "1" || process.env.EXPO_FORCE_GO === "true";
+const requestedGo =
   args.includes("--go") ||
   process.env.EXPO_USE_GO === "1" ||
   process.env.npm_lifecycle_event === "start:go";
+
+// Customer app is Expo SDK 54. Play Store Expo Go is often SDK 57+ and refuses
+ // this project ("Project is incompatible with this version of Expo Go").
+ // Default + recommended path: development build (`expo-dev-client`).
+if (requestedGo && !forceGo) {
+  console.error(`
+[gatimitra-customer] Expo Go is blocked for this app (SDK 54).
+
+Your phone's Expo Go is typically SDK 57 and will show:
+  "Project is incompatible with this version of Expo Go"
+
+Use the GatiMitra customer development build instead:
+  1. npm start
+  2. Open the installed GatiMitra customer app (dev client), not Expo Go
+  3. Or press 'a' after Metro starts (with the app installed)
+
+Do NOT press 's' to switch to Expo Go while Metro is running.
+
+Override (unsupported): EXPO_FORCE_GO=1 npm run start:go
+`);
+  process.exit(1);
+}
+
+const modeGo = requestedGo && forceGo;
 
 const online =
   args.includes("--online") ||
@@ -46,11 +72,17 @@ const expoArgs = [
   process.env.EXPO_PORT || "8081",
 ];
 if (wantOffline) expoArgs.push("--offline");
+// Always prefer the development client for this SDK 54 app.
 if (modeGo) {
   expoArgs.push("--go");
 } else {
   expoArgs.push("--dev-client");
 }
+console.log(
+  modeGo
+    ? "[gatimitra-customer] Starting with Expo Go (EXPO_FORCE_GO=1) — SDK mismatch may still fail."
+    : "[gatimitra-customer] Starting development client (SDK 54). Open the GatiMitra app, not Expo Go. Do not press 's'."
+);
 if (clear) expoArgs.push("--clear");
 for (const a of args) {
   if (

@@ -115,9 +115,10 @@ export async function isOrderStillDispatchable(orderCoreId: number): Promise<boo
   }
 
   if (serviceType === "parcel") {
+    const currentSt = String(row.currentStatus ?? "").trim().toUpperCase();
     return (
-      row.currentStatus === "READY_FOR_PICKUP" &&
-      !["delivered", "cancelled", "failed"].includes(String(row.status ?? ""))
+      ["SEARCHING_RIDER", "PLACED", "CREATED", "READY_FOR_PICKUP"].includes(currentSt) &&
+      !["delivered", "cancelled", "failed"].includes(String(row.status ?? "").toLowerCase())
     );
   }
 

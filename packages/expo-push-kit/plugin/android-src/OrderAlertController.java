@@ -341,6 +341,15 @@ public final class OrderAlertController {
     String storeName = first(data, "storeName", "store_name", "restaurantName", "merchantName");
     String itemCount = first(data, "itemCount", "item_count", "items");
     String toPickupKm = first(data, "toPickupKm", "to_pickup_km", "pickupDistanceKm");
+    if (toPickupKm.length() == 0) {
+      // Accept "1.4 km" / bare km number from the distance-only fast path.
+      String labeled = first(data, "pickupDistance", "distanceKm");
+      if (labeled.matches("(?i)^[\\d.]+\\s*km$")) {
+        toPickupKm = labeled.replaceAll("(?i)\\s*km$", "").trim();
+      } else if (labeled.matches("^[\\d.]+$")) {
+        toPickupKm = labeled;
+      }
+    }
     String overallKm = first(data, "overallKm", "overall_km", "totalDistanceKm");
     String itemsJson = first(data, "itemsJson", "items_json", "orderItemsJson", "itemsSummary");
     String special = first(
@@ -1274,15 +1283,17 @@ public final class OrderAlertController {
   }
 
   private static String resolvePickup(Map<String, String> data) {
-    String labeled = first(data, "pickupDistance", "pickup", "pickupAddress", "merchantName");
-    if (labeled.length() > 0) return labeled;
-    String meters = first(data, "pickupDistanceMeters");
-    if (meters.length() > 0) return meters;
+    // Prefer a real address / store name — never treat distance as the pickup line.
+    String address = first(data, "pickupAddress", "pickup_address", "pickup");
+    if (address.length() > 0 && !address.matches("(?i)^[\\d.]+\\s*(m|km)?$")) return address;
+    String store = first(data, "storeName", "store_name", "merchantName", "restaurantName");
+    if (store.length() > 0) return store;
+    if (address.length() > 0) return address;
     return "";
   }
 
   private static String resolveDrop(Map<String, String> data) {
-    return first(data, "dropArea", "drop", "dropAddress");
+    return first(data, "dropAddress", "drop_address", "dropArea", "drop");
   }
 
   private static String resolveOrderType(Map<String, String> data) {

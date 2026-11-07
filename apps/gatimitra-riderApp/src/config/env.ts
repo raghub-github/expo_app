@@ -64,6 +64,19 @@ function isLocalhostApiUrl(url: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1)(\b|:)/.test(url.replace(/\/+$/, ""));
 }
 
+/** Production / staging hosts that must never be used while Metro is in __DEV__. */
+function isRemoteProductionApiHost(host: string | null): boolean {
+  if (!host) return false;
+  const h = host.toLowerCase();
+  return (
+    h === "api.gatimitra.com" ||
+    h.endsWith(".gatimitra.com") ||
+    h.includes("railway.app") ||
+    h.includes("onrender.com") ||
+    h.includes("vercel.app")
+  );
+}
+
 function isPlausibleIpv4(host: string): boolean {
   const parts = host.split(".");
   if (parts.length !== 4) return false;
@@ -234,7 +247,15 @@ export function getRiderAppConfig(): RiderAppConfig {
   // (Metro embeds env at start; Wi‑Fi hops leave stale IPs until a full restart).
   const liveLan = __DEV__ ? preferredDevLanHost() : null;
   const fromEnvHost = fromEnv ? hostFromApiUrl(fromEnv) : null;
-  if (liveLan && fromEnvHost && isPrivateLanIpv4(fromEnvHost) && fromEnvHost !== liveLan) {
+  // Dev must hit the local backend — never silently keep targeting production.
+  if (__DEV__ && fromEnvHost && isRemoteProductionApiHost(fromEnvHost)) {
+    const lan = liveLan ?? devHost ?? "127.0.0.1";
+    rawUrl = `http://${lan}:${port}`;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[RiderEnv] EXPO_PUBLIC_API_BASE_URL pointed at production (${fromEnvHost}); forcing local ${rawUrl}`
+    );
+  } else if (liveLan && fromEnvHost && isPrivateLanIpv4(fromEnvHost) && fromEnvHost !== liveLan) {
     rawUrl = `http://${liveLan}:${port}`;
   } else if (fromEnv && !isLocalhostApiUrl(fromEnv)) {
     // Explicit LAN / public URL in .env wins over DEV_HOST.
@@ -259,6 +280,12 @@ export function getRiderAppConfig(): RiderAppConfig {
         : "";
     // eslint-disable-next-line no-console
     console.log(`[RiderEnv] API base URL: ${apiBaseUrl}${emulatorHint}`);
+    if (host && isRemoteProductionApiHost(host)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[RiderEnv] Still on remote host ${host} in __DEV__ — check EXPO_PUBLIC_API_BASE_URL / Metro LAN`
+      );
+    }
   }
 
   const mapboxToken = resolveMapboxPublicToken();

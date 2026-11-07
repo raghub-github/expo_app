@@ -10,6 +10,8 @@ export type DeliveryProofImageInput = {
   r2Key?: string | null;
   riderAssignmentId?: number | null;
   takenAt?: Date;
+  /** `pickup` for parcel handover at sender; `delivery` (default) for drop proof. */
+  imageType?: "pickup" | "delivery";
 };
 
 function firstRowId(rows: unknown): number | null {
@@ -52,6 +54,7 @@ export async function recordOrderDeliveryProofImageTx(
   const r2Key = String(input.r2Key ?? "").trim() || null;
   const takenAt = input.takenAt ?? new Date();
   const ts = takenAt.toISOString();
+  const imageType = input.imageType === "pickup" ? "pickup" : "delivery";
 
   const assignmentId =
     input.riderAssignmentId ?? (await resolveAssignmentId(tx, input.orderCorePk, input.riderId));
@@ -73,7 +76,7 @@ export async function recordOrderDeliveryProofImageTx(
       VALUES (
         ${input.orderCorePk},
         ${assignmentId},
-        'delivery',
+        ${imageType},
         ${imageUrl},
         ${r2Key},
         'rider',
@@ -96,7 +99,7 @@ export async function recordOrderDeliveryProofImageTx(
         )
         VALUES (
           ${input.orderCorePk},
-          'delivery',
+          ${imageType},
           ${imageUrl},
           ${ts}::timestamptz,
           ${ts}::timestamptz

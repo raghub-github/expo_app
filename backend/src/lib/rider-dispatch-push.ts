@@ -200,6 +200,7 @@ export async function sendRiderDispatchDirectPush(args: {
 
     for (const token of nativeTokens) {
       try {
+        const collapseKey = `gm_rider_order_${String(args.orderId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48)}`;
         const res = await sendFcmV1({
           notificationId: randomUUID(),
           token,
@@ -213,6 +214,9 @@ export async function sendRiderDispatchDirectPush(args: {
           priority: "critical",
           data,
           deepLink,
+          // Same logical offer → replace tray card (not stack duplicates).
+          collapseKey,
+          tag: collapseKey,
         });
         const push_provider_response_at = Date.now();
         if (res.ok) {

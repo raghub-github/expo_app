@@ -662,11 +662,82 @@ export default function SelectLocationScreen() {
   }, [searchQuery, coords?.latitude, coords?.longitude]);
 
   const handleUseCurrentLocation = async () => {
-    // Always pull a fresh GPS fix, set it as the session location, then close this sheet.
+    const paintCurrentAndClose = (
+      coords: { latitude: number; longitude: number },
+      address: {
+        primary?: string;
+        secondary?: string;
+        fullAddress?: string;
+        city?: string | null;
+        state?: string | null;
+        pincode?: string | null;
+      } | null
+    ) => {
+      setAddressAndCoords(
+        address
+          ? {
+              primary: address.primary ?? "Current location",
+              secondary: address.secondary ?? "",
+              fullAddress: address.fullAddress ?? address.primary ?? "Current location",
+              city: address.city ?? null,
+              state: address.state ?? null,
+              pincode: address.pincode ?? null,
+            }
+          : {
+              primary: "Current location",
+              secondary: "",
+              fullAddress: "Current location",
+            },
+        coords,
+        { source: "current" }
+      );
+      void clearPersistedSelection();
+      void invalidateFoodHomeLocationQueries(queryClient);
+      void addressService
+        .setActiveLocation({
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          address: address?.fullAddress ?? address?.primary ?? "Current location",
+          addressId: null,
+        })
+        .catch(() => {});
+      void profileService
+        .updateProfile({
+          location_permission: true,
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+        })
+        .catch(() => {});
+      safeBack();
+    };
+
+    // Instant path: already have a usable pin — paint + close, refresh GPS in background.
+    const cached = useLocationStore.getState();
+    if (cached.coords) {
+      paintCurrentAndClose(cached.coords, cached.address);
+      void requestPermissionAndFetch({ forceDevice: true }).then(() => {
+        const latest = useLocationStore.getState();
+        if (latest.locationSource !== "current" || !latest.coords) return;
+        void addressService
+          .setActiveLocation({
+            latitude: latest.coords.latitude,
+            longitude: latest.coords.longitude,
+            address:
+              latest.address?.fullAddress ?? latest.address?.primary ?? "Current location",
+            addressId: null,
+          })
+          .catch(() => {});
+      });
+      return;
+    }
+
+    // Cold path: need a first GPS fix before we can paint.
     await requestPermissionAndFetch({ forceDevice: true });
     const osPermission = await Location.getForegroundPermissionsAsync();
-    const { permissionStatus, coords: latestCoords, address: latestAddress } = useLocationStore.getState();
-    const hasLocationAccess = permissionStatus === "granted" && osPermission.status === "granted";
+    const { permissionStatus, coords: latestCoords, address: latestAddress } =
+      useLocationStore.getState();
+    const hasLocationAccess =
+      permissionStatus === "granted" && osPermission.status === "granted";
 
     if (!hasLocationAccess || !latestCoords) {
       try {
@@ -674,40 +745,14 @@ export default function SelectLocationScreen() {
       } catch {
         // Non-blocking; user flow should continue.
       }
-      Alert.alert("Location not found", "We couldn't detect your location. Try again or search manually.");
+      Alert.alert(
+        "Location not found",
+        "We couldn't detect your location. Try again or search manually."
+      );
       return;
     }
 
-    try {
-      await Promise.all([
-        clearPersistedSelection(),
-        addressService.setActiveLocation({
-          latitude: latestCoords.latitude,
-          longitude: latestCoords.longitude,
-          address: latestAddress?.fullAddress ?? latestAddress?.primary ?? "Current location",
-          addressId: null,
-        }),
-        profileService
-          .updateProfile({
-            location_permission: true,
-            latitude: latestCoords.latitude,
-            longitude: latestCoords.longitude,
-          })
-          .catch(() => {}),
-      ]);
-      setAddressAndCoords(
-        latestAddress ?? {
-          primary: "Current location",
-          secondary: "",
-          fullAddress: "Current location",
-        },
-        latestCoords,
-        { source: "current" }
-      );
-      void invalidateFoodHomeLocationQueries(queryClient);
-    } finally {
-      safeBack();
-    }
+    paintCurrentAndClose(latestCoords, latestAddress);
   };
 
   const handleAddAddressDirect = async () => {
@@ -851,22 +896,21 @@ export default function SelectLocationScreen() {
     setPendingNearbyPlace(place);
   };
 
-  const applySavedAddress = async (addr: Address) => {
+  const applySavedAddress = (addr: Address) => {
+    // Instant: local pin + navigate back. Backend sync is fire-and-forget inside apply.
     setSavedAddressLoading(addr.id);
-    try {
-      const { applySelectedDeliveryAddress } = await import(
-        "@/lib/applySelectedDeliveryAddress"
-      );
-      await applySelectedDeliveryAddress(addr, queryClient);
-      safeBack();
-    } catch {
-      Alert.alert(
-        "Could not select address",
-        "Please check your connection and try again."
-      );
-    } finally {
-      setSavedAddressLoading(null);
-    }
+    void import("@/lib/applySelectedDeliveryAddress")
+      .then(({ applySelectedDeliveryAddress }) =>
+        applySelectedDeliveryAddress(addr, queryClient)
+      )
+      .catch(() => {
+        Alert.alert(
+          "Could not select address",
+          "Please check your connection and try again."
+        );
+      })
+      .finally(() => setSavedAddressLoading(null));
+    safeBack();
   };
 
   const handleSelectSaved = (addr: Address) => {
@@ -875,7 +919,7 @@ export default function SelectLocationScreen() {
       setConfirmAddress(addr);
       return;
     }
-    void applySavedAddress(addr);
+    applySavedAddress(addr);
   };
 
   const showSearchSection = searchQuery.trim().length >= 2;

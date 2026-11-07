@@ -23,8 +23,8 @@ export function useCategoryServiceAssignments() {
         const res = await getJson<CategoryServiceAssignmentsResponse>(
           `${API_BASE()}/v1/onboarding/category-service-assignments`,
           {
-            // Boot path — fail fast to fallback instead of hanging 30s on a busy DB pool.
-            timeout: 20_000,
+            // Boot path — fail fast to fallback instead of hanging when API is down.
+            timeout: 12_000,
             ...(session?.accessToken
               ? { headers: { authorization: `Bearer ${session.accessToken}` } }
               : {}),

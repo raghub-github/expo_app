@@ -221,7 +221,12 @@ export function getConfig(): {
   googleMapsApiKey: string | null;
   supabaseUrl: string | null;
   supabaseAnonKey: string | null;
-  /** When true, OTP uses `POST /v1/auth/otp/request` (backend + MSG91). Default: Supabase hook (same as merchant). */
+  /**
+   * When true, OTP uses `POST /v1/auth/otp/request` (backend + MSG91).
+   * Production / public API: false → Supabase Send SMS hook.
+   * LAN __DEV__: auto-true — Supabase cloud cannot reach a private API hook, so
+   * signInWithOtp would succeed with no SMS. Override with EXPO_PUBLIC_PHONE_OTP_USE_BACKEND.
+   */
   phoneOtpUseBackendOnly: boolean;
   /**
    * Google Play review phone (E.164). When the login phone matches this, OTP is
@@ -311,11 +316,22 @@ export function getConfig(): {
   const phoneOtpBackendRaw =
     asNonEmptyString(process.env.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND) ??
     asNonEmptyString(extra?.EXPO_PUBLIC_PHONE_OTP_USE_BACKEND as string);
-  const phoneOtpUseBackendOnly =
+  const phoneOtpBackendExplicit =
     phoneOtpBackendRaw === "1" ||
     phoneOtpBackendRaw?.toLowerCase() === "true" ||
     phoneOtpBackendRaw?.toLowerCase() === "yes" ||
     phoneOtpBackendRaw?.toLowerCase() === "on";
+  const phoneOtpBackendExplicitOff =
+    phoneOtpBackendRaw === "0" ||
+    phoneOtpBackendRaw?.toLowerCase() === "false" ||
+    phoneOtpBackendRaw?.toLowerCase() === "no" ||
+    phoneOtpBackendRaw?.toLowerCase() === "off";
+  // LAN Metro/dev: Supabase's Send SMS hook must call a *public* URL. A private
+  // 10.x / 192.168.x API never receives the hook → client shows "OTP sent" with
+  // zero SMS. Route through the local backend MSG91 path instead unless forced off.
+  const phoneOtpUseBackendOnly = phoneOtpBackendExplicitOff
+    ? false
+    : phoneOtpBackendExplicit || (__DEV__ && isPrivateOrLocalApiUrl(apiBaseUrl));
 
   /**
    * Google Play review phone (E.164). When set, this number uses the backend

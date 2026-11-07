@@ -75,6 +75,8 @@ export interface RiderSummary {
     createdAt: string;
   } | null;
   recentOrders: any[];
+  /** True when rider has an active GMitra Max subscription. */
+  gmitraMaxActive?: boolean;
   /** Subscription fee outstanding + dispatch block (wallet settlement dues). */
   subscriptionDues?: {
     duesOutstanding: number;

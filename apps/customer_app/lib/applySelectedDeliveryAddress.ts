@@ -2,6 +2,8 @@
  * Persist a saved address as the active delivery pin (checkout + home discovery).
  * Marks selection as nearby vs remote so resume can preserve "order for someone else"
  * without undoing genuine travel-away switches for local addresses.
+ *
+ * Instant UX: paint the pin in the location store first, then sync backend in background.
  */
 
 import type { QueryClient } from "@tanstack/react-query";
@@ -31,18 +33,8 @@ export async function applySelectedDeliveryAddress(
   const retentionRadiusM = options?.retentionRadiusM ?? DEFAULT_RETENTION_M;
   const selectionKind = classifySelectionKind(addr, retentionRadiusM);
 
-  await Promise.all([
-    addressService.setActiveLocation({
-      latitude: addr.latitude,
-      longitude: addr.longitude,
-      address: addr.fullAddress,
-      addressId: addr.id,
-    }),
-    // Default flag is separate from MRU (last_used); keep for legacy checkout defaults.
-    addressService.setAddressDefault(addr.id).catch(() => {}),
-  ]);
-
   const primary = addr.label ?? "Other";
+  // 1) Instant UI — never wait on network before the pin updates.
   useLocationStore.getState().setAddressAndCoords(
     {
       primary,
@@ -55,6 +47,7 @@ export async function applySelectedDeliveryAddress(
     { latitude: addr.latitude, longitude: addr.longitude },
     { source: "selected", selectionKind, boundAddressId: addr.id }
   );
+  void invalidateFoodHomeLocationQueries(queryClient);
 
   if (__DEV__) {
     console.log("[active-location] select_saved", {
@@ -62,18 +55,32 @@ export async function applySelectedDeliveryAddress(
       addressId: addr.id,
       selectionKind,
       retentionRadiusM,
+      instant: true,
     });
   }
 
-  // Force network refetch so the list reflects backend MRU order immediately.
-  await Promise.all([
-    queryClient.refetchQueries({ queryKey: ["addresses"] }),
-    queryClient.refetchQueries({ queryKey: ["active-location"] }),
-  ]);
-  void invalidateFoodHomeLocationQueries(queryClient);
+  // 2) Background persist + list refresh — failures must not undo the local pin.
+  void (async () => {
+    try {
+      await Promise.all([
+        addressService.setActiveLocation({
+          latitude: addr.latitude,
+          longitude: addr.longitude,
+          address: addr.fullAddress,
+          addressId: addr.id,
+        }),
+        addressService.setAddressDefault(addr.id).catch(() => {}),
+      ]);
+      void queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      void queryClient.invalidateQueries({ queryKey: ["active-location"] });
+    } catch (e) {
+      if (__DEV__) {
+        console.warn("[active-location] select_saved_sync_failed", e);
+      }
+    }
+  })();
 
-  const { promptCartIfLocationBrokeServiceability } = await import(
-    "@/lib/promptCartIfLocationBrokeServiceability"
-  );
-  void promptCartIfLocationBrokeServiceability(queryClient);
+  void import("@/lib/promptCartIfLocationBrokeServiceability").then(({ promptCartIfLocationBrokeServiceability }) => {
+    void promptCartIfLocationBrokeServiceability(queryClient);
+  });
 }

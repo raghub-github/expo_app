@@ -25,9 +25,14 @@ import { subscribeRiderNetworkRestored } from "@/src/stores/riderNetworkStore";
 
 export { dispatchSessionKey, recoveryIntervalMs, WS_CONNECTED_RECOVERY_MS, WS_DOWN_RECOVERY_MS, DUTY_SYNC_MS } from "@/src/lib/riderDispatchPolicy";
 
+/** Inline copy of WS_DOWN_RECOVERY_MS — avoid TDZ/circular-import crashes in Hermes. */
+const GATEWAY_DOWN_RECOVER_THROTTLE_MS = 10_000;
+
 const MIN_RECOVER_GAP_MS = 1_200;
 const ABORT_RETRY_MS = 2_000;
 const MAX_ABORT_RETRIES = 2;
+/** Coalesce stacked force recovers (foreground + WS + net) into one radio burst. */
+const FORCE_RECOVER_DEBOUNCE_MS = 400;
 const DISPATCH_G = "__gmRiderDispatchLifecycleV3";
 
 type ActiveLifecycle = {
@@ -41,6 +46,8 @@ type DispatchRuntime = {
   recoverTimer: ReturnType<typeof setInterval> | null;
   dutyTimer: ReturnType<typeof setInterval> | null;
   abortRetryTimer: ReturnType<typeof setTimeout> | null;
+  forceDebounceTimer: ReturnType<typeof setTimeout> | null;
+  forceDebounceReason: string | null;
   recovering: boolean;
   recoverGen: number;
   abortRetryAttempts: number;
@@ -64,6 +71,8 @@ function emptyRuntime(): DispatchRuntime {
     recoverTimer: null,
     dutyTimer: null,
     abortRetryTimer: null,
+    forceDebounceTimer: null,
+    forceDebounceReason: null,
     recovering: false,
     recoverGen: 0,
     abortRetryAttempts: 0,
@@ -82,6 +91,28 @@ function emptyRuntime(): DispatchRuntime {
   };
 }
 
+/** Prefer ingest over generic wake reasons when coalescing stacked forces. */
+function preferRecoverReason(prev: string | null, next: string): string {
+  if (!prev) return next;
+  if (next.startsWith("ingest:")) return next;
+  if (prev.startsWith("ingest:")) return prev;
+  return next;
+}
+
+function scheduleForcedRecover(reason: string): void {
+  const rt = runtime();
+  rt.forceDebounceReason = preferRecoverReason(rt.forceDebounceReason, reason);
+  if (rt.forceDebounceTimer) clearTimeout(rt.forceDebounceTimer);
+  rt.forceDebounceTimer = setTimeout(() => {
+    rt.forceDebounceTimer = null;
+    const queued = rt.forceDebounceReason;
+    rt.forceDebounceReason = null;
+    if (queued && rt.active) {
+      void rt.runRecover(queued, { force: true });
+    }
+  }, FORCE_RECOVER_DEBOUNCE_MS);
+}
+
 function runtime(): DispatchRuntime {
   const root = globalThis as typeof globalThis & { [DISPATCH_G]?: DispatchRuntime };
   if (!root[DISPATCH_G]) root[DISPATCH_G] = emptyRuntime();
@@ -97,16 +128,17 @@ function isAbortError(err: unknown): boolean {
 }
 
 function shouldQueueWhileRecovering(reason: string, force?: boolean): boolean {
+  // Interval / abort noise must not stack. Forced wakes (ingest, foreground, net,
+  // WS) must queue — dropping ingest while /available is in flight left the offer
+  // store primed and React Query caches empty (stuck / missing incoming card).
   if (
     reason === "interval" ||
     reason === "lifecycle_already_running" ||
-    reason === "ws_reconnect" ||
-    reason === "abort_retry" ||
-    reason.startsWith("ingest:")
+    reason === "abort_retry"
   ) {
     return false;
   }
-  return force === true;
+  return force === true || reason.startsWith("ingest:");
 }
 
 function clearTimers(): void {
@@ -123,6 +155,11 @@ function clearTimers(): void {
     clearTimeout(rt.abortRetryTimer);
     rt.abortRetryTimer = null;
   }
+  if (rt.forceDebounceTimer) {
+    clearTimeout(rt.forceDebounceTimer);
+    rt.forceDebounceTimer = null;
+  }
+  rt.forceDebounceReason = null;
   rt.lastIntervalMs = 0;
 }
 
@@ -156,11 +193,11 @@ function ensureGlobalListeners(): void {
 
   rt.appStateSub = AppState.addEventListener("change", (state: AppStateStatus) => {
     if (state !== "active") return;
-    void rt.runRecover("app_foreground", { force: true });
+    scheduleForcedRecover("app_foreground");
   });
 
   rt.netUnsub = subscribeRiderNetworkRestored(() => {
-    void rt.runRecover("network_restored", { force: true });
+    scheduleForcedRecover("network_restored");
     const qc = rt.active?.queryClient;
     if (qc) {
       void qc.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
@@ -175,7 +212,7 @@ function ensureGlobalListeners(): void {
     }
     if (live && !rt.prevWsLive) {
       riderDispatchLog("WS_CONNECTED");
-      void rt.runRecover("ws_reconnect", { force: true });
+      scheduleForcedRecover("ws_reconnect");
     } else if (!live && rt.prevWsLive) {
       riderDispatchLog("WS_DISCONNECTED");
     }
@@ -247,7 +284,20 @@ export async function recoverDispatchOffers(
     };
 
     const pendingPromise = fetchPendingOffersForDispatch();
-    const availablePromise = fetchAvailableOrdersForDispatch();
+    // Skip pool scan while rider already has a live trip — available/offers are
+    // unused on the active-nav screen and were timing out (25s) under DB load.
+    const activeCached =
+      current.queryClient.getQueryData<RiderOrderSummary[]>(RIDER_ACTIVE_ORDERS_QUERY_KEY) ?? [];
+    const skipAvailable = activeCached.some(
+      (o) =>
+        o.status !== "delivered" && o.status !== "cancelled" && o.status !== "pending"
+    );
+    const availablePromise = skipAvailable
+      ? Promise.resolve([] as RiderOrderSummary[])
+      : fetchAvailableOrdersForDispatch();
+    if (skipAvailable) {
+      riderDispatchLog("fetch available skipped", { reason: "active_order", sessionKey: current.sessionKey });
+    }
 
     let pending: RiderOrderSummary[] = [];
     try {
@@ -383,6 +433,21 @@ export function stopRiderDispatchLifecycle(reason: string): void {
 
 export function isRiderDispatchLifecycleActive(): boolean {
   return runtime().active != null;
+}
+
+/**
+ * ws-gateway unreachable — switch to fast HTTP recovery and pull offers now.
+ * Expo Go has no FCM; without this, riders wait a full idle interval for the next poll.
+ * Throttled so reconnect backoff does not stampede /available.
+ */
+let lastGatewayDownRecoverAt = 0;
+export function notifyDispatchGatewayDown(): void {
+  if (!runtime().active) return;
+  armRecoveryTimer();
+  const now = Date.now();
+  if (now - lastGatewayDownRecoverAt < GATEWAY_DOWN_RECOVER_THROTTLE_MS) return;
+  lastGatewayDownRecoverAt = now;
+  scheduleForcedRecover("gateway_down");
 }
 
 /** Test helper — not used in production paths. */

@@ -202,6 +202,22 @@ public final class OrderAlertDecisionLedger {
     return needle == null ? "" : needle.trim();
   }
 
+  /**
+   * Rider session ids may omit the wave suffix in JS
+   * (`RIDER_NEW_ORDER:order:rider`) while FCM includes it
+   * (`RIDER_NEW_ORDER:order:rider:wave`). Treat those as the same decision for
+   * replay protection. Distinct waves (`…:1` vs `…:2`) are NOT related — neither
+   * is a prefix of the other with a trailing ':'.
+   */
+  public static boolean riderSessionKeysRelated(String a, String b) {
+    if (a == null || b == null) return false;
+    if (a.equals(b)) return true;
+    String ka = a.startsWith("s:") ? a.substring(2) : a;
+    String kb = b.startsWith("s:") ? b.substring(2) : b;
+    if (!ka.startsWith("RIDER_NEW_ORDER:") || !kb.startsWith("RIDER_NEW_ORDER:")) return false;
+    return ka.startsWith(kb + ":") || kb.startsWith(ka + ":");
+  }
+
   /** True when any of these keys was decided and the decision has not expired. */
   public static boolean isDecided(String ledger, String[] keys, long nowMs, long ttlMs) {
     if (keys == null || keys.length == 0) return false;
@@ -214,7 +230,8 @@ public final class OrderAlertDecisionLedger {
       long at_ms = parseLong(entry.substring(at + 1));
       if (at_ms <= 0 || expired(at_ms, nowMs, ttlMs)) continue;
       for (String k : keys) {
-        if (k != null && k.equals(key)) return true;
+        if (k == null) continue;
+        if (k.equals(key) || riderSessionKeysRelated(k, key)) return true;
       }
     }
     return false;

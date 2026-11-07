@@ -10,15 +10,16 @@ const fs = require("fs");
 const path = require("path");
 
 // Launcher: rideraap.png. Native APK icons: `npm run generate:icons`.
-// JS splash is the "GatiMitra - Rider" wordmark on mint — no launcher icon.
+// JS splash is the "GatiMitra Rider" wordmark on mint — no circular brand mark.
 const APP_ICON = "./assets/images/rideraap.png";
 const APP_ICON_NATIVE = "./assets/icon.png";
 const APP_ADAPTIVE_FOREGROUND = "./assets/adaptive-icon.png";
 const APP_ICON_BG = "#C4E8D1";
 const SPLASH_BG = "#C4E8D1";
-// Native splash icon (Android 12 splash API + iOS). Required so expo-splash-screen
-// generates the splashscreen_logo drawable; the JS wordmark splash takes over after.
-const SPLASH_LOGO = "./assets/images/onlylogo.png";
+// Native splash must supply an `image` or the Android build fails (missing
+// splashscreen_logo drawable). Use a solid mint tile matching SPLASH_BG so the
+// circular onlylogo is never shown — users go straight into the JS wordmark splash.
+const SPLASH_LOGO = "./assets/images/splash-blank.png";
 
 const googleServicesFile = path.resolve(__dirname, "google-services.json");
 const hasGoogleServices = fs.existsSync(googleServicesFile);
@@ -236,10 +237,9 @@ module.exports = {
       [
         "expo-splash-screen",
         {
-          // An `image` is REQUIRED: with only resizeMode/backgroundColor, the plugin
-          // still emits a values.xml reference to @drawable/splashscreen_logo but never
-          // generates the drawable → `resource drawable/splashscreen_logo not found`
-          // at :app:processReleaseResources. The JS wordmark splash takes over at runtime.
+          // An `image` is REQUIRED for Android drawable generation, but must NOT be
+          // the circular brand mark (onlylogo). splash-blank.png is solid #C4E8D1 so
+          // native splash is mint-only; RiderBootstrapScreen wordmark takes over next.
           image: SPLASH_LOGO,
           resizeMode: "contain",
           backgroundColor: SPLASH_BG,

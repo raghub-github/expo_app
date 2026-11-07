@@ -90,17 +90,20 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
   );
 
   const showCurrentLocationNow = useCallback(async () => {
+    // Close sheet immediately; GPS + reconcile continue in background.
     handleDismiss();
-    await requestPermissionAndFetch({ forceDevice: true });
-    const { reconcileActiveLocationFromGps } = await import(
-      "@/lib/reconcileActiveLocationFromGps"
-    );
-    const { useAuthStore } = await import("@/store/authStore");
-    if (useAuthStore.getState().session) {
-      void reconcileActiveLocationFromGps(queryClient, {
-        allowRemoteSessionPreserve: true,
-      });
-    }
+    void (async () => {
+      await requestPermissionAndFetch({ forceDevice: true });
+      const { reconcileActiveLocationFromGps } = await import(
+        "@/lib/reconcileActiveLocationFromGps"
+      );
+      const { useAuthStore } = await import("@/store/authStore");
+      if (useAuthStore.getState().session) {
+        void reconcileActiveLocationFromGps(queryClient, {
+          allowRemoteSessionPreserve: true,
+        });
+      }
+    })();
   }, [handleDismiss, queryClient, requestPermissionAndFetch]);
 
   const handleEnableLocation = useCallback(async () => {
@@ -170,19 +173,17 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
   ]);
 
   const handleSelectAddress = useCallback(
-    async (addr: Address) => {
+    (addr: Address) => {
       setSelectingId(addr.id);
-      try {
-        const { applySelectedDeliveryAddress } = await import(
-          "@/lib/applySelectedDeliveryAddress"
-        );
-        await applySelectedDeliveryAddress(addr, queryClient);
-        handleDismiss();
-      } catch {
-        // Keep sheet open so user can retry or search manually.
-      } finally {
-        setSelectingId(null);
-      }
+      void import("@/lib/applySelectedDeliveryAddress")
+        .then(({ applySelectedDeliveryAddress }) =>
+          applySelectedDeliveryAddress(addr, queryClient)
+        )
+        .catch(() => {
+          // Keep sheet open so user can retry or search manually.
+        })
+        .finally(() => setSelectingId(null));
+      handleDismiss();
     },
     [handleDismiss, queryClient]
   );

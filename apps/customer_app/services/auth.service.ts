@@ -61,19 +61,22 @@ function normalizeOtpErrorMessage(message: string): string {
 
 export const authService = {
   /**
-   * Send OTP — same as merchant: Supabase signInWithOtp when configured (Send SMS hook → MSG91).
-   * Set EXPO_PUBLIC_PHONE_OTP_USE_BACKEND=true only when Supabase hook cannot reach your API.
+   * Send OTP — production: Supabase signInWithOtp (Send SMS hook → MSG91).
+   * LAN __DEV__: backend `/otp/request` (Supabase cannot reach a private API hook).
    */
   async sendOtp(payload: SendOtpPayload): Promise<void> {
     _lastBackendOtpRequestId = null;
     const viaBackend = shouldSendPhoneOtpViaBackend(payload.phoneE164);
     const phoneTail = payload.phoneE164.replace(/\D/g, "").slice(-4);
+    const cfg = getConfig();
 
     if (__DEV__) {
       // eslint-disable-next-line no-console
       console.log("[CustomerAuth] sendOtp: start", {
         phoneTail: phoneTail ? `…${phoneTail}` : "(short)",
         channel: viaBackend ? "backend" : "supabase",
+        apiBaseUrl: cfg.apiBaseUrl,
+        phoneOtpUseBackendOnly: cfg.phoneOtpUseBackendOnly,
         supabase: getSupabaseOtpEnvDebugInfo(),
       });
     }
@@ -82,7 +85,7 @@ export const authService = {
       try {
         const { data } = await api.post<{ requestId?: string; message?: string; error?: string }>(
           `${AUTH_PREFIX}/otp/request`,
-          payload,
+          { phoneE164: payload.phoneE164, appType: "customer" },
           { timeout: 15000 },
         );
         const rid = typeof data?.requestId === "string" ? data.requestId : "";

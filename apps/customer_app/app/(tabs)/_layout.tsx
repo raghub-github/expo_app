@@ -1,5 +1,6 @@
 import { Tabs, useRouter } from "expo-router";
 import { useEffect, useRef } from "react";
+import { View, StyleSheet } from "react-native";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { CustomerTabBar, customerTabBarOffset } from "@/components/CustomerTabBar";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -7,6 +8,7 @@ import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { hasCompletedProfileSync } from "@/lib/profileCache";
 import { useAuthStore } from "@/store/authStore";
 import { tabDbg } from "@/lib/tabNavDebug";
+import { markInitialShellReady } from "@/lib/startupShellReady";
 
 /**
  * Tab navigator owns ONE floating CustomerTabBar.
@@ -46,15 +48,23 @@ export default function TabsLayout() {
   const tabsReady = hydrated && Boolean(accessToken) && hasCompletedProfileSync();
   if (tabsReady) tabsUnlockedRef.current = true;
 
+  useEffect(() => {
+    if (!tabsUnlockedRef.current) return;
+    // Tabs chrome is about to paint Home under the splash — arm fade now so we
+    // don't wait solely on Home's first onLayout (which can lag on cold Metro).
+    markInitialShellReady("tabs-unlocked");
+  }, [tabsReady]);
+
   // Never unmount the tab navigator after it has painted — a brief profile-cache
   // miss remounted tabs at Home and bounced Food → previous page → Food.
+  // Soft home bg (not null / not mint) so a brief unlock race never flashes blank teal.
   if (!tabsUnlockedRef.current) {
     tabDbg("TABS_LAYOUT_NULL", {
       hydrated,
       hasToken: Boolean(accessToken),
       profileSync: hasCompletedProfileSync(),
     });
-    return null;
+    return <View style={styles.hold} />;
   }
 
   return (
@@ -89,9 +99,10 @@ export default function TabsLayout() {
           // in the animated pipeline — incoming Food stays opacity 0 at zIndex 0 while
           // Home stays opaque, so the previous page paints for seconds.
           animation: "none",
-          // Keep Food/Home scenes in the graph so rapid tab presses don't remount.
-          // Home↔Food authority: `lib/customerPrimaryTabNav` + `navigatePrimaryTab`.
-          lazy: false,
+          // Cold start: only mount the focused tab (Home). Eager-mounting Food/Orders/
+          // Profile pulled multi-second Metro/JS work before Home was usable.
+          // Home↔Food still uses animation:"none" + freezeOnBlur:false (no slide race).
+          lazy: true,
         }}
       >
         <Tabs.Screen
@@ -99,11 +110,8 @@ export default function TabsLayout() {
           options={{
             title: "Home",
             headerShown: false,
-            // freezeOnBlur + AppState resume can leave Home cards/buttons untappable, and —
-            // combined with the always-mounted (lazy:false) Food tab + the custom slide transition
-            // above — was also the cause of Home→Food tab switches bouncing back to Home within
-            // ~1s (react-native-screens freezing/unfreezing Home while its own effects were still
-            // settling raced the tab-slide transition). Never freeze Home.
+            // Home is the landing tab — mount immediately; never freeze.
+            lazy: false,
             freezeOnBlur: false,
           }}
         />
@@ -112,9 +120,6 @@ export default function TabsLayout() {
           options={{
             title: "Food",
             headerShown: false,
-            // Same as Home: never freeze during the custom Home↔Food slide.
-            // freezeOnBlur:true raced unfreeze mid-transition and briefly snapped
-            // the navigator back to Main Home before Food settled.
             freezeOnBlur: false,
           }}
         />
@@ -123,8 +128,6 @@ export default function TabsLayout() {
           options={{
             title: "Orders",
             headerShown: false,
-            // Same as Home/Food: freezeOnBlur can leave My Orders stuck on
-            // "Loading orders..." after a fetch completes while the tab was blurred.
             freezeOnBlur: false,
           }}
         />
@@ -147,3 +150,11 @@ export default function TabsLayout() {
     </>
   );
 }
+
+const styles = StyleSheet.create({
+  hold: {
+    flex: 1,
+    // Match splash mint while tabs unlock — softBackground read as a white blank.
+    backgroundColor: GatiMitraColors.splashMint,
+  },
+});

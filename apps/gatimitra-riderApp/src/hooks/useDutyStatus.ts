@@ -12,8 +12,10 @@ export function useDutyStatus() {
     queryKey: RIDER_DUTY_STATUS_QUERY_KEY,
     queryFn: () => riderApi.getDutyStatus(),
     enabled: sessionHydrated && Boolean(session?.accessToken),
-    staleTime: 30_000,
+    // Shares single-flight with dutyStore.syncFromServer — avoid stampede + retries.
+    staleTime: 60_000,
     gcTime: 5 * 60_000,
-    retry: 2,
+    retry: false,
+    refetchOnWindowFocus: false,
   });
 }

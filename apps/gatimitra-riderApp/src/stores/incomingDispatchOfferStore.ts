@@ -30,6 +30,12 @@ export const useIncomingDispatchOfferStore = create<IncomingDispatchOfferStore>(
     const id = orderId.trim();
     if (!id) return false;
     if (get().cancelledOrderIds.includes(id)) return false;
+    // Same live offer from FCM + WS + recover must not bump ingestCount /
+    // force another dual-fetch storm. Wave re-offers reuse orderId after cancel.
+    if (get().lastOfferId === id) {
+      set({ lastOfferAtMs: Date.now() });
+      return false;
+    }
     set({
       lastOfferId: id,
       ownerRiderId: riderId?.trim() || get().ownerRiderId,

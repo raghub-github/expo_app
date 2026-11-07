@@ -55,6 +55,15 @@ export function ingestIncomingDispatchOffer(
   }
   riderDispatchLog("OFFER_RECEIVED", { orderId: id, source });
   riderDispatchLog("OFFER STATE UPDATED", { orderId: id, source });
+
+  // Skip recover storm when the offer summary is already in React Query caches.
+  const pending = queryClient.getQueryData<RiderOrderSummary[]>(RIDER_PENDING_OFFERS_QUERY_KEY);
+  const available = queryClient.getQueryData<RiderOrderSummary[]>(RIDER_AVAILABLE_ORDERS_QUERY_KEY);
+  const alreadyHydrated =
+    (Array.isArray(pending) && pending.some((o) => o.id === id || o.formattedOrderId === id)) ||
+    (Array.isArray(available) && available.some((o) => o.id === id || o.formattedOrderId === id));
+  if (alreadyHydrated) return;
+
   if (isRiderDispatchLifecycleActive()) {
     void recoverDispatchOffers(`ingest:${source}`, { force: true });
     return;

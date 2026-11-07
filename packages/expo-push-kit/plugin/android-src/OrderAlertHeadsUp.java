@@ -25,6 +25,14 @@ public final class OrderAlertHeadsUp {
 
   private OrderAlertHeadsUp() {}
 
+  /** Must match backend `gm_rider_order_{orderId}` FCM Android tag so we REPLACE the FCM card. */
+  static String trayTagForOrder(String orderId) {
+    String id = orderId == null ? "" : orderId.trim().replaceAll("[^a-zA-Z0-9_-]", "");
+    if (id.length() == 0) return "gm_rider_order_active";
+    if (id.length() > 48) id = id.substring(0, 48);
+    return "gm_rider_order_" + id;
+  }
+
   static void show(Context context, String sessionId) {
     if (context == null) return;
     JSONObject row = OrderAlertController.getActive(context);
@@ -38,10 +46,23 @@ public final class OrderAlertHeadsUp {
 
     String display = row.optString("displayOrderId", "");
     if (display.matches("^\\d+$")) display = "";
-    String title = "NEW ORDER";
-    String body = OrderAlertCardText.shadeBody(
+    String orderId = row.optString("orderId", "");
+    if (orderId.length() == 0) orderId = display;
+    String trayTag = trayTagForOrder(orderId);
+    String orderType = row.optString("orderType", "");
+    String typeLabel = OrderAlertCardText.displayOrderType(orderType);
+    String title = typeLabel.length() > 0
+        ? OrderAlertCardText.brandLine() + " · " + typeLabel
+        : OrderAlertCardText.headingFor(orderType);
+    String body = OrderAlertCardText.shadeBodyRich(
         display,
+        orderType,
         row.optString("amount", ""),
+        row.optString("storeName", ""),
+        row.optString("pickup", ""),
+        row.optString("drop", ""),
+        row.optString("toPickupKm", ""),
+        row.optString("tripDistanceKm", ""),
         row.optString("customerName", ""),
         row.optString("itemsJson", ""),
         row.optString("body", "Open to accept")
@@ -92,8 +113,9 @@ public final class OrderAlertHeadsUp {
     }
 
     try {
-      nm.notify(NOTIFICATION_ID, b.build());
-      AlertEngineLog.log(context, "HEADS_UP_POSTED", sid, display, "locked=" + isLocked(context));
+      // Tagged notify replaces the FCM tray card that used the same Android tag.
+      nm.notify(trayTag, NOTIFICATION_ID, b.build());
+      AlertEngineLog.log(context, "HEADS_UP_POSTED", sid, display, "tag=" + trayTag);
     } catch (Throwable t) {
       AlertEngineLog.log(context, "HEADS_UP_FAILED", sid, display, t.getMessage());
     }
@@ -103,7 +125,14 @@ public final class OrderAlertHeadsUp {
     if (context == null) return;
     try {
       NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-      if (nm != null) nm.cancel(NOTIFICATION_ID);
+      if (nm == null) return;
+      nm.cancel(NOTIFICATION_ID);
+      JSONObject row = OrderAlertController.getActive(context);
+      if (row != null) {
+        String orderId = row.optString("orderId", "");
+        if (orderId.length() == 0) orderId = row.optString("displayOrderId", "");
+        nm.cancel(trayTagForOrder(orderId), NOTIFICATION_ID);
+      }
     } catch (Throwable ignored) {
     }
   }

@@ -80,9 +80,73 @@ import { refreshRiderLocationBeforeAccept } from "@/src/lib/refreshRiderLocation
  * long to land the accept; after that the slider is handed back to the rider
  * rather than spinning on "Accepting..." forever.
  */
-const ACCEPT_WEDGE_RELEASE_MS = 12_000;
+/** Cover accept HTTP timeout (35s) + reconcile probe — don't release mid-claim. */
+const ACCEPT_WEDGE_RELEASE_MS = 40_000;
 
 const EMPTY_ORDERS: RiderOrderSummary[] = [];
+
+const WEAK_ADDRESS_LABELS = new Set([
+  "pickup",
+  "drop",
+  "drop location",
+  "delivery location",
+  "current location",
+  "home",
+  "work",
+  "office",
+  "n/a",
+  "na",
+  "—",
+  "-",
+]);
+
+/** Prefer street/geocoded text over short saved nicknames like "HOME" / "Pickup". */
+function preferStreetAddress(
+  primary: string,
+  ...fallbacks: (string | null | undefined)[]
+): string {
+  const p = primary?.trim() || "";
+  const weak =
+    !p ||
+    WEAK_ADDRESS_LABELS.has(p.toLowerCase()) ||
+    (Boolean(p) && !p.includes(",") && p.length <= 28 && !/\d/.test(p));
+  if (p && !weak) return p;
+  for (const c of fallbacks) {
+    const t = c?.trim();
+    if (!t) continue;
+    if (WEAK_ADDRESS_LABELS.has(t.toLowerCase())) continue;
+    if (t.includes(",") || /\d/.test(t) || t.length > 28) return t;
+  }
+  // Last resort: keep primary even if weak, else first non-empty fallback, else em dash.
+  return (
+    (p && !WEAK_ADDRESS_LABELS.has(p.toLowerCase()) ? p : "") ||
+    fallbacks.find((c) => {
+      const t = c?.trim();
+      return t && !WEAK_ADDRESS_LABELS.has(t.toLowerCase());
+    })?.trim() ||
+    p ||
+    "—"
+  );
+}
+
+function formatCoordFallback(lat?: number | null, lng?: number | null): string | null {
+  if (lat == null || lng == null) return null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat === 0 && lng === 0) return null;
+  return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
+/** Prefer a non-empty customer name when sticky cache and live poll disagree. */
+function mergeStickyOffer(
+  prev: RiderOrderSummary | null,
+  next: RiderOrderSummary
+): RiderOrderSummary {
+  if (!prev || prev.id !== next.id) return next;
+  const nextName = next.customerName?.trim() || "";
+  const prevName = prev.customerName?.trim() || "";
+  if (nextName || !prevName) return next;
+  return { ...next, customerName: prev.customerName };
+}
 
 function toIncomingOrder(order: RiderOrderSummary, offerShownAtMs: number): IncomingDispatchOrder {
   return {
@@ -91,9 +155,26 @@ function toIncomingOrder(order: RiderOrderSummary, offerShownAtMs: number): Inco
     formattedOrderId: order.formattedOrderId,
     rideType: order.rideType,
     merchantName: order.merchantName,
+    customerName: order.customerName,
+    payAt: order.payAt,
+    cashCollected: order.cashCollected,
     itemCount: order.itemCount,
-    pickup: order.pickup,
-    delivery: order.delivery,
+    pickup: {
+      ...order.pickup,
+      address: preferStreetAddress(
+        order.pickup.address,
+        order.pickupAddressGeocoded,
+        formatCoordFallback(order.pickup.lat, order.pickup.lng)
+      ),
+    },
+    delivery: {
+      ...order.delivery,
+      address: preferStreetAddress(
+        order.delivery.address,
+        order.dropAddressGeocoded,
+        formatCoordFallback(order.delivery.lat, order.delivery.lng)
+      ),
+    },
     stops: order.stops,
     storeImageUrl: order.storeImageUrl,
     dropAddressImageUrl: order.dropAddressImageUrl,
@@ -109,6 +190,8 @@ function toIncomingOrder(order: RiderOrderSummary, offerShownAtMs: number): Inco
     appliedSurges: order.appliedSurges,
     totalEarning: order.totalEarning,
     higherDispatchPriority: order.higherDispatchPriority,
+    paymentMethod: order.paymentMethod,
+    paymentStatus: order.paymentStatus,
     createdAt: order.createdAt,
     acceptDeadlineAt: order.acceptDeadlineAt,
     offerShownAtMs,
@@ -120,7 +203,8 @@ export function IncomingRideOrderHost() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const session = useSessionStore((s) => s.session);
-  const isOnDuty = useDutyStore((s) => s.isOnDuty);
+  // Offers are actionable only after backend-confirmed ON duty.
+  const isOnDuty = useDutyStore((s) => s.syncPhase === "server_on");
   const { selectedServices: dutySelectedServices } = useRiderDutyServiceFilter();
   const { data: dutyStatus } = useDutyStatus();
   const blockedServices = useMemo(
@@ -253,6 +337,8 @@ export function IncomingRideOrderHost() {
       (o) =>
         !isRejected(o) &&
         !expiredRef.current.has(o.id) &&
+        !locallyAcceptedRef.current.has(o.id) &&
+        acceptingOrderIdRef.current !== o.id &&
         !useIncomingDispatchOfferStore.getState().isCancelled(o.id) &&
         o.status === "pending" &&
         (!hasExplicitSelection ||
@@ -283,9 +369,10 @@ export function IncomingRideOrderHost() {
 
   const activeOrder = useMemo(() => {
     if (!activeOrderId) return null;
-    const hit =
-      orders.find((o) => o.id === activeOrderId) ??
-      (stickyOfferRef.current?.id === activeOrderId ? stickyOfferRef.current : null);
+    const live = orders.find((o) => o.id === activeOrderId) ?? null;
+    const sticky =
+      stickyOfferRef.current?.id === activeOrderId ? stickyOfferRef.current : null;
+    const hit = live ? mergeStickyOffer(sticky, live) : sticky;
     if (!hit) return null;
     stickyOfferRef.current = hit;
     const offerShownAtMs = offerShownAtRef.current.get(activeOrderId) ?? Date.now();
@@ -487,6 +574,9 @@ export function IncomingRideOrderHost() {
         orderId: poolHeadId,
         riderId,
         serviceType: head?.category ?? activeOrderRef.current?.category ?? null,
+        // Prefer attaching to the FCM session when present; expiresAt stops
+        // background audio even if JS timers are suspended.
+        expiresAt: head?.acceptDeadlineAt ?? null,
       });
       if (native) {
         riderDispatchLog("sound_started_at", {
@@ -544,27 +634,32 @@ export function IncomingRideOrderHost() {
 
   const handleRejectPress = useCallback(() => {
     if (!activeOrderIdRef.current) return;
+    if (acceptingRef.current || rejectOrder.isPending) return;
     setRejectSheetOpen(true);
-  }, []);
+  }, [rejectOrder.isPending]);
 
   const handleRejectReason = useCallback(
     (reasonCode: string, reasonText: string) => {
       if (!activeOrderId) return;
+      if (rejectOrder.isPending) return;
       const id = activeOrderId;
       const order = activeOrderRef.current;
       const fmt = order?.formattedOrderId?.trim() || null;
       const rejectRef = fmt || id;
-      rejectedRef.current.add(id);
-      if (fmt) rejectedRef.current.add(fmt);
-      offerShownAtRef.current.delete(id);
-      void persistRiderRejectedOrderIds([id, fmt]);
-      bumpPool();
-      closeModal();
-      setActiveOrderId(null);
-      setRejectSheetOpen(false);
       rejectOrder.mutate(
         { orderId: rejectRef, reasonCode, reasonText },
         {
+          onSuccess: () => {
+            rejectedRef.current.add(id);
+            if (fmt) rejectedRef.current.add(fmt);
+            offerShownAtRef.current.delete(id);
+            void persistRiderRejectedOrderIds([id, fmt]);
+            bumpPool();
+            closeModal();
+            setActiveOrderId(null);
+            setRejectSheetOpen(false);
+            stickyOfferRef.current = null;
+          },
           onError: () => {
             Alert.alert(
               t("orders.reject.failedTitle", "Could not reject"),
@@ -623,6 +718,8 @@ export function IncomingRideOrderHost() {
     }
     acceptingRef.current = true;
     acceptingOrderIdRef.current = id;
+    // Pin immediately so poll/recovery cannot resurface this offer mid-accept.
+    locallyAcceptedRef.current.add(id);
     riderDispatchLog("ACCEPT_REQUEST_START", { orderId: id });
     markAcceptLatency("T1_HANDLER");
     setAcceptLatencyOrderId(id);
@@ -644,9 +741,12 @@ export function IncomingRideOrderHost() {
       clearWatchdog();
       acceptingRef.current = false;
       acceptingOrderIdRef.current = null;
+      // Allow the offer back into the pool only if accept truly failed / released.
+      locallyAcceptedRef.current.delete(id);
       setAcceptingOrderId(null);
       setAcceptBusyLabel(null);
       setAcceptSwipeResetKey((k) => k + 1);
+      bumpPool();
     };
 
     const finishAccept = () => {
@@ -757,6 +857,22 @@ export function IncomingRideOrderHost() {
               /* ignore recovery probe */
             }
 
+            // One more active probe — late claim often lands after a premature 409.
+            try {
+              await new Promise((r) => setTimeout(r, 600));
+              const active2 = await riderApi.getActiveOrders();
+              const hit2 = findAcceptedOrder(
+                active2,
+                acceptOrderRefs(id, acceptRef, snap.formattedOrderId)
+              );
+              if (hit2) {
+                finishAccept();
+                return;
+              }
+            } catch {
+              /* ignore */
+            }
+
             Alert.alert(
               t("orders.incoming.acceptFailedTitle", "Could not accept"),
               isOrderNoLongerAvailableError(err)
@@ -770,6 +886,7 @@ export function IncomingRideOrderHost() {
                       "Could not accept this order. Please try another offer."
                     )
             );
+            locallyAcceptedRef.current.delete(id);
             expiredRef.current.add(id);
             offerShownAtRef.current.delete(id);
             bumpPool();
@@ -778,6 +895,7 @@ export function IncomingRideOrderHost() {
             return;
           }
 
+          locallyAcceptedRef.current.delete(id);
           Alert.alert(
             t("orders.incoming.acceptFailedTitle", "Could not accept"),
             apiMessage ??
@@ -787,6 +905,7 @@ export function IncomingRideOrderHost() {
               )
           );
           setAcceptSwipeResetKey((k) => k + 1);
+          bumpPool();
         },
       });
     })();
@@ -841,6 +960,15 @@ export function IncomingRideOrderHost() {
   const handleExpired = useCallback(() => {
     const id = activeOrderIdRef.current;
     const order = activeOrderRef.current;
+    // Never miss/expire while accept is in flight — that caused "no longer available"
+    // while the claim was still succeeding on the server.
+    if (
+      id &&
+      (acceptingOrderIdRef.current === id || locallyAcceptedRef.current.has(id))
+    ) {
+      riderDispatchLog("OFFER_EXPIRY_SUPPRESSED_WHILE_ACCEPTING", { orderId: id });
+      return;
+    }
     if (id && order) {
       const orderRef = order.formattedOrderId?.trim() || id;
       missOrderOffer.mutate({ orderId: orderRef, reason: "timer_expired" });
@@ -866,7 +994,7 @@ export function IncomingRideOrderHost() {
       <IncomingOrderModal
         visible={modalVisible && activeOrder != null}
         order={activeOrder}
-        loading={accepting || !!acceptPending}
+        loading={accepting || !!acceptPending || rejectOrder.isPending}
         loadingLabel={acceptBusyLabel}
         acceptSwipeResetKey={acceptSwipeResetKey}
         isAdditional={isAdditionalOffer}
@@ -877,7 +1005,10 @@ export function IncomingRideOrderHost() {
       <RiderRejectReasonSheet
         visible={rejectSheetOpen}
         loading={rejectOrder.isPending}
-        onClose={() => setRejectSheetOpen(false)}
+        onClose={() => {
+          if (rejectOrder.isPending) return;
+          setRejectSheetOpen(false);
+        }}
         onSelect={handleRejectReason}
       />
     </>

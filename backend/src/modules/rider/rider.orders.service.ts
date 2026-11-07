@@ -12,6 +12,7 @@ import {
   merchantStoreRatings,
   ordersCore,
   ordersCoreItems,
+  ordersCorePayments,
   ordersFood,
   ordersParcel,
   ordersRide,
@@ -68,7 +69,14 @@ import {
 } from "../../lib/rider-order-earning-resolve.js";
 import type { DispatchServiceType } from "../../lib/order-assignment-engine.js";
 import { computePrePickupAllowanceForPickup } from "../../lib/pre-pickup-pay.js";
-import { rideAddressLabelsFromCheckoutMetadata, rideGeoFromCheckoutMetadata, resolveRideAddressDisplayLabel, rideTripDistanceFromCheckoutMetadata, roundRideTripDistanceKm } from "../../lib/ride-address-display.js";
+import {
+  isGenericRideLocationLabel,
+  rideAddressLabelsFromCheckoutMetadata,
+  rideGeoFromCheckoutMetadata,
+  resolveRideAddressDisplayLabel,
+  rideTripDistanceFromCheckoutMetadata,
+  roundRideTripDistanceKm,
+} from "../../lib/ride-address-display.js";
 import {
   persistRideRiderAcceptPayoutSnapshot,
   persistFoodRiderAcceptPayoutSnapshot,
@@ -81,6 +89,12 @@ import {
   isRideFarePaymentPending,
   maskRideEarningsIfWalletCreditPending,
 } from "../../lib/ride-rider-payout-snapshot.js";
+import {
+  buildAndDtoFromSnapshots,
+  readRiderSettlementBreakdown,
+  toRiderSettlementBreakdownDto,
+  type RiderSettlementBreakdownDto,
+} from "../../lib/rider-settlement-breakdown.js";
 import {
   attachRidePickupWaitFields,
   computeRidePickupWaitSeconds,
@@ -189,6 +203,11 @@ export type RiderOrderSummary = {
   appliedSurges?: { name: string; amount: number }[];
   /** Slab + surge + waiting before tip. */
   totalEarning?: number;
+  /**
+   * Backend settlement transparency: dispatch/accept quote vs final wallet credit.
+   * Never invent differences in the app — only render this payload.
+   */
+  settlementBreakdown?: RiderSettlementBreakdownDto | null;
   higherDispatchPriority?: boolean;
   merchantName?: string | null;
   itemCount?: number;
@@ -257,6 +276,15 @@ export type RiderOrderSummary = {
   paymentMethod?: string | null;
   /** orders_core.payment_status — paid, pending, etc. */
   paymentStatus?: string | null;
+  /**
+   * Parcel cash/COD collection point: `pickup` | `drop`.
+   * Null when prepaid/online (nothing to collect).
+   */
+  payAt?: "pickup" | "drop" | null;
+  /** True once rider recorded cash collection for this parcel/ride. */
+  cashCollected?: boolean;
+  /** Parcel receiver name (drop contact). */
+  receiverName?: string | null;
   /** Customer amount due after discounts (₹). Not rider earning. */
   customerPayable?: number;
   /** True only when customer still owes a collectible fare. */
@@ -291,6 +319,12 @@ export type RiderGpsPayload = { lat?: number; lng?: number };
 export type RiderDeliveryVerifyPayload = RiderGpsPayload & {
   deliveryImageUrl?: string;
   deliveryImageR2Key?: string;
+};
+
+export type RiderPickupVerifyPayload = RiderGpsPayload & {
+  deviceTimestamp?: string;
+  pickupImageUrl?: string;
+  pickupImageR2Key?: string;
 };
 
 async function riderDistanceAtMilestone(
@@ -380,6 +414,9 @@ type RideRow = {
   passengerPhone?: string | null;
   customerFullName?: string | null;
   customerPrimaryMobile?: string | null;
+  /** orders_core contact fields — last-resort name when passenger/profile are empty */
+  deliveryPrimaryContactName?: string | null;
+  alternateContactName?: string | null;
   pickupOtpVerifiedAt?: Date | null;
   /** orders_ride.pickup_address / drop_address — preferred over core raw lat/lng text */
   ridePickupAddress?: string | null;
@@ -425,7 +462,12 @@ function rideStopsFromRow(row: RideRow): { address: string; lat: number; lng: nu
 }
 
 function resolveRideCustomer(row: RideRow): { name: string | null; phone: string | null } {
-  const name = row.passengerName?.trim() || row.customerFullName?.trim() || null;
+  const name =
+    row.passengerName?.trim() ||
+    row.customerFullName?.trim() ||
+    row.deliveryPrimaryContactName?.trim() ||
+    row.alternateContactName?.trim() ||
+    null;
   const phone = row.passengerPhone?.trim() || row.customerPrimaryMobile?.trim() || null;
   return { name, phone };
 }
@@ -465,23 +507,37 @@ function enrichOrderDistances(
   const dropLat = parseCoord(order.delivery.lat);
   const dropLng = parseCoord(order.delivery.lng);
 
+  // Live rider→pickup is only meaningful before the drop leg. After pickup /
+  // at customer / delivered, GPS is near drop so that leg ≈ trip and would
+  // inflate totalDistanceKm to ~2× trip.
+  const pastPickup =
+    order.status === "picked_up" ||
+    order.status === "in_transit" ||
+    order.status === "delivered" ||
+    order.atCustomer === true ||
+    order.rideStarted === true;
+
   const pickupDistanceKm =
-    riderLat != null && riderLng != null && pickupLat && pickupLng
+    !pastPickup && riderLat != null && riderLng != null && pickupLat && pickupLng
       ? haversineDistanceMeters(riderLat, riderLng, pickupLat, pickupLng) / 1000
       : undefined;
 
+  // Prefer booking-time trip km already on the summary (checkout metadata /
+  // orders_core.distanceKm). Haversine pickup→drop is last resort only —
+  // it understates road distance vs what the customer was quoted.
   const tripDistanceKm =
     order.category === "ride"
       ? roundRideTripDistanceKm(order.tripDistanceKm ?? order.distanceKm)
-      : order.distanceKm != null && Number.isFinite(order.distanceKm) && order.distanceKm > 0
-        ? Math.round(order.distanceKm * 10) / 10
-        : pickupLat && pickupLng && dropLat && dropLng
-          ? Math.round((haversineDistanceMeters(pickupLat, pickupLng, dropLat, dropLng) / 1000) * 10) / 10
-          : undefined;
+      : roundRideTripDistanceKm(order.tripDistanceKm ?? order.distanceKm) ??
+        (pickupLat && pickupLng && dropLat && dropLng
+          ? Math.round(
+              (haversineDistanceMeters(pickupLat, pickupLng, dropLat, dropLng) / 1000) * 10
+            ) / 10
+          : undefined);
 
   const totalDistanceKm =
     pickupDistanceKm != null && tripDistanceKm != null
-      ? pickupDistanceKm + tripDistanceKm
+      ? Math.round((pickupDistanceKm + tripDistanceKm) * 10) / 10
       : tripDistanceKm ?? pickupDistanceKm;
 
   return {
@@ -493,36 +549,68 @@ function enrichOrderDistances(
   };
 }
 
+function attachSettlementBreakdown(
+  summary: RiderOrderSummary,
+  billingSnapshot?: unknown,
+  acceptPayoutSnapshot?: unknown,
+  ledgerTotal?: number | null
+): RiderOrderSummary {
+  const existing = readRiderSettlementBreakdown(billingSnapshot);
+  if (existing) {
+    return {
+      ...summary,
+      settlementBreakdown: toRiderSettlementBreakdownDto(existing),
+    };
+  }
+  const dto = buildAndDtoFromSnapshots({
+    billingSnapshot,
+    acceptPayoutSnapshot,
+    walletCreditedAmount: ledgerTotal ?? summary.totalEarning ?? 0,
+    tipAmount: summary.customerTipAmount,
+  });
+  if (!dto) return summary;
+  return { ...summary, settlementBreakdown: dto };
+}
+
 function applyRidePayoutSnapshot(
   summary: RiderOrderSummary,
   billingSnapshot?: unknown,
-  acceptPayoutSnapshot?: unknown
+  acceptPayoutSnapshot?: unknown,
+  ledgerTotal?: number | null
 ): RiderOrderSummary {
   const snap = resolveRideRiderPayoutForDisplay({
     billingSnapshot,
     acceptPayoutSnapshot,
   });
-  if (!snap) return summary;
-  const tip = summary.customerTipAmount ?? 0;
-  const distancePatch =
-    snap.tripDistanceKm != null
-      ? {
-          pickupDistanceKm: snap.pickupDistanceKm,
-          tripDistanceKm: snap.tripDistanceKm,
-          totalDistanceKm: snap.totalDistanceKm,
-          distanceKm: snap.tripDistanceKm,
-        }
-      : {};
-  return {
-    ...summary,
-    ...distancePatch,
-    baseEarning: snap.baseEarning,
-    waitingEarning: snap.waitingEarning > 0 ? snap.waitingEarning : undefined,
-    surgeEarning: snap.surgeEarning > 0 ? snap.surgeEarning : undefined,
-    appliedSurges: snap.appliedSurges.length > 0 ? snap.appliedSurges : undefined,
-    estimatedEarning: snap.totalEarning,
-    totalEarning: snap.totalEarning,
-  };
+  const withSnap = !snap
+    ? summary
+    : (() => {
+        const distancePatch =
+          snap.tripDistanceKm != null
+            ? {
+                pickupDistanceKm: snap.pickupDistanceKm,
+                tripDistanceKm: snap.tripDistanceKm,
+                totalDistanceKm: snap.totalDistanceKm,
+                distanceKm: snap.tripDistanceKm,
+              }
+            : {};
+        return {
+          ...summary,
+          ...distancePatch,
+          baseEarning: snap.baseEarning,
+          waitingEarning: snap.waitingEarning > 0 ? snap.waitingEarning : undefined,
+          surgeEarning: snap.surgeEarning > 0 ? snap.surgeEarning : undefined,
+          appliedSurges: snap.appliedSurges.length > 0 ? snap.appliedSurges : undefined,
+          estimatedEarning: snap.totalEarning,
+          totalEarning: snap.totalEarning,
+        };
+      })();
+  return attachSettlementBreakdown(
+    withSnap,
+    billingSnapshot,
+    acceptPayoutSnapshot,
+    ledgerTotal
+  );
 }
 
 function mapRideRow(row: RideRow, ledgerTotal?: number | null): RiderOrderSummary {
@@ -626,7 +714,12 @@ function mapRideRow(row: RideRow, ledgerTotal?: number | null): RiderOrderSummar
       : undefined,
   };
   return withMaskedCustomerPhones(
-    applyRidePayoutSnapshot(mapped, row.billingSnapshot, row.acceptPayoutSnapshot)
+    applyRidePayoutSnapshot(
+      mapped,
+      row.billingSnapshot,
+      row.acceptPayoutSnapshot,
+      ledgerTotal
+    )
   );
 }
 
@@ -756,7 +849,12 @@ function mapFoodRow(row: FoodRow, ledgerTotal?: number | null): RiderOrderSummar
     paymentMethod: payment.paymentMethod,
     paymentStatus: payment.paymentStatus,
   };
-  const withSnapshot = applyRidePayoutSnapshot(mapped, row.billingSnapshot);
+  const withSnapshot = applyRidePayoutSnapshot(
+    mapped,
+    row.billingSnapshot,
+    undefined,
+    ledgerTotal
+  );
   if (ledgerTotal != null && ledgerTotal > 0) {
     return withMaskedCustomerPhones({
       ...withSnapshot,
@@ -1177,6 +1275,7 @@ async function mapFoodRowForActiveRider(
 type ParcelRowWithStatus = ParcelRow & {
   status?: string | null;
   currentStatus?: string | null;
+  pickupOtpVerifiedAt?: Date | string | null;
 };
 
 function mapParcelRowWithStatus(
@@ -1188,14 +1287,22 @@ function mapParcelRowWithStatus(
   const coreSt = String(row.status ?? "accepted");
   const currentSt = String(row.currentStatus ?? "").trim().toUpperCase();
   const atPickup = coreSt === "reached_store" || currentSt === "RIDER_AT_PICKUP";
-  const rideStarted =
-    coreSt === "picked_up" || coreSt === "in_transit" || currentSt === "OUT_FOR_DELIVERY";
+  // Only core pickup/in-transit means the parcel left pickup.
+  // Accept used to set currentStatus=OUT_FOR_DELIVERY while status stayed "accepted",
+  // which incorrectly flipped the rider UI to the drop leg.
+  const rideStarted = coreSt === "picked_up" || coreSt === "in_transit";
+  // Required so Reach-drop slide advances to delivery OTP (same as food/ride mappers).
+  const atCustomer =
+    currentSt === "REACHED_CUSTOMER" &&
+    coreSt !== "delivered" &&
+    coreSt !== "cancelled";
+  const pickupOtpVerified = row.pickupOtpVerifiedAt != null || rideStarted;
   let status: RiderOrderSummary["status"] = "assigned";
   if (coreSt === "delivered") status = "delivered";
   else if (coreSt === "cancelled") status = "cancelled";
   else if (rideStarted) status = "in_transit";
   status = applyRiderAssignmentHistoryStatus(status, riderAssignmentStatus);
-  return { ...base, atPickup, rideStarted, status };
+  return { ...base, atPickup, rideStarted, atCustomer, pickupOtpVerified, status };
 }
 
 type ParcelRow = {
@@ -1203,12 +1310,16 @@ type ParcelRow = {
   formattedOrderId: string | null;
   pickupAddressRaw: string;
   pickupAddressNormalized?: string | null;
+  pickupAddressGeocoded?: string | null;
   pickupLat: string;
   pickupLon: string;
   dropAddressRaw: string;
+  dropAddressNormalized?: string | null;
+  dropAddressGeocoded?: string | null;
   dropLat: string;
   dropLon: string;
   distanceKm: string | null;
+  checkoutMetadata?: unknown;
   riderEarning: string | null;
   fareAmount: string | null;
   grandTotal: string | null;
@@ -1217,10 +1328,89 @@ type ParcelRow = {
   paymentMethod?: string | null;
   paymentStatus?: string | null;
   createdAt: Date;
+  senderName?: string | null;
+  senderMobile?: string | null;
+  receiverName?: string | null;
+  receiverMobile?: string | null;
+  /** orders_parcel.pickup_label / pickup_address — booking-time street text. */
+  parcelPickupLabel?: string | null;
+  parcelPickupAddress?: string | null;
+  parcelDropLabel?: string | null;
+  parcelDropAddress?: string | null;
+  parcelPayAt?: string | null;
+  parcelPaymentMethod?: string | null;
+  cashCollectedAt?: Date | null;
+  deliveryPrimaryContactName?: string | null;
+  deliveryPrimaryContactPhone?: string | null;
+  alternateContactName?: string | null;
+  customerFullName?: string | null;
+  customerPrimaryMobile?: string | null;
 };
 
+/** Shared address/payment columns for every parcel order select → mapParcelRow. */
+const PARCEL_ADDRESS_SELECT = {
+  pickupAddressGeocoded: ordersCore.pickupAddressGeocoded,
+  dropAddressNormalized: ordersCore.dropAddressNormalized,
+  dropAddressGeocoded: ordersCore.dropAddressGeocoded,
+  checkoutMetadata: ordersCore.checkoutMetadata,
+  parcelPickupLabel: ordersParcel.pickupLabel,
+  parcelPickupAddress: ordersParcel.pickupAddress,
+  parcelDropLabel: ordersParcel.dropLabel,
+  parcelDropAddress: ordersParcel.dropAddress,
+} as const;
+
+function resolveParcelStopAddress(args: {
+  label?: string | null;
+  parcelAddress?: string | null;
+  coreRaw?: string | null;
+  coreNormalized?: string | null;
+  geocoded?: string | null;
+  metaLabel?: string | null;
+  metaFull?: string | null;
+  lat?: unknown;
+  lon?: unknown;
+  defaultLabel: string;
+}): string {
+  const resolved = resolveRideAddressDisplayLabel({
+    label: args.metaLabel ?? args.label ?? args.coreNormalized,
+    fullAddress: args.metaFull ?? args.parcelAddress ?? args.coreRaw,
+    fallbacks: [
+      args.parcelAddress,
+      args.metaFull,
+      args.geocoded,
+      args.coreRaw,
+      args.coreNormalized,
+      args.label,
+      args.metaLabel,
+    ],
+    defaultLabel: args.defaultLabel,
+  });
+  // Never leave the rider with a useless "Pickup"/"Delivery location" when we
+  // at least have coordinates (common when customer used "Current location").
+  if (
+    resolved === args.defaultLabel ||
+    isGenericRideLocationLabel(resolved)
+  ) {
+    const lat = parseCoord(args.lat);
+    const lon = parseCoord(args.lon);
+    if (lat !== 0 || lon !== 0) {
+      return `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    }
+  }
+  return resolved;
+}
+
+function normalizeParcelPayAt(raw: string | null | undefined): "pickup" | "drop" | null {
+  const v = String(raw ?? "").trim().toLowerCase();
+  if (v === "pickup" || v === "drop") return v;
+  return null;
+}
+
 function mapParcelRow(row: ParcelRow, ledgerTotal?: number | null): RiderOrderSummary {
-  const payment = resolveOrderPaymentFields(row);
+  const payment = resolveOrderPaymentFields({
+    ...row,
+    paymentMethod: row.parcelPaymentMethod?.trim() || row.paymentMethod,
+  });
   let earnings = resolveRiderOrderEarnings(row, ledgerTotal);
   const hasFrozenPayout =
     (ledgerTotal != null && ledgerTotal > 0) ||
@@ -1235,37 +1425,140 @@ function mapParcelRow(row: ParcelRow, ledgerTotal?: number | null): RiderOrderSu
     };
   }
   const canonicalId = row.orderId?.trim() || row.formattedOrderId?.trim() || "";
-  return {
+  const customerName =
+    row.senderName?.trim() ||
+    row.deliveryPrimaryContactName?.trim() ||
+    row.customerFullName?.trim() ||
+    row.alternateContactName?.trim() ||
+    null;
+  const receiverName = row.receiverName?.trim() || null;
+  const senderPhone =
+    row.senderMobile?.trim() ||
+    row.customerPrimaryMobile?.trim() ||
+    null;
+  const receiverPhone =
+    row.receiverMobile?.trim() ||
+    row.deliveryPrimaryContactPhone?.trim() ||
+    null;
+  const method = (payment.paymentMethod || "").toLowerCase();
+  const isCash =
+    method === "cash" || method === "cod" || method.includes("cod") || method.includes("cash");
+  const payAtConfigured = normalizeParcelPayAt(row.parcelPayAt);
+  // Prefer explicit pay_at; for cash/COD default to pickup when unset.
+  const payAt = payAtConfigured ?? (isCash ? "pickup" : null);
+  // SSOT = placement billing final_amount → grandTotal; never slab-only fareAmount first.
+  const snap =
+    row.billingSnapshot != null && typeof row.billingSnapshot === "object"
+      ? (row.billingSnapshot as Record<string, unknown>)
+      : null;
+  const snapFinal = snap != null ? Number(snap.final_amount) : NaN;
+  const grand = Number(row.grandTotal);
+  const fare = Number(row.fareAmount);
+  const payableRaw =
+    Number.isFinite(grand) && grand > 0
+      ? grand
+      : Number.isFinite(snapFinal) && snapFinal > 0
+        ? snapFinal
+        : Number.isFinite(fare) && fare > 0
+          ? fare
+          : NaN;
+  // Keep paise (e.g. 48.38) so rider drop/collect UI matches what customer paid.
+  const customerPayable =
+    Number.isFinite(payableRaw) && payableRaw > 0
+      ? Math.round(payableRaw * 100) / 100
+      : undefined;
+  const paymentCompleted = ["paid", "completed", "captured"].includes(
+    String(payment.paymentStatus ?? "")
+      .trim()
+      .toLowerCase()
+  );
+  const fareCollected = row.cashCollectedAt != null || paymentCompleted;
+  // Prefer booking-time road km from checkout metadata (same as customer fare),
+  // not a later haversine fallback that understates trip vs customer UI.
+  const bookingTripKm =
+    rideTripDistanceFromCheckoutMetadata(row.checkoutMetadata) ??
+    roundRideTripDistanceKm(
+      row.distanceKm != null && Number.isFinite(Number(row.distanceKm))
+        ? Number(row.distanceKm)
+        : null
+    );
+  const addressLabels = rideAddressLabelsFromCheckoutMetadata(row.checkoutMetadata);
+  const pickupAddress = resolveParcelStopAddress({
+    label: row.parcelPickupLabel ?? row.pickupAddressNormalized,
+    parcelAddress: row.parcelPickupAddress,
+    coreRaw: row.pickupAddressRaw,
+    coreNormalized: row.pickupAddressNormalized,
+    geocoded: row.pickupAddressGeocoded,
+    metaLabel: addressLabels.pickupLabel,
+    metaFull: addressLabels.pickupFullAddress,
+    lat: row.pickupLat,
+    lon: row.pickupLon,
+    defaultLabel: "Pickup",
+  });
+  const dropAddress = resolveParcelStopAddress({
+    label: row.parcelDropLabel ?? row.dropAddressNormalized,
+    parcelAddress: row.parcelDropAddress,
+    coreRaw: row.dropAddressRaw,
+    coreNormalized: row.dropAddressNormalized,
+    geocoded: row.dropAddressGeocoded,
+    metaLabel: addressLabels.dropLabel,
+    metaFull: addressLabels.dropFullAddress,
+    lat: row.dropLat,
+    lon: row.dropLon,
+    defaultLabel: "Delivery location",
+  });
+  const mapped: RiderOrderSummary = {
     id: canonicalId,
     status: "pending",
     category: "parcel",
     pickup: {
-      address: row.pickupAddressRaw?.trim() || "Pickup",
+      address: pickupAddress,
       lat: parseCoord(row.pickupLat),
       lng: parseCoord(row.pickupLon),
     },
     delivery: {
-      address: row.dropAddressRaw?.trim() || "Delivery location",
+      address: dropAddress,
       lat: parseCoord(row.dropLat),
       lng: parseCoord(row.dropLon),
     },
-    distanceKm: row.distanceKm != null ? Number(row.distanceKm) : undefined,
+    distanceKm: bookingTripKm,
+    tripDistanceKm: bookingTripKm,
     estimatedEarning: earnings.estimatedEarning,
     baseEarning: earnings.baseEarning,
     customerTipAmount: earnings.customerTipAmount,
     totalEarning: earnings.totalEarning,
     createdAt: row.createdAt.toISOString(),
     formattedOrderId: row.formattedOrderId,
+    customerName,
+    receiverName,
+    /** Pickup dial — sender. */
+    restaurantPhone: senderPhone,
+    /** Drop dial — receiver. */
+    customerPhone: receiverPhone,
+    customerPrimaryPhone: receiverPhone,
+    pickupAddressGeocoded: row.pickupAddressGeocoded?.trim() || undefined,
+    dropAddressGeocoded: row.dropAddressGeocoded?.trim() || undefined,
     paymentMethod: payment.paymentMethod,
     paymentStatus: payment.paymentStatus,
+    payAt,
+    cashCollected: fareCollected,
+    paymentRequired: Boolean(payAt) && !fareCollected,
+    customerPayable,
   };
+  return attachSettlementBreakdown(
+    mapped,
+    row.billingSnapshot,
+    (row as ParcelRow & { acceptPayoutSnapshot?: unknown }).acceptPayoutSnapshot,
+    ledgerTotal
+  );
 }
 
 async function applyGeoSlabRiderEarnings(
   order: RiderOrderSummary,
-  ctx: { riderId: number; riderLat: number; riderLng: number; orderCoreId: number },
+  ctx: { riderId: number; riderLat: number | null; riderLng: number | null; orderCoreId: number },
   _rideCheckoutMetadata?: unknown
 ): Promise<RiderOrderSummary> {
+  if (ctx.riderLat == null || ctx.riderLng == null) return order;
   // Rider fare CONSISTENCY (bug fix): the pool/offer LIST used to show a bare
   // percentage-of-customer-fare number (resolveOrderRiderPayoutBreakdown only), while the
   // dispatch offer push AND the delivery-time credit both reconcile the v3.2 pre/post legs
@@ -1307,8 +1600,8 @@ async function applyGeoSlabRiderEarnings(
 
 async function hydrateDispatchPoolOrder(
   entry: DispatchPoolOrderRow,
-  riderLat: number,
-  riderLng: number,
+  riderLat: number | null,
+  riderLng: number | null,
   riderId: number
 ): Promise<RiderOrderSummary | null> {
   const db = getDb();
@@ -1340,10 +1633,17 @@ async function hydrateDispatchPoolOrder(
         higherDispatchPriority: ordersRide.higherDispatchPriority,
         ridePickupAddress: ordersRide.pickupAddress,
         rideDropAddress: ordersRide.dropAddress,
+        passengerName: ordersRide.passengerName,
+        passengerPhone: ordersRide.passengerPhone,
         ...RIDE_STOP_SELECT,
+        customerFullName: customers.fullName,
+        customerPrimaryMobile: customers.primaryMobile,
+        deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
+        alternateContactName: ordersCore.alternateContactName,
       })
       .from(ordersCore)
       .innerJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
+      .leftJoin(customers, eq(ordersCore.customerId, customers.id))
       .where(eq(ordersCore.id, entry.orderCoreId))
       .limit(1);
     if (!row?.orderId) return null;
@@ -1440,14 +1740,28 @@ async function hydrateDispatchPoolOrder(
       paymentMethod: ordersCore.paymentMethod,
       paymentStatus: ordersCore.paymentStatus,
       createdAt: ordersCore.createdAt,
+      senderName: ordersParcel.senderName,
+      senderMobile: ordersParcel.senderMobile,
+      receiverName: ordersParcel.receiverName,
+      receiverMobile: ordersParcel.receiverMobile,
+      parcelPayAt: ordersParcel.payAt,
+      parcelPaymentMethod: ordersParcel.paymentMethod,
+      cashCollectedAt: ordersParcel.cashCollectedAt,
+      deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
+      deliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+      alternateContactName: ordersCore.alternateContactName,
+      customerFullName: customers.fullName,
+      customerPrimaryMobile: customers.primaryMobile,
+      ...PARCEL_ADDRESS_SELECT,
     })
     .from(ordersCore)
     .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+    .leftJoin(customers, eq(ordersCore.customerId, customers.id))
     .where(eq(ordersCore.id, entry.orderCoreId))
     .limit(1);
   if (!row?.orderId) return null;
   return applyGeoSlabRiderEarnings(
-    enrichOrderDistances(mapParcelRow(row), riderLat, riderLng),
+    enrichOrderDistances(mapParcelRow(row as ParcelRow), riderLat, riderLng),
     { riderId, riderLat, riderLng, orderCoreId: entry.orderCoreId }
   );
 }
@@ -1484,28 +1798,41 @@ export async function getAvailableOrdersForRider(riderId: number): Promise<Rider
 
   const ctx = await resolveRiderAssignmentContext(riderId, { skipAssignmentCheck: true });
   const lastKnown = ctx ? null : await loadRiderGpsLastKnown(riderId);
+  // Never fall back to the order pickup as "rider GPS" — that forced TO PICKUP
+  // to ~0.0 km even when the captain was elsewhere / GPS was stale.
   const gps = ctx
     ? { lat: ctx.lat, lng: ctx.lng }
     : lastKnown
       ? { lat: lastKnown.lat, lng: lastKnown.lng }
-      : merged[0]
-        ? { lat: merged[0].pickupLat, lng: merged[0].pickupLng }
-        : null;
-  if (!gps) return [];
+      : null;
+  const riderLat = gps?.lat ?? null;
+  const riderLng = gps?.lng ?? null;
 
+  // Hydrate nearby offers concurrently (was sequential — stacked with the pool
+  // scan and tripped available_orders_timeout → empty [] → no rides in the app).
+  const HYDRATE_CONCURRENCY = 4;
   const summaries: RiderOrderSummary[] = [];
-  for (const entry of merged) {
-    try {
-      const summary = await hydrateDispatchPoolOrder(entry, gps.lat, gps.lng, riderId);
-      if (summary) summaries.push(summary);
-    } catch (err) {
-      console.warn(
-        "[dispatch] hydrate available order failed",
-        entry.orderId,
-        (err as Error).message
-      );
+  let hydrateIdx = 0;
+  const hydrateWorkers = Array.from(
+    { length: Math.min(HYDRATE_CONCURRENCY, Math.max(1, merged.length)) },
+    async () => {
+      while (hydrateIdx < merged.length) {
+        const entry = merged[hydrateIdx++];
+        if (!entry) continue;
+        try {
+          const summary = await hydrateDispatchPoolOrder(entry, riderLat, riderLng, riderId);
+          if (summary) summaries.push(summary);
+        } catch (err) {
+          console.warn(
+            "[dispatch] hydrate available order failed",
+            entry.orderId,
+            (err as Error).message
+          );
+        }
+      }
     }
-  }
+  );
+  await Promise.all(hydrateWorkers);
   return summaries;
 }
 
@@ -1529,17 +1856,15 @@ export async function getPendingOffersForRider(riderId: number): Promise<RiderOr
     : await listPendingDispatchPoolOrdersForRider(riderId);
   if (pending.length === 0) return [];
 
-  const gps =
-    (await loadRiderGpsLastKnown(riderId)) ??
-    (pending[0]
-      ? { lat: pending[0].pickupLat, lng: pending[0].pickupLng, updatedAt: new Date(0) }
-      : null);
-  if (!gps) return [];
+  // Do not fake rider GPS as the order pickup — that made TO PICKUP show 0.0 km.
+  const gps = await loadRiderGpsLastKnown(riderId);
+  const riderLat = gps?.lat ?? null;
+  const riderLng = gps?.lng ?? null;
 
   const summaries: RiderOrderSummary[] = [];
   for (const entry of pending) {
     try {
-      const summary = await hydrateDispatchPoolOrder(entry, gps.lat, gps.lng, riderId);
+      const summary = await hydrateDispatchPoolOrder(entry, riderLat, riderLng, riderId);
       if (summary) summaries.push(summary);
     } catch (err) {
       console.warn(
@@ -1751,12 +2076,29 @@ export async function getActiveOrdersForRider(riderId: number): Promise<RiderOrd
         grandTotal: ordersCore.grandTotal,
         tipAmount: ordersCore.tipAmount,
         billingSnapshot: ordersCore.billingSnapshot,
+        paymentMethod: ordersCore.paymentMethod,
+        paymentStatus: ordersCore.paymentStatus,
         createdAt: ordersCore.createdAt,
         status: ordersCore.status,
         currentStatus: ordersCore.currentStatus,
+        senderName: ordersParcel.senderName,
+        senderMobile: ordersParcel.senderMobile,
+        receiverName: ordersParcel.receiverName,
+        receiverMobile: ordersParcel.receiverMobile,
+        parcelPayAt: ordersParcel.payAt,
+        parcelPaymentMethod: ordersParcel.paymentMethod,
+        cashCollectedAt: ordersParcel.cashCollectedAt,
+        pickupOtpVerifiedAt: ordersParcel.pickupOtpVerifiedAt,
+        deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
+        deliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+        alternateContactName: ordersCore.alternateContactName,
+        customerFullName: customers.fullName,
+        customerPrimaryMobile: customers.primaryMobile,
+        ...PARCEL_ADDRESS_SELECT,
       })
       .from(ordersCore)
       .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+      .leftJoin(customers, eq(ordersCore.customerId, customers.id))
       .where(
         and(
           eq(ordersCore.riderId, riderId),
@@ -2475,12 +2817,29 @@ async function loadOwnedParcelSummaryForRider(
       grandTotal: ordersCore.grandTotal,
       tipAmount: ordersCore.tipAmount,
       billingSnapshot: ordersCore.billingSnapshot,
+      paymentMethod: ordersCore.paymentMethod,
+      paymentStatus: ordersCore.paymentStatus,
       createdAt: ordersCore.createdAt,
       status: ordersCore.status,
       currentStatus: ordersCore.currentStatus,
+      senderName: ordersParcel.senderName,
+      senderMobile: ordersParcel.senderMobile,
+      receiverName: ordersParcel.receiverName,
+      receiverMobile: ordersParcel.receiverMobile,
+      parcelPayAt: ordersParcel.payAt,
+      parcelPaymentMethod: ordersParcel.paymentMethod,
+      cashCollectedAt: ordersParcel.cashCollectedAt,
+      pickupOtpVerifiedAt: ordersParcel.pickupOtpVerifiedAt,
+      deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
+      deliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+      alternateContactName: ordersCore.alternateContactName,
+      customerFullName: customers.fullName,
+      customerPrimaryMobile: customers.primaryMobile,
+      ...PARCEL_ADDRESS_SELECT,
     })
     .from(ordersCore)
     .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+    .leftJoin(customers, eq(ordersCore.customerId, customers.id))
     .where(
       and(
         orderRefWhere(orderRef),
@@ -2517,6 +2876,53 @@ function enqueueAcceptSideEffect(label: string, work: () => Promise<unknown>): v
   void work().catch((err) => {
     console.warn(`[${label}] post-accept side effect failed:`, (err as Error)?.message ?? err);
   });
+}
+
+/**
+ * Stamp first-mile pickup meters BEFORE freezing the accept payout snapshot.
+ * Previously this raced with persist*AcceptPayoutSnapshot via a separate
+ * fire-and-forget side effect, so offer/settle pickup km could diverge.
+ */
+async function stampAcceptPrePickupDistance(args: {
+  serviceType: "food" | "parcel" | "person_ride";
+  orderCoreId: number;
+  riderId: number;
+  pickupLat: unknown;
+  pickupLon: unknown;
+  checkoutMetadata?: unknown;
+}): Promise<void> {
+  const db = getDb();
+  const gps = await loadRiderGpsLastKnown(args.riderId);
+  if (!gps) return;
+  const pickupLat = parseCoord(args.pickupLat);
+  const pickupLon = parseCoord(args.pickupLon);
+  const rideGeo =
+    args.serviceType === "person_ride"
+      ? rideGeoFromCheckoutMetadata(args.checkoutMetadata)
+      : {};
+  const allowance = await computePrePickupAllowanceForPickup(
+    args.serviceType,
+    gps.lat,
+    gps.lng,
+    pickupLat,
+    pickupLon,
+    {
+      pincode: rideGeo.pickupPincode,
+      state: rideGeo.pickupState,
+      latitude: pickupLat,
+      longitude: pickupLon,
+    }
+  ).catch(() => null);
+  if (!allowance) return;
+  await db
+    .update(ordersCore)
+    .set({
+      riderPrePickupAllowance: String(allowance.amount),
+      riderPickupDistanceMeters: allowance.pickupDistanceMeters,
+      riderPrePickupFunding: allowance.funding,
+      updatedAt: new Date(),
+    })
+    .where(eq(ordersCore.id, args.orderCoreId));
 }
 
 async function assertOfferStillClaimable(riderId: number, orderCoreId: number): Promise<void> {
@@ -2901,38 +3307,27 @@ async function acceptFoodOrderForRider(
     "[dispatch] ORDER_CLAIM_SUCCESS",
     JSON.stringify({ order: orderIdText, rider: riderId })
   );
-  await finalizeWinningDispatchClaim({
-    orderCoreId: preCheck.id,
-    orderId: orderIdText,
-    winnerRiderId: riderId,
-    serviceType: "food",
-    occurredAt: now,
-  });
-  enqueueAcceptSideEffect("acceptFoodOrderForRider:prePickup", async () => {
-    const gps = await loadRiderGpsLastKnown(riderId);
-    if (!gps) return;
-    const allowance = await computePrePickupAllowanceForPickup(
-      "food",
-      gps.lat,
-      gps.lng,
-      parseCoord(preCheck.pickupLat),
-      parseCoord(preCheck.pickupLon),
-      { latitude: parseCoord(preCheck.pickupLat), longitude: parseCoord(preCheck.pickupLon) }
-    ).catch(() => null);
-    if (!allowance) return;
-    await db
-      .update(ordersCore)
-      .set({
-        riderPrePickupAllowance: String(allowance.amount),
-        riderPickupDistanceMeters: allowance.pickupDistanceMeters,
-        riderPrePickupFunding: allowance.funding,
-        updatedAt: new Date(),
-      })
-      .where(eq(ordersCore.id, preCheck.id));
-  });
+  // Return HTTP 200 immediately after DB claim — finalize (wave stop / lose-offer
+  // cancels / audits) must not hold the accept response past the rider client timeout.
+  enqueueAcceptSideEffect("acceptFoodOrderForRider:finalizeClaim", () =>
+    finalizeWinningDispatchClaim({
+      orderCoreId: preCheck.id,
+      orderId: orderIdText,
+      winnerRiderId: riderId,
+      serviceType: "food",
+      occurredAt: now,
+    })
+  );
 
   void (async () => {
     try {
+      await stampAcceptPrePickupDistance({
+        serviceType: "food",
+        orderCoreId: preCheck.id,
+        riderId,
+        pickupLat: preCheck.pickupLat,
+        pickupLon: preCheck.pickupLon,
+      });
       const ctx = await resolveRiderAssignmentContext(riderId, { skipAssignmentCheck: true });
       // Capture MX/CX at accept for Assigned timeline box (outside claim TX).
       await backfillAcceptTimelineDistances({
@@ -3123,7 +3518,7 @@ async function acceptParcelOrderForRider(
       .set({
         riderId,
         status: "accepted",
-        currentStatus: "OUT_FOR_DELIVERY",
+        currentStatus: "RIDER_ASSIGNED",
         updatedAt: now,
       })
       .where(and(eq(ordersCore.id, existing.id), isNull(ordersCore.riderId)))
@@ -3147,7 +3542,7 @@ async function acceptParcelOrderForRider(
 
     await appendOrderTimeline(tx, {
       orderCorePk: updated.id,
-      status: "OUT_FOR_DELIVERY",
+      status: "RIDER_ASSIGNED",
       previousStatus,
       actorType: "rider",
       actorId: riderId,
@@ -3180,54 +3575,60 @@ async function acceptParcelOrderForRider(
         grandTotal: ordersCore.grandTotal,
         tipAmount: ordersCore.tipAmount,
         billingSnapshot: ordersCore.billingSnapshot,
+        paymentMethod: ordersCore.paymentMethod,
+        paymentStatus: ordersCore.paymentStatus,
         createdAt: ordersCore.createdAt,
+        senderName: ordersParcel.senderName,
+        senderMobile: ordersParcel.senderMobile,
+        receiverName: ordersParcel.receiverName,
+        receiverMobile: ordersParcel.receiverMobile,
+        parcelPayAt: ordersParcel.payAt,
+        parcelPaymentMethod: ordersParcel.paymentMethod,
+        cashCollectedAt: ordersParcel.cashCollectedAt,
+        deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
+        deliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+        alternateContactName: ordersCore.alternateContactName,
+        customerFullName: customers.fullName,
+        customerPrimaryMobile: customers.primaryMobile,
+        ...PARCEL_ADDRESS_SELECT,
       })
       .from(ordersCore)
       .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+      .leftJoin(customers, eq(ordersCore.customerId, customers.id))
       .where(eq(ordersCore.id, updated.id))
       .limit(1);
 
     if (!row?.orderId) throw new Error("Accepted order missing");
-    return mapParcelRow(row);
+    return mapParcelRow(row as ParcelRow);
   });
 
   const orderIdText = preCheck.orderId.trim();
-  enqueueAcceptSideEffect("acceptParcelOrderForRider:prePickup", async () => {
-    const gps = await loadRiderGpsLastKnown(riderId);
-    if (!gps) return;
-    const allowance = await computePrePickupAllowanceForPickup(
-      "parcel",
-      gps.lat,
-      gps.lng,
-      parseCoord(preCheck.pickupLat),
-      parseCoord(preCheck.pickupLon),
-      { latitude: parseCoord(preCheck.pickupLat), longitude: parseCoord(preCheck.pickupLon) }
-    ).catch(() => null);
-    if (!allowance) return;
-    await db
-      .update(ordersCore)
-      .set({
-        riderPrePickupAllowance: String(allowance.amount),
-        riderPickupDistanceMeters: allowance.pickupDistanceMeters,
-        riderPrePickupFunding: allowance.funding,
-        updatedAt: new Date(),
-      })
-      .where(eq(ordersCore.id, preCheck.id));
-  });
   console.info(
     "[dispatch] ORDER_CLAIM_SUCCESS",
     JSON.stringify({ order: orderIdText, rider: riderId })
   );
-  await finalizeWinningDispatchClaim({
-    orderCoreId: preCheck.id,
-    orderId: orderIdText,
-    winnerRiderId: riderId,
-    serviceType: "parcel",
-    occurredAt: now,
-  });
+  // Return HTTP 200 immediately after DB claim — finalize must not block accept.
+  enqueueAcceptSideEffect("acceptParcelOrderForRider:finalizeClaim", () =>
+    finalizeWinningDispatchClaim({
+      orderCoreId: preCheck.id,
+      orderId: orderIdText,
+      winnerRiderId: riderId,
+      serviceType: "parcel",
+      occurredAt: now,
+    })
+  );
   noteRiderOrderLocationMilestone(riderId, accepted.id, "accepted");
   void (async () => {
     try {
+      // Stamp pickup meters first so accept snapshot uses the same first-mile
+      // distance as settlement (no race with a separate prePickup side effect).
+      await stampAcceptPrePickupDistance({
+        serviceType: "parcel",
+        orderCoreId: preCheck.id,
+        riderId,
+        pickupLat: preCheck.pickupLat,
+        pickupLon: preCheck.pickupLon,
+      });
       await backfillAcceptTimelineDistances({ orderCorePk: preCheck.id, riderId });
     } catch (err) {
       console.warn("[acceptParcelOrderForRider] timeline distance backfill failed:", err);
@@ -3418,45 +3819,20 @@ async function acceptRideOrderForRider(
   });
 
   const orderIdText = accepted.id?.trim() || orderRef.trim();
-  enqueueAcceptSideEffect("acceptRideOrderForRider:prePickup", async () => {
-    const gps = await loadRiderGpsLastKnown(riderId);
-    if (!gps) return;
-    const rideAcceptGeo = rideGeoFromCheckoutMetadata(preCheck.checkoutMetadata);
-    const allowance = await computePrePickupAllowanceForPickup(
-      "person_ride",
-      gps.lat,
-      gps.lng,
-      parseCoord(preCheck.pickupLat),
-      parseCoord(preCheck.pickupLon),
-      {
-        pincode: rideAcceptGeo.pickupPincode,
-        state: rideAcceptGeo.pickupState,
-        latitude: parseCoord(preCheck.pickupLat),
-        longitude: parseCoord(preCheck.pickupLon),
-      }
-    ).catch(() => null);
-    if (!allowance) return;
-    await db
-      .update(ordersCore)
-      .set({
-        riderPrePickupAllowance: String(allowance.amount),
-        riderPickupDistanceMeters: allowance.pickupDistanceMeters,
-        riderPrePickupFunding: allowance.funding,
-        updatedAt: new Date(),
-      })
-      .where(eq(ordersCore.id, preCheck.id));
-  });
   console.info(
     "[dispatch] ORDER_CLAIM_SUCCESS",
     JSON.stringify({ order: orderIdText, rider: riderId })
   );
-  await finalizeWinningDispatchClaim({
-    orderCoreId: preCheck.id,
-    orderId: orderIdText,
-    winnerRiderId: riderId,
-    serviceType: "person_ride",
-    occurredAt: now,
-  });
+  // Return HTTP 200 immediately after DB claim — finalize must not block accept.
+  enqueueAcceptSideEffect("acceptRideOrderForRider:finalizeClaim", () =>
+    finalizeWinningDispatchClaim({
+      orderCoreId: preCheck.id,
+      orderId: orderIdText,
+      winnerRiderId: riderId,
+      serviceType: "person_ride",
+      occurredAt: now,
+    })
+  );
 
   void (async () => {
     const { notifyCustomerRideCaptainOnTheWay } = await import(
@@ -3467,6 +3843,14 @@ async function acceptRideOrderForRider(
 
   void (async () => {
     try {
+      await stampAcceptPrePickupDistance({
+        serviceType: "person_ride",
+        orderCoreId: preCheck.id,
+        riderId,
+        pickupLat: preCheck.pickupLat,
+        pickupLon: preCheck.pickupLon,
+        checkoutMetadata: preCheck.checkoutMetadata,
+      });
       const ctx = await resolveRiderAssignmentContext(riderId, { skipAssignmentCheck: true });
       await backfillAcceptTimelineDistances({
         orderCorePk: preCheck.id,
@@ -3859,9 +4243,24 @@ export async function getParcelOrderForRider(
       createdAt: ordersCore.createdAt,
       status: ordersCore.status,
       currentStatus: ordersCore.currentStatus,
+      senderName: ordersParcel.senderName,
+      senderMobile: ordersParcel.senderMobile,
+      receiverName: ordersParcel.receiverName,
+      receiverMobile: ordersParcel.receiverMobile,
+      parcelPayAt: ordersParcel.payAt,
+      parcelPaymentMethod: ordersParcel.paymentMethod,
+      cashCollectedAt: ordersParcel.cashCollectedAt,
+      pickupOtpVerifiedAt: ordersParcel.pickupOtpVerifiedAt,
+      deliveryPrimaryContactName: ordersCore.deliveryPrimaryContactName,
+      deliveryPrimaryContactPhone: ordersCore.deliveryPrimaryContactPhone,
+      alternateContactName: ordersCore.alternateContactName,
+      customerFullName: customers.fullName,
+      customerPrimaryMobile: customers.primaryMobile,
+      ...PARCEL_ADDRESS_SELECT,
     })
     .from(ordersCore)
     .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+    .leftJoin(customers, eq(ordersCore.customerId, customers.id))
     .where(
       and(
         orderRefWhere(orderRef),
@@ -3879,7 +4278,7 @@ export async function getParcelOrderForRider(
   return attachRiderOrderDistanceBreakdown(
     riderId,
     row.coreId,
-    mapParcelRowWithStatus(row, ledgerTotal)
+    mapParcelRowWithStatus(row as ParcelRowWithStatus, ledgerTotal)
   );
 }
 
@@ -3991,7 +4390,7 @@ export async function verifyPickupOtpForRider(
   riderId: number,
   orderRef: string,
   otpInput: string,
-  gps?: RiderGpsPayload & { deviceTimestamp?: string }
+  gps?: RiderPickupVerifyPayload
 ): Promise<RiderOrderSummary> {
   const db = getDb();
   const [meta] = await db
@@ -4010,15 +4409,32 @@ export async function verifyPickupOtpForRider(
     );
   }
   if (meta?.orderType === "parcel") {
-    // Parcel pickup OTP: verify against core pickup_otp, stamp verified_at, then pick up.
+    // Parcel pickup: OTP + parcel item photo required, then mark picked up.
     const db = getDb();
     const now = new Date();
+    const normalizedOtp = String(otpInput ?? "").trim().replace(/\D/g, "");
+    if (normalizedOtp.length !== 4) {
+      throw Object.assign(new Error("Enter the 4-digit pickup OTP"), { statusCode: 400 });
+    }
+    const proofUrl = String(gps?.pickupImageUrl ?? "").trim();
+    const proofKey = String(gps?.pickupImageR2Key ?? "").trim();
+    if (!proofUrl || !proofKey) {
+      throw Object.assign(
+        new Error("Capture a clear photo of the parcel before verifying pickup OTP"),
+        { statusCode: 400, code: "parcel_pickup_photo_required" }
+      );
+    }
+    if (!/\/attachments\/proxy/i.test(proofUrl)) {
+      throw Object.assign(new Error("Invalid parcel pickup photo URL"), { statusCode: 400 });
+    }
     const [row] = await db
       .select({
         id: ordersCore.id,
         pickupOtp: ordersCore.pickupOtp,
+        pickupOtpVerifiedAt: ordersParcel.pickupOtpVerifiedAt,
       })
       .from(ordersCore)
+      .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
       .where(
         and(
           orderRefWhere(orderRef),
@@ -4027,19 +4443,33 @@ export async function verifyPickupOtpForRider(
         )
       )
       .limit(1);
-    const expected = String(row?.pickupOtp ?? "").trim();
-    if (expected) {
-      const got = String(otpInput ?? "").trim().replace(/\D/g, "");
-      if (expected !== got) {
-        throw Object.assign(new Error("Incorrect pickup OTP"), { statusCode: 403 });
-      }
+    if (!row?.id) {
+      throw Object.assign(new Error("Parcel order not found"), { statusCode: 404 });
     }
-    if (row?.id) {
-      await db
+    const expected = String(row.pickupOtp ?? "").trim();
+    if (!expected || expected !== normalizedOtp) {
+      throw Object.assign(new Error("Incorrect pickup OTP"), { statusCode: 403 });
+    }
+    await db.transaction(async (tx) => {
+      await tx
         .update(ordersParcel)
-        .set({ pickupOtpVerifiedAt: now, updatedAt: now })
+        .set({
+          pickupOtpVerifiedAt: row.pickupOtpVerifiedAt ?? now,
+          pickupProofImageUrl: proofUrl,
+          pickupProofR2Key: proofKey,
+          pickupProofAt: now,
+          updatedAt: now,
+        })
         .where(eq(ordersParcel.orderId, row.id));
-    }
+      await recordOrderDeliveryProofImageTx(tx, {
+        orderCorePk: row.id,
+        riderId,
+        imageUrl: proofUrl,
+        r2Key: proofKey,
+        imageType: "pickup",
+        takenAt: now,
+      });
+    });
     return markParcelPickedUpForRider(riderId, orderRef, gps);
   }
 
@@ -4673,6 +5103,16 @@ async function markReachedParcelPickupForRider(
       distance,
       statusMessage: "Reached Parcel Pickup",
     });
+    await appendOrderTimeline(tx, {
+      orderCorePk: row.id,
+      status: "RIDER_AT_PICKUP",
+      previousStatus: String(existing.currentStatus ?? existing.status ?? "RIDER_ASSIGNED"),
+      actorType: "rider",
+      actorId: riderId,
+      statusMessage: "Rider reached parcel pickup",
+      occurredAt: now,
+      metadata: { riderReachedPickupAt: now.toISOString() },
+    });
     newlyReached = true;
   });
 
@@ -4699,6 +5139,143 @@ async function markReachedParcelPickupForRider(
   return getParcelOrderForRider(riderId, orderRef);
 }
 
+export async function confirmParcelCashCollectedForRider(
+  riderId: number,
+  orderRef: string,
+  opts?: { method?: "cash" | "online" }
+): Promise<RiderOrderSummary> {
+  const db = getDb();
+  const now = new Date();
+  const collectedMethod = opts?.method === "online" ? "online" : "cash";
+
+  const [existing] = await db
+    .select({
+      id: ordersCore.id,
+      orderId: ordersCore.orderId,
+      grandTotal: ordersCore.grandTotal,
+      fareAmount: ordersCore.fareAmount,
+      paymentStatus: ordersCore.paymentStatus,
+      billingSnapshot: ordersCore.billingSnapshot,
+      payAt: ordersParcel.payAt,
+      parcelPaymentMethod: ordersParcel.paymentMethod,
+      corePaymentMethod: ordersCore.paymentMethod,
+      cashCollectedAt: ordersParcel.cashCollectedAt,
+      finalFare: ordersParcel.finalFare,
+      estimatedFare: ordersParcel.estimatedFare,
+    })
+    .from(ordersCore)
+    .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+    .where(
+      and(
+        orderRefWhere(orderRef),
+        eq(ordersCore.riderId, riderId),
+        eq(ordersCore.orderType, "parcel"),
+        notInArray(ordersCore.status, ["delivered", "cancelled", "failed"])
+      )
+    )
+    .limit(1);
+
+  if (!existing?.id || !existing.orderId) {
+    throw Object.assign(new Error("Parcel order not found"), { statusCode: 404 });
+  }
+
+  const paymentDone =
+    existing.cashCollectedAt != null ||
+    ["paid", "completed", "captured"].includes(
+      String(existing.paymentStatus ?? "")
+        .trim()
+        .toLowerCase()
+    );
+  if (paymentDone) {
+    return getParcelOrderForRider(riderId, orderRef);
+  }
+
+  const method = String(
+    existing.parcelPaymentMethod?.trim() || existing.corePaymentMethod?.trim() || ""
+  ).toLowerCase();
+  const isCash =
+    method === "cash" || method === "cod" || method.includes("cod") || method.includes("cash");
+  const payAt = normalizeParcelPayAt(existing.payAt) ?? (isCash ? "pickup" : null);
+  if (!payAt) {
+    throw Object.assign(new Error("This parcel has no cash collection step"), {
+      statusCode: 409,
+      code: "parcel_no_cash_collect",
+    });
+  }
+
+  const amountRaw = Number(
+    existing.grandTotal ?? existing.finalFare ?? existing.estimatedFare ?? existing.fareAmount ?? 0
+  );
+  const customerBill =
+    Number.isFinite(amountRaw) && amountRaw > 0 ? Math.round(amountRaw * 100) / 100 : 0;
+  if (!(customerBill > 0)) {
+    throw Object.assign(new Error("Parcel fare amount is unavailable"), { statusCode: 409 });
+  }
+
+  const orderIdText = existing.orderId.trim();
+  const prevSnap =
+    existing.billingSnapshot != null && typeof existing.billingSnapshot === "object"
+      ? (existing.billingSnapshot as Record<string, unknown>)
+      : {};
+
+  const gateway = collectedMethod === "online" ? "upi" : "cash";
+  const paymentMethodLabel = collectedMethod === "online" ? "ONLINE" : "CASH";
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(ordersParcel)
+      .set({
+        cashCollectedAt: now,
+        cashCollectedByRiderId: riderId,
+        amountCollected: String(customerBill),
+        finalFare: String(customerBill),
+        paymentMethod: collectedMethod,
+        updatedAt: now,
+      })
+      .where(eq(ordersParcel.orderId, existing.id));
+
+    await tx
+      .update(ordersCore)
+      .set({
+        paymentStatus: "completed",
+        paymentMethod: collectedMethod,
+        grandTotal: String(customerBill),
+        billingSnapshot: {
+          ...prevSnap,
+          final_amount: customerBill,
+          parcel_fare_paid_at: now.toISOString(),
+          parcel_fare_paid_method: collectedMethod,
+          parcel_fare_collected_by_rider_id: riderId,
+        },
+        updatedAt: now,
+      })
+      .where(eq(ordersCore.id, existing.id));
+
+    await tx.insert(ordersCorePayments).values({
+      orderId: orderIdText,
+      paymentGateway: gateway,
+      paymentMethod: paymentMethodLabel,
+      transactionId: `parcel_${collectedMethod}:${existing.id}:${now.getTime()}`,
+      amount: String(customerBill),
+      currency: "INR",
+      paymentStatus: "PAID",
+      gatewayResponse: {
+        source:
+          collectedMethod === "online"
+            ? "parcel_rider_online_collect"
+            : "parcel_rider_cash_collect",
+        payAt,
+        amountPaid: customerBill,
+        collectedByRiderId: riderId,
+        method: collectedMethod,
+      },
+      paidAt: now,
+    });
+  });
+
+  return getParcelOrderForRider(riderId, orderRef);
+}
+
 async function markParcelPickedUpForRider(
   riderId: number,
   orderRef: string,
@@ -4717,7 +5294,14 @@ async function markParcelPickedUpForRider(
         orderId: ordersCore.orderId,
         status: ordersCore.status,
         currentStatus: ordersCore.currentStatus,
+        paymentStatus: ordersCore.paymentStatus,
         riderReachedPickupAt: ordersParcel.riderReachedPickupAt,
+        pickupOtpVerifiedAt: ordersParcel.pickupOtpVerifiedAt,
+        pickupProofAt: ordersParcel.pickupProofAt,
+        payAt: ordersParcel.payAt,
+        parcelPaymentMethod: ordersParcel.paymentMethod,
+        corePaymentMethod: ordersCore.paymentMethod,
+        cashCollectedAt: ordersParcel.cashCollectedAt,
       })
       .from(ordersCore)
       .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
@@ -4736,6 +5320,37 @@ async function markParcelPickedUpForRider(
     }
     orderIdText = existing.orderId.trim();
     orderCorePk = existing.id;
+
+    if (existing.pickupOtpVerifiedAt == null) {
+      throw Object.assign(
+        new Error("Verify pickup OTP with the sender before marking the parcel picked up"),
+        { statusCode: 409, code: "parcel_pickup_otp_required" }
+      );
+    }
+    if (existing.pickupProofAt == null) {
+      throw Object.assign(
+        new Error("Upload a parcel photo at pickup before continuing"),
+        { statusCode: 409, code: "parcel_pickup_photo_required" }
+      );
+    }
+
+    const method = String(
+      existing.parcelPaymentMethod?.trim() || existing.corePaymentMethod?.trim() || ""
+    ).toLowerCase();
+    const isCash =
+      method === "cash" || method === "cod" || method.includes("cod") || method.includes("cash");
+    const payAt = normalizeParcelPayAt(existing.payAt) ?? (isCash ? "pickup" : null);
+    const paymentCompleted = ["paid", "completed", "captured"].includes(
+      String(existing.paymentStatus ?? "")
+        .trim()
+        .toLowerCase()
+    );
+    if (payAt === "pickup" && existing.cashCollectedAt == null && !paymentCompleted) {
+      throw Object.assign(
+        new Error("Collect payment at pickup before marking the parcel picked up"),
+        { statusCode: 409, code: "parcel_cash_required_at_pickup" }
+      );
+    }
 
     const activeAssignment = await loadActiveRiderAssignmentMilestones(tx, existing.id, riderId);
     if (activeAssignment?.pickedUpAt) {
@@ -4770,14 +5385,15 @@ async function markParcelPickedUpForRider(
       ? computeRidePickupWaitSeconds(existing.riderReachedPickupAt, now)
       : null;
 
-    await tx
-      .update(ordersParcel)
-      .set({
-        pickupOtpVerifiedAt: now,
-        updatedAt: now,
-        ...(pickupWaitSeconds != null ? { pickupWaitSeconds } : {}),
-      })
-      .where(eq(ordersParcel.orderId, row.id));
+    if (pickupWaitSeconds != null) {
+      await tx
+        .update(ordersParcel)
+        .set({
+          pickupWaitSeconds,
+          updatedAt: now,
+        })
+        .where(eq(ordersParcel.orderId, row.id));
+    }
 
     const distance = await riderDistanceAtMilestone(riderId, row.id, gps);
     await recordRiderAssignmentMilestone(tx, {
@@ -4788,6 +5404,16 @@ async function markParcelPickedUpForRider(
       occurredAt: now,
       distance,
       statusMessage: "Parcel Picked Up",
+    });
+    await appendOrderTimeline(tx, {
+      orderCorePk: row.id,
+      status: "OUT_FOR_DELIVERY",
+      previousStatus: String(existing.currentStatus ?? existing.status ?? "RIDER_AT_PICKUP"),
+      actorType: "rider",
+      actorId: riderId,
+      statusMessage: "Parcel picked up — out for delivery",
+      occurredAt: now,
+      metadata: { actualPickupTime: now.toISOString() },
     });
     newlyPicked = true;
   });
@@ -4898,6 +5524,15 @@ async function markReachedParcelCustomerForRider(
       distance,
       statusMessage: "Reached Parcel Drop",
     });
+    await appendOrderTimeline(tx, {
+      orderCorePk: row.id,
+      status: "REACHED_CUSTOMER",
+      previousStatus: String(existing.currentStatus ?? existing.status ?? "OUT_FOR_DELIVERY"),
+      actorType: "rider",
+      actorId: riderId,
+      statusMessage: "Rider reached parcel drop",
+      occurredAt: now,
+    });
     newlyReached = true;
   });
 
@@ -4942,8 +5577,13 @@ async function verifyParcelDeliveryOtpForRider(
         orderId: ordersCore.orderId,
         status: ordersCore.status,
         currentStatus: ordersCore.currentStatus,
+        paymentStatus: ordersCore.paymentStatus,
         deliveryOtp: ordersCore.deliveryOtp,
         requiresOtp: ordersParcel.requiresOtpVerification,
+        payAt: ordersParcel.payAt,
+        parcelPaymentMethod: ordersParcel.paymentMethod,
+        corePaymentMethod: ordersCore.paymentMethod,
+        cashCollectedAt: ordersParcel.cashCollectedAt,
       })
       .from(ordersCore)
       .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
@@ -4963,12 +5603,47 @@ async function verifyParcelDeliveryOtpForRider(
     orderIdText = existing.orderId.trim();
     orderCorePk = existing.id;
 
-    if (existing.requiresOtp) {
+    const dropMethod = String(
+      existing.parcelPaymentMethod?.trim() || existing.corePaymentMethod?.trim() || ""
+    ).toLowerCase();
+    const dropIsCash =
+      dropMethod === "cash" ||
+      dropMethod === "cod" ||
+      dropMethod.includes("cod") ||
+      dropMethod.includes("cash");
+    const dropPayAt = normalizeParcelPayAt(existing.payAt) ?? (dropIsCash ? "pickup" : null);
+    const dropPaymentDone =
+      existing.cashCollectedAt != null ||
+      ["paid", "completed", "captured"].includes(
+        String(existing.paymentStatus ?? "")
+          .trim()
+          .toLowerCase()
+      );
+    if (dropPayAt === "drop" && !dropPaymentDone) {
+      throw Object.assign(
+        new Error("Collect payment at drop before completing delivery"),
+        { statusCode: 409, code: "parcel_cash_required_at_drop" }
+      );
+    }
+
+    {
       const expected = String(existing.deliveryOtp ?? "").trim();
       const got = String(otpInput ?? "").trim().replace(/\D/g, "");
-      if (!expected || expected !== got) {
+      if (!expected || expected.length !== 4 || expected !== got) {
         throw Object.assign(new Error("Incorrect delivery OTP"), { statusCode: 403 });
       }
+    }
+
+    const proofUrl = String(payload?.deliveryImageUrl ?? "").trim();
+    const proofKey = String(payload?.deliveryImageR2Key ?? "").trim();
+    if (!proofUrl || !proofKey) {
+      throw Object.assign(
+        new Error("Capture a clear photo of the parcel before completing delivery"),
+        { statusCode: 400, code: "parcel_delivery_photo_required" }
+      );
+    }
+    if (!/\/attachments\/proxy/i.test(proofUrl)) {
+      throw Object.assign(new Error("Invalid parcel delivery photo URL"), { statusCode: 400 });
     }
 
     await assertRiderMilestoneGeoFence({
@@ -4997,6 +5672,9 @@ async function verifyParcelDeliveryOtpForRider(
       .update(ordersParcel)
       .set({
         deliveryOtpVerifiedAt: now,
+        deliveryProofImageUrl: proofUrl,
+        deliveryProofR2Key: proofKey,
+        deliveryProofAt: now,
         updatedAt: now,
       })
       .where(eq(ordersParcel.orderId, row.id));
@@ -5011,18 +5689,25 @@ async function verifyParcelDeliveryOtpForRider(
       distance,
       statusMessage: "Parcel Delivered",
     });
+    await appendOrderTimeline(tx, {
+      orderCorePk: row.id,
+      status: "DELIVERED",
+      previousStatus: String(existing.currentStatus ?? existing.status ?? "REACHED_CUSTOMER"),
+      actorType: "rider",
+      actorId: riderId,
+      statusMessage: "Parcel delivered",
+      occurredAt: now,
+      metadata: { deliveryProofAt: now.toISOString() },
+    });
 
-    const proofUrl = String(payload?.deliveryImageUrl ?? "").trim();
-    const proofKey = String(payload?.deliveryImageR2Key ?? "").trim();
-    if (proofUrl && proofKey) {
-      await recordOrderDeliveryProofImageTx(tx, {
-        orderCorePk: row.id,
-        riderId,
-        imageUrl: proofUrl,
-        r2Key: proofKey,
-        takenAt: now,
-      });
-    }
+    await recordOrderDeliveryProofImageTx(tx, {
+      orderCorePk: row.id,
+      riderId,
+      imageUrl: proofUrl,
+      r2Key: proofKey,
+      imageType: "delivery",
+      takenAt: now,
+    });
     newlyDelivered = true;
   });
 
@@ -5683,7 +6368,10 @@ export async function markFoodPickupWithoutVerificationForRider(
     .where(orderRefWhere(orderRef))
     .limit(1);
   if (meta?.orderType === "parcel") {
-    return markParcelPickedUpForRider(riderId, orderRef, gps);
+    throw Object.assign(
+      new Error("Verify the sender pickup OTP before marking this parcel picked up"),
+      { statusCode: 409, code: "parcel_pickup_otp_required" }
+    );
   }
 
   const settings = await loadFoodPickupVerificationSettings();

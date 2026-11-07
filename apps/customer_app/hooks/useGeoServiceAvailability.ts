@@ -82,9 +82,17 @@ export function useGeoServiceAvailability(args: {
   });
 
   const enabledServices: GeoEnabledServices = (() => {
-    if (!canQuery) return ALL_DISABLED;
+    // No pin yet (Detecting location…) — keep tiles fully painted and tappable.
+    // Greying the whole Home grid here was the washed-out post-splash bug.
+    // Coverage is enforced after GPS/geocode when canQuery becomes true.
+    if (!canQuery) return DEFAULT_WHILE_LOADING;
     if (query.isLoading && !query.data) return DEFAULT_WHILE_LOADING;
-    if (!query.data) return ALL_DISABLED;
+    if (query.isFetching && !query.data) return DEFAULT_WHILE_LOADING;
+    if (!query.data) {
+      // Failed / empty after a real pin — only then grey out out-of-coverage.
+      if (query.isError) return DEFAULT_WHILE_LOADING;
+      return ALL_DISABLED;
+    }
     // Home tiles + Food tab: use merged food/ride/parcel (coverage AND Prevent).
     // Inactive services grey out like E-Commerce; inner gates still apply on enter.
     return {

@@ -34,9 +34,12 @@ export async function GET(
     }
     const { user } = auth;
 
+    const email = user.email ?? "";
     const allowed =
-      (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccessByAuth(user.id, user.email ?? "", "ORDER_FOOD"));
+      (await isSuperAdmin(user.id, email)) ||
+      (await hasDashboardAccessByAuth(user.id, email, "ORDER_FOOD")) ||
+      (await hasDashboardAccessByAuth(user.id, email, "ORDER_PARCEL")) ||
+      (await hasDashboardAccessByAuth(user.id, email, "ORDER_PERSON_RIDE"));
 
     if (!allowed) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });

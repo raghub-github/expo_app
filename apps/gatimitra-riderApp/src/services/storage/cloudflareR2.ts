@@ -66,6 +66,12 @@ export function buildOrderDeliveryProofKey(orderRef: string): string {
   return `orders/${safe}/delivery-proof/${Date.now()}.jpg`;
 }
 
+/** Parcel pickup item photo — one folder per order. */
+export function buildOrderPickupProofKey(orderRef: string): string {
+  const safe = String(orderRef).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || "order";
+  return `orders/${safe}/pickup-proof/${Date.now()}.jpg`;
+}
+
 async function fetchWithTimeout(
   url: string,
   options: RequestInit,

@@ -81,6 +81,7 @@ export function useDashboardRiderLocation(opts: {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let attempt = 0;
+    let openedOnce = false;
 
     clearRiderGpsFilterState(ticketIds);
 
@@ -156,10 +157,21 @@ export function useDashboardRiderLocation(opts: {
         });
         if (!ticketRes.ok || cancelled) {
           setWsConnected(false);
-          if (ticketRes.status === 401 || ticketRes.status === 403) {
+          // 401/403/503 (no access JWT / backend down) — back off; HTTP poll still works.
+          if (
+            ticketRes.status === 401 ||
+            ticketRes.status === 403 ||
+            ticketRes.status === 503
+          ) {
             attempt = Math.max(attempt, 8);
           }
-          scheduleReconnect(ticketRes.status === 401 || ticketRes.status === 403 ? 60_000 : undefined);
+          scheduleReconnect(
+            ticketRes.status === 401 ||
+              ticketRes.status === 403 ||
+              ticketRes.status === 503
+              ? 60_000
+              : undefined
+          );
           return;
         }
         const { ticket } = (await ticketRes.json()) as { ticket?: string };
@@ -169,9 +181,11 @@ export function useDashboardRiderLocation(opts: {
           return;
         }
 
+        openedOnce = false;
         ws = new WebSocket(`${wsBase}/v1/ws?ticket=${encodeURIComponent(ticket.trim())}`);
         ws.onopen = () => {
           if (cancelled) return;
+          openedOnce = true;
           attempt = 0;
           setWsConnected(true);
           clearHeartbeat();
@@ -198,11 +212,20 @@ export function useDashboardRiderLocation(opts: {
         ws.onclose = () => {
           setWsConnected(false);
           clearHeartbeat();
-          if (!cancelled) scheduleReconnect();
+          if (!cancelled) {
+            // Gateway down / refused before handshake — don't spam tickets every 2s.
+            if (!openedOnce) {
+              attempt = Math.max(attempt, 8);
+              scheduleReconnect(60_000);
+            } else {
+              scheduleReconnect();
+            }
+          }
         };
       } catch {
         setWsConnected(false);
-        scheduleReconnect();
+        attempt = Math.max(attempt, 8);
+        scheduleReconnect(60_000);
       }
     };
 
@@ -210,7 +233,7 @@ export function useDashboardRiderLocation(opts: {
       if (cancelled || reconnectTimer) return;
       const delay = Math.max(
         minDelayMs ?? 0,
-        Math.min(60_000, 2_000 * Math.pow(1.6, attempt))
+        Math.min(90_000, 2_000 * Math.pow(1.6, attempt))
       );
       attempt += 1;
       reconnectTimer = setTimeout(() => {

@@ -72,16 +72,18 @@ function UserAppCategoryImageInner({
   useEffect(() => {
     if (uri) {
       prefetchFoodHomeImageUri(uri);
-      void ensureLocalCategoryImage(cacheKey, uri).then((local) => {
-        if (local) {
-          setLocalUri(local);
-          lastGoodRef.current = local;
-          markHeroMediaSessionReady(local);
-          rememberCategoryImageLastGood(cacheKey, uri);
-          setFailed(false);
-          bump((n) => n + 1);
-        }
-      });
+      void ensureLocalCategoryImage(cacheKey, uri)
+        .then((local) => {
+          if (local) {
+            setLocalUri(local);
+            lastGoodRef.current = local;
+            markHeroMediaSessionReady(local);
+            rememberCategoryImageLastGood(cacheKey, uri);
+            setFailed(false);
+            bump((n) => n + 1);
+          }
+        })
+        .catch(() => {});
       if (isHeroMediaSessionReady(uri) || localFile) {
         lastGoodRef.current = localFile || uri;
         rememberCategoryImageLastGood(cacheKey, uri);

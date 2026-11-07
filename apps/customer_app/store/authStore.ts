@@ -10,8 +10,13 @@
 import { create } from "zustand";
 import type { Session } from "@gatimitra/contracts";
 import { authService } from "@/services/auth.service";
-import { getActiveCustomerScopeId, setActiveCustomerScopeId } from "@/lib/customerScope";
+import {
+  getActiveCustomerScopeId,
+  hydrateCustomerScopeFromStorage,
+  setActiveCustomerScopeId,
+} from "@/lib/customerScope";
 import { runCustomerPushUnregister } from "@/lib/customerPushUnregister";
+import { startupLaunchLog } from "@/lib/startupPerf";
 
 async function scopedClear(customerId: string | null): Promise<void> {
   // Lazy — a static import pulled cart/location stores before authStore
@@ -79,36 +84,63 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   hydrate: async () => {
     if (get().hydrated) return;
+    const t0 = Date.now();
     try {
+      // Scope must be disk-hydrated before compare — otherwise Expo Go cold start
+      // sees scope=null and incorrectly awaits full scopedClear (multi-second Metro
+      // pull of cart/location/order modules) on every launch.
+      await hydrateCustomerScopeFromStorage();
+      const sessionT0 = Date.now();
       const stored = await authService.getStoredSession();
+      startupLaunchLog("AUTH_SESSION_READ", { durationMs: Date.now() - sessionT0 });
+
       if (!stored) {
-        await scopedClear(null);
         set({ session: null, hydrated: true });
+        startupLaunchLog("AUTH_RESTORE_LOCAL_DONE", {
+          durationMs: Date.now() - t0,
+          hasSession: false,
+        });
+        // Background teardown — never block first paint on signed-out clear.
+        void scopedClear(null);
         return;
       }
 
       const customerId = customerIdOf(stored);
       if (!customerId) {
-        await scopedClear(null);
         set({ session: null, hydrated: true });
+        startupLaunchLog("AUTH_RESTORE_LOCAL_DONE", {
+          durationMs: Date.now() - t0,
+          hasSession: false,
+        });
+        void scopedClear(null);
         return;
       }
-      if (customerId !== getActiveCustomerScopeId()) {
+
+      const previousScope = getActiveCustomerScopeId();
+      // Only a real account switch needs a blocking clear. scope=null on first
+      // paint after process start is normal (memory empty) — just bind the id.
+      const crossesAccount =
+        previousScope != null && previousScope.length > 0 && previousScope !== customerId;
+
+      if (crossesAccount) {
+        const clearT0 = Date.now();
         await scopedClear(customerId);
+        startupLaunchLog("STARTUP_BLOCKER", {
+          stage: "auth_scoped_clear_account_switch",
+          durationMs: Date.now() - clearT0,
+        });
       } else {
         setActiveCustomerScopeId(customerId);
       }
 
-      // Optimistic: unblock first paint immediately with the stored session,
-      // validate against the backend in the background instead of gating
-      // hydrated (and therefore the whole app's first screen) behind a live
-      // network round trip (up to 12s on a slow connection). Every API call
-      // already enforces auth per-request (401/403 on a bad token), so this
-      // check is a UX guard against showing authenticated screens on a
-      // forged/revoked token, not the only line of defense — it still runs,
-      // just without blocking the first frame. A definitive 401/403 clears
-      // the session below, same outcome as before, a couple seconds later.
+      // Optimistic: unblock navigator immediately. Network validate stays background.
       set({ session: stored, hydrated: true });
+      startupLaunchLog("AUTH_RESTORE_LOCAL_DONE", {
+        durationMs: Date.now() - t0,
+        hasSession: true,
+        crossedAccount: crossesAccount,
+      });
+
       void authService.validateStoredSession(stored).then((validated) => {
         if (validated) return;
         void scopedClear(null);
@@ -116,8 +148,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       });
     } catch (e) {
       console.warn("[AuthStore] hydrate failed:", e);
-      await scopedClear(null);
       set({ session: null, hydrated: true });
+      void scopedClear(null);
     }
   },
 

@@ -51,7 +51,12 @@ export function resolveHomeLocationSecondary(
   primary: string,
   hasCoords: boolean
 ): string {
-  if (!hasCoords) return "Turn on location for accurate address";
+  const primaryLower = primary.trim().toLowerCase();
+  if (!hasCoords) {
+    // Home header: always show detecting secondary — never "Allow location…".
+    if (primaryLower.startsWith("tap to")) return "Or choose a saved address";
+    return "Updating address…";
+  }
   const fullParts = filterCoordinateAddressParts(
     (address?.fullAddress ?? "")
       .split(",")
@@ -63,7 +68,6 @@ export function resolveHomeLocationSecondary(
     [...fullParts].reverse().find((p) => !isPincode(p) && p.toLowerCase() !== "india") ||
     address?.city?.trim() ||
     null;
-  const primaryLower = primary.trim().toLowerCase();
   if (
     stateCandidate &&
     !isRawCoordinateText(stateCandidate) &&

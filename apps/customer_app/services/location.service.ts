@@ -266,7 +266,12 @@ async function mapboxV5Reverse(
   const { mapboxAccessToken } = getConfig();
   if (!mapboxAccessToken) return null;
   const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${encodeURIComponent(mapboxAccessToken)}&limit=1&types=address,place,locality,neighborhood,poi&language=en&worldview=in`;
-  const res = await fetch(url);
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    throw err instanceof Error ? err : new Error("Mapbox geocode network failed");
+  }
   if (!res.ok) throw new Error(`Mapbox geocode failed: ${res.status}`);
   const data = (await res.json()) as {
     features?: Array<{ place_name?: string; text?: string; context?: Array<{ id: string; text: string }> }>;
@@ -482,7 +487,12 @@ export async function getRoadDistance(
 
   const coords = `${originLongitude},${originLatitude};${destinationLongitude},${destinationLatitude}`;
   const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coords}?access_token=${encodeURIComponent(mapboxAccessToken)}&alternatives=false&overview=false&steps=false`;
-  const res = await fetch(url);
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    throw err instanceof Error ? err : new Error("Mapbox directions network failed");
+  }
   if (!res.ok) {
     throw new Error(`Mapbox directions failed: ${res.status}`);
   }
@@ -519,13 +529,17 @@ export async function geocodeAddressToCoord(
   const encoded = encodeURIComponent(trimmed);
   const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encoded}.json?access_token=${encodeURIComponent(mapboxAccessToken)}&limit=1&country=${COUNTRY_INDIA}&types=address,place,locality,neighborhood&language=en`;
 
-  const res = await fetch(url);
-  if (!res.ok) return null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
 
-  const data = (await res.json()) as { features?: Array<{ center?: [number, number] }> };
-  const center = data.features?.[0]?.center;
-  if (!center || center.length < 2) return null;
-  return { longitude: center[0], latitude: center[1] };
+    const data = (await res.json()) as { features?: Array<{ center?: [number, number] }> };
+    const center = data.features?.[0]?.center;
+    if (!center || center.length < 2) return null;
+    return { longitude: center[0], latitude: center[1] };
+  } catch {
+    return null;
+  }
 }
 
 /**

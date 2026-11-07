@@ -36,7 +36,10 @@ import {
   resolveInboxOnlyRecipients,
   resolveTarget,
 } from "./targetResolver.js";
-import { expandCustomerPushUserIds } from "./customerPushTokens.js";
+import {
+  customerAudienceCoverKey,
+  expandCustomerPushUserIds,
+} from "./customerPushTokens.js";
 import { sendFcmV1 } from "./fcmProvider.js";
 import { isFirebaseAdminConfigured } from "../../config/firebase.js";
 import {
@@ -273,6 +276,25 @@ function mustShowWhenKilled(row: {
   );
 }
 
+/**
+ * Stable Android tray identity for one logical rider dispatch offer.
+ * Prefer orderId (not wave/session) so retries and realerts REPLACE the same
+ * card instead of stacking three identical GMP… notifications.
+ */
+function riderDispatchCollapseKey(row: CreateLogRow): string | null {
+  if (!isRiderDispatchOfferTemplate(row)) return null;
+  const meta = row.metadata ?? {};
+  const orderId = String(meta.orderId ?? meta.order_id ?? "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "");
+  if (orderId) return `gm_rider_order_${orderId.slice(0, 48)}`;
+  const session = String(meta.alertSessionId ?? meta.alert_session_id ?? "")
+    .trim()
+    .replace(/[^a-zA-Z0-9:_-]/g, "");
+  if (session) return `gm_rider_${session.slice(0, 64)}`;
+  return null;
+}
+
 function announcementCollapseKey(row: CreateLogRow): string | null {
   if (!isAnnouncementTemplateCode(row.templateCode)) return null;
   const cid = row.campaignId != null ? String(row.campaignId) : "";
@@ -348,8 +370,10 @@ function buildFcmV1InputForRow(
     data: args.data ?? fcmDataForRow(row),
     priority: row.priority as never,
     silent,
-    collapseKey: live.collapseKey ?? announcementCollapseKey(row),
-    tag: live.tag,
+    collapseKey:
+      live.collapseKey ?? announcementCollapseKey(row) ?? riderDispatchCollapseKey(row),
+    // Android tray replace needs `tag`; collapseKey alone is not enough.
+    tag: live.tag ?? riderDispatchCollapseKey(row),
   };
 }
 
@@ -1132,9 +1156,11 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
 
   // 3. Resolve recipients
   // High/critical transactional alerts: do not drop tokens solely for 90-day dormancy.
-  // Marketing/announcement can still use staleness; invalid tokens purge on DeviceNotRegistered.
+  // Admin Send now / Resend (bypassQuietHours) also ignores dormancy so All
+  // customers campaigns retry every registered device, not only last-90-day ones.
   const effectivePriorityForTokens = intent.priority ?? template.priority;
   const ignoreTokenStaleness =
+    intent.bypassQuietHours === true ||
     isCriticalIncomingOrderTemplate(template.code) ||
     effectivePriorityForTokens === "critical" ||
     effectivePriorityForTokens === "high" ||
@@ -1164,37 +1190,65 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     }
   }
 
-  // No push tokens: still write in-app inbox rows for explicit user / order /
-  // all_customers / all_riders targets when we can resolve user ids.
+  // In-app inbox for users without a push token.
+  // Previously this only ran when ZERO push tokens existed — so All customers
+  // with ~80 devices skipped the other 300+ accounts entirely. Merge census
+  // inbox rows for broadcast targets even when some devices already have push.
   let inboxOnlyFallback = false;
-  if (recipients.length === 0 && intent.channel !== "push") {
+  const targetRec = intent.target as Record<string, unknown>;
+  const wantsBroadcastInbox =
+    targetRec.all_customers === true ||
+    targetRec.all_riders === true ||
+    (typeof targetRec.role === "string" &&
+      (targetRec.role === "customer" || targetRec.role === "rider") &&
+      targetRec.geo !== true);
+  if (intent.channel !== "push") {
     const inboxOnly = await resolveInboxOnlyRecipients(intent.target, template.role);
     if (inboxOnly.length > 0) {
-      recipients = inboxOnly;
-      inboxOnlyFallback = true;
-      const killVisiblePreview = mustShowWhenKilled({
-        templateCode: template.code,
-        metadata: intent.metadata ?? null,
-      });
-      const criticalPreview =
-        (intent.priority ?? template.priority) === "critical" || killVisiblePreview;
-      if (criticalPreview) {
-        console.error(
-          `[notifications] push_failure reason=no_push_tokens template=${template.code}`,
-          {
-            target: intent.target,
-            users: inboxOnly.length,
-            note: "inbox_only_fallback — FCM not sent",
-          },
+      if (recipients.length === 0) {
+        recipients = inboxOnly;
+        inboxOnlyFallback = true;
+        const killVisiblePreview = mustShowWhenKilled({
+          templateCode: template.code,
+          metadata: intent.metadata ?? null,
+        });
+        const criticalPreview =
+          (intent.priority ?? template.priority) === "critical" || killVisiblePreview;
+        if (criticalPreview) {
+          console.error(
+            `[notifications] push_failure reason=no_push_tokens template=${template.code}`,
+            {
+              target: intent.target,
+              users: inboxOnly.length,
+              note: "inbox_only_fallback — FCM not sent",
+            },
+          );
+        } else {
+          console.warn(
+            `[notifications] Push token unavailable. Recording in-app only ` +
+              `(template=${template.code}, users=${inboxOnly.length}).`,
+            { target: intent.target },
+          );
+        }
+      } else if (wantsBroadcastInbox) {
+        const covered = new Set(
+          recipients.map((r) => customerAudienceCoverKey(r.userId)).filter(Boolean),
         );
-      } else {
-        console.warn(
-          `[notifications] Push token unavailable. Recording in-app only ` +
-            `(template=${template.code}, users=${inboxOnly.length}).`,
-          { target: intent.target },
-        );
+        let merged = 0;
+        for (const row of inboxOnly) {
+          const key = customerAudienceCoverKey(row.userId);
+          if (!key || covered.has(key)) continue;
+          covered.add(key);
+          recipients.push(row);
+          merged++;
+        }
+        if (merged > 0) {
+          console.info(
+            `[notifications] broadcast_inbox_merge template=${template.code} added=${merged} push=${recipients.length - merged}`,
+          );
+        }
       }
-    } else {
+    } else if (recipients.length === 0) {
       console.warn(
         `[notifications] Push token unavailable. Skipping notification ` +
           `(template=${template.code}, campaign=${intent.campaignId ?? "n/a"}).`,
@@ -1213,6 +1267,24 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
         warning: softSkipWarningForTarget(intent.target, "no_recipients"),
       });
     }
+  } else if (recipients.length === 0) {
+    console.warn(
+      `[notifications] Push token unavailable. Skipping notification ` +
+        `(template=${template.code}, campaign=${intent.campaignId ?? "n/a"}).`,
+      { target: intent.target, title: rendered.title, body: rendered.body },
+    );
+    if (intent.campaignId) {
+      await syncCampaignCountsFromLogs(intent.campaignId);
+    }
+    return finishOrderEventClaim({
+      campaignId: intent.campaignId,
+      queued: 0,
+      skipped: 0,
+      failedSync: 0,
+      notificationIds: [],
+      skipReason: "no_recipients",
+      warning: softSkipWarningForTarget(intent.target, "no_recipients"),
+    });
   }
 
   // 3b. Quiet-hours + rate-limit enforcement (skips critical / kill-visible).

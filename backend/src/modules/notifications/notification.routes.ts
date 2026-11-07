@@ -27,6 +27,7 @@
  *      POST   /v1/notifications/:notificationId/click    — mark click (deep link tap)
  *      POST   /v1/notifications/:notificationId/read     — mark read
  *      POST   /v1/notifications/read-all                 — mark all read
+ *      POST   /v1/notifications/clear-all                — persist Clear All for auth user
  *      GET    /v1/notifications/preferences              — list user prefs
  *      PUT    /v1/notifications/preferences/:type        — set per-type prefs
  *
@@ -193,6 +194,51 @@ async function supportsRevoke(): Promise<boolean> {
     revokeColumnSupported = false;
   }
   return revokeColumnSupported;
+}
+
+/**
+ * Per-user Clear All cutoff (migration 0647). Cache only a positive probe so an
+ * un-migrated DB keeps serving the inbox, and a later migration apply is picked
+ * up without requiring a process restart.
+ */
+let inboxClearsSupported: boolean | null = null;
+async function supportsInboxClears(): Promise<boolean> {
+  if (inboxClearsSupported === true) return true;
+  try {
+    const rows = await getSql()`
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name = 'notification_inbox_clears'
+      LIMIT 1
+    `;
+    if (rows.length > 0) {
+      inboxClearsSupported = true;
+      return true;
+    }
+  } catch {
+    /* keep retrying until migration lands */
+  }
+  return false;
+}
+
+/** Server-authoritative Clear All cutoff for this authenticated user, if any. */
+async function getInboxClearedAt(userId: string): Promise<Date | null> {
+  if (!(await supportsInboxClears())) return null;
+  try {
+    const rows = (await getSql()`
+      SELECT cleared_at
+      FROM public.notification_inbox_clears
+      WHERE user_id = ${userId}
+      LIMIT 1
+    `) as unknown as Array<{ cleared_at: Date | string }>;
+    const raw = rows[0]?.cleared_at;
+    if (!raw) return null;
+    const d = raw instanceof Date ? raw : new Date(raw);
+    return Number.isFinite(d.getTime()) ? d : null;
+  } catch {
+    return null;
+  }
 }
 
 function isAdminLikeRole(role: string): boolean {
@@ -1393,12 +1439,18 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
 
     // Paged inbox — prefer in_app rows; include push-only rows that have no in_app twin
     // (avoids showing duplicate cards when channel=all wrote both push + in_app).
+    // Clear All cutoff (0647): hide rows with queued_at <= per-user cleared_at.
     user.get<{ Querystring: { limit?: string; offset?: string } }>("/inbox", async (req) => {
       const q = req.query ?? {};
       const limit = Math.min(200, Math.max(1, Number(q.limit ?? 50)));
       const offset = Math.max(0, Number(q.offset ?? 0));
       const sql = getSql();
       const notRevoked = (await supportsRevoke()) ? sql`AND d.revoked_at IS NULL` : sql``;
+      const clearedAt = await getInboxClearedAt(req.auth!.sub);
+      const afterClear =
+        clearedAt != null
+          ? sql`AND d.queued_at > ${clearedAt.toISOString()}::timestamptz`
+          : sql``;
       const rows = await sql`
         SELECT notification_id, template_code, title, body, image_url, deep_link,
                priority, status, queued_at, delivered_at, clicked_at, metadata
@@ -1410,6 +1462,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
             OR lower(${req.auth!.role ?? ""}) = ''
           )
           ${notRevoked}
+          ${afterClear}
           AND (
             channel = 'in_app'
             OR (
@@ -1439,6 +1492,7 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           )
           AND clicked_at IS NULL
           ${notRevoked}
+          ${afterClear}
           AND (
             channel = 'in_app'
             OR (
@@ -1489,6 +1543,53 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           AND clicked_at IS NULL
       `;
       return reply.code(204).send();
+    });
+
+    /**
+     * Persist Clear All for the authenticated user only.
+     * Sets a per-user cutoff so inbox queries never return older rows again
+     * (app restart, other devices, FCM/API refresh). Also marks unread as read.
+     * Does NOT delete audit rows and never touches other users' inboxes.
+     */
+    user.post("/clear-all", async (req, reply) => {
+      const userId = req.auth!.sub;
+      if (!userId) return reply.code(401).send({ error: "unauthorized" });
+      if (!(await supportsInboxClears())) {
+        return reply.code(409).send({
+          error: "migration_pending",
+          message: "Run migration 0647_notification_inbox_clears.sql to enable Clear All persistence.",
+        });
+      }
+      const sql = getSql();
+      // Mark unread first, then advance cutoff — order keeps unread counts consistent
+      // if a concurrent inbox fetch races between the two writes.
+      await sql`
+        UPDATE public.notification_dispatch_logs
+        SET
+          status = 'clicked',
+          delivered_at = COALESCE(delivered_at, now()),
+          clicked_at = COALESCE(clicked_at, now())
+        WHERE recipient_user_id = ${userId}
+          AND clicked_at IS NULL
+      `;
+      const rows = (await sql`
+        INSERT INTO public.notification_inbox_clears (user_id, cleared_at, updated_at)
+        VALUES (${userId}, now(), now())
+        ON CONFLICT (user_id) DO UPDATE SET
+          cleared_at = EXCLUDED.cleared_at,
+          updated_at = EXCLUDED.updated_at
+        RETURNING cleared_at
+      `) as unknown as Array<{ cleared_at: Date | string }>;
+      const clearedAt = rows[0]?.cleared_at;
+      return reply.send({
+        ok: true,
+        cleared_at:
+          clearedAt instanceof Date
+            ? clearedAt.toISOString()
+            : clearedAt
+              ? new Date(clearedAt).toISOString()
+              : new Date().toISOString(),
+      });
     });
 
     // Get / set user preferences

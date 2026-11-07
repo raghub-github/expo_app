@@ -155,6 +155,8 @@ const AUTH_FETCH_SKIP_PREFIXES = [
   "/api/auth/otp",
   "/api/auth/verify",
   "/api/auth/force-logout",
+  // Live-map ticket mint — soft-fails to HTTP poll; never a session death signal.
+  "/api/auth/ws-ticket",
 ];
 
 function resolveFetchUrl(input: RequestInfo | URL): string {

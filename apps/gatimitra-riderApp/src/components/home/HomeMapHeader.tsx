@@ -10,7 +10,8 @@ import { LanguageSelectionSheet } from "@/src/components/language/LanguageSelect
 import { useRiderInboxUnreadStore } from "@/src/stores/riderInboxUnreadStore";
 import { useResponsiveLayout } from "@/src/hooks/useResponsiveLayout";
 
-export const ORDERS_HEADER_BG = "#F5F7FA";
+/** Match Expo-Go / map placeholder mint so header does not flash white over the map. */
+export const ORDERS_HEADER_BG = "#E8F4F1";
 
 export function HomeMapHeaderInner() {
   const headerRef = useRef<View>(null);

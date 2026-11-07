@@ -39,6 +39,13 @@ export type IncomingDispatchOrder = {
   formattedOrderId?: string | null;
   rideType?: string;
   merchantName?: string | null;
+  /** Ride passenger / food-parcel customer — shown on the offer sheet. */
+  customerName?: string | null;
+  /** Parcel cash/COD: collect at pickup or drop. */
+  payAt?: "pickup" | "drop" | null;
+  cashCollected?: boolean;
+  paymentMethod?: string | null;
+  paymentStatus?: string | null;
   itemCount?: number;
   pickup: { address: string; lat: number; lng: number };
   delivery: { address: string; lat: number; lng: number };
@@ -89,14 +96,15 @@ const REJECT_ROW_H = 40;
 const BADGE_H = 42;
 const BADGE_OVERLAP = BADGE_H * 0.2;
 
-function compactAddress(raw: string): string {
+/** Full address for the offer sheet — dedupe repeated segments only; never truncate. */
+function fullAddressLine(raw: string): string {
   const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
   const out: string[] = [];
   for (const part of parts) {
     const key = part.toLowerCase();
     if (!out.some((p) => p.toLowerCase() === key)) out.push(part);
   }
-  return out.join(", ");
+  return out.join(", ") || raw.trim() || "—";
 }
 
 function DistanceStat({ label, value }: { label: string; value: string }) {
@@ -290,7 +298,28 @@ function IncomingOrderModalInner({
                 </Text>
               </View>
 
-              {order.merchantName && order.category !== "ride" ? (
+              {order.category === "ride" || order.category === "parcel" ? (
+                <View style={[rowLayout.rowStart, styles.merchantRow]}>
+                  <Ionicons
+                    name="person-outline"
+                    size={14}
+                    color={colors.primary[800]}
+                    style={{ marginRight: 6, marginTop: 2 }}
+                  />
+                  <Text
+                    style={[styles.merchantName, flexShrinkText]}
+                    {...responsiveMultilineProps}
+                    numberOfLines={2}
+                  >
+                    {order.customerName?.trim() ||
+                      (order.category === "parcel"
+                        ? t("orders.incoming.senderFallback", "Sender")
+                        : t("orders.incoming.customerFallback", "Customer"))}
+                  </Text>
+                </View>
+              ) : null}
+
+              {order.merchantName && order.category !== "ride" && order.category !== "parcel" ? (
                 <View style={[rowLayout.rowStart, styles.merchantRow]}>
                   <Text
                     style={[styles.merchantName, flexShrinkText]}
@@ -313,12 +342,39 @@ function IncomingOrderModalInner({
                 </View>
               ) : null}
 
+              {order.category === "parcel" ? (
+                <View style={styles.fareCollectBanner}>
+                  <Ionicons name="cash-outline" size={14} color="#92400E" />
+                  <Text style={[styles.fareCollectText, flexShrinkText]} numberOfLines={2}>
+                    {order.cashCollected === true ||
+                    ["paid", "completed", "captured", "success"].includes(
+                      String(order.paymentStatus ?? "")
+                        .trim()
+                        .toLowerCase()
+                    ) ||
+                    (Boolean(order.paymentMethod) &&
+                      !/cash|cod/i.test(String(order.paymentMethod)) &&
+                      order.payAt == null)
+                      ? t("orders.incoming.farePaid", "Payment Paid")
+                      : order.payAt === "drop"
+                        ? t(
+                            "orders.incoming.fareCollectDrop",
+                            "Fare collect at Drop"
+                          )
+                        : t(
+                            "orders.incoming.fareCollectPickup",
+                            "Fare collect at Pickup"
+                          )}
+                  </Text>
+                </View>
+              ) : null}
+
               <View style={styles.earningsCard}>
                 <View style={styles.earningsBreakdown}>
                   <View style={[rowLayout.row, styles.earningsLine]}>
                     <Text style={[styles.earningsSubLabel, flexShrinkText]} numberOfLines={1}>
                       {isDeliveryOrder
-                        ? t("orders.incoming.deliveryFee", "Delivery fee")
+                        ? t("orders.incoming.tripEarning", "Trip earning")
                         : t("orders.incoming.baseEarning", "Base earnings")}
                     </Text>
                     <Text style={[styles.earningsSubValue, rowLayout.noShrink]} numberOfLines={1}>
@@ -426,8 +482,9 @@ function IncomingOrderModalInner({
                     <Text
                       style={[styles.routeAddress, flexShrinkText]}
                       {...responsiveMultilineProps}
+                      numberOfLines={4}
                     >
-                      {compactAddress(order.pickup.address)}
+                      {fullAddressLine(order.pickup.address)}
                     </Text>
                   </View>
                 </View>
@@ -449,8 +506,9 @@ function IncomingOrderModalInner({
                       <Text
                         style={[styles.routeAddress, flexShrinkText]}
                         {...responsiveMultilineProps}
+                        numberOfLines={4}
                       >
-                        {compactAddress(stop.address)}
+                        {fullAddressLine(stop.address)}
                       </Text>
                     </View>
                   </View>
@@ -473,8 +531,9 @@ function IncomingOrderModalInner({
                     <Text
                       style={[styles.routeAddress, flexShrinkText]}
                       {...responsiveMultilineProps}
+                      numberOfLines={4}
                     >
-                      {compactAddress(order.delivery.address)}
+                      {fullAddressLine(order.delivery.address)}
                     </Text>
                   </View>
                   <OrderLocationPhotoBox
@@ -518,6 +577,8 @@ export const IncomingOrderModal = memo(IncomingOrderModalInner, (prev, next) => 
     a.customerTipAmount === b.customerTipAmount &&
     a.itemCount === b.itemCount &&
     a.merchantName === b.merchantName &&
+    a.customerName === b.customerName &&
+    a.payAt === b.payAt &&
     a.rideType === b.rideType &&
     a.pickup.address === b.pickup.address &&
     a.delivery.address === b.delivery.address &&
@@ -685,6 +746,25 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: colors.gray[800],
     lineHeight: 19,
+  },
+  fareCollectBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+    marginBottom: 10,
+    marginTop: -2,
+    backgroundColor: "#FFFBEB",
+    borderColor: "#FDE68A",
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  fareCollectText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#92400E",
   },
   itemCountPill: {
     flexDirection: "row",
