@@ -154,7 +154,7 @@ export function RideBookingScreen() {
     }
 
     setReturnTripGps({ status: "loading" });
-    void getFastPosition({})
+    void getFastPosition({ mayShowUserSettingsDialog: false })
       .then((fix) => {
         if (cancelled) return;
         if (

@@ -65,11 +65,10 @@ export async function applySelectedDeliveryAddress(
     });
   }
 
-  // Force network refetch so the list reflects backend MRU order immediately.
-  await Promise.all([
-    queryClient.refetchQueries({ queryKey: ["addresses"] }),
-    queryClient.refetchQueries({ queryKey: ["active-location"] }),
-  ]);
+  // Refresh so the list reflects backend MRU order. Not awaited: the pin is already
+  // applied, and the user should not sit on this screen while lists reload.
+  void queryClient.refetchQueries({ queryKey: ["addresses"] });
+  void queryClient.refetchQueries({ queryKey: ["active-location"] });
   void invalidateFoodHomeLocationQueries(queryClient);
 
   const { promptCartIfLocationBrokeServiceability } = await import(

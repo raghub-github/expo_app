@@ -4,6 +4,7 @@ import {
   shouldReplaceFix,
   isImplausibleJump,
   metresBetween,
+  pinStillHolds,
   type FixLike,
 } from "./locationFixSelection";
 
@@ -98,4 +99,54 @@ test("shouldReplaceFix: accept a real relocation when enough time elapsed", () =
   const current = at(BASE_LAT, BASE_LON, 10, T0);
   const relocated = at(BASE_LAT + 0.045, BASE_LON, 15, T0 + 3 * 3600 * 1000); // ~5km, 3h later
   assert.equal(shouldReplaceFix(current, relocated), true);
+});
+
+test("a sharp GPS fix replaces a km-off cell fix from seconds ago (not an impossible jump)", () => {
+  const cell = at(BASE_LAT, BASE_LON, 3000, T0);
+  const gps = at(BASE_LAT + 0.02, BASE_LON, 12, T0 + 5_000); // ~2.2 km away
+  assert.equal(shouldReplaceFix(cell, gps), true);
+});
+
+test("a coarse reading inside its own error radius does not displace a sharp recent fix", () => {
+  const gps = at(BASE_LAT, BASE_LON, 12, T0);
+  const cell = at(BASE_LAT + 0.002, BASE_LON, 400, T0 + 20_000); // ~220 m away, +-400 m
+  assert.equal(shouldReplaceFix(gps, cell), false);
+});
+
+test("a coarse reading well outside its error radius is a real move", () => {
+  const gps = at(BASE_LAT, BASE_LON, 12, T0);
+  const cell = at(BASE_LAT + 0.02, BASE_LON, 400, T0 + 600_000); // ~2.2 km away, 10 min on
+  assert.equal(shouldReplaceFix(gps, cell), true);
+});
+
+test("a stale fix earns no protection from a coarse live reading", () => {
+  const yesterday = at(BASE_LAT, BASE_LON, 12, T0);
+  const live = at(BASE_LAT + 0.002, BASE_LON, 400, T0 + 24 * 3_600_000);
+  assert.equal(shouldReplaceFix(yesterday, live), true);
+});
+
+// --- pinStillHolds: noise must not move the pin, a real move must ---
+const PIN = { latitude: BASE_LAT, longitude: BASE_LON };
+const northOf = (metres: number) => BASE_LAT + metres / 111_320;
+
+test("pin holds against a fix inside the fix's own error radius", () => {
+  assert.equal(pinStillHolds(PIN, { latitude: northOf(25), longitude: BASE_LON, accuracy: 30 }), true);
+});
+
+test("pin moves for a sharp fix that puts it outside the error radius", () => {
+  assert.equal(pinStillHolds(PIN, { latitude: northOf(25), longitude: BASE_LON, accuracy: 12 }), false);
+});
+
+test("pin holds against small jitter on a very sharp fix", () => {
+  assert.equal(pinStillHolds(PIN, { latitude: northOf(8), longitude: BASE_LON, accuracy: 4 }), true);
+  assert.equal(pinStillHolds(PIN, { latitude: northOf(12), longitude: BASE_LON, accuracy: 4 }), false);
+});
+
+test("a rough fix cannot hold the pin at long range just by claiming a wide radius", () => {
+  assert.equal(pinStillHolds(PIN, { latitude: northOf(200), longitude: BASE_LON, accuracy: 500 }), false);
+});
+
+test("unknown accuracy holds only within GPS noise", () => {
+  assert.equal(pinStillHolds(PIN, { latitude: northOf(8), longitude: BASE_LON, accuracy: null }), true);
+  assert.equal(pinStillHolds(PIN, { latitude: northOf(15), longitude: BASE_LON, accuracy: null }), false);
 });

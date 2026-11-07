@@ -22,6 +22,12 @@ export const MAX_PLAUSIBLE_SPEED_MPS = 60;
 export const REAL_MOVE_THRESHOLD_M = 30;
 /** Allowed accuracy slack (m) before a same-spot fix counts as a downgrade. */
 export const ACCURACY_SLACK_M = 5;
+/** A fix older than this no longer says where the user is, whatever accuracy it claims. */
+export const STALE_FIX_AGE_MS = 15 * 60_000;
+/** GPS noise on even a sharp fix: below what any consumer of the pin can use (metres). */
+export const PIN_HOLD_MIN_M = 10;
+/** A fix further than this always moves the pin, however rough it claims to be (metres). */
+export const PIN_HOLD_MAX_M = 30;
 
 export function metresBetween(
   lat1: number,
@@ -41,22 +47,42 @@ export function metresBetween(
 }
 
 /**
+ * True when a new fix is no evidence that the pin on screen is wrong: the pin already lies
+ * inside the fix's own error radius. Moving it would re-render every subscriber and re-key
+ * every coordinate-keyed request just to follow noise, while a phone that is standing
+ * still reports fixes metres apart. Measured from the pin, so a real walk still gets out.
+ */
+export function pinStillHolds(
+  pin: { latitude: number; longitude: number },
+  fix: { latitude: number; longitude: number; accuracy: number | null }
+): boolean {
+  const radius = Math.min(PIN_HOLD_MAX_M, Math.max(PIN_HOLD_MIN_M, fix.accuracy ?? 0));
+  return metresBetween(pin.latitude, pin.longitude, fix.latitude, fix.longitude) <= radius;
+}
+
+/**
  * §23 — reject an obviously invalid jump: a large move whose implied speed is impossible
  * for the elapsed time. If the previous fix is old (large dt), any distance is plausible,
  * so a genuine relocation (e.g. opened the app after a flight) is NOT rejected.
+ *
+ * Distance is measured beyond both fixes' accuracy radii. A cell-tower fix can be
+ * kilometres out, and without this the GPS fix arriving seconds later looked like an
+ * impossible jump from it and was thrown away, leaving the bad fix in place.
  */
 export function isImplausibleJump(prev: FixLike | null, next: FixLike): boolean {
   if (!prev || !prev.timestampMs) return false;
   const dist = metresBetween(prev.latitude, prev.longitude, next.latitude, next.longitude);
-  if (dist < OUTLIER_MIN_JUMP_M) return false;
+  const beyondUncertainty = dist - (prev.accuracy ?? 0) - (next.accuracy ?? 0);
+  if (beyondUncertainty < OUTLIER_MIN_JUMP_M) return false;
   const dtSec = Math.max(1, (next.timestampMs - prev.timestampMs) / 1000);
-  return dist / dtSec > MAX_PLAUSIBLE_SPEED_MPS;
+  return beyondUncertainty / dtSec > MAX_PLAUSIBLE_SPEED_MPS;
 }
 
 /**
  * §22/§30 — decide whether `next` should replace `current`:
  *  - no current            → accept
  *  - implausible jump      → reject (keep current)
+ *  - coarse fix inside its own error radius of a sharper, still-recent one → reject (no evidence of a move)
  *  - genuine move (>30 m)  → accept (user actually moved)
  *  - same spot, current has no known accuracy → accept
  *  - same spot, next has no known accuracy     → reject (don't drop known accuracy)
@@ -65,9 +91,12 @@ export function isImplausibleJump(prev: FixLike | null, next: FixLike): boolean 
 export function shouldReplaceFix(current: FixLike | null, next: FixLike): boolean {
   if (!current) return true;
   if (isImplausibleJump(current, next)) return false;
-  if (metresBetween(current.latitude, current.longitude, next.latitude, next.longitude) >= REAL_MOVE_THRESHOLD_M) {
-    return true;
-  }
+  const moved = metresBetween(current.latitude, current.longitude, next.latitude, next.longitude);
+  const nextIsCoarser =
+    next.accuracy != null && current.accuracy != null && next.accuracy > current.accuracy + ACCURACY_SLACK_M;
+  const currentIsStale = next.timestampMs - current.timestampMs > STALE_FIX_AGE_MS;
+  if (nextIsCoarser && !currentIsStale && moved <= next.accuracy!) return false;
+  if (moved >= REAL_MOVE_THRESHOLD_M) return true;
   if (current.accuracy == null) return true;
   if (next.accuracy == null) return false;
   return next.accuracy <= current.accuracy + ACCURACY_SLACK_M;

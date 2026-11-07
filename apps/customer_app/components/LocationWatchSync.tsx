@@ -6,8 +6,10 @@ import { useAuthStore } from "@/store/authStore";
 import {
   useLocationStore,
   coordsMovedSignificantly,
+  noteAddressResolvedAt,
 } from "@/store/locationStore";
-import { reverseGeocode } from "@/services/location.service";
+import { isUnresolvedReverseResult, reverseGeocode } from "@/services/location.service";
+import { shouldReplaceFix } from "@/lib/locationFixSelection";
 import { saveLastKnownLocation } from "@/lib/lastKnownLocationCache";
 import {
   invalidateFoodHomeListingQueriesAfterMove,
@@ -70,6 +72,23 @@ export function LocationWatchSync() {
       const tsMs = typeof loc.timestamp === "number" ? loc.timestamp : Date.now();
       const prev = lastAppliedRef.current ?? useLocationStore.getState().coords;
       if (!coordsMovedSignificantly(prev, next, CUSTOMER_GPS_MOVE_METERS)) return;
+      // A coarse Low reading can sit 100+ m from a sharp fix without the user moving at
+      // all. Do not let it move the pin and refetch every listing.
+      const store = useLocationStore.getState();
+      if (
+        store.coords &&
+        !shouldReplaceFix(
+          {
+            latitude: store.coords.latitude,
+            longitude: store.coords.longitude,
+            accuracy: store.coordsAccuracy,
+            timestampMs: store.coordsUpdatedAt ?? 0,
+          },
+          { ...next, accuracy, timestampMs: tsMs }
+        )
+      ) {
+        return;
+      }
 
       lastAppliedRef.current = next;
       const geocodeSeq = ++geocodeSeqRef.current;
@@ -90,7 +109,8 @@ export function LocationWatchSync() {
         accuracy,
         updatedAt: tsMs,
         source: "watch",
-        address: useLocationStore.getState().address,
+        // The label is for the old spot until the geocode below lands; never cache it here.
+        address: null,
       });
       void useLocationStore.getState().clearPersistedSelection();
 
@@ -106,6 +126,7 @@ export function LocationWatchSync() {
             if (cancelled) return;
             if (geocodeSeq !== geocodeSeqRef.current) return;
             if (useLocationStore.getState().locationSource === "selected") return;
+            if (isUnresolvedReverseResult(address)) return;
 
             const secondary = address.secondary?.trim() ?? "";
             const full = address.fullAddress?.trim() ?? "";
@@ -114,6 +135,7 @@ export function LocationWatchSync() {
               return;
             }
 
+            noteAddressResolvedAt(next);
             useLocationStore.setState({ address, locationSource: "current" });
             saveLastKnownLocation({
               lat: next.latitude,
@@ -139,6 +161,7 @@ export function LocationWatchSync() {
       try {
         const loc = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Low,
+          mayShowUserSettingsDialog: false,
         });
         applyGpsFix(loc);
       } catch {

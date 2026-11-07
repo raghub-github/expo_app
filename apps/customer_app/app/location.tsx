@@ -23,7 +23,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Location from "expo-location";
-import { useLocationStore } from "@/store/locationStore";
+import { getFastPosition } from "@gatimitra/expo-location-kit";
+import {
+  awaitLiveDeviceFix,
+  isPlaceholderAddress,
+  useLocationStore,
+} from "@/store/locationStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import {
   searchPlacesEnriched,
@@ -32,10 +37,12 @@ import {
   geocodeAddressToCoord,
   type EnrichedPlaceResult,
   MAPBOX_SEARCH_DEBOUNCE_MS,
+  isGenericLocationLabel,
+  isUnresolvedReverseResult,
+  reverseGeocode,
 } from "@/services/location.service";
-import { mapboxSearchSuggest } from "@/services/mapboxSearch.service";
+import { mapboxGeocodeForward } from "@/services/mapboxSearch.service";
 import { isValidMapCoordinate } from "@/lib/map-coordinates";
-import { reverseGeocode } from "@/services/location.service";
 import { addressService, type Address, type LocalSuggestionResult } from "@/services/address.service";
 import { shareAddressViaLink } from "@/services/addressShare.service";
 import { profileService } from "@/services/profile.service";
@@ -64,6 +71,11 @@ const BRAND = "#14B8A6";
 const BRAND_LIGHT = GatiMitraColors.mintSoft;
 
 const SEARCH_DEBOUNCE_MS = MAPBOX_SEARCH_DEBOUNCE_MS;
+/**
+ * "Use current location" waits up to this long overall for a live fix, rather than act on
+ * a cached one. The time the store has already spent waiting counts towards it.
+ */
+const USE_CURRENT_FIX_WAIT_MS = 4_000;
 const INITIAL_SAVED_VISIBLE = 3;
 const NEARBY_PLACES_LIMIT = 6;
 const NEARBY_MIN_DISTANCE_M = 30;
@@ -105,6 +117,7 @@ async function fetchNearbyPlacesForAnchor(
       !!q &&
       q.trim().length >= 2 &&
       q.toLowerCase() !== "india" &&
+      !isGenericLocationLabel(q) &&
       !/^\d{6}$/.test(q.trim())
   );
 
@@ -114,18 +127,19 @@ async function fetchNearbyPlacesForAnchor(
     rg.city,
     cityCandidates.find((c) => c.length >= 3),
     "market",
-  ].filter((q): q is string => !!q && q.trim().length >= 2);
+  ].filter((q): q is string => !!q && q.trim().length >= 2 && !isGenericLocationLabel(q));
 
   const uniqueQueries = [...new Set(queryCandidates.map((q) => q.trim().slice(0, 28)))].slice(0, 4);
   const uniqueCities = [...new Set(cityCandidates.map((c) => c.trim().slice(0, 40)))].slice(0, 3);
 
   const [mapboxBatches, cityAreaBatches, searchBatches] = await Promise.all([
     Promise.all(
+      // Geocoding v6 hits already carry coordinates. This list used to run up to 12
+      // sequential Search Box retrieves on every open of this screen.
       uniqueQueries.map((q) =>
-        mapboxSearchSuggest(q, {
+        mapboxGeocodeForward(q, {
           proximity: { longitude, latitude },
           limit: 8,
-          sessionContext: "location-picker",
         }).catch(() => [] as EnrichedPlaceResult[])
       )
     ),
@@ -156,21 +170,7 @@ async function fetchNearbyPlacesForAnchor(
     });
   };
 
-  const rawMapbox = mapboxBatches.flat();
-  let retrieveCount = 0;
-  for (const place of rawMapbox) {
-    if (retrieveCount >= 12) break;
-    try {
-      const candidate =
-        place.pendingRetrieve && place.mapboxSuggestion
-          ? await resolveMapboxEnrichedPlace(place, "location-picker")
-          : place;
-      if (place.pendingRetrieve) retrieveCount += 1;
-      push(candidate);
-    } catch {
-      // skip failed retrieve
-    }
-  }
+  for (const place of mapboxBatches.flat()) push(place);
 
   for (const batch of cityAreaBatches) {
     for (const area of batch) push(localSuggestionToEnriched(area));
@@ -272,16 +272,14 @@ export default function SelectLocationScreen() {
       navLockRef.current = false;
     }, [])
   );
-  const {
-    address,
-    coords,
-    locationSource,
-    requestPermissionAndFetch,
-    clearPersistedSelection,
-    setAddress,
-    setAddressAndCoords,
-    loading,
-  } = useLocationStore();
+  const address = useLocationStore((s) => s.address);
+  const coords = useLocationStore((s) => s.coords);
+  const locationSource = useLocationStore((s) => s.locationSource);
+  const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
+  const clearPersistedSelection = useLocationStore((s) => s.clearPersistedSelection);
+  const setAddress = useLocationStore((s) => s.setAddress);
+  const setAddressAndCoords = useLocationStore((s) => s.setAddressAndCoords);
+  const loading = useLocationStore((s) => s.loading);
   const {
     items: recentSearches,
     getRecentLocationKeys,
@@ -293,7 +291,8 @@ export default function SelectLocationScreen() {
   const [searchResults, setSearchResults] = useState<EnrichedPlaceResult[]>([]);
   const [resolvingSearchPlace, setResolvingSearchPlace] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
-  const [searchFailsafe, setSearchFailsafe] = useState(false);
+  const [searchUnavailable, setSearchUnavailable] = useState(false);
+  const [searchRetryNonce, setSearchRetryNonce] = useState(0);
   const [savedAddressLoading, setSavedAddressLoading] = useState<number | null>(null);
   const [confirmAddress, setConfirmAddress] = useState<Address | null>(null);
   const [pendingNearbyPlace, setPendingNearbyPlace] = useState<EnrichedPlaceResult | null>(null);
@@ -304,7 +303,6 @@ export default function SelectLocationScreen() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchInputRef = useRef<TextInput>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
-  const lastSearchKeyRef = useRef<string>("");
   const queryClient = useQueryClient();
   const safeBack = () => {
     if (params.fromOnboarding === "1") {
@@ -501,33 +499,24 @@ export default function SelectLocationScreen() {
   };
 
   const refreshCurrentLocationPreview = useCallback(async () => {
-    const gpsMs = 14_000;
-    const geoMs = 10_000;
-    const withTimeout = <T,>(promise: Promise<T>, ms: number) =>
-      new Promise<T>((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error("timeout")), ms);
-        promise.then(
-          (v) => {
-            clearTimeout(t);
-            resolve(v);
-          },
-          (e) => {
-            clearTimeout(t);
-            reject(e);
-          }
-        );
-      });
+    // The live label the store already holds paints instantly; then confirm it.
+    const store = useLocationStore.getState();
+    if (store.locationSource === "current" && store.address && !isPlaceholderAddress(store.address)) {
+      setCurrentLocationPreview(
+        formatLocationLine(
+          store.address.fullAddress,
+          store.address.secondary,
+          store.address.primary,
+          store.address.state ?? null
+        )
+      );
+    }
     try {
       const permission = await Location.getForegroundPermissionsAsync();
       if (permission.status !== "granted") return;
-      const pos = await withTimeout(
-        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-        gpsMs
-      );
-      const rg = await withTimeout(
-        reverseGeocode(pos.coords.longitude, pos.coords.latitude),
-        geoMs
-      );
+      const pos = await getFastPosition({ lastKnownMaxAgeMs: 120_000, quickTimeoutMs: 3_000, mayShowUserSettingsDialog: false });
+      const rg = await reverseGeocode(pos.longitude, pos.latitude);
+      if (isUnresolvedReverseResult(rg)) return;
       setCurrentLocationPreview(
         formatLocationLine(rg.fullAddress, rg.secondary, rg.primary, rg.state ?? null)
       );
@@ -559,97 +548,62 @@ export default function SelectLocationScreen() {
     refreshCurrentLocationPreview,
   ]);
 
-  // Autocomplete 250ms debounce; pincode (6 digits) or normal search (2+ chars)
+  // GPS updates must not restart a search in flight; ~1 km of movement is enough to matter.
+  const searchProximity = useMemo(
+    () =>
+      coords?.latitude != null && coords?.longitude != null
+        ? { latitude: coords.latitude, longitude: coords.longitude }
+        : undefined,
+    [coords?.latitude, coords?.longitude]
+  );
+  const searchProximityRef = useRef(searchProximity);
+  searchProximityRef.current = searchProximity;
+  const searchProximityKey = searchProximity
+    ? `${searchProximity.latitude.toFixed(2)},${searchProximity.longitude.toFixed(2)}`
+    : "";
+
+  // Autocomplete debounce; pincode (6 digits) or normal search (2+ chars)
   useEffect(() => {
     const query = searchQuery.trim();
     const isPincode = isPincodeSearchMode(query);
     const minChars = isPincode ? 6 : 2;
+    setSearchUnavailable(false);
     if (query.length < minChars) {
+      searchAbortRef.current?.abort();
       setSearchResults([]);
-      setSearchFailsafe(false);
+      setSearchLoading(false);
       return;
     }
+    // Loading from the first keystroke, so "No places found" never flashes during debounce.
+    setSearchLoading(true);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       debounceRef.current = null;
       searchAbortRef.current?.abort();
       const controller = new AbortController();
       searchAbortRef.current = controller;
-      setSearchLoading(true);
-      setSearchFailsafe(false);
-      const proximity =
-        coords?.latitude != null && coords?.longitude != null
-          ? { latitude: coords.latitude, longitude: coords.longitude }
-          : undefined;
-      const reqKey = `${query.toLowerCase()}|${proximity?.longitude ?? ""},${proximity?.latitude ?? ""}`;
-      if (lastSearchKeyRef.current === reqKey) {
-        setSearchLoading(false);
-        return;
-      }
-      lastSearchKeyRef.current = reqKey;
       const getLocal = (q: string) => addressService.getLocationSearchSuggestions(q, 10);
       const getCityAreas = (city: string) => addressService.getCityAreaSuggestions(city, 10);
       searchPlacesEnriched(query, {
         signal: controller.signal,
-        proximity,
+        proximity: searchProximityRef.current,
         sessionContext: "food-delivery",
         recentLocationKeys: getRecentLocationKeys(),
         getLocalSuggestions: getLocal,
         getCityAreas,
+        onPartialResults: (partial) => {
+          if (!controller.signal.aborted) setSearchResults(partial);
+        },
       })
         .then((results) => {
           if (controller.signal.aborted) return;
           LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
           setSearchResults(results);
-          // Rule 4: In pincode mode do NOT show random nearby locations when no exact match.
-          if (results.length === 0 && !isPincodeSearchMode(query)) {
-            setSearchFailsafe(true);
-            getLocal(query).then((local) => {
-              if (controller.signal.aborted) return;
-              const enriched: EnrichedPlaceResult[] = local.map((l) => {
-                const distanceKm =
-                  coords?.latitude != null && coords?.longitude != null
-                    ? (() => {
-                        const R = 6371;
-                        const dLat = ((l.latitude - coords.latitude) * Math.PI) / 180;
-                        const dLon = ((l.longitude - coords.longitude) * Math.PI) / 180;
-                        const a =
-                          Math.sin(dLat / 2) ** 2 +
-                          Math.cos((coords.latitude * Math.PI) / 180) *
-                            Math.cos((l.latitude * Math.PI) / 180) *
-                            Math.sin(dLon / 2) ** 2;
-                        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-                        return R * c;
-                      })()
-                    : undefined;
-                return {
-                  primary: l.primary,
-                  secondary: l.secondary,
-                  fullAddress: l.fullAddress,
-                  latitude: l.latitude,
-                  longitude: l.longitude,
-                  confidenceScore: 0.75,
-                  source: "local",
-                  usageCount: l.usageCount,
-                  city: l.city,
-                  area: l.area,
-                  distanceKm,
-                };
-              });
-              // Show nearest first (ascending by distance)
-              if (coords?.latitude != null && coords?.longitude != null) {
-                enriched.sort((a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity));
-              }
-              if (enriched.length > 0) {
-                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                setSearchResults(enriched);
-              }
-              setSearchFailsafe(false);
-            });
-          }
         })
         .catch(() => {
-          if (!controller.signal.aborted) setSearchResults([]);
+          if (controller.signal.aborted) return;
+          setSearchResults([]);
+          setSearchUnavailable(true);
         })
         .finally(() => {
           if (!controller.signal.aborted) setSearchLoading(false);
@@ -659,62 +613,81 @@ export default function SelectLocationScreen() {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       searchAbortRef.current?.abort();
     };
-  }, [searchQuery, coords?.latitude, coords?.longitude]);
+  }, [searchQuery, searchProximityKey, searchRetryNonce, getRecentLocationKeys]);
 
   const handleUseCurrentLocation = async () => {
-    // Always pull a fresh GPS fix, set it as the session location, then close this sheet.
+    // Pull a live GPS fix, make it the session location, and close this sheet at once.
+    const startedAt = Date.now();
     await requestPermissionAndFetch({ forceDevice: true });
     const osPermission = await Location.getForegroundPermissionsAsync();
-    const { permissionStatus, coords: latestCoords, address: latestAddress } = useLocationStore.getState();
+    const waitLeft = USE_CURRENT_FIX_WAIT_MS - (Date.now() - startedAt);
+    if (waitLeft > 0 && useLocationStore.getState().permissionStatus === "granted" && osPermission.status === "granted") {
+      await awaitLiveDeviceFix(waitLeft);
+    }
+    const {
+      permissionStatus,
+      coords: latestCoords,
+      address: latestAddress,
+      locationSource: latestSource,
+    } = useLocationStore.getState();
     const hasLocationAccess = permissionStatus === "granted" && osPermission.status === "granted";
 
-    if (!hasLocationAccess || !latestCoords) {
-      try {
-        await profileService.updateProfile({ location_permission: false });
-      } catch {
-        // Non-blocking; user flow should continue.
+    // Still "selected" means no fix arrived: those coords are the old pin, not the device.
+    if (!hasLocationAccess || !latestCoords || latestSource === "selected") {
+      if (!hasLocationAccess) {
+        void profileService.updateProfile({ location_permission: false }).catch(() => {});
       }
       Alert.alert("Location not found", "We couldn't detect your location. Try again or search manually.");
       return;
     }
 
-    try {
-      await Promise.all([
-        clearPersistedSelection(),
-        addressService.setActiveLocation({
-          latitude: latestCoords.latitude,
-          longitude: latestCoords.longitude,
-          address: latestAddress?.fullAddress ?? latestAddress?.primary ?? "Current location",
-          addressId: null,
-        }),
-        profileService
-          .updateProfile({
-            location_permission: true,
-            latitude: latestCoords.latitude,
-            longitude: latestCoords.longitude,
-          })
-          .catch(() => {}),
-      ]);
-      setAddressAndCoords(
-        latestAddress ?? {
-          primary: "Current location",
-          secondary: "",
-          fullAddress: "Current location",
-        },
-        latestCoords,
-        { source: "current" }
-      );
-      void invalidateFoodHomeLocationQueries(queryClient);
-    } finally {
-      safeBack();
-    }
+    // Local first, so closing never depends on the network. The address itself follows
+    // from the store's geocode. A failed write is corrected by the next reconcile.
+    setAddressAndCoords(
+      latestAddress ?? {
+        primary: "Current location",
+        secondary: "",
+        fullAddress: "Current location",
+      },
+      latestCoords,
+      { source: "current" }
+    );
+    void invalidateFoodHomeLocationQueries(queryClient);
+    safeBack();
+
+    void clearPersistedSelection();
+    void addressService
+      .setActiveLocation({
+        latitude: latestCoords.latitude,
+        longitude: latestCoords.longitude,
+        address: isPlaceholderAddress(latestAddress)
+          ? "Current location"
+          : (latestAddress?.fullAddress ?? latestAddress?.primary ?? "Current location"),
+        addressId: null,
+      })
+      .catch(() => {})
+      .finally(() => {
+        void queryClient.invalidateQueries({ queryKey: ["active-location"] });
+      });
+    void profileService
+      .updateProfile({
+        location_permission: true,
+        latitude: latestCoords.latitude,
+        longitude: latestCoords.longitude,
+      })
+      .catch(() => {});
   };
 
   const handleAddAddressDirect = async () => {
     if (navLockRef.current) return;
     navLockRef.current = true;
     try {
+      const startedAt = Date.now();
       await requestPermissionAndFetch({ forceDevice: true });
+      const waitLeft = USE_CURRENT_FIX_WAIT_MS - (Date.now() - startedAt);
+      if (waitLeft > 0 && useLocationStore.getState().permissionStatus === "granted") {
+        await awaitLiveDeviceFix(waitLeft);
+      }
       const { permissionStatus, coords: latestCoords, address: latestAddress } = useLocationStore.getState();
       if (permissionStatus !== "granted" || !latestCoords) {
         navLockRef.current = false;
@@ -729,8 +702,10 @@ export default function SelectLocationScreen() {
         params: {
           latitude: String(latestCoords.latitude),
           longitude: String(latestCoords.longitude),
-          primary: latestAddress?.primary ?? "Current location",
-          fullAddress: latestAddress?.fullAddress ?? "",
+          primary: isPlaceholderAddress(latestAddress)
+            ? "Current location"
+            : (latestAddress?.primary ?? "Current location"),
+          fullAddress: isPlaceholderAddress(latestAddress) ? "" : (latestAddress?.fullAddress ?? ""),
           ...forwardParams,
         },
       });
@@ -782,6 +757,7 @@ export default function SelectLocationScreen() {
       });
     } catch {
       navLockRef.current = false;
+      Alert.alert("Location unavailable", "Please check your connection and try again.");
     } finally {
       setResolvingSearchPlace(false);
     }
@@ -841,6 +817,8 @@ export default function SelectLocationScreen() {
       void invalidateFoodHomeLocationQueries(queryClient);
       setPendingNearbyPlace(null);
       safeBack();
+    } catch {
+      Alert.alert("Could not set location", "Please check your connection and try again.");
     } finally {
       setResolvingSearchPlace(false);
     }
@@ -905,8 +883,9 @@ export default function SelectLocationScreen() {
         { source: "selected" }
       );
       void invalidateFoodHomeLocationQueries(queryClient);
-    } finally {
       safeBack();
+    } catch {
+      Alert.alert("Could not set location", "Please check your connection and try again.");
     }
   };
 
@@ -1053,12 +1032,28 @@ export default function SelectLocationScreen() {
         )}
         {showSearchSection && searchResults.length === 0 && (
           <View style={styles.emptySaved}>
-            {searchFailsafe || searchLoading ? (
+            {searchLoading ? (
               <>
                 <ActivityIndicator size="small" color={BRAND} />
                 <AppText style={[styles.emptySavedText, { marginTop: 12 }]}>
                   Searching nearby known places…
                 </AppText>
+              </>
+            ) : searchUnavailable ? (
+              <>
+                <View style={styles.emptyIconWrap}>
+                  <Ionicons name="cloud-offline-outline" size={40} color={BORDER} />
+                </View>
+                <AppText style={styles.emptySavedText}>
+                  Couldn't search right now. Please check your connection.
+                </AppText>
+                <TouchableOpacity
+                  onPress={() => setSearchRetryNonce((n) => n + 1)}
+                  hitSlop={10}
+                  activeOpacity={0.8}
+                >
+                  <AppText style={[styles.emptySavedText, { marginTop: 12, color: BRAND }]}>Try again</AppText>
+                </TouchableOpacity>
               </>
             ) : isPincodeSearchMode(searchQuery.trim()) ? (
               <>

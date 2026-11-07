@@ -11,7 +11,7 @@
  */
 
 import { addressService } from "@/services/address.service";
-import { useLocationStore } from "@/store/locationStore";
+import { isPlaceholderAddress, useLocationStore } from "@/store/locationStore";
 import { isActiveLocationReconcileReady } from "@/lib/activeLocationReconcileGate";
 
 export async function syncActiveLocationFromStore(): Promise<void> {
@@ -30,7 +30,9 @@ export async function syncActiveLocationFromStore(): Promise<void> {
     await addressService.setActiveLocation({
       latitude: coords.latitude,
       longitude: coords.longitude,
-      address: address?.fullAddress ?? address?.primary ?? "Current location",
+      address: isPlaceholderAddress(address)
+        ? "Current location"
+        : (address?.fullAddress ?? address?.primary ?? "Current location"),
       // omit addressId — preserve backend-bound saved address if any
     });
   } catch {

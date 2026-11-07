@@ -103,14 +103,113 @@ export function dedupeSearchResults(results: EnrichedPlaceResult[]): EnrichedPla
       ? `mbx:${mapboxId}`
       : `${item.primary.trim().toLowerCase()}|${(item.city ?? item.secondary).trim().toLowerCase()}`;
     const existing = byKey.get(key);
-    if (!existing || (item.confidenceScore ?? 0) > (existing.confidenceScore ?? 0)) {
+    const delta = (item.confidenceScore ?? 0) - (existing?.confidenceScore ?? 0);
+    // On a tie keep the broader feature: "Andheri West" the locality, not a street of that name.
+    if (!existing || delta > 0 || (delta === 0 && featureRank(item) > featureRank(existing))) {
       byKey.set(key, item);
     }
   }
   return Array.from(byKey.values());
 }
 
-/** Sort + filter + dedupe like Rapido: exact → POI/place → nearby. */
+/** Nearby results beat equally-named ones in another state; a far exact match can still win. */
+function distanceBonus(distanceKm: number | undefined): number {
+  if (distanceKm == null) return 0;
+  if (distanceKm <= 3) return 5;
+  if (distanceKm <= 10) return 4;
+  if (distanceKm <= 30) return 3;
+  if (distanceKm <= 100) return 1;
+  if (distanceKm <= 500) return -1;
+  return -4;
+}
+
+/**
+ * Text match for ordering. A hit in the place's own name counts in full; one only in its
+ * address counts for half, so a salon that merely IS in "Koramangala 5th Block" cannot
+ * outrank the neighbourhood actually called that. (Such hits still pass the relevance
+ * filter, which uses bestMatchScore.)
+ */
+function rankingTextScore(result: EnrichedPlaceResult, query: string): number {
+  return Math.max(primaryMatchScore(result.primary, query), bestMatchScore(result, query) * 0.5);
+}
+
+/** Overall relevance. Text match leads; type, distance and provider confidence adjust it. */
+export function suggestionRelevance(result: EnrichedPlaceResult, query: string): number {
+  return (
+    rankingTextScore(result, query) +
+    featureRank(result) * 0.6 +
+    distanceBonus(result.distanceKm) +
+    (result.confidenceScore ?? 0) * 2
+  );
+}
+
+function kmBetween(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function normalizedName(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/**
+ * Combine Search Box and Geocoding v6 results. The same place found by both is kept once,
+ * preferring the v6 entry: it already has coordinates, so tapping it is instant.
+ * Fills in distance from the user wherever a provider left it out.
+ */
+export function mergeProviderResults(
+  searchBox: EnrichedPlaceResult[],
+  geocoding: EnrichedPlaceResult[],
+  user?: { latitude: number; longitude: number }
+): EnrichedPlaceResult[] {
+  const seen = new Set(
+    geocoding.map((r) => `${normalizedName(r.primary)}|${normalizedName(r.city ?? "")}`)
+  );
+  const merged = [
+    ...geocoding,
+    ...searchBox.filter((r) => !seen.has(`${normalizedName(r.primary)}|${normalizedName(r.city ?? "")}`)),
+  ];
+  if (!user) return merged;
+  return merged.map((r) => {
+    if (r.distanceKm != null || r.pendingRetrieve) return r;
+    return { ...r, distanceKm: kmBetween(user.latitude, user.longitude, r.latitude, r.longitude) };
+  });
+}
+
+const LEADING_UNIT = /^(?:flat|house|h\.?\s?no\.?|plot|room|shop|door|no\.?|#)\s*[\w/-]+[\s,]+/i;
+const LEADING_RELATION = /^(?:near|nr\.?|opp\.?|opposite|behind|beside|next to|in front of)\s+/i;
+
+/**
+ * Simpler forms of a full typed address, for when it finds nothing as written. People
+ * type "Flat 203, Shanti Apartment, Kankarbagh, Patna"; the map knows the last parts.
+ * Most specific first, excluding the original.
+ */
+export function simplifySearchQuery(query: string): string[] {
+  const original = query.trim();
+  const stripped = original.replace(LEADING_UNIT, "").replace(LEADING_RELATION, "").trim();
+  const parts = stripped.split(",").map((p) => p.trim()).filter(Boolean);
+  const words = stripped.replace(/,/g, " ").split(/\s+/).filter(Boolean);
+  const variants = [
+    stripped,
+    parts.length >= 2 ? parts.slice(-2).join(", ") : "",
+    parts.length < 2 && words.length > 3 ? words.slice(-3).join(" ") : "",
+    words.length > 1 ? words.slice(-2).join(" ") : "",
+  ];
+  const seen = new Set([original.toLowerCase()]);
+  return variants.filter((v) => {
+    const key = v.toLowerCase();
+    if (v.length < 3 || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** Sort + filter + dedupe like Rapido: best overall relevance first. */
 export function finalizeRapidoSuggestions(
   results: EnrichedPlaceResult[],
   query: string,
@@ -129,22 +228,11 @@ export function finalizeRapidoSuggestions(
     : deduped;
 
   filtered.sort((a, b) => {
-    // Sort by best field match (not primary-only) so address/locality hits rank correctly.
-    const textA = bestMatchScore(a, trimmed);
-    const textB = bestMatchScore(b, trimmed);
-    if (textA !== textB) return textB - textA;
-
-    const featA = featureRank(a);
-    const featB = featureRank(b);
-    if (featA !== featB) return featB - featA;
-
-    const conf = (b.confidenceScore ?? 0) - (a.confidenceScore ?? 0);
-    if (Math.abs(conf) > 0.03) return conf;
-
+    const score = suggestionRelevance(b, trimmed) - suggestionRelevance(a, trimmed);
+    if (Math.abs(score) > 0.001) return score;
     const da = a.distanceKm ?? Infinity;
     const db = b.distanceKm ?? Infinity;
     if (da !== db) return da - db;
-
     return a.primary.localeCompare(b.primary);
   });
 
