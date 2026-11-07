@@ -1456,7 +1456,7 @@ export default function FoodMerchantsScreen() {
     ]) {
       if (!raw?.trim()) continue;
       const uri = toAbsoluteImageUrl(raw) ?? raw;
-      void Image.prefetch(uri, { cachePolicy: "memory-disk" });
+      void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => {});
     }
   }, [
     isGridFirstLayout,

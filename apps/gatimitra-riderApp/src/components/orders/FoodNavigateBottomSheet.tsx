@@ -99,6 +99,14 @@ type Props = {
    * slider is enabled on arrival and the "wait for restaurant" hint is hidden.
    */
   forcePickupReady?: boolean;
+  /**
+   * Parcel pay-at-pickup: show Collect Payment before Mark Pickup until cash is recorded.
+   */
+  requirePickupCashCollect?: boolean;
+  onCollectPayment?: () => void;
+  collectPaymentLoading?: boolean;
+  /** Bump when collect-payment sheet is dismissed so the slider thumb returns left. */
+  collectPaymentResetKey?: string | number;
 };
 
 function ActionIconButton({
@@ -198,6 +206,10 @@ export function FoodNavigateBottomSheetInner({
   routeMeta,
   suppressDropDeliverSlider = false,
   forcePickupReady = false,
+  requirePickupCashCollect = false,
+  onCollectPayment,
+  collectPaymentLoading = false,
+  collectPaymentResetKey = 0,
 }: Props) {
   const { t } = useTranslation();
   const { isShortHeight, height } = useResponsiveLayout();
@@ -216,24 +228,44 @@ export function FoodNavigateBottomSheetInner({
 
   const showReachStore =
     phase === "pickup" && !pickupConfirmed && !rideStarted && !reachSliderDone;
-  const showMarkPickup =
+  const atPickupForActions =
     phase === "pickup" &&
     !rideStarted &&
     !hideMarkPickupWhilePickSheet &&
     (pickupConfirmed || reachSliderDone);
+  const showCollectPayment =
+    atPickupForActions && requirePickupCashCollect && !!onCollectPayment;
+  const showMarkPickup = atPickupForActions && !requirePickupCashCollect;
   const showReachCustomer = phase === "drop" && rideStarted && !atCustomer && !orderDelivered;
   const showDelivered =
     phase === "drop" && atCustomer && !orderDelivered && !suppressDropDeliverSlider;
 
-  const reachStoreGeo = resolveMilestoneGeoUi(milestoneGeo?.reach_store, "reach_store");
-  const markPickupGeo = resolveMilestoneGeoUi(milestoneGeo?.mark_picked_up, "mark_picked_up");
+  /** Parcel geo API uses reach_pickup/pickup_confirmation/reach_drop/delivery_confirmation;
+   * food sheet historically looked up food keys — alias so out-of-range locks the slider. */
+  const isParcel = order.category === "parcel";
+  const reachStoreGeo = resolveMilestoneGeoUi(
+    isParcel
+      ? milestoneGeo?.reach_pickup ?? milestoneGeo?.reach_store
+      : milestoneGeo?.reach_store,
+    isParcel ? "reach_pickup" : "reach_store"
+  );
+  const markPickupGeo = resolveMilestoneGeoUi(
+    isParcel
+      ? milestoneGeo?.pickup_confirmation ?? milestoneGeo?.mark_picked_up
+      : milestoneGeo?.mark_picked_up,
+    isParcel ? "pickup_confirmation" : "mark_picked_up"
+  );
   const reachCustomerGeo = resolveMilestoneGeoUi(
-    milestoneGeo?.reach_customer,
-    "reach_customer"
+    isParcel
+      ? milestoneGeo?.reach_drop ?? milestoneGeo?.reach_customer
+      : milestoneGeo?.reach_customer,
+    isParcel ? "reach_drop" : "reach_customer"
   );
   const markDeliveredGeo = resolveMilestoneGeoUi(
-    milestoneGeo?.mark_delivered,
-    "mark_delivered"
+    isParcel
+      ? milestoneGeo?.delivery_confirmation ?? milestoneGeo?.mark_delivered
+      : milestoneGeo?.mark_delivered,
+    isParcel ? "delivery_confirmation" : "mark_delivered"
   );
 
   const fullAddress = [pickupAddress, pickupLandmark].filter(Boolean).join(", ");
@@ -244,6 +276,17 @@ export function FoodNavigateBottomSheetInner({
   /** Pre-pickup: restaurant only. Post-pickup / drop leg: customer only. */
   const activeAddress = phase === "drop" ? dropFull : pickupFull;
   const activeIsDrop = phase === "drop";
+
+  const parcelHeaderName =
+    order.category === "parcel"
+      ? phase === "drop"
+        ? order.receiverName?.trim() ||
+          order.customerName?.trim() ||
+          t("orders.activeParcel.receiverFallback", "Receiver")
+        : order.customerName?.trim() ||
+          order.customerPrimaryName?.trim() ||
+          t("orders.activeParcel.senderFallback", "Sender")
+      : null;
 
   const atStore = pickupConfirmed || reachSliderDone;
   /** Ready to pick up: merchant marked the order ready, or the service has no
@@ -310,6 +353,19 @@ export function FoodNavigateBottomSheetInner({
           geoLocked={reachStoreGeo.locked}
           geoHint={reachStoreGeo.hintText}
           actionName="reached_pickup"
+        />
+      ) : null}
+
+      {showCollectPayment ? (
+        <FoodSlideToReachStore
+          label={t("orders.activeParcel.slideCollectPayment", "Collect Payment")}
+          onComplete={onCollectPayment!}
+          loading={collectPaymentLoading}
+          disabled={collectPaymentLoading}
+          completed={false}
+          completedLabel={t("orders.activeParcel.paymentCollected", "Payment collected ✓")}
+          actionName="collect_payment"
+          resetKey={collectPaymentResetKey}
         />
       ) : null}
 
@@ -399,9 +455,9 @@ export function FoodNavigateBottomSheetInner({
               <View style={[rowLayout.rowStart, styles.customerHeaderRow]}>
                 <View style={[styles.customerInfoCol, rowLayout.grow]}>
                   <Text style={[styles.locationName, flexShrinkText]} numberOfLines={2}>
-                    {restaurantName}
+                    {parcelHeaderName || restaurantName}
                   </Text>
-                  {phase === "drop" ? (
+                  {order.category === "parcel" || phase === "drop" ? (
                     <Text style={[styles.orderIdLine, flexShrinkText]} numberOfLines={1}>
                       <Text style={styles.orderIdPrefix}>
                         {t("orders.activeFood.orderPrefix", "Order")}:{" "}
@@ -499,13 +555,20 @@ export function FoodNavigateBottomSheetInner({
           </View>
         ) : (
           <View style={styles.sheetBody}>
-            <View style={[rowLayout.row, styles.collapsedHeader]}>
-              <Text style={[styles.collapsedTitle, flexShrinkText]} numberOfLines={1}>
-                {restaurantName}
-              </Text>
-              <Text style={[styles.collapsedDistance, rowLayout.noShrink]} numberOfLines={1}>
-                {distanceLabel}
-              </Text>
+            <View style={styles.collapsedHeaderBlock}>
+              <View style={[rowLayout.row, styles.collapsedHeader]}>
+                <Text style={[styles.collapsedTitle, flexShrinkText]} numberOfLines={1}>
+                  {parcelHeaderName || restaurantName}
+                </Text>
+                <Text style={[styles.collapsedDistance, rowLayout.noShrink]} numberOfLines={1}>
+                  {distanceLabel}
+                </Text>
+              </View>
+              {activeAddress ? (
+                <Text style={[styles.collapsedAddress, flexShrinkText]} numberOfLines={2}>
+                  {activeAddress}
+                </Text>
+              ) : null}
             </View>
           </View>
         )}
@@ -634,8 +697,9 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 10,
-    marginBottom: 6,
-    paddingTop: 10,
+    marginBottom: 4,
+    paddingTop: 0,
+    marginTop: -4,
   },
   customerInfoCol: {
     flex: 1,
@@ -800,7 +864,7 @@ const styles = StyleSheet.create({
     fontFamily: LORA_BOLD,
     fontWeight: "700",
     color: "#202124",
-    marginBottom: 2,
+    marginBottom: 0,
     letterSpacing: -0.3,
     lineHeight: 22,
   },
@@ -841,7 +905,8 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
   orderIdLine: {
-    marginBottom: 12,
+    marginTop: 1,
+    marginBottom: 8,
   },
   orderIdPrefix: {
     fontSize: 14,
@@ -914,11 +979,15 @@ const styles = StyleSheet.create({
   actionIconBtnTextDisabled: {
     color: "#9AA0A6",
   },
+  collapsedHeaderBlock: {
+    width: "100%",
+    marginBottom: 8,
+    gap: 4,
+  },
   collapsedHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginBottom: 8,
   },
   collapsedTitle: {
     flex: 1,
@@ -933,6 +1002,13 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#202124",
     flexShrink: 0,
+  },
+  collapsedAddress: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: colors.gray[700],
+    lineHeight: 18,
+    paddingHorizontal: 8,
   },
   delayBannerWrap: {
     width: "100%",

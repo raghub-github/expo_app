@@ -34,6 +34,8 @@ export type NativeOrderAlert = {
   /** active | muted | terminal — absent on older native builds → treat as active. */
   alertState?: string;
   startedAt: number;
+  /** ISO / epoch string from FCM — used to stop expired alerts on app open. */
+  expiresAt?: string;
 };
 
 export type { NativePendingOrderAction } from "./pendingOrderAction";

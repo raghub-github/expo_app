@@ -8,11 +8,13 @@
  *   - sub: <userId>               (server-authoritative, NOT from client)
  *   - channels: ["order:GM…", …]  (whitelist; gateway uses verbatim)
  *
- * The client can only request channels the caller is entitled to (their own
- * order, their own rider id). The route enforces that — it doesn't trust the
- * request body for `sub`.
+ * Auth:
+ *   1. Bearer JWT (customer/rider apps) — auth plugin required:false + sub check
+ *   2. X-Internal-Secret (Control Dashboard proxy) — dashboard already verified
+ *      the admin via Supabase cookies; admin JWTs often fail HS256 verify here
+ *      (asymmetric Supabase signing keys), so internal secret is the gate.
  */
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { SignJWT } from "jose";
 import { ulid } from "ulid";
@@ -32,6 +34,16 @@ const ZONE_KEY_RE = /^grid:-?\d+(\.\d+)?_-?\d+(\.\d+)?$/;
 
 const TICKET_TTL_SEC = 60;
 
+function internalSecretGrantsAccess(req: FastifyRequest): boolean {
+  const env = getEnv();
+  const header = String(req.headers["x-internal-secret"] ?? "").trim();
+  if (!header) return false;
+  const candidates = [env.INTERNAL_API_TOKEN, env.BACKEND_SCHEDULE_TICK_SECRET]
+    .map((s) => (typeof s === "string" ? s.trim() : ""))
+    .filter(Boolean);
+  return candidates.includes(header);
+}
+
 export async function wsTicketRoutes(app: FastifyInstance) {
   /** REST backend does not host websockets — avoids opaque 404 in dev logs. */
   app.get("/ws", async (_req, reply) => {
@@ -44,7 +56,22 @@ export async function wsTicketRoutes(app: FastifyInstance) {
   });
 
   app.register(async (scoped) => {
-    await scoped.register(auth, { required: true });
+    // Optional JWT so dashboard internal-secret callers are not rejected before
+    // our preHandler can grant access.
+    await scoped.register(auth, { required: false });
+
+    scoped.addHook("preHandler", async (req: FastifyRequest, reply: FastifyReply) => {
+      if (req.auth?.sub) return;
+      if (!internalSecretGrantsAccess(req)) {
+        return reply.code(401).send({ ok: false, error: "unauthorized" });
+      }
+      const actorSubRaw = String(req.headers["x-actor-sub"] ?? "").trim();
+      const actorRoleRaw = String(req.headers["x-actor-role"] ?? "").trim();
+      req.auth = {
+        sub: actorSubRaw || "dashboard",
+        role: actorRoleRaw || "admin",
+      };
+    });
 
     scoped.post(
       "/auth/ws-ticket",

@@ -125,7 +125,9 @@ const PICKUP_ZONE_STROKE_ID = "pickup-zone-stroke";
 const DROP_ZONE_SOURCE_ID = "drop-zone";
 const DROP_ZONE_FILL_ID = "drop-zone-fill";
 const DROP_ZONE_STROKE_ID = "drop-zone-stroke";
-const MAP_STYLE = "mapbox://styles/mapbox/standard";
+/** Streets is more reliable in dashboard cards than Standard (fewer 3D/model failures). */
+const MAP_STYLE = "mapbox://styles/mapbox/streets-v12";
+const MAP_STYLE_FALLBACK = "mapbox://styles/mapbox/light-v11";
 /** Flat 2D day navigation — no 3D buildings / tilt. */
 const MAP_INITIAL_ZOOM = 14.2;
 const MAP_INITIAL_PITCH = 0;
@@ -749,9 +751,18 @@ export default function RiderRouteMap({
 
   const isTerminalOrder = useMemo(() => {
     return [orderStatus, coreStatus, foodOrderStatus]
-      .map((s) => String(s ?? "").toUpperCase())
+      .map((s) => String(s ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_"))
       .some((s) =>
-        ["DELIVERED", "CANCELLED", "FAILED", "REJECTED", "COMPLETED"].includes(s)
+        [
+          "DELIVERED",
+          "COMPLETED",
+          "CANCELLED",
+          "CANCELED",
+          "FAILED",
+          "REJECTED",
+          "ORDER_DELIVERED",
+          "DELIVERY_COMPLETED",
+        ].includes(s)
       );
   }, [orderStatus, coreStatus, foodOrderStatus]);
 
@@ -2205,18 +2216,6 @@ export default function RiderRouteMap({
 
         const enableDayNavBasemap = () => {
           try {
-            // Day mode 2D navigation — no 3D buildings/landmarks/trees.
-            map.setConfigProperty("basemap", "show3dObjects", false);
-            map.setConfigProperty("basemap", "lightPreset", "day");
-            map.setConfigProperty("basemap", "theme", "default");
-            map.setConfigProperty("basemap", "showPointOfInterestLabels", true);
-            map.setConfigProperty("basemap", "showPlaceLabels", true);
-            map.setConfigProperty("basemap", "showRoadLabels", true);
-            map.setConfigProperty("basemap", "showTransitLabels", true);
-          } catch {
-            /* style may not expose basemap config yet */
-          }
-          try {
             map.easeTo({
               pitch: MAP_INITIAL_PITCH,
               duration: 0,
@@ -2227,6 +2226,7 @@ export default function RiderRouteMap({
         };
         map.on("style.load", enableDayNavBasemap);
 
+        let styleFallbackTried = false;
         const lockUserView = (e?: { originalEvent?: unknown }) => {
           if (e?.originalEvent != null) {
             userControlsViewRef.current = true;
@@ -2268,7 +2268,6 @@ export default function RiderRouteMap({
             riderRouteAnchor,
             trackingRef.current?.rider?.assignment_status ?? null
           );
-          // fitBounds can race style load — re-apply day 2D camera after fit.
           enableDayNavBasemap();
 
           const resizeMap = () => {
@@ -2280,11 +2279,26 @@ export default function RiderRouteMap({
           };
           requestAnimationFrame(resizeMap);
           window.setTimeout(resizeMap, 150);
+          window.setTimeout(resizeMap, 500);
+          window.setTimeout(resizeMap, 1200);
+          map.once("idle", resizeMap);
         });
 
         map.on("error", (e: { error?: { message?: string } }) => {
           const msg = e?.error?.message ?? "";
           const errorType = (e?.error as { type?: string } | undefined)?.type ?? "";
+          if (
+            !styleFallbackTried &&
+            (msg.includes("style") || msg.includes("Failed to fetch") || msg.includes("401"))
+          ) {
+            styleFallbackTried = true;
+            try {
+              map.setStyle(MAP_STYLE_FALLBACK);
+            } catch {
+              /* ignore */
+            }
+            return;
+          }
           const isTileError =
             msg.includes("tile") ||
             msg.includes("vector.pbf") ||

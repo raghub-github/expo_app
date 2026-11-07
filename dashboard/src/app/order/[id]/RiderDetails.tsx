@@ -1384,7 +1384,7 @@ export default function RiderDetails({
           </div>
           {!showPickupHelpMessage ? (
             <div className="flex shrink-0 items-center gap-1.5">
-              {order.orderId != null ? (
+              {hasAssignedRider && order.orderId != null ? (
                 <button
                   type="button"
                   className="shrink-0 inline-flex items-center gap-1 text-[10px] font-semibold bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded-full transition-colors cursor-pointer"
@@ -1510,13 +1510,35 @@ export default function RiderDetails({
                   )}
                 </DetailField>
               </div>
-              {/* Same 3-col grid as wait/rating/tip so View Delivery image left edge matches Cx rating. */}
+              {/* OTP + Cx rating share one row; delivery image stays in the 3rd column. */}
               <div className="col-span-2 grid grid-cols-3 gap-x-3 gap-y-1 min-w-0 items-end">
                 <DetailField label="Delivery OTP">
                   <span className="inline-flex w-fit px-2 py-0.5 border border-dashed border-emerald-400 bg-emerald-50 rounded font-mono text-emerald-700 font-bold tracking-[0.12em]">
                     {deliveryOtp}
                   </span>
                 </DetailField>
+                {showRiderRating && customerFeedback?.deliveryRating != null ? (
+                  <DetailField label="Cx rating">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onOpenFeedback?.();
+                      }}
+                      disabled={!onOpenFeedback}
+                      className="inline-flex items-center gap-1.5 cursor-pointer group font-semibold disabled:cursor-default disabled:opacity-70"
+                    >
+                      <OrderNum>{customerFeedback.deliveryRating}</OrderNum>
+                      <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400 shrink-0" aria-hidden />
+                      <span className="text-[10px] text-emerald-700 group-hover:underline">
+                        Feedback
+                      </span>
+                    </button>
+                  </DetailField>
+                ) : (
+                  <div />
+                )}
                 <div className="min-w-0 flex flex-col gap-0.5">
                   <span className="text-[10px] font-medium text-transparent select-none" aria-hidden>
                     .
@@ -1532,11 +1554,8 @@ export default function RiderDetails({
                     </button>
                   ) : null}
                 </div>
-                <div />
               </div>
-              {showStoreWaitTime ||
-              (showRiderRating && customerFeedback?.deliveryRating != null) ||
-              tipLabel ? (
+              {showStoreWaitTime || tipLabel ? (
                 <div className="col-span-2 grid grid-cols-3 gap-x-3 gap-y-1 min-w-0">
                   {showStoreWaitTime ? (
                     <DetailField label="Store wait time">
@@ -1557,23 +1576,7 @@ export default function RiderDetails({
                   ) : (
                     <div />
                   )}
-                  {showRiderRating && customerFeedback?.deliveryRating != null ? (
-                    <DetailField label="Cx rating">
-                      <button
-                        type="button"
-                        onClick={onOpenFeedback}
-                        className="inline-flex items-center gap-1.5 cursor-pointer group font-semibold"
-                      >
-                        <OrderNum>{customerFeedback.deliveryRating}</OrderNum>
-                        <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400 shrink-0" aria-hidden />
-                        <span className="text-[10px] text-emerald-700 group-hover:underline">
-                          Feedback
-                        </span>
-                      </button>
-                    </DetailField>
-                  ) : (
-                    <div />
-                  )}
+                  <div />
                   {tipLabel ? (
                     <DetailField label="Tip received">
                       <OrderNum className="font-bold text-emerald-700">{tipLabel}</OrderNum>

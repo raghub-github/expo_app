@@ -23,6 +23,7 @@ import {
 } from "./campaignTarget.js";
 import {
   dedupeNativeTokensForDispatch,
+  effectivePushRecipientRole,
   expandCustomerPushUserIds,
   shouldKeepPushRecipient,
 } from "./customerPushTokens.js";
@@ -55,6 +56,24 @@ function stalenessSql(
     return sql`AND (updated_at IS NULL OR updated_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)`;
   }
   return sql`AND (last_seen_at IS NULL OR last_seen_at >= now() - (${TOKEN_STALENESS_DAYS} || ' days')::interval)`;
+}
+
+/**
+ * Match role case-insensitively and keep legacy rows where role was never set.
+ * Same rule as lookupExpoPushToken — blank role must not hide a live device
+ * from All customers / All riders broadcasts.
+ */
+function roleMatchSql(
+  sql: ReturnType<typeof getSql>,
+  role: string | null | undefined,
+) {
+  if (!role || role === "all") return sql``;
+  const want = role.toLowerCase();
+  return sql`AND (
+    lower(coalesce(role, ${want})) = ${want}
+    OR role IS NULL
+    OR trim(role) = ''
+  )`;
 }
 
 function normaliseRole(r: string | null | undefined): NotificationRole {
@@ -150,7 +169,7 @@ async function tokensForUserIds(
     WHERE user_id = ANY(${lookupIds}::text[])
       AND expo_push_token IS NOT NULL
       ${stalenessSql(sql, "updated_at", opts?.ignoreStaleness)}
-      ${role && role !== "all" ? sql`AND lower(role) = ${role}` : sql``}
+      ${roleMatchSql(sql, role)}
     ORDER BY updated_at DESC NULLS LAST
   `) as unknown as Array<{
     user_id: string;
@@ -161,7 +180,7 @@ async function tokensForUserIds(
 
   return rows.map((r) => ({
     userId: r.user_id,
-    role: normaliseRole(r.role),
+    role: normaliseRole(effectivePushRecipientRole(r.role, role)),
     deviceToken: r.token,
     deviceId: null,
     platform: normalisePlatform(r.device_type),
@@ -199,13 +218,17 @@ async function nativeFcmTokens(opts: {
     native_token: string;
     source: string | null;
     device_model?: string | null;
+    device_brand?: string | null;
+    os_name?: string | null;
+    app_version?: string | null;
     last_seen_at?: Date | string | null;
   }> = [];
 
   try {
     if (storeIds.length > 0) {
       rows = (await sql`
-        SELECT user_id, role, platform, native_token, source, device_model, last_seen_at
+        SELECT user_id, role, platform, native_token, source,
+               device_model, device_brand, os_name, app_version, last_seen_at
         FROM public.native_device_push_tokens
         WHERE token_type = 'fcm'
           AND store_id = ANY(${storeIds}::bigint[])
@@ -214,16 +237,21 @@ async function nativeFcmTokens(opts: {
       `) as unknown as typeof rows;
     } else if (userIds.length > 0) {
       rows = (await sql`
-        SELECT user_id, role, platform, native_token, source, device_model, last_seen_at
+        SELECT user_id, role, platform, native_token, source,
+               device_model, device_brand, os_name, app_version, last_seen_at
         FROM public.native_device_push_tokens
         WHERE token_type = 'fcm'
           AND user_id = ANY(${userIds}::text[])
           ${stale}
-          ${role ? sql`AND lower(role) = ${role}` : sql``}
+          ${roleMatchSql(sql, role)}
       `) as unknown as typeof rows;
     } else if (opts.allForRole && role) {
+      // Strict role for inventory scans — blank-role tokens are picked up via
+      // census / userIds lookups with roleMatchSql instead (avoids merchant
+      // null-role rows leaking into All customers).
       rows = (await sql`
-        SELECT user_id, role, platform, native_token, source, device_model, last_seen_at
+        SELECT user_id, role, platform, native_token, source,
+               device_model, device_brand, os_name, app_version, last_seen_at
         FROM public.native_device_push_tokens
         WHERE token_type = 'fcm'
           AND lower(role) = ${role}
@@ -238,18 +266,46 @@ async function nativeFcmTokens(opts: {
 
   // App Android FCM is always included; preferNativeAndroidFcm drops Expo
   // duplicates for the same user so we do not double-notify.
-  return dedupeNativeTokensForDispatch(rows)
-    .filter((r) => {
-      if (!r.native_token || isExpoPushTokenString(r.native_token)) return false;
-      return true;
-    })
-    .map((r) => ({
-      userId: r.user_id,
-      role: normaliseRole(r.role),
-      deviceToken: r.native_token,
-      deviceId: null,
-      platform: normalisePlatform(r.platform),
-    }));
+  let selected = dedupeNativeTokensForDispatch(rows).filter((r) => {
+    if (!r.native_token || isExpoPushTokenString(r.native_token)) return false;
+    return true;
+  });
+
+  // Rider is single-device: FCM token rotation left multiple live rows for one
+  // handset and the template pipeline fanned out one tray card per token.
+  // Collapse here (same as direct-fallback sendRiderDispatchDirectPush).
+  if (role === "rider" && selected.length > 1) {
+    const { selectRiderPushDelivery } = await import("../../lib/rider-push-delivery.js");
+    const { nativeTokenSeenAt } = await import("./customerPushTokens.js");
+    const before = selected.length;
+    const { nativeTokens } = selectRiderPushDelivery({
+      nativeCandidates: selected.map((r) => ({
+        token: r.native_token,
+        deviceModel: r.device_model,
+        deviceBrand: r.device_brand,
+        osName: r.os_name,
+        appVersion: r.app_version,
+        lastSeenMs: nativeTokenSeenAt(r),
+      })),
+      expoCandidates: [],
+    });
+    const keep = new Set(nativeTokens);
+    selected = selected.filter((r) => keep.has(r.native_token));
+    if (before > selected.length) {
+      console.info(
+        "[notifications] collapsed_stale_rider_tokens",
+        JSON.stringify({ role, stored: before, sent: selected.length })
+      );
+    }
+  }
+
+  return selected.map((r) => ({
+    userId: r.user_id,
+    role: normaliseRole(effectivePushRecipientRole(r.role, role)),
+    deviceToken: r.native_token,
+    deviceId: null,
+    platform: normalisePlatform(r.platform),
+  }));
 }
 
 async function tokensFromMerchantStorePushTokens(opts: {
@@ -384,6 +440,8 @@ async function userIdsByRole(
 
   const ids = new Set<string>();
   try {
+    // Strict role for the inventory index — blank-role rows are recovered via
+    // the customers/riders census in recipientsForRole.
     const expoRows = (await sql`
       SELECT DISTINCT user_id FROM public.expo_push_tokens
       WHERE user_id IS NOT NULL
@@ -668,14 +726,30 @@ async function recipientsForRole(
   if (role === "merchant") {
     return merchantRecipients({ allStores: true, ignoreStaleness: opts?.ignoreStaleness });
   }
-  const ids = await userIdsByRole(role, opts);
+  const idSet = new Set<string>(await userIdsByRole(role, opts));
+  // Census fills gaps: tokens registered under a customer/rider id with a
+  // blank role never appear in userIdsByRole, so All customers was far below
+  // the account count even when devices had live tokens.
+  if (role === "customer") {
+    for (const id of await customerIdsForInboxFallback()) idSet.add(id);
+  } else if (role === "rider") {
+    for (const id of await riderIdsForInboxFallback()) idSet.add(id);
+  }
+  const ids = [...idSet];
   const expo = await tokensForUserIds(ids, role, opts);
-  const native = await nativeFcmTokens({
+  const nativeFromIds = await nativeFcmTokens({
+    userIds: ids,
+    role,
+    ignoreStaleness: opts?.ignoreStaleness,
+  });
+  const nativeAllRole = await nativeFcmTokens({
     allForRole: true,
     role,
     ignoreStaleness: opts?.ignoreStaleness,
   });
-  return preferNativeAndroidFcm(dedupeByToken([...expo, ...native]));
+  return preferNativeAndroidFcm(
+    dedupeByToken([...expo, ...nativeFromIds, ...nativeAllRole]),
+  );
 }
 
 const DEFAULT_GEO_RADIUS_KM = 25;

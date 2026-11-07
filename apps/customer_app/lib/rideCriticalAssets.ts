@@ -26,7 +26,7 @@ function prefetchUrisForAsset(item: AppAssetItem | undefined): void {
     const uri = toAbsoluteImageUrl(trimmed) ?? trimmed;
     if (!uri || prefetchedUris.has(uri)) continue;
     prefetchedUris.add(uri);
-    void Image.prefetch(uri, { cachePolicy: "memory-disk" });
+    void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => {});
   }
 }
 

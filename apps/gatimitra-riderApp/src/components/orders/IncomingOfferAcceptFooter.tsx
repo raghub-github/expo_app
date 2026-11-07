@@ -115,6 +115,7 @@ export const IncomingOfferAcceptFooter = memo(function IncomingOfferAcceptFooter
         variant={fuseUrgent ? "urgent" : "default"}
         sideInset={rs(12)}
         hapticOnComplete
+        claimOnTouchStart
       />
     </View>
   );

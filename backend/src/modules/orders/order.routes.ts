@@ -398,6 +398,10 @@ const orderDetailResponseSchema = z.object({
   refundAmount: z.number().optional().nullable(),
   fullyGatiCashUsed: z.boolean().optional().nullable(),
   gatiCashUsed: z.number().optional().nullable(),
+  /** Parcel cash COD: collect at pickup or drop. */
+  payAt: z.enum(["pickup", "drop"]).optional().nullable(),
+  /** Parcel: rider confirmed cash received. */
+  cashCollected: z.boolean().optional(),
   refund: z
     .object({
       status: z.string().nullable(),
@@ -1673,6 +1677,8 @@ export async function orderRoutes(app: FastifyInstance) {
                 assignedRiderId: ordersParcel.assignedRiderId,
                 receiverName: ordersParcel.receiverName,
                 receiverMobile: ordersParcel.receiverMobile,
+                payAt: ordersParcel.payAt,
+                cashCollectedAt: ordersParcel.cashCollectedAt,
               })
               .from(ordersParcel)
               .where(eq(ordersParcel.orderId, coreRow.id))
@@ -2336,6 +2342,19 @@ export async function orderRoutes(app: FastifyInstance) {
               pickupWaitingChargePerMin,
               estimatedPickupWaitingCharge,
             }
+          : {}),
+        ...(coreRow.orderType === "parcel"
+          ? (() => {
+              const rawPayAt = String(parcelMetaRow?.payAt ?? "").trim().toLowerCase();
+              const payAt =
+                rawPayAt === "drop" || rawPayAt === "pickup"
+                  ? (rawPayAt as "pickup" | "drop")
+                  : null;
+              return {
+                payAt,
+                cashCollected: parcelMetaRow?.cashCollectedAt != null,
+              };
+            })()
           : {}),
         deliveryPromiseComparison,
       };
@@ -3209,6 +3228,7 @@ export async function orderRoutes(app: FastifyInstance) {
       if (!orderRow) return reply.status(404).send({ error: "Order not found" });
 
       const isPersonRide = orderRow.orderType === "person_ride";
+      const isParcel = orderRow.orderType === "parcel";
 
       const statusUpper = normalizeCustomerOrderStatus(orderRow.currentStatus, orderRow.status);
       if (statusUpper !== "DELIVERED") {
@@ -3216,7 +3236,9 @@ export async function orderRoutes(app: FastifyInstance) {
           error: "order_not_delivered",
           message: isPersonRide
             ? "You can rate your captain after the ride is complete."
-            : "You can rate the store after delivery is complete.",
+            : isParcel
+              ? "You can rate your delivery partner after the parcel is delivered."
+              : "You can rate the store after delivery is complete.",
         });
       }
 
@@ -3226,16 +3248,19 @@ export async function orderRoutes(app: FastifyInstance) {
         storeId = null;
       }
 
-      if (!isPersonRide && storeId == null) {
+      if (!isPersonRide && !isParcel && storeId == null) {
         return reply.status(400).send({ error: "store_not_found" });
       }
 
-      if (isPersonRide && storeId == null) {
+      // Parcel / person-ride have no merchant store — reuse sentinel store for FK.
+      if ((isPersonRide || isParcel) && storeId == null) {
         storeId = await resolvePersonRideRatingStoreId();
         if (storeId == null) {
           return reply.status(400).send({
             error: "store_not_found",
-            message: "Captain rating is temporarily unavailable. Please try again later.",
+            message: isParcel
+              ? "Rider rating is temporarily unavailable. Please try again later."
+              : "Captain rating is temporarily unavailable. Please try again later.",
           });
         }
       }
@@ -3361,7 +3386,9 @@ export async function orderRoutes(app: FastifyInstance) {
           error: "rating_required",
           message: isPersonRide
             ? "Provide a captain rating."
-            : "Provide a restaurant and/or delivery rating.",
+            : isParcel
+              ? "Provide a delivery partner rating."
+              : "Provide a restaurant and/or delivery rating.",
         });
       }
 
@@ -3818,6 +3845,159 @@ export async function orderRoutes(app: FastifyInstance) {
           platformOfferId: body.platformOfferId,
         });
         return result;
+      } catch (err) {
+        const statusCode = (err as { statusCode?: number }).statusCode ?? 500;
+        const message = err instanceof Error ? err.message : "Payment failed";
+        if (statusCode === 404) return reply.status(404).send({ error: "order_not_found" });
+        if (statusCode === 403) return reply.status(403).send({ error: "forbidden" });
+        if (statusCode === 409) return reply.status(409).send({ error: "conflict", message });
+        if (statusCode === 400) return reply.status(400).send({ error: "invalid_payment", message });
+        return reply.status(500).send({ error: "payment_failed", message });
+      }
+    }
+  );
+
+  const parcelFarePaymentBodySchema = z
+    .object({
+      razorpayOrderId: z.string().min(1).optional(),
+      razorpayPaymentId: z.string().min(1).optional(),
+      razorpaySignature: z.string().min(1).optional(),
+      gatiCashAmount: z.number().positive().optional(),
+    })
+    .superRefine((body, ctx) => {
+      const hasWallet = (body.gatiCashAmount ?? 0) > 0;
+      const hasRz = Boolean(
+        body.razorpayOrderId?.trim() &&
+          body.razorpayPaymentId?.trim() &&
+          body.razorpaySignature?.trim()
+      );
+      const partialRz =
+        Boolean(body.razorpayOrderId?.trim()) ||
+        Boolean(body.razorpayPaymentId?.trim()) ||
+        Boolean(body.razorpaySignature?.trim());
+      if (!hasWallet && !hasRz) {
+        ctx.addIssue({ code: "custom", message: "payment_required" });
+      }
+      if (partialRz && !hasRz) {
+        ctx.addIssue({ code: "custom", message: "incomplete_razorpay" });
+      }
+    });
+
+  app.post<{ Params: { id: string } }>(
+    "/:id/parcel-fare-bill",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            finalAmount: z.number(),
+            parcelFare: z.number(),
+            waitingCharge: z.number().optional(),
+            platformFee: z.number().optional(),
+            convenienceFee: z.number().optional(),
+            surgeFee: z.number().optional(),
+            smallOrderFee: z.number().optional(),
+            miscFee: z.number().optional(),
+            taxTotal: z.number().optional(),
+            discountTotal: z.number().optional(),
+            lines: z
+              .array(
+                z.object({
+                  key: z.string(),
+                  label: z.string(),
+                  amount: z.number(),
+                  kind: z.enum(["fare", "charge", "waiting", "tax", "discount", "total"]),
+                })
+              )
+              .optional(),
+            taxes: z
+              .array(z.object({ label: z.string(), amount: z.number() }))
+              .optional(),
+            discounts: z
+              .array(z.object({ label: z.string(), amount: z.number() }))
+              .optional(),
+            paymentMethod: z.string().nullable().optional(),
+            payAt: z.enum(["pickup", "drop"]).nullable().optional(),
+          }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth?.sub;
+      if (!sub || req.auth?.role !== "customer") {
+        return reply.status(403).send({ error: "Customer only" });
+      }
+      const { getParcelFareBillForCustomer } = await import(
+        "../parcel/parcel-fare-payment.service.js"
+      );
+      const result = await getParcelFareBillForCustomer({
+        customerSub: sub,
+        orderRef: (req.params as { id: string }).id,
+      });
+      if (!result.ok) {
+        const status = result.statusCode ?? 400;
+        return reply.status(status as 400).send({ error: result.code, message: result.message });
+      }
+      return {
+        ok: true as const,
+        finalAmount: result.finalAmount,
+        parcelFare: result.parcelFare,
+        waitingCharge: result.waitingCharge,
+        platformFee: result.platformFee,
+        convenienceFee: result.convenienceFee,
+        surgeFee: result.surgeFee,
+        smallOrderFee: result.smallOrderFee,
+        miscFee: result.miscFee,
+        taxTotal: result.taxTotal,
+        discountTotal: result.discountTotal,
+        lines: result.lines,
+        taxes: result.taxes,
+        discounts: result.discounts,
+        paymentMethod: result.paymentMethod,
+        payAt: result.payAt,
+      };
+    }
+  );
+
+  app.post<{ Params: { id: string }; Body: z.infer<typeof parcelFarePaymentBodySchema> }>(
+    "/:id/parcel-fare-payment",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        body: parcelFarePaymentBodySchema,
+        response: {
+          200: z.object({ ok: z.literal(true), amountPaid: z.number() }),
+          400: z.object({ error: z.string(), message: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), message: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const sub = req.auth?.sub;
+      if (!sub || req.auth?.role !== "customer") {
+        return reply.status(403).send({ error: "Customer only" });
+      }
+      const orderIdParam = (req.params as { id: string }).id;
+      const body = parcelFarePaymentBodySchema.parse(req.body ?? {});
+      try {
+        const { confirmParcelFarePaymentForCustomer } = await import(
+          "../parcel/parcel-fare-payment.service.js"
+        );
+        return await confirmParcelFarePaymentForCustomer({
+          customerSub: sub,
+          orderRef: orderIdParam,
+          razorpayOrderId: body.razorpayOrderId,
+          razorpayPaymentId: body.razorpayPaymentId,
+          razorpaySignature: body.razorpaySignature,
+          gatiCashAmount: body.gatiCashAmount,
+        });
       } catch (err) {
         const statusCode = (err as { statusCode?: number }).statusCode ?? 500;
         const message = err instanceof Error ? err.message : "Payment failed";

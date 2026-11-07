@@ -118,8 +118,9 @@ export default function ParcelSearchingScreen() {
 
   const fare = Math.max(0, Math.round(paramNum(params.fare) ?? 0));
   const quotedGrandTotal = Math.max(0, Math.round(paramNum(params.quotedGrandTotal) ?? 0));
+  // After place, prefer server totalAmount (resumeFare) — authoritative bill.
   const displayFare =
-    quotedGrandTotal > 0 ? quotedGrandTotal : fare > 0 ? fare : resumeFare;
+    resumeFare > 0 ? resumeFare : quotedGrandTotal > 0 ? quotedGrandTotal : fare;
   const selectedPlatformOfferId = paramNum(params.selectedPlatformOfferId);
   const forceNoAutoOffer = paramStr(params.forceNoAutoOffer) === "true";
   const paramTripKm = paramNum(params.tripKm);
@@ -743,10 +744,7 @@ export default function ParcelSearchingScreen() {
               placementError={placementError}
               bottomInset={insets.bottom}
               onRetry={goBackToBook}
-              showCancel={phase === "searching" || phase === "error"}
-              cancelTitle="Cancel parcel"
-              cancelSubtitle="Free cancellation before captain accepts"
-              onCancelRide={openCancelFlow}
+              showCancel={false}
               shareTripEnabled={false}
               showFullAddresses
               onTripDetails={() => setTripDetailsVisible(true)}

@@ -6,7 +6,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, TextInput, TouchableOpacity, ScrollView, StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Alert, InteractionManager, Keyboard } from "react-native";
+import { View, TextInput, TouchableOpacity, ScrollView, StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, Alert, Keyboard } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -681,23 +681,20 @@ export default function RidePickupScreen() {
         }
       );
 
-      const go = () => {
-        try {
-          if (isIntercityReturn) {
-            router.replace({
-              pathname: "/home/service/ride",
-              params: { ...params, tab: "intercity" },
-            });
-          } else {
-            router.replace({ pathname: "/home/service/ride-book", params });
-          }
-        } catch {
-          navigatingToBookRef.current = false;
-          Alert.alert("Could not open ride options", "Please try again.");
+      // Navigate immediately — do not wait for keyboard/scroll interactions (first-tap misses).
+      try {
+        if (isIntercityReturn) {
+          router.replace({
+            pathname: "/home/service/ride",
+            params: { ...params, tab: "intercity" },
+          });
+        } else {
+          router.replace({ pathname: "/home/service/ride-book", params });
         }
-      };
-
-      InteractionManager.runAfterInteractions(go);
+      } catch {
+        navigatingToBookRef.current = false;
+        Alert.alert("Could not open ride options", "Please try again.");
+      }
     },
     [
       pickupText,
@@ -915,6 +912,15 @@ export default function RidePickupScreen() {
         applyDefaultPickupRef.current();
         setActiveField("drop");
         activeFieldRef.current = "drop";
+        // Skip autofocus when Recent / Favorite cards are visible so the first tap books immediately.
+        const recentState = useRecentLocationStore.getState();
+        const { journeys: shortcutJourneys } = visibleRecentJourneys(
+          recentState.recentJourneys,
+          recentState.lastCompletedRideJourney
+        );
+        if (shortcutJourneys.length > 0 || recentState.favoriteJourneys.length > 0) {
+          return undefined;
+        }
         const timer = setTimeout(() => {
           if (activeFieldRef.current === "drop") {
             dropInputRef.current?.focus();
@@ -1505,7 +1511,7 @@ export default function RidePickupScreen() {
             { paddingBottom: insets.bottom + (showConfirmFooter ? 96 : 40) },
           ]}
           showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
+          keyboardShouldPersistTaps="always"
         >
           <View style={[styles.inputCard, stops.length > 0 && styles.inputCardExpanded]}>
             <TouchableOpacity

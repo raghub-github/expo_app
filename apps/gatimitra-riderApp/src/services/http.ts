@@ -105,24 +105,35 @@ function maybeNotifySessionRevoked(status: number, body?: string) {
   notifyForceLogoutIfNeeded(status, body);
 }
 
-function createTimeoutPromise(ms: number): Promise<never> {
-  return new Promise((_, reject) => {
-    setTimeout(() => reject(new Error(`Request timeout after ${ms}ms`)), ms);
-  });
-}
-
 /**
- * Fetch with timeout wrapper
+ * Fetch with AbortController timeout — aborts the in-flight request so
+ * orphaned sockets do not pile up on weak networks (unlike Promise.race alone).
  */
 async function fetchWithTimeout(
   url: string,
   options: RequestInit,
   timeoutMs: number = 30000, // 30 seconds default
 ): Promise<Response> {
-  return Promise.race([
-    fetch(url, options),
-    createTimeoutPromise(timeoutMs),
-  ]) as Promise<Response>;
+  const controller = new AbortController();
+  const external = options.signal;
+  if (external) {
+    if (external.aborted) {
+      controller.abort();
+    } else {
+      external.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+  }
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (controller.signal.aborted && !external?.aborted) {
+      throw new Error(`Request timeout after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function postJson<TResponse>(

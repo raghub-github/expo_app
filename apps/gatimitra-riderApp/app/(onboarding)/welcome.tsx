@@ -1,20 +1,23 @@
 import React from "react";
 import { View, Text, ScrollView, StyleSheet } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
 import { Button } from "@/src/components/ui/Button";
 import { Logo } from "@/src/components/Logo";
 import { colors } from "@/src/theme";
 import { RIDER_AUTH_BG } from "@/src/theme/riderAuthTheme";
+import { onboardingTopBarHeightBelowSafeArea } from "@/src/components/onboarding/OnboardingTopBar";
 
 export default function WelcomeScreen() {
   const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
+  const topPad = insets.top + onboardingTopBarHeightBelowSafeArea();
 
   return (
-    <SafeAreaView style={styles.root}>
+    <SafeAreaView style={styles.root} edges={["left", "right", "bottom"]}>
       <ScrollView
-        contentContainerStyle={styles.scroll}
+        contentContainerStyle={[styles.scroll, { paddingTop: topPad }]}
         showsVerticalScrollIndicator={false}
         style={styles.flex}
       >
@@ -89,7 +92,7 @@ const styles = StyleSheet.create({
   body: {
     flexGrow: 1,
     paddingHorizontal: 24,
-    paddingTop: 48,
+    paddingTop: 12,
     paddingBottom: 32,
     justifyContent: "space-between",
   },

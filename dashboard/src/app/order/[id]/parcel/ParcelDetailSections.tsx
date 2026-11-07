@@ -1,11 +1,11 @@
 "use client";
 
+import { useState, type ReactNode } from "react";
 import Link from "next/link";
-import { IndianRupee, MapPin, Package, User } from "lucide-react";
+import { ImageIcon, MapPin, Package, Star, User } from "lucide-react";
 import type { OrderPaymentDetail } from "@/lib/orders/order-payment-types";
-import { buildRideInvoiceLinesFromSnapshot } from "@/lib/orders/ride-invoice-lines";
-import { isRideFarePaymentPending } from "@/lib/riders/ride-wallet-credit-pending";
-import { readRiderPayoutSnapshotFromBilling } from "@/lib/riders/rider-payout-snapshot";
+import { OrderMixedText } from "@/components/orders/orders-typography";
+import { RiderPhotoModal } from "@/components/orders/RiderPhotoModal";
 import type { ParcelDetailOrder } from "./parcel-detail-types";
 import {
   formatInr,
@@ -14,10 +14,55 @@ import {
   haversineKm,
   PR_MUTED,
 } from "../person-ride/person-ride-utils";
+import { readRiderPayoutSnapshotFromBilling } from "@/lib/riders/rider-payout-snapshot";
 
-function CompactCard({ children }: { children: React.ReactNode }) {
+function formatCollectedAt(value: string | Date | null | undefined): string {
+  if (!value) return "—";
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  });
+}
+
+function resolveParcelCollectMode(
+  order: ParcelDetailOrder,
+  parcel: NonNullable<ParcelDetailOrder["parcelDetail"]>
+): "Online" | "COD" {
+  const method = String(parcel.paymentMethod ?? order.paymentMethod ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    method.includes("online") ||
+    method.includes("wallet") ||
+    method.includes("upi") ||
+    method.includes("gati")
+  ) {
+    return "Online";
+  }
+  if (parcel.isCod === true || method.includes("cash") || method.includes("cod")) {
+    return "COD";
+  }
+  return "Online";
+}
+
+function CompactCard({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <div className="h-full rounded-lg border border-[#e5e5e5] bg-white px-3 py-2 shadow-sm transition-all hover:border-neutral-300 hover:shadow-md">
+    <div
+      className={`h-full rounded-xl border border-slate-200/80 bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(15,23,42,0.04)] ${className}`}
+    >
       {children}
     </div>
   );
@@ -27,14 +72,22 @@ function CardHeader({
   icon,
   title,
   right,
+  tone = "neutral",
 }: {
   icon: React.ReactNode;
   title: React.ReactNode;
   right?: React.ReactNode;
+  tone?: "neutral" | "pickup" | "drop";
 }) {
+  const bar =
+    tone === "pickup"
+      ? "border-emerald-100"
+      : tone === "drop"
+        ? "border-sky-100"
+        : "border-slate-100";
   return (
-    <div className="mb-2 flex items-start justify-between gap-2 border-b border-[#e5e5e5] pb-1.5">
-      <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-900">
+    <div className={`mb-2 flex items-start justify-between gap-2 border-b ${bar} pb-1.5`}>
+      <span className="flex items-center gap-1.5 text-[12px] font-bold tracking-tight text-slate-900">
         {icon}
         {title}
       </span>
@@ -44,12 +97,71 @@ function CardHeader({
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
+  const rendered =
+    typeof value === "string" || typeof value === "number" ? (
+      <OrderMixedText>{String(value)}</OrderMixedText>
+    ) : (
+      value
+    );
   return (
-    <div className="grid min-h-[20px] grid-cols-[96px_1fr] items-start gap-1">
-      <div className="pr-body text-[12px] font-medium" style={{ color: PR_MUTED }}>
+    <div className="grid min-h-[18px] grid-cols-[72px_1fr] items-start gap-1">
+      <div className="pr-body text-[11px] font-bold" style={{ color: PR_MUTED }}>
         {label}
       </div>
-      <div className="pr-body text-[12px] font-medium text-slate-800 break-words">{value}</div>
+      <div className="pr-body text-[11px] font-bold leading-snug text-slate-800 break-words">
+        {rendered}
+      </div>
+    </div>
+  );
+}
+
+/** Toggle Package ↔ Payment details — Payment is the default tab. */
+export function PackagePaymentToggle({
+  packagePanel,
+  paymentPanel,
+}: {
+  packagePanel: ReactNode;
+  paymentPanel: ReactNode;
+}) {
+  const [tab, setTab] = useState<"payment" | "package">("payment");
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-col gap-2">
+      <div
+        className="inline-flex w-full rounded-lg border border-slate-200 bg-slate-100/80 p-0.5"
+        role="tablist"
+        aria-label="Package or payment details"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "package"}
+          onClick={() => setTab("package")}
+          className={`flex-1 rounded-md px-2.5 py-1.5 text-[11px] font-bold transition-colors ${
+            tab === "package"
+              ? "bg-white text-slate-900 shadow-sm"
+              : "text-slate-500 hover:text-slate-700"
+          }`}
+        >
+          Package
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "payment"}
+          onClick={() => setTab("payment")}
+          className={`flex-1 rounded-md px-2.5 py-1.5 text-[11px] font-bold transition-colors ${
+            tab === "payment"
+              ? "bg-white text-slate-900 shadow-sm"
+              : "text-slate-500 hover:text-slate-700"
+          }`}
+        >
+          Payment details
+        </button>
+      </div>
+      <div className="min-h-0 min-w-0 flex-1" role="tabpanel">
+        {tab === "package" ? packagePanel : paymentPanel}
+      </div>
     </div>
   );
 }
@@ -67,26 +179,50 @@ function MapLink({ lat, lon }: { lat: number; lon: number }) {
   );
 }
 
-function DetailField({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <p className="text-[10px] font-semibold text-slate-500">{label}</p>
-      <div className="mt-0.5 text-[12px] font-medium leading-snug text-slate-800">{children}</div>
-    </div>
-  );
-}
-
 function OtpBadge({ otp, tone }: { otp: string; tone: "pickup" | "delivery" }) {
   const cls =
     tone === "pickup"
-      ? "border-emerald-400 bg-emerald-50 text-emerald-800"
-      : "border-sky-400 bg-sky-50 text-sky-800";
+      ? "border-emerald-300/80 bg-emerald-50 text-emerald-800"
+      : "border-sky-300/80 bg-sky-50 text-sky-800";
   return (
     <span
-      className={`inline-flex items-center rounded-md border border-dashed px-2 py-0.5 pr-num text-[13px] font-bold tracking-[0.2em] ${cls}`}
+      className={`inline-flex items-center rounded-md border border-dashed px-1.5 py-0.5 pr-num text-[12px] font-bold tracking-[0.18em] ${cls}`}
     >
       {otp}
     </span>
+  );
+}
+
+function ProofThumb({
+  url,
+  label,
+  tone,
+  onOpen,
+}: {
+  url: string;
+  label: string;
+  tone: "pickup" | "drop";
+  onOpen: () => void;
+}) {
+  const border = tone === "pickup" ? "border-emerald-200" : "border-sky-200";
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`group relative block h-16 w-full overflow-hidden rounded-lg border ${border} bg-slate-50 text-left`}
+      aria-label={label}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={url}
+        alt={label}
+        className="h-full w-full object-cover transition group-hover:opacity-90"
+      />
+      <span className="absolute bottom-1 left-1 inline-flex items-center gap-0.5 rounded bg-black/55 px-1 py-0.5 text-[9px] font-semibold text-white">
+        <ImageIcon className="h-2.5 w-2.5" />
+        View
+      </span>
+    </button>
   );
 }
 
@@ -99,382 +235,353 @@ function formatVehicleLabel(parcel: NonNullable<ParcelDetailOrder["parcelDetail"
   return formatLabel(category || type || parcel.parcelType?.replace(/_/g, " ") || null);
 }
 
-export function SenderCard({ order }: { order: ParcelDetailOrder }) {
-  const parcel = order.parcelDetail;
-  const name = parcel?.senderName?.trim() || order.customerName?.trim() || "—";
-  const mobile = parcel?.senderMobile?.trim() || order.customerMobile?.trim() || "—";
-
-  return (
-    <CompactCard>
-      <CardHeader icon={<User className="h-4 w-4 text-emerald-600" />} title="Sender" />
-      <div className="space-y-1.5">
-        <Row label="Name" value={name} />
-        <Row label="Mobile" value={mobile} />
-        {order.customerEmail ? <Row label="Email" value={order.customerEmail} /> : null}
-        {order.customerExternalId ? (
-          <Row
-            label="Customer ID"
-            value={
-              order.customerId ? (
-                <Link
-                  href={`/dashboard/customers/${order.customerId}`}
-                  className="font-semibold text-emerald-700 hover:underline"
-                >
-                  {order.customerExternalId}
-                </Link>
-              ) : (
-                order.customerExternalId
-              )
-            }
-          />
-        ) : null}
-        <Row label="Account" value={formatLabel(order.customerAccountStatus)} />
-        {order.customerTrustTierLabel ? (
-          <Row label="Trust tier" value={formatLabel(order.customerTrustTierLabel)} />
-        ) : null}
-      </div>
-    </CompactCard>
-  );
-}
-
-export function ReceiverCard({ order }: { order: ParcelDetailOrder }) {
-  const parcel = order.parcelDetail;
-  const name = parcel?.receiverName?.trim() || "—";
-  const mobile = parcel?.receiverMobile?.trim() || "—";
-
-  return (
-    <CompactCard>
-      <CardHeader icon={<User className="h-4 w-4 text-sky-600" />} title="Receiver" />
-      <div className="space-y-1.5">
-        <Row label="Name" value={name} />
-        <Row label="Mobile" value={mobile} />
-        {parcel?.requiresOtpVerification ? (
-          <Row label="OTP required" value="Yes — delivery OTP handoff" />
-        ) : null}
-      </div>
-    </CompactCard>
-  );
-}
-
-export function PackageCard({ order }: { order: ParcelDetailOrder }) {
-  const parcel = order.parcelDetail;
-  if (!parcel) {
-    return (
-      <CompactCard>
-        <CardHeader icon={<Package className="h-4 w-4 text-amber-600" />} title="Package" />
-        <p className="text-[12px] text-slate-500">Parcel details not recorded.</p>
-      </CompactCard>
-    );
-  }
-
-  const dims =
-    parcel.lengthCm != null && parcel.widthCm != null && parcel.heightCm != null
-      ? `${parcel.lengthCm} × ${parcel.widthCm} × ${parcel.heightCm} cm`
-      : "—";
-
-  const paymentLabel = parcel.isCod
-    ? `COD · ${formatInr(parcel.codAmount ?? order.grandTotal)}`
-    : parcel.paymentMethod === "online"
-      ? "Paid online"
-      : parcel.paymentMethod
-        ? formatLabel(parcel.paymentMethod)
-        : order.paymentMethod
-          ? formatLabel(order.paymentMethod)
-          : "—";
-
-  return (
-    <CompactCard>
-      <CardHeader icon={<Package className="h-4 w-4 text-amber-600" />} title="Package" />
-      <div className="space-y-1.5">
-        <Row label="Category" value={formatVehicleLabel(parcel)} />
-        {parcel.parcelType && parcel.parcelType !== parcel.vehicleCategory ? (
-          <Row label="Parcel type" value={formatLabel(parcel.parcelType.replace(/_/g, " "))} />
-        ) : null}
-        <Row label="Weight" value={parcel.weightKg != null ? `${parcel.weightKg} kg` : "—"} />
-        <Row label="Dimensions" value={dims} />
-        <Row label="Payment" value={paymentLabel} />
-        {parcel.payAt ? <Row label="Pay at" value={formatLabel(parcel.payAt)} /> : null}
-        {parcel.couponCode ? <Row label="Coupon" value={parcel.couponCode} /> : null}
-        {parcel.appliedOfferDiscount != null && parcel.appliedOfferDiscount > 0 ? (
-          <Row
-            label="Offer off"
-            value={
-              <span className="pr-num text-emerald-700">
-                −{formatInr(parcel.appliedOfferDiscount)}
-              </span>
-            }
-          />
-        ) : null}
-      </div>
-    </CompactCard>
-  );
-}
-
-export function ParcelFareSummaryCard({
+export function SenderCard({
   order,
-  paymentDetail,
+  overallRating,
+  onOpenPartnerChat,
 }: {
   order: ParcelDetailOrder;
-  paymentDetail: OrderPaymentDetail | null;
+  /** Customer overall rating (avg across orders). */
+  overallRating?: number | null;
+  onOpenPartnerChat?: () => void;
 }) {
   const parcel = order.parcelDetail;
-  const parcelFare =
-    parcel?.finalFare ?? parcel?.estimatedFare ?? order.grandTotal ?? order.fareAmount;
-
-  const { lines: rawLines, totalFare: snapTotal } = buildRideInvoiceLinesFromSnapshot({
-    billingSnapshot: order.billingSnapshot,
-    fareAmount: order.itemTotal ?? order.fareAmount ?? parcelFare,
-    tipAmount: order.tipAmount,
-    grandTotal:
-      paymentDetail?.totalPaid ??
-      paymentDetail?.totalAmount ??
-      order.grandTotal ??
-      parcelFare,
-  });
-
-  const lines = rawLines.map((line) =>
-    line.label === "Ride charge" ? { ...line, label: "Parcel charge" } : line
-  );
-
-  const hasOfferInLines = lines.some((l) => l.isDiscount);
-  if (
-    !hasOfferInLines &&
-    parcel?.appliedOfferDiscount != null &&
-    parcel.appliedOfferDiscount > 0.005
-  ) {
-    lines.push({
-      label: parcel.couponCode?.trim() || "Offer discount",
-      amount: parcel.appliedOfferDiscount,
-      isDiscount: true,
-    });
-  }
-
-  const ctc =
-    snapTotal > 0
-      ? snapTotal
-      : Math.max(
-          0,
-          Number(parcelFare ?? 0) -
-            (hasOfferInLines || parcel?.appliedOfferDiscount
-              ? parcel?.appliedOfferDiscount ?? 0
-              : 0)
-        );
-
-  const method =
-    paymentDetail?.paymentMode ||
-    paymentDetail?.source ||
-    parcel?.paymentMethod ||
-    order.paymentMethod ||
-    null;
-  const payStatus =
-    paymentDetail?.records?.[0]?.paymentStatus || order.paymentStatus || null;
-  const farePending = isRideFarePaymentPending(payStatus);
-  const riderPayout = readRiderPayoutSnapshotFromBilling(order.billingSnapshot);
-  const riderDeliveryCharge = riderPayout?.baseEarning ?? null;
-  const ctde = riderPayout?.totalEarning ?? null;
-
-  return (
-    <CompactCard>
-      <CardHeader
-        icon={
-          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-[11px] font-semibold text-emerald-700">
-            <IndianRupee className="h-3.5 w-3.5" />
-          </span>
-        }
-        title="Fare"
-        right={
-          payStatus ? (
-            <span
-              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
-                farePending
-                  ? "border-amber-200 bg-amber-50 text-amber-800"
-                  : "border-emerald-200 bg-emerald-50 text-emerald-800"
-              }`}
-            >
-              {formatLabel(String(payStatus))}
-            </span>
-          ) : parcel?.isCod ? (
-            <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
-              COD
-            </span>
-          ) : null
-        }
-      />
-      <div className="grid grid-cols-2 gap-2">
-        <div className="min-w-0 space-y-1 border-r border-slate-100 pr-2">
-          <p className="mb-1 text-[10px] font-bold text-slate-500">CTC</p>
-          {lines.length > 0 ? (
-            lines.map((line, idx) => (
-              <Row
-                key={`ctc-${line.label}-${idx}`}
-                label={line.label}
-                value={
-                  line.isDiscount ? (
-                    <span className="pr-num text-emerald-700">−{formatInr(line.amount)}</span>
-                  ) : (
-                    formatInr(line.amount)
-                  )
-                }
-              />
-            ))
-          ) : (
-            <Row label="Parcel charge" value={formatInr(parcelFare)} />
-          )}
-          <div className="my-1 border-t border-slate-100" />
-          <Row
-            label="Total"
-            value={
-              <span className="pr-num text-[12px] font-bold text-slate-900">{formatInr(ctc)}</span>
-            }
-          />
-          <Row label="Method" value={formatLabel(method ? String(method) : null)} />
-          {parcel?.estimatedFare != null && parcel.finalFare != null &&
-          Math.abs(parcel.estimatedFare - parcel.finalFare) > 0.01 ? (
-            <Row
-              label="Quoted"
-              value={
-                <span className="pr-num text-slate-500">{formatInr(parcel.estimatedFare)}</span>
-              }
-            />
-          ) : null}
-        </div>
-
-        <div className="min-w-0 space-y-1 pl-1">
-          <p className="mb-1 text-[10px] font-bold text-slate-500">CTDE</p>
-          <Row
-            label="Captain payout"
-            value={
-              riderDeliveryCharge != null ? (
-                <span className="pr-num font-semibold text-slate-800">
-                  {formatInr(riderDeliveryCharge)}
-                </span>
-              ) : order.riderId ? (
-                "Pending assignment"
-              ) : (
-                "—"
-              )
-            }
-          />
-          {riderPayout != null && riderPayout.surgeEarning > 0.005 ? (
-            <Row label="Surge" value={formatInr(riderPayout.surgeEarning)} />
-          ) : null}
-          <div className="my-1 border-t border-slate-100" />
-          <Row
-            label="Total"
-            value={
-              <span className="pr-num text-[12px] font-bold text-emerald-700">
-                {ctde != null ? formatInr(ctde) : "—"}
-              </span>
-            }
-          />
-        </div>
-      </div>
-    </CompactCard>
-  );
-}
-
-export function ParcelTripDetailsCard({ order }: { order: ParcelDetailOrder }) {
-  const parcel = order.parcelDetail;
+  const [proofOpen, setProofOpen] = useState(false);
+  const name = parcel?.senderName?.trim() || order.customerName?.trim() || "—";
+  const mobile = parcel?.senderMobile?.trim() || order.customerMobile?.trim() || "—";
   const pickup =
     parcel?.pickupAddress?.trim() ||
     order.pickupAddressNormalized?.trim() ||
     order.pickupAddressRaw?.trim() ||
     order.pickupAddressGeocoded?.trim() ||
     "—";
+  const pickupOtp = parcel?.pickupOtp?.trim() || null;
+  const pickupProofUrl = parcel?.pickupProofImageUrl?.trim() || null;
+  const pickupLabel = parcel?.pickupLabel?.trim() || null;
+
+  return (
+    <>
+      <CompactCard>
+        <CardHeader
+          tone="pickup"
+          icon={<User className="h-3.5 w-3.5 text-emerald-600" />}
+          title="Sender · Pickup"
+          right={
+            pickupOtp ? (
+              <OtpBadge otp={pickupOtp} tone="pickup" />
+            ) : (
+              <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-700">
+                Pickup
+              </span>
+            )
+          }
+        />
+        <div className="space-y-1">
+          <Row label="Name" value={name} />
+          <Row label="Mobile" value={<span className="pr-num">{mobile}</span>} />
+          {order.customerExternalId ? (
+            <Row
+              label="ID"
+              value={
+                order.customerId ? (
+                  <Link
+                    href={`/dashboard/customers/${order.customerId}`}
+                    className="font-semibold text-emerald-700 hover:underline"
+                  >
+                    {order.customerExternalId}
+                  </Link>
+                ) : (
+                  order.customerExternalId
+                )
+              }
+            />
+          ) : null}
+          {order.customerTrustTierLabel || order.customerAccountStatus ? (
+            <Row
+              label="Account"
+              value={[
+                formatLabel(order.customerAccountStatus),
+                order.customerTrustTierLabel
+                  ? formatLabel(order.customerTrustTierLabel)
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            />
+          ) : null}
+          <Row
+            label="Rating"
+            value={
+              overallRating != null &&
+              Number.isFinite(overallRating) &&
+              overallRating > 0 ? (
+                <span className="inline-flex items-center gap-1 font-semibold text-amber-700">
+                  <span className="pr-num">{Number(overallRating).toFixed(1)}</span>
+                  <Star className="h-3 w-3 fill-amber-400 text-amber-400" aria-hidden />
+                </span>
+              ) : (
+                <span className="text-slate-400">—</span>
+              )
+            }
+          />
+
+          <div className="mt-1.5 space-y-1 rounded-lg border border-emerald-100/80 bg-emerald-50/40 px-2 py-1.5">
+            {pickupLabel ? (
+              <p className="text-[10px] font-semibold text-emerald-800">{pickupLabel}</p>
+            ) : null}
+            <p className="text-[11px] leading-snug text-slate-700">{pickup}</p>
+            {order.pickupLat != null && order.pickupLon != null ? (
+              <div className="flex items-center gap-1.5">
+                <span className="pr-num text-[10px] text-slate-500">
+                  {order.pickupLat.toFixed(5)}, {order.pickupLon.toFixed(5)}
+                </span>
+                <MapLink lat={order.pickupLat} lon={order.pickupLon} />
+              </div>
+            ) : null}
+            {pickupProofUrl ? (
+              <div className="pt-1">
+                <ProofThumb
+                  url={pickupProofUrl}
+                  label="Pickup parcel photo"
+                  tone="pickup"
+                  onOpen={() => setProofOpen(true)}
+                />
+              </div>
+            ) : (
+              <p className="pt-0.5 text-[10px] text-slate-400">Pickup image not uploaded</p>
+            )}
+          </div>
+
+          {onOpenPartnerChat ? (
+            <div className="mt-1.5 flex justify-end border-t border-slate-100 pt-1.5">
+              <button
+                type="button"
+                onClick={onOpenPartnerChat}
+                className="inline-flex cursor-pointer items-center gap-0.5 border-0 bg-transparent p-0 py-0.5 text-[11px] font-semibold whitespace-nowrap text-emerald-700 hover:text-emerald-800"
+              >
+                <i className="bi bi-chat-left-text text-[10px]" />
+                Chat history
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </CompactCard>
+      <RiderPhotoModal
+        open={proofOpen}
+        imageUrl={pickupProofUrl}
+        riderName="Pickup parcel photo"
+        onClose={() => setProofOpen(false)}
+      />
+    </>
+  );
+}
+
+export function ReceiverCard({ order }: { order: ParcelDetailOrder }) {
+  const parcel = order.parcelDetail;
+  const [proofOpen, setProofOpen] = useState(false);
+  const name = parcel?.receiverName?.trim() || "—";
+  const mobile = parcel?.receiverMobile?.trim() || "—";
   const drop =
     parcel?.dropAddress?.trim() ||
     order.dropAddressNormalized?.trim() ||
     order.dropAddressRaw?.trim() ||
     order.dropAddressGeocoded?.trim() ||
     "—";
+  // Delivery OTP lives on RiderDetails only — avoid duplicate badge here.
+  const deliveryProofUrl = parcel?.deliveryProofImageUrl?.trim() || null;
+  const dropLabel = parcel?.dropLabel?.trim() || null;
+  const riderPayout = readRiderPayoutSnapshotFromBilling(order.billingSnapshot);
+  // Prefer frozen accept quote trip km (dispatch/settlement SSOT) over core/haversine.
   const tripKm =
+    riderPayout?.tripDistanceKm ??
     parcel?.tripDistanceKm ??
     (order.distanceKm != null && Number.isFinite(order.distanceKm)
       ? order.distanceKm
       : haversineKm(order.pickupLat, order.pickupLon, order.dropLat, order.dropLon));
 
-  const pickupOtp = parcel?.pickupOtp?.trim() || null;
-  const deliveryOtp = parcel?.deliveryOtp?.trim() || null;
-
   return (
-    <div className="flex h-full flex-col rounded-lg border border-[#e5e5e5] bg-white px-3 py-2 shadow-sm">
-      <div className="mb-2 flex items-center justify-between gap-2 border-b border-[#e5e5e5] pb-1.5">
-        <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-900">
-          <MapPin className="h-4 w-4 text-emerald-600" />
-          Route &amp; handoff
-        </span>
-        {tripKm != null ? (
-          <span className="pr-num rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
-            {formatKm(tripKm)}
-          </span>
-        ) : null}
-      </div>
+    <>
+      <CompactCard>
+        <CardHeader
+          tone="drop"
+          icon={<MapPin className="h-3.5 w-3.5 text-sky-600" />}
+          title="Receiver · Drop"
+          right={
+            <span className="rounded-full bg-sky-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-sky-700">
+              Drop
+            </span>
+          }
+        />
+        <div className="space-y-1">
+          <Row label="Name" value={name} />
+          <Row label="Mobile" value={<span className="pr-num">{mobile}</span>} />
+          {tripKm != null ? (
+            <Row label="Trip" value={<span className="pr-num">{formatKm(tripKm)}</span>} />
+          ) : null}
+          {riderPayout?.pickupDistanceKm != null ? (
+            <Row
+              label="Quoted pickup"
+              value={
+                <span className="pr-num">{formatKm(riderPayout.pickupDistanceKm)}</span>
+              }
+            />
+          ) : null}
 
-      <div className="grid flex-1 gap-3 lg:grid-cols-2">
-        <div className="space-y-3 rounded-md border border-slate-100 bg-slate-50/60 p-2.5">
-          <p className="text-[10px] font-bold text-emerald-700">Pickup</p>
-          <DetailField label="Label">{parcel?.pickupLabel?.trim() || "—"}</DetailField>
-          <DetailField label="Address">{pickup}</DetailField>
-          <DetailField label="Coordinates">
-            {order.pickupLat != null && order.pickupLon != null ? (
-              <span className="inline-flex flex-wrap items-center gap-1.5">
-                <span className="pr-num text-[11px]">
-                  {order.pickupLat}, {order.pickupLon}
-                </span>
-                <MapLink lat={order.pickupLat} lon={order.pickupLon} />
-              </span>
-            ) : (
-              "—"
-            )}
-          </DetailField>
-          <DetailField label="Pickup OTP">
-            {pickupOtp ? <OtpBadge otp={pickupOtp} tone="pickup" /> : "—"}
-          </DetailField>
-        </div>
-
-        <div className="space-y-3 rounded-md border border-slate-100 bg-slate-50/60 p-2.5">
-          <p className="text-[10px] font-bold text-sky-700">Drop</p>
-          <DetailField label="Label">{parcel?.dropLabel?.trim() || "—"}</DetailField>
-          <DetailField label="Address">{drop}</DetailField>
-          <DetailField label="Coordinates">
+          <div className="mt-1.5 space-y-1 rounded-lg border border-sky-100/80 bg-sky-50/40 px-2 py-1.5">
+            {dropLabel ? (
+              <p className="text-[10px] font-semibold text-sky-800">{dropLabel}</p>
+            ) : null}
+            <p className="text-[11px] leading-snug text-slate-700">{drop}</p>
             {order.dropLat != null && order.dropLon != null ? (
-              <span className="inline-flex flex-wrap items-center gap-1.5">
-                <span className="pr-num text-[11px]">
-                  {order.dropLat}, {order.dropLon}
+              <div className="flex items-center gap-1.5">
+                <span className="pr-num text-[10px] text-slate-500">
+                  {order.dropLat.toFixed(5)}, {order.dropLon.toFixed(5)}
                 </span>
                 <MapLink lat={order.dropLat} lon={order.dropLon} />
-              </span>
+              </div>
+            ) : null}
+            {deliveryProofUrl ? (
+              <div className="pt-1">
+                <ProofThumb
+                  url={deliveryProofUrl}
+                  label="Drop parcel photo"
+                  tone="drop"
+                  onOpen={() => setProofOpen(true)}
+                />
+              </div>
             ) : (
-              "—"
+              <p className="pt-0.5 text-[10px] text-slate-400">Drop image not uploaded</p>
             )}
-          </DetailField>
-          <DetailField label="Delivery OTP">
-            {deliveryOtp ? <OtpBadge otp={deliveryOtp} tone="delivery" /> : "—"}
-          </DetailField>
-        </div>
-      </div>
+          </div>
 
-      {(parcel?.instructions ||
-        parcel?.cancellationReasonText ||
-        parcel?.cancellationReasonCode ||
-        order.etaSeconds != null) && (
-        <div className="mt-3 grid gap-2 border-t border-slate-100 pt-2 sm:grid-cols-2">
           {parcel?.instructions ? (
-            <DetailField label="Instructions">{parcel.instructions}</DetailField>
+            <p className="mt-1 line-clamp-2 text-[10px] leading-snug text-slate-500">
+              <span className="font-semibold text-slate-600">Note: </span>
+              {parcel.instructions}
+            </p>
           ) : null}
-          {order.etaSeconds != null && order.etaSeconds > 0 ? (
-            <DetailField label="ETA">
-              <span className="pr-num">{Math.ceil(order.etaSeconds / 60)} min</span>
-            </DetailField>
-          ) : null}
-          {parcel?.cancellationReasonText || parcel?.cancellationReasonCode ? (
-            <DetailField label="Cancel reason">
-              {parcel.cancellationReasonText?.trim() ||
-                formatLabel(parcel.cancellationReasonCode?.replace(/_/g, " ") ?? null)}
-            </DetailField>
+          {parcel?.cashCollectedAt ? (
+            <Row
+              label="Collected at"
+              value={
+                <span className="flex flex-col items-end gap-0.5">
+                  <span className="pr-num text-[10px]">
+                    {formatCollectedAt(parcel.cashCollectedAt)}
+                  </span>
+                  <span className="text-[9px] font-semibold text-violet-700">
+                    {resolveParcelCollectMode(order, parcel)}
+                  </span>
+                </span>
+              }
+            />
           ) : null}
         </div>
-      )}
-    </div>
+      </CompactCard>
+      <RiderPhotoModal
+        open={proofOpen}
+        imageUrl={deliveryProofUrl}
+        riderName="Drop parcel photo"
+        onClose={() => setProofOpen(false)}
+      />
+    </>
   );
+}
+
+/** Package specs only — payment lives in shared PaymentDetails (food-parity). */
+export function PackageCard({ order }: { order: ParcelDetailOrder }) {
+  const parcel = order.parcelDetail;
+  const dims =
+    parcel?.lengthCm != null && parcel?.widthCm != null && parcel?.heightCm != null
+      ? `${parcel.lengthCm}×${parcel.widthCm}×${parcel.heightCm} cm`
+      : "—";
+
+  const paymentLabel = parcel?.isCod
+    ? `COD · ${formatInr(parcel.codAmount ?? order.grandTotal)}`
+    : parcel?.paymentMethod === "online"
+      ? "Paid online"
+      : parcel?.paymentMethod
+        ? formatLabel(parcel.paymentMethod)
+        : order.paymentMethod
+          ? formatLabel(order.paymentMethod)
+          : "—";
+
+  const riderPayout = readRiderPayoutSnapshotFromBilling(order.billingSnapshot);
+
+  return (
+    <CompactCard>
+      <CardHeader
+        icon={<Package className="h-3.5 w-3.5 text-amber-600" />}
+        title="Package"
+      />
+      {parcel ? (
+        <div className="space-y-1">
+          <Row label="Category" value={formatVehicleLabel(parcel)} />
+          <Row
+            label="Weight"
+            value={parcel.weightKg != null ? `${parcel.weightKg} kg` : "—"}
+          />
+          <Row label="Size" value={dims} />
+          <Row label="Payment" value={paymentLabel} />
+          {parcel.payAt ? <Row label="Pay at" value={formatLabel(parcel.payAt)} /> : null}
+          {parcel.couponCode ? <Row label="Coupon" value={parcel.couponCode} /> : null}
+          {riderPayout ? (
+            <>
+              <div className="my-1 border-t border-slate-100" />
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                Rider quote (accept)
+              </p>
+              <Row
+                label="Quoted earning"
+                value={
+                  <span className="pr-num font-semibold text-slate-800">
+                    {formatInr(riderPayout.totalEarning)}
+                  </span>
+                }
+              />
+              {riderPayout.tripDistanceKm != null ? (
+                <Row
+                  label="Quoted trip"
+                  value={
+                    <span className="pr-num">{formatKm(riderPayout.tripDistanceKm)}</span>
+                  }
+                />
+              ) : null}
+              {riderPayout.pickupDistanceKm != null ? (
+                <Row
+                  label="Quoted pickup"
+                  value={
+                    <span className="pr-num">{formatKm(riderPayout.pickupDistanceKm)}</span>
+                  }
+                />
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      ) : (
+        <p className="text-[11px] text-slate-500">Not recorded.</p>
+      )}
+    </CompactCard>
+  );
+}
+
+/** @deprecated Prefer PackageCard + PaymentDetails */
+export function PackageFareCard({
+  order,
+  paymentDetail: _paymentDetail,
+}: {
+  order: ParcelDetailOrder;
+  paymentDetail: OrderPaymentDetail | null;
+}) {
+  return <PackageCard order={order} />;
+}
+
+/** @deprecated Prefer PackageCard + PaymentDetails */
+export function ParcelFareSummaryCard({
+  order,
+  paymentDetail: _paymentDetail,
+}: {
+  order: ParcelDetailOrder;
+  paymentDetail: OrderPaymentDetail | null;
+}) {
+  return <PackageCard order={order} />;
 }

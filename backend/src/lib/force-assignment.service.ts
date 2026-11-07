@@ -9,6 +9,7 @@ import { getDb, getSql } from "../db/client.js";
 import {
   ordersCore,
   ordersFood,
+  ordersParcel,
   riderVehicles,
   riders,
 } from "../db/schema.js";
@@ -28,6 +29,7 @@ import {
   recordRiderOrderAccepted,
 } from "./rider-ride-assignment.js";
 import { recordFoodRiderAssignedTimeline } from "./food-rider-assigned-timeline.js";
+import { appendOrderTimeline } from "./order-placement-timeline.js";
 import {
   ADMIN_SELECTABLE_MAX_RADIUS_KM,
   resolveForceAssignmentRadiusMeters,
@@ -118,19 +120,44 @@ async function loadOrderForForce(orderCoreId: number) {
       orderType: ordersCore.orderType,
       riderId: ordersCore.riderId,
       status: ordersCore.status,
+      currentStatus: ordersCore.currentStatus,
       pickupLat: ordersCore.pickupLat,
       pickupLon: ordersCore.pickupLon,
       dropLat: ordersCore.dropLat,
       dropLon: ordersCore.dropLon,
       foodStatus: ordersFood.orderStatus,
       foodCancelled: ordersFood.cancelledAt,
+      parcelCancelled: ordersParcel.cancelledAt,
       createdAt: ordersCore.createdAt,
     })
     .from(ordersCore)
     .leftJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
+    .leftJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
     .where(eq(ordersCore.id, orderCoreId))
     .limit(1);
   return row ?? null;
+}
+
+function normalizeForceServiceType(orderType: string | null | undefined): "food" | "parcel" | null {
+  const t = String(orderType ?? "").trim().toLowerCase();
+  if (t === "food" || t === "parcel") return t;
+  return null;
+}
+
+function isForceTerminalOrder(order: NonNullable<Awaited<ReturnType<typeof loadOrderForForce>>>): boolean {
+  const serviceType = normalizeForceServiceType(order.orderType);
+  const coreStatus = String(order.status ?? "").toLowerCase();
+  if (["delivered", "cancelled", "failed"].includes(coreStatus)) return true;
+  const current = String(order.currentStatus ?? "").trim().toUpperCase();
+  if (["DELIVERED", "CANCELLED", "COMPLETED", "FAILED"].includes(current)) return true;
+  if (serviceType === "food") {
+    const foodSt = String(order.foodStatus ?? "").toUpperCase();
+    return order.foodCancelled != null || ["DELIVERED", "CANCELLED"].includes(foodSt);
+  }
+  if (serviceType === "parcel") {
+    return order.parcelCancelled != null;
+  }
+  return true;
 }
 
 async function loadRiderName(riderId: number | null): Promise<string | null> {
@@ -218,7 +245,8 @@ function buildForceDispatchTarget(
   formattedOrderId: string | null,
   pickupLat: unknown,
   pickupLon: unknown,
-  radiusMeters: number
+  radiusMeters: number,
+  serviceType: "food" | "parcel" = "food"
 ): DispatchOrderTarget {
   const effectiveRadiusMeters =
     Number.isFinite(radiusMeters) && radiusMeters > 0
@@ -228,7 +256,7 @@ function buildForceDispatchTarget(
     orderCoreId,
     orderId,
     formattedOrderId,
-    serviceType: "food",
+    serviceType,
     pickup: {
       latitude: parseCoord(pickupLat),
       longitude: parseCoord(pickupLon),
@@ -254,9 +282,9 @@ function forceAssignmentIneligibleMessage(
       return "Selected rider cannot receive offers (subscription / wallet block)";
     case "service_not_eligible":
     case "service_not_in_duty":
-      return "Selected rider is not on duty for food delivery";
+      return "Selected rider is not on duty for this service";
     case "blacklisted_for_service":
-      return "Selected rider is restricted for food delivery";
+      return "Selected rider is restricted for this service";
     case "assignment_limit_or_active_order":
       return "Selected rider already has an active order";
     default:
@@ -276,7 +304,7 @@ export async function listAdminSelectableRidersForOrder(
 ): Promise<AdminSelectableRider[]> {
   const order = await loadOrderForForce(orderCoreId);
   if (!order?.orderId) return [];
-  if (String(order.orderType ?? "").toLowerCase() !== "food") return [];
+  if (!normalizeForceServiceType(order.orderType)) return [];
 
   const mxLat = parseCoord(order.pickupLat);
   const mxLng = parseCoord(order.pickupLon);
@@ -496,17 +524,13 @@ export async function startForceAssignment(
     if (!order?.orderId) {
       throw Object.assign(new Error("Order not found"), { statusCode: 404 });
     }
-    if (String(order.orderType ?? "").toLowerCase() !== "food") {
-      throw Object.assign(new Error("Force Assignment is only supported for food orders"), {
+    const serviceType = normalizeForceServiceType(order.orderType);
+    if (!serviceType) {
+      throw Object.assign(new Error("Force Assignment is only supported for food and parcel orders"), {
         statusCode: 400,
       });
     }
-    const foodSt = String(order.foodStatus ?? "").toUpperCase();
-    if (
-      order.foodCancelled != null ||
-      ["DELIVERED", "CANCELLED"].includes(foodSt) ||
-      ["delivered", "cancelled", "failed"].includes(String(order.status ?? "").toLowerCase())
-    ) {
+    if (isForceTerminalOrder(order)) {
       throw Object.assign(new Error("Cannot force-assign on a terminal order"), {
         statusCode: 409,
       });
@@ -533,7 +557,8 @@ export async function startForceAssignment(
       order.formattedOrderId,
       order.pickupLat,
       order.pickupLon,
-      resolvedRadiusMeters
+      resolvedRadiusMeters,
+      serviceType
     );
 
     const lastRejectReason: { current?: string } = {};
@@ -725,11 +750,12 @@ export async function appendForceAssignmentPoolRow(
   const order = await loadOrderForForce(force.orderCoreId);
   if (!order?.orderId) return rows;
 
+  const poolServiceType = normalizeForceServiceType(order.orderType) ?? "food";
   const injected: DispatchPoolOrderRow = {
     orderCoreId: force.orderCoreId,
     orderId: order.orderId.trim(),
     formattedOrderId: order.formattedOrderId,
-    serviceType: "food",
+    serviceType: poolServiceType,
     pickupLat: parseCoord(order.pickupLat),
     pickupLng: parseCoord(order.pickupLon),
     dropLat: order.dropLat != null ? parseCoord(order.dropLat) : null,
@@ -789,24 +815,14 @@ export async function acceptForceAssignmentForRider(
       .where(eq(riders.id, riderId))
       .limit(1);
 
-    const [pre] = await db
-      .select({
-        id: ordersCore.id,
-        orderId: ordersCore.orderId,
-        riderId: ordersCore.riderId,
-        foodStatus: ordersFood.orderStatus,
-      })
-      .from(ordersCore)
-      .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
-      .where(eq(ordersCore.id, lookup.id))
-      .limit(1);
-
-    if (!pre?.id || !pre.orderId) {
+    const orderMeta = await loadOrderForForce(lookup.id);
+    const serviceType = normalizeForceServiceType(orderMeta?.orderType);
+    if (!orderMeta?.id || !orderMeta.orderId || !serviceType) {
       throw Object.assign(new Error("Order not found"), { statusCode: 404 });
     }
 
-    const orderIdText = pre.orderId.trim();
-    const currentRiderId = pre.riderId != null ? Number(pre.riderId) : null;
+    const orderIdText = orderMeta.orderId.trim();
+    const currentRiderId = orderMeta.riderId != null ? Number(orderMeta.riderId) : null;
     if (fresh.oldRiderId != null && currentRiderId !== fresh.oldRiderId) {
       throw Object.assign(new Error("Current rider changed — Force Assignment aborted"), {
         statusCode: 409,
@@ -818,110 +834,222 @@ export async function acceptForceAssignmentForRider(
       });
     }
 
-    const foodStatusAtAccept = String(pre.foodStatus ?? "").trim().toUpperCase();
-    const readyNow = foodStatusAtAccept === "READY_FOR_PICKUP";
-    const nextCoreStatus = readyNow ? "OUT_FOR_DELIVERY" : "RIDER_ASSIGNED";
-    const nextFoodStatus = readyNow ? "OUT_FOR_DELIVERY" : foodStatusAtAccept;
+    if (serviceType === "parcel") {
+      const previousStatus = String(orderMeta.currentStatus ?? "SEARCHING_RIDER");
+      await db.transaction(async (tx) => {
+        if (fresh.oldRiderId != null) {
+          await tx
+            .update(ordersCore)
+            .set({
+              riderId: null,
+              status: "assigned",
+              updatedAt: now,
+            })
+            .where(
+              and(eq(ordersCore.id, orderMeta.id), eq(ordersCore.riderId, fresh.oldRiderId))
+            );
 
-    await db.transaction(async (tx) => {
-      if (fresh.oldRiderId != null) {
-        await tx
+          await tx
+            .update(ordersParcel)
+            .set({
+              assignedRiderId: null,
+              riderAssignedAt: null,
+              riderReachedPickupAt: null,
+              pickupWaitSeconds: null,
+              updatedAt: now,
+            })
+            .where(eq(ordersParcel.orderId, orderMeta.id));
+
+          await recordFoodRiderAdminCancelled(tx, {
+            orderCorePk: orderMeta.id,
+            orderIdText,
+            riderId: fresh.oldRiderId,
+            reasonCode: fresh.reasonCode,
+            reasonText: fresh.reasonText,
+            removedBy: fresh.adminEmail,
+            actorType: "admin",
+            actorId: fresh.adminUserId ?? fresh.adminEmail ?? undefined,
+            cancelledBy: fresh.adminEmail,
+            foodStatus: previousStatus,
+            occurredAt: now,
+          });
+        }
+
+        const [updated] = await tx
           .update(ordersCore)
           .set({
-            riderId: null,
-            status: "assigned",
+            riderId,
+            status: "accepted",
+            currentStatus: "RIDER_ASSIGNED",
+            actualPickupTime: null,
             updatedAt: now,
           })
-          .where(
-            and(eq(ordersCore.id, pre.id), eq(ordersCore.riderId, fresh.oldRiderId))
-          );
+          .where(and(eq(ordersCore.id, orderMeta.id), isNull(ordersCore.riderId)))
+          .returning({ id: ordersCore.id, orderId: ordersCore.orderId });
+
+        if (!updated?.id) {
+          throw Object.assign(new Error("Could not transfer order to replacement rider"), {
+            statusCode: 409,
+          });
+        }
+
+        await tx
+          .update(ordersParcel)
+          .set({
+            assignedRiderId: riderId,
+            riderAssignedAt: now,
+            riderReachedPickupAt: null,
+            pickupWaitSeconds: null,
+            updatedAt: now,
+          })
+          .where(eq(ordersParcel.orderId, updated.id));
+
+        await appendOrderTimeline(tx, {
+          orderCorePk: updated.id,
+          status: "RIDER_ASSIGNED",
+          previousStatus,
+          actorType: "admin",
+          actorId:
+            fresh.adminUserId && Number.isFinite(Number(fresh.adminUserId))
+              ? Number(fresh.adminUserId)
+              : null,
+          actorName: fresh.adminEmail ?? fresh.adminUserId ?? "admin",
+          statusMessage: "Force Assignment — replacement rider accepted",
+          occurredAt: now,
+        });
+
+        await recordRiderOrderAccepted(tx, {
+          orderCorePk: updated.id,
+          orderIdText: (updated.orderId ?? orderIdText).trim(),
+          riderId,
+          serviceType: "parcel",
+          occurredAt: now,
+          riderName: riderProfile?.name ?? null,
+          riderMobile: riderProfile?.mobile ?? null,
+        });
+      });
+    } else {
+      const [pre] = await db
+        .select({
+          id: ordersCore.id,
+          orderId: ordersCore.orderId,
+          riderId: ordersCore.riderId,
+          foodStatus: ordersFood.orderStatus,
+        })
+        .from(ordersCore)
+        .innerJoin(ordersFood, eq(ordersFood.orderId, ordersCore.id))
+        .where(eq(ordersCore.id, lookup.id))
+        .limit(1);
+
+      if (!pre?.id || !pre.orderId) {
+        throw Object.assign(new Error("Order not found"), { statusCode: 404 });
+      }
+
+      const foodStatusAtAccept = String(pre.foodStatus ?? "").trim().toUpperCase();
+      const readyNow = foodStatusAtAccept === "READY_FOR_PICKUP";
+      const nextCoreStatus = readyNow ? "OUT_FOR_DELIVERY" : "RIDER_ASSIGNED";
+      const nextFoodStatus = readyNow ? "OUT_FOR_DELIVERY" : foodStatusAtAccept;
+
+      await db.transaction(async (tx) => {
+        if (fresh.oldRiderId != null) {
+          await tx
+            .update(ordersCore)
+            .set({
+              riderId: null,
+              status: "assigned",
+              updatedAt: now,
+            })
+            .where(
+              and(eq(ordersCore.id, pre.id), eq(ordersCore.riderId, fresh.oldRiderId))
+            );
+
+          await tx
+            .update(ordersFood)
+            .set({
+              riderId: null,
+              riderReachedPickupAt: null,
+              pickupDurationSeconds: null,
+              pickupTimerStartedAt: null,
+              pickupWaitSeconds: null,
+              riderPickedUpAt: null,
+              handedOverToRiderAt: null,
+              dispatchedAt: null,
+              updatedAt: now,
+            })
+            .where(eq(ordersFood.orderId, pre.id));
+
+          await recordFoodRiderAdminCancelled(tx, {
+            orderCorePk: pre.id,
+            orderIdText,
+            riderId: fresh.oldRiderId,
+            reasonCode: fresh.reasonCode,
+            reasonText: fresh.reasonText,
+            removedBy: fresh.adminEmail,
+            actorType: "admin",
+            actorId: fresh.adminUserId ?? fresh.adminEmail ?? undefined,
+            cancelledBy: fresh.adminEmail,
+            foodStatus: foodStatusAtAccept,
+            occurredAt: now,
+          });
+        }
+
+        const [updated] = await tx
+          .update(ordersCore)
+          .set({
+            riderId,
+            status: "accepted",
+            currentStatus: readyNow ? "RIDER_ASSIGNED" : nextCoreStatus,
+            actualPickupTime: null,
+            updatedAt: now,
+          })
+          .where(and(eq(ordersCore.id, pre.id), isNull(ordersCore.riderId)))
+          .returning({ id: ordersCore.id, orderId: ordersCore.orderId });
+
+        if (!updated?.id) {
+          throw Object.assign(new Error("Could not transfer order to replacement rider"), {
+            statusCode: 409,
+          });
+        }
 
         await tx
           .update(ordersFood)
           .set({
-            riderId: null,
+            riderId,
+            riderName: riderProfile?.name ?? null,
+            riderPhone: riderProfile?.mobile ?? null,
+            orderStatus: nextFoodStatus,
             riderReachedPickupAt: null,
             pickupDurationSeconds: null,
             pickupTimerStartedAt: null,
             pickupWaitSeconds: null,
-            riderPickedUpAt: null,
-            handedOverToRiderAt: null,
-            dispatchedAt: null,
+            ...(readyNow ? { dispatchedAt: now } : {}),
             updatedAt: now,
           })
-          .where(eq(ordersFood.orderId, pre.id));
+          .where(eq(ordersFood.orderId, updated.id));
 
-        await recordFoodRiderAdminCancelled(tx, {
-          orderCorePk: pre.id,
-          orderIdText,
-          riderId: fresh.oldRiderId,
-          reasonCode: fresh.reasonCode,
-          reasonText: fresh.reasonText,
-          removedBy: fresh.adminEmail,
-          actorType: "admin",
-          actorId: fresh.adminUserId ?? fresh.adminEmail ?? undefined,
-          cancelledBy: fresh.adminEmail,
-          foodStatus: foodStatusAtAccept,
-          occurredAt: now,
-        });
-      }
-
-      const [updated] = await tx
-        .update(ordersCore)
-        .set({
-          riderId,
-          status: "accepted",
-          currentStatus: readyNow ? "RIDER_ASSIGNED" : nextCoreStatus,
-          actualPickupTime: null,
-          updatedAt: now,
-        })
-        .where(and(eq(ordersCore.id, pre.id), isNull(ordersCore.riderId)))
-        .returning({ id: ordersCore.id, orderId: ordersCore.orderId });
-
-      if (!updated?.id) {
-        throw Object.assign(new Error("Could not transfer order to replacement rider"), {
-          statusCode: 409,
-        });
-      }
-
-      await tx
-        .update(ordersFood)
-        .set({
+        await recordFoodRiderAssignedTimeline(tx, {
+          orderCorePk: updated.id,
+          previousStatus: foodStatusAtAccept,
           riderId,
           riderName: riderProfile?.name ?? null,
-          riderPhone: riderProfile?.mobile ?? null,
-          orderStatus: nextFoodStatus,
-          riderReachedPickupAt: null,
-          pickupDurationSeconds: null,
-          pickupTimerStartedAt: null,
-          pickupWaitSeconds: null,
-          ...(readyNow ? { dispatchedAt: now } : {}),
-          updatedAt: now,
-        })
-        .where(eq(ordersFood.orderId, updated.id));
+          statusMessage: "Force Assignment — replacement rider accepted",
+          occurredAt: now,
+        });
 
-      await recordFoodRiderAssignedTimeline(tx, {
-        orderCorePk: updated.id,
-        previousStatus: foodStatusAtAccept,
-        riderId,
-        riderName: riderProfile?.name ?? null,
-        statusMessage: "Force Assignment — replacement rider accepted",
-        occurredAt: now,
+        await recordRiderOrderAccepted(tx, {
+          orderCorePk: updated.id,
+          orderIdText: (updated.orderId ?? orderIdText).trim(),
+          riderId,
+          serviceType: "food",
+          occurredAt: now,
+          riderName: riderProfile?.name ?? null,
+          riderMobile: riderProfile?.mobile ?? null,
+        });
       });
+    }
 
-      await recordRiderOrderAccepted(tx, {
-        orderCorePk: updated.id,
-        orderIdText: (updated.orderId ?? orderIdText).trim(),
-        riderId,
-        serviceType: "food",
-        occurredAt: now,
-        riderName: riderProfile?.name ?? null,
-        riderMobile: riderProfile?.mobile ?? null,
-      });
-    });
-
-    await setOrderDispatchManualHold(pre.id, false);
-    await completeOrderDispatch(pre.id, "accepted").catch(() => undefined);
+    await setOrderDispatchManualHold(orderMeta.id, false);
+    await completeOrderDispatch(orderMeta.id, "accepted").catch(() => undefined);
 
     const acceptedState: ForceAssignmentState = {
       ...fresh,
@@ -931,7 +1059,7 @@ export async function acceptForceAssignmentForRider(
     await persistForceState(acceptedState);
 
     await recordDispatchAssignmentAudit({
-      orderCoreId: pre.id,
+      orderCoreId: orderMeta.id,
       orderId: orderIdText,
       riderId,
       eventType: "accepted",
@@ -944,13 +1072,14 @@ export async function acceptForceAssignmentForRider(
         event: "force_assignment_accepted",
         oldRiderId: fresh.oldRiderId,
         reasonCode: fresh.reasonCode,
+        serviceType,
       },
       occurredAt: now,
     });
 
     if (fresh.oldRiderId != null) {
       await recordDispatchAssignmentAudit({
-        orderCoreId: pre.id,
+        orderCoreId: orderMeta.id,
         orderId: orderIdText,
         riderId: fresh.oldRiderId,
         eventType: "removed",
@@ -964,6 +1093,7 @@ export async function acceptForceAssignmentForRider(
           event: "force_assignment_old_rider_removed",
           newRiderId: riderId,
           reasonCode: fresh.reasonCode,
+          serviceType,
         },
         occurredAt: now,
       });
@@ -977,7 +1107,7 @@ export async function acceptForceAssignmentForRider(
 
     await publishOrderEvent(orderIdText, {
       type: "force_assignment_completed",
-      orderCoreId: pre.id,
+      orderCoreId: orderMeta.id,
       oldRiderId: fresh.oldRiderId,
       newRiderId: riderId,
     });
@@ -985,7 +1115,7 @@ export async function acceptForceAssignmentForRider(
     return {
       handled: true as const,
       summaryOrderId: orderIdText,
-      orderCoreId: pre.id,
+      orderCoreId: orderMeta.id,
     };
   });
 }
@@ -1010,6 +1140,17 @@ export async function adminHardAssignSpecificRider(args: {
   if (!order?.orderId) {
     throw Object.assign(new Error("Order not found"), { statusCode: 404 });
   }
+  const serviceType = normalizeForceServiceType(order.orderType);
+  if (!serviceType) {
+    throw Object.assign(new Error("Hard assign is only supported for food and parcel orders"), {
+      statusCode: 400,
+    });
+  }
+  if (isForceTerminalOrder(order)) {
+    throw Object.assign(new Error("Cannot assign rider on a terminal order"), {
+      statusCode: 409,
+    });
+  }
   if (order.riderId != null) {
     throw Object.assign(new Error("Order already has a rider — use Force Assignment"), {
       statusCode: 409,
@@ -1029,7 +1170,8 @@ export async function adminHardAssignSpecificRider(args: {
     order.formattedOrderId,
     order.pickupLat,
     order.pickupLon,
-    resolvedRadiusMeters
+    resolvedRadiusMeters,
+    serviceType
   );
   const lastRejectReason: { current?: string } = {};
   const eligible = await evaluateRiderDispatchEligibility(args.riderId, target, {
@@ -1073,12 +1215,65 @@ export async function adminHardAssignSpecificRider(args: {
     .where(eq(riders.id, args.riderId))
     .limit(1);
 
-  const foodStatusAtAccept = String(order.foodStatus ?? "").trim().toUpperCase();
-  const readyNow = foodStatusAtAccept === "READY_FOR_PICKUP";
-  const nextCoreStatus = readyNow ? "OUT_FOR_DELIVERY" : "RIDER_ASSIGNED";
-  const nextFoodStatus = readyNow ? "OUT_FOR_DELIVERY" : foodStatusAtAccept;
-
   await db.transaction(async (tx) => {
+    if (serviceType === "parcel") {
+      const previousStatus = String(order.currentStatus ?? "SEARCHING_RIDER");
+      const [updated] = await tx
+        .update(ordersCore)
+        .set({
+          riderId: args.riderId,
+          status: "accepted",
+          currentStatus: "RIDER_ASSIGNED",
+          actualPickupTime: null,
+          updatedAt: now,
+        })
+        .where(and(eq(ordersCore.id, args.orderCoreId), isNull(ordersCore.riderId)))
+        .returning({ id: ordersCore.id, orderId: ordersCore.orderId });
+
+      if (!updated?.id) {
+        throw Object.assign(new Error("Order already taken"), { statusCode: 409 });
+      }
+
+      await tx
+        .update(ordersParcel)
+        .set({
+          assignedRiderId: args.riderId,
+          riderAssignedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(ordersParcel.orderId, updated.id));
+
+      await appendOrderTimeline(tx, {
+        orderCorePk: updated.id,
+        status: "RIDER_ASSIGNED",
+        previousStatus,
+        actorType: "admin",
+        actorId:
+          args.adminUserId && Number.isFinite(Number(args.adminUserId))
+            ? Number(args.adminUserId)
+            : null,
+        actorName: args.adminEmail ?? args.adminUserId ?? "admin",
+        statusMessage: "Rider assigned manually by admin",
+        occurredAt: now,
+      });
+
+      await recordRiderOrderAccepted(tx, {
+        orderCorePk: updated.id,
+        orderIdText: (updated.orderId ?? order.orderId!).trim(),
+        riderId: args.riderId,
+        serviceType: "parcel",
+        occurredAt: now,
+        riderName: riderProfile?.name ?? null,
+        riderMobile: riderProfile?.mobile ?? null,
+      });
+      return;
+    }
+
+    const foodStatusAtAccept = String(order.foodStatus ?? "").trim().toUpperCase();
+    const readyNow = foodStatusAtAccept === "READY_FOR_PICKUP";
+    const nextCoreStatus = readyNow ? "OUT_FOR_DELIVERY" : "RIDER_ASSIGNED";
+    const nextFoodStatus = readyNow ? "OUT_FOR_DELIVERY" : foodStatusAtAccept;
+
     const [updated] = await tx
       .update(ordersCore)
       .set({

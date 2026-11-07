@@ -1,8 +1,13 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useOnboardingStore } from "@/src/stores/onboardingStore";
 import { useRiderStatus } from "@/src/hooks/useOnboarding";
+
+/** After this, proceed with cached status so cold-start splash does not linger. */
+const COLD_STATUS_BUDGET_MS = 1200;
+/** Hard ceiling: never hold branded splash forever when status API hangs with no cache. */
+const HARD_SPLASH_CEILING_MS = 8_000;
 import {
   canAccessHomeTabs,
   resolveEstablishedRiderHref,
@@ -52,6 +57,7 @@ export function useOnboardingGate() {
   const cachedOnboardingStatus = useOnboardingStore((s) => s.data.cachedOnboardingStatus);
   const cachedAccountStatus = useOnboardingStore((s) => s.data.cachedAccountStatus);
   const cachedApprovalStatus = useOnboardingStore((s) => s.data.cachedApprovalStatus);
+  const cachedPaymentCompleted = useOnboardingStore((s) => s.data.cachedPaymentCompleted);
   const setData = useOnboardingStore((s) => s.setData);
   const setStep = useOnboardingStore((s) => s.setStep);
   const clearOnboarding = useOnboardingStore((s) => s.clear);
@@ -76,6 +82,38 @@ export function useOnboardingGate() {
       String((error as Error)?.message ?? failureReason?.message ?? "")
     );
 
+  // Soft budget: don't hold the wordmark splash on a slow status round-trip when
+  // we already have a cached onboarding snapshot from a previous session.
+  const [statusBudgetElapsed, setStatusBudgetElapsed] = useState(false);
+  const [hardSplashElapsed, setHardSplashElapsed] = useState(false);
+  useEffect(() => {
+    if (!session || !riderId || isFetched || statusTimedOut) {
+      setStatusBudgetElapsed(false);
+      return;
+    }
+    setStatusBudgetElapsed(false);
+    const t = setTimeout(() => setStatusBudgetElapsed(true), COLD_STATUS_BUDGET_MS);
+    return () => clearTimeout(t);
+  }, [session, riderId, isFetched, statusTimedOut]);
+
+  // Hard ceiling: start once session is known. Do NOT reset to false when status
+  // finally settles — that used to cancel an already-elapsed ceiling and race
+  // navigation. Only reset when the session itself clears.
+  useEffect(() => {
+    if (!session) {
+      setHardSplashElapsed(false);
+      return;
+    }
+    if (hardSplashElapsed) return;
+    if (riderId && (isFetched || statusTimedOut)) {
+      // Status already resolved — no need to wait the full ceiling.
+      setHardSplashElapsed(true);
+      return;
+    }
+    const t = setTimeout(() => setHardSplashElapsed(true), HARD_SPLASH_CEILING_MS);
+    return () => clearTimeout(t);
+  }, [session, riderId, isFetched, statusTimedOut, hardSplashElapsed]);
+
   const serverStep = (riderStatus?.nextOnboardingStep ?? null) as ServerOnboardingStep | null;
 
   const completedOnboardingSteps = useMemo(() => {
@@ -86,6 +124,8 @@ export function useOnboardingGate() {
     riderStatus?.onboardingStatus ?? cachedOnboardingStatus ?? null;
   const effectiveAccountStatus = riderStatus?.accountStatus ?? cachedAccountStatus ?? null;
   const effectiveApprovalStatus = riderStatus?.approvalStatus ?? cachedApprovalStatus ?? null;
+  const effectivePaymentCompleted =
+    riderStatus?.paymentCompleted ?? cachedPaymentCompleted ?? null;
 
   // Persist access fields so cold start can skip Aadhaar for approved riders.
   useEffect(() => {
@@ -94,11 +134,16 @@ export function useOnboardingGate() {
       cachedOnboardingStatus: riderStatus.onboardingStatus,
       cachedAccountStatus: riderStatus.accountStatus ?? undefined,
       cachedApprovalStatus: riderStatus.approvalStatus ?? undefined,
+      ...(typeof riderStatus.paymentCompleted === "boolean"
+        ? { cachedPaymentCompleted: riderStatus.paymentCompleted }
+        : {}),
     };
     if (
       next.cachedOnboardingStatus === cachedOnboardingStatus &&
       next.cachedAccountStatus === cachedAccountStatus &&
-      next.cachedApprovalStatus === cachedApprovalStatus
+      next.cachedApprovalStatus === cachedApprovalStatus &&
+      (typeof riderStatus.paymentCompleted !== "boolean" ||
+        next.cachedPaymentCompleted === cachedPaymentCompleted)
     ) {
       return;
     }
@@ -107,9 +152,11 @@ export function useOnboardingGate() {
     riderStatus?.onboardingStatus,
     riderStatus?.accountStatus,
     riderStatus?.approvalStatus,
+    riderStatus?.paymentCompleted,
     cachedOnboardingStatus,
     cachedAccountStatus,
     cachedApprovalStatus,
+    cachedPaymentCompleted,
     setData,
   ]);
 
@@ -266,13 +313,17 @@ export function useOnboardingGate() {
   }, [serverStep, currentStep, setStep]);
 
   const ready = useMemo(() => {
-    if (!sessionHydrated || !onboardingHydrated) return false;
+    if (!sessionHydrated) return false;
+    // Hard ceiling must beat a stuck bindOwner / slow AsyncStorage hydrate —
+    // otherwise branded splash never leaves even when session is valid.
+    if (!onboardingHydrated && !hardSplashElapsed) return false;
     if (!session) return true;
     if (riderNotFound) return true;
     // Wait until bindOwner attaches this session — do NOT treat empty riderId as
     // "ready → login" (that caused kill→reopen to flash OTP before restore finished).
-    if (!boundOwnerId && !riderId) return false;
-    if (!riderId) return false;
+    // Hard ceiling still unblocks so splash cannot hang when bindOwner stalls.
+    if (!boundOwnerId && !riderId) return hardSplashElapsed;
+    if (!riderId) return hardSplashElapsed;
     // Known established rider (live or cached) → route home without waiting.
     if (
       resolveEstablishedRiderHref(
@@ -280,7 +331,7 @@ export function useOnboardingGate() {
         effectiveAccountStatus,
         effectiveApprovalStatus,
         {
-          paymentCompleted: riderStatus?.paymentCompleted,
+          paymentCompleted: effectivePaymentCompleted,
           nextOnboardingStep: serverStep,
         }
       )
@@ -291,6 +342,18 @@ export function useOnboardingGate() {
     if (statusTimedOut || (isError && !isFetching)) {
       return true;
     }
+    // Slow network but we have a prior snapshot — leave splash a bit sooner.
+    if (
+      statusBudgetElapsed &&
+      (cachedOnboardingStatus != null ||
+        cachedAccountStatus != null ||
+        cachedApprovalStatus != null)
+    ) {
+      return true;
+    }
+    // Absolute ceiling: leave splash even with empty cache so UI never hangs forever.
+    // Route still uses cached/null status — onboarding screens remain the safe fallback.
+    if (hardSplashElapsed) return true;
     // Wait for first status fetch so we never flash Aadhaar for approved riders.
     if (!isFetched) return false;
     return true;
@@ -307,8 +370,13 @@ export function useOnboardingGate() {
     isFetched,
     isError,
     isFetching,
+    hardSplashElapsed,
     statusTimedOut,
-    riderStatus?.paymentCompleted,
+    statusBudgetElapsed,
+    cachedOnboardingStatus,
+    cachedAccountStatus,
+    cachedApprovalStatus,
+    effectivePaymentCompleted,
     serverStep,
   ]);
 
@@ -316,7 +384,10 @@ export function useOnboardingGate() {
     if (!session) return null;
     if (riderNotFound) return "/(auth)/login" as const;
     // Still binding owner / resolving numeric rider id — keep splash, never login.
-    if (!riderId) return null;
+    // Hard ceiling: unstick splash with a safe login recovery (never open tabs).
+    if (!riderId) {
+      return hardSplashElapsed ? ("/(auth)/login" as const) : null;
+    }
     // Server-confirmed only. Local locationSource is a draft until work-location POST succeeds
     // (and hiring allows it) — otherwise riders skip location and reach payment while NOT_HIRING.
     const workLocationConfirmed = riderStatus?.workLocationConfirmed === true;
@@ -336,13 +407,14 @@ export function useOnboardingGate() {
       accountStatus: effectiveAccountStatus,
       completedOnboardingSteps,
       approvalStatus: effectiveApprovalStatus,
-      paymentCompleted: riderStatus?.paymentCompleted,
+      paymentCompleted: effectivePaymentCompleted,
       referralPromptHandled,
       workLocationConfirmed,
     });
   }, [
     session,
     riderId,
+    hardSplashElapsed,
     effectiveOnboardingStatus,
     currentStep,
     serverStep,
@@ -354,7 +426,7 @@ export function useOnboardingGate() {
     effectiveAccountStatus,
     completedOnboardingSteps,
     effectiveApprovalStatus,
-    riderStatus?.paymentCompleted,
+    effectivePaymentCompleted,
     riderStatus?.vehicleChoice,
     riderStatus?.vehicleOnboardingFlow,
     riderStatus?.vehicleDocsSubmittedFor,
@@ -367,7 +439,7 @@ export function useOnboardingGate() {
   const canAccessTabs = canAccessHomeTabs(
     effectiveOnboardingStatus,
     effectiveAccountStatus,
-    riderStatus?.paymentCompleted,
+    effectivePaymentCompleted,
   );
 
   return {

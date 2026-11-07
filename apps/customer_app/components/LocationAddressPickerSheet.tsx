@@ -107,44 +107,45 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
   }, [searchQuery]);
 
   const applySelection = useCallback(
-    async (
+    (
       primary: string,
       fullAddress: string,
       latitude: number,
       longitude: number
     ) => {
-      await addressService.setActiveLocation({
-        latitude,
-        longitude,
-        address: fullAddress,
-        addressId: null,
-      });
+      // Instant local pin — backend sync in background.
       setAddressAndCoords(
         { primary, secondary: fullAddress.slice(0, 80), fullAddress },
         { latitude, longitude },
         { source: "selected" }
       );
-      await queryClient.invalidateQueries({ queryKey: ADDRESSES_QUERY_KEY });
-      await queryClient.invalidateQueries({ queryKey: ACTIVE_LOCATION_QUERY_KEY });
       onComplete();
+      void addressService
+        .setActiveLocation({
+          latitude,
+          longitude,
+          address: fullAddress,
+          addressId: null,
+        })
+        .catch(() => {});
+      void queryClient.invalidateQueries({ queryKey: ADDRESSES_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: ACTIVE_LOCATION_QUERY_KEY });
     },
     [onComplete, queryClient, setAddressAndCoords]
   );
 
   const handleSelectAddress = useCallback(
-    async (addr: Address) => {
+    (addr: Address) => {
       setSelectingId(addr.id);
-      try {
-        const { applySelectedDeliveryAddress } = await import(
-          "@/lib/applySelectedDeliveryAddress"
-        );
-        await applySelectedDeliveryAddress(addr, queryClient);
-        onComplete();
-      } catch {
-        Alert.alert("Could not select address", "Please try again.");
-      } finally {
-        setSelectingId(null);
-      }
+      void import("@/lib/applySelectedDeliveryAddress")
+        .then(({ applySelectedDeliveryAddress }) =>
+          applySelectedDeliveryAddress(addr, queryClient)
+        )
+        .catch(() => {
+          Alert.alert("Could not select address", "Please try again.");
+        })
+        .finally(() => setSelectingId(null));
+      onComplete();
     },
     [onComplete, queryClient]
   );

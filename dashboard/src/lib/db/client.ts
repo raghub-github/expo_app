@@ -72,12 +72,28 @@ export function getSql() {
  */
 const RETRYABLE_PG_CODES = new Set(["08P01", "08006", "08003", "57P01"]);
 
+const RETRYABLE_NODE_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "EPIPE",
+  "EAI_AGAIN",
+]);
+
 export function isRetryablePgError(error: unknown): boolean {
   if (error == null || typeof error !== "object") return false;
   const code = (error as { code?: unknown }).code;
   if (typeof code === "string" && RETRYABLE_PG_CODES.has(code)) return true;
+  if (typeof code === "string" && RETRYABLE_NODE_CODES.has(code)) return true;
   const message = (error as { message?: unknown }).message;
-  return typeof message === "string" && message.includes("bind message supplies");
+  if (typeof message !== "string") return false;
+  if (message.includes("bind message supplies")) return true;
+  // postgres.js sometimes surfaces pooler drops as plain message text.
+  return (
+    /ECONNRESET|connection (?:terminated|reset|ended|closed)|server closed the connection/i.test(
+      message
+    )
+  );
 }
 
 /**

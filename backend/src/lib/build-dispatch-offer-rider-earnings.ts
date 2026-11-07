@@ -195,9 +195,14 @@ export async function buildDispatchOfferRiderEarnings(args: {
       ? Math.round((args.pickupDistanceMeters / 1000) * 1000) / 1000
       : 0;
 
-  const rideGeo = service === "ride" ? rideGeoFromCheckoutMetadata(core.checkoutMetadata) : {};
+  const rideGeo =
+    service === "ride" || service === "parcel"
+      ? rideGeoFromCheckoutMetadata(core.checkoutMetadata)
+      : {};
+  // Parcel + ride: prefer checkout road km (customer quote). Haversine-only
+  // distanceKm understates trip vs customer searching UI.
   const bookingTripKm =
-    service === "ride"
+    service === "ride" || service === "parcel"
       ? rideTripDistanceFromCheckoutMetadata(core.checkoutMetadata) ??
         roundRideTripDistanceKm(Number(core.distanceKm))
       : roundRideTripDistanceKm(Number(core.distanceKm));

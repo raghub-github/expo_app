@@ -835,6 +835,13 @@ export function useOrderRealtime() {
           markWs(false);
           failureCount += 1;
         };
+      } catch {
+        // fetch()/ticket failures must not become uncaught rejections (whatwg-fetch).
+        markWs(false);
+        failureCount += 1;
+        if (!cancelled && !suspended) {
+          scheduleReconnect("connect_error");
+        }
       } finally {
         connectInFlight = false;
       }

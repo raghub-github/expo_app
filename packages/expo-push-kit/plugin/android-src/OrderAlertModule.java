@@ -206,6 +206,10 @@ public class OrderAlertModule extends ReactContextBaseJavaModule {
     // active | muted | terminal — JS uses this for bg→in-app audio handoff.
     map.putString("alertState", row.optString("alertState", "active"));
     map.putDouble("startedAt", row.optLong("startedAt", 0L));
+    String expiresAt = row.optString("expiresAt", "");
+    if (expiresAt != null && expiresAt.length() > 0) {
+      map.putString("expiresAt", expiresAt);
+    }
     return map;
   }
 }

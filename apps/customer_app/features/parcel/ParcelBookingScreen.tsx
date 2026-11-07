@@ -129,12 +129,18 @@ export function ParcelBookingScreen() {
   useEffect(() => {
     if (pickupSeededRef.current || pickup || !address || !coords) return;
     pickupSeededRef.current = true;
+    const primary =
+      address.primary?.trim() ||
+      address.fullAddress?.split(",")[0]?.trim() ||
+      [address.city, address.state].filter(Boolean).join(", ").trim() ||
+      "Pickup";
+    const fullAddress =
+      address.fullAddress?.trim() ||
+      [address.primary, address.city, address.state].filter(Boolean).join(", ").trim() ||
+      primary;
     setPickup({
-      primary: address.primary?.trim() || "Current location",
-      fullAddress:
-        address.fullAddress?.trim() ||
-        [address.primary, address.city, address.state].filter(Boolean).join(", ") ||
-        "Current location",
+      primary,
+      fullAddress,
       latitude: coords.latitude,
       longitude: coords.longitude,
       contactName: profile?.full_name ?? null,

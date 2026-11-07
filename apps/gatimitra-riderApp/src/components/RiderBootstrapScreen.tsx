@@ -1,5 +1,6 @@
 /**
- * Branded boot splash — mint background with wordmark (no launcher icon).
+ * Branded boot splash — mint background with bold Lora wordmark (no launcher icon).
+ * Layout mirrors MerchantBootstrapScreen: title + tagline, no divider rule.
  */
 import { useCallback, useRef } from "react";
 import {
@@ -19,7 +20,6 @@ import { RiderFonts } from "@/src/theme/fonts";
 export const RIDER_SPLASH_BG = "#C4E8D1";
 const TITLE = "#0F172A";
 const SUBTITLE = "#115E59";
-const ACCENT = "#EA580C";
 const SPINNER = "#0F766E";
 const SPINNER_BOTTOM_GAP = 28;
 
@@ -68,7 +68,6 @@ export function RiderBootstrapScreen({ statusMessage = null, onSplashReady }: Pr
         >
           GatiMitra Rider
         </Text>
-        <View style={styles.divider} />
         <Text style={styles.subtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
           Moving India Forward
         </Text>
@@ -107,35 +106,29 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 20,
+    paddingHorizontal: 28,
     zIndex: 2,
   },
   title: {
     fontFamily: RiderFonts.loraBold,
-    fontSize: 32,
+    fontSize: 36,
     fontWeight: "700",
     color: TITLE,
-    letterSpacing: -0.3,
+    letterSpacing: 0.15,
     textAlign: "center",
     width: "100%",
     flexShrink: 0,
   },
-  divider: {
-    width: "72%",
-    maxWidth: 240,
-    height: 2.5,
-    backgroundColor: ACCENT,
-    marginTop: 16,
-    marginBottom: 16,
-  },
   subtitle: {
     fontFamily: RiderFonts.loraBold,
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: "700",
+    lineHeight: 18,
     color: SUBTITLE,
-    letterSpacing: 0.4,
+    letterSpacing: 0.9,
     textAlign: "center",
     width: "100%",
+    marginTop: 10,
   },
   spinner: {
     position: "absolute",
@@ -157,6 +150,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(15, 118, 110, 0.18)",
   },
   statusTitle: {
+    fontFamily: RiderFonts.loraBold,
     color: "#115E59",
     fontSize: 14,
     fontWeight: "700",
@@ -164,9 +158,10 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   statusSubtitle: {
+    fontFamily: RiderFonts.loraRegular,
     color: "#0F766E",
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "400",
     textAlign: "center",
     marginTop: 4,
   },

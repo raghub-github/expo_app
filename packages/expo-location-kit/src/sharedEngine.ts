@@ -52,12 +52,12 @@ const DUTY_IDLE_BG_PROFILE: LocationEngineProfile = {
 
 /**
  * Off-duty home "You" pin only. Continuous High/5s GPS while idle was a top
- * thermal culprit; Balanced + long interval keeps the pin alive without heat.
+ * thermal culprit; Balanced + ~8s/15m keeps the pin near-instant without heat.
  */
 const HOME_MAP_IDLE_PROFILE: LocationEngineProfile = {
-  timeIntervalMs: 45_000,
-  distanceIntervalM: 80,
-  minAccuracyM: 200,
+  timeIntervalMs: 8_000,
+  distanceIntervalM: 15,
+  minAccuracyM: 120,
   accuracy: Location.Accuracy.Balanced,
 };
 

@@ -18,6 +18,7 @@ import {
   RIDER_ORDER_ETA_QUERY_KEY,
   type OrderEtaResponse,
 } from "@/src/services/api/etaApi";
+import { notifyDispatchGatewayDown } from "@/src/lib/riderDispatchLifecycle";
 
 const RECONNECT_BASE_MS = 3_000;
 const RECONNECT_MAX_MS = 60_000;
@@ -60,7 +61,8 @@ export function RiderDispatchRealtime() {
   const queryClient = useQueryClient();
   const session = useSessionStore((s) => s.session);
   const hydrated = useSessionStore((s) => s.hydrated);
-  const isOnDuty = useDutyStore((s) => s.isOnDuty);
+  const syncPhase = useDutyStore((s) => s.syncPhase);
+  const isOnDuty = syncPhase === "server_on";
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heartbeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -186,18 +188,35 @@ export function RiderDispatchRealtime() {
               { reason: "gateway_down", wsOrigin }
             );
           }
+          // HTTP poll is the only offer path while gateway is down (no FCM in Expo Go).
+          notifyDispatchGatewayDown();
           scheduleReconnect("gateway_down");
           return;
         }
 
-        const ticketRes = await fetch(`${apiUrl}/v1/auth/ws-ticket`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${accessToken}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ riderId }),
-        });
+        // Bound ticket fetch — without AbortController a hung radio leaves
+        // connectInFlightRef stuck until the OS kills the socket (reconnect freeze).
+        const ticketController = new AbortController();
+        const ticketTimer = setTimeout(() => ticketController.abort(), 8_000);
+        let ticketRes: Response;
+        try {
+          ticketRes = await fetch(`${apiUrl}/v1/auth/ws-ticket`, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${accessToken}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ riderId }),
+            signal: ticketController.signal,
+          });
+        } catch (ticketErr) {
+          failureCountRef.current += 1;
+          riderDispatchWarn("ws ticket timeout/network", ticketErr);
+          scheduleReconnect("ticket_timeout");
+          return;
+        } finally {
+          clearTimeout(ticketTimer);
+        }
         if (!ticketRes.ok || cancelledRef.current || gen !== connectGenRef.current) {
           failureCountRef.current += 1;
           let ticketError = "";

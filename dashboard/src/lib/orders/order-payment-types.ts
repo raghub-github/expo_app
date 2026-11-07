@@ -57,6 +57,16 @@ export type OrderPaymentDetail = {
   deliveryFeeQuoted?: number | null;
   /** True when membership benefit made delivery ₹0. */
   deliveryFeeWaived?: boolean;
+  /**
+   * Parcel: rider payout shown on the dispatch offer (accept freeze /
+   * billing rider_payout_snapshot / core.rider_earning fallback).
+   */
+  riderDispatchOffer?: number | null;
+  /**
+   * Parcel: amount payable to the rider after delivery complete
+   * (orders_core.rider_earning, may include waiting beyond the offer).
+   */
+  riderPayAfterComplete?: number | null;
   /** Taxes / GST on the customer bill. */
   taxes: number | null;
   /** Payment instrument: UPI / QR / Card / Wallet / Pay later / … */

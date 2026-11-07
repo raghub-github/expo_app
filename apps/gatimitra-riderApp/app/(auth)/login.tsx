@@ -15,14 +15,16 @@ import {
 import * as WebBrowser from "expo-web-browser";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, type Href } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useTranslation } from "react-i18next";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   isRiderAuthError,
   isRiderSessionConflict,
   riderAuthService,
   type RiderSessionConflict,
+  type RiderStatusResponse,
 } from "@/src/services/auth/auth.service";
 import { resetSessionRevokedFlag } from "@/src/services/sessionEvents";
 import { getOrCreateDeviceId } from "@/src/utils/deviceId";
@@ -53,6 +55,24 @@ import { keyboardInsetFromEvent } from "@/src/hooks/useKeyboardBottomInset";
 import { sanitizeRiderAuthError } from "@/src/lib/sanitizeRiderAuthError";
 import { usePermissionStore } from "@/src/stores/permissionStore";
 import PermissionRequestScreen from "@/app/(permissions)/request";
+import {
+  canAccessHomeTabs,
+  resolveOnboardingHref,
+} from "@/src/lib/onboarding-routes";
+
+function gateCacheFromStatus(status: RiderStatusResponse) {
+  return {
+    ...(status.onboardingStatus
+      ? { cachedOnboardingStatus: status.onboardingStatus }
+      : {}),
+    ...(status.approvalStatus
+      ? { cachedApprovalStatus: status.approvalStatus }
+      : {}),
+    ...(typeof status.paymentCompleted === "boolean"
+      ? { cachedPaymentCompleted: status.paymentCompleted }
+      : {}),
+  };
+}
 
 const OTP_LENGTH = 6;
 const RIDER_TERMS_URL = "https://rider.gatimitra.com/terms";
@@ -229,6 +249,7 @@ export default function LoginScreen() {
   const insets = useSafeAreaInsets();
   const bottomInset = useRiderBottomInset();
 
+  const queryClient = useQueryClient();
   const setSession = useSessionStore((s) => s.setSession);
   const sessionHydrated = useSessionStore((s) => s.hydrated);
   const existingSession = useSessionStore((s) => s.session);
@@ -251,16 +272,25 @@ export default function LoginScreen() {
   const riderHero = useAppAssetSource(RX.auth.hero);
   /** Prefetch while rider types OTP so verify does not wait on GPS. */
   const loginGeoPrefetchRef = useRef<ReturnType<typeof getRiderLoginGeoFromDevice> | null>(null);
+  /**
+   * After a successful OTP / takeover, proceedAfterSession owns navigation.
+   * Do not bounce back to index (splash) when busy/takeoverBusy clears in finally —
+   * that race left authenticated riders stuck on the branded spinner.
+   */
+  const postAuthRoutingRef = useRef(false);
 
   const phoneDigits = phoneE164.replace(/\D/g, "");
   const phoneValid = phoneDigits.length >= 10;
   const otpValid = otp.trim().length === OTP_LENGTH;
   const showSignupHero = step === "phone" && !keyboardVisible;
+  /** OTP Submit loading — covers verify and post–Mark Logout continuation. */
+  const otpSubmitting = busy || takeoverBusy;
 
-  // Already signed in → leave login. Location is asked on the home screen.
+  // Already signed in → leave login (cold restore only). Location is asked on home.
   useEffect(() => {
     if (!sessionHydrated || !existingSession?.accessToken) return;
     if (busy || takeoverBusy || sessionConflict) return;
+    if (postAuthRoutingRef.current) return;
     if (!hasRequestedPermissions) return;
     router.replace("/");
   }, [
@@ -342,6 +372,9 @@ export default function LoginScreen() {
   };
 
   const proceedAfterSession = async (session: Session) => {
+    // Own navigation for the rest of this login — prevent the session-restore
+    // effect from bouncing authenticated riders onto the branded splash.
+    postAuthRoutingRef.current = true;
     resetSessionRevokedFlag();
 
     const initialRiderId =
@@ -370,43 +403,68 @@ export default function LoginScreen() {
       status.riderId ??
       sessionWithRider.riderId ??
       initialRiderId;
+    const cacheSeed = gateCacheFromStatus(status);
 
     if (riderId && String(riderId) !== String(sessionWithRider.riderId ?? "")) {
       await setSession({ ...sessionWithRider, riderId: String(riderId) });
       await useOnboardingStore.getState().bindOwner(String(riderId));
-      await setOnboardingData({ riderId: String(riderId) });
+      await setOnboardingData({
+        riderId: String(riderId),
+        ...cacheSeed,
+      });
     } else if (riderId && !initialRiderId) {
       await useOnboardingStore.getState().bindOwner(String(riderId));
-      await setOnboardingData({ riderId: String(riderId) });
+      await setOnboardingData({
+        riderId: String(riderId),
+        ...cacheSeed,
+      });
+    } else if (riderId && Object.keys(cacheSeed).length > 0) {
+      // Seed gate cache so tabs unlock without waiting on a second status fetch.
+      await setOnboardingData(cacheSeed);
     }
 
-    if (status.onboardingStatus === "approved") {
-      // Resolve OS location before Home mounts location-dependent work.
-      // If denied/blocked, tabs still open under the FG location gate host.
-      try {
-        const { ensureForegroundLocationForAuthenticatedEntry } = await import(
-          "@/src/lib/riderForegroundLocationGate"
-        );
-        await ensureForegroundLocationForAuthenticatedEntry();
-      } catch (err) {
-        console.warn("[Login] foreground location gate failed:", err);
-      }
+    // Seed react-query so useOnboardingGate/canAccessTabs see payment + status immediately.
+    if (riderId) {
+      queryClient.setQueryData(["rider", String(riderId)], (prev: unknown) => {
+        const base =
+          prev && typeof prev === "object" ? (prev as Record<string, unknown>) : {};
+        return {
+          ...base,
+          riderId: String(riderId),
+          onboardingStatus: status.onboardingStatus ?? base.onboardingStatus,
+          approvalStatus: status.approvalStatus ?? base.approvalStatus,
+          ...(typeof status.paymentCompleted === "boolean"
+            ? { paymentCompleted: status.paymentCompleted }
+            : {}),
+        };
+      });
+    }
+
+    const requestLocationAfterHome = () => {
+      void import("@/src/lib/riderForegroundLocationGate")
+        .then(({ ensureForegroundLocationForAuthenticatedEntry }) =>
+          ensureForegroundLocationForAuthenticatedEntry()
+        )
+        .catch((err) => {
+          console.warn("[Login] foreground location gate failed:", err);
+        });
+    };
+
+    const onboarding = useOnboardingStore.getState().data;
+    const homeUnlocked = canAccessHomeTabs(
+      status.onboardingStatus,
+      onboarding.cachedAccountStatus,
+      status.paymentCompleted,
+    );
+
+    if (homeUnlocked) {
       router.replace("/(tabs)/orders");
-    } else if (
-      status.onboardingStatus === "pending_approval" &&
-      status.paymentCompleted === true
-    ) {
-      // Home + Waiting for Review sheet (no full pending page).
-      try {
-        const { ensureForegroundLocationForAuthenticatedEntry } = await import(
-          "@/src/lib/riderForegroundLocationGate"
-        );
-        await ensureForegroundLocationForAuthenticatedEntry();
-      } catch (err) {
-        console.warn("[Login] foreground location gate failed:", err);
-      }
-      router.replace("/(tabs)/orders");
-    } else if (
+      // Home owns FG location UX — do not block navigation on the OS dialog.
+      requestLocationAfterHome();
+      return;
+    }
+
+    if (
       !status.exists ||
       status.onboardingStatus === "not_started" ||
       status.onboardingStatus == null
@@ -417,9 +475,28 @@ export default function LoginScreen() {
         skippedReferral: false,
       });
       router.replace("/(onboarding)/referral");
-    } else {
-      router.replace("/");
+      return;
     }
+
+    // Mid-onboarding: concrete resume href — never bounce through Index splash.
+    const resumeHref = resolveOnboardingHref(
+      status.onboardingStatus,
+      onboarding.currentStep,
+      null,
+      {
+        paymentCompleted: status.paymentCompleted,
+        accountStatus: onboarding.cachedAccountStatus,
+        approvalStatus: status.approvalStatus,
+        referralPromptHandled: onboarding.referralPromptHandled,
+        vehicleChoice: onboarding.vehicleChoice,
+        vehicleOnboardingFlow: onboarding.vehicleOnboardingFlow,
+        vehicleOnboardingSubmittedFor: onboarding.vehicleOnboardingSubmittedFor,
+        bankAccountOnboardingDone: onboarding.bankAccountOnboardingDone,
+        // Slim auth status has no work-location flag; local draft is not authoritative.
+        workLocationConfirmed: false,
+      },
+    );
+    router.replace(resumeHref as Href);
   };
 
   const resolveLoginGeoFast = async () => {
@@ -443,6 +520,7 @@ export default function LoginScreen() {
       setError(`Please enter a valid ${OTP_LENGTH}-digit OTP`);
       return;
     }
+    if (busy || takeoverBusy || sessionConflict) return;
 
     setBusy(true);
     setError(null);
@@ -481,6 +559,7 @@ export default function LoginScreen() {
 
       await proceedAfterSession(result);
     } catch (e) {
+      postAuthRoutingRef.current = false;
       setError(sanitizeRiderAuthError(e, t("login.highTraffic")));
     } finally {
       setBusy(false);
@@ -507,8 +586,10 @@ export default function LoginScreen() {
   }, [otp, otpValid, busy, step, sessionConflict]);
 
   const onMarkLogout = async () => {
-    if (!sessionConflict || takeoverBusy) return;
+    if (!sessionConflict || takeoverBusy || busy) return;
+    // Sheet busy + OTP Submit spinner (visible once the sheet dismisses).
     setTakeoverBusy(true);
+    setBusy(true);
     setError(null);
     try {
       const [deviceId, loginGeo] = await Promise.all([
@@ -520,12 +601,15 @@ export default function LoginScreen() {
         deviceId,
         loginGeo,
       });
+      // Old device invalidated — continue auth with Submit loading state.
       setSessionConflict(null);
       await proceedAfterSession(session);
     } catch (e) {
+      postAuthRoutingRef.current = false;
       setError(sanitizeRiderAuthError(e, t("login.highTraffic")));
     } finally {
       setTakeoverBusy(false);
+      setBusy(false);
     }
   };
 
@@ -774,8 +858,8 @@ export default function LoginScreen() {
               <AuthPrimaryButton
                 label={t("login.submit", "Submit")}
                 onPress={onVerifyOtp}
-                disabled={!otpValid}
-                loading={busy}
+                disabled={!otpValid || Boolean(sessionConflict)}
+                loading={otpSubmitting}
               />
             </View>
           </>

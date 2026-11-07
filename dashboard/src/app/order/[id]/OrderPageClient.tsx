@@ -80,7 +80,7 @@ export default function OrderPageClient({ orderPublicId }: OrderPageClientProps)
 
   if (isParcel) {
     return (
-      <div className={`${ORDER_PAGE_SHELL} bg-[#FAFAFA]`}>
+      <div className={`${ORDER_PAGE_SHELL} parcel-order-typo bg-[#FAFAFA]`}>
         {header}
         <main className={mainClass}>
           <ParcelOrderDetailClient

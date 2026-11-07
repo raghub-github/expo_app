@@ -672,9 +672,39 @@ export async function assertRiderEligibleForOrderAccept(args: {
   pickupState?: string | null;
 }): Promise<void> {
   const mode = eligibilityEnforcementMode();
+  // Never await the heavy eligibility resolver unless we will enforce.
+  // Shadow used to await 5–15s and leave the rider stuck on "Accepting…".
   if (mode === "off") return;
   const service = mapOrderTypeToEligibilityService(args.orderType);
   if (!service) return;
+
+  if (mode === "shadow") {
+    void resolveRiderServiceEligibilityAtPickup({
+      riderId: args.riderId,
+      service,
+      pickupLat: args.pickupLat,
+      pickupLng: args.pickupLng,
+      pickupPincode: args.pickupPincode,
+      pickupState: args.pickupState,
+    })
+      .then((decision) => {
+        if (decision.eligible) return;
+        console.info("[rider-eligibility][shadow] would block accept", {
+          riderId: args.riderId,
+          service,
+          reasons: decision.blocking.map((b) => b.code).join(","),
+          geo: decision.resolvedGeo,
+        });
+      })
+      .catch((err) => {
+        console.warn(
+          "[rider-eligibility][shadow] check skipped (infra):",
+          args.riderId,
+          (err as Error)?.message ?? err
+        );
+      });
+    return;
+  }
 
   let decision: EligibilityDecision;
   try {
@@ -693,15 +723,6 @@ export async function assertRiderEligibleForOrderAccept(args: {
 
   if (decision.eligible) return;
   const reasons = decision.blocking.map((b) => b.code).join(",");
-  if (mode === "shadow") {
-    console.info("[rider-eligibility][shadow] would block accept", {
-      riderId: args.riderId,
-      service,
-      reasons,
-      geo: decision.resolvedGeo,
-    });
-    return;
-  }
   console.info("[rider-eligibility][enforce] blocked accept", { riderId: args.riderId, service, reasons });
   throw new RiderServiceIneligibleError(decision);
 }

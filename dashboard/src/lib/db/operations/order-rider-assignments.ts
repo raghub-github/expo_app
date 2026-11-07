@@ -164,6 +164,10 @@ export type RiderAssignmentTimelineData = {
   reached_merchant_skipped: boolean;
   picked_up_actor_type: string | null;
   picked_up_actor_label: string | null;
+  /** Parcel / COD fare collection confirmation (orders_parcel.cash_collected_at). */
+  fare_collected_at?: string | null;
+  /** Display mode under collect: Online | COD | null. */
+  fare_payment_mode?: "Online" | "COD" | null;
   events: RiderAssignmentTimelineEvent[];
 };
 
@@ -191,6 +195,8 @@ export async function getRiderAssignmentTimeline(
     reached_merchant_skipped: false,
     picked_up_actor_type: null,
     picked_up_actor_label: null,
+    fare_collected_at: null,
+    fare_payment_mode: null,
     events: [],
   };
 
@@ -349,6 +355,71 @@ export async function getRiderAssignmentTimeline(
         ? pickedUpMeta.actor_label.trim()
         : null;
 
+  let fareCollectedAt: string | null = null;
+  let farePaymentMode: "Online" | "COD" | null = null;
+  try {
+    const parcelPay = await sql`
+      SELECT
+        p.cash_collected_at,
+        p.payment_method,
+        p.is_cod,
+        c.payment_method AS core_payment_method,
+        c.payment_status,
+        c.billing_snapshot
+      FROM orders_parcel p
+      INNER JOIN orders_core c ON c.id = p.order_id
+      WHERE p.order_id = ${orderCoreId}
+      LIMIT 1
+    `;
+    const payRow = (parcelPay as Record<string, unknown>[])[0];
+    if (payRow) {
+      fareCollectedAt =
+        toIso(payRow.cash_collected_at) ??
+        (() => {
+          const snap =
+            payRow.billing_snapshot && typeof payRow.billing_snapshot === "object"
+              ? (payRow.billing_snapshot as Record<string, unknown>)
+              : null;
+          return toIso(snap?.parcel_fare_paid_at) ?? toIso(snap?.ride_fare_paid_at);
+        })();
+      const methodRaw = String(
+        payRow.payment_method ?? payRow.core_payment_method ?? ""
+      )
+        .trim()
+        .toLowerCase();
+      const isCod =
+        payRow.is_cod === true ||
+        methodRaw === "cash" ||
+        methodRaw === "cod" ||
+        methodRaw.includes("cash") ||
+        methodRaw.includes("cod");
+      const paidOnline =
+        ["online", "wallet", "upi", "gati_cash", "gaticash"].some((k) =>
+          methodRaw.includes(k)
+        ) ||
+        ["paid", "completed", "captured"].includes(
+          String(payRow.payment_status ?? "")
+            .trim()
+            .toLowerCase()
+        );
+      if (fareCollectedAt) {
+        farePaymentMode = isCod && !paidOnline ? "COD" : "Online";
+        // If still marked COD but cash_collected from online flow, prefer Online.
+        if (
+          methodRaw.includes("online") ||
+          methodRaw.includes("wallet") ||
+          methodRaw.includes("upi")
+        ) {
+          farePaymentMode = "Online";
+        } else if (isCod) {
+          farePaymentMode = "COD";
+        }
+      }
+    }
+  } catch {
+    /* orders_parcel optional for non-parcel */
+  }
+
   return {
     assigned_at: toIso(assignment.assigned_at) ?? pickEvent("assigned"),
     accepted_at: toIso(assignment.accepted_at) ?? pickEvent("accepted"),
@@ -365,6 +436,8 @@ export async function getRiderAssignmentTimeline(
       (assignment.picked_up_actor_label as string | null)?.trim() ||
       actorLabelFromMeta ||
       null,
+    fare_collected_at: fareCollectedAt,
+    fare_payment_mode: farePaymentMode,
     events,
   };
 }

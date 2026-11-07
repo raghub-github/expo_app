@@ -404,11 +404,18 @@ function HistoryOrderCard({
       paymentStatus: order.paymentStatus,
       refundStatus: order.refundStatus,
     });
-  const hasRating = order.storeRatingSubmitted === true && order.storeRating != null;
-  const hasStoreReply = Boolean(order.storeMerchantReplyText?.trim());
-  const price = orderListPriceDisplay(order);
-
   const isParcel = isParcelOrderSummary(order);
+  // Parcel / courier: only delivery-partner stars are stored (no restaurant).
+  const ratedStars = isParcel
+    ? order.deliveryRating != null && Number(order.deliveryRating) >= 1
+      ? Math.round(Number(order.deliveryRating))
+      : null
+    : order.storeRatingSubmitted === true && order.storeRating != null
+      ? Math.round(Number(order.storeRating))
+      : null;
+  const hasRating = ratedStars != null;
+  const hasStoreReply = !isParcel && Boolean(order.storeMerchantReplyText?.trim());
+  const price = orderListPriceDisplay(order);
   const restaurantName = isParcel
     ? "Courier"
     : order.merchantPublicName ?? order.merchantName ?? "";
@@ -615,7 +622,7 @@ function HistoryOrderCard({
               ) : hasRating ? (
                 <View style={styles.ratingBlock}>
                   <View style={styles.ratedRow}>
-                    <AppText style={styles.ratedLabel}>You rated {order.storeRating}</AppText>
+                    <AppText style={styles.ratedLabel}>You rated {ratedStars}</AppText>
                     <Ionicons name="star" size={14} color="#F59E0B" />
                   </View>
                   <TouchableOpacity
@@ -636,7 +643,7 @@ function HistoryOrderCard({
               )}
             </View>
 
-            {delivered ? (
+            {delivered && !isParcel ? (
               <TouchableOpacity style={styles.reorderBtn} onPress={onReorder} activeOpacity={0.9}>
                 <Ionicons name="refresh" size={15} color="#fff" />
                 <AppText style={styles.reorderText}>Reorder</AppText>

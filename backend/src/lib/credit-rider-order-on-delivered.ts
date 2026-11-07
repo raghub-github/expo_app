@@ -5,6 +5,11 @@ import type { OrderRiderPayoutService } from "./resolve-order-rider-payout.js";
 import { riderHasActiveGmitraMax } from "../modules/rider-payout-pricing/riderPayoutPricing.repository.js";
 import { rideTripDistanceFromCheckoutMetadata, rideGeoFromCheckoutMetadata } from "./ride-address-display.js";
 import { readRideRiderPayoutSnapshot } from "./ride-rider-payout-snapshot.js";
+import {
+  buildRiderSettlementBreakdown,
+  persistRiderSettlementBreakdown,
+  resolveAcceptedPayoutSnapshot,
+} from "./rider-settlement-breakdown.js";
 // Rider payout basis (gross, offer-independent) — shared so the accept-snapshot and
 // the delivery-time settlement resolve it identically. Re-exported for existing importers.
 import {
@@ -335,7 +340,13 @@ export async function creditRiderOrderEarningOnDelivered(
     const payoutService: OrderRiderPayoutService =
       orderType === "person_ride" ? "ride" : orderType === "parcel" ? "parcel" : "food";
 
-    if (orderType === "person_ride" || orderType === "food") {
+    // Snapshot-first for ALL dispatch services (ride / food / parcel) so delivery
+    // credit matches the frozen accept promise instead of silently recomputing.
+    if (
+      orderType === "person_ride" ||
+      orderType === "food" ||
+      orderType === "parcel"
+    ) {
       const acceptSnap = readRideRiderPayoutSnapshot(row.billing_snapshot);
       if (acceptSnap != null && acceptSnap.totalEarning > 0) {
         // The DELIVERY earning excludes the tip (credited separately below). Sum the
@@ -600,6 +611,48 @@ export async function creditRiderOrderEarningOnDelivered(
     return { credited: false, deliveryCredited: false, tipCredited: false, error: "zero_earning" };
   }
 
+  const totalRiderEarningPreview = round2(deliveryFee + tipAmount + dynamicIncentive);
+  const acceptSnap = resolveAcceptedPayoutSnapshot({
+    billingSnapshot: row.billing_snapshot,
+  });
+  const finalSnap = readRideRiderPayoutSnapshot(row.billing_snapshot) ?? acceptSnap;
+  const promiseFloorHonoured =
+    promisedDeliveryEarning > 0 &&
+    Math.abs(deliveryFee - promisedDeliveryEarning) < 0.05;
+  const settlementBreakdown = buildRiderSettlementBreakdown({
+    acceptedSnapshot: acceptSnap,
+    finalSnapshot: finalSnap
+      ? {
+          ...finalSnap,
+          baseEarning: Math.max(
+            0,
+            round2(
+              deliveryFee -
+                (finalSnap.waitingEarning || 0) -
+                Math.max(0, (finalSnap.surgeEarning || 0) - dynamicIncentive)
+            )
+          ),
+          waitingEarning: finalSnap.waitingEarning || 0,
+          surgeEarning: finalSnap.surgeEarning || 0,
+          totalEarning: totalRiderEarningPreview,
+        }
+      : null,
+    walletCreditedAmount: totalRiderEarningPreview,
+    tipAmount,
+    dynamicIncentiveAmount: dynamicIncentive,
+    promiseFloorHonoured,
+    quoteId: `order:${orderIdText}`,
+  });
+  const settlementMeta = {
+    dispatch_offer_amount: settlementBreakdown.dispatch_offer_amount,
+    accepted_quote_amount: settlementBreakdown.accepted_quote_amount,
+    final_settlement_amount: settlementBreakdown.final_settlement_amount,
+    difference_amount: settlementBreakdown.difference_amount,
+    difference_reason_code: settlementBreakdown.difference_reason_code,
+    difference_reason_text: settlementBreakdown.difference_reason_text,
+    investigation_required: settlementBreakdown.investigation_required,
+  };
+
   try {
     if (deliveryFee > 0) {
       const ref = deliveryRef(coreId);
@@ -612,7 +665,7 @@ export async function creditRiderOrderEarningOnDelivered(
           serviceType,
           ref,
           description: `Delivery earning — Order #${displayId}`,
-          metadata: { ...baseMeta, component: "delivery" },
+          metadata: { ...baseMeta, component: "delivery", settlement: settlementMeta },
         });
       }
       deliveryCredited = true;
@@ -629,7 +682,7 @@ export async function creditRiderOrderEarningOnDelivered(
           serviceType,
           ref,
           description: `Customer tip — Order #${displayId}`,
-          metadata: { ...baseMeta, component: "tip" },
+          metadata: { ...baseMeta, component: "tip", settlement: settlementMeta },
         });
       }
       tipCredited = true;
@@ -649,7 +702,11 @@ export async function creditRiderOrderEarningOnDelivered(
           serviceType,
           ref,
           description: `Dynamic incentive (night/rain/peak) — Order #${displayId}`,
-          metadata: { ...baseMeta, component: "dynamic_incentive" },
+          metadata: {
+            ...baseMeta,
+            component: "dynamic_incentive",
+            settlement: settlementMeta,
+          },
         });
       }
     }
@@ -659,6 +716,23 @@ export async function creditRiderOrderEarningOnDelivered(
     const earningToSync = ledgerTotal > 0 ? ledgerTotal : totalRiderEarning;
     if (earningToSync > 0) {
       await syncRiderEarningOnOrderCore(coreId, earningToSync);
+    }
+
+    try {
+      await persistRiderSettlementBreakdown(coreId, settlementBreakdown);
+      if (settlementBreakdown.investigation_required) {
+        console.warn("[credit-rider] settlement investigation required", {
+          order_id: orderIdText,
+          difference: settlementBreakdown.difference_amount,
+          reason: settlementBreakdown.difference_reason_text,
+        });
+      }
+    } catch (breakdownErr) {
+      console.warn(
+        "[credit-rider] settlement breakdown persist failed:",
+        orderIdText,
+        (breakdownErr as Error)?.message ?? breakdownErr
+      );
     }
 
     if (deliveryCredited || tipCredited || dynamicIncentive > 0) {

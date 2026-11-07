@@ -41,6 +41,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { setRuntimeApiBaseUrl, getConfig } from "@/config/env";
 import { useKeyboardBottomInset } from "@/hooks/useKeyboardBottomInset";
 import { armSmsOtpCapture } from "@/lib/androidSmsOtpRetriever";
+import { markInitialShellReady } from "@/lib/startupShellReady";
 
 const API_URL_OVERRIDE_KEY = "dev.apiBaseUrl";
 
@@ -78,6 +79,10 @@ export default function LoginScreen() {
   const padH = Math.max(20, Math.min(32, Math.round(screenW * 0.07)));
   const router = useRouter();
   const scrollRef = useRef<ScrollView>(null);
+
+  useEffect(() => {
+    markInitialShellReady("login");
+  }, []);
   const inputRef = useRef<TextInput>(null);
   const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);

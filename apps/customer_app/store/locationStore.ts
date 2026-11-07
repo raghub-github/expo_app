@@ -38,6 +38,7 @@ import {
   type PersistedDeviceLocation,
 } from "@/lib/lastKnownLocationCache";
 import { metresBetween, pinStillHolds, shouldReplaceFix } from "@/lib/locationFixSelection";
+import { startupLaunchLog } from "@/lib/startupPerf";
 
 function isSmsBlockingLocationPrompts(): boolean {
   try {
@@ -145,9 +146,24 @@ type LocationMetric =
   | "total_location_ready_ms";
 
 function logMetric(metric: LocationMetric, ms: number): void {
-  if (!LOCATION_DEBUG) return;
+  if (!LOCATION_DEBUG && !__DEV__) return;
   // eslint-disable-next-line no-console
   console.log(`[location:perf] ${metric} = ${Math.round(ms)}ms`);
+  if (__DEV__) {
+    try {
+      const { startupMeasure, startupInc } = require("@/lib/startupPerf") as typeof import("@/lib/startupPerf");
+      if (metric === "last_known_location_ms" || metric === "first_location_fix_ms") {
+        startupInc("gps_requests");
+        startupMeasure(metric, "process_start");
+      } else if (metric === "reverse_geocode_ms") {
+        startupMeasure("address_resolved", "process_start");
+      } else if (metric === "total_location_ready_ms") {
+        startupMeasure("cached_or_fresh_location_ready", "process_start");
+      }
+    } catch {
+      // ignore circular/dev load issues
+    }
+  }
 }
 
 type DeviceFix = {
@@ -221,6 +237,7 @@ export function resolveDeviceAddress(point: {
 }): void {
   const token = ++addressCommitSeq;
   const startedAt = Date.now();
+  startupLaunchLog("REVERSE_GEOCODE_START");
   const superseded = () =>
     token !== addressCommitSeq || useLocationStore.getState().locationSource === "selected";
 
@@ -247,7 +264,11 @@ export function resolveDeviceAddress(point: {
     }
 
     addressAnchor = { latitude: point.latitude, longitude: point.longitude };
-    useLocationStore.setState({ address, refining: false });
+    useLocationStore.setState({ address, refining: false, detectingTimedOut: false });
+    startupLaunchLog("REVERSE_GEOCODE_DONE", {
+      durationMs: Date.now() - startedAt,
+      hasPrimary: Boolean(address.primary),
+    });
     saveLastKnownLocation({
       lat: point.latitude,
       lon: point.longitude,
@@ -291,6 +312,7 @@ function commitDeviceFix(fix: DeviceFix): void {
     sessionBoundAddressId: null,
     loading: false,
     refining: needsGeocode,
+    detectingTimedOut: false,
     error: null,
     // Keep the last real label on screen while the geocode runs: never flash a spinner
     // over a usable address. A saved-address label ("Home") is never reused for GPS.
@@ -539,9 +561,12 @@ async function progressiveDeviceFetch(force = false): Promise<boolean> {
     logMetric("total_location_ready_ms", Date.now() - t0);
   }
   void acquisition.done.then(() => {
-    if (useLocationStore.getState().refining && !isPlaceholderAddress(useLocationStore.getState().address)) {
+    const s = useLocationStore.getState();
+    if (s.refining && !isPlaceholderAddress(s.address)) {
       useLocationStore.setState({ refining: false });
     }
+    // The GPS has given up with nothing to show: offer the user a way forward.
+    if (!s.coords) useLocationStore.setState({ detectingTimedOut: true, loading: false });
   });
   return ok;
 }
@@ -576,6 +601,8 @@ type LocationState = {
   showPermissionModal: boolean;
   /** User closed the sheet this session — re-prompt on next cold start only. */
   locationSheetDismissedSession: boolean;
+  /** True after detecting watchdog — stop endless "Detecting location…". */
+  detectingTimedOut: boolean;
   hydrate: () => Promise<void>;
   clearPersistedSelection: () => Promise<void>;
   requestPermissionAndFetch: (options?: { forceDevice?: boolean }) => Promise<void>;
@@ -629,6 +656,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   locationHydrated: !!bootCachedLocation,
   showPermissionModal: false,
   locationSheetDismissedSession: false,
+  detectingTimedOut: false,
 
   hydrate: async () => {
     const already = get();
@@ -667,6 +695,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       locationHydrated: true,
       sessionSelectionKind: null,
       sessionBoundAddressId: null,
+      detectingTimedOut: false,
       ...(fillMissingCoords && cached
         ? {
             coords: { latitude: cached.lat, longitude: cached.lon },

@@ -46,10 +46,16 @@ export function useHotZones({
     queryFn: async (): Promise<HotZoneCell[]> => {
       const base = getRiderAppConfig().apiBaseUrl;
       const qs = new URLSearchParams({ lat: String(riderLat), lng: String(riderLng) });
-      const res = await getJson<HotZonesResponse>(`${base}/v1/rider/hot-zones?${qs}`, {
-        headers: accessToken ? { authorization: `Bearer ${accessToken}` } : undefined,
-      });
-      return res.zones ?? [];
+      try {
+        const res = await getJson<HotZonesResponse>(`${base}/v1/rider/hot-zones?${qs}`, {
+          headers: accessToken ? { authorization: `Bearer ${accessToken}` } : undefined,
+          // Banner spinner must not sit on a 30s default — fail fast to empty.
+          timeout: 4_000,
+        });
+        return res.zones ?? [];
+      } catch {
+        return [];
+      }
     },
     enabled: canFetch,
     staleTime: 60_000,
@@ -58,10 +64,13 @@ export function useHotZones({
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
+    retry: false,
   });
 
   return {
     zones: query.data ?? [],
-    isLoading: Boolean(canFetch && query.isFetching && !query.data),
+    // Spin only on the first in-flight request — never while waiting for GPS,
+    // and never after a settled (even empty) response.
+    isLoading: Boolean(canFetch && query.isFetching && query.data === undefined),
   };
 }

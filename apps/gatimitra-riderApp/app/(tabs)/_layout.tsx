@@ -34,7 +34,11 @@ export default function TabLayout() {
   const hydrated = useSessionStore((s) => s.hydrated);
   const hasSession = useSessionStore((s) => Boolean(s.session));
   const accessToken = useSessionStore((s) => s.session?.accessToken);
-  const { canAccessTabs } = useOnboardingGate();
+  const {
+    canAccessTabs,
+    ready: onboardingGateReady,
+    href: onboardingHref,
+  } = useOnboardingGate();
 
   const onOrdersHome =
     pathname === "/orders" ||
@@ -62,10 +66,17 @@ export default function TabLayout() {
     return <Redirect href="/(auth)/login" />;
   }
 
-  // Incomplete KYC: do NOT Redirect/replace from tabs — Index owns that hop.
-  // Dual navigators fighting over onboarding caused Maximum update depth.
-  // If cache already grants home tabs, never trap behind a wedged status fetch.
+  // Incomplete KYC / gate lag: never trap forever on the branded spinner.
+  // Prefer a single Redirect to the concrete onboarding href once the gate is ready.
+  // Avoid Redirect loops onto tabs themselves (Index / login own home unlock).
   if (hasSession && !canAccessTabs) {
+    if (
+      onboardingGateReady &&
+      onboardingHref &&
+      !String(onboardingHref).includes("/(tabs)")
+    ) {
+      return <Redirect href={onboardingHref} />;
+    }
     return <RiderBootstrapScreen />;
   }
 

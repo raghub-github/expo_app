@@ -979,6 +979,14 @@ async function syncOrdersFoodForDashboardStatus(
         delivered_at = COALESCE(delivered_at, ${nowIso}::timestamptz)
       WHERE order_id = ${orderId}
     `;
+    // Parcel has no orders_food row — stamp delivery OTP verified so completion is durable.
+    await sql`
+      UPDATE orders_parcel
+      SET
+        delivery_otp_verified_at = COALESCE(delivery_otp_verified_at, ${nowIso}::timestamptz),
+        updated_at = ${nowIso}::timestamptz
+      WHERE order_id = ${orderId}
+    `;
   }
 }
 
@@ -1272,6 +1280,8 @@ export async function updateOrderStatus(
       currentStatus: ordersCore.currentStatus,
       estimatedDeliveryTime: ordersCore.estimatedDeliveryTime,
       firstEtaAt: ordersCore.firstEtaAt,
+      actualDeliveryTime: ordersCore.actualDeliveryTime,
+      orderType: ordersCore.orderType,
     })
     .from(ordersCore)
     .where(eq(ordersCore.id, orderId))
@@ -1291,7 +1301,12 @@ export async function updateOrderStatus(
   }
 
   const previousLabel = existing.currentStatus ?? null;
-  const label = STATUS_TO_LABEL[status];
+  const orderType = String(existing.orderType ?? "").toLowerCase();
+  // Parcel/ride apps normalize on uppercase DELIVERED; food timeline still shows the label.
+  const label =
+    status === "delivered" && (orderType === "parcel" || orderType === "person_ride")
+      ? "DELIVERED"
+      : STATUS_TO_LABEL[status];
   const now = new Date();
   const existingEta = existing.estimatedDeliveryTime
     ? new Date(existing.estimatedDeliveryTime)
@@ -1300,6 +1315,9 @@ export async function updateOrderStatus(
     existingEta != null && !isNaN(existingEta.getTime())
       ? existingEta
       : new Date(now.getTime() + DEFAULT_ETA_MINUTES_AFTER_STATUS_UPDATE * 60 * 1000);
+  const hasActualDelivery =
+    existing.actualDeliveryTime != null &&
+    !Number.isNaN(new Date(existing.actualDeliveryTime).getTime());
 
   try {
     await db.transaction(async (tx) => {
@@ -1310,6 +1328,9 @@ export async function updateOrderStatus(
           currentStatus: label,
           manualStatusUpdatedByEmail: updatedByEmail,
           updatedAt: now,
+          ...(status === "delivered" && !hasActualDelivery
+            ? { actualDeliveryTime: now }
+            : {}),
           ...(existingEta == null || isNaN(existingEta.getTime())
             ? {
                 // Current ETA only — never invent First ETA on status changes.

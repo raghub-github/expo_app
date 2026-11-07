@@ -31,6 +31,8 @@ function isSamePickup(a: RiderOrderSummary, b: RiderOrderSummary): boolean {
 type Props = {
   /** The order currently open on the navigation screen. */
   currentOrder: RiderOrderSummary;
+  /** Extra offset below the nav header (e.g. when a crucial banner is showing). */
+  topOffsetExtra?: number;
 };
 
 /**
@@ -39,7 +41,7 @@ type Props = {
  * e.g. picking up a same-store batch together. Renders nothing when the rider
  * has only this one active order.
  */
-export function ActiveOrderSwitcherPill({ currentOrder }: Props) {
+export function ActiveOrderSwitcherPill({ currentOrder, topOffsetExtra = 0 }: Props) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const { data: active = [] } = useActiveOrders();
@@ -84,7 +86,10 @@ export function ActiveOrderSwitcherPill({ currentOrder }: Props) {
   return (
     <>
       <View
-        style={[styles.host, { top: insets.top + CHROME_ROW_HEIGHT + 8 }]}
+        style={[
+          styles.host,
+          { top: insets.top + CHROME_ROW_HEIGHT + 8 + Math.max(0, topOffsetExtra) },
+        ]}
         pointerEvents="box-none"
       >
         <Pressable

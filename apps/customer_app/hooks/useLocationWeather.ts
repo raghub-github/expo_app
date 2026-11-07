@@ -3,6 +3,8 @@ import { weatherService, type CustomerWeatherContext } from "@/services/weather.
 import {
   getBootstrapWeather,
   loadPersistedWeatherSnapshot,
+  peekAnyPersistedWeather,
+  peekPersistedWeatherSnapshot,
   persistWeatherSnapshot,
   setBootstrapWeather,
 } from "@/lib/weatherCacheStorage";
@@ -49,6 +51,14 @@ export function locationWeatherQueryOptions(params: LocationWeatherParams) {
   return queryOptions({
     queryKey: locationWeatherQueryKey(params),
     queryFn: async ({ client, queryKey }) => {
+      if (__DEV__) {
+        try {
+          const { startupInc } = require("@/lib/startupPerf") as typeof import("@/lib/startupPerf");
+          startupInc("weather_requests");
+        } catch {
+          /* ignore */
+        }
+      }
       const data = await weatherService.getForLocationSafe({
         lat: lat!,
         lng: lng!,
@@ -99,7 +109,7 @@ export function patchLocationWeatherCache(
   }
 }
 
-/** Restore disk cache + warm React Query before home paints. */
+/** Seed RQ from disk immediately; network prefetch runs in background (does not block UI). */
 export async function restoreAndPrefetchLocationWeather(
   queryClient: QueryClient,
   address: Parameters<typeof resolveHomeWeatherQueryParams>[0],
@@ -109,21 +119,30 @@ export async function restoreAndPrefetchLocationWeather(
   const params = resolveHomeWeatherQueryParams(address, coords);
   if (params.lat == null || params.lng == null) return;
 
-  const restored = await loadPersistedWeatherSnapshot(params.lat, params.lng);
+  // Sync peek first — Home can paint without awaiting AsyncStorage / network.
+  let restored =
+    peekPersistedWeatherSnapshot(params.lat, params.lng) ??
+    getBootstrapWeather(params.lat, params.lng) ??
+    null;
+  if (!restored) {
+    restored = await loadPersistedWeatherSnapshot(params.lat, params.lng);
+  }
   if (restored) {
     queryClient.setQueryData(locationWeatherQueryKey(params), restored);
   }
 
   const options = locationWeatherQueryOptions(params);
   if (!options.enabled) return;
-  try {
-    await queryClient.prefetchQuery({
+
+  // Fire-and-forget network warm — never block Home on weather API latency.
+  void queryClient
+    .prefetchQuery({
       ...options,
       staleTime: restored ? staleTimeForWeather(restored) : CLEAR_STALE_MS,
+    })
+    .catch(() => {
+      // weather_missing_temperature / network — keep disk seed if present.
     });
-  } catch {
-    // weather_missing_temperature / network — leave cache empty; Home pill stays hidden.
-  }
 }
 
 export function prefetchLocationWeather(
@@ -147,20 +166,22 @@ export function useLocationWeather(
     Number.isFinite(lat) &&
     Number.isFinite(lng);
 
-  const bootstrap =
+  const exactBootstrap =
     lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng)
-      ? getBootstrapWeather(lat, lng)
+      ? getBootstrapWeather(lat, lng) ?? peekPersistedWeatherSnapshot(lat, lng) ?? undefined
       : undefined;
+  // Soft last-known weather so the banner never sits on skeleton while a new grid fetches.
+  const softBootstrap = exactBootstrap ?? peekAnyPersistedWeather() ?? undefined;
 
   return useQuery({
     ...locationWeatherQueryOptions({ lat, lng, city: args.city, area: args.area }),
     enabled,
-    initialData: bootstrap,
-    initialDataUpdatedAt: bootstrap?.updatedAt
-      ? new Date(bootstrap.updatedAt).getTime()
+    initialData: exactBootstrap,
+    initialDataUpdatedAt: exactBootstrap?.updatedAt
+      ? new Date(exactBootstrap.updatedAt).getTime()
       : undefined,
     placeholderData: (prev) => {
-      const candidate = prev ?? bootstrap;
+      const candidate = prev ?? exactBootstrap ?? softBootstrap;
       if (
         candidate?.temperatureC != null &&
         Number.isFinite(candidate.temperatureC)
@@ -169,7 +190,7 @@ export function useLocationWeather(
       }
       return undefined;
     },
-    staleTime: (query) => staleTimeForWeather(query.state.data ?? bootstrap),
+    staleTime: (query) => staleTimeForWeather(query.state.data ?? exactBootstrap),
     // If a prior failure cached null-temp CLEAR, refetch so the Home pill can recover.
     refetchOnMount: (query) => {
       const data = query.state.data;
@@ -182,7 +203,7 @@ export function useLocationWeather(
     },
     select: (data) => {
       if (data?.temperatureC != null && Number.isFinite(data.temperatureC)) return data;
-      return bootstrap ?? data;
+      return exactBootstrap ?? softBootstrap ?? data;
     },
   });
 }

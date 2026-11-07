@@ -1,11 +1,13 @@
 // @ts-nocheck — pending strict-mode cleanup; tracked in follow-up issue.
 import { router, useRootNavigationState, type Href } from "expo-router";
-import { usePermissionStore } from "@/src/stores/permissionStore";
 import { useSessionStore } from "@/src/stores/sessionStore";
 import { useLanguageStore } from "@/src/stores/languageStore";
 import { useOnboardingGate } from "@/src/hooks/useOnboardingGate";
 import { RiderBootstrapScreen } from "@/src/components/RiderBootstrapScreen";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+
+/** Absolute wall clock — never leave the branded splash up longer than this. */
+const INDEX_NAV_FAILSAFE_MS = 10_000;
 
 /**
  * Cold-start router. Keep the branded splash until hydration is done, then
@@ -17,8 +19,6 @@ import { useEffect, useRef } from "react";
  */
 export default function Index() {
   const nav = useRootNavigationState();
-  const hydrated = usePermissionStore((s) => s.hydrated);
-  const hasRequestedPermissions = usePermissionStore((s) => s.hasRequestedPermissions);
   const session = useSessionStore((s) => s.session);
   const sessionHydrated = useSessionStore((s) => s.hydrated);
   const languageSelected = useLanguageStore((s) => s.languageSelected);
@@ -27,6 +27,7 @@ export default function Index() {
   const { ready: onboardingGateReady, href: onboardingHref, canAccessTabs } = useOnboardingGate();
   /** First destination we committed — ignore later href flicker within the same bucket. */
   const committedRef = useRef<string | null>(null);
+  const [navFailsafeElapsed, setNavFailsafeElapsed] = useState(false);
 
   useEffect(() => {
     void hydrateLanguage().catch((err) => {
@@ -35,25 +36,45 @@ export default function Index() {
   }, [hydrateLanguage]);
 
   useEffect(() => {
+    const t = setTimeout(() => setNavFailsafeElapsed(true), INDEX_NAV_FAILSAFE_MS);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
     if (!nav?.key) return;
 
     let target: Href | null = null;
+    // Prefer Home as soon as tabs are unlocked (live/cached approved status).
+    // Do not wait on optional onboardingHref churn once canAccessTabs is true.
     if (sessionHydrated && session && canAccessTabs) {
       target = "/(tabs)";
-    } else if (!hydrated || !languageHydrated || !sessionHydrated) {
-      return;
+    } else if (!languageHydrated || !sessionHydrated) {
+      // Absolute failsafe: leave splash even if language/session hydrate stalls.
+      if (navFailsafeElapsed) {
+        target = languageSelected ? "/(auth)/login" : "/(onboarding)/language";
+      } else {
+        return;
+      }
     } else if (session && !onboardingGateReady) {
-      return;
+      if (navFailsafeElapsed) {
+        // Gate stalled — prefer cached tabs unlock, else safe login (never hang).
+        target = canAccessTabs ? "/(tabs)" : onboardingHref ?? "/(auth)/login";
+      } else {
+        return;
+      }
     } else if (session && onboardingHref) {
       target = onboardingHref;
     } else if (session) {
-      // Session exists but href not ready yet (bindOwner / status) — keep splash.
-      return;
+      // Session exists but href not ready — failsafe instead of infinite splash.
+      if (navFailsafeElapsed) {
+        target = canAccessTabs ? "/(tabs)" : "/(auth)/login";
+      } else {
+        return;
+      }
     } else if (!languageSelected) {
       target = "/(onboarding)/language";
-    } else if (!hasRequestedPermissions) {
-      target = "/(auth)/login";
     } else {
+      // Logged-out + language chosen → login (permissions prompt happens later).
       target = "/(auth)/login";
     }
 
@@ -98,7 +119,6 @@ export default function Index() {
     }
   }, [
     nav?.key,
-    hydrated,
     languageHydrated,
     sessionHydrated,
     session,
@@ -106,7 +126,7 @@ export default function Index() {
     onboardingHref,
     canAccessTabs,
     languageSelected,
-    hasRequestedPermissions,
+    navFailsafeElapsed,
   ]);
 
   return <RiderBootstrapScreen />;

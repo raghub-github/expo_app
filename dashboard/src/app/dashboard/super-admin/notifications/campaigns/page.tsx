@@ -811,9 +811,9 @@ type TargetMode =
   | "city";
 
 const TARGET_OPTIONS: Array<{ mode: TargetMode; label: string; sub: string; Icon: typeof Users }> = [
-  { mode: "all_customers", label: "All customers", sub: "Phones that opened the app and allowed notifications", Icon: Users },
-  { mode: "all_merchants", label: "All merchants", sub: "Every merchant with an active app", Icon: Store },
-  { mode: "all_riders",    label: "All riders",    sub: "Every rider with an active app",    Icon: Users },
+  { mode: "all_customers", label: "All customers", sub: "OS push only to phones with app + notification permission — not every registered account", Icon: Users },
+  { mode: "all_merchants", label: "All merchants", sub: "Every merchant with an active app push token", Icon: Store },
+  { mode: "all_riders",    label: "All riders",    sub: "Every rider with an active app push token",    Icon: Users },
   { mode: "role",          label: "By role",       sub: "Pick a single role bucket",         Icon: Users },
   { mode: "store_ids",     label: "Store(s)",      sub: "One or more GMMC codes (e.g. 1025 or 1025, 1026)", Icon: Store },
   { mode: "user_ids",      label: "User(s)",       sub: "One or more GM / GMMP ids (comma-separated)",     Icon: User },
@@ -1453,7 +1453,9 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
             "No registered push devices for this target. Open the customer/rider app once with notifications allowed, then resend.",
           );
         } else {
-          toast.success(`Campaign “${name}” is sending — ${queued} phones with a push token.`);
+          toast.success(
+            `Campaign “${name}” is sending — ${queued} device(s) with a push token (accounts without the app / permission get in-app inbox only).`,
+          );
         }
         return;
       }
@@ -1745,6 +1747,14 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
                 );
               })}
             </div>
+
+            {(targetMode === "all_customers" || targetMode === "all_riders") && (
+              <p className="mt-3 rounded-md border border-amber-200 bg-amber-50/80 px-3 py-2 text-[12px] leading-relaxed text-amber-950">
+                Registered accounts without a live push token cannot get an OS tray
+                notification. Sent/Delivered counts only devices that opened the app and
+                allowed notifications; others still get the in-app inbox when possible.
+              </p>
+            )}
 
             <div className="mt-3">
               {targetMode === "role" && (

@@ -2,6 +2,7 @@
  * Parcel customer fare quote — uses parcel_customer_pricing geo slabs per vehicle type.
  */
 
+import { withSqlRetry } from "../../db/client.js";
 import { calculateProgressiveSlabAmount } from "../delivery-slab-pricing/deliverySlabPricing.service.js";
 import type { DeliveryActorType, DeliveryRateSlabRow, DeliveryServiceType } from "../delivery-slab-pricing/types.js";
 import type { RideCustomerPricingRow, RideVehiclePricingType } from "../rider-payout-pricing/types.js";
@@ -25,6 +26,7 @@ export type ParcelFareQuoteOk = {
   finalFare: number;
   /** Raw geo-slab fare before billing rules (optional; set by quote-batch enrich). */
   slabFare?: number;
+  bookingFee?: number;
   platformFee?: number;
   convenienceFee?: number;
   /** Surge / small-order / misc charges from the PARCEL billing pipeline.
@@ -68,72 +70,76 @@ export async function quoteParcelVehicleFare(args: {
   pickupPincode?: string | null;
   pickupState?: string | null;
 }): Promise<ParcelFareQuoteResult> {
-  const tripKm = Math.max(0, args.tripKm);
-  const { pricingGeo } = await resolveRidePricingGeoFromPickup({
-    pickupLat: args.pickupLat,
-    pickupLng: args.pickupLng,
-    pickupPincode: args.pickupPincode,
-    pickupState: args.pickupState,
-  });
+  // Pooler blips (CONNECTION_ENDED) must not 500 the book screen — retry once
+  // the postgres.js client opens a fresh socket.
+  return withSqlRetry(async () => {
+    const tripKm = Math.max(0, args.tripKm);
+    const { pricingGeo } = await resolveRidePricingGeoFromPickup({
+      pickupLat: args.pickupLat,
+      pickupLng: args.pickupLng,
+      pickupPincode: args.pickupPincode,
+      pickupState: args.pickupState,
+    });
 
-  if (!pricingGeo) {
-    return {
-      ok: false,
-      code: "NO_GEO",
-      message: "Could not resolve pricing geo for pickup",
+    if (!pricingGeo) {
+      return {
+        ok: false,
+        code: "NO_GEO",
+        message: "Could not resolve pricing geo for pickup",
+        vehicleType: args.vehicleType,
+      };
+    }
+
+    const pricing = await loadEffectiveParcelCustomerPricing({
+      level: pricingGeo.level,
+      refId: pricingGeo.refId,
       vehicleType: args.vehicleType,
-    };
-  }
+    });
 
-  const pricing = await loadEffectiveParcelCustomerPricing({
-    level: pricingGeo.level,
-    refId: pricingGeo.refId,
-    vehicleType: args.vehicleType,
-  });
+    if (pricing.slabs.length === 0) {
+      return {
+        ok: true,
+        vehicleType: args.vehicleType,
+        eligible: false,
+        baseFare: 0,
+        distanceFare: 0,
+        finalFare: 0,
+        pricingGeoLevel: pricing.applied?.level ?? pricingGeo.level,
+        pricingGeoRefId: pricing.applied?.refId ?? pricingGeo.refId,
+      };
+    }
 
-  if (pricing.slabs.length === 0) {
+    const slabs = toDeliveryRows(pricing.slabs);
+    const calc = calculateProgressiveSlabAmount({
+      distanceKm: tripKm,
+      slabs,
+      applyRiderExtras: false,
+    });
+
+    if (!calc.ok) {
+      return {
+        ok: false,
+        code: calc.code,
+        message: calc.message,
+        vehicleType: args.vehicleType,
+      };
+    }
+
+    const baseFare = Math.round(calc.quote.baseFareApplied * 100) / 100;
+    const finalFare = Math.round(calc.quote.finalAmount * 100) / 100;
+    const distanceFare = Math.round((finalFare - baseFare) * 100) / 100;
+
     return {
       ok: true,
       vehicleType: args.vehicleType,
-      eligible: false,
-      baseFare: 0,
-      distanceFare: 0,
-      finalFare: 0,
+      eligible: finalFare > 0,
+      baseFare,
+      distanceFare: Math.max(0, distanceFare),
+      finalFare,
       pricingGeoLevel: pricing.applied?.level ?? pricingGeo.level,
       pricingGeoRefId: pricing.applied?.refId ?? pricingGeo.refId,
     };
-  }
-
-  const slabs = toDeliveryRows(pricing.slabs);
-  const calc = calculateProgressiveSlabAmount({
-    distanceKm: tripKm,
-    slabs,
-    applyRiderExtras: false,
   });
-
-  if (!calc.ok) {
-    return {
-      ok: false,
-      code: calc.code,
-      message: calc.message,
-      vehicleType: args.vehicleType,
-    };
-  }
-
-  const baseFare = Math.round(calc.quote.baseFareApplied * 100) / 100;
-  const finalFare = Math.round(calc.quote.finalAmount * 100) / 100;
-  const distanceFare = Math.round((finalFare - baseFare) * 100) / 100;
-
-  return {
-    ok: true,
-    vehicleType: args.vehicleType,
-    eligible: finalFare > 0,
-    baseFare,
-    distanceFare: Math.max(0, distanceFare),
-    finalFare,
-    pricingGeoLevel: pricing.applied?.level ?? pricingGeo.level,
-    pricingGeoRefId: pricing.applied?.refId ?? pricingGeo.refId,
-  };
 }
 
 export async function quoteParcelVehicleFareBatch(args: {

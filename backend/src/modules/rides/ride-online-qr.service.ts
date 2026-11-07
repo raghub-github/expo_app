@@ -8,9 +8,44 @@ import { insertRideCustomerPaymentSnapshot } from "../../lib/persist-ride-custom
 import { computeRideBillForCustomerOrder } from "./ride-bill.service.js";
 import { rideBillingToSettlementComponents } from "./settlement/billingToComponents.js";
 import { postOnlineRideSettlement } from "./settlement/rideSettlement.engine.js";
-import { createRazorpayQrCode } from "../../services/payment/razorpayService.js";
+import {
+  closeRazorpayQrCode,
+  createRazorpayQrCode,
+  createRazorpayRefund,
+} from "../../services/payment/razorpayService.js";
 import { getEnv } from "../../config/env.js";
 import { ulid } from "ulid";
+
+async function refundDuplicateOnlineQrPayment(input: {
+  paymentId: string;
+  amountPaise: number;
+  orderId: string;
+  qrId: string;
+}): Promise<void> {
+  const paymentId = String(input.paymentId ?? "").trim();
+  if (!paymentId) return;
+  try {
+    await createRazorpayRefund({
+      paymentId,
+      amountPaise: input.amountPaise > 0 ? input.amountPaise : undefined,
+      receipt: `dup_ride_qr_${input.qrId}_${paymentId}`.slice(0, 40),
+      notes: {
+        reason: "duplicate_online_qr_payment",
+        orderRef: input.orderId,
+        qrId: input.qrId,
+      },
+    });
+    console.warn(
+      "[ride-online-qr] refunded duplicate QR payment",
+      JSON.stringify({ orderId: input.orderId, qrId: input.qrId, paymentId })
+    );
+  } catch (err) {
+    console.warn(
+      "[ride-online-qr] duplicate refund failed",
+      (err as Error)?.message ?? err
+    );
+  }
+}
 
 /**
  * Rider-presented dynamic UPI QR for a COMPLETED person ride (online collection).
@@ -129,9 +164,17 @@ export async function createRideOnlineQr(
     String(existing.paymentStatus ?? "").toUpperCase() === "INITIATED" &&
     Number(existing.amount) === customerBill
   ) {
-    const gr = (existing.gatewayResponse ?? {}) as { imageUrl?: string; closeBy?: number };
-    const notExpired = typeof gr.closeBy === "number" ? gr.closeBy * 1000 > Date.now() : true;
-    if (gr.imageUrl && notExpired && existing.transactionId) {
+    const gr = (existing.gatewayResponse ?? {}) as {
+      imageUrl?: string;
+      closeBy?: number | null;
+      expiresAtEpoch?: number;
+      dummyMode?: boolean;
+      source?: string;
+    };
+    const expiryEpoch = gr.expiresAtEpoch ?? gr.closeBy ?? null;
+    const notExpired =
+      typeof expiryEpoch === "number" ? expiryEpoch * 1000 > Date.now() : true;
+    if (gr.imageUrl && notExpired && existing.transactionId && !gr.dummyMode) {
       return {
         ok: true,
         orderId: orderIdText,
@@ -141,21 +184,28 @@ export async function createRideOnlineQr(
         reused: true,
       };
     }
+    if (existing.transactionId && !String(existing.transactionId).startsWith("dummy_")) {
+      void closeRazorpayQrCode(existing.transactionId).catch(() => undefined);
+      await db
+        .update(ordersCorePayments)
+        .set({
+          paymentStatus: "EXPIRED",
+          gatewayResponse: {
+            ...gr,
+            qrStatus: "closed",
+            paymentStatus: "EXPIRED",
+            closedReason: "replaced_before_new_qr",
+          },
+        })
+        .where(eq(ordersCorePayments.id, existing.id));
+    }
   }
 
   const closeBy = Math.floor(Date.now() / 1000) + QR_TTL_SECONDS;
-
+  const amountPaise = Math.round(customerBill * 100);
   const env = getEnv();
-  const dummyModeActive =
-    env.PAYMENT_DUMMY_MODE || !env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET;
 
-  if (dummyModeActive) {
-    if (!env.PAYMENT_DUMMY_MODE && env.NODE_ENV !== "development") {
-      throw Object.assign(new Error("Payment gateway not configured"), {
-        statusCode: 503,
-        code: "QR_CREATE_FAILED",
-      });
-    }
+  if (env.PAYMENT_DUMMY_MODE) {
     const qrId = `dummy_qr_${ulid()}`;
     const qrImageUrl = buildDummyQrImageUrl(orderIdText, customerBill);
     await db.insert(ordersCorePayments).values({
@@ -171,10 +221,18 @@ export async function createRideOnlineQr(
         qrId,
         imageUrl: qrImageUrl,
         amount: customerBill,
+        amountPaise,
+        currency: "INR",
         closeBy,
+        expiresAtEpoch: closeBy,
         dummyMode: true,
+        dummyReason: "PAYMENT_DUMMY_MODE",
       },
     });
+    console.warn(
+      "[createRideOnlineQr] using dummy QR",
+      JSON.stringify({ order: orderIdText, reason: "PAYMENT_DUMMY_MODE", amount: customerBill })
+    );
     return {
       ok: true,
       orderId: orderIdText,
@@ -185,8 +243,16 @@ export async function createRideOnlineQr(
     };
   }
 
+  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+    throw Object.assign(new Error("Payment gateway not configured"), {
+      statusCode: 503,
+      code: "RAZORPAY_NOT_CONFIGURED",
+    });
+  }
+
   const qr = await createRazorpayQrCode({
-    amountPaise: Math.round(customerBill * 100),
+    amountPaise,
+    name: "GatiMitra Ride",
     description: `GatiMitra ride ${orderIdText}`,
     closeBy,
     notes: {
@@ -195,8 +261,12 @@ export async function createRideOnlineQr(
       customerId: String(customerPk),
       riderId: String(riderId),
       service: "person_ride",
+      purpose: "ride_fare_collect",
     },
   });
+
+  const effectiveExpiry =
+    typeof qr.close_by === "number" && qr.close_by > 0 ? qr.close_by : closeBy;
 
   await db.insert(ordersCorePayments).values({
     orderId: orderIdText,
@@ -211,11 +281,26 @@ export async function createRideOnlineQr(
       qrId: qr.id,
       imageUrl: qr.image_url,
       amount: customerBill,
-      closeBy,
+      amountPaise,
+      currency: "INR",
+      closeBy: qr.close_by,
+      expiresAtEpoch: effectiveExpiry,
+      usage: qr.usage,
+      fixedAmount: true,
+      purpose: "ride_fare_collect",
+      qrStatus: qr.status || "active",
+      paymentStatus: "INITIATED",
     },
   });
 
-  return { ok: true, orderId: orderIdText, qrId: qr.id, qrImageUrl: qr.image_url, amount: customerBill, reused: false };
+  return {
+    ok: true,
+    orderId: orderIdText,
+    qrId: qr.id,
+    qrImageUrl: qr.image_url,
+    amount: customerBill,
+    reused: false,
+  };
 }
 
 export type FinalizeRideOnlineQrInput = {
@@ -260,6 +345,17 @@ export async function finalizeRideOnlineQrPayment(
   }
   // Idempotent: this QR was already captured (duplicate webhook).
   if (String(payRow.paymentStatus ?? "").toUpperCase() === "PAID") {
+    const priorGr = (payRow.gatewayResponse ?? {}) as { razorpayPaymentId?: string };
+    const priorPaymentId = String(priorGr.razorpayPaymentId ?? "");
+    const newPaymentId = String(input.razorpayPaymentId ?? "");
+    if (newPaymentId && newPaymentId !== priorPaymentId) {
+      void refundDuplicateOnlineQrPayment({
+        paymentId: newPaymentId,
+        amountPaise: Math.round(Number(input.amountPaise) || 0),
+        orderId: payRow.orderId,
+        qrId,
+      }).catch(() => undefined);
+    }
     return { ok: true, alreadyDone: true, orderId: payRow.orderId, amountPaid: Number(payRow.amount) };
   }
 
@@ -294,12 +390,31 @@ export async function finalizeRideOnlineQrPayment(
   if (!billRes.ok) throw Object.assign(new Error(billRes.message), { statusCode: billRes.statusCode ?? 400 });
   const fareDue = Math.round(billRes.billing.final_amount * 100) / 100;
 
+  const gr = (payRow.gatewayResponse ?? {}) as {
+    amountPaise?: number;
+    currency?: string;
+  };
+  const expectedPaise =
+    typeof gr.amountPaise === "number" && gr.amountPaise > 0
+      ? Math.round(gr.amountPaise)
+      : Math.round(Number(payRow.amount) * 100);
+  const paidPaise = Math.round(Number(input.amountPaise) || 0);
+  if (paidPaise > 0 && expectedPaise > 0 && Math.abs(paidPaise - expectedPaise) > 1) {
+    throw Object.assign(
+      new Error(
+        `QR payment amount mismatch: expected ${expectedPaise} paise, got ${paidPaise}`
+      ),
+      { statusCode: 409, code: "AMOUNT_MISMATCH" }
+    );
+  }
+
   const now = new Date();
   const prevSnap =
     orderRow.billingSnapshot != null && typeof orderRow.billingSnapshot === "object"
       ? (orderRow.billingSnapshot as Record<string, unknown>)
       : {};
-  const amountPaid = Math.round((input.amountPaise / 100) * 100) / 100;
+  const amountPaid =
+    paidPaise > 0 ? Math.round((paidPaise / 100) * 100) / 100 : fareDue;
 
   await db.transaction(async (tx) => {
     await tx
@@ -325,11 +440,17 @@ export async function finalizeRideOnlineQrPayment(
           ...((payRow.gatewayResponse ?? {}) as Record<string, unknown>),
           razorpayPaymentId: input.razorpayPaymentId,
           amountPaid,
+          amountPaise: expectedPaise,
+          currency: "INR",
           capturedAt: now.toISOString(),
+          qrStatus: "closed",
+          paymentStatus: "PAID",
         },
       })
       .where(eq(ordersCorePayments.id, payRow.id));
   });
+
+  void closeRazorpayQrCode(qrId).catch(() => undefined);
 
   const snapshotId = await insertRideCustomerPaymentSnapshot(db, {
     orderCoreId: orderRow.id,

@@ -52,6 +52,9 @@ export function categoryBannerIcon(category: IncomingOrderCategory): "restaurant
 }
 
 export function formatDistanceKm(km?: number | null): string {
-  if (km == null || !Number.isFinite(km) || km <= 0) return "—";
+  if (km == null || !Number.isFinite(km) || km < 0) return "—";
+  if (km === 0) return "—";
+  // Sub-100 m used to show as "0.0 km" and looked like a broken engine.
+  if (km > 0 && km < 0.1) return `${km.toFixed(2)} km`;
   return `${km.toFixed(1)} km`;
 }

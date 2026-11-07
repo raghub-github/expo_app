@@ -15,7 +15,11 @@ describe("riderActionTtlMs", () => {
     assert.ok(riderActionTtlMs("accept") < riderActionTtlMs("complete_ride"));
   });
 
-  it("gives every non-accept action the long default", () => {
+  it("expires a reject on the same short offer window as accept", () => {
+    assert.equal(riderActionTtlMs("reject"), ACCEPT_ACTION_TTL_MS);
+  });
+
+  it("gives every non-offer action the long default", () => {
     for (const t of [
       "reached_pickup",
       "reached_drop",

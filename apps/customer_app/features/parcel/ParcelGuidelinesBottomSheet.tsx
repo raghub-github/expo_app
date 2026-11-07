@@ -95,14 +95,16 @@ export function ParcelGuidelinesBottomSheet({ visible, onClose }: Props) {
   useEffect(() => {
     if (!visible) return;
     let cancelled = false;
-    void fetchParcelGuidelineSlides().then((next) => {
-      if (cancelled || next.length === 0) return;
-      setSlides(next);
-      setIndex(0);
-      requestAnimationFrame(() => {
-        listRef.current?.scrollToOffset({ offset: 0, animated: false });
-      });
-    });
+    void fetchParcelGuidelineSlides()
+      .then((next) => {
+        if (cancelled || next.length === 0) return;
+        setSlides(next);
+        setIndex(0);
+        requestAnimationFrame(() => {
+          listRef.current?.scrollToOffset({ offset: 0, animated: false });
+        });
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };

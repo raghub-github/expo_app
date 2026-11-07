@@ -191,6 +191,10 @@ async function enrichSingleOrderDetail(
       routedToHistoryResult,
       paymentDetailResult,
       statusHistoryResult,
+      parcelDetailRaw,
+      parcelBillingCtx,
+      personRideDetail,
+      personRideBillingCtx,
     ] = await Promise.all([
       storeIdNum != null ? getMerchantStoreSummaryByStoreId(storeIdNum) : Promise.resolve(null),
       first?.orderType === "food"
@@ -231,6 +235,48 @@ async function enrichSingleOrderDetail(
         console.error("[GET /api/orders/core] manual status history fetch failed", err);
         return [] as OrderManualStatusHistoryEntry[];
       }),
+      // Parcel / ride detail folded into the same wave so the page isn't waiting
+      // on a second sequential DB round-trip after enrichment.
+      first?.orderType === "parcel"
+        ? getParcelOrderDetail(orderId).catch((err) => {
+            console.error("[GET /api/orders/core] parcel detail failed", err);
+            return null;
+          })
+        : Promise.resolve(null),
+      first?.orderType === "parcel"
+        ? getParcelBillingContext(orderId).catch((err) => {
+            console.error("[GET /api/orders/core] parcel billing failed", err);
+            return {
+              billingSnapshot: null,
+              paymentStatus: null,
+              paymentMethod: null,
+              fareAmount: null,
+              itemTotal: null,
+              grandTotal: null,
+              tipAmount: null,
+            };
+          })
+        : Promise.resolve(null),
+      first?.orderType === "person_ride"
+        ? getPersonRideOrderDetail(orderId).catch((err) => {
+            console.error("[GET /api/orders/core] person ride detail failed", err);
+            return null;
+          })
+        : Promise.resolve(null),
+      first?.orderType === "person_ride"
+        ? getPersonRideBillingContext(orderId).catch((err) => {
+            console.error("[GET /api/orders/core] person ride billing failed", err);
+            return {
+              billingSnapshot: null,
+              paymentStatus: null,
+              paymentMethod: null,
+              fareAmount: null,
+              itemTotal: null,
+              grandTotal: null,
+              tipAmount: null,
+            };
+          })
+        : Promise.resolve(null),
     ]);
 
     merchantSummary = summary;
@@ -280,6 +326,7 @@ async function enrichSingleOrderDetail(
           deliveredBy: detailExtra.deliveredBy,
           deliveryInitiator: detailExtra.deliveryInitiator,
           customerTrustTierLabel: detailExtra.customerTrustTierLabel,
+          customerTrustScore: detailExtra.customerTrustScore,
           customerUserType: detailExtra.customerUserType,
           riderId: detailExtra.riderId ?? firstRow.riderId ?? null,
           riderInstructionsList: detailExtra.riderInstructionsList,
@@ -311,10 +358,16 @@ async function enrichSingleOrderDetail(
       ] as unknown as typeof enrichedData;
     }
     if (first?.orderType === "person_ride" && orderId != null) {
-      const [rideDetail, billingCtx] = await Promise.all([
-        getPersonRideOrderDetail(orderId),
-        getPersonRideBillingContext(orderId),
-      ]);
+      const rideDetail = personRideDetail;
+      const billingCtx = personRideBillingCtx ?? {
+        billingSnapshot: null,
+        paymentStatus: null,
+        paymentMethod: null,
+        fareAmount: null,
+        itemTotal: null,
+        grandTotal: null,
+        tipAmount: null,
+      };
       enrichedData = [
         {
           ...(enrichedData[0] as Record<string, unknown>),
@@ -354,10 +407,15 @@ async function enrichSingleOrderDetail(
         },
       ] as unknown as typeof enrichedData;
     } else if (first?.orderType === "parcel" && orderId != null) {
-      const [parcelDetailRaw, billingCtx] = await Promise.all([
-        getParcelOrderDetail(orderId),
-        getParcelBillingContext(orderId),
-      ]);
+      const billingCtx = parcelBillingCtx ?? {
+        billingSnapshot: null,
+        paymentStatus: null,
+        paymentMethod: null,
+        fareAmount: null,
+        itemTotal: null,
+        grandTotal: null,
+        tipAmount: null,
+      };
       const row0 = enrichedData[0] as Record<string, unknown>;
       const topPickupOtp =
         row0.pickupOtp != null ? String(row0.pickupOtp).trim() || null : null;

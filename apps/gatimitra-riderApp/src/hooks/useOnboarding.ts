@@ -297,7 +297,8 @@ export function useRiderStatus(
         bankAccountOnboardingSkipped?: boolean;
       }>(`${API_BASE()}/v1/rider/${riderId}/status`, {
         headers: { authorization: `Bearer ${session.accessToken}` },
-        timeout: 12_000,
+        // Keep cold-start splash short — gate falls back to cached status on timeout.
+        timeout: 6_000,
       });
     },
     enabled: !!riderId && !!session?.accessToken,

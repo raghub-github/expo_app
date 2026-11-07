@@ -84,8 +84,8 @@ export function CustomerFeedbackBottomSheet({
   const [comment, setComment] = useState("");
 
   const availableTags = useMemo(() => tagsForRating(rating), [rating]);
-  const bottomPad = resolveRiderBottomInset(insets.bottom) + rs(12);
-  const bodyMaxH = Math.round(height * (isShortHeight ? 0.82 : 0.76));
+  const bottomPad = resolveRiderBottomInset(insets.bottom) + rs(8);
+  const bodyMaxH = Math.round(height * (isShortHeight ? 0.72 : 0.64));
 
   useEffect(() => {
     if (!visible) return;
@@ -142,17 +142,22 @@ export function CustomerFeedbackBottomSheet({
           accessibilityLabel={t("orders.activeFood.feedbackSkip", "Skip")}
         />
 
-        <View style={[styles.sheet, { maxHeight: Math.round(height * 0.92) }]}>
+        <View style={[styles.sheet, { maxHeight: Math.round(height * 0.88) }]}>
           <View style={styles.handle} />
 
           <View style={[rowLayout.row, styles.header]}>
-            <Text style={[styles.title, flexShrinkText]} numberOfLines={2}>
-              {t("orders.activeFood.customerFeedbackTitle", "Customer Feedback")}
-            </Text>
+            <View style={[styles.headerTextCol, rowLayout.grow]}>
+              <Text style={[styles.title, flexShrinkText]} numberOfLines={1}>
+                {t("orders.activeFood.customerFeedbackTitle", "Customer Feedback")}
+              </Text>
+              <Text style={[styles.lead, flexShrinkText]} numberOfLines={1}>
+                {t("orders.activeFood.customerFeedbackLead", "You just delivered an order")}
+              </Text>
+            </View>
             <Pressable
               onPress={onSkip}
               disabled={loading}
-              hitSlop={12}
+              hitSlop={10}
               style={[styles.skipBtn, rowLayout.noShrink]}
               accessibilityRole="button"
               accessibilityLabel={t("orders.activeFood.feedbackSkip", "Skip")}
@@ -184,28 +189,24 @@ export function CustomerFeedbackBottomSheet({
               </Pressable>
             }
           >
-            <Text style={[styles.lead, flexShrinkText]} numberOfLines={2}>
-              {t("orders.activeFood.customerFeedbackLead", "You just delivered an order")}
-            </Text>
-
-            <View style={[rowLayout.rowStart, styles.infoCard]}>
+            <View style={[rowLayout.row, styles.infoCard]}>
               <View style={[styles.orderIcon, rowLayout.noShrink]}>
-                <Ionicons name="home" size={22} color="#fff" />
+                <Ionicons name="person" size={16} color="#fff" />
               </View>
               <View style={[styles.orderTextCol, rowLayout.grow]}>
                 <Text style={[styles.orderIdLine, flexShrinkText]} numberOfLines={1}>
                   {t("orders.activeFood.orderIdLabel", "Order ID")}: {orderIdLabel}
                 </Text>
-                <Text style={[styles.customerName, flexShrinkText]} numberOfLines={2}>
+                <Text style={[styles.customerName, flexShrinkText]} numberOfLines={1}>
                   {customerName}
                 </Text>
               </View>
             </View>
 
-            <Text style={[styles.sectionLabel, flexShrinkText]} numberOfLines={3}>
+            <Text style={[styles.sectionLabel, flexShrinkText]} numberOfLines={2}>
               {t(
                 "orders.activeFood.customerRatingPrompt",
-                "Please rate your experience with the customer"
+                "Rate your experience with the customer"
               )}
             </Text>
 
@@ -222,14 +223,14 @@ export function CustomerFeedbackBottomSheet({
                     accessibilityRole="button"
                     accessibilityState={{ selected }}
                   >
-                    <Text style={[styles.emoji, selected && styles.emojiSelected]}>{emoji}</Text>
+                    <Text style={styles.emoji}>{emoji}</Text>
                   </Pressable>
                 );
               })}
             </View>
 
-            <Text style={[styles.sectionLabel, flexShrinkText]} numberOfLines={2}>
-              {t("orders.activeFood.customerFeedbackImprove", "Tell us more so we can improve")}
+            <Text style={[styles.sectionLabel, flexShrinkText]} numberOfLines={1}>
+              {t("orders.activeFood.customerFeedbackImprove", "Tell us more")}
             </Text>
 
             <View style={styles.tagsWrap}>
@@ -244,7 +245,7 @@ export function CustomerFeedbackBottomSheet({
                   >
                     <Text
                       style={[styles.tagText, active && styles.tagTextActive, flexShrinkText]}
-                      numberOfLines={2}
+                      numberOfLines={1}
                     >
                       {t(tag.labelKey, tag.fallback)}
                     </Text>
@@ -259,11 +260,11 @@ export function CustomerFeedbackBottomSheet({
               onChangeText={setComment}
               placeholder={t(
                 "orders.activeFood.customerFeedbackCommentPlaceholder",
-                "Add your comment here..."
+                "Add a comment (optional)"
               )}
               placeholderTextColor="#9CA3AF"
               multiline
-              numberOfLines={4}
+              numberOfLines={3}
               textAlignVertical="top"
               editable={!loading}
             />
@@ -281,13 +282,13 @@ const styles = StyleSheet.create({
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(15, 23, 42, 0.48)",
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
   },
   sheet: {
     backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingTop: 10,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 8,
     overflow: "hidden",
     flexShrink: 1,
     minHeight: 0,
@@ -295,80 +296,85 @@ const styles = StyleSheet.create({
     ...Platform.select({
       ios: {
         shadowColor: "#0F172A",
-        shadowOpacity: 0.18,
-        shadowRadius: 24,
-        shadowOffset: { width: 0, height: -8 },
+        shadowOpacity: 0.14,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: -4 },
       },
-      android: { elevation: 16 },
+      android: { elevation: 12 },
       default: {},
     }),
   },
   handle: {
     alignSelf: "center",
-    width: 40,
+    width: 36,
     height: 4,
     borderRadius: 2,
     backgroundColor: "#D1D5DB",
-    marginBottom: 12,
+    marginBottom: 8,
   },
   header: {
     justifyContent: "space-between",
-    marginBottom: 6,
-    paddingHorizontal: 20,
-    gap: 12,
+    marginBottom: 10,
+    paddingHorizontal: 16,
+    gap: 10,
+    alignItems: "flex-start",
     maxWidth: "100%",
-    alignItems: "center",
   },
-  title: {
-    fontSize: 22,
-    fontWeight: "800",
-    color: "#0F172A",
-    letterSpacing: -0.3,
+  headerTextCol: {
     flex: 1,
     minWidth: 0,
+    gap: 2,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0F172A",
+    letterSpacing: -0.2,
+  },
+  lead: {
+    fontSize: 12,
+    color: "#64748B",
+    fontWeight: "500",
   },
   skipBtn: {
+    marginTop: 1,
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 5,
     borderRadius: 999,
     backgroundColor: "#FFF1F2",
   },
   skipText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "700",
     color: SKIP_PINK,
   },
   scrollContent: {
-    paddingBottom: 8,
-    paddingHorizontal: 4,
+    paddingBottom: 4,
+    paddingHorizontal: 16,
   },
   footerSlot: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#F1F5F9",
+    borderTopColor: "#E8EAED",
     backgroundColor: "#fff",
-    paddingHorizontal: 4,
-    paddingTop: 10,
-  },
-  lead: {
-    fontSize: 14,
-    color: "#64748B",
-    marginBottom: 12,
-    fontWeight: "500",
+    paddingHorizontal: 16,
+    paddingTop: 8,
   },
   infoCard: {
-    gap: 12,
-    marginBottom: 20,
+    gap: 10,
+    marginBottom: 12,
     maxWidth: "100%",
     backgroundColor: "#F8FAFC",
-    borderRadius: 16,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
-    padding: 14,
+    borderColor: "#E8EAED",
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    alignItems: "center",
   },
   orderIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 16,
+    width: 34,
+    height: 34,
+    borderRadius: 10,
     backgroundColor: REF_BLUE,
     alignItems: "center",
     justifyContent: "center",
@@ -377,38 +383,37 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     justifyContent: "center",
+    gap: 1,
   },
   orderIdLine: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#334155",
-    marginBottom: 4,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#64748B",
   },
   customerName: {
-    fontSize: 17,
+    fontSize: 14,
     fontWeight: "800",
     color: "#0F172A",
   },
   sectionLabel: {
-    fontSize: 15,
+    fontSize: 13,
     color: "#334155",
-    marginBottom: 12,
-    fontWeight: "600",
+    marginBottom: 8,
+    fontWeight: "700",
   },
   emojiRow: {
     justifyContent: "space-between",
-    marginBottom: 22,
-    gap: 8,
+    marginBottom: 14,
+    gap: 6,
     maxWidth: "100%",
   },
   emojiBtn: {
     flex: 1,
     minWidth: 0,
-    aspectRatio: 1,
-    maxWidth: 56,
-    maxHeight: 56,
-    borderRadius: 28,
-    borderWidth: 2,
+    height: 44,
+    maxWidth: 52,
+    borderRadius: 22,
+    borderWidth: 1.5,
     borderColor: "#E2E8F0",
     alignItems: "center",
     justifyContent: "center",
@@ -417,27 +422,23 @@ const styles = StyleSheet.create({
   emojiBtnSelected: {
     borderColor: SUBMIT_GREEN,
     backgroundColor: colors.success[50],
-    transform: [{ scale: 1.06 }],
   },
   emoji: {
-    fontSize: 26,
-  },
-  emojiSelected: {
-    fontSize: 28,
+    fontSize: 22,
   },
   tagsWrap: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
-    marginBottom: 14,
+    gap: 8,
+    marginBottom: 10,
     maxWidth: "100%",
   },
   tagPill: {
     borderWidth: 1.5,
     borderColor: "#E2E8F0",
     borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
     backgroundColor: "#fff",
     maxWidth: "100%",
   },
@@ -446,7 +447,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.success[50],
   },
   tagText: {
-    fontSize: 14,
+    fontSize: 12,
     color: "#64748B",
     fontWeight: "600",
   },
@@ -454,24 +455,23 @@ const styles = StyleSheet.create({
     color: "#166534",
   },
   commentInput: {
-    minHeight: 100,
+    minHeight: 64,
+    maxHeight: 88,
     borderWidth: 1.5,
     borderColor: "#E2E8F0",
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
     color: "#0F172A",
     backgroundColor: "#F8FAFC",
-    marginBottom: 8,
+    marginBottom: 4,
     maxWidth: "100%",
   },
   submitBtn: {
-    marginTop: 4,
-    marginBottom: 4,
     backgroundColor: SUBMIT_GREEN,
-    borderRadius: 16,
-    paddingVertical: 16,
+    borderRadius: 14,
+    paddingVertical: 14,
     paddingHorizontal: 12,
     alignItems: "center",
     justifyContent: "center",
@@ -481,7 +481,7 @@ const styles = StyleSheet.create({
   },
   submitText: {
     color: "#fff",
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: "800",
     letterSpacing: 0.2,
   },

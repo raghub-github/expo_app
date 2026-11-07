@@ -1,7 +1,8 @@
 /**
  * In-app notification inbox client for the three mobile apps.
  *
- * Talks to the backend at /v1/notifications/{inbox,:id/click,:id/read,read-all,preferences}.
+ * Talks to the backend at
+ * /v1/notifications/{inbox,:id/click,:id/read,read-all,clear-all,preferences}.
  * Auth is the app's normal Bearer token (customer/merchant/rider JWT).
  *
  * Pure TS — no React dependency. The UI screen imports this and renders.
@@ -80,6 +81,19 @@ export async function markReadRemote(cfg: NotificationApiConfig, notificationId:
 
 export async function markAllReadRemote(cfg: NotificationApiConfig): Promise<void> {
   await authedFetch<void>(cfg, `/v1/notifications/read-all`, { method: "POST" });
+}
+
+/**
+ * Persist Clear All for the authenticated user on the backend.
+ * Server hides all inbox rows queued at or before the returned cleared_at.
+ * New notifications after that timestamp still appear.
+ */
+export async function clearAllRemote(
+  cfg: NotificationApiConfig,
+): Promise<{ ok: true; cleared_at: string }> {
+  return authedFetch<{ ok: true; cleared_at: string }>(cfg, `/v1/notifications/clear-all`, {
+    method: "POST",
+  });
 }
 
 export async function loadPreferences(cfg: NotificationApiConfig): Promise<{ items: NotificationPreference[] }> {

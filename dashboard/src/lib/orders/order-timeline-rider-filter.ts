@@ -54,10 +54,82 @@ export function isRiderAssignmentCancellationTimelineEntry(entry: {
   if (meta?.rider_assignment_cancel === true || meta?.rider_assignment_only === true) {
     return true;
   }
+  if (meta?.order_cancellation === true) return false;
   const msg = (entry.statusMessage ?? "").trim().toLowerCase();
   if (msg.includes("rider cancelled by agent")) return true;
   if (msg.includes("rider unassigned")) return true;
+  if (msg.includes("rider cancelled")) return true;
+  if (msg.includes("assignment cancelled") || msg.includes("assignment canceled")) return true;
+  if (msg.includes("reassigned") || msg.includes("re-assign")) return true;
+  if (msg.includes("captain cancelled") || msg.includes("captain canceled")) return true;
+  if (msg.includes("offer expired") || msg.includes("offer timeout")) return true;
+  if (msg.includes("searching again") || msg.includes("search restarted")) return true;
   return false;
+}
+
+/** Progress after a mid-trip cancel means the order continued (rider churn), not order cancel. */
+const POST_CANCEL_PROGRESS_STATUSES = new Set([
+  "searching rider",
+  "rider assigned",
+  "delivery partner assigned",
+  "rider at pickup",
+  "rider reached pickup",
+  "reached store",
+  "reached mx",
+  "reached merchant",
+  "handed over to rider",
+  "picked up",
+  "out for delivery",
+  "on the way",
+  "in transit",
+  "ride in progress",
+  "arrived at drop",
+  "near drop",
+  "delivered",
+  "completed",
+]);
+
+function isPostCancelProgressStatus(status: string): boolean {
+  return POST_CANCEL_PROGRESS_STATUSES.has(normalizeOrderTimelineStatus(status));
+}
+
+function timelineOccurredMs(value: string | Date | null | undefined): number {
+  if (value == null || value === "") return 0;
+  const t = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Drop CANCELLED nodes that were superseded by later live progress.
+ * Order-level cancel is terminal — if Rider Assigned / At Pickup / … appears after
+ * CANCELLED, that cancel was rider churn and must not show on a live order bar.
+ */
+export function dropSupersededOrderCancellationEntries<
+  T extends {
+    status: string;
+    occurredAt?: string | Date | null;
+  },
+>(entries: T[]): T[] {
+  const cancelIndexes = entries
+    .map((entry, index) => (isOrderCancellationTimelineStatus(entry.status) ? index : -1))
+    .filter((index) => index >= 0);
+  if (cancelIndexes.length === 0) return entries;
+
+  const superseded = new Set<number>();
+  for (const cancelIdx of cancelIndexes) {
+    const cancelAt = timelineOccurredMs(entries[cancelIdx]?.occurredAt);
+    const hasLaterProgress = entries.some((entry, index) => {
+      if (index === cancelIdx) return false;
+      if (!isPostCancelProgressStatus(entry.status)) return false;
+      const at = timelineOccurredMs(entry.occurredAt);
+      // Prefer time; if either stamp missing, fall back to array order.
+      if (cancelAt > 0 && at > 0) return at > cancelAt;
+      return index > cancelIdx;
+    });
+    if (hasLaterProgress) superseded.add(cancelIdx);
+  }
+  if (superseded.size === 0) return entries;
+  return entries.filter((_, index) => !superseded.has(index));
 }
 
 function cancellationEntryScore(entry: {
@@ -117,12 +189,26 @@ export function filterOrderProgressTimelineEntries<
     metadata?: unknown;
     occurredAt?: string | Date | null;
   },
->(entries: T[]): T[] {
-  const withoutRiderMilestones = entries.filter((entry) => !isRiderOnlyOrderTimelineEntry(entry));
+>(
+  entries: T[],
+  options?: {
+    /**
+     * Parcel / person-ride progress is rider-driven (no merchant Accepted/Ready/…).
+     * Keep rider milestone statuses on the main order progress bar for those types.
+     */
+    keepRiderMilestones?: boolean;
+  }
+): T[] {
+  const withoutRiderMilestones = options?.keepRiderMilestones
+    ? entries
+    : entries.filter((entry) => !isRiderOnlyOrderTimelineEntry(entry));
   const withoutRiderAssignmentCancel = withoutRiderMilestones.filter(
     (entry) => !isRiderAssignmentCancellationTimelineEntry(entry)
   );
-  return dedupeOrderCancellationTimelineEntries(withoutRiderAssignmentCancel);
+  const withoutSupersededCancel = dropSupersededOrderCancellationEntries(
+    withoutRiderAssignmentCancel
+  );
+  return dedupeOrderCancellationTimelineEntries(withoutSupersededCancel);
 }
 
 /** True when the order progress timeline shows an order-level cancellation (not rider unassign). */

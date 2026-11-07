@@ -22,6 +22,7 @@ const device = {
   oneShot: (() => new Promise<Loc>(() => {})) as (arg: { accuracy: number }) => Promise<Loc>,
   watches: [] as WatchCb[],
   watchStarts: 0,
+  watchFails: false,
   removed: 0,
   geocoder: (async () => []) as () => Promise<unknown[]>,
 };
@@ -38,6 +39,7 @@ mock.module("expo-location", {
     getCurrentPositionAsync: (arg: { accuracy: number }) => device.oneShot(arg),
     watchPositionAsync: async (_opts: unknown, cb: WatchCb) => {
       device.watchStarts += 1;
+      if (device.watchFails) throw new Error("no location provider");
       device.watches.push(cb);
       return {
         remove: () => {
@@ -73,6 +75,8 @@ const backend = {
   boundId: null as number | null,
   saved: null as Saved | null,
   reconcileCalls: [] as Array<{ latitude: number; longitude: number; capturedAtMs?: number; address?: string | null }>,
+  activeWrites: [] as Array<{ addressId?: number | null }>,
+  activeWriteFails: false,
   retentionM: 500,
 };
 
@@ -135,7 +139,11 @@ mock.module("@/services/address.service", {
         return current(true, "switched_far", d);
       },
       getAddresses: async () => [],
-      setActiveLocation: async () => {},
+      setActiveLocation: async (p: { addressId?: number | null }) => {
+        backend.activeWrites.push(p);
+        if (backend.activeWriteFails) throw new Error("HTTP 500");
+      },
+      setAddressDefault: async () => {},
     },
   },
 });
@@ -234,11 +242,14 @@ beforeEach(async () => {
   device.oneShot = () => new Promise(() => {});
   device.watches = [];
   device.watchStarts = 0;
+  device.watchFails = false;
   device.removed = 0;
   device.geocoder = async () => [];
   backend.boundId = null;
   backend.saved = null;
   backend.reconcileCalls = [];
+  backend.activeWrites = [];
+  backend.activeWriteFails = false;
   net.calls = [];
   net.route = (url) => {
     if (url.includes("/geocode/v6/reverse")) {
@@ -545,6 +556,82 @@ test("a picked location never counts as a pin to hold: 'use current' takes the r
   assert.equal(s.locationSource, "current");
   assert.ok(metres(s.coords!.latitude, s.coords!.longitude, HOME.latitude, HOME.longitude) < 1);
   assert.notEqual(s.address?.primary, "Shop");
+});
+
+test("no GPS at all: the session ending stops 'Detecting…', and a later fix clears it", async () => {
+  const { useLocationStore } = await load();
+  device.oneShot = async () => {
+    throw new Error("no fix");
+  };
+  device.watchFails = true;
+  useLocationStore.setState({ detectingTimedOut: false });
+  await useLocationStore.getState().requestPermissionAndFetch({ forceDevice: true });
+  assert.ok(await until(() => useLocationStore.getState().detectingTimedOut === true));
+  assert.equal(useLocationStore.getState().loading, false);
+
+  // Retry with a working GPS, and a geocode that has not answered: having a pin is enough.
+  net.route = () => new Promise(() => {});
+  device.watchFails = false;
+  // A spot no other test has geocoded: a cached answer would clear the flag by itself.
+  device.oneShot = async () => at(HOME.latitude + 0.37, HOME.longitude + 0.37, 12);
+  void useLocationStore.getState().requestPermissionAndFetch({ forceDevice: true });
+  assert.ok(await until(() => useLocationStore.getState().coords != null));
+  assert.equal(useLocationStore.getState().detectingTimedOut, false);
+});
+
+test("a session that found a pin never reports having timed out", async () => {
+  const { useLocationStore } = await load();
+  device.oneShot = async () => at(HOME.latitude, HOME.longitude, 12);
+  await useLocationStore.getState().requestPermissionAndFetch({ forceDevice: true });
+  endGpsSession();
+  await tick(40);
+  assert.equal(useLocationStore.getState().detectingTimedOut, false);
+});
+
+const fakeQueryClient = () => {
+  const invalidated: unknown[] = [];
+  return {
+    invalidated,
+    client: new Proxy(
+      {},
+      {
+        get: (_t, name) => async (arg?: { queryKey?: unknown }) => {
+          if (name === "invalidateQueries") invalidated.push(arg?.queryKey);
+        },
+      }
+    ) as never,
+  };
+};
+const SAVED_ADDRESS = {
+  id: 7,
+  label: "Home",
+  fullAddress: "Home Lane, Patna",
+  latitude: HOME.latitude,
+  longitude: HOME.longitude,
+} as never;
+
+test("picking a saved address: the pin is instant, and the choice reaches the server", async () => {
+  const { useLocationStore } = await load();
+  const { applySelectedDeliveryAddress } = await import("@/lib/applySelectedDeliveryAddress");
+  const q = fakeQueryClient();
+  await applySelectedDeliveryAddress(SAVED_ADDRESS, q.client);
+  const s = useLocationStore.getState();
+  assert.equal(s.locationSource, "selected");
+  assert.equal(s.sessionBoundAddressId, 7);
+  assert.ok(await until(() => backend.activeWrites.length === 1), "the pick never reached the server");
+  assert.equal(backend.activeWrites[0]?.addressId, 7);
+  // Lists refresh only after the write, so they cannot show the old order.
+  assert.ok(await until(() => q.invalidated.some((k) => JSON.stringify(k) === '["addresses"]')));
+});
+
+test("picking a saved address: a failed server write does not undo the pin", async () => {
+  const { useLocationStore } = await load();
+  const { applySelectedDeliveryAddress } = await import("@/lib/applySelectedDeliveryAddress");
+  backend.activeWriteFails = true;
+  await applySelectedDeliveryAddress(SAVED_ADDRESS, fakeQueryClient().client);
+  assert.ok(await until(() => backend.activeWrites.length === 1));
+  await tick(20);
+  assert.equal(useLocationStore.getState().sessionBoundAddressId, 7);
 });
 
 test("geocoding failure: never stuck on 'Detecting address…', never an old city's name", async () => {

@@ -2,9 +2,9 @@
 
 export const COALESCE_MIN_MOVE_M = 2;
 export const COALESCE_MIN_HEADING_DEG = 8;
-/** Idle Home pin — GPS jitter while standing still must not re-render Mapbox. */
-export const COALESCE_IDLE_HOME_MOVE_M = 12;
-export const COALESCE_IDLE_HOME_HEADING_DEG = 15;
+/** Idle Home pin — small moves update the pin; tiny GPS jitter still skipped. */
+export const COALESCE_IDLE_HOME_MOVE_M = 5;
+export const COALESCE_IDLE_HOME_HEADING_DEG = 10;
 
 export function coalesceHaversineM(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const R = 6371000;

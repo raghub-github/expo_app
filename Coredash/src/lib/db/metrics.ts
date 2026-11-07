@@ -1867,100 +1867,120 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
   if (!customerId) throw new Error("Invalid customer id");
   const { period, from, to } = boundsFromSearch(periodRaw);
 
-  const [profileRows, orderRows, mixRows, spendRows, activeRows, addressRows] = await Promise.all([
+  // Profile must not use safeQuery([]) — a timeout/bind blip was returned as
+  // "Customer not found" 500 even when the row exists in the list.
+  const profileRows = await requiredQuery(
+    "customer-detail-profile",
+    () =>
+      sql<
+        {
+          id: number;
+          customer_id: string;
+          full_name: string;
+          email: string | null;
+          primary_mobile: string;
+          country_code: string | null;
+          account_status: string;
+          city: string | null;
+          state: string | null;
+          pincode: string | null;
+          address_line1: string | null;
+          address_line2: string | null;
+          risk_flag: string | null;
+          trust_score: number | null;
+          gmitra_plus_active: boolean | null;
+          profile_image_url: string | null;
+          referral_code: string | null;
+          referred_by: string | null;
+          referred_by_name: string | null;
+          preferred_language: string | null;
+          wallet: number;
+          wallet_locked: number;
+          last_order_at: Date | string | null;
+          last_login_at: Date | string | null;
+          created_at: Date | string;
+          created_via: string | null;
+        }[]
+      >`
+        SELECT
+          c.id,
+          c.customer_id,
+          c.full_name,
+          c.email,
+          c.primary_mobile,
+          c.primary_mobile_country_code AS country_code,
+          c.account_status::text AS account_status,
+          c.city,
+          c.state,
+          c.pincode,
+          c.address_line1,
+          c.address_line2,
+          c.risk_flag::text AS risk_flag,
+          c.trust_score::float AS trust_score,
+          c.gmitra_plus_active,
+          c.profile_image_url,
+          c.referral_code,
+          c.referred_by,
+          COALESCE(NULLIF(TRIM(ref.full_name), ''), NULLIF(TRIM(c.referred_by), '')) AS referred_by_name,
+          c.preferred_language,
+          COALESCE(c.wallet_balance, 0)::float AS wallet,
+          COALESCE(c.wallet_locked_amount, 0)::float AS wallet_locked,
+          c.last_order_at,
+          c.last_login_at,
+          c.created_at,
+          c.created_via
+        FROM customers c
+        LEFT JOIN LATERAL (
+          SELECT r.full_name
+          FROM customers r
+          WHERE
+            (c.referrer_customer_id IS NOT NULL AND r.id = c.referrer_customer_id)
+            OR (
+              c.referrer_customer_id IS NULL
+              AND NULLIF(TRIM(c.referred_by), '') IS NOT NULL
+              AND UPPER(r.referral_code) = UPPER(TRIM(c.referred_by))
+            )
+          LIMIT 1
+        ) ref ON true
+        WHERE c.deleted_at IS NULL
+          AND (
+            c.customer_id = ${customerId}
+            OR UPPER(c.customer_id) = UPPER(${customerId})
+            OR c.id::text = ${customerId}
+          )
+        LIMIT 1
+      `
+  );
+
+  const profile = profileRows[0];
+  if (!profile) throw new Error("Customer not found");
+
+  const customerDbId = num(profile.id);
+
+  const [orderStatsRows, orderRows, mixRows, spendRows, activeRows, addressRows] = await Promise.all([
     safeQuery(
-      "customer-detail",
+      "customer-detail-order-stats",
       () =>
         sql<
           {
-            id: number;
-            customer_id: string;
-            full_name: string;
-            email: string | null;
-            primary_mobile: string;
-            country_code: string | null;
-            account_status: string;
-            city: string | null;
-            state: string | null;
-            pincode: string | null;
-            address_line1: string | null;
-            address_line2: string | null;
-            risk_flag: string | null;
-            trust_score: number | null;
-            gmitra_plus_active: boolean | null;
-            profile_image_url: string | null;
-            referral_code: string | null;
-            referred_by: string | null;
-            referred_by_name: string | null;
-            preferred_language: string | null;
-            wallet: number;
-            wallet_locked: number;
             orders: number;
             gmv: number;
             cancelled: number;
             delivered: number;
             last_order_at: Date | string | null;
-            last_login_at: Date | string | null;
-            created_at: Date | string;
-            created_via: string | null;
           }[]
         >`
           SELECT
-            c.id,
-            c.customer_id,
-            c.full_name,
-            c.email,
-            c.primary_mobile,
-            c.primary_mobile_country_code AS country_code,
-            c.account_status::text AS account_status,
-            c.city,
-            c.state,
-            c.pincode,
-            c.address_line1,
-            c.address_line2,
-            c.risk_flag::text AS risk_flag,
-            c.trust_score::float AS trust_score,
-            c.gmitra_plus_active,
-            c.profile_image_url,
-            c.referral_code,
-            c.referred_by,
-            COALESCE(NULLIF(TRIM(ref.full_name), ''), NULLIF(TRIM(c.referred_by), '')) AS referred_by_name,
-            c.preferred_language,
-            COALESCE(c.wallet_balance, 0)::float AS wallet,
-            COALESCE(c.wallet_locked_amount, 0)::float AS wallet_locked,
-            COALESCE(oc.orders, 0) AS orders,
-            COALESCE(oc.gmv, 0)::float AS gmv,
-            COALESCE(oc.cancelled, 0) AS cancelled,
-            COALESCE(oc.delivered, 0) AS delivered,
-            COALESCE(c.last_order_at, oc.last_order_at) AS last_order_at,
-            c.last_login_at,
-            c.created_at,
-            c.created_via
-          FROM customers c
-          LEFT JOIN customers ref ON (
-            (c.referrer_customer_id IS NOT NULL AND ref.id = c.referrer_customer_id)
-            OR (
-              c.referrer_customer_id IS NULL
-              AND NULLIF(TRIM(c.referred_by), '') IS NOT NULL
-              AND UPPER(ref.referral_code) = UPPER(TRIM(c.referred_by))
-            )
-          )
-          LEFT JOIN LATERAL (
-            SELECT
-              COUNT(*)::int AS orders,
-              COALESCE(
-                SUM(${payableSql("o")}) FILTER (WHERE o.status::text = 'delivered'),
-                0
-              )::float AS gmv,
-              COUNT(*) FILTER (WHERE o.status::text = 'cancelled')::int AS cancelled,
-              COUNT(*) FILTER (WHERE o.status::text = 'delivered')::int AS delivered,
-              MAX(COALESCE(o.actual_delivery_time, o.created_at)) AS last_order_at
-            FROM orders_core o
-            WHERE o.customer_id = c.id
-          ) oc ON true
-          WHERE c.deleted_at IS NULL
-            AND (c.customer_id = ${customerId} OR c.id::text = ${customerId})
-          LIMIT 1
+            COUNT(*)::int AS orders,
+            COALESCE(
+              SUM(${payableSql("o")}) FILTER (WHERE o.status::text = 'delivered'),
+              0
+            )::float AS gmv,
+            COUNT(*) FILTER (WHERE o.status::text = 'cancelled')::int AS cancelled,
+            COUNT(*) FILTER (WHERE o.status::text = 'delivered')::int AS delivered,
+            MAX(COALESCE(o.actual_delivery_time, o.created_at)) AS last_order_at
+          FROM orders_core o
+          WHERE o.customer_id = ${customerDbId}
         `,
       []
     ),
@@ -1991,9 +2011,7 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
             o.created_at,
             o.actual_delivery_time AS delivered_at
           FROM orders_core o
-          JOIN customers c ON c.id = o.customer_id
-          WHERE c.deleted_at IS NULL
-            AND (c.customer_id = ${customerId} OR c.id::text = ${customerId})
+          WHERE o.customer_id = ${customerDbId}
           ORDER BY o.created_at DESC
           LIMIT 40
         `,
@@ -2013,9 +2031,7 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
             COUNT(*)::int AS orders,
             COALESCE(SUM(${payableSql("o")}) FILTER (WHERE o.status::text = 'delivered'), 0)::float AS gmv
           FROM orders_core o
-          JOIN customers c ON c.id = o.customer_id
-          WHERE c.deleted_at IS NULL
-            AND (c.customer_id = ${customerId} OR c.id::text = ${customerId})
+          WHERE o.customer_id = ${customerDbId}
           GROUP BY 1
           ORDER BY orders DESC
         `,
@@ -2030,9 +2046,7 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
             COALESCE(SUM(${payableSql("o")}) FILTER (WHERE o.status::text = 'delivered'), 0)::float AS gmv,
             COUNT(*)::int AS orders
           FROM orders_core o
-          JOIN customers c ON c.id = o.customer_id
-          WHERE c.deleted_at IS NULL
-            AND (c.customer_id = ${customerId} OR c.id::text = ${customerId})
+          WHERE o.customer_id = ${customerDbId}
             AND o.created_at >= ${from}::timestamptz
             AND o.created_at < ${to}::timestamptz
           GROUP BY 1
@@ -2065,9 +2079,7 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
             COALESCE(${payableSql("o")}, 0)::float AS payable,
             o.created_at
           FROM orders_core o
-          JOIN customers c ON c.id = o.customer_id
-          WHERE c.deleted_at IS NULL
-            AND (c.customer_id = ${customerId} OR c.id::text = ${customerId})
+          WHERE o.customer_id = ${customerDbId}
             AND o.status::text NOT IN ('delivered', 'cancelled', 'failed')
             AND o.cancelled_at IS NULL
           ORDER BY o.updated_at DESC NULLS LAST, o.created_at DESC
@@ -2116,11 +2128,9 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
             ca.last_used_at,
             ca.created_at
           FROM customer_addresses ca
-          JOIN customers c ON c.id = ca.customer_id
-          WHERE c.deleted_at IS NULL
+          WHERE ca.customer_id = ${customerDbId}
             AND ca.deleted_at IS NULL
             AND COALESCE(ca.is_active, true) = true
-            AND (c.customer_id = ${customerId} OR c.id::text = ${customerId})
           ORDER BY
             COALESCE(ca.is_default, false) DESC,
             COALESCE(ca.is_last_used, false) DESC,
@@ -2131,8 +2141,12 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
     ),
   ]);
 
-  const profile = profileRows[0];
-  if (!profile) throw new Error("Customer not found");
+  const orderStats = orderStatsRows[0];
+  const profileOrders = num(orderStats?.orders);
+  const profileGmv = num(orderStats?.gmv);
+  const profileCancelled = num(orderStats?.cancelled);
+  const profileDelivered = num(orderStats?.delivered);
+  const statsLastOrderAt = orderStats?.last_order_at ?? null;
 
   const active = activeRows[0] ?? null;
   const selectedAddressRow = addressRows[0] ?? null;
@@ -2157,11 +2171,12 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
     ? str(selectedAddressRow.postal_code) || str(profile.pincode)
     : str(profile.pincode);
 
+  const lastOrderSource = profile.last_order_at ?? statsLastOrderAt;
   const derivedLastOrder =
-    profile.last_order_at instanceof Date
-      ? profile.last_order_at.toISOString()
-      : profile.last_order_at
-        ? str(profile.last_order_at)
+    lastOrderSource instanceof Date
+      ? lastOrderSource.toISOString()
+      : lastOrderSource
+        ? str(lastOrderSource)
         : orderRows[0]
           ? orderRows[0].delivered_at instanceof Date
             ? orderRows[0].delivered_at.toISOString()
@@ -2176,7 +2191,7 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
     period,
     customer: {
       id: str(profile.customer_id),
-      dbId: num(profile.id),
+      dbId: customerDbId,
       name: str(profile.full_name) || "Unnamed",
       email: str(profile.email) || "—",
       mobile: formatCustomerMobile(profile.primary_mobile, profile.country_code),
@@ -2195,10 +2210,10 @@ export async function fetchCustomerDetail(customerIdRaw: string, periodRaw: stri
       language: str(profile.preferred_language) || "en",
       wallet: num(profile.wallet),
       walletLocked: num(profile.wallet_locked),
-      orders: num(profile.orders),
-      gmv: num(profile.gmv),
-      cancelled: num(profile.cancelled),
-      delivered: num(profile.delivered),
+      orders: profileOrders,
+      gmv: profileGmv,
+      cancelled: profileCancelled,
+      delivered: profileDelivered,
       createdVia: str(profile.created_via) || "app",
       lastOrderAt: derivedLastOrder,
       lastLoginAt:

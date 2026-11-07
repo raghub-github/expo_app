@@ -243,7 +243,8 @@ function isServiceEnabled(
   enabledServices: Props["enabledServices"]
 ): boolean {
   if (ALWAYS_DISABLED_IDS.has(id)) return false;
-  if (!enabledServices) return false;
+  // Missing map = still resolving location/coverage — paint full opacity (not washed).
+  if (!enabledServices) return true;
   if (id === "food") return enabledServices.food;
   if (id === "ride") return enabledServices.ride;
   if (id === "parcels") return enabledServices.parcels;

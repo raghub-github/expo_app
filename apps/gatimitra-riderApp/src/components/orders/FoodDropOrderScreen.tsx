@@ -24,6 +24,7 @@ import { flexShrinkText, rowLayout } from "@/src/theme/responsiveText";
 import { colors } from "@/src/theme";
 import type { RiderOrderSummary } from "@/src/services/api/riderApi";
 import {
+  formatExactInr,
   formatRiderDropPaymentLabel,
   isCodPaymentMethod,
 } from "@/src/lib/rider-payment-display";
@@ -43,9 +44,16 @@ type Props = {
   onDirectionsPress?: () => void;
   onHelpPress: () => void;
   onCallCustomer: () => void;
+  /** Parcel: dial sender / pickup contact. */
+  onCallSender?: () => void;
   onChatCustomer: () => void;
   onOpenMaps: () => void;
   onDelivered: () => void;
+  /** Parcel: open cash-collect when fare still due at drop. */
+  onCollectCash?: () => void;
+  collectCashLoading?: boolean;
+  /** Bump when collect sheet closes without success so Collect slider resets. */
+  collectCashResetKey?: number;
   deliverLoading?: boolean;
   /**
    * In-flight camera / OTP lock — slider stays completed without a spinner.
@@ -62,18 +70,26 @@ type FoodItem = NonNullable<RiderOrderSummary["foodItems"]>[number];
 
 type DropOrderItemsSheetProps = {
   visible: boolean;
+  isParcel: boolean;
   items: FoodItem[];
   itemCount: number;
   fallbackLine: string;
+  receiverName: string;
+  receiverPhone: string;
+  deliveryAddress: string;
   specialNotes: string[];
   onDismiss: () => void;
 };
 
 function DropOrderItemsSheet({
   visible,
+  isParcel,
   items,
   itemCount,
   fallbackLine,
+  receiverName,
+  receiverPhone,
+  deliveryAddress,
   specialNotes,
   onDismiss,
 }: DropOrderItemsSheetProps) {
@@ -95,16 +111,24 @@ function DropOrderItemsSheet({
         <View style={[rowLayout.row, styles.sheetHeader]}>
           <View style={[rowLayout.row, styles.sheetTitleRow, rowLayout.grow]}>
             <View style={[styles.sheetIconWrap, styles.sheetIconWrapGreen, rowLayout.noShrink]}>
-              <Ionicons name="fast-food-outline" size={20} color={REF_GREEN} />
+              <Ionicons
+                name={isParcel ? "person-outline" : "fast-food-outline"}
+                size={20}
+                color={REF_GREEN}
+              />
             </View>
             <View style={[styles.sheetTitleCol, rowLayout.grow]}>
               <Text style={[styles.sheetTitle, flexShrinkText]} numberOfLines={2}>
-                {t("orders.activeFood.allOrderItems", "All order items")}
+                {isParcel
+                  ? t("orders.activeParcel.receiverDetails", "Receiver details")
+                  : t("orders.activeFood.allOrderItems", "All order items")}
               </Text>
               <Text style={[styles.sheetSubtitle, flexShrinkText]} numberOfLines={1}>
-                {t("orders.activeFood.totalItemsCount", "{{count}} items total", {
-                  count: itemCount,
-                })}
+                {isParcel
+                  ? receiverName
+                  : t("orders.activeFood.totalItemsCount", "{{count}} items total", {
+                      count: itemCount,
+                    })}
               </Text>
             </View>
           </View>
@@ -118,7 +142,32 @@ function DropOrderItemsSheet({
         </View>
 
         <View style={styles.allItemsPanel}>
-          {items.length > 0 ? (
+          {isParcel ? (
+            <>
+              <View style={[rowLayout.rowStart, styles.itemRow]}>
+                <View style={[styles.itemBullet, rowLayout.noShrink]} />
+                <Text style={[styles.sheetItemLine, flexShrinkText]} numberOfLines={2}>
+                  {t("orders.activeParcel.receiverName", "Name")}: {receiverName}
+                </Text>
+              </View>
+              {receiverPhone ? (
+                <View style={[rowLayout.rowStart, styles.itemRow]}>
+                  <View style={[styles.itemBullet, rowLayout.noShrink]} />
+                  <Text style={[styles.sheetItemLine, flexShrinkText]} numberOfLines={2}>
+                    {t("orders.activeParcel.receiverPhone", "Phone")}: {receiverPhone}
+                  </Text>
+                </View>
+              ) : null}
+              {deliveryAddress ? (
+                <View style={[rowLayout.rowStart, styles.itemRow]}>
+                  <View style={[styles.itemBullet, rowLayout.noShrink]} />
+                  <Text style={[styles.sheetItemLine, flexShrinkText]} numberOfLines={4}>
+                    {t("orders.activeParcel.dropAddress", "Drop")}: {deliveryAddress}
+                  </Text>
+                </View>
+              ) : null}
+            </>
+          ) : items.length > 0 ? (
             items.map((item, idx) => {
               const label = item.variantName
                 ? `${item.quantity} x ${item.name} (${item.variantName})`
@@ -170,9 +219,13 @@ export function FoodDropOrderScreen({
   onEmergencyPress,
   onHelpPress,
   onCallCustomer,
+  onCallSender,
   onChatCustomer,
   onOpenMaps,
   onDelivered,
+  onCollectCash,
+  collectCashLoading = false,
+  collectCashResetKey = 0,
   deliverLoading = false,
   deliverLocked = false,
   deliverPhotoReady = false,
@@ -181,30 +234,59 @@ export function FoodDropOrderScreen({
   children,
 }: Props) {
   const { t } = useTranslation();
+  const isParcel = order.category === "parcel";
   const paymentLabel = formatRiderDropPaymentLabel(
     order.paymentMethod,
     order.paymentStatus,
-    t
+    t,
+    {
+      payAt: order.payAt ?? null,
+      cashCollected: order.cashCollected === true,
+    }
   );
-  const isCod = isCodPaymentMethod(order.paymentMethod);
+  const needsCashCollect =
+    isParcel &&
+    order.cashCollected !== true &&
+    (order.payAt === "drop" ||
+      (order.payAt === "pickup" && isCodPaymentMethod(order.paymentMethod)) ||
+      (order.payAt == null && isCodPaymentMethod(order.paymentMethod)));
+  const fareAlreadyCollected =
+    order.cashCollected === true ||
+    (!isCodPaymentMethod(order.paymentMethod) &&
+      !needsCashCollect &&
+      paymentLabel.toLowerCase().includes("paid"));
+  const isCod = isCodPaymentMethod(order.paymentMethod) && !fareAlreadyCollected;
   const insets = useSafeAreaInsets();
   const bottomInset = resolveRiderBottomInset(insets.bottom);
   const [orderItemsSheetOpen, setOrderItemsSheetOpen] = useState(false);
   const [sosSheetOpen, setSosSheetOpen] = useState(false);
 
-  const customerName =
-    order.customerName?.trim() || t("orders.activeFood.customerFallback", "Customer");
+  const senderName =
+    order.customerName?.trim() ||
+    order.customerPrimaryName?.trim() ||
+    t("orders.activeParcel.senderFallback", "Sender");
+  const receiverName =
+    order.receiverName?.trim() ||
+    t("orders.activeParcel.receiverFallback", "Receiver");
+  const customerName = isParcel
+    ? senderName
+    : order.customerName?.trim() || t("orders.activeFood.customerFallback", "Customer");
   const resolvedRating = customerRating ?? order.customerRating ?? null;
+  /** Drop contact — receiver for parcel, customer for food. */
   const customerPhone =
     order.customerPhone?.trim() ||
     order.customerAlternatePhone?.trim() ||
     order.customerPrimaryPhone?.trim() ||
     "";
+  /** Pickup / sender dial for parcel. */
+  const senderPhone = order.restaurantPhone?.trim() || "";
   const hasCallablePhone = Boolean(customerPhone);
+  const hasCallableSenderPhone = Boolean(senderPhone);
   const itemCount = order.itemCount ?? order.foodItems?.length ?? 0;
   const firstItemName = order.foodItems?.[0]?.name?.trim() || restaurantName;
-  const orderDetailSubtitle =
-    itemCount > 0
+  const orderDetailSubtitle = isParcel
+    ? [receiverName, customerPhone].filter(Boolean).join(" · ") || receiverName
+    : itemCount > 0
       ? `${restaurantName}${firstItemName !== restaurantName ? ` · ${firstItemName}` : ""}`
       : restaurantName;
 
@@ -221,6 +303,11 @@ export function FoodDropOrderScreen({
     }
     return notes;
   }, [order.deliveryInstructions]);
+
+  const collectedFareLabel = useMemo(
+    () => formatExactInr(order.customerPayable),
+    [order.customerPayable]
+  );
 
   return (
     <Modal
@@ -285,17 +372,51 @@ export function FoodDropOrderScreen({
           <View style={[rowLayout.row, styles.paymentCard]}>
             <View style={[styles.paymentIconWrap, rowLayout.noShrink]}>
               <Ionicons
-                name={isCod ? "cash-outline" : "checkmark-circle"}
+                name={
+                  needsCashCollect
+                    ? "cash-outline"
+                    : fareAlreadyCollected || order.cashCollected
+                      ? "checkmark-circle"
+                      : isCod
+                        ? "cash-outline"
+                        : "checkmark-circle"
+                }
                 size={22}
-                color={isCod ? "#B45309" : "#9AA0A6"}
+                color={
+                  needsCashCollect
+                    ? "#B45309"
+                    : fareAlreadyCollected || order.cashCollected
+                      ? REF_GREEN
+                      : isCod
+                        ? "#B45309"
+                        : "#9AA0A6"
+                }
               />
             </View>
             <View style={[styles.paymentTextCol, rowLayout.grow]}>
               <Text style={[styles.paymentTitle, flexShrinkText]} numberOfLines={2}>
-                {paymentLabel}
+                {collectedFareLabel && (fareAlreadyCollected || order.cashCollected || needsCashCollect)
+                  ? `${paymentLabel} · ${collectedFareLabel}`
+                  : paymentLabel}
               </Text>
-              <Text style={[styles.paymentOrderLine, flexShrinkText]} numberOfLines={1}>
-                {t("orders.activeFood.orderPrefix", "Order")}: {orderIdLabel}
+              <Text style={[styles.paymentOrderLine, flexShrinkText]} numberOfLines={2}>
+                {needsCashCollect
+                  ? collectedFareLabel
+                    ? t(
+                        "orders.activeParcel.slideCollectHint",
+                        "Slide Collect amount below before marking delivered"
+                      )
+                    : t(
+                        "orders.activeParcel.slideCollectHintNoAmt",
+                        "Slide Collect amount below before marking delivered"
+                      )
+                  : collectedFareLabel && (fareAlreadyCollected || order.cashCollected)
+                    ? t(
+                        "orders.activeParcel.collectedAmountLine",
+                        "Collected {{amount}} · Order: {{orderId}}",
+                        { amount: collectedFareLabel, orderId: orderIdLabel }
+                      )
+                    : `${t("orders.activeFood.orderPrefix", "Order")}: ${orderIdLabel}`}
               </Text>
             </View>
           </View>
@@ -306,10 +427,21 @@ export function FoodDropOrderScreen({
                 <Ionicons name="person-outline" size={18} color="#5F6368" />
               </View>
               <View style={[styles.expandTextCol, rowLayout.grow]}>
+                {isParcel ? (
+                  <Text style={[styles.partyRoleLabel, flexShrinkText]} numberOfLines={1}>
+                    {t("orders.activeParcel.senderDetails", "Sender details")}
+                  </Text>
+                ) : null}
                 <Text style={[styles.expandTitle, flexShrinkText]} numberOfLines={2}>
                   {customerName}
                 </Text>
-                {ratingLabel ? (
+                {isParcel ? (
+                  senderPhone ? (
+                    <Text style={[styles.partyPhoneLine, flexShrinkText]} numberOfLines={1}>
+                      {senderPhone}
+                    </Text>
+                  ) : null
+                ) : ratingLabel ? (
                   <View style={[rowLayout.row, styles.ratingRow]}>
                     <Text style={[styles.ratingLabel, flexShrinkText]} numberOfLines={1}>
                       {t("orders.activeFood.customerRating", "Rating")} {ratingLabel}
@@ -325,15 +457,20 @@ export function FoodDropOrderScreen({
                 )}
               </View>
               <Pressable
-                onPress={onCallCustomer}
-                disabled={!hasCallablePhone}
+                onPress={isParcel ? onCallSender ?? onCallCustomer : onCallCustomer}
+                disabled={isParcel ? !hasCallableSenderPhone : !hasCallablePhone}
                 style={[
                   styles.phoneFab,
                   rowLayout.noShrink,
-                  !hasCallablePhone && styles.phoneFabDisabled,
+                  (isParcel ? !hasCallableSenderPhone : !hasCallablePhone) &&
+                    styles.phoneFabDisabled,
                 ]}
                 accessibilityRole="button"
-                accessibilityLabel={t("orders.activeFood.call", "Call")}
+                accessibilityLabel={
+                  isParcel
+                    ? t("orders.activeParcel.callSender", "Call sender")
+                    : t("orders.activeFood.call", "Call")
+                }
               >
                 <Ionicons name="call" size={20} color="#ffffff" />
               </Pressable>
@@ -383,35 +520,89 @@ export function FoodDropOrderScreen({
             </View>
           </View>
 
-          <Pressable
-            style={styles.expandCard}
-            onPress={() => setOrderItemsSheetOpen(true)}
-          >
-            <View style={[rowLayout.row, styles.expandCardHeader]}>
-              <View style={[styles.expandIconWrap, rowLayout.noShrink]}>
-                <Ionicons name="receipt-outline" size={18} color="#5F6368" />
+          {isParcel ? (
+            <View style={styles.expandCard}>
+              <View style={[rowLayout.row, styles.expandCardHeader]}>
+                <View style={[styles.expandIconWrap, rowLayout.noShrink]}>
+                  <Ionicons name="person-outline" size={18} color="#5F6368" />
+                </View>
+                <View style={[styles.expandTextCol, rowLayout.grow]}>
+                  <Text style={[styles.partyRoleLabel, flexShrinkText]} numberOfLines={1}>
+                    {t("orders.activeParcel.receiverDetails", "Receiver details")}
+                  </Text>
+                  <Text style={[styles.expandTitle, flexShrinkText]} numberOfLines={2}>
+                    {receiverName}
+                  </Text>
+                  {customerPhone ? (
+                    <Text style={[styles.partyPhoneLine, flexShrinkText]} numberOfLines={1}>
+                      {customerPhone}
+                    </Text>
+                  ) : null}
+                </View>
+                <Pressable
+                  onPress={onCallCustomer}
+                  disabled={!hasCallablePhone}
+                  style={[
+                    styles.phoneFab,
+                    rowLayout.noShrink,
+                    !hasCallablePhone && styles.phoneFabDisabled,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("orders.activeParcel.callReceiver", "Call receiver")}
+                >
+                  <Ionicons name="call" size={20} color="#ffffff" />
+                </Pressable>
               </View>
-              <View style={[styles.expandTextCol, rowLayout.grow]}>
-                <Text style={[styles.expandTitle, flexShrinkText]} numberOfLines={1}>
-                  {t("orders.activeFood.orderDetails", "Order details")}
-                </Text>
-                <Text style={[styles.expandSub, flexShrinkText]} numberOfLines={1}>
-                  {orderDetailSubtitle}
-                </Text>
+              <View style={styles.receiverDetailsBody}>
+                {deliveryAddress ? (
+                  <Text style={[styles.receiverDetailLine, flexShrinkText]} numberOfLines={4}>
+                    {t("orders.activeParcel.dropAddress", "Drop")}: {deliveryAddress}
+                  </Text>
+                ) : null}
+                {specialNotes.length > 0 ? (
+                  <Text style={[styles.receiverDetailLine, flexShrinkText]} numberOfLines={4}>
+                    {t("orders.activeParcel.instructions", "Note")}: {specialNotes.join(" | ")}
+                  </Text>
+                ) : null}
               </View>
-              <Ionicons name="chevron-down" size={18} color="#5F6368" style={rowLayout.noShrink} />
             </View>
-          </Pressable>
+          ) : (
+            <Pressable
+              style={styles.expandCard}
+              onPress={() => setOrderItemsSheetOpen(true)}
+            >
+              <View style={[rowLayout.row, styles.expandCardHeader]}>
+                <View style={[styles.expandIconWrap, rowLayout.noShrink]}>
+                  <Ionicons name="receipt-outline" size={18} color="#5F6368" />
+                </View>
+                <View style={[styles.expandTextCol, rowLayout.grow]}>
+                  <Text style={[styles.expandTitle, flexShrinkText]} numberOfLines={1}>
+                    {t("orders.activeFood.orderDetails", "Order details")}
+                  </Text>
+                  <Text style={[styles.expandSub, flexShrinkText]} numberOfLines={1}>
+                    {orderDetailSubtitle}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-down" size={18} color="#5F6368" style={rowLayout.noShrink} />
+              </View>
+            </Pressable>
+          )}
         </ScrollView>
 
-        <DropOrderItemsSheet
-          visible={orderItemsSheetOpen}
-          items={foodItems}
-          itemCount={itemCount}
-          fallbackLine={orderDetailSubtitle}
-          specialNotes={specialNotes}
-          onDismiss={() => setOrderItemsSheetOpen(false)}
-        />
+        {!isParcel ? (
+          <DropOrderItemsSheet
+            visible={orderItemsSheetOpen}
+            isParcel={false}
+            items={foodItems}
+            itemCount={itemCount}
+            fallbackLine={orderDetailSubtitle}
+            receiverName={receiverName}
+            receiverPhone={customerPhone}
+            deliveryAddress={deliveryAddress}
+            specialNotes={specialNotes}
+            onDismiss={() => setOrderItemsSheetOpen(false)}
+          />
+        ) : null}
 
         <View
           style={[
@@ -419,19 +610,47 @@ export function FoodDropOrderScreen({
             { paddingBottom: Math.max(bottomInset, 8) + 2 },
           ]}
         >
-          <FoodSlideToReachStore
-            label={
-              deliverPhotoReady
-                ? t("orders.activeFood.slideEnterDeliveryOtp", "Enter delivery OTP")
-                : t("orders.activeFood.slideDelivered", "Order delivered")
-            }
-            onComplete={onDelivered}
-            loading={deliverLoading}
-            locked={deliverLocked}
-            completed={false}
-            completedLabel={t("orders.activeFood.deliveredDone", "Delivered ✓")}
-            actionName="delivered"
-          />
+          {needsCashCollect && onCollectCash ? (
+            <FoodSlideToReachStore
+              label={
+                collectedFareLabel
+                  ? t(
+                      "orders.activeParcel.slideCollectAmount",
+                      "Collect amount {{amount}}",
+                      { amount: collectedFareLabel }
+                    )
+                  : t("orders.activeParcel.slideCollectPayment", "Collect Payment")
+              }
+              onComplete={onCollectCash}
+              loading={collectCashLoading}
+              disabled={collectCashLoading}
+              completed={false}
+              completedLabel={t(
+                "orders.activeParcel.paymentCollected",
+                "Payment collected ✓"
+              )}
+              actionName="collect_payment"
+              resetKey={collectCashResetKey}
+              claimOnTouchStart
+            />
+          ) : (
+            <FoodSlideToReachStore
+              label={
+                deliverPhotoReady
+                  ? t("orders.activeFood.slideEnterDeliveryOtp", "Enter delivery OTP")
+                  : t("orders.activeFood.slideDelivered", "Order delivered")
+              }
+              onComplete={onDelivered}
+              loading={deliverLoading}
+              locked={deliverLocked}
+              completed={false}
+              completedLabel={t("orders.activeFood.deliveredDone", "Delivered ✓")}
+              actionName="delivered"
+              // Footer sits outside ScrollView — claim immediately so Android
+              // does not drop the gesture before horizontal slop.
+              claimOnTouchStart
+            />
+          )}
         </View>
 
         <RiderEmergencySosBottomSheet
@@ -595,11 +814,36 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#202124",
   },
+  partyRoleLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#5F6368",
+    letterSpacing: 0.2,
+    marginBottom: 2,
+    textTransform: "uppercase",
+  },
+  partyPhoneLine: {
+    marginTop: 2,
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#5F6368",
+  },
   expandSub: {
     marginTop: 2,
     fontSize: 12,
     fontWeight: "500",
     color: "#5F6368",
+  },
+  receiverDetailsBody: {
+    marginTop: 10,
+    gap: 6,
+    paddingLeft: 42,
+  },
+  receiverDetailLine: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#3C4043",
+    lineHeight: 18,
   },
   ratingRow: {
     alignItems: "center",

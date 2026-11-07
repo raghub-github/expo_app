@@ -101,6 +101,15 @@ export async function recordRiderDutyLog(input: RecordRiderDutyLogInput): Promis
     timestamp: new Date(),
   });
 
+  try {
+    const { invalidateRiderEligibleDispatchServicesCache } = await import(
+      "./order-assignment-engine.js"
+    );
+    invalidateRiderEligibleDispatchServicesCache(input.riderId);
+  } catch {
+    /* never block duty writes on cache invalidation */
+  }
+
   void recordRiderDutyLocationBusinessEvent({
     riderId: input.riderId,
     deviceId: input.deviceId ?? null,

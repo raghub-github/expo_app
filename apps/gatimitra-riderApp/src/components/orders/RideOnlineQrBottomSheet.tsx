@@ -17,6 +17,14 @@ import { colors } from "@/src/theme";
 
 const MINT_DARK = colors.primary[700];
 
+/**
+ * Mild crop: trim Razorpay logos / side rails without eating finder patterns
+ * or the quiet zone (aggressive crop made UPI apps fail to scan).
+ */
+const RAZORPAY_TEMPLATE_CROP_SCALE = 1.48;
+/** White quiet-zone around the matrix so scanners can lock. */
+const QR_QUIET_ZONE = 18;
+
 type Props = {
   visible: boolean;
   onDismiss: () => void;
@@ -25,6 +33,8 @@ type Props = {
   loading?: boolean;
   errorMessage?: string | null;
   onRetry?: () => void;
+  /** Brief success flash before the parent closes the sheet. */
+  paymentSuccess?: boolean;
 };
 
 export function RideOnlineQrBottomSheet({
@@ -35,60 +45,74 @@ export function RideOnlineQrBottomSheet({
   loading = false,
   errorMessage,
   onRetry,
+  paymentSuccess = false,
 }: Props) {
   const { t } = useTranslation();
   const { width: windowWidth, height, isShortHeight } = useResponsiveLayout();
 
-  /** Large square QR — nearly full sheet width so passengers can scan easily. */
+  /** Slightly inset so the full matrix + quiet zone stay on-screen and scannable. */
   const qrSize = useMemo(() => {
     const horizontalPad = 56;
     const target = Math.floor(windowWidth - horizontalPad);
-    const capped = Math.max(220, Math.min(target, isShortHeight ? 280 : 360));
-    return capped;
-  }, [windowWidth, isShortHeight]);
+    const maxByHeight = Math.floor(height * (isShortHeight ? 0.36 : 0.4));
+    return Math.max(220, Math.min(target, maxByHeight, 320));
+  }, [windowWidth, height, isShortHeight]);
 
-  const bodyMaxH = Math.round(height * (isShortHeight ? 0.78 : 0.72));
+  const innerSize = qrSize - QR_QUIET_ZONE * 2;
+  const croppedImageSize = Math.round(innerSize * RAZORPAY_TEMPLATE_CROP_SCALE);
+  const bodyMaxH = Math.round(height * (isShortHeight ? 0.86 : 0.8));
 
   return (
     <DismissibleBottomSheetShell
       visible={visible}
       onDismiss={onDismiss}
-      maxHeightRatio={isShortHeight ? 0.92 : 0.88}
-      minHeightRatio={isShortHeight ? 0.5 : 0.62}
+      maxHeightRatio={isShortHeight ? 0.9 : 0.86}
+      minHeightRatio={isShortHeight ? 0.5 : 0.6}
       showOuterHandle={false}
       showFloatingClose
     >
       <ResponsiveSheetBody
         maxHeight={bodyMaxH}
         contentContainerStyle={styles.bodyContent}
-        footerStyle={styles.footerSlot}
-        footer={
-          <Pressable style={styles.cancelBtn} onPress={onDismiss}>
-            <Text style={styles.cancelLabel} numberOfLines={1}>
-              {t("common.cancel", "Cancel")}
-            </Text>
-          </Pressable>
-        }
       >
         <View style={styles.headerTextCol}>
           <Text style={[styles.title, flexShrinkText]} numberOfLines={2}>
-            {t("orders.ridePaymentWait.onlineSheetTitle", "Scan & pay online")}
+            {paymentSuccess
+              ? t(
+                  "orders.ridePaymentWait.paymentSuccessTitle",
+                  "Payment Received Successfully"
+                )
+              : t("orders.ridePaymentWait.onlineSheetTitle", "Scan & pay online")}
           </Text>
-          <Text
-            style={[styles.subtitle, flexShrinkText]}
-            numberOfLines={isShortHeight ? 3 : 4}
-          >
-            {t(
-              "orders.ridePaymentWait.onlineSheetSub",
-              "Ask the passenger to scan this QR and pay {{amount}}.",
-              { amount: amountLabel }
-            )}
-          </Text>
+          {!paymentSuccess ? (
+            <Text
+              style={[styles.subtitle, flexShrinkText]}
+              numberOfLines={isShortHeight ? 3 : 4}
+            >
+              {t(
+                "orders.ridePaymentWait.onlineSheetSub",
+                "Ask the passenger to scan this QR and pay {{amount}}.",
+                { amount: amountLabel }
+              )}
+            </Text>
+          ) : null}
         </View>
 
         <View style={styles.body}>
-          {loading && !qrImageUrl ? (
+          {paymentSuccess ? (
             <View style={[styles.centerWrap, { minHeight: Math.min(qrSize, 200) }]}>
+              <View style={styles.successIconWrap}>
+                <Ionicons name="checkmark-circle" size={64} color={MINT_DARK} />
+              </View>
+              <Text style={[styles.successText, flexShrinkText]} numberOfLines={3}>
+                {t(
+                  "orders.ridePaymentWait.paymentSuccessSub",
+                  "Fare collected. Continuing…"
+                )}
+              </Text>
+            </View>
+          ) : loading && !qrImageUrl ? (
+            <View style={[styles.centerWrap, { minHeight: Math.min(qrSize, 180) }]}>
               <ActivityIndicator color={MINT_DARK} size="large" />
               <Text style={styles.loadingText}>
                 {t("orders.ridePaymentWait.qrLoading", "Generating QR…")}
@@ -97,7 +121,7 @@ export function RideOnlineQrBottomSheet({
           ) : errorMessage ? (
             <View style={styles.centerWrap}>
               <Ionicons name="alert-circle-outline" size={36} color="#DC2626" />
-              <Text style={[styles.errorText, flexShrinkText]} numberOfLines={4}>
+              <Text style={[styles.errorText, flexShrinkText]} numberOfLines={5}>
                 {errorMessage}
               </Text>
               {onRetry ? (
@@ -110,18 +134,34 @@ export function RideOnlineQrBottomSheet({
             </View>
           ) : qrImageUrl ? (
             <>
-              <View style={[styles.qrWrap, { width: qrSize + 24, height: qrSize + 24 }]}>
-                <Image
-                  source={{ uri: qrImageUrl }}
-                  style={[styles.qrImage, { width: qrSize, height: qrSize }]}
-                  resizeMode="contain"
-                  accessibilityLabel="Payment QR code"
-                />
+              <View style={[styles.qrFrame, { width: qrSize, height: qrSize }]}>
+                <View
+                  style={[
+                    styles.qrClip,
+                    {
+                      width: innerSize,
+                      height: innerSize,
+                      margin: QR_QUIET_ZONE,
+                    },
+                  ]}
+                >
+                  <Image
+                    source={{ uri: qrImageUrl }}
+                    style={{
+                      width: croppedImageSize,
+                      height: croppedImageSize,
+                      marginLeft: (innerSize - croppedImageSize) / 2,
+                      marginTop: (innerSize - croppedImageSize) / 2,
+                    }}
+                    resizeMode="cover"
+                    accessibilityLabel="Payment QR code"
+                  />
+                </View>
               </View>
-              <Text style={[styles.waitText, flexShrinkText]} numberOfLines={3}>
+              <Text style={[styles.hintText, flexShrinkText]} numberOfLines={2}>
                 {t(
-                  "orders.ridePaymentWait.qrSub",
-                  "This confirms automatically once they pay."
+                  "orders.ridePaymentWait.autoConfirmHint",
+                  "Confirms automatically after the UPI payment succeeds."
                 )}
               </Text>
             </>
@@ -135,21 +175,17 @@ export function RideOnlineQrBottomSheet({
 const styles = StyleSheet.create({
   bodyContent: {
     paddingTop: 18,
+    paddingBottom: 20,
     alignItems: "stretch",
-  },
-  footerSlot: {
-    borderTopWidth: 0,
-    backgroundColor: "transparent",
-    paddingBottom: 12,
   },
   headerTextCol: {
     flex: 1,
     gap: 6,
     maxWidth: "100%",
-    marginBottom: 8,
+    marginBottom: 12,
   },
   title: {
-    fontSize: 17,
+    fontSize: 18,
     fontWeight: "800",
     color: "#1C1C1C",
   },
@@ -160,7 +196,7 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
   body: {
-    gap: 16,
+    gap: 14,
     alignItems: "center",
     width: "100%",
     maxWidth: "100%",
@@ -198,40 +234,35 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "800",
   },
-  qrWrap: {
+  qrFrame: {
     backgroundColor: "#fff",
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: "#E5E7EB",
-    padding: 12,
-    alignItems: "center",
-    justifyContent: "center",
+    overflow: "hidden",
     maxWidth: "100%",
   },
-  qrImage: {
-    aspectRatio: 1,
-  },
-  waitText: {
-    fontSize: 13,
-    color: "#6B7280",
-    textAlign: "center",
-    lineHeight: 18,
-    fontWeight: "600",
-    maxWidth: "100%",
-  },
-  cancelBtn: {
-    width: "100%",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#D1D5DB",
+  qrClip: {
+    overflow: "hidden",
     backgroundColor: "#fff",
   },
-  cancelLabel: {
-    fontSize: 14,
-    fontWeight: "800",
+  hintText: {
+    fontSize: 12,
+    color: "#6B7280",
+    textAlign: "center",
+    lineHeight: 17,
+    fontWeight: "500",
+    maxWidth: "100%",
+    paddingHorizontal: 12,
+  },
+  successIconWrap: {
+    marginBottom: 4,
+  },
+  successText: {
+    fontSize: 15,
     color: "#374151",
+    textAlign: "center",
+    fontWeight: "600",
+    lineHeight: 21,
   },
 });

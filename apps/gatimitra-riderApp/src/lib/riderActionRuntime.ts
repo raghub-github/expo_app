@@ -129,16 +129,58 @@ export async function reconcileRiderAction(
     } catch {
       return { status: "unknown", order: null };
     }
+    // Empty /available can be fail-open [] after an 8s server ceiling — never treat
+    // that as "taken" or we invent ORDER_ALREADY_ASSIGNED while the claim still lands.
     try {
-      const available = await riderApi.getAvailableOrders();
-      if (available.some((o) => orderMatches(o, orderId))) {
+      const [available, pending] = await Promise.all([
+        riderApi.getAvailableOrders().catch(() => null),
+        riderApi.getPendingOffers().catch(() => null),
+      ]);
+      if (available == null && pending == null) {
+        return { status: "unknown", order: null };
+      }
+      const stillOffered =
+        (available?.some((o) => orderMatches(o, orderId)) ?? false) ||
+        (pending?.some((o) => orderMatches(o, orderId)) ?? false);
+      if (stillOffered) {
         return { status: "retry", order: null };
       }
+      // Both lists loaded and offer gone, but we are not on active yet — unknown
+      // (late claim / race). Retry accept; do NOT invent "taken".
+      riderActionLog("RECONCILE_UNKNOWN", {
+        action_type: actionType,
+        order_id: orderId,
+        availableCount: available?.length ?? null,
+        pendingCount: pending?.length ?? null,
+      });
+      return { status: "unknown", order: null };
     } catch {
       return { status: "unknown", order: null };
     }
-    riderActionLog("RECONCILE_SUCCESS", { action_type: actionType, order_id: orderId, taken: true });
-    return { status: "taken", order: null };
+  }
+
+  if (actionType === "reject") {
+    // Authoritative: offer gone from pools ⇒ reject (or expiry/reassign) already applied.
+    // Still present ⇒ safe to retry. Never invent success while the offer remains.
+    try {
+      const [pending, available] = await Promise.all([
+        riderApi.getPendingOffers().catch(() => [] as RiderOrderSummary[]),
+        riderApi.getAvailableOrders().catch(() => [] as RiderOrderSummary[]),
+      ]);
+      const stillOffered =
+        pending.some((o) => orderMatches(o, orderId)) ||
+        available.some((o) => orderMatches(o, orderId));
+      if (stillOffered) return { status: "retry", order: null };
+      dropOfferCaches({ id: orderId } as RiderOrderSummary, orderId);
+      riderActionLog("RECONCILE_SUCCESS", {
+        action_type: actionType,
+        order_id: orderId,
+        rejected: true,
+      });
+      return { status: "success", order: null };
+    } catch {
+      return { status: "unknown", order: null };
+    }
   }
 
   const order = await loadAuthoritativeOrder(orderId);
@@ -216,6 +258,9 @@ export async function executeRiderAction<T>(args: ExecuteArgs<T>): Promise<T> {
     store.remove(actionId);
     if (args.actionType === "cancel_assigned") {
       dropActiveOrderCaches(args.orderId);
+    }
+    if (args.actionType === "reject") {
+      dropOfferCaches({ id: args.orderId } as RiderOrderSummary, args.orderId);
     }
     if (result && typeof result === "object" && "id" in result) {
       const order = result as unknown as RiderOrderSummary;
@@ -322,7 +367,7 @@ export async function executeRiderAction<T>(args: ExecuteArgs<T>): Promise<T> {
       lastAttemptAt: Date.now(),
     });
 
-    if (kind === "timeout" || args.actionType === "cancel_assigned") {
+    if (kind === "timeout" || args.actionType === "cancel_assigned" || args.actionType === "reject") {
       riderActionLog("UNKNOWN_RESULT", { action_id: actionId, order_id: args.orderId });
       const outcome = await reconcileRiderAction(args.actionType, args.orderId);
       if (outcome.status === "success") {
@@ -331,6 +376,10 @@ export async function executeRiderAction<T>(args: ExecuteArgs<T>): Promise<T> {
         if (args.actionType === "cancel_assigned") {
           dropActiveOrderCaches(args.orderId);
           return emptyCancelAssignedResult<T>();
+        }
+        if (args.actionType === "reject") {
+          dropOfferCaches({ id: args.orderId } as RiderOrderSummary, args.orderId);
+          return { ok: true } as T;
         }
       }
       if (outcome.status === "taken") {
@@ -400,6 +449,21 @@ export async function flushRiderPendingActions(): Promise<void> {
           switch (action.actionType) {
             case "accept":
               return riderApi.acceptOrder(action.orderId, { actionId });
+            case "reject": {
+              const reasonCode = String(action.payload.reasonCode ?? "").trim();
+              if (!reasonCode) throw new Error("Missing reject reason");
+              return riderApi.rejectOrder(
+                action.orderId,
+                {
+                  reasonCode,
+                  reasonText:
+                    typeof action.payload.reasonText === "string"
+                      ? action.payload.reasonText
+                      : undefined,
+                },
+                { actionId }
+              );
+            }
             case "reached_pickup":
               return riderApi.markReachedPickup(action.orderId, gps, { actionId });
             case "reached_drop":
@@ -413,10 +477,22 @@ export async function flushRiderPendingActions(): Promise<void> {
             case "verify_pickup_otp": {
               const otp = String(action.payload.otp ?? "").replace(/\D/g, "");
               if (otp.length < 4) throw new Error("Missing pickup OTP");
-              return riderApi.verifyPickupOtp(action.orderId, {
-                otp,
-                ...gps,
-              }, { actionId });
+              return riderApi.verifyPickupOtp(
+                action.orderId,
+                {
+                  otp,
+                  ...gps,
+                  pickupImageUrl:
+                    typeof action.payload.pickupImageUrl === "string"
+                      ? action.payload.pickupImageUrl
+                      : undefined,
+                  pickupImageR2Key:
+                    typeof action.payload.pickupImageR2Key === "string"
+                      ? action.payload.pickupImageR2Key
+                      : undefined,
+                },
+                { actionId }
+              );
             }
             case "verify_delivery_otp": {
               const otp = String(action.payload.otp ?? "").replace(/\D/g, "");

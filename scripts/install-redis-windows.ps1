@@ -26,5 +26,5 @@ $ping = Test-NetConnection -ComputerName 127.0.0.1 -Port 6379 -WarningAction Sil
 if ($ping.TcpTestSucceeded) {
   Write-Host "Redis port 6379 is reachable." -ForegroundColor Green
 } else {
-  Write-Host "Port 6379 not open yet — reboot or start Memurai from Services.msc" -ForegroundColor Yellow
+  Write-Host "Port 6379 not open yet - reboot or start Memurai from Services.msc" -ForegroundColor Yellow
 }

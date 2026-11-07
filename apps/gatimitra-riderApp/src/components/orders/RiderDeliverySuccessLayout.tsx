@@ -60,6 +60,8 @@ export type RiderDeliverySuccessLayoutProps = {
   walletPocketLabel?: string;
   closeAccessibilityLabel?: string;
   ctaAccessibilityLabel?: string;
+  /** Backend settlement transparency (offer vs final). */
+  extraContent?: React.ReactNode;
 };
 
 const PAGE_BG = "#F4F6F5";
@@ -228,6 +230,7 @@ export function RiderDeliverySuccessLayout({
   breakdownTitle = "Earnings Breakdown",
   breakdownRows,
   totalEarningsLabel,
+  extraContent,
   tripDetailsTitle = "Trip Details",
   tripDistanceLabel,
   tripDistanceValue,
@@ -425,6 +428,10 @@ export function RiderDeliverySuccessLayout({
                 </AppText>
               </View>
             </Animated.View>
+
+            {extraContent ? (
+              <Animated.View style={cardAnimStyle}>{extraContent}</Animated.View>
+            ) : null}
 
             <Animated.View style={[styles.sectionCard, cardAnimStyle]}>
               <View style={[rowLayout.row, styles.sectionHeaderLeft]}>

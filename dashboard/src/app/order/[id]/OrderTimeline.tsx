@@ -22,12 +22,23 @@ export interface OrderTimelineEntry {
 
 type DisplayEntry = OrderTimelineEntry & { placeholder?: boolean };
 
-/** Always visible on the order progress bar (filled from DB or shown as pending). */
+/**
+ * Food checkout payment pipeline placeholders — always shown on food/grocery
+ * progress bars. Parcel / person-ride do not use these stages.
+ */
 const ALWAYS_PAYMENT_STAGES = [
   "Bill Ready",
   "Payment Initiated At",
   "Pymt Assign RX",
 ] as const;
+
+function usesFoodPaymentPipeline(orderType?: string | null): boolean {
+  const t = String(orderType ?? "")
+    .trim()
+    .toLowerCase();
+  if (!t) return true; // legacy food detail pages omit orderType
+  return t !== "parcel" && t !== "person_ride" && t !== "ride";
+}
 
 interface OrderTimelineProps {
   orderId: number;
@@ -43,10 +54,19 @@ interface OrderTimelineProps {
   deliveryType?: string | null;
   /** Order delivered_at / completion time — used when timeline has no Delivered row (e.g. self-pickup). */
   completedAt?: Date | string | null;
+  /** food | parcel | person_ride — parcel/ride keep rider milestones on the main bar. */
+  orderType?: string | null;
+  /** Parcel fare collection confirmation (orders_parcel.cash_collected_at). */
+  fareCollectedAt?: string | Date | null;
+  /** Online | COD — shown on the Payment collected node. */
+  farePaymentMode?: string | null;
 }
 
-function filterOrderProgressEntries(list: OrderTimelineEntry[]): OrderTimelineEntry[] {
-  return filterOrderProgressTimelineEntries(list);
+function keepRiderMilestonesForOrderType(orderType?: string | null): boolean {
+  const t = String(orderType ?? "")
+    .trim()
+    .toLowerCase();
+  return t === "parcel" || t === "person_ride";
 }
 
 export default function OrderTimeline({
@@ -57,16 +77,22 @@ export default function OrderTimeline({
   etaAt,
   deliveryType,
   completedAt,
+  orderType,
+  fareCollectedAt,
+  farePaymentMode,
 }: OrderTimelineProps) {
+  const keepRiderMilestones = keepRiderMilestonesForOrderType(orderType);
   const [entries, setEntries] = useState<OrderTimelineEntry[]>(() =>
-    filterOrderProgressEntries(initialEntries ?? [])
+    filterOrderProgressTimelineEntries(initialEntries ?? [], { keepRiderMilestones })
   );
   const [loading, setLoading] = useState(!initialEntries);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialEntries != null) {
-      setEntries(filterOrderProgressEntries(initialEntries));
+      setEntries(
+        filterOrderProgressTimelineEntries(initialEntries, { keepRiderMilestones })
+      );
       setLoading(false);
       return;
     }
@@ -79,7 +105,9 @@ export default function OrderTimeline({
       .then((body) => {
         if (cancelled) return;
         if (body?.success && Array.isArray(body.data)) {
-          setEntries(filterOrderProgressEntries(body.data));
+          setEntries(
+            filterOrderProgressTimelineEntries(body.data, { keepRiderMilestones })
+          );
         } else {
           setEntries([]);
         }
@@ -96,7 +124,7 @@ export default function OrderTimeline({
     return () => {
       cancelled = true;
     };
-  }, [orderId, initialEntries]);
+  }, [orderId, initialEntries, keepRiderMilestones]);
 
   const formatTimeShort = (date: Date) => {
     if (!date || isNaN(date.getTime())) return "—";
@@ -255,10 +283,13 @@ export default function OrderTimeline({
     placeholder: true,
   });
 
-  const pipelineSlots: DisplayEntry[] = ALWAYS_PAYMENT_STAGES.map((stage, idx) => {
-    const found = entries.find((e) => matchStage(e, stage));
-    return found ? { ...found, placeholder: false } : makePlaceholder(stage, idx);
-  });
+  const showPaymentPipeline = usesFoodPaymentPipeline(orderType);
+  const pipelineSlots: DisplayEntry[] = showPaymentPipeline
+    ? ALWAYS_PAYMENT_STAGES.map((stage, idx) => {
+        const found = entries.find((e) => matchStage(e, stage));
+        return found ? { ...found, placeholder: false } : makePlaceholder(stage, idx);
+      })
+    : [];
 
   let others: DisplayEntry[] = [...entries]
     .filter((e) => !ALWAYS_PAYMENT_STAGES.some((s) => matchStage(e, s)))
@@ -289,14 +320,16 @@ export default function OrderTimeline({
 
   const createdIdx = others.findIndex((e) => matchStage(e, "Created"));
   let displayEntries: DisplayEntry[];
-  if (createdIdx >= 0) {
+  if (showPaymentPipeline && createdIdx >= 0) {
     displayEntries = [
       ...others.slice(0, createdIdx + 1),
       ...pipelineSlots,
       ...others.slice(createdIdx + 1),
     ];
-  } else {
+  } else if (showPaymentPipeline) {
     displayEntries = [...pipelineSlots, ...others];
+  } else {
+    displayEntries = others;
   }
 
   if (displayEntries.length === 0 && orderCreatedAt) {
@@ -315,6 +348,60 @@ export default function OrderTimeline({
       },
       ...pipelineSlots,
     ];
+  }
+
+  // Parcel: surface fare collection confirmation on the main progress bar.
+  const isParcelOrder = String(orderType ?? "")
+    .trim()
+    .toLowerCase() === "parcel";
+  if (isParcelOrder && fareCollectedAt) {
+    const collectedIso = (() => {
+      const d =
+        fareCollectedAt instanceof Date
+          ? fareCollectedAt
+          : new Date(fareCollectedAt);
+      return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    })();
+    if (collectedIso) {
+      const already = displayEntries.some(
+        (e) =>
+          !e.placeholder &&
+          (matchStage(e, "Payment collected") ||
+            norm(e.status).startsWith("payment collected"))
+      );
+      if (!already) {
+        const mode = String(farePaymentMode ?? "")
+          .trim()
+          .toUpperCase();
+        const modeLabel =
+          mode === "COD" || mode.includes("CASH")
+            ? "COD"
+            : mode
+              ? "Online"
+              : "";
+        displayEntries = [
+          ...displayEntries,
+          {
+            id: -40,
+            orderId,
+            status: modeLabel
+              ? `Payment collected · ${modeLabel}`
+              : "Payment collected",
+            previousStatus: null,
+            actorType: "system",
+            actorId: null,
+            actorName: null,
+            statusMessage: modeLabel || null,
+            occurredAt: collectedIso,
+            placeholder: false,
+          },
+        ].sort(
+          (a, b) =>
+            new Date(a.occurredAt || 0).getTime() -
+            new Date(b.occurredAt || 0).getTime()
+        );
+      }
+    }
   }
 
   /**
@@ -440,7 +527,7 @@ export default function OrderTimeline({
   const showRedFromBreach = breachActive;
 
   return (
-    <div className="bg-white/95 rounded-lg pl-2.5 pr-2.5 pt-1 pb-0 shadow-[0_1px_2px_rgba(15,23,42,0.06)] border border-slate-200 relative">
+    <div className="relative max-w-full overflow-hidden bg-white/95 rounded-lg pl-2.5 pr-2.5 pt-1 pb-0 shadow-[0_1px_2px_rgba(15,23,42,0.06)] border border-slate-200">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5 min-w-0">
         <div className="min-w-0">
           <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[9px] font-medium text-slate-600 bg-slate-100 border border-slate-200 whitespace-nowrap">
@@ -501,7 +588,8 @@ export default function OrderTimeline({
         </div>
       </div>
 
-      <div className="relative mt-1 overflow-x-auto pb-1 sm:overflow-visible">
+      {/* Always clip + scroll inside the card — never spill past card edges on narrow screens. */}
+      <div className="relative mt-1 max-w-full overflow-x-auto overscroll-x-contain pb-1 [-webkit-overflow-scrolling:touch]">
         <div
           className="relative"
           style={{ minWidth: timelineContentMinWidth, minHeight: 72 }}

@@ -462,16 +462,39 @@ public final class OrderAlertOverlay {
         ViewGroup.LayoutParams.WRAP_CONTENT
     ));
 
+    LinearLayout titleCol = new LinearLayout(context);
+    titleCol.setOrientation(LinearLayout.VERTICAL);
+    LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+    titleCol.setLayoutParams(titleLp);
+
+    TextView brand = new TextView(context);
+    brand.setText(OrderAlertCardText.brandLine());
+    brand.setTextColor(Color.parseColor("#5EEAD4"));
+    brand.setTextSize(11);
+    brand.setTypeface(Typeface.DEFAULT_BOLD);
+    brand.setLetterSpacing(0.06f);
+    titleCol.addView(brand);
+
     TextView heading = new TextView(context);
     heading.setText(headingFor(orderType));
     heading.setTag("gm_overlay_title");
     heading.setTextColor(Color.parseColor("#F9FAFB"));
-    heading.setTextSize(16);
+    heading.setTextSize(15);
     heading.setTypeface(Typeface.DEFAULT_BOLD);
     heading.setLetterSpacing(0.04f);
-    LinearLayout.LayoutParams headingLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-    heading.setLayoutParams(headingLp);
-    header.addView(heading);
+    titleCol.addView(heading);
+
+    String typeLabel = OrderAlertCardText.typeLine(orderType);
+    if (typeLabel.length() > 0) {
+      TextView typeView = new TextView(context);
+      typeView.setText(typeLabel);
+      typeView.setTag("gm_overlay_type");
+      typeView.setTextColor(Color.parseColor("#A7F3D0"));
+      typeView.setTextSize(13);
+      typeView.setTypeface(Typeface.DEFAULT_BOLD);
+      titleCol.addView(typeView);
+    }
+    header.addView(titleCol);
 
     if (amountLabel.length() > 0) {
       TextView price = new TextView(context);
@@ -481,28 +504,11 @@ public final class OrderAlertOverlay {
       price.setText(OrderAlertCardText.amountLabel(amount));
       price.setTag("gm_overlay_price");
       price.setTextColor(Color.WHITE);
-      price.setTextSize(16);
+      price.setTextSize(15);
       price.setTypeface(Typeface.DEFAULT_BOLD);
       price.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
       price.setPadding(dp(context, 8), 0, dp(context, 8), 0);
       header.addView(price);
-    }
-
-    // Countdown, server-authoritative. Only elapsed time is read from this device;
-    // the deadline itself came from the backend, so a wrong device clock cannot
-    // extend an offer. Absent deadline => no timer, rather than a fake one.
-    long expiresAtMs = parseEpochMs(active != null ? active.optString("expiresAt", "") : "");
-    if (expiresAtMs > 0L) {
-      TextView countdown = new TextView(context);
-      countdown.setTag("gm_overlay_countdown");
-      countdown.setTextColor(Color.parseColor("#5EEAD4"));
-      countdown.setTextSize(15);
-      countdown.setTypeface(Typeface.DEFAULT_BOLD);
-      countdown.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-      countdown.setPadding(dp(context, 8), 0, dp(context, 8), 0);
-      countdown.setText(OrderAlertCardText.countdownClock(expiresAtMs, System.currentTimeMillis()));
-      header.addView(countdown);
-      startCountdown(context, countdown, sessionId, expiresAtMs);
     }
 
     TextView close = new TextView(context);
@@ -518,9 +524,26 @@ public final class OrderAlertOverlay {
     header.addView(close);
     card.addView(header);
 
-    // Who the job is for, and how big it is. A rider needs the restaurant name
-    // to know where they are going; a merchant already knows their own store, so
-    // storeLine() returns "" for them and the row is skipped entirely.
+    // Server-authoritative countdown — never invent a fresh acceptance window.
+    long expiresAtMs = parseEpochMs(active != null ? active.optString("expiresAt", "") : "");
+    if (expiresAtMs > 0L) {
+      TextView countdown = new TextView(context);
+      countdown.setTag("gm_overlay_countdown");
+      countdown.setTextColor(Color.parseColor("#5EEAD4"));
+      countdown.setTextSize(14);
+      countdown.setTypeface(Typeface.DEFAULT_BOLD);
+      countdown.setText(OrderAlertCardText.acceptWithinLabel(expiresAtMs, System.currentTimeMillis()));
+      LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(
+          ViewGroup.LayoutParams.MATCH_PARENT,
+          ViewGroup.LayoutParams.WRAP_CONTENT
+      );
+      cLp.topMargin = dp(context, 6);
+      countdown.setLayoutParams(cLp);
+      card.addView(countdown);
+      startCountdown(context, countdown, sessionId, expiresAtMs);
+    }
+
+    // Who the job is for, and how big it is.
     String storeName = OrderAlertCardText.storeLine(
         active != null ? active.optString("storeName", "") : ""
     );
@@ -538,24 +561,21 @@ public final class OrderAlertOverlay {
       card.addView(storeView);
     }
 
-    String typeLabel = displayOrderType(orderType);
-    if (typeLabel.length() > 0) {
-      card.addView(metaRow(context, "Order type: " + typeLabel));
-    }
-
     String pickupLabel = displayPickup(pickup);
     if (pickupLabel.length() > 0) {
-      card.addView(metaRow(context, "Pickup: " + pickupLabel));
+      card.addView(sectionRow(context, "PICKUP", pickupLabel));
+    } else {
+      card.addView(sectionRow(context, "PICKUP", "Address unavailable"));
     }
 
     String dropLabel = safeText(drop);
     if (dropLabel.length() > 0) {
-      card.addView(metaRow(context, "Drop: " + dropLabel));
+      card.addView(sectionRow(context, "DROP", dropLabel));
+    } else {
+      card.addView(sectionRow(context, "DROP", "Address unavailable"));
     }
 
-    // One distance strip instead of a lone "Trip: n km" row. Any leg the payload
-    // did not send is skipped, so a partial payload still renders cleanly rather
-    // than drawing an empty strip or printing "null km".
+    // Distinct legs — never mix rider→pickup with trip distance.
     String distances = OrderAlertCardText.distanceSummary(
         active != null ? active.optString("toPickupKm", "") : "",
         active != null ? active.optString("tripDistanceKm", "") : "",
@@ -564,6 +584,10 @@ public final class OrderAlertOverlay {
     if (distances.length() > 0) {
       TextView distanceView = metaRow(context, distances);
       distanceView.setTextColor(Color.parseColor("#A7F3D0"));
+      card.addView(distanceView);
+    } else {
+      TextView distanceView = metaRow(context, "Distance unavailable");
+      distanceView.setTextColor(Color.parseColor("#94A3B8"));
       card.addView(distanceView);
     }
 
@@ -668,14 +692,14 @@ public final class OrderAlertOverlay {
       if (view.getParent() == null) return;
       long leftMs = expiresAtMs - System.currentTimeMillis();
       if (leftMs <= 0L) {
-        view.setText("0s");
+        view.setText("Offer expired");
         try {
           OrderAlertController.stop(app, sessionId);
         } catch (Throwable ignored) {
         }
         return;
       }
-      view.setText(OrderAlertCardText.countdownClock(expiresAtMs, System.currentTimeMillis()));
+      view.setText(OrderAlertCardText.acceptWithinLabel(expiresAtMs, System.currentTimeMillis()));
       MAIN.postDelayed(tick[0], 1000L);
     };
     MAIN.post(tick[0]);
@@ -709,6 +733,39 @@ public final class OrderAlertOverlay {
     lp.topMargin = dp(context, 4);
     tv.setLayoutParams(lp);
     return tv;
+  }
+
+  private static LinearLayout sectionRow(Context context, String label, String value) {
+    LinearLayout row = new LinearLayout(context);
+    row.setOrientation(LinearLayout.VERTICAL);
+    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT
+    );
+    lp.topMargin = dp(context, 8);
+    row.setLayoutParams(lp);
+
+    TextView labelView = new TextView(context);
+    labelView.setText(label);
+    labelView.setTextColor(Color.parseColor("#5EEAD4"));
+    labelView.setTextSize(11);
+    labelView.setTypeface(Typeface.DEFAULT_BOLD);
+    labelView.setLetterSpacing(0.05f);
+    row.addView(labelView);
+
+    TextView valueView = new TextView(context);
+    valueView.setText(value);
+    valueView.setTextColor(Color.parseColor("#F9FAFB"));
+    valueView.setTextSize(13);
+    valueView.setMaxLines(2);
+    LinearLayout.LayoutParams vLp = new LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT
+    );
+    vLp.topMargin = dp(context, 2);
+    valueView.setLayoutParams(vLp);
+    row.addView(valueView);
+    return row;
   }
 
   private static Button actionButton(Context context, String label, int bgColor, int fg) {

@@ -83,6 +83,28 @@ export function LedgerPaymentDetailSheet({ entryId, onClose }: Props) {
               <Row label="Processed" value={data.processedAt ? formatLedgerDateTime(data.processedAt) : null} />
               <Row label="Refund status" value={data.refundStatus} />
               <Row label="Refund ID" value={data.refundId} />
+              {data.settlementDispatchOfferAmount != null ? (
+                <Row
+                  label="Dispatch offer"
+                  value={`₹${formatLedgerAmount(data.settlementDispatchOfferAmount)}`}
+                />
+              ) : null}
+              {data.settlementFinalAmount != null ? (
+                <Row
+                  label="Final settlement"
+                  value={`₹${formatLedgerAmount(data.settlementFinalAmount)}`}
+                />
+              ) : null}
+              {data.settlementDifferenceAmount != null &&
+              Math.abs(data.settlementDifferenceAmount) > 0.49 ? (
+                <Row
+                  label="Difference"
+                  value={`${data.settlementDifferenceAmount > 0 ? "+" : "−"}₹${formatLedgerAmount(
+                    Math.abs(data.settlementDifferenceAmount)
+                  )}`}
+                />
+              ) : null}
+              <Row label="Settlement reason" value={data.settlementDifferenceReason} />
             </ScrollView>
           )}
           <Pressable style={styles.close} onPress={onClose}>

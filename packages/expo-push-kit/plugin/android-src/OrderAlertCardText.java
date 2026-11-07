@@ -135,27 +135,47 @@ public final class OrderAlertCardText {
   }
 
   public static String displayOrderType(String raw) {
-    String v = safe(raw).toLowerCase();
+    String v = safe(raw).toLowerCase().replace('-', '_');
     if (v.length() == 0) return "";
-    if ("food".equals(v)) return "Food";
-    if ("parcel".equals(v)) return "Parcel";
-    if ("ride".equals(v) || "person_ride".equals(v) || "person-ride".equals(v)) return "Ride";
+    if ("food".equals(v)) return "Food Delivery";
+    if ("grocery".equals(v)) return "Grocery Delivery";
+    if ("parcel".equals(v)) return "Parcel Delivery";
+    if ("ride".equals(v) || "person_ride".equals(v) || "bike".equals(v) || "bike_ride".equals(v)) {
+      return "Bike Ride";
+    }
     if (v.length() == 1) return v.toUpperCase();
-    return Character.toUpperCase(v.charAt(0)) + v.substring(1);
+    return Character.toUpperCase(v.charAt(0)) + v.substring(1).replace('_', ' ');
+  }
+
+  /** Brand line above the alert heading. */
+  public static String brandLine() {
+    return RIDER ? "GatiMitra Rider" : "GatiMitra";
   }
 
   /** Rider cards name the job; a merchant card only ever receives orders. */
   public static String headingFor(String orderType) {
     if (!RIDER) return "NEW ORDER";
-    String label = displayOrderType(orderType);
-    return label.length() == 0 ? "NEW ORDER REQUEST" : "NEW " + label.toUpperCase() + " REQUEST";
+    return "NEW ORDER RECEIVED";
+  }
+
+  /** Type chip under the heading — never invent a category. */
+  public static String typeLine(String orderType) {
+    return displayOrderType(orderType);
   }
 
   /** A bare number from the payload is metres; anything else is already formatted. */
   public static String displayPickup(String raw) {
     String v = safe(raw);
     if (v.length() == 0) return "";
-    return v.matches("^\\d+$") ? v + " m" : v;
+    // Pure metres from a mis-wired distance field — show as distance, not address.
+    if (v.matches("^\\d+$")) return v + " m";
+    return v;
+  }
+
+  /** "Accept within 0:25" — empty when no deadline. */
+  public static String acceptWithinLabel(long expiresAtMs, long nowMs) {
+    if (expiresAtMs <= 0L) return "";
+    return "Accept within " + countdownClock(expiresAtMs, nowMs);
   }
 
   /**
@@ -292,20 +312,68 @@ public final class OrderAlertCardText {
       String itemsJson,
       String fallback
   ) {
+    return shadeBodyRich(
+        displayOrderId, "", amountRaw, "", "", "", "", "", customer, itemsJson, fallback);
+  }
+
+  /**
+   * Rich shade body for background / lock-screen notifications: type, pickup,
+   * drop, distances, rider earning. Missing fields are skipped — never invented.
+   */
+  public static String shadeBodyRich(
+      String displayOrderId,
+      String orderType,
+      String amountRaw,
+      String storeName,
+      String pickup,
+      String drop,
+      String toPickupKm,
+      String tripKm,
+      String customer,
+      String itemsJson,
+      String fallback
+  ) {
     StringBuilder sb = new StringBuilder();
+    String type = displayOrderType(orderType);
+    if (type.length() > 0) sb.append(type);
     String id = safe(displayOrderId);
-    String amount = formatAmount(amountRaw);
-    if (id.length() > 0) sb.append(id);
-    if (amount.length() > 0) {
+    if (id.length() > 0) {
       if (sb.length() > 0) sb.append(" · ");
-      sb.append(amount);
+      sb.append(id);
+    }
+    String earn = amountLabel(amountRaw);
+    if (earn.length() > 0) {
+      if (sb.length() > 0) sb.append('\n');
+      sb.append(earn);
+    }
+    String store = storeLine(storeName);
+    String pickupLine = displayPickup(pickup);
+    if (store.length() > 0 || pickupLine.length() > 0) {
+      if (sb.length() > 0) sb.append('\n');
+      sb.append("Pickup: ");
+      if (store.length() > 0) sb.append(store);
+      if (store.length() > 0 && pickupLine.length() > 0 && !pickupLine.equalsIgnoreCase(store)) {
+        sb.append(" · ").append(pickupLine);
+      } else if (store.length() == 0) {
+        sb.append(pickupLine);
+      }
+    }
+    String dropLine = safe(drop);
+    if (dropLine.length() > 0) {
+      if (sb.length() > 0) sb.append('\n');
+      sb.append("Drop: ").append(dropLine);
+    }
+    String distances = distanceSummary(toPickupKm, tripKm, "");
+    if (distances.length() > 0) {
+      if (sb.length() > 0) sb.append('\n');
+      sb.append(distances);
     }
     String cust = safe(customer);
     if (cust.length() > 0 && !"Customer".equalsIgnoreCase(cust)) {
       if (sb.length() > 0) sb.append('\n');
       sb.append(cust);
     }
-    String[] lines = itemLines(itemsJson, 4);
+    String[] lines = itemLines(itemsJson, 3);
     for (String line : lines) {
       if (line.length() == 0) continue;
       if (sb.length() > 0) sb.append('\n');

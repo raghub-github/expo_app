@@ -198,6 +198,8 @@ export default function OrderDetailsScreen() {
   const [customizationItem, setCustomizationItem] = useState<OrderDetailLineItem | null>(null);
   const [ratingSheetVisible, setRatingSheetVisible] = useState(false);
   const [ratingDismissed, setRatingDismissed] = useState(false);
+  /** Keep sheet open after submit so user can tip before manual dismiss. */
+  const [ratingSheetKeepOpen, setRatingSheetKeepOpen] = useState(false);
   const [ratingSubmitting, setRatingSubmitting] = useState(false);
   const [invoiceDownloading, setInvoiceDownloading] = useState(false);
   const [receiptDownloading, setReceiptDownloading] = useState(false);
@@ -490,17 +492,24 @@ export default function OrderDetailsScreen() {
   useEffect(() => {
     if (!order) return;
     const delivered = normalizeCustomerOrderStatus(order.status) === "DELIVERED";
-    const alreadyRated = order.storeRatingSubmitted === true;
+    if (!delivered || isPersonRideOrder(order)) return;
+
     const wantsRate = rate === "1" || rate === "true";
-    const isFoodDelivered = delivered && !isPersonRideOrder(order);
-    const usesDeliveredSuccessScreen = isFoodDelivered && !useHistoryOrderDetails;
-    if (!isFoodDelivered || alreadyRated || usesDeliveredSuccessScreen) return;
+    const isParcel = isParcelOrder(order);
+    const alreadyRated = isParcel
+      ? Number(order.deliveryRating) >= 1
+      : order.storeRatingSubmitted === true;
+    // Food uses FoodOrderDeliveredScreen (own rating UI). Parcel uses this sheet.
+    const usesDeliveredSuccessScreen =
+      !isParcel && !useHistoryOrderDetails;
+    if (alreadyRated || usesDeliveredSuccessScreen) return;
     if (!ratingDismissed || wantsRate) {
       setRatingSheetVisible(true);
     }
   }, [
     order?.status,
     order?.storeRatingSubmitted,
+    order?.deliveryRating,
     ratingDismissed,
     rate,
     order,
@@ -548,8 +557,7 @@ export default function OrderDetailsScreen() {
       });
       await queryClient.invalidateQueries({ queryKey: ["order", orderId] });
       await queryClient.invalidateQueries({ queryKey: ["my-orders"] });
-      setRatingSheetVisible(false);
-      Alert.alert("Thank you!", "Your rating helps us improve.");
+      setRatingSheetKeepOpen(true);
     } catch (e) {
       const msg =
         (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data
@@ -557,6 +565,7 @@ export default function OrderDetailsScreen() {
         (e as { response?: { data?: { error?: string } } })?.response?.data?.error ??
         "Could not submit rating. Please try again.";
       Alert.alert("Rating failed", msg);
+      throw e;
     } finally {
       setRatingSubmitting(false);
     }
@@ -565,19 +574,31 @@ export default function OrderDetailsScreen() {
   const renderOrderRatingSheet = () => {
     if (!order || isPersonRideOrder(order)) return null;
     const isDelivered = normalizeCustomerOrderStatus(order.status) === "DELIVERED";
+    const isParcel = isParcelOrder(order);
+    const alreadyRated = isParcel
+      ? Number(order.deliveryRating) >= 1
+      : order.storeRatingSubmitted === true;
     return (
       <OrderDeliveryRatingSheet
-        visible={ratingSheetVisible && isDelivered && !order.storeRatingSubmitted}
+        visible={
+          ratingSheetVisible && isDelivered && (!alreadyRated || ratingSheetKeepOpen)
+        }
         orderId={order.orderId}
-        storeName={order.merchantPublicName ?? order.merchantName ?? "Restaurant"}
+        storeName={
+          isParcel
+            ? order.rider?.name?.trim() || "Delivery partner"
+            : order.merchantPublicName ?? order.merchantName ?? "Restaurant"
+        }
         storeBannerUri={toAbsoluteImageUrl(order.merchantBannerUrl)}
         riderName={order.rider?.name}
         existingTipAmount={order.tipAmount ?? 0}
         paymentMethodLabel={order.paymentMethod ?? "UPI"}
         hideDeliveryPartner={isSelfPickupOrder(order)}
+        hideStoreRating={isParcel}
         submitting={ratingSubmitting}
         onClose={() => {
           setRatingSheetVisible(false);
+          setRatingSheetKeepOpen(false);
           setRatingDismissed(true);
         }}
         onTipPaid={async () => {
@@ -1079,25 +1100,36 @@ export default function OrderDetailsScreen() {
             </View>
           </View>
 
-          {isDelivered && order.storeRatingSubmitted && order.storeRating != null && !isRideOrder ? (
+          {isDelivered &&
+          !isRideOrder &&
+          ((order.storeRatingSubmitted && order.storeRating != null) ||
+            (isParcelDeliveryOrder &&
+              order.deliveryRating != null &&
+              Number(order.deliveryRating) >= 1)) ? (
             <View style={styles.card}>
               <AppText style={styles.feedbackCardTitle}>Your feedback</AppText>
-              <View style={styles.feedbackRatingRow}>
-                <AppText style={styles.feedbackRatingLabel}>Restaurant</AppText>
-                <View style={styles.feedbackStars}>
-                  {[1, 2, 3, 4, 5].map((n) => (
-                    <Ionicons
-                      key={n}
-                      name={n <= order.storeRating! ? "star" : "star-outline"}
-                      size={18}
-                      color={n <= order.storeRating! ? "#F59E0B" : "#D1D5DB"}
-                    />
-                  ))}
-                </View>
-              </View>
-              {order.deliveryRating != null && !isSelfPickupOrder(order) ? (
+              {order.storeRatingSubmitted && order.storeRating != null && !isParcelDeliveryOrder ? (
                 <View style={styles.feedbackRatingRow}>
-                  <AppText style={styles.feedbackRatingLabel}>Delivery</AppText>
+                  <AppText style={styles.feedbackRatingLabel}>Restaurant</AppText>
+                  <View style={styles.feedbackStars}>
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <Ionicons
+                        key={n}
+                        name={n <= order.storeRating! ? "star" : "star-outline"}
+                        size={18}
+                        color={n <= order.storeRating! ? "#F59E0B" : "#D1D5DB"}
+                      />
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+              {order.deliveryRating != null &&
+              Number(order.deliveryRating) >= 1 &&
+              !isSelfPickupOrder(order) ? (
+                <View style={styles.feedbackRatingRow}>
+                  <AppText style={styles.feedbackRatingLabel}>
+                    {isParcelDeliveryOrder ? "Delivery partner" : "Delivery"}
+                  </AppText>
                   <View style={styles.feedbackStars}>
                     {[1, 2, 3, 4, 5].map((n) => (
                       <Ionicons
@@ -1110,13 +1142,13 @@ export default function OrderDetailsScreen() {
                   </View>
                 </View>
               ) : null}
-              {order.storeReviewText ? (
+              {order.storeReviewText && !isParcelDeliveryOrder ? (
                 <AppText style={styles.feedbackReviewText}>
                   <AppText style={styles.feedbackReviewLabel}>Restaurant: </AppText>
                   {order.storeReviewText}
                 </AppText>
               ) : null}
-              {order.storeMerchantReplyText ? (
+              {order.storeMerchantReplyText && !isParcelDeliveryOrder ? (
                 <View style={styles.storeReplyBlock}>
                   <AppText style={styles.storeReplyTitle}>Store response</AppText>
                   <AppText style={styles.storeReplyText}>{order.storeMerchantReplyText}</AppText>
@@ -1124,7 +1156,9 @@ export default function OrderDetailsScreen() {
               ) : null}
               {order.riderReviewText && !isSelfPickupOrder(order) ? (
                 <AppText style={styles.feedbackReviewText}>
-                  <AppText style={styles.feedbackReviewLabel}>Delivery: </AppText>
+                  <AppText style={styles.feedbackReviewLabel}>
+                    {isParcelDeliveryOrder ? "Delivery partner: " : "Delivery: "}
+                  </AppText>
                   {order.riderReviewText}
                 </AppText>
               ) : null}

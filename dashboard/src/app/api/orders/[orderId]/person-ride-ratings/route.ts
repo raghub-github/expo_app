@@ -47,7 +47,8 @@ export async function GET(
     const allowed =
       (await isSuperAdmin(user.id)) ||
       (await hasDashboardAccessByAuth(user.id, userEmail, "ORDER_PERSON_RIDE")) ||
-      (await hasDashboardAccessByAuth(user.id, userEmail, "ORDER_FOOD"));
+      (await hasDashboardAccessByAuth(user.id, userEmail, "ORDER_FOOD")) ||
+      (await hasDashboardAccessByAuth(user.id, userEmail, "ORDER_PARCEL"));
     if (!allowed) {
       return NextResponse.json({ success: false, error: "Forbidden" }, { status: 403 });
     }
@@ -122,12 +123,21 @@ export async function GET(
 
     if (customerId) {
       // Avg of overall stars this customer has left (store rating column),
+      // plus ratings linked via orders_core when msr.customer_id is unset,
       // plus any ratings.from_id rows — gives a passenger rating signal.
       const cxRows = await db.execute(sql`
         WITH scores AS (
           SELECT msr.rating::numeric AS rating
           FROM merchant_store_ratings msr
           WHERE msr.customer_id = ${customerId}
+            AND msr.rating IS NOT NULL
+            AND msr.rating BETWEEN 1 AND 5
+          UNION ALL
+          SELECT msr.rating::numeric AS rating
+          FROM merchant_store_ratings msr
+          INNER JOIN orders_core oc ON oc.id = msr.order_id
+          WHERE oc.customer_id = ${customerId}
+            AND (msr.customer_id IS NULL OR msr.customer_id <> ${customerId})
             AND msr.rating IS NOT NULL
             AND msr.rating BETWEEN 1 AND 5
           UNION ALL
@@ -146,9 +156,21 @@ export async function GET(
       customerAvgRating = asNum(cx?.avg_rating);
       customerRatingCount = Number(cx?.rating_count ?? 0) || 0;
 
-      // Person-ride rows often only set service_rating (captain). If customer has no
-      // overall store rating history, surface this order's service_rating as N/A for cx —
-      // leave null rather than mislabeling captain stars as customer stars.
+      // Fallback: customers.trust_score (default profile score) when no review history.
+      if (customerAvgRating == null || customerAvgRating < 1) {
+        const trustRows = await db.execute(sql`
+          SELECT trust_score::numeric AS trust_score
+          FROM customers
+          WHERE id = ${customerId}
+          LIMIT 1
+        `);
+        const trust = asNum(
+          (trustRows as unknown as Record<string, unknown>[])[0]?.trust_score
+        );
+        if (trust != null && trust > 0) {
+          customerAvgRating = Math.round(trust * 10) / 10;
+        }
+      }
     }
 
     return NextResponse.json({
