@@ -1151,6 +1151,19 @@ export async function riderRoutes(app: FastifyInstance) {
       penaltyEventId: z.string().nullable().optional(),
       penaltyTitle: z.string().nullable().optional(),
       penaltyFormattedOrderId: z.string().nullable().optional(),
+      /** Minimum available balance for Ride + Parcel (₹200 default, admin-configurable). */
+      walletMinBalance: z
+        .object({
+          mode: z.enum(["off", "warn", "enforce"]),
+          threshold: z.number(),
+          balance: z.number(),
+          shortfall: z.number(),
+          belowMinimum: z.boolean(),
+          restricted: z.boolean(),
+          restrictedServices: z.array(z.enum(["parcel", "person_ride"])),
+          message: z.string().nullable(),
+        })
+        .optional(),
     }),
   });
 
@@ -1276,6 +1289,7 @@ export async function riderRoutes(app: FastifyInstance) {
           allServicesBlacklisted: accountRestrictions.allServicesBlacklisted,
           penaltyDue: accountRestrictions.penaltyDue,
           penaltyDutyStopped: accountRestrictions.penaltyDutyStopped,
+          walletMinBalance: accountRestrictions.walletMinBalance,
         },
       };
     },
@@ -1373,6 +1387,10 @@ export async function riderRoutes(app: FastifyInstance) {
     orderPublicId: z.string().nullable(),
     createdAt: z.string(),
     rejectionReason: z.string().nullable(),
+    settlementKind: z
+      .enum(["cash_platform_share", "cash_top_up", "online_earning"])
+      .nullable()
+      .optional(),
   });
 
   const RiderLedgerSummarySchema = z.object({
@@ -4955,6 +4973,37 @@ export async function riderRoutes(app: FastifyInstance) {
     }
   );
 
+  /**
+   * Settlement for a completed Ride / Parcel: amount to collect vs earned, and the
+   * wallet movement between them. `settlement` is null until the job is settled
+   * (payment pending); the app keeps polling while it shows the payment step.
+   */
+  app.get(
+    "/orders/:id/settlement",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) return reply.code(403).send({ error: "Invalid rider session" });
+      const { id } = req.params as { id: string };
+      const { getRiderSettlementSummary, resolveRiderOrderCoreId } = await import(
+        "../../lib/rider-settlement-summary.js"
+      );
+      const coreId = await resolveRiderOrderCoreId(riderId, id);
+      if (coreId == null) return reply.code(404).send({ error: "Order not found" });
+      const [settlement, restrictions] = await Promise.all([
+        getRiderSettlementSummary(riderId, coreId),
+        import("../../lib/rider-account-restrictions.js").then((m) =>
+          m.getRiderAccountRestrictions(riderId)
+        ),
+      ]);
+      return { settlement, walletMinBalance: restrictions.walletMinBalance };
+    }
+  );
+
   app.post(
     "/orders/:id/ride/confirm-cash-collected",
     {
@@ -4967,7 +5016,9 @@ export async function riderRoutes(app: FastifyInstance) {
             orderId: z.string(),
             customerBill: z.number(),
             companyReceivable: z.number(),
+            riderEntitlement: z.number(),
             walletDebit: z.number(),
+            walletCredit: z.number(),
             walletBalanceAfter: z.number().nullable(),
             settlementId: z.string(),
           }),

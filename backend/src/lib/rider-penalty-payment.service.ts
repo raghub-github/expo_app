@@ -10,6 +10,8 @@ import {
 } from "../db/schema.js";
 import { applyFifoAllocation } from "./rider-negative-wallet-blocks.js";
 import { syncRiderDutyWithRestrictions } from "./rider-account-restrictions.js";
+import { riderWalletRechargeDue } from "./rider-wallet-min-balance.js";
+import { loadRideWalletPolicy } from "../modules/rides/settlement/rideSettlement.repository.js";
 import { getEnv } from "../config/env.js";
 import { logPaymentEvent } from "../modules/orders/order.placement.service.js";
 import {
@@ -55,13 +57,22 @@ async function ensureWalletRow(riderId: number): Promise<void> {
 }
 
 /**
- * Payable = the entire current negative balance (→ wallet becomes exactly ₹0).
- * Returns 0 when the wallet is not negative.
+ * Payable = the entire current negative balance (→ wallet becomes exactly ₹0),
+ * or — while the minimum-balance policy is on — the shortfall up to the minimum
+ * (₹200 by default). Returns 0 when nothing is due. The rider cannot edit it.
  */
 async function getPayableNegativeRupees(riderId: number): Promise<number> {
   const balance = await readWalletBalance(riderId);
-  if (balance >= 0) return 0;
-  return round2(-balance);
+  let threshold = 0;
+  let mode: "off" | "warn" | "enforce" = "off";
+  try {
+    const policy = await loadRideWalletPolicy();
+    threshold = policy.minWalletBalance;
+    mode = policy.minBalanceMode;
+  } catch {
+    // Policy unreadable: fall back to clearing the negative balance only.
+  }
+  return riderWalletRechargeDue({ balance, threshold, mode });
 }
 
 /** Latest snapshot of the rider's active negative-wallet (penalty) service blocks. */
@@ -497,9 +508,14 @@ async function settleRiderWalletPayment(args: {
       }
 
       const amountPaid = round2(args.expectedPaise / 100);
-      // Never let the wallet go positive — cap the credit to the outstanding.
-      const balanceAfter = round2(Math.min(0, balanceBefore + amountPaid));
-      const creditApplied = round2(balanceAfter - balanceBefore);
+      // Credit everything that was captured. The amount was fixed by the server
+      // when the order was created, so it is never an arbitrary top-up — but the
+      // balance can move between order and capture (an earning lands, or this is
+      // a minimum-balance recharge from a positive balance), and the old cap at ₹0
+      // then kept money the rider had actually paid.
+      const balanceAfter = round2(balanceBefore + amountPaid);
+      const creditApplied = amountPaid;
+      const isRecharge = balanceBefore >= 0;
 
       await tx.insert(walletLedger).values({
         riderId: args.riderId,
@@ -508,11 +524,15 @@ async function settleRiderWalletPayment(args: {
         balance: balanceAfter.toFixed(2),
         ref: args.razorpayPaymentId,
         refType: "negative_wallet_recovery",
-        description: "Negative wallet settlement via Razorpay",
+        description: isRecharge
+          ? "Wallet recharge via Razorpay"
+          : "Negative wallet settlement via Razorpay",
         metadata: {
           razorpayOrderId: args.razorpayOrderId,
           razorpayPaymentId: args.razorpayPaymentId,
           source: args.source === "webhook" ? "razorpay_webhook" : "rider_app",
+          walletBalanceBefore: balanceBefore,
+          purpose: isRecharge ? "min_balance_recharge" : "negative_wallet_recovery",
         },
       });
 
@@ -529,7 +549,7 @@ async function settleRiderWalletPayment(args: {
           razorpayPaymentId: args.razorpayPaymentId,
           ...(args.razorpaySignature ? { razorpaySignature: args.razorpaySignature } : {}),
           method: args.method,
-          remarks: "Negative wallet settlement",
+          remarks: isRecharge ? "Wallet recharge" : "Negative wallet settlement",
           updatedAt: new Date(),
           updatedBy: args.source === "webhook" ? "webhook" : "rider",
         })

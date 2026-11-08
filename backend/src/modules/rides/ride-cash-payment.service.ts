@@ -19,13 +19,15 @@ import type { SettlementPostingResult } from "./settlement/rideSettlement.engine
  *   1. records an immutable ride_settlements row,
  *   2. posts paired debit/credit lines to ride_settlement_ledger, including
  *      the informational "rider kept earnings in cash" credit,
- *   3. debits the rider's wallet by company_receivable ONLY (never the full
- *      customer fare), and
+ *   3. moves the rider's wallet by riderEarnings − customerBill ONLY (never the
+ *      full customer fare), and
  *   4. resyncs negative-wallet blocks so the rider is auto-blocked as soon as
  *      wallet hits the configured threshold.
  *
- * The rider never receives a wallet credit for cash rides — the rider
- * physically kept the money. This matches Uber/Ola/Rapido cash economics.
+ * The wallet only ever moves by the difference: the rider keeps the cash, the
+ * wallet is debited the platform's share, or — when an offer made the customer
+ * pay less than the rider earned — credited the company top-up. The cash itself
+ * is never credited to the wallet.
  */
 
 export type ConfirmRideCashCollectionInput = {
@@ -39,7 +41,11 @@ export type ConfirmRideCashCollectionResult = {
   orderId: string;
   customerBill: number;
   companyReceivable: number;
+  /** Rider fare engine output for this ride (what the rider earned in total). */
+  riderEntitlement: number;
   walletDebit: number;
+  /** Company top-up when the customer paid less cash than the rider earned. */
+  walletCredit: number;
   walletBalanceAfter: number | null;
   settlementId: string;
 };
@@ -136,7 +142,9 @@ export async function confirmRideCashCollectionForRider(
       orderId: orderIdText,
       customerBill: 0,
       companyReceivable: 0,
+      riderEntitlement: 0,
       walletDebit: 0,
+      walletCredit: 0,
       walletBalanceAfter: null,
       settlementId: orderRow.rideSettlementId,
     };
@@ -228,7 +236,9 @@ export async function confirmRideCashCollectionForRider(
     orderId: orderIdText,
     customerBill,
     companyReceivable: posting.settlement?.companyReceivable ?? 0,
+    riderEntitlement: posting.settlement?.riderEarnings ?? 0,
     walletDebit: posting.settlement?.walletDebit ?? 0,
+    walletCredit: posting.settlement?.walletCredit ?? 0,
     walletBalanceAfter: posting.walletBalanceAfter ?? null,
     settlementId: posting.settlementId,
   };

@@ -1,5 +1,14 @@
-import type { Sql, TransactionSql } from "postgres";
+import type { TransactionSql } from "postgres";
 import { getSql } from "../../../db/client.js";
+import {
+  computePostpaidSettlement,
+  toPaise,
+  type PostpaidSettlementResult,
+} from "../../../lib/postpaid-settlement.js";
+import {
+  applySettlementWalletMovement,
+  recordSettlementExtensions,
+} from "../../../lib/postpaid-settlement-posting.js";
 import { syncNegativeWalletBlocks } from "../../../lib/rider-negative-wallet-blocks.js";
 import {
   loadEffectiveServicePayoutRule,
@@ -353,173 +362,60 @@ function componentLedgerLines(result: SettlementResult): LedgerLine[] {
 }
 
 // ---------------------------------------------------------------------------
-// Rider wallet debit (cash mode only). Mirrors the pattern used in
-// debitRiderWalletPenalty: FOR UPDATE lock, patch balance + service-level
-// negative counter, emit a wallet_ledger row.
+// Wallet settlement. The ride fare engine above decides R (riderEarnings) and C
+// (customerBill); the shared post-paid engine decides how the wallet moves and
+// produces the balanced journal. Identical for every Person Ride and Parcel.
 // ---------------------------------------------------------------------------
 
-async function debitRiderWalletForCashSettlement(
-  tx: TransactionSql,
-  args: {
-    riderId: number;
-    orderCoreId: number;
-    orderIdText: string;
-    settlementId: string;
-    amount: number;
-  }
-): Promise<{ balanceAfter: number; negativeUsedDelta: number }> {
-  const amount = round2(args.amount);
-  if (!(amount > 0)) {
-    return { balanceAfter: 0, negativeUsedDelta: 0 };
-  }
-
-  await tx`
-    INSERT INTO rider_wallet (rider_id, total_balance, last_updated_at)
-    VALUES (${args.riderId}, 0, NOW())
-    ON CONFLICT (rider_id) DO NOTHING
-  `;
-
-  const locked = await tx<
-    Array<{
-      total_balance: string | null;
-      negative_used_person_ride: string | null;
-    }>
-  >`
-    SELECT total_balance, negative_used_person_ride
-    FROM rider_wallet
-    WHERE rider_id = ${args.riderId}
-    FOR UPDATE
-  `;
-  const wallet = locked[0];
-  const currentBalance = Number(wallet?.total_balance ?? 0);
-  const balanceAfter = round2(currentBalance - amount);
-  const negativeUsedDelta =
-    balanceAfter < 0
-      ? currentBalance >= 0
-        ? round2(amount - currentBalance)
-        : round2(amount)
-      : 0;
-
-  const walletRef = `ride_cash_settle:${args.orderCoreId}`;
-
-  await tx`
-    INSERT INTO wallet_ledger (
-      rider_id, entry_type, amount, balance,
-      service_type, ref, ref_type, description, metadata,
-      performed_by_type
-    ) VALUES (
-      ${args.riderId}, 'adjustment', ${amount.toFixed(2)}, ${balanceAfter.toFixed(2)},
-      'person_ride', ${walletRef}, 'ride_settlement',
-      ${`Cash ride company recovery — ${args.orderIdText}`},
-      ${JSON.stringify({
-        source: "ride_cash_settlement",
-        orderCoreId: args.orderCoreId,
-        orderIdText: args.orderIdText,
-        settlementId: args.settlementId,
-        component: "company_receivable_recovery",
-      })}::text::jsonb,
-      'system'
-    )
-    ON CONFLICT DO NOTHING
-  `;
-
-  const currentNeg = Number(wallet?.negative_used_person_ride ?? 0);
-  await tx`
-    UPDATE rider_wallet
-    SET total_balance = ${balanceAfter.toFixed(2)},
-        negative_used_person_ride = ${(currentNeg + negativeUsedDelta).toFixed(2)},
-        last_updated_at = NOW()
-    WHERE rider_id = ${args.riderId}
-  `;
-
-  return { balanceAfter, negativeUsedDelta };
+function toCommonRideSettlement(
+  result: SettlementResult,
+  method: "cash" | "online",
+  gatiCashApplied: number
+): PostpaidSettlementResult {
+  const c = result.components;
+  return computePostpaidSettlement({
+    service: "person_ride",
+    method,
+    customerPayablePaise: toPaise(result.customerBill),
+    riderEntitlementPaise: toPaise(result.riderEarnings),
+    collectedPaise: toPaise(method === "cash" ? result.customerBill : result.customerPaid),
+    walletPaidPaise: toPaise(gatiCashApplied),
+    taxPaise: toPaise(c.taxTotal),
+    tipPaise: toPaise(c.tipAmount),
+    // Company-funded parts of the rider's earning — paid by us, not the customer.
+    incentivePaise: toPaise(c.surgeCompanyShare + c.pickupIncentiveCompanyShare),
+    discountPaise: toPaise(c.couponDiscount + c.companyFundedDiscount),
+  });
 }
 
 /**
- * Credit rider wallet with residual earnings (online / wallet / mixed).
- * Uses the same `rider_earn:delivery:{orderCoreId}` ref as the legacy
- * credit-rider-order-on-delivered path so a stray legacy call is a no-op.
+ * The ride math and the shared engine must agree on the wallet movement — they
+ * are the same identity (cash: R − C, online: R). A disagreement means one of
+ * them changed; the shared engine's figure is posted and the row is flagged.
  */
-async function creditRiderWalletForOnlineSettlement(
-  tx: TransactionSql,
-  args: {
-    riderId: number;
-    orderCoreId: number;
-    orderIdText: string;
-    settlementId: string;
-    amount: number;
-  }
-): Promise<{ balanceAfter: number }> {
-  const amount = round2(args.amount);
-  if (!(amount > 0)) {
-    return { balanceAfter: 0 };
-  }
+function rideWalletDisagreement(result: SettlementResult, common: PostpaidSettlementResult): string | null {
+  const rideDelta = toPaise(result.walletCredit) - toPaise(result.walletDebit);
+  if (Math.abs(rideDelta - common.walletDeltaPaise) <= 1) return null;
+  return `ride math wallet Δ ${rideDelta} paise ≠ settlement engine ${common.walletDeltaPaise} paise`;
+}
 
-  await tx`
-    INSERT INTO rider_wallet (rider_id, total_balance, last_updated_at)
-    VALUES (${args.riderId}, 0, NOW())
-    ON CONFLICT (rider_id) DO NOTHING
-  `;
+function rideWalletRefs(orderCoreId: number) {
+  return {
+    // Shared with credit-rider-order-on-delivered so a stray legacy credit is a no-op.
+    creditRef: `rider_earn:delivery:${orderCoreId}`,
+    debitRef: `ride_cash_settle:${orderCoreId}`,
+  };
+}
 
-  const walletRef = `rider_earn:delivery:${args.orderCoreId}`;
-  const already = await tx<Array<{ ok: number }>>`
-    SELECT 1 AS ok FROM wallet_ledger
-    WHERE rider_id = ${args.riderId} AND ref = ${walletRef}
-    LIMIT 1
-  `;
-  if (already.length > 0) {
-    const bal = await tx<Array<{ total_balance: string | null }>>`
-      SELECT total_balance FROM rider_wallet WHERE rider_id = ${args.riderId} LIMIT 1
-    `;
-    return { balanceAfter: round2(Number(bal[0]?.total_balance ?? 0)) };
-  }
-
-  const locked = await tx<Array<{ total_balance: string | null }>>`
-    SELECT total_balance
-    FROM rider_wallet
-    WHERE rider_id = ${args.riderId}
-    FOR UPDATE
-  `;
-  const currentBalance = Number(locked[0]?.total_balance ?? 0);
-  const balanceAfter = round2(currentBalance + amount);
-
-  await tx`
-    INSERT INTO wallet_ledger (
-      rider_id, entry_type, amount, balance,
-      service_type, ref, ref_type, description, metadata,
-      performed_by_type
-    ) VALUES (
-      ${args.riderId}, 'earning', ${amount.toFixed(2)}, ${balanceAfter.toFixed(2)},
-      'person_ride', ${walletRef}, 'ride_settlement',
-      ${`Ride earning — ${args.orderIdText}`},
-      ${JSON.stringify({
-        source: "ride_online_settlement",
-        orderCoreId: args.orderCoreId,
-        orderIdText: args.orderIdText,
-        settlementId: args.settlementId,
-        component: "rider_earnings",
-      })}::text::jsonb,
-      'system'
-    )
-    ON CONFLICT DO NOTHING
-  `;
-
-  await tx`
-    UPDATE rider_wallet
-    SET total_balance = ${balanceAfter.toFixed(2)},
-        last_updated_at = NOW()
-    WHERE rider_id = ${args.riderId}
-  `;
-
+async function markRideEarningOnOrder(tx: TransactionSql, orderCoreId: number, riderEarnings: number) {
+  if (!(riderEarnings > 0)) return;
   await tx`
     UPDATE orders_core
-    SET rider_earning = ${amount.toFixed(2)},
+    SET rider_earning = ${round2(riderEarnings).toFixed(2)},
         updated_at = NOW()
-    WHERE id = ${args.orderCoreId}
+    WHERE id = ${orderCoreId}
       AND (rider_earning IS NULL OR rider_earning::numeric = 0)
   `;
-
-  return { balanceAfter };
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +464,8 @@ export async function postOnlineRideSettlement(
     riderWaitingEntitled: await resolveRiderWaitingEntitled(input.riderId ?? null),
     components: input.billing.components,
   });
+  const common = toCommonRideSettlement(result, "online", gatiCashApplied);
+  const disagreement = rideWalletDisagreement(result, common);
 
   const billingSnapshot = input.billing.billingSnapshot ?? {};
 
@@ -639,16 +537,41 @@ export async function postOnlineRideSettlement(
         ],
       });
 
-      if (input.riderId != null && input.riderId > 0 && result.walletCredit > 0) {
-        const credited = await creditRiderWalletForOnlineSettlement(tx, {
+      let walletBalanceBefore: number | null = null;
+      if (input.riderId != null && input.riderId > 0) {
+        const moved = await applySettlementWalletMovement(tx, {
           riderId: input.riderId,
-          orderCoreId: input.orderCoreId,
-          orderIdText: input.orderIdText,
-          settlementId,
-          amount: result.walletCredit,
+          service: "person_ride",
+          settlement: common,
+          ...rideWalletRefs(input.orderCoreId),
+          refType: "ride_settlement",
+          creditDescription: `Ride earning — ${input.orderIdText}`,
+          debitDescription: `Ride settlement — ${input.orderIdText}`,
+          metadata: {
+            source: "ride_online_settlement",
+            orderCoreId: input.orderCoreId,
+            orderIdText: input.orderIdText,
+            settlementId,
+            component: "rider_earnings",
+            paymentMethod: "online",
+            customerPayable: result.customerBill,
+            riderEntitlement: result.riderEarnings,
+          },
         });
-        walletBalanceAfter = credited.balanceAfter;
+        walletBalanceBefore = moved.balanceBefore;
+        walletBalanceAfter = moved.balanceAfter;
+        if (moved.posted === "credit") {
+          await markRideEarningOnOrder(tx, input.orderCoreId, result.riderEarnings);
+        }
       }
+
+      await recordSettlementExtensions(tx, settlementId, {
+        service: "person_ride",
+        settlement: common,
+        walletBalanceBefore,
+        walletBalanceAfter,
+        reconciliationReason: disagreement,
+      });
 
       await tx`
         UPDATE orders_ride
@@ -671,6 +594,15 @@ export async function postOnlineRideSettlement(
     }
     console.warn("[postOnlineRideSettlement] failed:", input.orderCoreId, msg);
     throw err;
+  }
+
+  // A credit can lift a wallet restriction; re-derive it from the committed balance.
+  if (input.riderId != null && input.riderId > 0 && common.walletCreditPaise > 0) {
+    try {
+      await syncNegativeWalletBlocks(input.riderId);
+    } catch (err) {
+      console.warn("[postOnlineRideSettlement] wallet block sync failed:", input.riderId, err);
+    }
   }
 
   await logSettlementActivity({
@@ -829,6 +761,10 @@ export async function postCashRideSettlement(
     riderWaitingEntitled: await resolveRiderWaitingEntitled(input.riderId ?? null),
     components: input.billing.components,
   });
+  const common = toCommonRideSettlement(result, "cash", 0);
+  const disagreement = rideWalletDisagreement(result, common);
+  const walletCredit = common.walletCreditPaise / 100;
+  const walletDebit = common.walletDebitPaise / 100;
 
   const collectedAt = input.cashCollectedAt ?? new Date();
   const billingSnapshot = input.billing.billingSnapshot ?? {};
@@ -859,29 +795,42 @@ export async function postCashRideSettlement(
         },
         ...componentLedgerLines(result),
       ];
-      if (result.riderEarnings > 0) {
+      // The rider physically keeps the cash — up to their earning. Under an offer
+      // the cash is less than the earning and the wallet makes up the rest.
+      const keptInCash = round2(Math.min(result.riderEarnings, customerBill));
+      if (keptInCash > 0) {
         lines.push({
           direction: "credit",
-          amount: result.riderEarnings,
+          amount: keptInCash,
           accountKind: "rider_earning_kept",
           reasonCode: "RIDE_EARNING_KEPT_IN_CASH",
           description: "Rider retained earnings in cash",
         });
       }
-      if (result.walletDebit > 0) {
+      if (walletDebit > 0) {
         lines.push({
           direction: "debit",
-          amount: result.walletDebit,
+          amount: walletDebit,
           accountKind: "rider_wallet",
           reasonCode: "CASH_COMPANY_RECOVERY",
           description: "Company share recovered from rider wallet",
         });
         lines.push({
           direction: "credit",
-          amount: result.walletDebit,
+          amount: walletDebit,
           accountKind: "company_receivable",
           reasonCode: "CASH_COMPANY_RECOVERY",
           description: "Company recovered its share for the ride",
+        });
+      }
+      if (walletCredit > 0) {
+        lines.push({
+          direction: "credit",
+          amount: walletCredit,
+          accountKind: "rider_wallet",
+          reasonCode: "CASH_SETTLEMENT_CREDIT",
+          description: "Company top-up: customer paid less cash than the rider's earning",
+          metadata: { customerPaidCash: customerBill, riderEarnings: result.riderEarnings },
         });
       }
 
@@ -893,14 +842,37 @@ export async function postCashRideSettlement(
         lines,
       });
 
-      const debit = await debitRiderWalletForCashSettlement(tx, {
+      const moved = await applySettlementWalletMovement(tx, {
         riderId: input.riderId,
-        orderCoreId: input.orderCoreId,
-        orderIdText: input.orderIdText,
-        settlementId,
-        amount: result.walletDebit,
+        service: "person_ride",
+        settlement: common,
+        ...rideWalletRefs(input.orderCoreId),
+        refType: "ride_settlement",
+        creditDescription: `Cash ride top-up — ${input.orderIdText}`,
+        debitDescription: `Cash ride platform share — ${input.orderIdText}`,
+        metadata: {
+          source: "ride_cash_settlement",
+          orderCoreId: input.orderCoreId,
+          orderIdText: input.orderIdText,
+          settlementId,
+          component: walletCredit > 0 ? "cash_settlement_credit" : "company_receivable_recovery",
+          paymentMethod: "cash",
+          customerPayable: customerBill,
+          cashCollected: customerBill,
+          riderEntitlement: result.riderEarnings,
+        },
       });
-      walletBalanceAfter = debit.balanceAfter;
+      walletBalanceAfter = moved.balanceAfter;
+      // The rider earned R whichever way the wallet moved (cash in hand + Δ).
+      await markRideEarningOnOrder(tx, input.orderCoreId, result.riderEarnings);
+
+      await recordSettlementExtensions(tx, settlementId, {
+        service: "person_ride",
+        settlement: common,
+        walletBalanceBefore: moved.balanceBefore,
+        walletBalanceAfter: moved.balanceAfter,
+        reconciliationReason: disagreement,
+      });
 
       await tx`
         UPDATE orders_ride
@@ -957,17 +929,27 @@ export async function postCashRideSettlement(
     payload: {
       settlementId,
       companyReceivable: result.companyReceivable,
-      walletDebit: result.walletDebit,
+      walletDebit,
+      walletCredit,
       riderEarnings: result.riderEarnings,
     },
   });
-  if (result.walletDebit > 0) {
+  if (walletDebit > 0) {
     await logSettlementActivity({
       orderCoreId: input.orderCoreId,
       riderId: input.riderId,
       eventType: "WALLET_DEBITED",
-      amount: result.walletDebit,
+      amount: walletDebit,
       summary: "Company receivable recovered from rider wallet",
+    });
+  }
+  if (walletCredit > 0) {
+    await logSettlementActivity({
+      orderCoreId: input.orderCoreId,
+      riderId: input.riderId,
+      eventType: "WALLET_CREDITED",
+      amount: walletCredit,
+      summary: "Company top-up: customer paid less cash than the rider's earning",
     });
   }
   await logSettlementActivity({

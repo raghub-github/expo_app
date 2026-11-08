@@ -10,6 +10,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { PostpaidSettlementsSection } from "./PostpaidSettlementsSection";
 import Link from "next/link";
 import {
   validateCancellationSlabs,
@@ -35,12 +36,17 @@ import {
   Wallet,
 } from "lucide-react";
 
+type MinBalanceMode = "off" | "warn" | "enforce";
+
 type Policy = {
   serviceNegativeThreshold: number;
   globalBlockThreshold: number;
   cashSettlementEnabled: boolean;
   autoUnblockOnZero: boolean;
   commissionOnToll?: boolean;
+  /** Minimum available wallet balance for Ride + Parcel (₹). */
+  minWalletBalance?: number;
+  minBalanceMode?: MinBalanceMode;
 };
 
 type HistoryRow = {
@@ -126,6 +132,8 @@ const DEFAULT_POLICY: Policy = {
   cashSettlementEnabled: true,
   autoUnblockOnZero: true,
   commissionOnToll: false,
+  minWalletBalance: 200,
+  minBalanceMode: "warn",
 };
 
 type CancelService = "food" | "parcel" | "person_ride";
@@ -425,7 +433,9 @@ export default function RideBillingWalletHub() {
       draft.globalBlockThreshold !== policy.globalBlockThreshold ||
       draft.cashSettlementEnabled !== policy.cashSettlementEnabled ||
       draft.autoUnblockOnZero !== policy.autoUnblockOnZero ||
-      Boolean(draft.commissionOnToll) !== Boolean(policy.commissionOnToll)
+      Boolean(draft.commissionOnToll) !== Boolean(policy.commissionOnToll) ||
+      (draft.minWalletBalance ?? 200) !== (policy.minWalletBalance ?? 200) ||
+      (draft.minBalanceMode ?? "off") !== (policy.minBalanceMode ?? "off")
     );
   }, [draft, policy]);
 
@@ -435,6 +445,9 @@ export default function RideBillingWalletHub() {
     }
     if (!(draft.globalBlockThreshold < 0)) {
       return "Global block threshold must be a negative number";
+    }
+    if (!(Number(draft.minWalletBalance ?? 0) >= 0)) {
+      return "Minimum wallet balance must be zero or positive";
     }
     return null;
   }, [draft]);
@@ -456,6 +469,8 @@ export default function RideBillingWalletHub() {
           cashSettlementEnabled: draft.cashSettlementEnabled,
           autoUnblockOnZero: draft.autoUnblockOnZero,
           commissionOnToll: Boolean(draft.commissionOnToll),
+          minWalletBalance: Number(draft.minWalletBalance ?? 200),
+          minBalanceMode: draft.minBalanceMode ?? "off",
           reason: reason.trim() || undefined,
         }),
       });
@@ -466,20 +481,17 @@ export default function RideBillingWalletHub() {
       if (!res.ok) {
         throw new Error(json.message || json.error || `Save failed (${res.status})`);
       }
-      setPolicy({
+      const saved: Policy = {
         serviceNegativeThreshold: json.serviceNegativeThreshold,
         globalBlockThreshold: json.globalBlockThreshold,
         cashSettlementEnabled: json.cashSettlementEnabled,
         autoUnblockOnZero: json.autoUnblockOnZero,
         commissionOnToll: Boolean(json.commissionOnToll),
-      });
-      setDraft({
-        serviceNegativeThreshold: json.serviceNegativeThreshold,
-        globalBlockThreshold: json.globalBlockThreshold,
-        cashSettlementEnabled: json.cashSettlementEnabled,
-        autoUnblockOnZero: json.autoUnblockOnZero,
-        commissionOnToll: Boolean(json.commissionOnToll),
-      });
+        minWalletBalance: json.minWalletBalance,
+        minBalanceMode: json.minBalanceMode,
+      };
+      setPolicy(saved);
+      setDraft(saved);
       setReason("");
       setSavedAt(Date.now());
       // Immediately re-pull history so the audit trail shows the new row.
@@ -674,6 +686,52 @@ export default function RideBillingWalletHub() {
           </label>
         </div>
 
+        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
+          <div className="text-sm font-semibold text-slate-900">
+            Minimum wallet balance — Ride &amp; Parcel
+          </div>
+          <p className="mt-0.5 text-[11px] text-slate-600">
+            A rider holding customer cash owes the platform its share from the
+            wallet. Below this balance the rider is asked to recharge (exact
+            shortfall, native Razorpay). In <b>enforce</b> mode new Ride and
+            Parcel assignments stop until the verified recharge lands; Food is
+            never blocked by this rule. Checked live from the committed balance.
+          </p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Minimum balance (₹)
+              </span>
+              <input
+                type="number"
+                min={0}
+                step={10}
+                value={draft.minWalletBalance ?? 200}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, minWalletBalance: Number(e.target.value) }))
+                }
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Mode
+              </span>
+              <select
+                value={draft.minBalanceMode ?? "off"}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, minBalanceMode: e.target.value as MinBalanceMode }))
+                }
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+              >
+                <option value="off">Off — ignore</option>
+                <option value="warn">Warn — show recharge prompt only</option>
+                <option value="enforce">Enforce — stop new Ride/Parcel assignments</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
         <label className="mt-4 block">
           <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             Reason for this change (optional — recorded in audit log)
@@ -695,7 +753,8 @@ export default function RideBillingWalletHub() {
                 <span className="font-mono text-slate-700">
                   service {policy.serviceNegativeThreshold} / global{" "}
                   {policy.globalBlockThreshold} / cash{" "}
-                  {policy.cashSettlementEnabled ? "on" : "off"}
+                  {policy.cashSettlementEnabled ? "on" : "off"} / min ₹
+                  {policy.minWalletBalance ?? 200} ({policy.minBalanceMode ?? "off"})
                 </span>
               </>
             ) : (
@@ -1349,6 +1408,8 @@ export default function RideBillingWalletHub() {
           </p>
         )}
       </section>
+
+      <PostpaidSettlementsSection />
 
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="mb-1 text-lg font-bold text-slate-900">Related controls</h2>

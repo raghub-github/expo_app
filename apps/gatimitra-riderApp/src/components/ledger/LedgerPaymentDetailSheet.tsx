@@ -31,6 +31,70 @@ function purposeLabel(detail: RiderLedgerEntryDetail): string | null {
   return null;
 }
 
+type SettlementDetail = NonNullable<RiderLedgerEntryDetail["settlement"]>;
+
+function inr(amount: number): string {
+  return `₹${formatLedgerAmount(Math.abs(amount))}`;
+}
+
+/**
+ * The whole Ride/Parcel this wallet row came from: what the customer paid, the
+ * cash the rider kept, what the rider earned, and the wallet movement between.
+ */
+function SettlementBreakdown({ s }: { s: SettlementDetail }) {
+  const { t } = useTranslation();
+  const isCash = s.paymentMethod === "cash";
+  const service = s.serviceType === "parcel" ? "Parcel" : "Ride";
+  return (
+    <View style={styles.settlement}>
+      <Text style={styles.settlementTitle}>
+        {isCash
+          ? t("ledger.settlementCashTitle", "{{service}} completed — Cash", { service })
+          : t("ledger.settlementOnlineTitle", "{{service}} completed — Online", { service })}
+      </Text>
+      <Row label={t("ledger.settlementOrder", "Order")} value={s.orderId} />
+      <Row label={t("ledger.settlementPayable", "Customer payable")} value={inr(s.customerPayable)} />
+      {isCash ? (
+        <Row
+          label={t("ledger.settlementCash", "Cash collected from customer (not a wallet credit)")}
+          value={inr(s.cashCollected)}
+        />
+      ) : (
+        <Row label={t("ledger.settlementOnline", "Customer paid online")} value={inr(s.platformCollected)} />
+      )}
+      <Row label={t("ledger.settlementEarning", "Your earning")} value={inr(s.riderEntitlement)} />
+      {s.tip > 0 ? <Row label={t("ledger.settlementTip", "Includes tip")} value={inr(s.tip)} /> : null}
+      {s.incentive > 0 ? (
+        <Row label={t("ledger.settlementIncentive", "Includes incentive")} value={inr(s.incentive)} />
+      ) : null}
+      {s.walletDebit > 0 ? (
+        <Row label={t("ledger.settlementShare", "Platform share deducted")} value={`−${inr(s.walletDebit)}`} />
+      ) : null}
+      {s.walletCredit > 0 ? (
+        <Row
+          label={
+            isCash
+              ? t("ledger.settlementTopUp", "Company top-up credited")
+              : t("ledger.settlementCredited", "Earning credited")
+          }
+          value={`+${inr(s.walletCredit)}`}
+        />
+      ) : null}
+      <Row
+        label={t("ledger.settlementImpact", "Wallet impact")}
+        value={s.walletImpact === 0 ? inr(0) : `${s.walletImpact > 0 ? "+" : "−"}${inr(s.walletImpact)}`}
+      />
+      {s.walletBalanceBefore != null ? (
+        <Row label={t("ledger.settlementBefore", "Wallet before")} value={`${s.walletBalanceBefore < 0 ? "−" : ""}${inr(s.walletBalanceBefore)}`} />
+      ) : null}
+      {s.walletBalanceAfter != null ? (
+        <Row label={t("ledger.settlementAfter", "Wallet after")} value={`${s.walletBalanceAfter < 0 ? "−" : ""}${inr(s.walletBalanceAfter)}`} />
+      ) : null}
+      <Text style={styles.settlementNote}>{s.explanation}</Text>
+    </View>
+  );
+}
+
 function serviceLabel(service: string | null): string | null {
   const s = service?.toLowerCase() ?? "";
   if (s === "food") return "Food";
@@ -68,6 +132,7 @@ export function LedgerPaymentDetailSheet({ entryId, onClose }: Props) {
                 {credit ? "+" : "−"} ₹{formatLedgerAmount(data.amount)}
               </Text>
               <Text style={styles.status}>{credit ? "Credit" : "Debit"}</Text>
+              {data.settlement ? <SettlementBreakdown s={data.settlement} /> : null}
               <Row label="Description" value={data.description} />
               <Row label="Purpose" value={purposeLabel(data)} />
               <Row label="Service" value={serviceLabel(data.serviceType)} />
@@ -144,6 +209,16 @@ const styles = StyleSheet.create({
   label: { fontSize: 12, color: "#6B7280", marginBottom: 2 },
   value: { fontSize: 14, fontWeight: "600", color: "#111827" },
   loader: { marginVertical: 24 },
+  settlement: {
+    marginBottom: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#E2E8F0",
+  },
+  settlementTitle: { fontSize: 15, fontWeight: "800", color: "#0F172A", marginBottom: 4 },
+  settlementNote: { marginTop: 8, fontSize: 12.5, lineHeight: 18, color: "#475569" },
   missing: { color: "#6B7280", marginVertical: 16 },
   close: {
     marginTop: 8,

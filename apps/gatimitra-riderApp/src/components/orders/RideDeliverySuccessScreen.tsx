@@ -25,6 +25,8 @@ import {
   type SuccessBreakdownRow,
 } from "@/src/components/orders/RiderDeliverySuccessLayout";
 import { RiderSettlementBreakdownCard } from "@/src/components/orders/RiderSettlementBreakdownCard";
+import { PostpaidSettlementCard } from "@/src/components/orders/PostpaidSettlementCard";
+import { useOrderSettlement } from "@/src/hooks/useOrderSettlement";
 import { useRecordDeliverySuccessTipBaseline } from "@/src/hooks/useRecordDeliverySuccessTipBaseline";
 
 type Props = {
@@ -61,6 +63,11 @@ export function RideDeliverySuccessScreen({ params: rawParams }: Props) {
   }, [activeOrders, params.orderId]);
 
   const navigatedRef = useRef(false);
+
+  // A cash job is not "credited": the rider holds the cash and the wallet only
+  // moves by the difference. Same query the settlement card uses (deduped).
+  const { data: settlementData } = useOrderSettlement(params.orderId);
+  const paidInCash = settlementData?.settlement?.paymentMethod === "cash";
 
   const { data: orderDetail } = useRideOrder(params.orderId, {
     refetchInterval: 4000,
@@ -195,7 +202,11 @@ export function RideDeliverySuccessScreen({ params: rawParams }: Props) {
         "Your passenger has reached their destination safely."
       )}
       totalEarning={totalEarning}
-      paymentBadgeLabel={t("orders.deliverySuccess.paymentCredited", "Payment Credited")}
+      paymentBadgeLabel={
+        paidInCash
+          ? t("orders.deliverySuccess.cashSettled", "Cash collected · Settled")
+          : t("orders.deliverySuccess.paymentCredited", "Payment Credited")
+      }
       breakdownTitle={t("orders.deliverySuccess.earningsBreakdown", "Earnings Breakdown")}
       breakdownRows={breakdownRows}
       totalEarningsLabel={t("orders.deliverySuccess.totalEarnings", "Total Earnings")}
@@ -217,7 +228,10 @@ export function RideDeliverySuccessScreen({ params: rawParams }: Props) {
       closeAccessibilityLabel={t("common.close", "Close")}
       ctaAccessibilityLabel={ctaLabel}
       extraContent={
-        <RiderSettlementBreakdownCard breakdown={orderDetail?.settlementBreakdown} />
+        <>
+          <PostpaidSettlementCard orderId={params.orderId} />
+          <RiderSettlementBreakdownCard breakdown={orderDetail?.settlementBreakdown} />
+        </>
       }
     />
   );

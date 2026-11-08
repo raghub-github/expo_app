@@ -18,6 +18,8 @@ import {
   NEGATIVE_WALLET_THRESHOLD,
 } from "./rider-negative-wallet-blocks.js";
 import { splitWalletNegativeBalance } from "./rider-wallet-balance-split.js";
+import { evaluateMinWalletBalance, type RiderMinBalanceStatus } from "./rider-wallet-min-balance.js";
+import { loadRideWalletPolicy } from "../modules/rides/settlement/rideSettlement.repository.js";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -40,7 +42,23 @@ export type RiderAccountRestrictions = {
   penaltyEventId: string | null;
   penaltyTitle: string | null;
   penaltyFormattedOrderId: string | null;
+  /** Minimum-balance policy for Ride + Parcel, from the committed balance. */
+  walletMinBalance: RiderMinBalanceStatus;
 };
+
+async function readMinBalanceStatus(totalBalance: number): Promise<RiderMinBalanceStatus> {
+  try {
+    const policy = await loadRideWalletPolicy();
+    return evaluateMinWalletBalance({
+      balance: totalBalance,
+      threshold: policy.minWalletBalance,
+      mode: policy.minBalanceMode,
+    });
+  } catch {
+    // Policy unreadable → never restrict on a guess.
+    return evaluateMinWalletBalance({ balance: totalBalance, threshold: 0, mode: "off" });
+  }
+}
 
 function normServiceType(s: string): string {
   const x = (s || "").toLowerCase().trim();
@@ -315,6 +333,7 @@ export async function getRiderAccountRestrictions(
     ]);
 
   const totalBalance = round2(Number(wallet?.totalBalance ?? 0));
+  const walletMinBalance = await readMinBalanceStatus(totalBalance);
   const walletPenaltiesSum = walletPenaltiesColumnSum(wallet ?? null);
   const split = splitWalletNegativeBalance(totalBalance, wallet ?? null, {
     subscriptionDuesOutstanding,
@@ -348,7 +367,8 @@ export async function getRiderAccountRestrictions(
   let blacklistBlockedServices = mergeBlockedServices(
     blacklist.blockedServices,
     walletBlockedServices,
-    cancellationBlockedServices
+    cancellationBlockedServices,
+    walletMinBalance.restrictedServices
   );
   let allServicesBlacklisted =
     blacklistBlockedServices.length >= 3 ||
@@ -411,6 +431,7 @@ export async function getRiderAccountRestrictions(
     penaltyEventId: penaltyNotice.penaltyEventId,
     penaltyTitle: penaltyNotice.penaltyTitle,
     penaltyFormattedOrderId: penaltyNotice.penaltyFormattedOrderId,
+    walletMinBalance,
   };
 }
 

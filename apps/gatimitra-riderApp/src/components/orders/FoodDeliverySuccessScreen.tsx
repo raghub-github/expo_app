@@ -26,6 +26,8 @@ import {
   type SuccessBreakdownRow,
 } from "@/src/components/orders/RiderDeliverySuccessLayout";
 import { RiderSettlementBreakdownCard } from "@/src/components/orders/RiderSettlementBreakdownCard";
+import { PostpaidSettlementCard } from "@/src/components/orders/PostpaidSettlementCard";
+import { useOrderSettlement } from "@/src/hooks/useOrderSettlement";
 import { useRecordDeliverySuccessTipBaseline } from "@/src/hooks/useRecordDeliverySuccessTipBaseline";
 
 type Props = {
@@ -73,6 +75,12 @@ export function FoodDeliverySuccessScreen({ params: rawParams }: Props) {
   const { data: orderDetail, refetch, isRefetching } = useRideOrder(params.orderId, {
     refetchInterval: 4000,
   });
+
+  // A cash parcel is not "credited": the rider holds the cash and the wallet only
+  // moves by the difference. Food never settles this way, so it is not queried.
+  const isParcel = orderDetail?.category === "parcel";
+  const { data: settlementData } = useOrderSettlement(isParcel ? params.orderId : undefined);
+  const paidInCash = settlementData?.settlement?.paymentMethod === "cash";
 
   const customerRating = useMemo(() => {
     const raw = orderDetail?.passengerRating;
@@ -167,7 +175,11 @@ export function FoodDeliverySuccessScreen({ params: rawParams }: Props) {
         "Great job! You made someone's day better."
       )}
       totalEarning={totalEarning}
-      paymentBadgeLabel={t("orders.deliverySuccess.paymentCredited", "Payment Credited")}
+      paymentBadgeLabel={
+        paidInCash
+          ? t("orders.deliverySuccess.cashSettled", "Cash collected · Settled")
+          : t("orders.deliverySuccess.paymentCredited", "Payment Credited")
+      }
       breakdownTitle={t("orders.deliverySuccess.earningsBreakdown", "Earnings Breakdown")}
       breakdownRows={breakdownRows}
       totalEarningsLabel={t("orders.deliverySuccess.totalEarnings", "Total Earnings")}
@@ -191,7 +203,12 @@ export function FoodDeliverySuccessScreen({ params: rawParams }: Props) {
       closeAccessibilityLabel={t("common.close", "Close")}
       ctaAccessibilityLabel={ctaLabel}
       extraContent={
-        <RiderSettlementBreakdownCard breakdown={orderDetail?.settlementBreakdown} />
+        <>
+          {isParcel ? (
+            <PostpaidSettlementCard orderId={params.orderId} />
+          ) : null}
+          <RiderSettlementBreakdownCard breakdown={orderDetail?.settlementBreakdown} />
+        </>
       }
     />
   );

@@ -36,8 +36,10 @@ export const paymentService = {
      * amount and durably anchors the attempt so a captured fare is recoverable
      * (webhook/reconciler) even if this app is killed before confirmation.
      */
-    purpose?: "ride_fare";
+    purpose?: "ride_fare" | "parcel_fare";
     businessOrderId?: string;
+    /** parcel_fare: GatiCash applied alongside; the backend charges the rest. */
+    gatiCashAmount?: number;
   }): Promise<CreateRazorpayOrderResponse> {
     const { data } = await api.post<CreateRazorpayOrderResponse>(
       `${PAYMENT_PREFIX}/create-order`,
@@ -48,6 +50,9 @@ export const paymentService = {
         pendingId: params.pendingId,
         ...(params.purpose ? { purpose: params.purpose } : {}),
         ...(params.businessOrderId ? { businessOrderId: params.businessOrderId } : {}),
+        ...(params.gatiCashAmount != null && params.gatiCashAmount > 0
+          ? { gatiCashAmount: params.gatiCashAmount }
+          : {}),
       },
       { timeout: ORDER_PLACEMENT_TIMEOUT_MS }
     );

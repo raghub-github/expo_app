@@ -37,7 +37,7 @@ import { colors } from "@/src/theme";
 import { Button } from "@/src/components/ui/Button";
 import { permissionManager } from "@/src/services/permissions/permissionManager";
 import { type RiderMapViewHandle } from "@/src/components/RiderMapView";
-import { AccountRestrictedBanner, PenaltyBanner, OffDutyBanner, RidePaymentHoldBanner, NetworkStatusBanner } from "@/src/components/home/HomeAlertBanners";
+import { AccountRestrictedBanner, PenaltyBanner, OffDutyBanner, RidePaymentHoldBanner, NetworkStatusBanner, WalletMinBalanceBanner } from "@/src/components/home/HomeAlertBanners";
 import {
   HomeAlertBannerCarousel,
   homeBannerDuration,
@@ -137,6 +137,13 @@ export default function OrdersScreen() {
     dutyAccountRestricted: dutyStatus?.accountRestricted,
   });
   const penaltyDue = Math.max(restrictions?.penaltyDue ?? 0, earnings?.locked ?? 0);
+  const walletMinBalance = restrictions?.walletMinBalance ?? null;
+  // Only explain the restriction as "low balance" when that is its sole cause.
+  const minBalanceIsOnlyRestriction =
+    walletMinBalance?.restricted === true &&
+    blockedServices.every((s) =>
+      (walletMinBalance.restrictedServices as string[]).includes(s)
+    );
 
   const refreshRestrictionQueries = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["rider", "earnings", "summary"] });
@@ -307,6 +314,7 @@ export default function OrdersScreen() {
             blockedServices={blockedServices}
             allServicesBlacklisted={allServicesBlacklisted}
             globalWalletBlock={restrictions?.globalWalletBlock === true}
+            reasonOverride={minBalanceIsOnlyRestriction ? walletMinBalance?.message : null}
           />
         ),
       });
@@ -340,6 +348,25 @@ export default function OrdersScreen() {
       });
     }
 
+    // Below the Ride/Parcel minimum balance (and not already showing the negative
+    // wallet Pay slide, which pays the same server-computed amount).
+    if (walletMinBalance?.belowMinimum && !showPenaltyBanner) {
+      slides.push({
+        id: "wallet_min_balance",
+        type: "wallet_min_balance",
+        durationMs: homeBannerDuration("wallet_min_balance"),
+        element: (
+          <WalletMinBalanceBanner
+            amount={walletMinBalance.shortfall}
+            message={walletMinBalance.message}
+            restricted={walletMinBalance.restricted}
+            paying={penaltyPaying}
+            onPay={() => void handlePayPenalty()}
+          />
+        ),
+      });
+    }
+
     if (primaryPaymentHold) {
       slides.push({
         id: "ride_payment_hold",
@@ -365,6 +392,8 @@ export default function OrdersScreen() {
     handlePayPenalty,
     primaryPaymentHold,
     subscriptionBannerVisible,
+    walletMinBalance,
+    minBalanceIsOnlyRestriction,
   ]);
 
   const homeChrome = useMemo(

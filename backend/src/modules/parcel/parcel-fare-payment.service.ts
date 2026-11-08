@@ -812,3 +812,181 @@ export async function confirmParcelFarePaymentForCustomer(input: {
 
   return { ok: true, amountPaid: fareDue };
 }
+
+/**
+ * Create the Razorpay order for an in-app parcel fare payment and durably anchor
+ * it in payment_events (PARCEL_FARE_PAYMENT_INITIATED), exactly like the ride
+ * fare. Without the anchor a capture whose client callback was lost (app killed,
+ * network drop) could never be finalized: the customer was charged and the parcel
+ * stayed unpaid. The amount is computed here — the client's is never trusted.
+ */
+export async function createParcelFarePaymentOrder(input: {
+  customerSub: string;
+  orderRef: string;
+  /** GatiCash the customer chose to apply; the gateway charges the rest. */
+  gatiCashAmount?: number;
+}): Promise<
+  | { ok: true; orderId: string; keyId: string; amount: number; currency: string; dummy: boolean }
+  | { ok: false; statusCode: number; code: string; message: string }
+> {
+  const { getEnv } = await import("../../config/env.js");
+  const { createRazorpayOrder } = await import("../../services/payment/razorpayService.js");
+  const env = getEnv();
+
+  const bill = await getParcelFareBillForCustomer({
+    customerSub: input.customerSub,
+    orderRef: input.orderRef,
+  });
+  if (!bill.ok) {
+    return { ok: false, statusCode: bill.statusCode, code: bill.code, message: bill.message };
+  }
+
+  const db = getDb();
+  const [orderRow] = await db
+    .select({
+      customerId: ordersCore.customerId,
+      status: ordersCore.status,
+      currentStatus: ordersCore.currentStatus,
+      paymentStatus: ordersCore.paymentStatus,
+      cashCollectedAt: ordersParcel.cashCollectedAt,
+    })
+    .from(ordersCore)
+    .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
+    .where(eq(ordersCore.id, bill.orderCoreId))
+    .limit(1);
+  if (!orderRow) {
+    return { ok: false, statusCode: 404, code: "ORDER_NOT_FOUND", message: "Order not found" };
+  }
+  if (isParcelNonPayableTerminal(normalizeCustomerOrderStatus(orderRow.currentStatus, orderRow.status))) {
+    return { ok: false, statusCode: 409, code: "NOT_PAYABLE", message: "Parcel is no longer payable" };
+  }
+  if (!isPaymentPending(orderRow.paymentStatus) || orderRow.cashCollectedAt != null) {
+    return { ok: false, statusCode: 409, code: "ALREADY_PAID", message: "Parcel fare is already paid" };
+  }
+
+  const fareDue = roundInr(bill.finalAmount);
+  if (!(fareDue > 0.005)) {
+    return { ok: false, statusCode: 409, code: "ZERO_PAYABLE", message: "No online fare payable" };
+  }
+  const requestedGatiCash = roundInr(input.gatiCashAmount ?? 0);
+  const gatiCashAvailable =
+    requestedGatiCash > 0.005 && orderRow.customerId != null
+      ? await getCustomerGatiCashAvailable(getSql(), Number(orderRow.customerId))
+      : 0;
+  const gatiCashApplied = roundInr(Math.min(requestedGatiCash, gatiCashAvailable, fareDue));
+  const gatewayDue = roundInr(fareDue - gatiCashApplied);
+  if (!(gatewayDue > 0.005)) {
+    return { ok: false, statusCode: 409, code: "ZERO_PAYABLE", message: "Covered by GatiCash — no online payment needed" };
+  }
+  const amountPaise = Math.round(gatewayDue * 100);
+
+  const dummyModeActive = env.PAYMENT_DUMMY_MODE || !env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET;
+  let razorpayOrderId: string;
+  let currency = "INR";
+  if (dummyModeActive) {
+    if (!env.PAYMENT_DUMMY_MODE && env.NODE_ENV !== "development") {
+      return { ok: false, statusCode: 503, code: "GATEWAY_NOT_CONFIGURED", message: "Razorpay not configured" };
+    }
+    razorpayOrderId = `dummy_parcel_${bill.orderIdText}_${Date.now()}`;
+  } else {
+    const order = await createRazorpayOrder({
+      amount: amountPaise,
+      currency: "INR",
+      receipt: `parcel_${bill.orderIdText}_${Date.now()}`.slice(0, 40),
+      notes: {
+        purpose: "parcel_fare",
+        business_order_id: bill.orderIdText,
+        customer_id: input.customerSub,
+        gaticash_amount: String(gatiCashApplied),
+      },
+    });
+    razorpayOrderId = order.id;
+    currency = order.currency;
+  }
+
+  try {
+    await getSql()`
+      INSERT INTO payment_events (
+        razorpay_order_id, order_id, event_type, source, amount_paise, currency, payload
+      ) VALUES (
+        ${razorpayOrderId}, ${bill.orderIdText}, 'PARCEL_FARE_PAYMENT_INITIATED', 'client', ${amountPaise}, ${currency},
+        ${JSON.stringify({
+          flow: "parcel_fare",
+          business_order_id: bill.orderIdText,
+          order_core_id: bill.orderCoreId,
+          customer_sub: input.customerSub,
+          fare_inr: fareDue,
+          gaticash_amount: gatiCashApplied,
+        })}::text::jsonb
+      )
+    `;
+  } catch {
+    /* anchor best-effort — webhook notes still enable recovery */
+  }
+
+  return {
+    ok: true,
+    orderId: razorpayOrderId,
+    keyId: env.RAZORPAY_KEY_ID || "dummy_key",
+    amount: amountPaise,
+    currency,
+    dummy: dummyModeActive,
+  };
+}
+
+/**
+ * Server-side finalization of an in-app parcel fare payment, for the Razorpay
+ * webhook and the reconciler. Reuses confirmParcelFarePaymentForCustomer (the
+ * same finalizer as the client callback) via a synthesized signature, which still
+ * fetches and amount-checks the payment at Razorpay. Idempotent.
+ */
+export async function finalizeParcelFarePaymentFromWebhook(args: {
+  razorpayOrderId: string;
+  razorpayPaymentId: string;
+  notes?: Record<string, unknown> | null;
+  source?: string;
+}): Promise<{ ok: boolean; idempotent?: boolean; code?: string; amountPaid?: number }> {
+  const razorpayOrderId = args.razorpayOrderId?.trim() ?? "";
+  const razorpayPaymentId = args.razorpayPaymentId?.trim() ?? "";
+  if (!razorpayOrderId || !razorpayPaymentId) return { ok: false, code: "INVALID_PAYLOAD" };
+
+  let orderRef = args.notes ? String(args.notes.business_order_id ?? "") : "";
+  let customerSub = args.notes ? String(args.notes.customer_id ?? "") : "";
+  let gatiCash = args.notes ? Number(args.notes.gaticash_amount ?? 0) : 0;
+  if (!orderRef || !customerSub) {
+    const rows = await getSql()<Array<{ order_id: string | null; payload: Record<string, unknown> | null }>>`
+      SELECT order_id, payload FROM payment_events
+      WHERE razorpay_order_id = ${razorpayOrderId} AND event_type = 'PARCEL_FARE_PAYMENT_INITIATED'
+      ORDER BY created_at DESC LIMIT 1
+    `;
+    const p = (rows[0]?.payload ?? {}) as Record<string, unknown>;
+    if (!orderRef) orderRef = String(rows[0]?.order_id ?? p.business_order_id ?? "");
+    if (!customerSub) customerSub = String(p.customer_sub ?? "");
+    if (!(gatiCash > 0)) gatiCash = Number(p.gaticash_amount ?? 0);
+  }
+  if (!orderRef || !customerSub) return { ok: false, code: "ANCHOR_NOT_FOUND" };
+
+  const { createHmac } = await import("node:crypto");
+  const { getEnv } = await import("../../config/env.js");
+  const synthesizedSignature = createHmac("sha256", getEnv().RAZORPAY_KEY_SECRET ?? "")
+    .update(`${razorpayOrderId}|${razorpayPaymentId}`)
+    .digest("hex");
+
+  try {
+    const res = await confirmParcelFarePaymentForCustomer({
+      customerSub,
+      orderRef,
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature: synthesizedSignature,
+      gatiCashAmount: Number.isFinite(gatiCash) && gatiCash > 0 ? gatiCash : undefined,
+    });
+    return { ok: true, idempotent: false, amountPaid: res.amountPaid, code: args.source ?? "webhook" };
+  } catch (err) {
+    const statusCode = (err as { statusCode?: number }).statusCode;
+    const message = (err as Error)?.message ?? "";
+    if (statusCode === 409 && /already paid/i.test(message)) return { ok: true, idempotent: true };
+    if (statusCode === 400) return { ok: false, code: "AMOUNT_OR_VERIFY_FAILED" };
+    return { ok: false, code: "SETTLE_FAILED" };
+  }
+}
