@@ -1,5 +1,9 @@
 import type { Sql } from "postgres";
 import { getSql } from "../../../db/client.js";
+import {
+  normalizeMinBalanceMode,
+  type MinBalanceMode,
+} from "../../../lib/rider-wallet-min-balance.js";
 
 /**
  * Ride Settlement + Wallet-Config repositories.
@@ -13,6 +17,9 @@ export type RideWalletPolicy = {
   cashSettlementEnabled: boolean;
   autoUnblockOnZero: boolean;
   commissionOnToll: boolean;
+  /** Minimum available wallet balance for Ride + Parcel (see rider-wallet-min-balance.ts). */
+  minWalletBalance: number;
+  minBalanceMode: MinBalanceMode;
 };
 
 const DEFAULT_POLICY: RideWalletPolicy = {
@@ -21,7 +28,36 @@ const DEFAULT_POLICY: RideWalletPolicy = {
   cashSettlementEnabled: true,
   autoUnblockOnZero: true,
   commissionOnToll: false,
+  minWalletBalance: 200,
+  // 'off' only until migration 0649 adds the columns (which seeds 'warn').
+  minBalanceMode: "off",
 };
+
+/**
+ * The 0649 columns, read on their own so a database without them yet keeps its
+ * existing policy instead of falling back to defaults wholesale.
+ */
+async function loadMinBalancePolicy(
+  sql: Sql,
+  policyId: number | string
+): Promise<Pick<RideWalletPolicy, "minWalletBalance" | "minBalanceMode">> {
+  try {
+    const rows = await sql<Array<{ min_wallet_balance: string | number; min_balance_mode: string }>>`
+      SELECT min_wallet_balance, min_balance_mode
+      FROM ride_wallet_config
+      WHERE id = ${policyId}
+    `;
+    const row = rows[0];
+    if (!row) return { minWalletBalance: DEFAULT_POLICY.minWalletBalance, minBalanceMode: "off" };
+    const threshold = Number(row.min_wallet_balance);
+    return {
+      minWalletBalance: Number.isFinite(threshold) ? threshold : DEFAULT_POLICY.minWalletBalance,
+      minBalanceMode: normalizeMinBalanceMode(row.min_balance_mode),
+    };
+  } catch {
+    return { minWalletBalance: DEFAULT_POLICY.minWalletBalance, minBalanceMode: "off" };
+  }
+}
 
 let cachedPolicy: { value: RideWalletPolicy; loadedAt: number } | null = null;
 const POLICY_CACHE_MS = 30_000;
@@ -47,6 +83,7 @@ export async function loadRideWalletPolicy(
   try {
     const rows = await sql<
       Array<{
+        id: string | number;
         service_negative_threshold: string | number;
         global_block_threshold: string | number;
         cash_settlement_enabled: boolean;
@@ -54,7 +91,8 @@ export async function loadRideWalletPolicy(
         commission_on_toll?: boolean;
       }>
     >`
-      SELECT service_negative_threshold,
+      SELECT id,
+             service_negative_threshold,
              global_block_threshold,
              cash_settlement_enabled,
              auto_unblock_on_zero,
@@ -75,6 +113,7 @@ export async function loadRideWalletPolicy(
       cashSettlementEnabled: row.cash_settlement_enabled !== false,
       autoUnblockOnZero: row.auto_unblock_on_zero !== false,
       commissionOnToll: row.commission_on_toll === true,
+      ...(await loadMinBalancePolicy(sql, row.id)),
     };
     cachedPolicy = { value, loadedAt: now };
     return value;
@@ -96,6 +135,8 @@ export type UpdateRideWalletPolicyInput = {
   cashSettlementEnabled?: boolean;
   autoUnblockOnZero?: boolean;
   commissionOnToll?: boolean;
+  minWalletBalance?: number;
+  minBalanceMode?: MinBalanceMode;
   changedBySystemUserId?: number | null;
   reason?: string | null;
 };
@@ -123,6 +164,20 @@ export async function updateRideWalletPolicy(
   const cashEnabled = input.cashSettlementEnabled !== false;
   const autoUnblock = input.autoUnblockOnZero !== false;
   const commissionOnToll = input.commissionOnToll === true;
+  // Unspecified → keep the current values, so older admin clients that do not
+  // send these fields never silently change the minimum-balance policy.
+  const current = await loadRideWalletPolicy(sql, { forceRefresh: true });
+  const minWalletBalance =
+    input.minWalletBalance == null ? current.minWalletBalance : Number(input.minWalletBalance);
+  if (!Number.isFinite(minWalletBalance) || minWalletBalance < 0) {
+    throw Object.assign(new Error("min_wallet_balance must be zero or positive"), {
+      statusCode: 400,
+    });
+  }
+  const minBalanceMode =
+    input.minBalanceMode == null
+      ? current.minBalanceMode
+      : normalizeMinBalanceMode(input.minBalanceMode);
 
   await sql.begin(async (tx) => {
     await tx`
@@ -134,9 +189,11 @@ export async function updateRideWalletPolicy(
       INSERT INTO ride_wallet_config (
         service_negative_threshold, global_block_threshold,
         cash_settlement_enabled, auto_unblock_on_zero, commission_on_toll,
+        min_wallet_balance, min_balance_mode,
         is_active, updated_by_system_user_id, notes
       ) VALUES (
         ${serviceNeg}, ${globalBlock}, ${cashEnabled}, ${autoUnblock}, ${commissionOnToll},
+        ${minWalletBalance}, ${minBalanceMode},
         TRUE, ${input.changedBySystemUserId ?? null}, ${input.reason ?? null}
       )
     `;
@@ -144,9 +201,11 @@ export async function updateRideWalletPolicy(
       INSERT INTO ride_wallet_config_history (
         service_negative_threshold, global_block_threshold,
         cash_settlement_enabled, auto_unblock_on_zero, commission_on_toll,
+        min_wallet_balance, min_balance_mode,
         changed_by_system_user_id, reason
       ) VALUES (
         ${serviceNeg}, ${globalBlock}, ${cashEnabled}, ${autoUnblock}, ${commissionOnToll},
+        ${minWalletBalance}, ${minBalanceMode},
         ${input.changedBySystemUserId ?? null}, ${input.reason ?? null}
       )
     `;

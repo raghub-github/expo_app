@@ -22,6 +22,7 @@ import { reconcilePendingPayments } from "../orders/order.placement.service.js";
 import { reconcileOnboardingPayments } from "../../lib/rider-onboarding-payment.service.js";
 import { reconcileMerchantSubscriptionPayments } from "../../lib/merchant-subscription-payment-reconcile.service.js";
 import { reconcileRideFarePayments } from "../../lib/ride-fare-payment-reconcile.service.js";
+import { reconcileParcelFarePayments } from "../../lib/parcel-fare-payment-reconcile.service.js";
 import { reconcileAnchoredPayments } from "../../lib/payment/anchored-payment-recovery.js";
 import { reconcileWalletTopups } from "../../lib/wallet-topup-payment.service.js";
 import { reconcileMerchantOnboardingPayments } from "../../lib/merchant-onboarding-payment-reconcile.service.js";
@@ -70,6 +71,9 @@ export async function paymentInternalRoutes(app: FastifyInstance) {
         );
         await reconcileRideFarePayments().catch((err) =>
           req.log.error({ err }, "reconcile_ride_fare")
+        );
+        await reconcileParcelFarePayments().catch((err) =>
+          req.log.error({ err }, "reconcile_parcel_fare")
         );
         await reconcileAnchoredPayments().catch((err) =>
           req.log.error({ err }, "reconcile_anchored_payments")

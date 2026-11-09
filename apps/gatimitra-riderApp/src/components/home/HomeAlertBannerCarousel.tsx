@@ -11,6 +11,7 @@ import {
 export type HomeBannerSlideType =
   | "account_restricted"
   | "penalty"
+  | "wallet_min_balance"
   | "ride_payment_hold"
   | "subscription"
   | "network";
@@ -25,6 +26,7 @@ export type HomeBannerSlide = {
 const DEFAULT_DURATION_MS: Record<HomeBannerSlideType, number> = {
   account_restricted: 10_000,
   penalty: 30_000,
+  wallet_min_balance: 20_000,
   ride_payment_hold: 15_000,
   subscription: 15_000,
   network: 12_000,

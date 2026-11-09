@@ -1,5 +1,6 @@
 import { getSql } from "../db/client.js";
 import { readRideRiderPayoutSnapshot } from "./ride-rider-payout-snapshot.js";
+import { getRiderSettlementSummary, type RiderSettlementSummary } from "./rider-settlement-summary.js";
 
 export type RiderLedgerSegment =
   | "all"
@@ -68,7 +69,33 @@ export type RiderLedgerEntryDto = {
   orderPublicId: string | null;
   createdAt: string;
   rejectionReason: string | null;
+  /**
+   * Set for wallet rows written by a Ride/Parcel settlement:
+   *   cash_platform_share — cash job, platform's share deducted from the wallet
+   *   cash_top_up         — cash job paid less than the earning, company top-up
+   *   online_earning      — customer paid online, earning credited
+   */
+  settlementKind: RiderSettlementKind | null;
 };
+
+export type RiderSettlementKind = "cash_platform_share" | "cash_top_up" | "online_earning";
+
+const SETTLEMENT_REF_TYPES = new Set(["ride_settlement", "parcel_settlement"]);
+
+function settlementKindForRow(row: LedgerRow): RiderSettlementKind | null {
+  const refType = row.ref_type?.toLowerCase() ?? "";
+  const ref = row.ref?.trim() ?? "";
+  // ride_cash_settle rows written before 0649 carry ref_type ride_settlement too.
+  if (!SETTLEMENT_REF_TYPES.has(refType) && !/^(ride|parcel)_cash_settle:\d+$/.test(ref)) return null;
+  const entryType = row.entry_type.toLowerCase();
+  if (entryType === "adjustment") return "cash_platform_share";
+  if (entryType !== "earning") return null;
+  const meta = row.metadata ?? {};
+  const method = String(meta.paymentMethod ?? "").toLowerCase();
+  const source = String(meta.source ?? "").toLowerCase();
+  if (method === "cash" || source.endsWith("cash_settlement")) return "cash_top_up";
+  return "online_earning";
+}
 
 export type RiderLedgerSummaryDto = {
   totalEarnings: number;
@@ -120,6 +147,12 @@ function resolveServiceType(row: LedgerRow, orderTypeByCoreId?: Map<number, stri
 
 function categoryForRow(row: LedgerRow, orderTypeByCoreId?: Map<number, string | null>): string {
   const entryType = row.entry_type.toLowerCase();
+  // A cash job's platform-share debit is part of that ride/parcel, not a manual adjustment.
+  if (settlementKindForRow(row) === "cash_platform_share") {
+    const service = resolveServiceType(row, orderTypeByCoreId);
+    if (service === "parcel") return "parcel";
+    if (service === "person_ride" || service === "ride") return "ride";
+  }
   if (entryType === "subscription_fee") return "subscriptions";
   if (entryType === "penalty" || entryType === "penalty_reversal") return "penalties";
   if (
@@ -352,9 +385,17 @@ function extractOrderCoreIdFromRow(row: LedgerRow): number | null {
     if (typeof value === "string" && /^\d+$/.test(value.trim())) return Number(value.trim());
   }
 
+  const settlementOrder = meta.orderCoreId;
+  if (typeof settlementOrder === "number" && Number.isFinite(settlementOrder) && settlementOrder > 0) {
+    return settlementOrder;
+  }
+
   const ref = row.ref?.trim() ?? "";
   const penaltyMatch = ref.match(/^rider_cancel_pen:(\d+):/);
   if (penaltyMatch) return Number(penaltyMatch[1]);
+
+  const settleMatch = ref.match(/^(?:ride|parcel)_cash_settle:(\d+)$/);
+  if (settleMatch) return Number(settleMatch[1]);
 
   const earningMatch = ref.match(/^rider_earn:(?:delivery|tip):(\d+)$/);
   if (earningMatch) return Number(earningMatch[1]);
@@ -428,6 +469,7 @@ function mapRow(
     orderPublicId: resolvedPublicId,
     createdAt: new Date(row.created_at).toISOString(),
     rejectionReason: extractRejectionReason(row),
+    settlementKind: settlementKindForRow(row),
   };
 }
 
@@ -930,6 +972,8 @@ export type RiderLedgerEntryDetailDto = RiderLedgerEntryDto & {
   settlementDifferenceAmount: number | null;
   settlementDispatchOfferAmount: number | null;
   settlementFinalAmount: number | null;
+  /** Full Ride/Parcel settlement this wallet row belongs to (cash vs earning vs wallet). */
+  settlement: RiderSettlementSummary | null;
 };
 
 function metaString(meta: Record<string, unknown>, key: string): string | null {
@@ -1047,5 +1091,23 @@ export async function getRiderLedgerEntryDetail(
     settlementFinalAmount: settlementRaw
       ? numOrNull(settlementRaw.final_settlement_amount)
       : null,
+    settlement: await readLinkedSettlement(riderId, row, mapped),
   };
+}
+
+/** The Ride/Parcel settlement a wallet row was posted by (or belongs to), if any. */
+async function readLinkedSettlement(
+  riderId: number,
+  row: LedgerRow,
+  mapped: RiderLedgerEntryDto
+): Promise<RiderSettlementSummary | null> {
+  const isOrderEarning = /^rider_earn:delivery:\d+$/.test(row.ref?.trim() ?? "");
+  if (mapped.settlementKind == null && !isOrderEarning) return null;
+  const coreId = extractOrderCoreIdFromRow(row);
+  if (coreId == null) return null;
+  try {
+    return await getRiderSettlementSummary(riderId, coreId);
+  } catch {
+    return null;
+  }
 }

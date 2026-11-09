@@ -79,9 +79,27 @@ export function isRiderUpiPaymentLedgerEntry(entry: RiderLedgerEntry): boolean {
   return false;
 }
 
+/** Wallet row written by a Ride/Parcel settlement — opens the full breakdown. */
+export function isSettlementLedgerEntry(entry: RiderLedgerEntry): boolean {
+  return entry.settlementKind != null;
+}
+
 export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): string {
   const entryType = entry.entryType.toLowerCase();
   const category = ledgerCategoryLabel(entry, t);
+
+  // Cash jobs: the cash itself never touches the wallet — only the difference
+  // between it and the rider's earning does. Say which way and why.
+  if (entry.settlementKind === "cash_platform_share") {
+    return entry.category === "parcel"
+      ? t("ledger.titleParcelCashShare", "Cash Parcel · Platform Share")
+      : t("ledger.titleRideCashShare", "Cash Ride · Platform Share");
+  }
+  if (entry.settlementKind === "cash_top_up") {
+    return entry.category === "parcel"
+      ? t("ledger.titleParcelCashTopUp", "Cash Parcel · Company Top-up")
+      : t("ledger.titleRideCashTopUp", "Cash Ride · Company Top-up");
+  }
 
   if (entryType === "penalty_reversal") {
     return t("ledger.titlePenaltyReversal", "Penalty Credited Back");
@@ -96,6 +114,9 @@ export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): s
     return t("ledger.titleWithdrawal", "Withdrawal to Bank");
   }
   if (entryType === "manual_add" || entry.refType?.toLowerCase() === "negative_wallet_recovery") {
+    if (/^wallet recharge/i.test(entry.description ?? "")) {
+      return t("ledger.titleWalletRecharge", "Wallet Recharge");
+    }
     return t("ledger.titleWalletSettlement", "Negative wallet settlement");
   }
   if (entry.flow === "debit") {

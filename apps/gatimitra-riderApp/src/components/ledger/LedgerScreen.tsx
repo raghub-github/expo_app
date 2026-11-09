@@ -21,7 +21,11 @@ import { LedgerMonthlySummaryCard } from "@/src/components/ledger/LedgerMonthlyS
 import { LedgerGroupedTransactionList } from "@/src/components/ledger/LedgerGroupedTransactionList";
 import { LedgerPeriodDropdown } from "@/src/components/ledger/LedgerPeriodDropdown";
 import { LedgerGraphView } from "@/src/components/ledger/LedgerGraphView";
-import { groupLedgerEntriesByDay, isRiderUpiPaymentLedgerEntry } from "@/src/components/ledger/ledgerDisplay";
+import {
+  groupLedgerEntriesByDay,
+  isRiderUpiPaymentLedgerEntry,
+  isSettlementLedgerEntry,
+} from "@/src/components/ledger/ledgerDisplay";
 import {
   OrderHistoryDateRangeSheet,
 } from "@/src/components/profile/OrderHistoryDateRangeSheet";
@@ -245,7 +249,7 @@ export function LedgerScreen() {
                   groups={groupedEntries}
                   firstHeaderControl={toggleWithPeriodControl}
                   onEntryPress={(entry) => {
-                    if (isRiderUpiPaymentLedgerEntry(entry)) {
+                    if (isRiderUpiPaymentLedgerEntry(entry) || isSettlementLedgerEntry(entry)) {
                       setDetailEntryId(entry.id);
                     }
                   }}

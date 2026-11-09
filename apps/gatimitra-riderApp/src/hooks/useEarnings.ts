@@ -28,6 +28,7 @@ export const DEFAULT_EARNINGS_SUMMARY: EarningsSummary = {
     penaltyEventId: null,
     penaltyTitle: null,
     penaltyFormattedOrderId: null,
+    walletMinBalance: null,
   },
 };
 

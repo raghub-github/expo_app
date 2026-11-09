@@ -58,6 +58,7 @@ import { pushRoutes } from "./modules/push/push.routes.js";
 import { notificationRoutes, notificationInternalRoutes, startScheduledPoller, startNotificationRetryPoller, startReminderPoller, registerDomainEventHandlers } from "./modules/notifications/index.js";
 import { startHotZoneReconciler } from "./lib/hot-zones/hot-zone-reconciler.js";
 import { startRideOnlineQrReconciler } from "./modules/rides/ride-online-qr-reconciler.js";
+import { startParcelSettlementReconciler } from "./lib/postpaid-settlement-reconciler.js";
 import { verificationAdminRoutes } from "./modules/verification/routes/admin.routes.js";
 import { cashfreeHeaderWebhookRoutes, cashfreeBodySignedWebhookRoutes } from "./modules/verification/routes/webhook.routes.js";
 import { offersRoutes } from "./modules/offers/offers.routes.js";
@@ -70,6 +71,7 @@ import { reconcilePendingPayments } from "./modules/orders/order.placement.servi
 import { reconcileOnboardingPayments } from "./lib/rider-onboarding-payment.service.js";
 import { reconcileMerchantSubscriptionPayments } from "./lib/merchant-subscription-payment-reconcile.service.js";
 import { reconcileRideFarePayments } from "./lib/ride-fare-payment-reconcile.service.js";
+import { reconcileParcelFarePayments } from "./lib/parcel-fare-payment-reconcile.service.js";
 import { reconcileAnchoredPayments } from "./lib/payment/anchored-payment-recovery.js";
 import { reconcileWalletTopups } from "./lib/wallet-topup-payment.service.js";
 import { reconcileMerchantOnboardingPayments } from "./lib/merchant-onboarding-payment-reconcile.service.js";
@@ -1444,6 +1446,13 @@ try {
     app.log.error({ err }, "ride_online_qr_reconciler_start_failed"),
   );
 
+  // Parcel settlement reconciler — re-runs the idempotent delivery settlement for
+  // delivered, paid parcels that have no settlement row (the inline call is
+  // fire-and-forget, so a failure there would otherwise leave the rider unsettled).
+  void startParcelSettlementReconciler().catch((err) =>
+    app.log.error({ err }, "parcel_settlement_reconciler_start_failed"),
+  );
+
   // Verification background workers — R2 mirror + retry queue.
   // Skip locked; running multiple backend replicas is safe.
   const verificationTickMs = 60_000; // 1 min — small enough for the 24h S3 URL expiry pressure
@@ -1690,6 +1699,9 @@ try {
           );
           await reconcileRideFarePayments().catch((err) =>
             app.log.error({ err }, "reconcile_ride_fare")
+          );
+          await reconcileParcelFarePayments().catch((err) =>
+            app.log.error({ err }, "reconcile_parcel_fare")
           );
           await reconcileAnchoredPayments().catch((err) =>
             app.log.error({ err }, "reconcile_anchored_payments")

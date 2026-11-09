@@ -524,6 +524,37 @@ export async function paymentRoutes(app: FastifyInstance) {
             return reply.send({ ok: rf.ok, handler: "ride_fare" });
           }
 
+          // In-app parcel fare — same safety net as ride_fare for a capture whose
+          // client callback never arrived.
+          if (notes && String(notes.purpose ?? "") === "parcel_fare") {
+            const { finalizeParcelFarePaymentFromWebhook } = await import(
+              "../parcel/parcel-fare-payment.service.js"
+            );
+            const pf = await finalizeParcelFarePaymentFromWebhook({
+              razorpayOrderId,
+              razorpayPaymentId,
+              notes,
+              source: "webhook",
+            });
+            await markWebhookProcessed(db, eventId);
+            await logPaymentEvent(db, {
+              eventType: pf.ok ? "WEBHOOK_HANDLED_OK" : "WEBHOOK_HANDLER_FAILED",
+              source: "webhook",
+              razorpayOrderId,
+              razorpayPaymentId,
+              payload: {
+                event,
+                eventId,
+                handler: "parcel_fare",
+                ok: pf.ok,
+                idempotent: pf.ok ? pf.idempotent : null,
+                errorCode: pf.ok ? null : pf.code,
+                durationMs: Date.now() - startedAtMs,
+              },
+            });
+            return reply.send({ ok: pf.ok, handler: "parcel_fare" });
+          }
+
           const result = await finalizePendingOrderFromWebhook(db, {
             razorpayOrderId,
             razorpayPaymentId,
@@ -611,6 +642,28 @@ export async function paymentRoutes(app: FastifyInstance) {
             refundStatus,
             gatewayPayload: { verifiedBy: "razorpay_webhook", event, payload: payloadObject },
           });
+
+          // Ride / parcel paid online and already settled: the rider has been paid,
+          // so flag the settlement for an admin adjustment instead of reversing it.
+          if (event === "refund.processed") {
+            try {
+              const { flagSettlementsForRefund } = await import(
+                "../../lib/postpaid-settlement-posting.js"
+              );
+              await flagSettlementsForRefund({
+                razorpayPaymentId,
+                refundId,
+                amountPaise: Number.isFinite(Number(refundEntity?.amount))
+                  ? Number(refundEntity?.amount)
+                  : null,
+              });
+            } catch (err) {
+              console.warn(
+                "[razorpay webhook] settlement refund flag failed:",
+                (err as Error)?.message ?? err
+              );
+            }
+          }
 
           // Onboarding-fee refund reflection: match by razorpay payment id
           // against onboarding_payments.payment_id (set at verify). Keeps the
@@ -761,8 +814,10 @@ export async function paymentRoutes(app: FastifyInstance) {
           // Direct-online person-ride fare: the backend computes the authoritative
           // amount + durably anchors the attempt (RIDE_FARE_PAYMENT_INITIATED) so a
           // captured fare is recoverable if the client callback is lost.
-          purpose: z.enum(["ride_fare"]).optional(),
+          purpose: z.enum(["ride_fare", "parcel_fare"]).optional(),
           businessOrderId: z.string().max(64).optional(),
+          /** parcel_fare only: GatiCash the customer applies; the gateway charges the rest. */
+          gatiCashAmount: z.number().nonnegative().optional(),
         }),
         response: {
           200: z.object({
@@ -776,14 +831,16 @@ export async function paymentRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { amount, currency, receipt, pendingId, purpose, businessOrderId } = req.body as {
-        amount: number;
-        currency?: string;
-        receipt?: string;
-        pendingId?: string;
-        purpose?: "ride_fare";
-        businessOrderId?: string;
-      };
+      const { amount, currency, receipt, pendingId, purpose, businessOrderId, gatiCashAmount } =
+        req.body as {
+          amount: number;
+          currency?: string;
+          receipt?: string;
+          pendingId?: string;
+          purpose?: "ride_fare" | "parcel_fare";
+          businessOrderId?: string;
+          gatiCashAmount?: number;
+        };
       const env = getEnv();
 
       // Direct-online person-ride fare: delegate to the ride service, which
@@ -799,6 +856,27 @@ export async function paymentRoutes(app: FastifyInstance) {
         }
         const { createRideFarePaymentOrder } = await import("../rides/ride-payment.service.js");
         const res = await createRideFarePaymentOrder({ customerSub, orderRef: businessOrderId });
+        if (!res.ok) {
+          return reply.status((res.statusCode as 400) ?? 400).send({ error: res.code, message: res.message });
+        }
+        return { orderId: res.orderId, keyId: res.keyId, amount: res.amount, currency: res.currency };
+      }
+
+      // In-app parcel fare: server-computed amount + PARCEL_FARE_PAYMENT_INITIATED anchor.
+      if (purpose === "parcel_fare") {
+        const customerSub = req.auth?.sub;
+        if (!customerSub || req.auth?.role !== "customer") {
+          return reply.status(400).send({ error: "CUSTOMER_REQUIRED", message: "Customer account required." });
+        }
+        if (!businessOrderId) {
+          return reply.status(400).send({ error: "ORDER_REQUIRED", message: "businessOrderId is required for parcel_fare." });
+        }
+        const { createParcelFarePaymentOrder } = await import("../parcel/parcel-fare-payment.service.js");
+        const res = await createParcelFarePaymentOrder({
+          customerSub,
+          orderRef: businessOrderId,
+          gatiCashAmount,
+        });
         if (!res.ok) {
           return reply.status((res.statusCode as 400) ?? 400).send({ error: res.code, message: res.message });
         }

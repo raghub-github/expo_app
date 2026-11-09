@@ -16,9 +16,11 @@ import { auth } from "../../../plugins/auth.js";
 import { getEnv } from "../../../config/env.js";
 import {
   defaultReportRange,
+  listPostpaidSettlements,
   loadCashRecoveryReport,
   loadNegativeWalletWatchlist,
   loadRideSettlementSummary,
+  resolveSettlementReconciliation,
 } from "./rideSettlement.reports.js";
 
 function isAdminLikeRole(r: string): boolean {
@@ -114,6 +116,26 @@ const watchlistResponseSchema = z.object({
   ),
 });
 
+const settlementsQuerySchema = rangeQuerySchema.extend({
+  service: z.enum(["person_ride", "parcel"]).optional(),
+  method: z.enum(["cash", "online"]).optional(),
+  status: z.enum(["pending", "settled", "failed", "reversed"]).optional(),
+  reconciliation: z.enum(["none", "required", "resolved"]).optional(),
+  q: z.string().max(80).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+const resolveBodySchema = z.object({ note: z.string().trim().min(3).max(500) });
+
+/** Writes are super-admin only; reads stay open to the admin-like roles above. */
+function canResolve(req: FastifyRequest): boolean {
+  if (internalSecretGrantsAdmin(req)) {
+    return String(req.headers["x-actor-role"] ?? "") === "super_admin";
+  }
+  return req.auth?.role === "super_admin";
+}
+
 function resolveRange(q: z.infer<typeof rangeQuerySchema>): {
   fromIso: string;
   toIso: string;
@@ -185,6 +207,40 @@ export const rideSettlementReportsRoutes: FastifyPluginAsync = async (app) => {
       async () => {
         const items = await loadNegativeWalletWatchlist(50);
         return { items };
+      }
+    );
+
+    // Every post-paid settlement (Ride + Parcel): cash vs online, wallet movement,
+    // commission vs subsidy, and reconciliation state. Range defaults to 7 days.
+    admin.get(
+      "/settlements",
+      { schema: { querystring: settlementsQuerySchema } },
+      async (req) => {
+        const q = settlementsQuerySchema.parse(req.query ?? {});
+        return listPostpaidSettlements({ ...resolveRange(q), ...q });
+      }
+    );
+
+    admin.post(
+      "/settlements/:settlementId/resolve",
+      {
+        schema: {
+          params: z.object({ settlementId: z.string().min(1).max(80) }),
+          body: resolveBodySchema,
+        },
+      },
+      async (req, reply) => {
+        if (!canResolve(req)) {
+          return reply.code(403).send({ error: "forbidden", reason: "super_admin_required" });
+        }
+        const { settlementId } = req.params as { settlementId: string };
+        const { note } = resolveBodySchema.parse(req.body ?? {});
+        const actorHeader = req.headers["x-actor-email"];
+        const actor =
+          (typeof actorHeader === "string" && actorHeader.trim()) || req.auth?.sub || "super_admin";
+        const ok = await resolveSettlementReconciliation({ settlementId, note, actor });
+        if (!ok) return reply.code(409).send({ error: "not_pending_reconciliation" });
+        return { ok: true };
       }
     );
   });

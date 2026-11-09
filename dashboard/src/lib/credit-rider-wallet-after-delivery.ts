@@ -66,7 +66,11 @@ export async function creditRiderWalletForDeliveredCoreOrder(
     formattedOrderId: row.formatted_order_id?.trim() || null,
   });
 
-  if (!result.credited && result.error && result.error !== "zero_earning") {
+  if (
+    !result.credited &&
+    result.error &&
+    !["zero_earning", "postpaid_settlement_ssot", "ride_settlement_ssot"].includes(result.error)
+  ) {
     console.warn("[creditRiderWalletForDeliveredCoreOrder]", ordersCoreId, result.error);
   }
 }

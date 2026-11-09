@@ -324,6 +324,19 @@ function normalizeBlockedServiceName(
   return null;
 }
 
+const RiderWalletMinBalanceSchema = z.object({
+  mode: z.enum(["off", "warn", "enforce"]),
+  threshold: z.number(),
+  balance: z.number(),
+  shortfall: z.number(),
+  belowMinimum: z.boolean(),
+  restricted: z.boolean(),
+  restrictedServices: z.array(z.enum(["parcel", "person_ride"])),
+  message: z.string().nullable(),
+});
+
+export type RiderWalletMinBalance = z.infer<typeof RiderWalletMinBalanceSchema>;
+
 const AccountRestrictionsSchema = z
   .object({
     accountRestricted: z.boolean().optional(),
@@ -339,6 +352,8 @@ const AccountRestrictionsSchema = z
     penaltyEventId: z.string().nullable().optional(),
     penaltyTitle: z.string().nullable().optional(),
     penaltyFormattedOrderId: z.string().nullable().optional(),
+    /** ₹200 minimum-balance status for Ride + Parcel (absent on older backends). */
+    walletMinBalance: RiderWalletMinBalanceSchema.optional(),
   })
   .transform((raw) => {
     const walletBlockServices =
@@ -388,6 +403,7 @@ const AccountRestrictionsSchema = z
       penaltyEventId: raw.penaltyEventId?.trim() || null,
       penaltyTitle: raw.penaltyTitle?.trim() || null,
       penaltyFormattedOrderId: raw.penaltyFormattedOrderId?.trim() || null,
+      walletMinBalance: raw.walletMinBalance ?? null,
     };
   });
 
@@ -442,6 +458,7 @@ const EarningsSummarySchema = z.object({
       penaltyEventId: null,
       penaltyTitle: null,
       penaltyFormattedOrderId: null,
+      walletMinBalance: null,
     }
   ),
 });
@@ -480,6 +497,35 @@ const RiderLedgerSummarySchema = z.object({
   monthLabel: z.string(),
 });
 
+/** One Ride/Parcel settlement: cash collected vs earned, and the wallet movement between them. */
+const RiderOrderSettlementSchema = z.object({
+  settlementId: z.string(),
+  orderCoreId: z.number(),
+  orderId: z.string(),
+  serviceType: z.enum(["person_ride", "parcel"]),
+  paymentMethod: z.enum(["cash", "online"]),
+  customerPayable: z.number(),
+  cashCollected: z.number(),
+  platformCollected: z.number(),
+  riderEntitlement: z.number(),
+  walletCredit: z.number(),
+  walletDebit: z.number(),
+  walletImpact: z.number(),
+  platformShare: z.number(),
+  promotionalSubsidy: z.number(),
+  tax: z.number(),
+  tip: z.number(),
+  incentive: z.number(),
+  walletBalanceBefore: z.number().nullable(),
+  walletBalanceAfter: z.number().nullable(),
+  status: z.string(),
+  reconciliationStatus: z.string(),
+  settledAt: z.string(),
+  explanation: z.string(),
+});
+
+export type RiderOrderSettlement = z.infer<typeof RiderOrderSettlementSchema>;
+
 const RiderLedgerEntryDetailSchema = z.object({
   id: z.number(),
   entryType: z.string(),
@@ -508,6 +554,11 @@ const RiderLedgerEntryDetailSchema = z.object({
   settlementDifferenceAmount: z.number().nullable().optional(),
   settlementDispatchOfferAmount: z.number().nullable().optional(),
   settlementFinalAmount: z.number().nullable().optional(),
+  settlementKind: z
+    .enum(["cash_platform_share", "cash_top_up", "online_earning"])
+    .nullable()
+    .optional(),
+  settlement: RiderOrderSettlementSchema.nullable().optional(),
 });
 
 export type RiderLedgerEntryDetail = z.infer<typeof RiderLedgerEntryDetailSchema>;
@@ -526,6 +577,10 @@ const RiderLedgerEntrySchema = z.object({
   orderPublicId: z.string().nullable(),
   createdAt: z.string(),
   rejectionReason: z.string().nullable().optional(),
+  settlementKind: z
+    .enum(["cash_platform_share", "cash_top_up", "online_earning"])
+    .nullable()
+    .optional(),
 });
 
 const RiderLedgerResponseSchema = z.object({
@@ -1232,7 +1287,9 @@ export const riderApi = {
       orderId: z.string(),
       customerBill: z.number(),
       companyReceivable: z.number(),
+      riderEntitlement: z.number().optional(),
       walletDebit: z.number(),
+      walletCredit: z.number().optional(),
       walletBalanceAfter: z.number().nullable(),
       settlementId: z.string(),
     });
@@ -1243,6 +1300,22 @@ export const riderApi = {
         headers: { "content-type": "application/json" },
         responseSchema,
       }
+    );
+  },
+
+  /**
+   * Settlement for a completed Ride/Parcel. settlement is null while payment is
+   * still pending; walletMinBalance is the ₹200 minimum-balance status.
+   */
+  async getOrderSettlement(orderId: string) {
+    const client = createApiClient();
+    const responseSchema = z.object({
+      settlement: RiderOrderSettlementSchema.nullable(),
+      walletMinBalance: RiderWalletMinBalanceSchema,
+    });
+    return client.request<z.infer<typeof responseSchema>>(
+      `/v1/rider/orders/${encodeURIComponent(orderId)}/settlement`,
+      { method: "GET", responseSchema }
     );
   },
 

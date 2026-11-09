@@ -239,9 +239,15 @@ export function ParcelFareCheckoutScreen({ order, onBack, initiallyPaid = false 
     }
     setPayingFare(true);
     try {
+      // purpose + businessOrderId: the backend computes the fare and anchors this
+      // attempt (PARCEL_FARE_PAYMENT_INITIATED) so a captured payment is recovered
+      // by the webhook/reconciler even if this app is killed before confirming.
       const rz = await paymentService.createRazorpayOrder({
         amountPaise: Math.round(payable * 100),
         receipt: `parcel_${order.orderId}`,
+        purpose: "parcel_fare",
+        businessOrderId: order.orderId,
+        gatiCashAmount: gatiCashApplyAmount,
       });
       setRazorpayParams({
         orderId: rz.orderId,

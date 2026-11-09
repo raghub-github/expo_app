@@ -324,6 +324,22 @@ export async function creditRiderOrderEarningOnDelivered(
   }
 
   const sql = getSql();
+
+  // Post-paid Ride and Parcel settle in the backend settlement engine
+  // (backend/src/lib/postpaid-settlement.ts), which nets the rider's earning
+  // against any cash they collected. Crediting the full earning here as well paid
+  // every cash job twice. A settled ride is final; a delivered, paid parcel is
+  // settled by the backend's parcel-settlement reconciler within minutes.
+  if (input.orderType === "parcel") {
+    return { credited: false, deliveryCredited: false, tipCredited: false, error: "postpaid_settlement_ssot" };
+  }
+  if (input.orderType === "person_ride") {
+    const settled = await sql`SELECT settlement_id FROM orders_ride WHERE order_id = ${coreId} LIMIT 1`;
+    if ((settled[0] as { settlement_id?: string | null } | undefined)?.settlement_id) {
+      return { credited: false, deliveryCredited: false, tipCredited: false, error: "ride_settlement_ssot" };
+    }
+  }
+
   let deliveryFee = input.deliveryFee;
   let tipAmount = input.tipAmount;
   let orderIdText = input.orderIdText?.trim() || null;

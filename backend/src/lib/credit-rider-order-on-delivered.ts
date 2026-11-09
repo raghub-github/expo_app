@@ -28,6 +28,7 @@ import {
   resolveOrderLegVehicleType,
 } from "./resolve-rider-legs-for-order.js";
 import type { DispatchServiceType } from "./order-assignment-engine.js";
+import { loadParcelPaymentContext, settleParcelOnDelivery } from "./parcel-postpaid-settlement.js";
 
 export type RiderOrderWalletServiceType = "food" | "parcel" | "person_ride";
 
@@ -607,7 +608,15 @@ export async function creditRiderOrderEarningOnDelivered(
     deliveryFee = promisedDeliveryEarning;
   }
 
-  if (deliveryFee <= 0 && tipAmount <= 0 && dynamicIncentive <= 0) {
+  // A parcel paid in CASH settles net against the cash the rider is holding
+  // (lib/postpaid-settlement.ts): wallet Δ = earning − cash. Crediting the
+  // delivery earning on its own as well paid the rider twice. Online parcels keep
+  // the itemized credits below and are recorded as a settlement afterwards.
+  const parcelPayment = serviceType === "parcel" ? await loadParcelPaymentContext(coreId) : null;
+  const settleNetAgainstCash = parcelPayment?.method === "cash";
+
+  // A cash parcel still settles at a ₹0 earning: the rider holds the customer's cash.
+  if (deliveryFee <= 0 && tipAmount <= 0 && dynamicIncentive <= 0 && !settleNetAgainstCash) {
     return { credited: false, deliveryCredited: false, tipCredited: false, error: "zero_earning" };
   }
 
@@ -654,7 +663,20 @@ export async function creditRiderOrderEarningOnDelivered(
   };
 
   try {
-    if (deliveryFee > 0) {
+    if (settleNetAgainstCash && parcelPayment) {
+      const outcome = await settleParcelOnDelivery({
+        orderCoreId: coreId,
+        orderIdText: orderIdText || String(coreId),
+        riderId,
+        deliveryEarning: round2(Math.max(0, deliveryFee)),
+        dynamicIncentive,
+        ctx: parcelPayment,
+        ledgerMeta: { ...baseMeta, settlement: settlementMeta },
+      });
+      deliveryCredited = outcome.status !== "legacy_flagged";
+    }
+
+    if (deliveryFee > 0 && !settleNetAgainstCash) {
       const ref = deliveryRef(coreId);
       if (!(await ledgerRefExists(riderId, ref))) {
         const balanceAfter = round2((await readWalletBalance(riderId)) + deliveryFee);
@@ -691,7 +713,7 @@ export async function creditRiderOrderEarningOnDelivered(
     // Pay the company-funded dynamic incentive (computed above) as a distinct earning so it
     // shows separately in the rider wallet and matches the dispatch offer. Idempotent;
     // company-funded so the customer's price is unaffected.
-    if (dynamicIncentive > 0) {
+    if (dynamicIncentive > 0 && !settleNetAgainstCash) {
       const ref = dynamicIncentiveRef(coreId);
       if (!(await ledgerRefExists(riderId, ref))) {
         const balanceAfter = round2((await readWalletBalance(riderId)) + dynamicIncentive);
@@ -713,9 +735,34 @@ export async function creditRiderOrderEarningOnDelivered(
 
     const totalRiderEarning = round2(deliveryFee + tipAmount + dynamicIncentive);
     const ledgerTotal = await readLedgerEarningTotal(riderId, coreId);
-    const earningToSync = ledgerTotal > 0 ? ledgerTotal : totalRiderEarning;
+    // A cash parcel's wallet only carries the net movement, so the ledger is not its earning.
+    const earningToSync = settleNetAgainstCash
+      ? totalRiderEarning
+      : ledgerTotal > 0
+        ? ledgerTotal
+        : totalRiderEarning;
     if (earningToSync > 0) {
       await syncRiderEarningOnOrderCore(coreId, earningToSync);
+    }
+
+    if (parcelPayment?.method === "online") {
+      // Audit record only — the wallet was credited line-by-line above.
+      try {
+        await settleParcelOnDelivery({
+          orderCoreId: coreId,
+          orderIdText: orderIdText || String(coreId),
+          riderId,
+          deliveryEarning: round2(Math.max(0, deliveryFee)),
+          dynamicIncentive,
+          ctx: parcelPayment,
+        });
+      } catch (settleErr) {
+        console.warn(
+          "[credit-rider] online parcel settlement record failed:",
+          orderIdText,
+          (settleErr as Error)?.message ?? settleErr
+        );
+      }
     }
 
     try {

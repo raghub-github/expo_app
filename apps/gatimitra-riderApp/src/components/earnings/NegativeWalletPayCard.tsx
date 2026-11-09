@@ -26,8 +26,10 @@ function formatRupee(amount: number) {
 }
 
 /**
- * Earnings-page settle card. Shown ONLY when the wallet balance is negative.
- * Amount is read-only (= abs(balance)). Native Razorpay Android/iOS SDK only.
+ * Earnings-page settle card. Shown when the wallet balance is negative, or below
+ * the Ride/Parcel minimum balance (₹200 by default) while that policy is on.
+ * Amount is read-only and matches the server: the larger of abs(balance) and the
+ * shortfall to the minimum. Native Razorpay Android/iOS SDK only.
  */
 export function NegativeWalletPayCard() {
   const { t } = useTranslation();
@@ -40,7 +42,11 @@ export function NegativeWalletPayCard() {
   const [paying, setPaying] = useState(false);
 
   const balance = earnings?.totalBalance ?? 0;
-  const payable = balance < 0 ? Math.round(-balance * 100) / 100 : 0;
+  const minBalance = earnings?.accountRestrictions?.walletMinBalance ?? null;
+  const negativeDue = balance < 0 ? Math.round(-balance * 100) / 100 : 0;
+  const minBalanceDue = minBalance?.belowMinimum ? minBalance.shortfall : 0;
+  const payable = Math.max(negativeDue, minBalanceDue);
+  const isRecharge = negativeDue <= 0 && minBalanceDue > 0;
   const subscriptionDue = subStatus?.dues?.totalDue ?? 0;
   const canPayFromWallet = subStatus?.dues?.alertBanner?.canPayFromWallet === true;
 
@@ -110,8 +116,8 @@ export function NegativeWalletPayCard() {
     if (paying || payable <= 0) return;
     setPaying(true);
     try {
-      // Subscription dues take priority when present.
-      if (subscriptionDue > 0) {
+      // Subscription dues take priority when they made the wallet negative.
+      if (subscriptionDue > 0 && negativeDue > 0) {
         if (canPayFromWallet) {
           const walletRes = await payDuesFromWallet.mutateAsync();
           await refreshAll();
@@ -258,7 +264,10 @@ export function NegativeWalletPayCard() {
         }
       );
       try {
-        const r = await runNative(order, "Negative wallet settlement");
+        const r = await runNative(
+          order,
+          isRecharge ? "Wallet recharge" : "Negative wallet settlement"
+        );
         stopPenaltyPoll();
         if (penaltyConfirmed) return;
         penaltyConfirmed = true;
@@ -302,6 +311,8 @@ export function NegativeWalletPayCard() {
   }, [
     paying,
     payable,
+    negativeDue,
+    isRecharge,
     subscriptionDue,
     canPayFromWallet,
     payDuesFromWallet,
@@ -318,13 +329,21 @@ export function NegativeWalletPayCard() {
 
   if (payable <= 0) return null;
 
-  const reason =
-    subscriptionDue > 0
+  const minimumLabel = minBalance ? formatRupee(minBalance.threshold) : "200";
+  const reason = isRecharge
+    ? minBalance?.message ??
+      t(
+        "earnings.minBalanceWarn",
+        "Your available wallet balance is below ₹{{min}}. Recharge your wallet to continue receiving new assignments.",
+        { min: minimumLabel }
+      )
+    : subscriptionDue > 0
       ? t("earnings.negativeSubscription", "Subscription dues have made your wallet negative.")
       : t(
           "earnings.negativePenalty",
           "A penalty has made your wallet negative. Clear it to receive orders."
         );
+  const includesMinimum = !isRecharge && minBalanceDue > negativeDue;
 
   return (
     <View style={styles.card}>
@@ -334,9 +353,22 @@ export function NegativeWalletPayCard() {
         </View>
         <View style={styles.textCol}>
           <Text style={styles.title}>
-            {t("earnings.settleTitle", "Clear your negative balance")}
+            {isRecharge
+              ? minBalance?.restricted
+                ? t("earnings.rechargeRequiredTitle", "Recharge required for Ride & Parcel")
+                : t("earnings.rechargeTitle", "Recharge your wallet")
+              : t("earnings.settleTitle", "Clear your negative balance")}
           </Text>
           <Text style={styles.sub}>{reason}</Text>
+          {includesMinimum ? (
+            <Text style={styles.sub}>
+              {t(
+                "earnings.includesMinimum",
+                "Includes the amount needed to reach the ₹{{min}} minimum balance.",
+                { min: minimumLabel }
+              )}
+            </Text>
+          ) : null}
         </View>
       </View>
       <Pressable

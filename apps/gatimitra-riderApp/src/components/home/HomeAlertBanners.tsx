@@ -32,6 +32,8 @@ type AccountRestrictedBannerProps = {
   blockedServices?: string[];
   allServicesBlacklisted?: boolean;
   globalWalletBlock?: boolean;
+  /** Specific cause to show instead of "contact Support" (e.g. low wallet balance). */
+  reasonOverride?: string | null;
   onSupport?: () => void;
 };
 
@@ -39,12 +41,14 @@ export function AccountRestrictedBanner({
   blockedServices = [],
   allServicesBlacklisted = false,
   globalWalletBlock = false,
+  reasonOverride = null,
   onSupport,
 }: AccountRestrictedBannerProps) {
   const { t } = useTranslation();
 
-  const restrictedSub =
-    allServicesBlacklisted || blockedServices.length >= 3
+  const restrictedSub = reasonOverride
+    ? reasonOverride
+    : allServicesBlacklisted || blockedServices.length >= 3
       ? globalWalletBlock
         ? t(
             "home.accountRestrictedWalletAll",
@@ -184,6 +188,71 @@ export function PenaltyBanner({
             {paying
               ? t("home.payingPenalty", "Processing…")
               : t("home.payPenalty", "Pay ₹{{amount}}", {
+                  amount: Number.isInteger(amount) ? amount : amount.toFixed(2),
+                })}
+          </Text>
+        </TouchableOpacity>
+        <BannerPagerIndicators />
+      </View>
+    </View>
+  );
+}
+
+type WalletMinBalanceBannerProps = {
+  /** Exact recharge that restores the minimum. */
+  amount: number;
+  message: string | null;
+  restricted: boolean;
+  paying?: boolean;
+  onPay?: () => void;
+};
+
+/**
+ * Wallet below the Ride/Parcel minimum balance (₹200 by default). Pay opens the
+ * same native Razorpay wallet payment as a negative balance; the server fixes the
+ * amount.
+ */
+export function WalletMinBalanceBanner({
+  amount,
+  message,
+  restricted,
+  paying = false,
+  onPay,
+}: WalletMinBalanceBannerProps) {
+  const { t } = useTranslation();
+  if (amount <= 0) return null;
+  return (
+    <View style={styles.penaltyWrap}>
+      <View style={styles.penaltyIcon}>
+        <Ionicons name="wallet" size={16} color="#ffffff" />
+      </View>
+      <View style={styles.bannerTextCol}>
+        <Text style={styles.penaltyTitle}>
+          {restricted
+            ? t("home.walletMinBalanceRestrictedTitle", "Recharge to get Ride & Parcel orders")
+            : t("home.walletMinBalanceTitle", "Low wallet balance")}
+        </Text>
+        <Text style={styles.penaltySub} numberOfLines={2}>
+          {message ??
+            t(
+              "home.walletMinBalanceSub",
+              "Your available wallet balance is below the minimum. Recharge your wallet to continue receiving new assignments."
+            )}
+        </Text>
+      </View>
+      <View style={styles.ctaCol}>
+        <TouchableOpacity
+          style={[styles.payBtn, paying && styles.payBtnDisabled]}
+          disabled={paying}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          delayPressIn={0}
+          activeOpacity={0.85}
+          onPress={onPay ?? (() => router.push("/(tabs)/earnings"))}
+        >
+          <Text style={styles.payBtnText}>
+            {paying
+              ? t("home.payingPenalty", "Processing…")
+              : t("home.rechargeAmount", "Recharge ₹{{amount}}", {
                   amount: Number.isInteger(amount) ? amount : amount.toFixed(2),
                 })}
           </Text>

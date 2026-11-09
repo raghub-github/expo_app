@@ -318,3 +318,158 @@ export async function loadNegativeWalletWatchlist(
     };
   });
 }
+
+// ---------------------------------------------------------------------------
+// Post-paid settlement ledger (Person Ride + Parcel) — one row per job, with
+// the cash/online split, the wallet movement and its reconciliation state.
+// Requires migration 0649.
+// ---------------------------------------------------------------------------
+
+export type SettlementListFilters = RideReportRange & {
+  service?: "person_ride" | "parcel";
+  method?: "cash" | "online";
+  status?: "pending" | "settled" | "failed" | "reversed";
+  reconciliation?: "none" | "required" | "resolved";
+  /** Order id / formatted order id / settlement id. */
+  q?: string;
+  limit: number;
+  offset: number;
+};
+
+export type SettlementListRow = {
+  settlementId: string;
+  orderCoreId: number;
+  orderId: string;
+  riderId: number | null;
+  customerId: number | null;
+  serviceType: "person_ride" | "parcel";
+  paymentMode: string;
+  customerPayable: number;
+  customerPaid: number;
+  cashCollected: number;
+  riderEntitlement: number;
+  walletCredit: number;
+  walletDebit: number;
+  platformShare: number;
+  promotionalSubsidy: number;
+  tax: number;
+  tip: number;
+  incentive: number;
+  discount: number;
+  walletBalanceBefore: number | null;
+  walletBalanceAfter: number | null;
+  gatewayPaymentId: string | null;
+  status: string;
+  reconciliationStatus: string;
+  reconciliationReason: string | null;
+  postedAt: string;
+};
+
+export async function listPostpaidSettlements(
+  f: SettlementListFilters
+): Promise<{ items: SettlementListRow[]; total: number }> {
+  const sql = getSql();
+  const from = new Date(f.fromIso);
+  const to = new Date(f.toIso);
+  const q = f.q?.trim() || null;
+  const where = sql`
+    s.posted_at >= ${from} AND s.posted_at < ${to}
+    ${f.service ? sql`AND s.service_type = ${f.service}` : sql``}
+    ${f.method === "cash" ? sql`AND s.payment_mode = 'cash'` : sql``}
+    ${f.method === "online" ? sql`AND s.payment_mode <> 'cash'` : sql``}
+    ${f.status ? sql`AND s.status = ${f.status}` : sql``}
+    ${f.reconciliation ? sql`AND s.reconciliation_status = ${f.reconciliation}` : sql``}
+    ${
+      q
+        ? sql`AND (s.settlement_id = ${q} OR s.order_id_text = ${q} OR c.formatted_order_id = ${q})`
+        : sql``
+    }
+  `;
+  const rows = await sql<Array<Record<string, unknown>>>`
+    SELECT s.settlement_id, s.order_core_id, s.order_id_text, c.formatted_order_id,
+           s.rider_id, s.customer_id, s.service_type, s.payment_mode,
+           s.customer_bill, s.customer_paid, s.cash_collected, s.rider_earnings,
+           s.wallet_credit, s.wallet_debit, s.company_commission, s.promotion_subsidy,
+           s.tax_total, s.tip_amount, s.incentive_amount, s.discount_total,
+           s.wallet_balance_before, s.wallet_balance_after, s.razorpay_payment_id,
+           s.status, s.reconciliation_status, s.reconciliation_reason, s.posted_at,
+           s.metadata->>'platformCommissionPaise' AS commission_paise,
+           s.metadata->>'promotionalSubsidyPaise' AS subsidy_paise,
+           COUNT(*) OVER () AS total
+    FROM ride_settlements s
+    LEFT JOIN orders_core c ON c.id = s.order_core_id
+    WHERE ${where}
+    ORDER BY s.posted_at DESC
+    LIMIT ${f.limit} OFFSET ${f.offset}
+  `;
+  const nullable = (v: unknown) => (v == null ? null : n(v));
+  const items = rows.map((r) => ({
+    settlementId: String(r.settlement_id),
+    orderCoreId: Number(r.order_core_id),
+    orderId: String((r.formatted_order_id as string | null)?.trim() || r.order_id_text),
+    riderId: r.rider_id == null ? null : Number(r.rider_id),
+    customerId: r.customer_id == null ? null : Number(r.customer_id),
+    serviceType: (r.service_type === "parcel" ? "parcel" : "person_ride") as "person_ride" | "parcel",
+    paymentMode: String(r.payment_mode),
+    customerPayable: n(r.customer_bill),
+    customerPaid: n(r.customer_paid),
+    cashCollected: n(r.cash_collected),
+    riderEntitlement: n(r.rider_earnings),
+    walletCredit: n(r.wallet_credit),
+    walletDebit: n(r.wallet_debit),
+    platformShare: r.commission_paise != null ? n(Number(r.commission_paise) / 100) : n(r.company_commission),
+    promotionalSubsidy: r.subsidy_paise != null ? n(Number(r.subsidy_paise) / 100) : n(r.promotion_subsidy),
+    tax: n(r.tax_total),
+    tip: n(r.tip_amount),
+    incentive: n(r.incentive_amount),
+    discount: n(r.discount_total),
+    walletBalanceBefore: nullable(r.wallet_balance_before),
+    walletBalanceAfter: nullable(r.wallet_balance_after),
+    gatewayPaymentId: (r.razorpay_payment_id as string | null) ?? null,
+    status: String(r.status),
+    reconciliationStatus: String(r.reconciliation_status ?? "none"),
+    reconciliationReason: (r.reconciliation_reason as string | null) ?? null,
+    postedAt: new Date(r.posted_at as string).toISOString(),
+  }));
+  return { items, total: rows.length > 0 ? Number(rows[0]!.total) : 0 };
+}
+
+/**
+ * Close a reconciliation item. Records the admin's decision only — any money
+ * correction goes through the audited wallet adjustment tools, never by editing
+ * the settlement or the ledger.
+ */
+export async function resolveSettlementReconciliation(args: {
+  settlementId: string;
+  note: string;
+  actor: string;
+}): Promise<boolean> {
+  const sql = getSql();
+  const stamp = `resolved by ${args.actor} at ${new Date().toISOString()}: ${args.note}`;
+  const rows = await sql<Array<{ order_core_id: string | number; rider_id: number | null }>>`
+    UPDATE ride_settlements
+    SET reconciliation_status = 'resolved',
+        reconciliation_reason = concat_ws(' | ', NULLIF(reconciliation_reason, ''), ${stamp}::text),
+        updated_at = NOW()
+    WHERE settlement_id = ${args.settlementId}
+      AND reconciliation_status = 'required'
+    RETURNING order_core_id, rider_id
+  `;
+  const row = rows[0];
+  if (!row) return false;
+  try {
+    const { recordRideBillingActivity } = await import("./rideBillingActivity.js");
+    await recordRideBillingActivity({
+      orderCoreId: Number(row.order_core_id),
+      riderId: row.rider_id,
+      eventType: "SETTLEMENT_RECONCILIATION_RESOLVED",
+      summary: stamp,
+      payload: { settlementId: args.settlementId },
+      actorType: "admin",
+      actorId: args.actor,
+    });
+  } catch {
+    /* audit row is best-effort; the settlement row carries the stamp */
+  }
+  return true;
+}

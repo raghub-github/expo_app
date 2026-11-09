@@ -36,6 +36,9 @@ const updateBodySchema = z.object({
   cashSettlementEnabled: z.boolean().optional(),
   autoUnblockOnZero: z.boolean().optional(),
   commissionOnToll: z.boolean().optional(),
+  /** Minimum available wallet balance for Ride + Parcel (₹). */
+  minWalletBalance: z.number().min(0).max(100_000).optional(),
+  minBalanceMode: z.enum(["off", "warn", "enforce"]).optional(),
   reason: z.string().max(500).optional(),
 });
 
@@ -45,6 +48,8 @@ const policyResponseSchema = z.object({
   cashSettlementEnabled: z.boolean(),
   autoUnblockOnZero: z.boolean(),
   commissionOnToll: z.boolean(),
+  minWalletBalance: z.number(),
+  minBalanceMode: z.enum(["off", "warn", "enforce"]),
 });
 
 const historyRowSchema = z.object({
@@ -105,6 +110,8 @@ export const rideWalletConfigAdminRoutes: FastifyPluginAsync = async (app) => {
             cashSettlementEnabled: body.cashSettlementEnabled,
             autoUnblockOnZero: body.autoUnblockOnZero,
             commissionOnToll: body.commissionOnToll,
+            minWalletBalance: body.minWalletBalance,
+            minBalanceMode: body.minBalanceMode,
             reason: body.reason ?? null,
           });
           return policy;
