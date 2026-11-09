@@ -477,7 +477,7 @@ export async function riderRoutes(app: FastifyInstance) {
         metadata?: Record<string, unknown>;
       };
       const eventId = `rae_${ulid()}`;
-      const now = new Date();
+      const now = new Date().toISOString(); // bind as string — raw Date params throw (drizzle identity serializer)
 
       if (
         (body.event_type === "unassigned" || body.event_type === "rejected") &&

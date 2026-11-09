@@ -102,7 +102,14 @@ export function PostpaidSettlementsSection() {
           total?: number;
           error?: string;
         };
-        if (!res.ok) throw new Error(json.error || `Load failed (${res.status})`);
+        if (!res.ok) {
+          // 5xx bodies carry internal error names (e.g. "TypeError") — not useful to an admin.
+          throw new Error(
+            res.status >= 500
+              ? `Settlements could not be loaded — server error (${res.status}). Try Refresh.`
+              : json.error || `Load failed (${res.status})`
+          );
+        }
         setRows(Array.isArray(json.items) ? json.items : []);
         setTotal(Number(json.total ?? 0));
         setOffset(nextOffset);
