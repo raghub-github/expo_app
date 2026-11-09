@@ -147,7 +147,7 @@ function AuthCallbackContent() {
           }
           const result = await syncCookiesFromSession(data.session);
           if (!result.ok) {
-            await supabase.auth.signOut();
+            await supabase.auth.signOut({ scope: "local" });
             router.push(`/login?error=${encodeURIComponent(result.error)}`);
             return;
           }
@@ -172,7 +172,7 @@ function AuthCallbackContent() {
         }
         const result = await syncCookiesFromSession(session);
         if (!result.ok) {
-          await supabase.auth.signOut();
+          await supabase.auth.signOut({ scope: "local" });
           router.push(`/login?error=${encodeURIComponent(result.error)}`);
           return;
         }
@@ -185,7 +185,7 @@ function AuthCallbackContent() {
       if (stored?.access_token && stored.refresh_token) {
         const result = await syncCookiesFromSession(stored);
         if (!result.ok) {
-          await supabase.auth.signOut();
+          await supabase.auth.signOut({ scope: "local" });
           router.push(`/login?error=${encodeURIComponent(result.error)}`);
           return;
         }

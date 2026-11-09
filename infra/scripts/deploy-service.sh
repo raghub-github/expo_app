@@ -301,8 +301,10 @@ if [[ $healthy -ne 1 ]]; then
   echo "===== FAILED CONTAINER LOGS ====="
   docker logs "$new_cid" --tail 500 || true
 
-  echo "===== FAILED CONTAINER INSPECT ====="
-  docker inspect "$new_cid" || true
+  # State + health probe history only. NEVER a bare `docker inspect` here: it
+  # includes Config.Env, and this output goes to the CI log.
+  echo "===== FAILED CONTAINER STATE ====="
+  docker inspect --format '{{json .State}}' "$new_cid" || true
 
   docker stop "$new_cid" >/dev/null || true
   docker rm   "$new_cid" >/dev/null || true

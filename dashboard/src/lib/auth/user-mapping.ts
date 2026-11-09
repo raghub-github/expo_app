@@ -142,6 +142,24 @@ export async function getSystemUserByAuthId(
 export async function getSystemUserByEmail(
   email: string | null | undefined
 ): Promise<SystemUser | null> {
+  return lookupSystemUserByEmail(email, false);
+}
+
+/**
+ * Like getSystemUserByEmail, but a failed query THROWS instead of returning null.
+ * Use wherever "no such user" and "could not ask the DB" must not be confused —
+ * login validation turned a query timeout into "account not registered".
+ */
+export async function getSystemUserByEmailStrict(
+  email: string | null | undefined
+): Promise<SystemUser | null> {
+  return lookupSystemUserByEmail(email, true);
+}
+
+async function lookupSystemUserByEmail(
+  email: string | null | undefined,
+  strict: boolean
+): Promise<SystemUser | null> {
   try {
     if (!email || typeof email !== 'string' || email.trim() === '') {
       return null;
@@ -214,7 +232,8 @@ export async function getSystemUserByEmail(
               can_toggle_portal: Boolean(row.can_toggle_portal),
             }];          }
         }
-      } catch {
+      } catch (rawErr) {
+        if (strict) throw rawErr;
         // Ignore raw fallback errors; result stays empty
       }
     }
@@ -250,6 +269,7 @@ export async function getSystemUserByEmail(
 
     return userData;
   } catch (error) {
+    if (strict) throw error;
     if (error instanceof Error) {
       // Only rethrow for actual connection failures (unreachable host, etc.).
       // Do NOT rethrow for "Failed query" — that can be timeout/transient; return null so

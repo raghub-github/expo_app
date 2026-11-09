@@ -10,6 +10,11 @@ export const fetchCache = "force-no-store";
 export default async function ShellLayout({ children }: { children: React.ReactNode }) {
   const session = await resolveCoreSession();
   if (!session.ok) {
+    // 503 = DB unreachable. Do NOT route to /api/auth/denied (it signs the user
+    // out); fail this render so a refresh recovers once the DB is back.
+    if (session.status === 503) {
+      throw new Error("Treasury is temporarily unavailable. Please refresh in a moment.");
+    }
     redirect(session.status === 403 ? "/api/auth/denied" : "/login");
   }
   const user = session.user;

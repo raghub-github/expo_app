@@ -149,7 +149,9 @@ export async function verifyOTP(
  */
 export async function logout(): Promise<AuthResponse> {
   try {
-    const { error } = await supabase.auth.signOut();
+    // "local": logging out here must not revoke this admin's sessions on other
+    // devices and on the other GatiMitra sites that share this Supabase project.
+    const { error } = await supabase.auth.signOut({ scope: "local" });
 
     if (error) {
       return { success: false, error: error.message };

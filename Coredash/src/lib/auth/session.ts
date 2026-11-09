@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { cookies } from "next/headers";
-import { getSql, requiredQuery, safeQuery } from "@/lib/db/client";
+import { getSql, requiredQuery } from "@/lib/db/client";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import {
   COREDASH_ACCESS_COOKIE,
@@ -20,8 +20,8 @@ export type CoreUser = {
 };
 
 export class CoreAuthError extends Error {
-  status: 401 | 403;
-  constructor(status: 401 | 403, message: string) {
+  status: 401 | 403 | 503;
+  constructor(status: 401 | 403 | 503, message: string) {
     super(message);
     this.name = "CoreAuthError";
     this.status = status;
@@ -30,7 +30,8 @@ export class CoreAuthError extends Error {
 
 async function hasSuperAdminAssignment(systemUserId: number): Promise<boolean> {
   const sql = getSql();
-  const rows = await safeQuery(
+  // requiredQuery: a DB fault must throw (→ 503), not read as "not a super admin".
+  const rows = await requiredQuery(
     "sa-roles",
     () =>
       sql<{ ok: number }[]>`
@@ -46,8 +47,7 @@ async function hasSuperAdminAssignment(systemUserId: number): Promise<boolean> {
             OR upper(replace(sr.role_id, '-', '_')) IN ('SUPER_ADMIN', 'SUPERADMIN')
           )
         LIMIT 1
-      `,
-    []
+      `
   );
   return Boolean(rows[0]);
 }
@@ -87,7 +87,8 @@ export async function findActiveSuperAdminByEmail(emailRaw: string) {
 
 export type CoreSessionResult =
   | { ok: true; user: CoreUser }
-  | { ok: false; status: 401 | 403 };
+  /** 503 = the DB could not be asked; the user was not judged. Never sign out on it. */
+  | { ok: false; status: 401 | 403 | 503 };
 
 const SESSION_CACHE_MS = 60_000;
 const SESSION_CACHE_MAX = 500;
@@ -153,20 +154,27 @@ async function resolveCoreSessionUncached(
 
   const email = user.email;
   const sql = getSql();
-  const rows = await safeQuery(
-    "system-user",
-    () =>
-      sql<
-        { id: number; full_name: string; primary_role: string; status: string }[]
-      >`
-        SELECT id, full_name, primary_role::text AS primary_role, status::text AS status
-        FROM system_users
-        WHERE lower(trim(email)) = ${email.trim().toLowerCase()}
-          AND deleted_at IS NULL
-        LIMIT 1
-      `,
-    []
-  );
+  // requiredQuery, not safeQuery: an empty fallback here turned every DB blip
+  // into 403 → /api/auth/denied → sign-out of a legitimate super admin.
+  let rows: { id: number; full_name: string; primary_role: string; status: string }[];
+  try {
+    rows = await requiredQuery(
+      "system-user",
+      () =>
+        sql<
+          { id: number; full_name: string; primary_role: string; status: string }[]
+        >`
+          SELECT id, full_name, primary_role::text AS primary_role, status::text AS status
+          FROM system_users
+          WHERE lower(trim(email)) = ${email.trim().toLowerCase()}
+            AND deleted_at IS NULL
+          LIMIT 1
+        `
+    );
+  } catch {
+    logAuthEvent("FORBIDDEN", { userId: user.id, email, reason: "db_unavailable" });
+    return { ok: false, status: 503 };
+  }
 
   const row = rows[0];
   if (!row) {
@@ -178,7 +186,14 @@ async function resolveCoreSessionUncached(
     logAuthEvent("FORBIDDEN", { userId: user.id, email, reason: "inactive" });
     return { ok: false, status: 403 };
   }
-  if (!(await systemUserIsSuperAdmin(Number(row.id), row.primary_role))) {
+  let isSuperAdmin: boolean;
+  try {
+    isSuperAdmin = await systemUserIsSuperAdmin(Number(row.id), row.primary_role);
+  } catch {
+    logAuthEvent("FORBIDDEN", { userId: user.id, email, reason: "db_unavailable" });
+    return { ok: false, status: 503 };
+  }
+  if (!isSuperAdmin) {
     logAuthEvent("FORBIDDEN", { userId: user.id, email, reason: "not_super_admin" });
     return { ok: false, status: 403 };
   }
@@ -228,7 +243,14 @@ export async function getCurrentCoreUser(): Promise<CoreUser | null> {
 export async function requireCoreUser(): Promise<CoreUser> {
   const result = await resolveCoreSession();
   if (!result.ok) {
-    throw new CoreAuthError(result.status, result.status === 403 ? NOT_AUTHORIZED : "UNAUTHORIZED");
+    throw new CoreAuthError(
+      result.status,
+      result.status === 403
+        ? NOT_AUTHORIZED
+        : result.status === 503
+          ? "Service temporarily unavailable. Please try again in a moment."
+          : "UNAUTHORIZED"
+    );
   }
   return result.user;
 }

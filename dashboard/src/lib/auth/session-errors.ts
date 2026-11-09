@@ -83,14 +83,19 @@ export function shouldClearAuthSession(err: unknown): boolean {
 /**
  * Sign out only when the refresh token is truly dead.
  * Returns true if signOut was attempted.
+ *
+ * Always scope "local": supabase-js defaults to "global", which revokes the
+ * user's refresh tokens on EVERY browser/device — and, because the control
+ * dashboard, Coredash, partner and rider sites share one Supabase project, on
+ * every GatiMitra site too. One tab's dead session must only clear itself.
  */
 export async function signOutIfSessionDead(
-  supabase: { auth: { signOut: () => Promise<unknown> } },
+  supabase: { auth: { signOut: (options?: { scope?: "global" | "local" | "others" }) => Promise<unknown> } },
   err: unknown
 ): Promise<boolean> {
   if (!shouldClearAuthSession(err)) return false;
   try {
-    await supabase.auth.signOut();
+    await supabase.auth.signOut({ scope: "local" });
   } catch {
     // ignore
   }

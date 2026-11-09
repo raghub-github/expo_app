@@ -236,7 +236,10 @@ export default function LoginPage() {
           const errorMessage =
             cookieResult.error ||
             "Your account is not authorized to access this portal. Please contact an administrator.";
-          await supabase.auth.signOut();
+          // "local" only: the default global sign-out revoked this admin's sessions
+          // on every device and every GatiMitra site whenever the server was slow
+          // (a 504 here is "busy", not "rejected").
+          await supabase.auth.signOut({ scope: "local" });
           showLoginError(errorMessage);
           setLoading(false);
           return;
