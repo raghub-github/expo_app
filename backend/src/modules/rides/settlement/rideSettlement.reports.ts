@@ -14,6 +14,7 @@
  */
 
 import { getSql } from "../../../db/client.js";
+import { toTimestamptzParam } from "../../../lib/sql-timestamps.js";
 
 export type RideReportRange = {
   fromIso: string;
@@ -97,8 +98,8 @@ export async function loadRideSettlementSummary(
   range: RideReportRange = defaultReportRange()
 ): Promise<RideSettlementSummary> {
   const sql = getSql();
-  const from = new Date(range.fromIso);
-  const to = new Date(range.toIso);
+  const from = toTimestamptzParam(range.fromIso);
+  const to = toTimestamptzParam(range.toIso);
 
   const [totalsRow] = await sql<
     Array<Record<string, unknown>>
@@ -122,7 +123,7 @@ export async function loadRideSettlementSummary(
       COALESCE(SUM(coupon_discount), 0)::text AS coupon_discount,
       COALESCE(SUM(company_funded_discount), 0)::text AS company_funded_discount
     FROM ride_settlements
-    WHERE posted_at >= ${from} AND posted_at < ${to}
+    WHERE posted_at >= ${from}::timestamptz AND posted_at < ${to}::timestamptz
       AND status <> 'reversed'
   `;
 
@@ -136,7 +137,7 @@ export async function loadRideSettlementSummary(
       COALESCE(SUM(rider_earnings), 0)::text AS rider_earnings,
       COALESCE(SUM(outstanding_amount), 0)::text AS outstanding
     FROM ride_settlements
-    WHERE posted_at >= ${from} AND posted_at < ${to}
+    WHERE posted_at >= ${from}::timestamptz AND posted_at < ${to}::timestamptz
       AND status <> 'reversed'
     GROUP BY payment_mode
     ORDER BY payment_mode ASC
@@ -148,7 +149,7 @@ export async function loadRideSettlementSummary(
       COUNT(*)::int AS rides,
       COALESCE(SUM(outstanding_amount), 0)::text AS outstanding
     FROM ride_settlements
-    WHERE posted_at >= ${from} AND posted_at < ${to}
+    WHERE posted_at >= ${from}::timestamptz AND posted_at < ${to}::timestamptz
     GROUP BY status
     ORDER BY status ASC
   `;
@@ -196,8 +197,8 @@ export async function loadCashRecoveryReport(
   topRidersLimit = 10
 ): Promise<CashRecoveryReport> {
   const sql = getSql();
-  const from = new Date(range.fromIso);
-  const to = new Date(range.toIso);
+  const from = toTimestamptzParam(range.fromIso);
+  const to = toTimestamptzParam(range.toIso);
 
   const [totals] = await sql<Array<Record<string, unknown>>>`
     SELECT
@@ -207,7 +208,7 @@ export async function loadCashRecoveryReport(
       COALESCE(SUM(wallet_debit), 0)::text AS wallet_debit,
       COALESCE(SUM(outstanding_amount), 0)::text AS outstanding
     FROM ride_settlements
-    WHERE posted_at >= ${from} AND posted_at < ${to}
+    WHERE posted_at >= ${from}::timestamptz AND posted_at < ${to}::timestamptz
       AND payment_mode = 'cash'
       AND status <> 'reversed'
   `;
@@ -219,7 +220,7 @@ export async function loadCashRecoveryReport(
       COALESCE(SUM(company_receivable), 0)::text AS company_receivable,
       COALESCE(SUM(wallet_debit), 0)::text AS wallet_debit
     FROM ride_settlements
-    WHERE posted_at >= ${from} AND posted_at < ${to}
+    WHERE posted_at >= ${from}::timestamptz AND posted_at < ${to}::timestamptz
       AND payment_mode = 'cash'
       AND status <> 'reversed'
       AND rider_id IS NOT NULL
@@ -369,11 +370,11 @@ export async function listPostpaidSettlements(
   f: SettlementListFilters
 ): Promise<{ items: SettlementListRow[]; total: number }> {
   const sql = getSql();
-  const from = new Date(f.fromIso);
-  const to = new Date(f.toIso);
+  const from = toTimestamptzParam(f.fromIso);
+  const to = toTimestamptzParam(f.toIso);
   const q = f.q?.trim() || null;
   const where = sql`
-    s.posted_at >= ${from} AND s.posted_at < ${to}
+    s.posted_at >= ${from}::timestamptz AND s.posted_at < ${to}::timestamptz
     ${f.service ? sql`AND s.service_type = ${f.service}` : sql``}
     ${f.method === "cash" ? sql`AND s.payment_mode = 'cash'` : sql``}
     ${f.method === "online" ? sql`AND s.payment_mode <> 'cash'` : sql``}

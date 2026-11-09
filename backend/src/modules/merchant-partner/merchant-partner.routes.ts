@@ -2769,7 +2769,8 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               : existing?.beneficiary_name ?? null,
         };
 
-        const now = new Date();
+        // ISO string, not a Date: drizzle(sql) makes the timestamptz serializer identity.
+        const now = new Date().toISOString();
 
         if (!existing) {
           const rows = await sql`
@@ -2859,7 +2860,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               verification_status = 'pending',
               attempt_count = 0,
               last_attempt_at = NULL,
-              updated_at = ${now}
+              updated_at = ${now}::timestamptz
             WHERE id = ${existing.id}
           `;
 
