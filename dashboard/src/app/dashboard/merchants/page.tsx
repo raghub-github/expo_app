@@ -9,7 +9,7 @@ export default async function MerchantsPage() {
   const canTogglePortal = cookieStore.get("gm_portal_toggle_access")?.value === "1";
 
   return (
-    <div className="space-y-4 w-full max-w-full overflow-x-hidden">
+    <div className="merchants-typo flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden">
       <MerchantsSearchClient canTogglePortal={canTogglePortal} />
     </div>
   );

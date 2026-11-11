@@ -141,9 +141,14 @@ export function CheckoutPaymentMethodsSheet({
               color={dark ? MerchantDarkPalette.text : "#111827"}
             />
           </Pressable>
-          <Text style={[styles.headerTitle, dark && styles.headerTitleDark]} numberOfLines={1}>
-            Bill total: {totalLabel}
-          </Text>
+          <View style={styles.headerTextCol}>
+            <Text style={[styles.headerTitle, dark && styles.headerTitleDark]} numberOfLines={1}>
+              Payment Options
+            </Text>
+            <Text style={[styles.headerSub, dark && styles.mutedDark]} numberOfLines={1}>
+              Bill total: {totalLabel}
+            </Text>
+          </View>
         </View>
 
         {loading && visibleSections.length === 0 ? (
@@ -218,17 +223,28 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexShrink: 0,
   },
-  headerTitle: {
+  headerTextCol: {
     flexGrow: 1,
     flexShrink: 1,
     minWidth: 0,
     marginLeft: 4,
+  },
+  headerTitle: {
     fontSize: 18,
     fontFamily: StoreFonts.loraBold,
     color: "#111827",
   },
   headerTitleDark: {
     color: MerchantDarkPalette.text,
+  },
+  headerSub: {
+    marginTop: 2,
+    fontSize: 12,
+    fontFamily: StoreFonts.poppinsSemiBold,
+    color: "#6B7280",
+  },
+  mutedDark: {
+    color: MerchantDarkPalette.textMuted,
   },
   scroll: {
     paddingHorizontal: 16,
@@ -289,7 +305,6 @@ const styles = StyleSheet.create({
   rowDividerDark: {
     backgroundColor: MerchantDarkPalette.border,
   },
-  mutedDark: { color: MerchantDarkPalette.textMuted },
   loadingWrap: {
     flex: 1,
     alignItems: "center",

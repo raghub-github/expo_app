@@ -16,6 +16,8 @@ import {
 } from "@/lib/auth/session-manager";
 import { cookies } from "next/headers";
 import { createFetchWithTimeout, runWithQuietAuthTimeoutErrors } from "@/lib/auth/fetch-with-timeout";
+import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
+import { hasActiveSessionForDevice, isMerchantDeviceSessionRevoked } from "@/lib/auth/merchant-session-db";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -65,6 +67,25 @@ export async function GET(req: NextRequest) {
       phone: user.phone ?? null,
     });
 
+    if (validation.merchantParentId != null) {
+      const cookieStore = await cookies();
+      const deviceId = cookieStore.get(deviceIdCookie())?.value?.trim();
+      if (deviceId) {
+        const deviceActive = await hasActiveSessionForDevice(validation.merchantParentId, deviceId);
+        if (!deviceActive && (await isMerchantDeviceSessionRevoked(validation.merchantParentId, deviceId))) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: "Session expired or invalid for this device. Please sign in again.",
+              code: "DEVICE_SESSION_INVALID",
+              expired: true,
+            },
+            { status: 401 }
+          );
+        }
+      }
+    }
+
     let parentStoreLogo: string | null = null;
     let parentOwnerName: string | null = null;
     if (validation.merchantParentId != null) {
@@ -95,6 +116,13 @@ export async function GET(req: NextRequest) {
       user = { ...user, name: parentOwnerName };
     }
 
+    const accessFields = {
+      accessRole: validation.accessRole ?? ("OWNER" as const),
+      staffId: validation.staffId ?? null,
+      storeId: validation.storeId ?? null,
+      permissions: validation.permissions ?? undefined,
+    };
+
     const parent = validation.isValid
       ? {
           id: validation.merchantParentId,
@@ -102,8 +130,9 @@ export async function GET(req: NextRequest) {
           approval_status: validation.approvalStatus ?? undefined,
           registration_status: validation.registrationStatus ?? undefined,
           is_active: validation.isActive,
-          can_register_child: true,
+          can_register_child: (validation.accessRole ?? "OWNER") === "OWNER",
           store_logo: parentStoreLogo,
+          ...accessFields,
         }
       : {
           id: validation.merchantParentId,
@@ -114,6 +143,7 @@ export async function GET(req: NextRequest) {
           can_register_child: false,
           block_message: validation.error ?? "Account restricted.",
           store_logo: parentStoreLogo,
+          ...accessFields,
         };
 
     // Partner_* sliding cookies: restore if missing/stale while Supabase session is valid.

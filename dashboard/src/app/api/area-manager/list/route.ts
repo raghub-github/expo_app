@@ -39,11 +39,15 @@ export async function GET(request: NextRequest) {
 
     const limit = Math.min(parseInt(request.nextUrl.searchParams.get("limit") ?? "50", 10), 100);
     const cursor = request.nextUrl.searchParams.get("cursor") ?? undefined;
+    const includeSuperAdmins =
+      request.nextUrl.searchParams.get("includeSuperAdmins") === "1" ||
+      request.nextUrl.searchParams.get("includeSuperAdmins") === "true";
 
     const { items, nextCursor } = await listAreaManagersByType({
       managerType: type,
       limit,
       cursor,
+      includeSuperAdmins,
     });
 
     return NextResponse.json({

@@ -9,9 +9,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { orderService } from "@/services/order.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { presentCheckoutPaymentFailure } from "@/store/checkoutPaymentFailureStore";
-import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
-import { useCartStore } from "@/store/cartStore";
-import { clearPendingCheckoutPayment } from "@/lib/pendingCheckoutPayment";
+import {
+  clearPendingCheckoutPayment,
+  shouldResumePendingCheckoutConfirming,
+} from "@/lib/pendingCheckoutPayment";
+import { leavePaymentOverlayToCheckout } from "@/lib/restoreCheckoutSurface";
 
 const PAD = 20;
 
@@ -43,8 +45,17 @@ export default function PaymentConfirmingScreen() {
   const handledTerminalRef = useRef(false);
 
   useEffect(() => {
+    if (handledTerminalRef.current) return;
+
+    if (statusQuery.isError) {
+      handledTerminalRef.current = true;
+      void clearPendingCheckoutPayment();
+      router.replace("/(tabs)");
+      return;
+    }
+
     const data = statusQuery.data;
-    if (!data || handledTerminalRef.current) return;
+    if (!data) return;
     if (data.finalized && data.orderId) {
       handledTerminalRef.current = true;
       void clearPendingCheckoutPayment();
@@ -58,24 +69,35 @@ export default function PaymentConfirmingScreen() {
       });
       return;
     }
-    if (data.paymentState === "refunded" || data.paymentState === "failed" || data.paymentState === "refund_pending") {
+    // User never paid (still `created`) or payment already failed — leave this screen.
+    if (!shouldResumePendingCheckoutConfirming(data.paymentState)) {
       handledTerminalRef.current = true;
       void clearPendingCheckoutPayment();
-      const amount = amountRaw != null ? Number(amountRaw) : NaN;
-      presentCheckoutPaymentFailure({
-        amountInr: Number.isFinite(amount) ? amount : null,
-        methodLabel: methodRaw?.trim() || "UPI",
-      });
-      if (useCartStore.getState().items.length > 0) {
-        useCheckoutSheetStore.getState().show();
+      if (
+        data.paymentState === "refunded" ||
+        data.paymentState === "failed" ||
+        data.paymentState === "refund_pending"
+      ) {
+        const amount = amountRaw != null ? Number(amountRaw) : NaN;
+        presentCheckoutPaymentFailure({
+          amountInr: Number.isFinite(amount) ? amount : null,
+          methodLabel: methodRaw?.trim() || "UPI",
+        });
+        leavePaymentOverlayToCheckout({ router });
+        return;
       }
-      if (router.canGoBack()) {
-        router.back();
-      } else {
-        router.replace("/checkout");
-      }
+      // `created` / unknown non-payment — back to home, not a fake confirming wait.
+      router.replace("/(tabs)");
     }
-  }, [amountRaw, deliveryEtaLabel, merchantName, methodRaw, router, statusQuery.data]);
+  }, [
+    amountRaw,
+    deliveryEtaLabel,
+    merchantName,
+    methodRaw,
+    router,
+    statusQuery.data,
+    statusQuery.isError,
+  ]);
 
   return (
     <ScrollView

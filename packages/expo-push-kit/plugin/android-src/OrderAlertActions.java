@@ -226,6 +226,14 @@ public final class OrderAlertActions {
     }
   }
 
+  /**
+   * Partner OPEN TO ACCEPT must land on Home → New (incoming accept sheet),
+   * never the order-details stack. Deep-link so Expo Router +native-intent
+   * rewrites to `/(tabs)?orderTab=New`.
+   */
+  static final String MERCHANT_HOME_NEW_ORDERS_URI =
+      "gatimitra-merchant:///(tabs)?orderTab=New";
+
   private static void launch(Context context, String action, String sessionId, JSONObject row) {
     try {
       Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
@@ -234,12 +242,24 @@ public final class OrderAlertActions {
           Intent.FLAG_ACTIVITY_NEW_TASK
               | Intent.FLAG_ACTIVITY_SINGLE_TOP
               | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+              | Intent.FLAG_ACTIVITY_CLEAR_TOP
       );
       launch.putExtra("gmOverlayAction", action);
       launch.putExtra("alertSessionId", sessionId);
       if (row != null) {
         launch.putExtra("orderId", row.optString("foodOrderId", row.optString("orderId", "")));
         launch.putExtra("displayOrderId", row.optString("displayOrderId", ""));
+      }
+      // OPEN TO ACCEPT → Home New tab (accept sheet), not /order/{id} details.
+      if ("open".equals(action) && "merchant".equals(APP_ROLE)) {
+        try {
+          launch.setData(android.net.Uri.parse(MERCHANT_HOME_NEW_ORDERS_URI));
+          launch.putExtra("gmOpenHomeNewOrders", "1");
+        } catch (Throwable ignored) {
+        }
+        // JS consumes this to force Home → New when the process was already alive
+        // and Expo Router would otherwise keep the previous (often details) route.
+        stashPending(context, "open", sessionId, row);
       }
       context.startActivity(launch);
     } catch (Throwable t) {

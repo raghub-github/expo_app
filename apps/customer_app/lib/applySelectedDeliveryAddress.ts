@@ -10,6 +10,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { addressService, type Address } from "@/services/address.service";
 import { useLocationStore, type SessionSelectionKind } from "@/store/locationStore";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
+import { mergeAddressesIntoQuery } from "@/lib/addressesCache";
 import { haversineKm } from "@/lib/billSummary";
 
 const DEFAULT_RETENTION_M = 500;
@@ -47,6 +48,8 @@ export async function applySelectedDeliveryAddress(
     { latitude: addr.latitude, longitude: addr.longitude },
     { source: "selected", selectionKind, boundAddressId: addr.id }
   );
+  // Keep Select-location list warm offline even if the list API is slow.
+  mergeAddressesIntoQuery(queryClient, { ...addr, isSelected: true, isLastUsed: true });
   void invalidateFoodHomeLocationQueries(queryClient);
 
   if (__DEV__) {

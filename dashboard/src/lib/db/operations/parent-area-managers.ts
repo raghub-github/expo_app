@@ -12,8 +12,12 @@ export interface ParentAreaManagerRow {
 export interface AssignedAreaManagerInfo {
   id: number;
   full_name: string | null;
+  system_user_id: string | null;
   email: string | null;
   mobile: string | null;
+  city: string | null;
+  locality_code: string | null;
+  primary_role: string | null;
 }
 
 export interface ParentSearchResult {
@@ -290,8 +294,12 @@ export async function listAssignedAreaManagers(
       ? await sql`
           SELECT am.id,
                  su.full_name,
+                 su.system_user_id,
                  su.email,
-                 su.mobile
+                 su.mobile,
+                 su.primary_role,
+                 am.city,
+                 am.locality_code
           FROM parent_area_managers pam
           JOIN area_managers am ON am.id = pam.area_manager_id
           JOIN system_users su ON su.id = am.user_id
@@ -302,8 +310,12 @@ export async function listAssignedAreaManagers(
       : await sql`
           SELECT am.id,
                  su.full_name,
+                 su.system_user_id,
                  su.email,
-                 su.mobile
+                 su.mobile,
+                 su.primary_role,
+                 am.city,
+                 am.locality_code
           FROM parent_area_managers pam
           JOIN area_managers am ON am.id = pam.area_manager_id
           JOIN system_users su ON su.id = am.user_id
@@ -315,8 +327,12 @@ export async function listAssignedAreaManagers(
   return list.filter(Boolean).map((r: any) => ({
     id: Number(r.id),
     full_name: r.full_name ?? null,
+    system_user_id: r.system_user_id ?? null,
     email: r.email ?? null,
     mobile: r.mobile ?? null,
+    city: r.city ?? null,
+    locality_code: r.locality_code ?? null,
+    primary_role: r.primary_role ?? null,
   }));
 }
 
@@ -328,8 +344,12 @@ export async function listAreaManagersForStore(storeInternalId: number): Promise
   const rows = await sql`
     SELECT am.id,
            su.full_name,
+           su.system_user_id,
            su.email,
-           su.mobile
+           su.mobile,
+           su.primary_role,
+           am.city,
+           am.locality_code
     FROM parent_area_managers pam
     JOIN area_managers am ON am.id = pam.area_manager_id
     JOIN system_users su ON su.id = am.user_id
@@ -340,8 +360,12 @@ export async function listAreaManagersForStore(storeInternalId: number): Promise
   return list.filter(Boolean).map((r: any) => ({
     id: Number(r.id),
     full_name: r.full_name ?? null,
+    system_user_id: r.system_user_id ?? null,
     email: r.email ?? null,
     mobile: r.mobile ?? null,
+    city: r.city ?? null,
+    locality_code: r.locality_code ?? null,
+    primary_role: r.primary_role ?? null,
   }));
 }
 
@@ -353,8 +377,12 @@ export async function getAreaManagerUserProfileById(
   const rows = await sql`
     SELECT am.id,
            su.full_name,
+           su.system_user_id,
            su.email,
-           su.mobile
+           su.mobile,
+           su.primary_role,
+           am.city,
+           am.locality_code
     FROM area_managers am
     JOIN system_users su ON su.id = am.user_id
     WHERE am.id = ${areaManagerId}
@@ -366,8 +394,12 @@ export async function getAreaManagerUserProfileById(
   return {
     id: Number(r.id),
     full_name: (r.full_name as string) ?? null,
+    system_user_id: (r.system_user_id as string) ?? null,
     email: (r.email as string) ?? null,
     mobile: (r.mobile as string) ?? null,
+    city: (r.city as string) ?? null,
+    locality_code: (r.locality_code as string) ?? null,
+    primary_role: (r.primary_role as string) ?? null,
   };
 }
 

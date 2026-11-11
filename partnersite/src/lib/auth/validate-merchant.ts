@@ -5,6 +5,10 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { createFetchWithTimeout } from "@/lib/auth/fetch-with-timeout";
+import {
+  permissionsForMerchantRole,
+} from "@/lib/auth/merchant-staff-permissions";
+import { resolveStoreStaffByPhone } from "@/lib/auth/resolve-merchant-staff";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -22,6 +26,11 @@ export interface MerchantValidationResult {
   approvalStatus?: string;
   registrationStatus?: string;
   isActive?: boolean;
+  accessRole?: "OWNER" | "MANAGER" | "STAFF";
+  staffId?: number | null;
+  /** Numeric merchant_stores.id when login is store staff. */
+  storeId?: number | null;
+  permissions?: string[];
 }
 
 function getSupabaseAdmin() {
@@ -85,6 +94,10 @@ function toValidationResult(row: ParentRow): MerchantValidationResult {
     approvalStatus: row.approval_status ?? undefined,
     registrationStatus: row.registration_status ?? undefined,
     isActive: row.is_active ?? undefined,
+    accessRole: "OWNER",
+    staffId: null,
+    storeId: null,
+    permissions: permissionsForMerchantRole("OWNER"),
   };
 }
 
@@ -339,6 +352,20 @@ export async function validateMerchantFromSession(user: {
       return byPhone;
     }
     if (byPhone.merchantParentId != null && byPhone.error) return byPhone;
+
+    const staff = await resolveStoreStaffByPhone(user.phone);
+    if (staff) {
+      return {
+        isValid: true,
+        merchantParentId: staff.parentId,
+        parentMerchantId: staff.parentMerchantId,
+        phone: user.phone,
+        accessRole: staff.accessRole,
+        staffId: staff.staffId,
+        storeId: staff.storeId,
+        permissions: staff.permissions,
+      };
+    }
   }
   if (hasId) {
     const byId = await validateMerchantBySupabaseUserId(user.id);

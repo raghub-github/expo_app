@@ -524,8 +524,44 @@ export function RiderBlacklistClient() {
     if (value < historyFrom) setHistoryFrom(value);
   };
 
+  const showSelectRider =
+    !riderId && !resolveLoading && !hasSearch;
+
   return (
     <div className="space-y-5 w-full max-w-full overflow-x-hidden">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-xl font-bold text-gray-900 tracking-tight">Service Access Control</h1>
+          <p className="mt-1 text-sm text-gray-500">
+            Manage rider service restrictions, wallet rules, and blacklist history.
+          </p>
+        </div>
+        {riderId && rider ? (
+          <div className="flex shrink-0 items-center gap-2">
+            <div className="inline-flex flex-nowrap items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 shadow-sm ring-1 ring-gray-900/5">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600">
+                <User className="h-4 w-4" aria-hidden />
+              </div>
+              <div className="whitespace-nowrap text-sm">
+                <span className="font-medium text-gray-900">GMR{rider.id}</span>
+                <span className="mx-1.5 text-gray-400">·</span>
+                <span className="text-gray-700">{rider.name || "—"}</span>
+                <span className="mx-1.5 text-gray-400">·</span>
+                <span className="text-gray-600">{rider.mobile || "—"}</span>
+              </div>
+              <div className="ml-1 flex shrink-0 items-center gap-2">
+                <Link
+                  href={buildRiderDetailUrl(rider.id, riderCardReturnTo)}
+                  className="whitespace-nowrap text-xs font-medium text-blue-600 hover:text-blue-700"
+                >
+                  View details
+                </Link>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
       {resolveLoading && (
         <div className="flex items-center gap-2 text-sm text-gray-500">
           <LoadingSpinner size="sm" />
@@ -533,43 +569,33 @@ export function RiderBlacklistClient() {
         </div>
       )}
       {error && hasSearch && !resolveLoading ? (
-        <p className="text-sm text-red-600 font-medium">{error}</p>
+        <p className="text-sm font-medium text-red-600">{error}</p>
       ) : null}
 
-      {riderId && (
-        <>
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="min-w-0">
-              <h1 className="text-xl font-bold text-gray-900 tracking-tight">Service Access Control</h1>
-              <p className="text-sm text-gray-500 mt-1">
-                Manage rider service restrictions, wallet rules, and blacklist history.
-              </p>
+      {showSelectRider ? (
+        <div className="rounded-2xl border border-gray-200/90 bg-white p-6 shadow-sm ring-1 ring-gray-900/5 sm:p-8">
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-50 text-violet-600">
+              <ShieldOff className="h-7 w-7" aria-hidden />
             </div>
-            {rider ? (
-              <div className="flex items-center gap-2 shrink-0">
-                <div className="inline-flex flex-nowrap items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 shadow-sm ring-1 ring-gray-900/5">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600">
-                    <User className="h-4 w-4" aria-hidden />
-                  </div>
-                  <div className="text-sm whitespace-nowrap">
-                    <span className="font-medium text-gray-900">GMR{rider.id}</span>
-                    <span className="text-gray-400 mx-1.5">·</span>
-                    <span className="text-gray-700">{rider.name || "—"}</span>
-                    <span className="text-gray-400 mx-1.5">·</span>
-                    <span className="text-gray-600">{rider.mobile || "—"}</span>
-                  </div>
-                  <div className="flex items-center gap-2 ml-1 shrink-0">
-                    <Link
-                      href={buildRiderDetailUrl(rider.id, riderCardReturnTo)}
-                      className="text-xs font-medium text-blue-600 hover:text-blue-700 whitespace-nowrap"
-                    >
-                      View details
-                    </Link>
-                  </div>
-                </div>
-              </div>
-            ) : null}
+            <h2 className="mb-2 text-lg font-semibold text-gray-900">Select a rider</h2>
+            <p className="max-w-md text-sm text-gray-500">
+              Use the search in the nav bar (Rider ID like GMR… or phone) to load blacklist /
+              whitelist status and history for that rider.
+            </p>
           </div>
+        </div>
+      ) : null}
+
+      {riderId && summaryFetching && !summary ? (
+        <div className="flex items-center justify-center gap-2 rounded-2xl border border-gray-200/90 bg-white py-16 text-sm text-gray-500 shadow-sm ring-1 ring-gray-900/5">
+          <LoadingSpinner size="sm" />
+          Loading blacklist data…
+        </div>
+      ) : null}
+
+      {riderId && (summary || !summaryFetching) && (
+        <>
 
           <div className="rounded-xl border border-gray-200/90 bg-white shadow-sm ring-1 ring-gray-900/5 relative overflow-hidden">
             {summaryFetching && summary?.blacklistStatusByService ? (

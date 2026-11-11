@@ -18,6 +18,12 @@ import { deliverSupabaseOtpViaMsg91 } from "../../services/otp/msg91DeliverSupab
 import { checkAndRecordOtpSend } from "./otpSendGuard.js";
 import { issueSupabaseCompatibleJwt } from "./jwt.js";
 import {
+  merchantAccountExistsForEmail,
+  merchantAccountExistsForPhone,
+  permissionsForRole,
+  resolveMerchantAccountByPhone,
+} from "./merchant-account-resolve.js";
+import {
   createReviewBypasses,
   matchReviewBypass,
   otpsEqual,
@@ -196,6 +202,9 @@ async function verifyMerchantJwtForRefresh(token: string): Promise<{
   role: string;
   phoneE164: string;
   deviceId: string;
+  merchantAccessRole?: "OWNER" | "MANAGER" | "STAFF";
+  merchantStaffId?: number | null;
+  merchantStoreId?: number | null;
 }> {
   const env = getEnv();
   const currentKey = createSecretKey(Buffer.from(env.SUPABASE_JWT_SECRET, "utf-8"));
@@ -227,7 +236,27 @@ async function verifyMerchantJwtForRefresh(token: string): Promise<{
     throw Object.assign(new Error("invalid_token"), { statusCode: 401 });
   }
 
-  return { sub, role, phoneE164, deviceId };
+  const rawAccess = (payload as { merchant_access_role?: unknown }).merchant_access_role;
+  const merchantAccessRole =
+    rawAccess === "OWNER" || rawAccess === "MANAGER" || rawAccess === "STAFF"
+      ? rawAccess
+      : undefined;
+  const staffRaw = (payload as { merchant_staff_id?: unknown }).merchant_staff_id;
+  const storeRaw = (payload as { merchant_store_id?: unknown }).merchant_store_id;
+  const merchantStaffId =
+    typeof staffRaw === "number" && Number.isFinite(staffRaw) ? staffRaw : null;
+  const merchantStoreId =
+    typeof storeRaw === "number" && Number.isFinite(storeRaw) ? storeRaw : null;
+
+  return {
+    sub,
+    role,
+    phoneE164,
+    deviceId,
+    merchantAccessRole,
+    merchantStaffId,
+    merchantStoreId,
+  };
 }
 
 function headersToRecord(headers: Record<string, unknown>): Record<string, string> {
@@ -239,6 +268,104 @@ function headersToRecord(headers: Record<string, unknown>): Record<string, strin
   return out;
 }
 
+type MerchantDeviceCapture = {
+  deviceName?: string | null;
+  deviceOs?: string | null;
+  deviceType?: string | null;
+  appSource?: string | null;
+  userAgent?: string | null;
+};
+
+function deviceCaptureFromUa(ua: string | null | undefined): MerchantDeviceCapture {
+  const s = String(ua ?? "").trim();
+  if (!s) return { deviceName: "Web browser", deviceOs: "Web", deviceType: "web", appSource: "partnersite", userAgent: null };
+  const browser =
+    /Edg\//i.test(s) ? "Edge"
+    : /Chrome\//i.test(s) && !/Edg\//i.test(s) ? "Chrome"
+    : /Firefox\//i.test(s) ? "Firefox"
+    : /Safari\//i.test(s) && !/Chrome/i.test(s) ? "Safari"
+    : "Browser";
+  const os =
+    /Windows NT/i.test(s) ? "Windows"
+    : /Android/i.test(s) ? "Android"
+    : /iPhone|iPad|iPod/i.test(s) ? "iOS"
+    : /Mac OS X/i.test(s) ? "macOS"
+    : /Linux/i.test(s) ? "Linux"
+    : "Web";
+  return {
+    deviceName: `${browser} on ${os}`,
+    deviceOs: os,
+    deviceType: "web",
+    appSource: "partnersite",
+    userAgent: s.slice(0, 255),
+  };
+}
+
+function readMerchantDeviceCapture(
+  body: Record<string, unknown> | null | undefined,
+  headers: Record<string, unknown>
+): MerchantDeviceCapture {
+  const uaHeader = headers["user-agent"];
+  const ua =
+    typeof uaHeader === "string"
+      ? uaHeader
+      : Array.isArray(uaHeader)
+        ? String(uaHeader[0] ?? "")
+        : "";
+  const fromBody: MerchantDeviceCapture = {
+    deviceName: typeof body?.deviceName === "string" ? body.deviceName : null,
+    deviceOs: typeof body?.deviceOs === "string" ? body.deviceOs : null,
+    deviceType: typeof body?.deviceType === "string" ? body.deviceType : null,
+    appSource: typeof body?.appSource === "string" ? body.appSource : "merchant_app",
+    userAgent: ua || null,
+  };
+  if (fromBody.deviceName && String(fromBody.deviceName).trim()) return fromBody;
+  if (ua) {
+    const fromUa = deviceCaptureFromUa(ua);
+    return {
+      ...fromUa,
+      appSource: fromBody.appSource || "merchant_app",
+    };
+  }
+  return fromBody;
+}
+
+function sanitizeDeviceCapture(raw: MerchantDeviceCapture | null | undefined): {
+  deviceName: string;
+  deviceOs: string;
+  deviceType: string;
+  appSource: string;
+  userAgent: string | null;
+} {
+  const deviceName = String(raw?.deviceName ?? "")
+    .trim()
+    .slice(0, 120);
+  const deviceOs = String(raw?.deviceOs ?? "")
+    .trim()
+    .slice(0, 64);
+  const deviceTypeRaw = String(raw?.deviceType ?? "")
+    .trim()
+    .toLowerCase();
+  const deviceType =
+    deviceTypeRaw === "web" || deviceTypeRaw === "tablet" || deviceTypeRaw === "mobile"
+      ? deviceTypeRaw
+      : "mobile";
+  const appSource = String(raw?.appSource ?? "merchant_app")
+    .trim()
+    .slice(0, 32) || "merchant_app";
+  const userAgent = (() => {
+    const ua = String(raw?.userAgent ?? "").trim().slice(0, 255);
+    return ua || null;
+  })();
+  return {
+    deviceName: deviceName || "Mobile device",
+    deviceOs: deviceOs || "Android",
+    deviceType,
+    appSource,
+    userAgent,
+  };
+}
+
 /** Ensures JWT device_id always has a matching active row (reactivates if user logs in again). */
 async function persistMerchantDeviceSessionForMerchant(
   sql: ReturnType<typeof getSql>,
@@ -247,60 +374,121 @@ async function persistMerchantDeviceSessionForMerchant(
     parentStoreId: number;
     childStoreId: number | null;
     deviceId: string;
-    loginMethod: "google" | "phone";
+    /** `phone` | `google` | `staff:<id>` (staff invites share owner user_id). */
+    loginMethod: string;
     ip: string | null;
     location: string | null;
+    device?: MerchantDeviceCapture | null;
   }
 ): Promise<void> {
   const { userId, parentStoreId, childStoreId, deviceId, loginMethod, ip, location } = args;
-  const updated = await sql`
-    UPDATE user_device_sessions
-    SET
-      is_active = TRUE,
-      last_active = now(),
-      parent_store_id = ${parentStoreId},
-      child_store_id = ${childStoreId},
-      device_type = 'mobile',
-      device_name = ${deviceId},
-      os = 'android',
-      ip_address = ${ip},
-      location = ${location},
-      login_method = ${loginMethod}
-    WHERE user_id = ${userId} AND device_id = ${deviceId}
-    RETURNING id
-  `;
-  const touched = Array.isArray(updated) ? updated.length : 0;
+  const cap = sanitizeDeviceCapture(args.device);
+  // Prefer rich capture; never store raw device_id as the display name.
+  let touched = 0;
+  try {
+    const updated = await sql`
+      UPDATE user_device_sessions
+      SET
+        is_active = TRUE,
+        last_active = now(),
+        parent_store_id = ${parentStoreId},
+        child_store_id = ${childStoreId},
+        device_type = ${cap.deviceType},
+        device_name = ${cap.deviceName},
+        os = ${cap.deviceOs},
+        ip_address = ${ip},
+        location = ${location},
+        login_method = ${loginMethod},
+        app_source = ${cap.appSource},
+        user_agent = ${cap.userAgent}
+      WHERE user_id = ${userId} AND device_id = ${deviceId}
+      RETURNING id
+    `;
+    touched = Array.isArray(updated) ? updated.length : 0;
+  } catch {
+    const updated = await sql`
+      UPDATE user_device_sessions
+      SET
+        is_active = TRUE,
+        last_active = now(),
+        parent_store_id = ${parentStoreId},
+        child_store_id = ${childStoreId},
+        device_type = ${cap.deviceType},
+        device_name = ${cap.deviceName},
+        os = ${cap.deviceOs},
+        ip_address = ${ip},
+        location = ${location},
+        login_method = ${loginMethod}
+      WHERE user_id = ${userId} AND device_id = ${deviceId}
+      RETURNING id
+    `;
+    touched = Array.isArray(updated) ? updated.length : 0;
+  }
   if (touched > 0) {
     markDeviceSessionActive(userId, deviceId);
     return;
   }
 
-  await sql`
-    INSERT INTO user_device_sessions (
-      user_id,
-      parent_store_id,
-      child_store_id,
-      device_type,
-      device_name,
-      os,
-      ip_address,
-      location,
-      login_method,
-      device_id
-    )
-    VALUES (
-      ${userId},
-      ${parentStoreId},
-      ${childStoreId},
-      'mobile',
-      ${deviceId},
-      'android',
-      ${ip},
-      ${location},
-      ${loginMethod},
-      ${deviceId}
-    )
-  `;
+  try {
+    await sql`
+      INSERT INTO user_device_sessions (
+        user_id,
+        parent_store_id,
+        child_store_id,
+        device_type,
+        device_name,
+        os,
+        ip_address,
+        location,
+        login_method,
+        device_id,
+        app_source,
+        user_agent
+      )
+      VALUES (
+        ${userId},
+        ${parentStoreId},
+        ${childStoreId},
+        ${cap.deviceType},
+        ${cap.deviceName},
+        ${cap.deviceOs},
+        ${ip},
+        ${location},
+        ${loginMethod},
+        ${deviceId},
+        ${cap.appSource},
+        ${cap.userAgent}
+      )
+    `;
+  } catch {
+    // Pre-0650 DBs without app_source/user_agent — fall back without those columns.
+    await sql`
+      INSERT INTO user_device_sessions (
+        user_id,
+        parent_store_id,
+        child_store_id,
+        device_type,
+        device_name,
+        os,
+        ip_address,
+        location,
+        login_method,
+        device_id
+      )
+      VALUES (
+        ${userId},
+        ${parentStoreId},
+        ${childStoreId},
+        ${cap.deviceType},
+        ${cap.deviceName},
+        ${cap.deviceOs},
+        ${ip},
+        ${location},
+        ${loginMethod},
+        ${deviceId}
+      )
+    `;
+  }
   markDeviceSessionActive(userId, deviceId);
 }
 
@@ -491,6 +679,9 @@ export async function authRoutes(app: FastifyInstance) {
             partner: z.object({
               parent: z.any(),
               childStores: z.array(z.any()),
+              accessRole: z.enum(["OWNER", "MANAGER", "STAFF"]).optional(),
+              staffId: z.number().nullable().optional(),
+              permissions: z.array(z.string()).optional(),
             }),
           }),
           400: z.object({ error: z.string(), message: z.string().optional() }),
@@ -610,6 +801,7 @@ export async function authRoutes(app: FastifyInstance) {
             loginMethod: "google",
             ip,
             location,
+            device: readMerchantDeviceCapture(req.body as Record<string, unknown>, req.headers as Record<string, unknown>),
           });
         } catch (sessErr: any) {
           req.log?.error?.({ err: sessErr }, "Merchant Google login: device session persist failed");
@@ -628,6 +820,7 @@ export async function authRoutes(app: FastifyInstance) {
           phoneE164: "", // not used for Google
           deviceId,
           exp: expiresAt,
+          merchantAccessRole: "OWNER",
         });
 
         const parent = {
@@ -646,7 +839,13 @@ export async function authRoutes(app: FastifyInstance) {
           expiresAt,
           role: "merchant",
           userId: parentMerchantId,
-          partner: { parent, childStores },
+          partner: {
+            parent,
+            childStores,
+            accessRole: "OWNER" as const,
+            staffId: null,
+            permissions: permissionsForRole("OWNER"),
+          },
         });
       } catch (err: any) {
         req.log?.error?.({ err }, "Google auth failed");
@@ -781,36 +980,27 @@ export async function authRoutes(app: FastifyInstance) {
       // review number never reaches here (handled above), so it needs no
       // account. Customer / rider requests skip this gate entirely.
       if (appType === "merchant") {
-        const normalizedPhone = phoneE164.replace(/\D/g, "");
-        let parentExists = false;
+        let accountExists = false;
         try {
           const sql = getSql();
-          const rows = await sql`
-            SELECT 1
-            FROM merchant_parents
-            WHERE registered_phone = ${phoneE164}
-               OR registered_phone_normalized = ${normalizedPhone}
-               OR registered_phone LIKE ${"%" + normalizedPhone.slice(-10)}
-            LIMIT 1
-          `;
-          parentExists = rows.length > 0;
+          accountExists = await merchantAccountExistsForPhone(sql as any, phoneE164);
         } catch (lookupErr) {
           // If the lookup itself fails (e.g. table missing), fail open to the
           // SMS path rather than block a legitimate login — verify still guards.
           req.log?.error?.({ err: lookupErr, phoneTail }, "[OTP] merchant existence check failed");
-          parentExists = true;
+          accountExists = true;
         }
-        if (!parentExists) {
+        if (!accountExists) {
           req.log?.info?.({ phoneTail, requestId }, "[OTP] merchant not registered — OTP not sent");
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           return (reply as any).code(404).send({
             error: "not_registered",
             message:
-              "This number isn't registered as a GatiMitra partner yet. Please complete your parent registration at partner.gatimitra.com, then add your store — after that you can log in here.",
+              "This number isn't registered as a GatiMitra partner or invited staff yet. Ask the owner to invite you, or register at partner.gatimitra.com.",
           });
         }
 
-        // Registered merchant → deliver the OTP via Supabase, not the backend.
+        // Registered merchant / staff → deliver the OTP via Supabase, not the backend.
         // The backend MSG91 OTP channels (v5 / sendotp.php) return HTTP 200
         // "success" but do NOT deliver on this account, so real numbers got no
         // SMS. Supabase's phone auth (same path the customer app uses) does
@@ -909,6 +1099,39 @@ export async function authRoutes(app: FastifyInstance) {
     },
   );
 
+  /**
+   * Merchant email OTP gate: confirm owner_email is registered, then client
+   * delivers via Supabase signInWithOtp({ email }) (same exchange path as Google).
+   */
+  app.post("/merchant/email-otp/request", async (req, reply) => {
+    const body = z
+      .object({
+        email: z.string().email().max(200),
+      })
+      .parse(req.body ?? {});
+    const email = body.email.trim().toLowerCase();
+    const sql = getSql();
+    let accountExists = false;
+    try {
+      accountExists = await merchantAccountExistsForEmail(sql as any, email);
+    } catch (lookupErr) {
+      req.log?.error?.({ err: lookupErr, email }, "[OTP] merchant email existence check failed");
+      accountExists = true;
+    }
+    if (!accountExists) {
+      return reply.code(404).send({
+        error: "not_registered",
+        message:
+          "This email isn't registered as a GatiMitra partner yet. Sign up at partner.gatimitra.com, or use your registered phone number.",
+      });
+    }
+    return reply.send({
+      ok: true,
+      useSupabase: true,
+      expiresInSec: env.MSG91_OTP_EXPIRY_SEC,
+    });
+  });
+
   app.post(
     "/otp/verify",
     {
@@ -926,6 +1149,9 @@ export async function authRoutes(app: FastifyInstance) {
               .object({
                 parent: z.any(),
                 childStores: z.array(z.any()),
+                accessRole: z.enum(["OWNER", "MANAGER", "STAFF"]).optional(),
+                staffId: z.number().nullable().optional(),
+                permissions: z.array(z.string()).optional(),
               })
               .optional(),
           }),
@@ -1052,22 +1278,17 @@ export async function authRoutes(app: FastifyInstance) {
             return reply.code(400).send({ error: "partner_not_found", message: "Partner registration is not available." });
           }
 
-          const normalizedPhone = phoneE164.replace(/\D/g, "");
-          const parentRows = await sql`
-            SELECT id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone
-            FROM merchant_parents
-            WHERE registered_phone = ${phoneE164}
-               OR registered_phone_normalized = ${normalizedPhone}
-               OR registered_phone LIKE ${"%" + normalizedPhone.slice(-10)}
-            LIMIT 1
-          `;
-          const parentRow = parentRows[0];
-          if (!parentRow) {
-            return reply.code(404).send({ error: "partner_not_found", message: "No partner account found for this phone. Sign up at partner.gatimitra.com" });
+          const account = await resolveMerchantAccountByPhone(sql as any, phoneE164);
+          if (!account) {
+            return reply.code(404).send({
+              error: "partner_not_found",
+              message:
+                "No partner or staff account found for this phone. Ask the owner to invite you, or sign up at partner.gatimitra.com",
+            });
           }
 
-          const parentId = Number(parentRow.id);
-          const parentMerchantId = String(parentRow.parent_merchant_id);
+          const parentId = account.parentId;
+          const parentMerchantId = account.parentMerchantId;
 
           const storeRows = await sql`
             SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
@@ -1096,7 +1317,7 @@ export async function authRoutes(app: FastifyInstance) {
             if (sid != null) subByStore.set(sid, { payment_status: String(row?.payment_status ?? "PENDING"), subscription_status: String(row?.subscription_status ?? "INACTIVE") });
           }
 
-          const childStores = (storeRows as any[]).map((s) => {
+          let childStores = (storeRows as any[]).map((s) => {
             const step = s?.current_step != null ? Number(s.current_step) : 1;
             const total = s?.total_steps != null ? Number(s.total_steps) : 9;
             const sub = s?.id != null ? subByStore.get(Number(s.id)) : null;
@@ -1115,6 +1336,9 @@ export async function authRoutes(app: FastifyInstance) {
               payment_status: paymentStatus,
             };
           });
+          if (account.kind === "staff" && account.storeId != null) {
+            childStores = childStores.filter((s) => Number(s.id) === Number(account.storeId));
+          }
 
           const ip =
             (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? (req.ip ?? null);
@@ -1122,19 +1346,22 @@ export async function authRoutes(app: FastifyInstance) {
           const country = (req.headers["x-vercel-ip-country"] as string) ?? null;
           const location =
             city && country ? `${city}, ${country}` : city ?? country ?? null;
-          const firstStore = (storeRows as any[])[0];
-          const parentStoreId = firstStore ? Number(firstStore.parent_id ?? parentId) : parentId;
+          const firstStore = childStores[0] ?? (storeRows as any[])[0];
+          const parentStoreId = parentId;
           const childStoreId = firstStore ? Number(firstStore.id) : null;
 
           try {
+            const { staffLoginMethodTag } = await import("../../lib/merchant-staff-session.js");
             await persistMerchantDeviceSessionForMerchant(sql, {
               userId: parentMerchantId,
               parentStoreId,
               childStoreId,
               deviceId,
-              loginMethod: "phone",
+              loginMethod:
+                account.staffId != null ? staffLoginMethodTag(account.staffId) : "phone",
               ip,
               location,
+              device: readMerchantDeviceCapture(req.body as Record<string, unknown>, req.headers as Record<string, unknown>),
             });
           } catch (sessErr: any) {
             req.log?.error?.({ err: sessErr }, "Merchant OTP login: device session persist failed");
@@ -1153,25 +1380,37 @@ export async function authRoutes(app: FastifyInstance) {
             phoneE164,
             deviceId,
             exp: expiresAt,
+            merchantAccessRole: account.accessRole,
+            merchantStaffId: account.staffId,
+            merchantStoreId: account.storeId,
           });
 
           const parent = {
             id: parentId,
             parent_merchant_id: parentMerchantId,
-            parent_name: parentRow.parent_name,
-            owner_name: parentRow.owner_name,
-            owner_email: parentRow.owner_email ?? undefined,
-            brand_name: parentRow.brand_name ?? undefined,
-            registered_phone: parentRow.registered_phone,
+            parent_name: account.parentName,
+            owner_name: account.ownerName,
+            owner_email: account.ownerEmail ?? undefined,
+            brand_name: account.brandName ?? undefined,
+            registered_phone: account.registeredPhone,
           };
 
-          req.log?.info?.({ parentMerchantId, phoneE164 }, "Merchant partner signed in successfully");
+          req.log?.info?.(
+            { parentMerchantId, phoneE164, accessRole: account.accessRole, staffId: account.staffId },
+            "Merchant partner signed in successfully"
+          );
           return reply.send({
             accessToken,
             expiresAt,
             role: "merchant",
             userId: parentMerchantId,
-            partner: { parent, childStores },
+            partner: {
+              parent,
+              childStores,
+              accessRole: account.accessRole,
+              staffId: account.staffId,
+              permissions: permissionsForRole(account.accessRole),
+            },
           });
         } catch (merchantErr: any) {
           req.log?.error?.({ err: merchantErr }, "Merchant OTP verify failed");
@@ -1890,6 +2129,9 @@ export async function authRoutes(app: FastifyInstance) {
         phoneE164: claims.phoneE164,
         deviceId: claims.deviceId,
         exp: expiresAt,
+        merchantAccessRole: claims.merchantAccessRole,
+        merchantStaffId: claims.merchantStaffId,
+        merchantStoreId: claims.merchantStoreId,
       });
 
       return {
@@ -2064,6 +2306,10 @@ export async function authRoutes(app: FastifyInstance) {
           accessToken: z.string().min(10),
           phoneE164: z.string().min(10).optional(),
           deviceId: z.string().min(1),
+          deviceName: z.string().max(120).optional(),
+          deviceOs: z.string().max(64).optional(),
+          deviceType: z.enum(["mobile", "tablet", "web"]).optional(),
+          appSource: z.string().max(32).optional(),
         }),
         response: {
           200: z.object({
@@ -2075,6 +2321,9 @@ export async function authRoutes(app: FastifyInstance) {
             partner: z.object({
               parent: z.any(),
               childStores: z.array(z.any()),
+              accessRole: z.enum(["OWNER", "MANAGER", "STAFF"]).optional(),
+              staffId: z.number().nullable().optional(),
+              permissions: z.array(z.string()).optional(),
             }),
           }),
           400: z.object({ error: z.string(), message: z.string().optional() }),
@@ -2109,7 +2358,6 @@ export async function authRoutes(app: FastifyInstance) {
           .send({ error: "invalid_supabase_token", message: "Invalid or expired Supabase token" });
       }
 
-      const db = getDb();
       const sql = getSql();
 
       try {
@@ -2123,44 +2371,54 @@ export async function authRoutes(app: FastifyInstance) {
           return reply.code(400).send({ error: "partner_not_found", message: "Partner registration is not available." });
         }
 
-        let parentRows: any[];
+        type ExchangeAccount = Awaited<ReturnType<typeof resolveMerchantAccountByPhone>>;
+        let account: ExchangeAccount = null;
+
         if (phoneE164 && phoneE164.length >= 10) {
           const sbPhone = verified.user.phone ?? "";
           if (!phonesMatch(sbPhone, phoneE164)) {
             return reply.code(400).send({ error: "phone_mismatch", message: "Phone mismatch between Supabase user and request" });
           }
-          const normalizedPhone = phoneE164.replace(/\D/g, "");
-          parentRows = await sql`
-            SELECT id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone
-            FROM merchant_parents
-            WHERE registered_phone = ${phoneE164}
-               OR registered_phone_normalized = ${normalizedPhone}
-               OR registered_phone LIKE ${"%" + normalizedPhone.slice(-10)}
-            LIMIT 1
-          `;
+          account = await resolveMerchantAccountByPhone(sql as any, phoneE164);
         } else {
           const email = (verified.user.email ?? "").trim().toLowerCase();
           if (!email) {
             return reply.code(400).send({ error: "no_email", message: "Google sign-in did not return an email. Use Phone Login or try another account." });
           }
-          parentRows = await sql`
+          const parentRows = await sql`
             SELECT id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone
             FROM merchant_parents
             WHERE LOWER(TRIM(owner_email)) = ${email}
             LIMIT 1
           `;
+          const parentRow = parentRows[0];
+          if (parentRow) {
+            account = {
+              kind: "owner",
+              parentId: Number(parentRow.id),
+              parentMerchantId: String(parentRow.parent_merchant_id),
+              parentName: String(parentRow.parent_name ?? ""),
+              ownerName: String(parentRow.owner_name ?? ""),
+              ownerEmail: parentRow.owner_email != null ? String(parentRow.owner_email) : null,
+              brandName: parentRow.brand_name != null ? String(parentRow.brand_name) : null,
+              registeredPhone: String(parentRow.registered_phone ?? ""),
+              accessRole: "OWNER",
+              staffId: null,
+              storeId: null,
+            };
+          }
         }
 
-        const parentRow = parentRows[0];
-        if (!parentRow) {
+        if (!account) {
           return reply.code(404).send({
             error: "partner_not_found",
-            message: "No partner account found for this account. Sign up at partner.gatimitra.com",
+            message:
+              "No partner or staff account found for this account. Ask the owner to invite you, or sign up at partner.gatimitra.com",
           });
         }
 
-        const parentId = Number(parentRow.id);
-        const parentMerchantId = String(parentRow.parent_merchant_id);
+        const parentId = account.parentId;
+        const parentMerchantId = account.parentMerchantId;
 
         const storeRows = await sql`
           SELECT ms.id, ms.store_id, ms.store_name, ms.full_address, ms.approval_status,
@@ -2194,7 +2452,7 @@ export async function authRoutes(app: FastifyInstance) {
           }
         }
 
-        const childStores = (storeRows as any[]).map((s) => {
+        let childStores = (storeRows as any[]).map((s) => {
           const step = s?.current_step != null ? Number(s.current_step) : 1;
           const total = s?.total_steps != null ? Number(s.total_steps) : 9;
           const sub = s?.id != null ? subByStore.get(Number(s.id)) : null;
@@ -2213,6 +2471,9 @@ export async function authRoutes(app: FastifyInstance) {
             payment_status: paymentStatus,
           };
         });
+        if (account.kind === "staff" && account.storeId != null) {
+          childStores = childStores.filter((s) => Number(s.id) === Number(account.storeId));
+        }
 
         const expiresInSec = MERCHANT_SESSION_TTL_SEC;
         const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
@@ -2220,9 +2481,15 @@ export async function authRoutes(app: FastifyInstance) {
           jwtSecret: env.SUPABASE_JWT_SECRET,
           sub: parentMerchantId,
           role: "merchant",
-          phoneE164: phoneE164 ?? parentRow.registered_phone ?? "",
+          phoneE164:
+            phoneE164 ??
+            (account.kind === "staff" ? account.staffPhone : account.registeredPhone) ??
+            "",
           deviceId,
           exp: expiresAt,
+          merchantAccessRole: account.accessRole,
+          merchantStaffId: account.staffId,
+          merchantStoreId: account.storeId,
         });
 
         // Same upsert + cache reactivation as phone OTP login. A raw INSERT left
@@ -2238,17 +2505,20 @@ export async function authRoutes(app: FastifyInstance) {
           const location =
             city && country ? `${city}, ${country}` : city ?? country ?? null;
 
-          const firstStore = (storeRows as any[])[0];
-          const parentStoreId = firstStore ? Number(firstStore.parent_id ?? parentId) : parentId;
+          const firstStore = childStores[0] ?? (storeRows as any[])[0];
+          const parentStoreId = parentId;
           const childStoreId = firstStore ? Number(firstStore.id) : null;
+          const { staffLoginMethodTag } = await import("../../lib/merchant-staff-session.js");
           await persistMerchantDeviceSessionForMerchant(sql, {
             userId: parentMerchantId,
             parentStoreId,
             childStoreId,
             deviceId,
-            loginMethod: "phone",
+            loginMethod:
+              account.staffId != null ? staffLoginMethodTag(account.staffId) : "phone",
             ip,
             location,
+            device: readMerchantDeviceCapture(req.body as Record<string, unknown>, req.headers as Record<string, unknown>),
           });
         } catch (sessErr: any) {
           req.log?.error?.({ err: sessErr }, "Merchant Supabase exchange: device session persist failed");
@@ -2261,21 +2531,36 @@ export async function authRoutes(app: FastifyInstance) {
         const parent = {
           id: parentId,
           parent_merchant_id: parentMerchantId,
-          parent_name: parentRow.parent_name,
-          owner_name: parentRow.owner_name,
-          owner_email: parentRow.owner_email ?? undefined,
-          brand_name: parentRow.brand_name ?? undefined,
-          registered_phone: parentRow.registered_phone,
+          parent_name: account.parentName,
+          owner_name: account.ownerName,
+          owner_email: account.ownerEmail ?? undefined,
+          brand_name: account.brandName ?? undefined,
+          registered_phone: account.registeredPhone,
         };
 
-        req.log?.info?.({ parentMerchantId, phoneE164, email: verified.user.email }, "Merchant partner signed in via Supabase exchange");
+        req.log?.info?.(
+          {
+            parentMerchantId,
+            phoneE164,
+            email: verified.user.email,
+            accessRole: account.accessRole,
+            staffId: account.staffId,
+          },
+          "Merchant partner signed in via Supabase exchange"
+        );
         return reply.send({
           accessToken: jwtToken,
           expiresAt,
           role: "merchant",
           userId: parentMerchantId,
           supabaseUserId: verified.user.id,
-          partner: { parent, childStores },
+          partner: {
+            parent,
+            childStores,
+            accessRole: account.accessRole,
+            staffId: account.staffId,
+            permissions: permissionsForRole(account.accessRole),
+          },
         });
       } catch (err: any) {
         req.log?.error?.({ err }, "Merchant Supabase OTP exchange failed");

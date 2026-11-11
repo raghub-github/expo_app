@@ -18,6 +18,7 @@ import { setActiveCustomerScopeId } from "@/lib/customerScope";
 import { clearCachedProfile } from "@/lib/profileCache";
 import { clearCachedStoreBookmarks } from "@/lib/storeBookmarkCache";
 import { clearWalletBalanceCache } from "@/lib/walletBalanceCache";
+import { clearCachedAddresses } from "@/lib/addressesCache";
 import { clearCachedMyOrders } from "@/lib/myOrdersCache";
 import { clearActivePersonRideIds } from "@/lib/active-person-ride-persist";
 import { clearDismissedNotificationIds } from "@/lib/dismissedNotifications";
@@ -85,6 +86,7 @@ async function clearLocationSessionState(): Promise<void> {
  */
 async function clearPersistedCustomerCaches(): Promise<void> {
   clearCachedMyOrders();
+  clearCachedAddresses();
   clearActivePersonRideIds();
   clearCachedStoreBookmarks();
   await Promise.all([

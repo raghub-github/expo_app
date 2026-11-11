@@ -1512,7 +1512,15 @@ export default function RiderDetails({
               </div>
               {/* OTP + Cx rating share one row; delivery image stays in the 3rd column. */}
               <div className="col-span-2 grid grid-cols-3 gap-x-3 gap-y-1 min-w-0 items-end">
-                <DetailField label="Delivery OTP">
+                <DetailField
+                  label={
+                    String(order.orderType ?? "")
+                      .trim()
+                      .toLowerCase() === "person_ride"
+                      ? "Pickup OTP"
+                      : "Delivery OTP"
+                  }
+                >
                   <span className="inline-flex w-fit px-2 py-0.5 border border-dashed border-emerald-400 bg-emerald-50 rounded font-mono text-emerald-700 font-bold tracking-[0.12em]">
                     {deliveryOtp}
                   </span>

@@ -31,6 +31,11 @@ type Props = {
   managedStores: ChildStore[];
   /** Online/offline for the currently active store only. */
   activeStoreOnline: boolean;
+  /**
+   * When false (staff), hide Manage Order + checkboxes — Switch Outlet only.
+   * Owners/managers keep full multi-outlet board control.
+   */
+  allowManageOrders?: boolean;
   onClose: () => void;
   /** Persist which outlets feed the incoming-orders board on this device. */
   onManagedStoresChange: (stores: ChildStore[]) => void;
@@ -51,19 +56,21 @@ export function ManageOrdersStoresSheet({
   selectedStore,
   managedStores,
   activeStoreOnline,
+  allowManageOrders = true,
   onClose,
   onManagedStoresChange,
   onSwitchOutlet,
 }: Props) {
   const insets = useSafeAreaInsets();
-  const [tab, setTab] = useState<SheetTab>("manage");
+  const canManage = allowManageOrders === true;
+  const [tab, setTab] = useState<SheetTab>(canManage ? "manage" : "switch");
   const [search, setSearch] = useState("");
   const [draftManagedIds, setDraftManagedIds] = useState<number[]>([]);
 
   useEffect(() => {
     if (!visible) return;
     setSearch("");
-    setTab("manage");
+    setTab(canManage ? "manage" : "switch");
     const ids =
       managedStores.length > 0
         ? managedStores.map((s) => s.id)
@@ -71,7 +78,7 @@ export function ManageOrdersStoresSheet({
           ? [selectedStore.id]
           : [];
     setDraftManagedIds(ids);
-  }, [visible, managedStores, selectedStore]);
+  }, [visible, managedStores, selectedStore, canManage]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -147,35 +154,37 @@ export function ManageOrdersStoresSheet({
             </Pressable>
           </View>
           <View style={styles.headerRow}>
-            <Text style={styles.title}>Manage Orders</Text>
+            <Text style={styles.title}>{canManage ? "Manage Orders" : "Switch Outlet"}</Text>
           </View>
 
-          {/* Payouts / Transactions style segmented control */}
-          <View style={styles.tabRow}>
-            <Pressable
-              onPress={() => setTab("manage")}
-              style={[styles.tabBtn, tab === "manage" && styles.tabBtnActive]}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: tab === "manage" }}
-            >
-              <Text style={[styles.tabBtnText, tab === "manage" && styles.tabBtnTextActive]}>
-                Manage Order
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setTab("switch")}
-              style={[styles.tabBtn, tab === "switch" && styles.tabBtnActive]}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: tab === "switch" }}
-            >
-              <Text style={[styles.tabBtnText, tab === "switch" && styles.tabBtnTextActive]}>
-                Switch Outlet
-              </Text>
-            </Pressable>
-          </View>
+          {/* Owners/managers: Manage Order | Switch Outlet. Staff: Switch Outlet only. */}
+          {canManage ? (
+            <View style={styles.tabRow}>
+              <Pressable
+                onPress={() => setTab("manage")}
+                style={[styles.tabBtn, tab === "manage" && styles.tabBtnActive]}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: tab === "manage" }}
+              >
+                <Text style={[styles.tabBtnText, tab === "manage" && styles.tabBtnTextActive]}>
+                  Manage Order
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setTab("switch")}
+                style={[styles.tabBtn, tab === "switch" && styles.tabBtnActive]}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: tab === "switch" }}
+              >
+                <Text style={[styles.tabBtnText, tab === "switch" && styles.tabBtnTextActive]}>
+                  Switch Outlet
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
 
           <Text style={styles.sectionHint}>
-            {tab === "manage"
+            {canManage && tab === "manage"
               ? "Tick one or more outlets to receive incoming orders on this device. You can select every linked store."
               : "Choose the active outlet for this device. Dashboard, menu, reports, and settings load for that outlet."}
           </Text>
@@ -193,7 +202,7 @@ export function ManageOrdersStoresSheet({
             />
           </View>
 
-          {tab === "manage" && stores.length > 1 ? (
+          {canManage && tab === "manage" && stores.length > 1 ? (
             <View style={styles.bulkRow}>
               <Pressable
                 onPress={allSelected ? clearToActiveOnly : selectAllManaged}
@@ -217,7 +226,7 @@ export function ManageOrdersStoresSheet({
               const locality = localityFromAddress(store.full_address);
               const checked = draftManagedIds.includes(store.id);
 
-              if (tab === "manage") {
+              if (canManage && tab === "manage") {
                 return (
                   <View key={store.id}>
                     {index > 0 ? <View style={styles.dashedRule} /> : null}
@@ -359,7 +368,7 @@ export function ManageOrdersStoresSheet({
             ) : null}
           </ScrollView>
 
-          {tab === "manage" ? (
+          {canManage && tab === "manage" ? (
             <Pressable
               onPress={applyManaged}
               disabled={!draftDirty || draftManagedIds.length === 0}

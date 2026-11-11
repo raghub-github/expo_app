@@ -5,26 +5,28 @@ import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-deta
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 type Props = {
-  /** Opens Razorpay Standard Checkout (full method list). */
+  /** Opens the in-app Payment options sheet (Intent / QR / apps / cards). */
   onPress: () => void;
   disabled?: boolean;
+  /** Last selected instrument short label. */
+  methodLabel?: string | null;
 };
 
 /**
- * Footer "Pay using" — payment methods are chosen inside Razorpay Checkout,
- * not a separate in-app sheet (keeps parity with gateway-supported instruments).
+ * Footer "Pay using" — opens GatiMitra payment options (Razorpay-backed).
  */
-export function CheckoutPayUsingButton({ onPress, disabled }: Props) {
+export function CheckoutPayUsingButton({ onPress, disabled, methodLabel }: Props) {
   const dark = useMerchantUiDark();
   const muted = dark ? MerchantDarkPalette.textMuted : "#6B7280";
   const title = dark ? MerchantDarkPalette.text : "#111827";
+  const label = methodLabel?.trim() || "UPI, Cards & more";
 
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
-      accessibilityLabel="Pay using UPI, cards and more"
+      accessibilityLabel={`Pay using ${label}`}
       style={({ pressed }) => [styles.hit, pressed && styles.pressed, disabled && styles.disabled]}
     >
       <View style={styles.row}>
@@ -39,7 +41,7 @@ export function CheckoutPayUsingButton({ onPress, disabled }: Props) {
             <Ionicons name="caret-up" size={10} color={muted} />
           </View>
           <Text style={[styles.method, { color: title }]} numberOfLines={1}>
-            UPI, Cards & more
+            {label}
           </Text>
         </View>
       </View>

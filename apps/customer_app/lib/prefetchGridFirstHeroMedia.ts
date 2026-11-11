@@ -17,11 +17,8 @@ function absoluteUri(uri: string | null | undefined): string | null {
 export function prefetchFoodHomeImageUri(uri: string | null | undefined): void {
   const absolute = absoluteUri(uri);
   if (!absolute) return;
-  if (prefetched.has(absolute)) {
-    // Already warmed this session — treat as ready so opacity:0 hero can paint.
-    markHeroMediaSessionReady(absolute);
-    return;
-  }
+  // In-flight ≠ ready. Marking early caused blank white deal tiles (skeleton skipped).
+  if (prefetched.has(absolute)) return;
   prefetched.add(absolute);
   void Image.prefetch(absolute, { cachePolicy: "memory-disk" })
     .then(() => {

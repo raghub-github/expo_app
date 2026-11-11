@@ -11,15 +11,9 @@ import {
   Gauge,
   ArrowRight,
   MoreVertical,
-  Wallet,
-  Clock,
-  CheckCircle2,
-  XCircle,
   PauseCircle,
   Calendar,
   Download,
-  Plus,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Scale,
@@ -76,6 +70,10 @@ type StatusFilter = "ALL" | "PENDING" | "COMPLETED" | "REJECTED" | "HOLD";
 type EditField = "pg" | "utr";
 
 const PAGE_SIZE_OPTIONS = [10, 50, 100, 500] as const;
+const rowBorder = "border-b-[0.5px] border-[#121212]/10";
+const outerBorder = "rounded-md border-[0.5px] border-[#121212]/40";
+const controlClass =
+  "h-9 rounded-md border border-[#121212]/12 bg-white px-2.5 text-xs text-[#121212] outline-none focus:border-[#121212]/35";
 
 function displayStatus(raw: string): string {
   const s = raw.toUpperCase();
@@ -146,10 +144,17 @@ export function PaymentManagementClient() {
   const router = useRouter();
   const pathname = useAppPathname();
   const searchParams = useAppSearchParams();
-  const party = parsePaymentParty(searchParams.get("tab"));
+  const urlParty = parsePaymentParty(searchParams.get("tab"));
+  /** Local party updates instantly; URL syncs in the background. */
+  const [party, setPartyState] = useState<PaymentParty>(urlParty);
+
+  useEffect(() => {
+    setPartyState(urlParty);
+  }, [urlParty]);
 
   const setParty = useCallback(
     (next: PaymentParty) => {
+      setPartyState(next);
       const params = new URLSearchParams(searchParams.toString());
       params.set("tab", next);
       const qs = params.toString();
@@ -379,186 +384,169 @@ export function PaymentManagementClient() {
   };
 
   return (
-    <div className="space-y-3">
-      {/* Tabs + Refresh */}
-      <div className="flex flex-wrap items-end justify-between gap-2 border-b border-gray-200">
-        <PaymentPartyTabs party={party} onChange={setParty} />
-        <button
-          type="button"
-          onClick={refreshAll}
-          className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"
-        >
-          <RefreshCw className="h-4 w-4" />
-          Refresh
-        </button>
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="sticky top-0 z-30 shrink-0 border-b-[0.5px] border-[#121212]/10 bg-white py-2">
+        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto rounded-md border-[0.5px] border-[#121212]/15 bg-white px-2.5 py-2 [scrollbar-width:thin]">
+          <PaymentPartyTabs party={party} onChange={setParty} />
+
+          {party === "merchant" || party === "rider" ? (
+            <>
+              {party === "merchant" ? (
+                <select
+                  value={storeFilter}
+                  onChange={(e) => setStoreFilter(e.target.value)}
+                  className={`${controlClass} w-[8.5rem] shrink-0 sm:w-44`}
+                >
+                  <option value="ALL">All Stores</option>
+                  {storeOptions.map(([code, name]) => (
+                    <option key={code} value={code}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <select
+                  value={riderFilter}
+                  onChange={(e) => setRiderFilter(e.target.value)}
+                  className={`${controlClass} w-[8.5rem] shrink-0 sm:w-44`}
+                >
+                  <option value="ALL">All Riders</option>
+                  {riderOptions.map(([id, name]) => (
+                    <option key={id} value={id}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+                className={`${controlClass} w-[7.5rem] shrink-0`}
+              >
+                <option value="ALL">All Status</option>
+                <option value="PENDING">Pending</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="REJECTED">Rejected</option>
+                <option value="HOLD">Hold</option>
+              </select>
+
+              <div className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-[#121212]/12 bg-white px-2 text-xs text-[#121212]/70">
+                <Calendar className="h-3.5 w-3.5 shrink-0 text-[#121212]/35" />
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="w-[108px] border-0 bg-transparent p-0 text-xs outline-none"
+                />
+                <span className="text-[#121212]/35">→</span>
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="w-[108px] border-0 bg-transparent p-0 text-xs outline-none"
+                />
+              </div>
+
+              {hasActiveFilters ? (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="inline-flex h-9 shrink-0 items-center rounded-md border border-[#121212]/12 bg-white px-2.5 text-xs font-medium text-[#121212]/65 hover:bg-[#F7F7F7]"
+                >
+                  Clear
+                </button>
+              ) : null}
+            </>
+          ) : null}
+
+          <div className="ml-auto flex shrink-0 items-center gap-2 pl-1">
+            <button
+              type="button"
+              onClick={refreshAll}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-[#121212]/12 bg-white px-3 text-xs font-semibold text-[#121212] hover:bg-[#F7F7F7]"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Refresh
+            </button>
+            {party === "merchant" || party === "rider" ? (
+              <button
+                type="button"
+                onClick={exportCsv}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md border border-[#121212]/12 bg-white px-3 text-xs font-semibold text-[#121212] hover:bg-[#F7F7F7]"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Export
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        {party === "merchant" || party === "rider" ? (
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 px-0.5 text-[11px] text-[#121212]/55">
+            <span>
+              Total <span className="font-semibold tabular-nums text-[#121212]">{formatInr(stats.total)}</span>
+            </span>
+            <span>
+              Pending{" "}
+              <span className="font-semibold tabular-nums text-amber-700">{formatInr(stats.pending)}</span>
+              {stats.pendingCount > 0 ? (
+                <span className="ml-1 text-amber-700/80">({stats.pendingCount})</span>
+              ) : null}
+            </span>
+            <span>
+              Completed{" "}
+              <span className="font-semibold tabular-nums text-emerald-700">{formatInr(stats.completed)}</span>
+              {stats.completedCount > 0 ? (
+                <span className="ml-1 text-emerald-700/80">({stats.completedCount})</span>
+              ) : null}
+            </span>
+            <span>
+              Rejected{" "}
+              <span className="font-semibold tabular-nums text-red-700">{formatInr(stats.rejected)}</span>
+              {stats.rejectedCount > 0 ? (
+                <span className="ml-1 text-red-700/80">({stats.rejectedCount})</span>
+              ) : null}
+            </span>
+            <span>
+              Hold{" "}
+              <span className="font-semibold tabular-nums text-violet-700">{formatInr(stats.hold)}</span>
+              {stats.holdCount > 0 ? (
+                <span className="ml-1 text-violet-700/80">({stats.holdCount})</span>
+              ) : null}
+            </span>
+            <Link
+              href="/dashboard/super-admin/rule-engine"
+              className="ml-auto inline-flex items-center gap-1 font-medium text-[#121212]/65 hover:text-[#121212]"
+            >
+              Cancellation / refund rules
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </div>
+        ) : null}
       </div>
 
       {migrationRequired && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <div className="mt-2 shrink-0 rounded-md border-[0.5px] border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
           <strong>Database migration required.</strong> Run{" "}
-          <code className="rounded bg-amber-100 px-1 text-xs">0239_super_admin_payment_management_system.sql</code>
+          <code className="rounded bg-amber-100 px-1">0239_super_admin_payment_management_system.sql</code>
           {" "}and{" "}
-          <code className="rounded bg-amber-100 px-1 text-xs">0270_merchant_payout_pg_transaction_id.sql</code>
+          <code className="rounded bg-amber-100 px-1">0270_merchant_payout_pg_transaction_id.sql</code>
           {" "}in Supabase, then refresh.
         </div>
       )}
 
-      {party === "threshold" ? (
-        <PaymentThresholdPanel />
-      ) : party === "adjustment" ? (
-        <WalletAdjustmentsPanel />
-      ) : (
-        <>
-          {/* Filters */}
-          <div className="flex flex-wrap items-center gap-2">
-            {party === "merchant" ? (
-              <select
-                value={storeFilter}
-                onChange={(e) => setStoreFilter(e.target.value)}
-                className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
-              >
-                <option value="ALL">All Stores</option>
-                {storeOptions.map(([code, name]) => (
-                  <option key={code} value={code}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <select
-                value={riderFilter}
-                onChange={(e) => setRiderFilter(e.target.value)}
-                className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
-              >
-                <option value="ALL">All Riders</option>
-                {riderOptions.map(([id, name]) => (
-                  <option key={id} value={id}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            )}
-
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-              className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
-            >
-              <option value="ALL">All Status</option>
-              <option value="PENDING">Pending</option>
-              <option value="COMPLETED">Completed</option>
-              <option value="REJECTED">Rejected</option>
-              <option value="HOLD">Hold</option>
-            </select>
-
-            <div className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 h-9 text-sm text-gray-600">
-              <Calendar className="h-4 w-4 text-gray-400 shrink-0" />
-              <input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className="border-0 bg-transparent p-0 text-sm outline-none w-[118px]"
-              />
-              <span className="text-gray-400">→</span>
-              <input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                className="border-0 bg-transparent p-0 text-sm outline-none w-[118px]"
-              />
-            </div>
-
-            {hasActiveFilters && (
-              <button
-                type="button"
-                onClick={clearFilters}
-                className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-600 hover:bg-gray-50"
-              >
-                Clear
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={exportCsv}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              <Download className="h-4 w-4" />
-              Export
-            </button>
-
-            <button
-              type="button"
-              onClick={() => toast.info("Manual withdrawal creation coming soon")}
-              className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
-            >
-              <Plus className="h-4 w-4" />
-              New Withdrawal
-            </button>
-          </div>
-
-          {/* Summary cards */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            <SummaryCard
-              label="Total Withdrawals"
-              value={formatInr(stats.total)}
-              icon={<Wallet className="h-5 w-5 text-blue-600" />}
-              iconWrap="bg-blue-50"
-            />
-            <SummaryCard
-              label="Pending"
-              value={formatInr(stats.pending)}
-              count={stats.pendingCount}
-              icon={<Clock className="h-5 w-5 text-amber-600" />}
-              iconWrap="bg-amber-50"
-              badgeTone="amber"
-            />
-            <SummaryCard
-              label="Completed"
-              value={formatInr(stats.completed)}
-              count={stats.completedCount}
-              icon={<CheckCircle2 className="h-5 w-5 text-emerald-600" />}
-              iconWrap="bg-emerald-50"
-              badgeTone="emerald"
-            />
-            <SummaryCard
-              label="Rejected"
-              value={formatInr(stats.rejected)}
-              count={stats.rejectedCount}
-              icon={<XCircle className="h-5 w-5 text-red-600" />}
-              iconWrap="bg-red-50"
-              badgeTone="red"
-            />
-            <SummaryCard
-              label="Hold"
-              value={formatInr(stats.hold)}
-              count={stats.holdCount}
-              icon={<PauseCircle className="h-5 w-5 text-violet-600" />}
-              iconWrap="bg-violet-50"
-              badgeTone="violet"
-              trailing={<ChevronDown className="h-4 w-4 text-gray-400" />}
-            />
-          </div>
-
-          {/* Table header */}
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-            <h2 className="text-sm font-semibold text-gray-900">
-              {party === "rider" ? "Rider withdrawals" : "Merchant withdrawals"}{" "}
-              <span className="font-normal text-gray-500">
-                ({stats.pendingCount} Pending • {stats.completedCount} Completed • {stats.rejectedCount} Rejected • {stats.holdCount} Hold)
-              </span>
-            </h2>
-            <Link
-              href="/dashboard/super-admin/rule-engine"
-              className="inline-flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700"
-            >
-              Cancellation / refund rules
-              <ArrowRight className="h-4 w-4" />
-            </Link>
-          </div>
-
+      {/* Keep panels mounted so tab switches stay instant after first load. */}
+      <div
+        className={
+          party === "merchant" || party === "rider"
+            ? "mt-3 flex min-h-0 flex-1 flex-col overflow-hidden"
+            : "hidden"
+        }
+      >
+        <div className={`min-h-0 flex-1 overflow-auto bg-white ${outerBorder}`}>
           <PayoutsTable
-            party={party}
+            party={party === "rider" ? "rider" : "merchant"}
             rows={pageRows}
             savingId={savingId}
             pgInputs={pgInputs}
@@ -570,19 +558,24 @@ export function PaymentManagementClient() {
             onHoldClick={(row) => setHoldModal(row)}
             onEditField={(row, field) => setEditModal({ row, field })}
           />
+        </div>
 
-          {/* Pagination */}
-          <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-gray-600">
-            <div className="flex flex-wrap items-center gap-3">
-              <p>
-                Showing {rangeStart} to {rangeEnd} of {filteredPayouts.length} entries
-              </p>
-              <div className="flex items-center gap-2">
-                <span className="text-gray-500">Rows per page</span>
+        <div className="sticky bottom-0 z-30 mt-1 shrink-0 border-t-[0.5px] border-[#121212]/10 bg-white px-3 py-1 sm:px-4">
+          <div className="flex flex-col items-center justify-between gap-1.5 sm:flex-row sm:gap-3">
+            <div className="flex flex-col items-center gap-1.5 sm:flex-row sm:gap-2.5">
+              <div className="text-center text-[11px] leading-none text-[#121212]/70 sm:text-left">
+                Showing{" "}
+                <span className="font-semibold text-[#121212]">{rangeStart}</span> to{" "}
+                <span className="font-semibold text-[#121212]">{rangeEnd}</span> of{" "}
+                <span className="font-semibold text-[#121212]">{filteredPayouts.length}</span>{" "}
+                entries
+              </div>
+              <label className="inline-flex items-center gap-1.5 text-[11px] leading-none text-[#121212]/70">
+                <span className="whitespace-nowrap">Rows per page</span>
                 <select
                   value={pageSize}
                   onChange={(e) => setPageSize(Number(e.target.value))}
-                  className="h-8 rounded-lg border border-gray-200 bg-white px-2 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+                  className="h-7 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-1.5 text-[11px] font-medium text-[#121212] focus:border-[#121212]/40 focus:outline-none"
                 >
                   {PAGE_SIZE_OPTIONS.map((n) => (
                     <option key={n} value={n}>
@@ -590,43 +583,65 @@ export function PaymentManagementClient() {
                     </option>
                   ))}
                 </select>
-              </div>
+              </label>
             </div>
-            <div className="inline-flex items-center gap-1">
+            <div className="flex flex-wrap items-center justify-center gap-1">
               <button
                 type="button"
                 disabled={safePage <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 bg-white disabled:opacity-40"
+                className="flex h-7 items-center gap-1 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-2 text-[11px] font-medium text-[#121212] hover:bg-[#F7F7F7] disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <ChevronLeft className="h-4 w-4" />
+                <ChevronLeft className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Previous</span>
               </button>
-              {Array.from({ length: totalPages }, (_, i) => i + 1).slice(0, 5).map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => setPage(n)}
-                  className={`inline-flex h-8 min-w-8 items-center justify-center rounded-lg border px-2 text-sm font-medium ${
-                    n === safePage
-                      ? "border-blue-600 bg-blue-600 text-white"
-                      : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
-                  }`}
-                >
-                  {n}
-                </button>
-              ))}
+              {Array.from({ length: totalPages }, (_, i) => i + 1)
+                .slice(0, 5)
+                .map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setPage(n)}
+                    className={`flex h-7 min-w-[28px] items-center justify-center rounded-md px-1.5 text-[11px] font-semibold ${
+                      n === safePage
+                        ? "bg-[#121212] text-white"
+                        : "border-[0.5px] border-[#121212]/20 bg-white text-[#121212] hover:bg-[#F7F7F7]"
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
               <button
                 type="button"
                 disabled={safePage >= totalPages}
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 bg-white disabled:opacity-40"
+                className="flex h-7 items-center gap-1 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-2 text-[11px] font-medium text-[#121212] hover:bg-[#F7F7F7] disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <ChevronRight className="h-4 w-4" />
+                <span className="hidden sm:inline">Next</span>
+                <ChevronRight className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
-        </>
-      )}
+        </div>
+      </div>
+
+      <div
+        className={
+          party === "threshold" ? "mt-3 min-h-0 flex-1 overflow-auto" : "hidden"
+        }
+      >
+        <PaymentThresholdPanel />
+      </div>
+
+      <div
+        className={
+          party === "adjustment"
+            ? "mt-3 flex min-h-0 flex-1 flex-col overflow-hidden"
+            : "hidden"
+        }
+      >
+        <WalletAdjustmentsPanel />
+      </div>
 
       {editModal ? (
         <EditPayoutFieldModal
@@ -677,53 +692,6 @@ export function PaymentManagementClient() {
   );
 }
 
-function SummaryCard({
-  label,
-  value,
-  count,
-  icon,
-  iconWrap,
-  badgeTone,
-  trailing,
-}: {
-  label: string;
-  value: string;
-  count?: number;
-  icon: ReactNode;
-  iconWrap: string;
-  badgeTone?: "amber" | "emerald" | "red" | "violet";
-  trailing?: ReactNode;
-}) {
-  const badgeClass =
-    badgeTone === "amber"
-      ? "bg-amber-100 text-amber-700"
-      : badgeTone === "emerald"
-        ? "bg-emerald-100 text-emerald-700"
-        : badgeTone === "red"
-          ? "bg-red-100 text-red-700"
-          : badgeTone === "violet"
-            ? "bg-violet-100 text-violet-700"
-            : "";
-
-  return (
-    <div className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-2.5 shadow-sm">
-      <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${iconWrap}`}>
-        {icon}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <p className="text-xs font-medium text-gray-500">{label}</p>
-          {count != null && count > 0 ? (
-            <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${badgeClass}`}>{count}</span>
-          ) : null}
-        </div>
-        <p className="mt-0.5 text-base font-bold tabular-nums text-gray-900">{value}</p>
-      </div>
-      {trailing}
-    </div>
-  );
-}
-
 function PaymentPartyTabs({
   party,
   onChange,
@@ -732,14 +700,18 @@ function PaymentPartyTabs({
   onChange: (p: PaymentParty) => void;
 }) {
   const items: { id: PaymentParty; label: string; icon: ReactNode }[] = [
-    { id: "merchant", label: "Merchant", icon: <Store className="h-4 w-4" /> },
-    { id: "rider", label: "Rider", icon: <Bike className="h-4 w-4" /> },
-    { id: "threshold", label: "Threshold", icon: <Gauge className="h-4 w-4" /> },
-    { id: "adjustment", label: "Adjustment", icon: <Scale className="h-4 w-4" /> },
+    { id: "merchant", label: "Merchant", icon: <Store className="h-3.5 w-3.5" /> },
+    { id: "rider", label: "Rider", icon: <Bike className="h-3.5 w-3.5" /> },
+    { id: "threshold", label: "Threshold", icon: <Gauge className="h-3.5 w-3.5" /> },
+    { id: "adjustment", label: "Adjustment", icon: <Scale className="h-3.5 w-3.5" /> },
   ];
 
   return (
-    <nav className="flex gap-6" role="tablist" aria-label="Payment party">
+    <div
+      className="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-[#121212]/12 bg-[#F7F7F7] p-0.5"
+      role="tablist"
+      aria-label="Payment party"
+    >
       {items.map((item) => {
         const active = party === item.id;
         return (
@@ -749,10 +721,10 @@ function PaymentPartyTabs({
             role="tab"
             aria-selected={active}
             onClick={() => onChange(item.id)}
-            className={`inline-flex items-center gap-2 border-b-2 pb-2 text-sm font-semibold transition-colors ${
+            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors ${
               active
-                ? "border-blue-600 text-blue-600"
-                : "border-transparent text-gray-500 hover:text-gray-800"
+                ? "bg-[#121212] text-white"
+                : "text-[#121212]/65 hover:bg-white hover:text-[#121212]"
             }`}
           >
             {item.icon}
@@ -760,22 +732,22 @@ function PaymentPartyTabs({
           </button>
         );
       })}
-    </nav>
+    </div>
   );
 }
 
 function statusBadge(rawStatus: string) {
   const status = displayStatus(rawStatus);
   const map: Record<string, string> = {
-    PENDING: "bg-amber-100 text-amber-800 ring-1 ring-amber-200/80",
-    HOLD: "bg-violet-100 text-violet-800 ring-1 ring-violet-200/80",
-    COMPLETED: "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200/80",
-    REJECTED: "bg-red-100 text-red-800 ring-1 ring-red-200/80",
+    PENDING: "bg-amber-50 text-amber-800",
+    HOLD: "bg-violet-50 text-violet-800",
+    COMPLETED: "bg-emerald-50 text-emerald-800",
+    REJECTED: "bg-red-50 text-red-700",
   };
   return (
     <span
-      className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
-        map[status] ?? "bg-gray-100 text-gray-700"
+      className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+        map[status] ?? "bg-[#F4F4F4] text-[#121212]/60"
       }`}
     >
       {status}
@@ -813,202 +785,222 @@ function PayoutsTable({
   onEditField: (row: MerchantPayoutRow, field: EditField) => void;
 }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
-      <div className="overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-200 bg-gray-50/80 text-left text-[11px] font-bold uppercase tracking-wide text-gray-500">
-              <th className="px-3 py-2">{party === "rider" ? "Rider" : "Store"}</th>
-              <th className="px-3 py-2">Amount</th>
-              <th className="px-3 py-2">Status</th>
-              <th className="px-3 py-2 min-w-[150px]">PG TNX ID</th>
-              <th className="px-3 py-2 min-w-[120px]">UTR</th>
-              <th className="px-3 py-2">Requested On</th>
-              <th className="px-3 py-2 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {rows.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-gray-500">
-                  No withdrawal requests
+    <table className="w-full min-w-[920px] border-collapse text-left text-sm">
+      <thead className="text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
+        <tr>
+          <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
+            {party === "rider" ? "Rider" : "Store"}
+          </th>
+          <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Amount</th>
+          <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Status</th>
+          <th className={`sticky top-0 z-20 min-w-[150px] bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
+            PG TNX ID
+          </th>
+          <th className={`sticky top-0 z-20 min-w-[120px] bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
+            UTR
+          </th>
+          <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
+            Requested On
+          </th>
+          <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 text-right ${rowBorder}`}>
+            Actions
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.length === 0 ? (
+          <tr>
+            <td colSpan={7} className="px-3 py-12 text-center text-sm text-[#121212]/45">
+              No withdrawal requests
+            </td>
+          </tr>
+        ) : (
+          rows.map((p, rowIndex) => {
+            const id = Number(p.id);
+            const busy = savingId === `payout-${id}`;
+            const pg = pgInputs[id] ?? p.pg_transaction_id ?? "";
+            const utr = utrInputs[id] ?? p.utr_reference ?? "";
+            const rawStatus = String(p.status ?? "PENDING");
+            const disp = displayStatus(rawStatus);
+            const isPending = disp === "PENDING";
+            const isHold = disp === "HOLD";
+            const showPgInput = isPending || isHold;
+            const showUtrInput = isPending || isHold;
+
+            return (
+              <tr key={id} className="hover:bg-[#F7F7F7]/70">
+                <td className={`px-3 py-2.5 align-middle ${rowBorder}`}>
+                  {party === "rider" ? (
+                    <>
+                      <div className="text-sm font-semibold leading-snug text-[#121212]">
+                        {String(p.rider_name ?? "—")}
+                      </div>
+                      <div className="font-mono text-[10px] text-[#121212]/40">
+                        GMR{String(p.rider_id ?? "")} · {String(p.rider_mobile ?? "")}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-sm font-semibold leading-snug text-[#121212]">
+                        {String(p.store_name ?? "—")}
+                      </div>
+                      <div className="font-mono text-[10px] text-[#121212]/40">
+                        {String(p.store_code ?? "")}
+                      </div>
+                    </>
+                  )}
+                </td>
+                <td
+                  className={`whitespace-nowrap px-3 py-2.5 align-middle text-sm font-semibold tabular-nums text-[#121212] ${rowBorder}`}
+                >
+                  {formatInr(Number(p.amount ?? 0))}
+                </td>
+                <td className={`px-3 py-2.5 align-middle ${rowBorder}`}>
+                  <div className="flex flex-col gap-0.5">
+                    {statusBadge(rawStatus)}
+                    {disp === "REJECTED" && p.rejection_reason ? (
+                      <span
+                        className="max-w-[180px] truncate text-[10px] text-red-600"
+                        title={String(p.rejection_reason)}
+                      >
+                        {String(p.rejection_reason)}
+                      </span>
+                    ) : null}
+                    {disp === "HOLD" && p.hold_reason ? (
+                      <span
+                        className="max-w-[180px] truncate text-[10px] text-violet-700"
+                        title={String(p.hold_reason)}
+                      >
+                        {String(p.hold_reason)}
+                      </span>
+                    ) : null}
+                  </div>
+                </td>
+                <td className={`px-3 py-2.5 align-middle ${rowBorder}`}>
+                  {showPgInput ? (
+                    <input
+                      type="text"
+                      value={pg}
+                      onChange={(e) => onPgChange(id, e.target.value)}
+                      placeholder="pay_xxx / txn id"
+                      disabled={busy}
+                      className="w-full min-w-[130px] rounded-md border border-[#121212]/12 px-2 py-1 font-mono text-xs outline-none focus:border-[#121212]/35 disabled:opacity-50"
+                    />
+                  ) : (
+                    <span className="font-mono text-xs text-[#121212]/70">{pg.trim() || "—"}</span>
+                  )}
+                </td>
+                <td className={`px-3 py-2.5 align-middle ${rowBorder}`}>
+                  {showUtrInput ? (
+                    <input
+                      type="text"
+                      value={utr}
+                      onChange={(e) => onUtrChange(id, e.target.value)}
+                      placeholder="Bank UTR"
+                      disabled={busy}
+                      className="w-full min-w-[100px] rounded-md border border-[#121212]/12 px-2 py-1 font-mono text-xs outline-none focus:border-[#121212]/35 disabled:opacity-50"
+                    />
+                  ) : (
+                    <span className="text-xs text-[#121212]/50">{utr.trim() || "—"}</span>
+                  )}
+                </td>
+                <td
+                  className={`whitespace-nowrap px-3 py-2.5 align-middle text-xs text-[#121212]/60 ${rowBorder}`}
+                >
+                  {formatRequestedAt(p.requested_at)}
+                </td>
+                <td className={`px-3 py-2.5 align-middle ${rowBorder}`}>
+                  <div className="flex items-center justify-end gap-1">
+                    {isPending && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={busy || (!pg.trim() && !utr.trim())}
+                          title={
+                            !pg.trim() && !utr.trim()
+                              ? "Enter PG TNX ID or UTR to approve (marks Completed)"
+                              : "Mark paid — completes withdrawal"
+                          }
+                          onClick={() =>
+                            void onAction(id, "complete", {
+                              pgTransactionId: pg.trim(),
+                              utrReference: utr.trim(),
+                            })
+                          }
+                          className="inline-flex items-center gap-1 rounded-md bg-[#121212] px-2.5 py-1 text-xs font-semibold text-white hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <Check className="h-3 w-3" />
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          title="Put withdrawal on hold for later release"
+                          onClick={() => onHoldClick(p)}
+                          className="inline-flex items-center gap-1 rounded-md border border-violet-300 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-50"
+                        >
+                          <PauseCircle className="h-3 w-3" />
+                          Hold
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => onRejectClick(p)}
+                          className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          <X className="h-3 w-3" />
+                          Reject
+                        </button>
+                      </>
+                    )}
+
+                    {isHold && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={busy || (!pg.trim() && !utr.trim())}
+                          title={
+                            !pg.trim() && !utr.trim()
+                              ? "Enter PG TNX ID or UTR to release"
+                              : "Release funds to bank (Completed)"
+                          }
+                          onClick={() =>
+                            void onAction(id, "complete", {
+                              pgTransactionId: pg.trim(),
+                              utrReference: utr.trim(),
+                            })
+                          }
+                          className="inline-flex items-center rounded-md bg-violet-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-violet-200 disabled:text-violet-500"
+                        >
+                          Release
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          title="Reject this held withdrawal and return funds"
+                          onClick={() => onRejectClick(p)}
+                          className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+                        >
+                          <X className="h-3 w-3" />
+                          Reject
+                        </button>
+                      </>
+                    )}
+
+                    <RowActionsMenu
+                      disabled={busy}
+                      preferDropUp={rowIndex >= rows.length - 2}
+                      onEditPg={() => onEditField(p, "pg")}
+                      onEditUtr={() => onEditField(p, "utr")}
+                    />
+                  </div>
                 </td>
               </tr>
-            ) : (
-              rows.map((p, rowIndex) => {
-                const id = Number(p.id);
-                const busy = savingId === `payout-${id}`;
-                const pg = pgInputs[id] ?? p.pg_transaction_id ?? "";
-                const utr = utrInputs[id] ?? p.utr_reference ?? "";
-                const rawStatus = String(p.status ?? "PENDING");
-                const disp = displayStatus(rawStatus);
-                const isPending = disp === "PENDING";
-                const isHold = disp === "HOLD";
-                const showPgInput = isPending || isHold;
-                const showUtrInput = isPending || isHold;
-
-                return (
-                  <tr key={id} className="hover:bg-gray-50/50">
-                    <td className="px-3 py-2">
-                      {party === "rider" ? (
-                        <>
-                          <div className="text-sm font-semibold leading-snug text-gray-900">
-                            {String(p.rider_name ?? "—")}
-                          </div>
-                          <div className="text-[10px] font-mono text-gray-400">
-                            GMR{String(p.rider_id ?? "")} · {String(p.rider_mobile ?? "")}
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="text-sm font-semibold leading-snug text-gray-900">{String(p.store_name ?? "—")}</div>
-                          <div className="text-[10px] font-mono text-gray-400">{String(p.store_code ?? "")}</div>
-                        </>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 tabular-nums text-sm font-semibold text-gray-900 whitespace-nowrap">
-                      {formatInr(Number(p.amount ?? 0))}
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex flex-col gap-0.5">
-                        {statusBadge(rawStatus)}
-                        {disp === "REJECTED" && p.rejection_reason ? (
-                          <span className="max-w-[180px] truncate text-[10px] text-red-600" title={String(p.rejection_reason)}>
-                            {String(p.rejection_reason)}
-                          </span>
-                        ) : null}
-                        {disp === "HOLD" && p.hold_reason ? (
-                          <span className="max-w-[180px] truncate text-[10px] text-violet-700" title={String(p.hold_reason)}>
-                            {String(p.hold_reason)}
-                          </span>
-                        ) : null}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2">
-                      {showPgInput ? (
-                        <input
-                          type="text"
-                          value={pg}
-                          onChange={(e) => onPgChange(id, e.target.value)}
-                          placeholder="pay_xxx / txn id"
-                          disabled={busy}
-                          className="w-full min-w-[130px] rounded-md border border-gray-200 px-2 py-1 text-xs font-mono outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200 disabled:opacity-50"
-                        />
-                      ) : (
-                        <span className="text-xs font-mono text-gray-700">{pg.trim() || "—"}</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2">
-                      {showUtrInput ? (
-                        <input
-                          type="text"
-                          value={utr}
-                          onChange={(e) => onUtrChange(id, e.target.value)}
-                          placeholder="Bank UTR"
-                          disabled={busy}
-                          className="w-full min-w-[100px] rounded-md border border-gray-200 px-2 py-1 text-xs font-mono outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200 disabled:opacity-50"
-                        />
-                      ) : (
-                        <span className="text-xs text-gray-500">{utr.trim() || "—"}</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-600">
-                      {formatRequestedAt(p.requested_at)}
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex items-center justify-end gap-1">
-                        {isPending && (
-                          <>
-                            <button
-                              type="button"
-                              disabled={busy || (!pg.trim() && !utr.trim())}
-                              title={
-                                !pg.trim() && !utr.trim()
-                                  ? "Enter PG TNX ID or UTR to approve (marks Completed)"
-                                  : "Mark paid — completes withdrawal"
-                              }
-                              onClick={() =>
-                                void onAction(id, "complete", {
-                                  pgTransactionId: pg.trim(),
-                                  utrReference: utr.trim(),
-                                })
-                              }
-                              className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              <Check className="h-3 w-3" />
-                              Approve
-                            </button>
-                            <button
-                              type="button"
-                              disabled={busy}
-                              title="Put withdrawal on hold for later release"
-                              onClick={() => onHoldClick(p)}
-                              className="inline-flex items-center gap-1 rounded-md border border-violet-300 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-50"
-                            >
-                              <PauseCircle className="h-3 w-3" />
-                              Hold
-                            </button>
-                            <button
-                              type="button"
-                              disabled={busy}
-                              onClick={() => onRejectClick(p)}
-                              className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
-                            >
-                              <X className="h-3 w-3" />
-                              Reject
-                            </button>
-                          </>
-                        )}
-
-                        {isHold && (
-                          <>
-                            <button
-                              type="button"
-                              disabled={busy || (!pg.trim() && !utr.trim())}
-                              title={
-                                !pg.trim() && !utr.trim()
-                                  ? "Enter PG TNX ID or UTR to release"
-                                  : "Release funds to bank (Completed)"
-                              }
-                              onClick={() =>
-                                void onAction(id, "complete", {
-                                  pgTransactionId: pg.trim(),
-                                  utrReference: utr.trim(),
-                                })
-                              }
-                              className="inline-flex items-center rounded-md bg-violet-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-violet-200 disabled:text-violet-500"
-                            >
-                              Release
-                            </button>
-                            <button
-                              type="button"
-                              disabled={busy}
-                              title="Reject this held withdrawal and return funds"
-                              onClick={() => onRejectClick(p)}
-                              className="inline-flex items-center gap-1 rounded-md border border-red-300 bg-white px-2.5 py-1 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
-                            >
-                              <X className="h-3 w-3" />
-                              Reject
-                            </button>
-                          </>
-                        )}
-
-                        <RowActionsMenu
-                          disabled={busy}
-                          preferDropUp={rowIndex >= rows.length - 2}
-                          onEditPg={() => onEditField(p, "pg")}
-                          onEditUtr={() => onEditField(p, "utr")}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
+            );
+          })
+        )}
+      </tbody>
+    </table>
   );
 }
 

@@ -181,19 +181,38 @@ function razorpayUpiAppKeys(upiApp: string): string[] {
 
 /** Lock Standard Checkout to the instrument already chosen on Pay using. */
 function buildDisplayConfig(method: RazorpayCheckoutMethod): Record<string, unknown> | null {
-  if (method.method === "upi" && (method.upiFlow === "qr" || method.upiFlow === "collect")) {
-    const qr = method.upiFlow === "qr";
+  // Never lock exclusive `flows:["qr"]` — Razorpay mobile SDK returns
+  // "No appropriate payment method found" under ~485px width. QR is in-app only.
+  if (method.method === "upi" && method.upiFlow === "qr") {
+    return null;
+  }
+  // Collect-only also fails on many accounts (NPCI Collect deprecation). Prefer
+  // Collect when available, keep Intent so Checkout always has a valid instrument.
+  if (method.method === "upi" && method.upiFlow === "collect") {
     return {
       display: {
         blocks: {
           preferred: {
-            name: qr ? "Pay via QR Code" : "Pay via UPI ID",
+            name: "Pay via UPI ID",
             instruments: [
-              {
-                method: "upi",
-                flows: [method.upiFlow],
-              },
+              { method: "upi", flows: ["collect"] },
+              { method: "upi", flows: ["intent"] },
             ],
+          },
+        },
+        sequence: ["block.preferred", "upi"],
+        preferences: { show_default_blocks: true },
+      },
+    };
+  }
+  // Generic Intent — pay in any UPI app without typing a VPA ("Pay Without UPI ID").
+  if (method.method === "upi" && method.upiFlow === "intent" && !method.upiApp) {
+    return {
+      display: {
+        blocks: {
+          preferred: {
+            name: "Pay Without UPI ID",
+            instruments: [{ method: "upi", flows: ["intent"] }],
           },
         },
         sequence: ["block.preferred"],
@@ -276,26 +295,37 @@ function applyCheckoutMethod(
   }
 }
 
-/** QR and UPI ID stay on every full checkout. A locked app/card/wallet keeps its own block. */
-const UPI_QR_AND_ID_CONFIG = {
+/**
+ * Default / open checkout: UPI Intent first, then Razorpay's enabled blocks
+ * (UPI apps, cards, wallets, netbanking). Do NOT pin exclusive QR here — it
+ * triggers "No appropriate payment method" on phones; Scan QR is in-app only.
+ */
+const OPEN_CHECKOUT_CONFIG = {
   display: {
     blocks: {
-      upi_qr_id: {
+      upi_preferred: {
         name: "UPI",
         instruments: [
-          { method: "upi", flows: ["qr"] },
+          { method: "upi", flows: ["intent"] },
           { method: "upi", flows: ["collect"] },
         ],
       },
     },
-    sequence: ["block.upi_qr_id"],
+    sequence: ["block.upi_preferred", "upi", "card", "wallet", "netbanking"],
     preferences: { show_default_blocks: true },
   },
 };
 
 function ensureQrAndUpiId(options: Record<string, unknown>): void {
   if (options.config) return;
-  options.config = UPI_QR_AND_ID_CONFIG;
+  // Never pre-lock top-level `method` on open checkout — that hides cards/wallets.
+  delete options.method;
+  if (options.prefill && typeof options.prefill === "object") {
+    const prefill = { ...(options.prefill as Record<string, unknown>) };
+    delete prefill.method;
+    options.prefill = prefill;
+  }
+  options.config = OPEN_CHECKOUT_CONFIG;
 }
 
 function isRazorpayNoMethodError(err: unknown): boolean {
@@ -349,6 +379,12 @@ async function openNativeSdk(args: {
     },
     retry: { enabled: true, max_count: 2 },
   };
+  if (args.checkoutMethod?.method === "upi" && args.checkoutMethod.upiFlow === "qr") {
+    throw Object.assign(new Error("UPI QR is handled in-app, not by Razorpay Standard Checkout"), {
+      code: "ERR_UPI_QR_IN_APP_ONLY",
+      description: "No appropriate payment method found.",
+    });
+  }
   applyCheckoutMethod(options, args.checkoutMethod);
   ensureQrAndUpiId(options);
   if (__DEV__ && args.checkoutMethod?.method) {
@@ -364,10 +400,28 @@ async function openNativeSdk(args: {
 
   args.onSheetOpening?.();
 
-  const data =
-    Platform.OS === "android"
-      ? await openAndroidRazorpay(options)
-      : await openPackagedRazorpay(options);
+  const openOnce = async (opts: Record<string, unknown>) =>
+    Platform.OS === "android" ? openAndroidRazorpay(opts) : openPackagedRazorpay(opts);
+
+  let data: Record<string, unknown>;
+  try {
+    data = await openOnce(options);
+  } catch (e) {
+    // Collect disabled on account → retry as Intent so user can still pay.
+    if (
+      isRazorpayNoMethodError(e) &&
+      args.checkoutMethod?.method === "upi" &&
+      args.checkoutMethod.upiFlow === "collect"
+    ) {
+      const retryOpts = { ...options };
+      delete retryOpts.config;
+      applyCheckoutMethod(retryOpts, { method: "upi", upiFlow: "intent" });
+      // Locked Intent retry — keep method=upi; do not wipe via open-checkout helper.
+      data = await openOnce(retryOpts);
+    } else {
+      throw e;
+    }
+  }
 
   return {
     razorpayPaymentId: String(data.razorpay_payment_id ?? ""),
@@ -566,6 +620,7 @@ function buildCheckoutHtml(args: {
     method: args.checkoutMethod?.method ?? null,
     upiApp: args.checkoutMethod?.upiApp ?? null,
     wallet: args.checkoutMethod?.wallet ?? null,
+    upiFlow: args.checkoutMethod?.upiFlow ?? null,
   }).replace(/</g, "\\u003c");
 
   return `<!DOCTYPE html>
@@ -646,7 +701,40 @@ function buildCheckoutHtml(args: {
           if (methodPick.method === 'wallet' && methodPick.wallet) {
             opts.wallet = methodPick.wallet;
           }
-          if (methodPick.method === 'upi' && methodPick.upiApp) {
+          if (methodPick.method === 'upi' && methodPick.upiFlow === 'qr') {
+            showErr('Scan QR Code opens in the app, not this sheet. Go back and pick Scan QR Code again.');
+            post({ type: 'error', error: { code: 'ERR_UPI_QR_IN_APP_ONLY', description: 'No appropriate payment method found.' } });
+            return;
+          } else if (methodPick.method === 'upi' && methodPick.upiFlow === 'collect') {
+            opts.config = {
+              display: {
+                blocks: {
+                  preferred: {
+                    name: 'Pay via UPI ID',
+                    instruments: [
+                      { method: 'upi', flows: ['collect'] },
+                      { method: 'upi', flows: ['intent'] }
+                    ]
+                  }
+                },
+                sequence: ['block.preferred', 'upi'],
+                preferences: { show_default_blocks: true }
+              }
+            };
+          } else if (methodPick.method === 'upi' && methodPick.upiFlow === 'intent' && !methodPick.upiApp) {
+            opts.config = {
+              display: {
+                blocks: {
+                  preferred: {
+                    name: 'Pay Without UPI ID',
+                    instruments: [{ method: 'upi', flows: ['intent'] }]
+                  }
+                },
+                sequence: ['block.preferred'],
+                preferences: { show_default_blocks: false }
+              }
+            };
+          } else if (methodPick.method === 'upi' && methodPick.upiApp) {
             var upiApps = methodPick.upiApp === 'google_pay'
               ? ['google_pay', 'gpay']
               : [methodPick.upiApp];
@@ -699,15 +787,12 @@ function buildCheckoutHtml(args: {
           opts.config = {
             display: {
               blocks: {
-                upi_qr_id: {
-                  name: 'UPI',
-                  instruments: [
-                    { method: 'upi', flows: ['qr'] },
-                    { method: 'upi', flows: ['collect'] }
-                  ]
+                upi_no_vpa: {
+                  name: 'Pay Without UPI ID',
+                  instruments: [{ method: 'upi', flows: ['intent'] }]
                 }
               },
-              sequence: ['block.upi_qr_id'],
+              sequence: ['block.upi_no_vpa', 'upi', 'card', 'wallet', 'netbanking'],
               preferences: { show_default_blocks: true }
             }
           };

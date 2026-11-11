@@ -41,13 +41,16 @@ export const GRID_FIRST_HEADER_OVERLAY_H = 130;
  * Tuned to food-delivery reference proportions (~1/3 width), not device pixels.
  * Layout height is UI-driven — never from source image/video dimensions.
  */
-export const GRID_FIRST_HERO_WIDTH_RATIO = 0.36;
+/**
+ * Media band under the overlaid header — compact immersive (status bar → search).
+ */
+export const GRID_FIRST_HERO_WIDTH_RATIO = 0.38;
 /** Floor for very narrow screens. */
-export const GRID_FIRST_HERO_MIN_H = 118;
+export const GRID_FIRST_HERO_MIN_H = 120;
 /** Extra px on the media band — applied on Food + Grocery grid-first homes. */
-export const GRID_FIRST_HERO_HEIGHT_NUDGE = 14;
-/** Cap vs viewport so the hero stays compact on tall phones. */
-export const GRID_FIRST_HERO_MAX_SCREEN_FRAC = 0.205;
+export const GRID_FIRST_HERO_HEIGHT_NUDGE = 4;
+/** Cap vs viewport — keep hero under ~1/4 screen. */
+export const GRID_FIRST_HERO_MAX_SCREEN_FRAC = 0.22;
 /**
  * @deprecated Prefer GRID_FIRST_HERO_WIDTH_RATIO. Kept for callers that still
  * pass an unused aspect argument (ignored for layout).
@@ -56,7 +59,7 @@ export const GRID_FIRST_HERO_DEFAULT_ASPECT = 1 / GRID_FIRST_HERO_WIDTH_RATIO;
 /**
  * Fallback media band height seed when screen width is not yet known.
  */
-export const GRID_FIRST_HERO_VISIBLE_H = 142;
+export const GRID_FIRST_HERO_VISIBLE_H = 140;
 
 /** Crossfade window for in-flow ↔ sticky handoff (keep tight to avoid double-ghosting). */
 const STICK_HANDOFF_PX = 4;

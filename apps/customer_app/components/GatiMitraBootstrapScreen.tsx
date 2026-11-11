@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { AppText } from "@/components/AppText";
 
 import {
@@ -108,14 +108,14 @@ export function GatiMitraBootstrapScreen({
     };
   }, []);
 
-  useEffect(() => {
+  // Layout-phase exit — must not wait for useEffect after Home's heavy work.
+  useLayoutEffect(() => {
     if (variant !== "root" || !appReady || exitStartedRef.current || completedRef.current) {
       return;
     }
     exitStartedRef.current = true;
-    // Cosmetic fade only — parent already schedules hard dismiss.
+    // Cosmetic fade only — parent useLayoutEffect owns hard dismiss.
     opacity.value = withTiming(0, { duration: EXIT_MS });
-    // Notify parent immediately so Home is not gated on animation / Reanimated.
     finishExit();
   }, [variant, appReady, opacity, finishExit]);
 

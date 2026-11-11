@@ -7,7 +7,7 @@ import { getConfig } from "@/config/env";
 import { ORDER_PLACEMENT_TIMEOUT_MS } from "@/constants";
 import { isRetriableCheckoutError } from "@/utils/networkError";
 import type { CheckoutPayMethodsResponse } from "@/lib/razorpayPaymentMethods";
-import { FALLBACK_PAY_METHODS } from "@/lib/razorpayPaymentMethods";
+import { ensureUpiQrAndCollectVisible, FALLBACK_PAY_METHODS } from "@/lib/razorpayPaymentMethods";
 
 const PAYMENT_PREFIX = "/v1/payment";
 
@@ -35,8 +35,9 @@ export const paymentService = {
      * Direct-online person-ride fare: the backend computes the authoritative
      * amount and durably anchors the attempt so a captured fare is recoverable
      * (webhook/reconciler) even if this app is killed before confirmation.
+     * `checkout_qr` forces a live Razorpay Orders API id (no dummy_*).
      */
-    purpose?: "ride_fare" | "parcel_fare";
+    purpose?: "ride_fare" | "parcel_fare" | "checkout_qr";
     businessOrderId?: string;
     /** parcel_fare: GatiCash applied alongside; the backend charges the rest. */
     gatiCashAmount?: number;
@@ -66,6 +67,7 @@ export const paymentService = {
       currency?: string;
       receipt?: string;
       pendingId?: string;
+      purpose?: "ride_fare" | "parcel_fare" | "checkout_qr";
     },
     opts: { retries?: number; delayMs?: number } = {}
   ): Promise<CreateRazorpayOrderResponse> {
@@ -150,10 +152,12 @@ export const paymentService = {
   async getAvailableMethods(): Promise<CheckoutPayMethodsResponse> {
     try {
       const { data } = await api.get<CheckoutPayMethodsResponse>(`${PAYMENT_PREFIX}/methods`);
-      if (data?.sections?.some((s) => s.items?.length > 0)) return data;
-      return FALLBACK_PAY_METHODS;
+      if (data?.sections?.some((s) => s.items?.length > 0)) {
+        return ensureUpiQrAndCollectVisible(data);
+      }
+      return ensureUpiQrAndCollectVisible(FALLBACK_PAY_METHODS);
     } catch {
-      return FALLBACK_PAY_METHODS;
+      return ensureUpiQrAndCollectVisible(FALLBACK_PAY_METHODS);
     }
   },
 
@@ -174,6 +178,36 @@ export const paymentService = {
       params,
       { timeout: ORDER_PLACEMENT_TIMEOUT_MS, headers: { "X-Silent-Error": "1" } }
     );
+    return data;
+  },
+
+  /**
+   * Food checkout Scan QR — Razorpay upi_qr image (mobile Standard Checkout hides QR).
+   */
+  /**
+   * Food checkout Scan QR — mints a real Razorpay upi_qr server-side and
+   * returns the gateway `imageUrl`. Never generates a local/dummy QR.
+   */
+  async createCheckoutQr(params: {
+    pendingId: string;
+    razorpayOrderId: string;
+    amountPaise: number;
+  }): Promise<{
+    qrId: string;
+    imageUrl: string;
+    expiresAt: number;
+    amountPaise: number;
+    currency: "INR";
+    status: string;
+  }> {
+    const { data } = await api.post<{
+      qrId: string;
+      imageUrl: string;
+      expiresAt: number;
+      amountPaise: number;
+      currency: "INR";
+      status: string;
+    }>(`${PAYMENT_PREFIX}/checkout-qr`, params, { timeout: ORDER_PLACEMENT_TIMEOUT_MS });
     return data;
   },
 };

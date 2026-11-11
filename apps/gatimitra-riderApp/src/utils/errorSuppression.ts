@@ -33,6 +33,8 @@ export function installErrorSuppression() {
     "Could not load bundle",
     "NetworkTimeoutError",
     "Request timed out after",
+    // GPS one-shot races — losers time out after a winner; not actionable for riders.
+    "Location request timed out",
   ]);
 
   const rejectionHandler = (event: PromiseRejectionEvent) => {
@@ -44,6 +46,10 @@ export function installErrorSuppression() {
           ? reason
           : String(reason ?? "");
     if (isBenignKeepAwakeMessage(message)) {
+      event.preventDefault?.();
+      return;
+    }
+    if (message.includes("Location request timed out")) {
       event.preventDefault?.();
     }
   };
@@ -114,7 +120,8 @@ export function installErrorSuppression() {
     // Available-orders poll timeout — dispatch already falls back to [] / pending.
     if (
       message.includes("NetworkTimeoutError") ||
-      message.includes("Request timed out after")
+      message.includes("Request timed out after") ||
+      message.includes("Location request timed out")
     ) {
       return;
     }

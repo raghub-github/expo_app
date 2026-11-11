@@ -37,6 +37,7 @@ import {
   type LocationFreshness,
   type PersistedDeviceLocation,
 } from "@/lib/lastKnownLocationCache";
+import { sameReverseGeocodeCell } from "@/lib/reverseGeocodeCacheKey";
 import { metresBetween, pinStillHolds, shouldReplaceFix } from "@/lib/locationFixSelection";
 import { startupLaunchLog } from "@/lib/startupPerf";
 
@@ -59,8 +60,8 @@ export {
 };
 export type { LocationPermissionStatus, DeviceLocationReadiness };
 
-/** Mapbox reverse-geocode budget — too short → placeholder "Current location" forever. */
-const GEOCODE_MS = 8_000;
+/** Mapbox reverse-geocode budget — keep under the 5–7s fresh-address SLA. */
+const GEOCODE_MS = 4_500;
 const STORAGE_KEY = "@gatimitra/last_selected_location_v1";
 /** Toggle verbose location logging for field debugging (raw coords, accuracy, PIN). */
 const LOCATION_DEBUG = __DEV__;
@@ -201,7 +202,7 @@ const DETECTING_ADDRESS = "Detecting address…";
 /** Below this the visible label still describes the point: no new geocode needed. */
 const ADDRESS_VALID_M = 25;
 /** Second chance for a failed geocode: mobile networks often recover within seconds. */
-const GEOCODE_RETRY_MS = 2_500;
+const GEOCODE_RETRY_MS = 700;
 
 function namedPlaceholder(primary: string): ReverseGeocodeResult {
   return { primary, secondary: "", fullAddress: primary, city: null, state: null, pincode: null };
@@ -235,9 +236,20 @@ export function resolveDeviceAddress(point: {
   timestampMs?: number;
   source?: PersistedDeviceLocation["source"];
 }): void {
+  const cur = useLocationStore.getState();
+  // Progressive GPS noise within ~11 m must not re-fire reverse geocode / logs.
+  if (
+    cur.locationSource !== "selected" &&
+    !isPlaceholderAddress(cur.address) &&
+    addressAnchor &&
+    sameReverseGeocodeCell(addressAnchor, point)
+  ) {
+    return;
+  }
+
   const token = ++addressCommitSeq;
   const startedAt = Date.now();
-  startupLaunchLog("REVERSE_GEOCODE_START");
+  startupLaunchLog("REVERSE_GEOCODE_START", { blocksHome: false });
   const superseded = () =>
     token !== addressCommitSeq || useLocationStore.getState().locationSource === "selected";
 
@@ -268,6 +280,12 @@ export function resolveDeviceAddress(point: {
     startupLaunchLog("REVERSE_GEOCODE_DONE", {
       durationMs: Date.now() - startedAt,
       hasPrimary: Boolean(address.primary),
+      blocksHome: false,
+    });
+    startupLaunchLog("HOME_LOCATION_VISIBLE", {
+      reason: "reverse_geocode",
+      durationMs: Date.now() - startedAt,
+      blocksHome: false,
     });
     saveLastKnownLocation({
       lat: point.latitude,
@@ -337,7 +355,7 @@ function commitDeviceFix(fix: DeviceFix): void {
 const ACCEPTABLE_ACCURACY_M = 100;
 
 /** How long a caller with nothing on screen waits for the first fix. */
-const FIRST_FIX_WAIT_MS = 6_000;
+const FIRST_FIX_WAIT_MS = 5_000;
 
 /** A fix this sharp may drive decisions like un-binding a saved address (metres). */
 const TRUSTED_FIX_ACCURACY_M = 200;
@@ -407,24 +425,72 @@ function startDeviceAcquisition(force: boolean): DeviceAcquisition {
     return activeAcquisition;
   }
   const t0 = Date.now();
-  let sawFirst = false;
+  let sawOsLastKnown = false;
+  let sawFirstFresh = false;
   let resolveTrusted!: (fix: DeviceFix | null) => void;
   const trusted = new Promise<DeviceFix | null>((resolve) => (resolveTrusted = resolve));
+  let loggedTrusted = false;
   const session = acquireProgressivePosition({
     log: logLocation,
     onFix: (raw) => {
       const fix = toDeviceFix(raw);
-      if (fix.accuracy != null && fix.accuracy <= TRUSTED_FIX_ACCURACY_M) resolveTrusted(fix);
-      if (!sawFirst) {
-        sawFirst = true;
-        logMetric(
-          raw.source === "last-known" ? "last_known_location_ms" : "first_location_fix_ms",
-          Date.now() - t0
-        );
+      const elapsed = Date.now() - t0;
+      const isOsLastKnown = raw.source === "last-known";
+      if (isOsLastKnown) {
+        if (!sawOsLastKnown) {
+          sawOsLastKnown = true;
+          logMetric("last_known_location_ms", elapsed);
+          startupLaunchLog("OS_LAST_KNOWN_FIX", {
+            durationMs: elapsed,
+            accuracyM: fix.accuracy,
+            source: fix.source,
+            isLiveGps: false,
+            blocksHome: false,
+          });
+          startupLaunchLog("HOME_LOCATION_VISIBLE", {
+            reason: "os_last_known_progressive",
+            durationMs: elapsed,
+            accuracyM: fix.accuracy,
+            freshness: classifyFreshness(fix.timestampMs),
+            blocksHome: false,
+          });
+        }
+      } else if (!sawFirstFresh) {
+        sawFirstFresh = true;
+        logMetric("first_location_fix_ms", elapsed);
+        startupLaunchLog("FIRST_FRESH_GPS_FIX", {
+          durationMs: elapsed,
+          accuracyM: fix.accuracy,
+          source: fix.source,
+          isLiveGps: true,
+          blocksHome: false,
+        });
+        startupLaunchLog("HOME_LOCATION_VISIBLE", {
+          reason: "first_fresh_gps",
+          durationMs: elapsed,
+          accuracyM: fix.accuracy,
+          freshness: classifyFreshness(fix.timestampMs),
+          blocksHome: false,
+        });
+      }
+      if (fix.accuracy != null && fix.accuracy <= TRUSTED_FIX_ACCURACY_M && !isOsLastKnown) {
+        resolveTrusted(fix);
+        if (!loggedTrusted) {
+          loggedTrusted = true;
+          logMetric("accurate_location_fix_ms", elapsed);
+          startupLaunchLog("ACCURATE_GPS_FIX", {
+            durationMs: elapsed,
+            accuracyM: fix.accuracy,
+            source: fix.source,
+            isLiveGps: true,
+            blocksHome: false,
+          });
+        }
       }
       const owner = acquisition;
       if (owner.commitSeq !== locationFetchSeq) return;
       if (useLocationStore.getState().locationSource === "selected" && !owner.force) return;
+      // Commit immediately — reverse geocode stays async and must never delay the pin.
       commitIfBetter(fix);
     },
   });
@@ -439,6 +505,15 @@ function startDeviceAcquisition(force: boolean): DeviceAcquisition {
       if (activeAcquisition === acquisition) activeAcquisition = null;
       resolveTrusted(null);
       logMetric("accurate_location_fix_ms", Date.now() - t0);
+      if (fix) {
+        startupLaunchLog("GPS_SESSION_DONE", {
+          durationMs: Date.now() - t0,
+          accuracyM: fix.accuracy,
+          source: fix.source,
+          isLiveGps: fix.source !== "last-known",
+          blocksHome: false,
+        });
+      }
       return fix ? toDeviceFix(fix) : null;
     }),
     commitSeq: ++locationFetchSeq,
@@ -541,16 +616,26 @@ async function progressiveDeviceFetch(force = false): Promise<boolean> {
     resolveDeviceAddress(shown.coords);
   }
 
-  if (hasFreshUsableCurrentCoords()) {
-    useLocationStore.setState({ loading: false, refining: false });
-    return true;
-  }
-
-  const acquisition = startDeviceAcquisition(force);
   const pinOnScreen = () => {
     const s = useLocationStore.getState();
     return s.locationSource !== "selected" && s.coords != null;
   };
+
+  // Cached/FRESH coords must still start a progressive session — otherwise cold
+  // start kept yesterday's pin and never refreshed the address for minutes.
+  const acquisition = startDeviceAcquisition(force);
+
+  if (hasFreshUsableCurrentCoords()) {
+    useLocationStore.setState({ loading: false, refining: pinOnScreen() });
+    logMetric("total_location_ready_ms", Date.now() - t0);
+    void acquisition.done.then(() => {
+      const s = useLocationStore.getState();
+      if (s.refining && !isPlaceholderAddress(s.address)) {
+        useLocationStore.setState({ refining: false });
+      }
+    });
+    return true;
+  }
 
   if (!pinOnScreen()) {
     await withTimeout(acquisition.firstFix, FIRST_FIX_WAIT_MS).catch(() => null);
@@ -671,14 +756,14 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     // Clear any previously persisted *selected* pin so cold start cannot lock onto an old city.
     // Explicit selections are session-scoped; live GPS is the default for discovery.
     AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
-    // Paint the last real *device* location instantly (sections 2/7) so the home header
-    // shows a location with no GPS wait. The cold-start reconcile + progressive fetch then
-    // refine or replace it. This is a cache, never presented as a guaranteed-current fix.
-    let cached: PersistedDeviceLocation | null = null;
-    try {
-      cached = await loadLastKnownLocation();
-    } catch {
-      cached = null;
+    // Prefer sync MMKV/memory peek — AsyncStorage load was the 20s+ LAST_KNOWN path on Expo Go.
+    let cached: PersistedDeviceLocation | null = peekLastKnownLocation();
+    if (!cached) {
+      try {
+        cached = await loadLastKnownLocation();
+      } catch {
+        cached = null;
+      }
     }
     if (cached?.address) {
       seedReverseGeocodeCache(cached.lon, cached.lat, cached.address);
@@ -827,9 +912,6 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   },
 
   requestPermissionAndFetch: async (options) => {
-    if (isSmsBlockingLocationPrompts()) {
-      return;
-    }
     const forceDevice = options?.forceDevice === true;
     // Mark hydrated on first attempt; hydration may also come from AsyncStorage clear.
     if (!get().locationHydrated) set({ locationHydrated: true });
@@ -845,6 +927,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       // native permission round-trip; refine GPS in the background.
       if (get().coords && get().locationSource === "current") {
         set({ loading: false });
+        // Already-granted GPS refine must not wait on SMS sheet.
         void progressiveDeviceFetch(forceDevice);
         return;
       }
@@ -853,9 +936,14 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       logMetric("location_permission_ms", Date.now() - permT0);
       if (readiness.isReady) {
         set({ permissionStatus: "granted", showPermissionModal: false });
-        // First fix → instant coords + async address → the session keeps sharpening it.
+        // Permission already granted — fetch even if SMS sheet is up (no OS dialog).
         const ok = await progressiveDeviceFetch(forceDevice);
         if (!ok) set({ loading: false });
+        return;
+      }
+      // Need to show permission UI — never over the SMS sheet.
+      if (isSmsBlockingLocationPrompts()) {
+        set({ loading: false });
         return;
       }
       if (readiness.permissionStatus === "denied") {
@@ -885,7 +973,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       set({
         error: message,
         loading: false,
-        showPermissionModal: true,
+        showPermissionModal: !isSmsBlockingLocationPrompts(),
       });
     }
   },

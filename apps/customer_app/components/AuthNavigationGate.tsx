@@ -97,6 +97,7 @@ export function AuthNavigationGate() {
   const segments = useSegments() as string[];
   const params = useGlobalSearchParams<{ id?: string }>();
   const hydrated = useAuthStore((s) => s.hydrated);
+  const sessionRestorePending = useAuthStore((s) => s.sessionRestorePending);
   const accessToken = useAuthStore((s) => s.session?.accessToken ?? null);
   const lastRedirectAtRef = useRef(0);
   const inFlightRef = useRef(false);
@@ -111,6 +112,8 @@ export function AuthNavigationGate() {
     const canRedirect = now - lastRedirectAtRef.current > 500;
 
     if (!accessToken) {
+      // Splash budget may unblock before AsyncStorage returns — don't flash login.
+      if (sessionRestorePending) return;
       if (root === "address" && shareToken) {
         void storePendingAddressShareToken(shareToken);
       }
@@ -158,7 +161,7 @@ export function AuthNavigationGate() {
       router.replace("/(onboarding)");
       return;
     }
-  }, [hydrated, accessToken, segments, router, params.id]);
+  }, [hydrated, sessionRestorePending, accessToken, segments, router, params.id]);
 
   return null;
 }

@@ -21,6 +21,9 @@ function proxyObjectKey(request: NextRequest): string | null {
   return key;
 }
 
+/** Browser-cacheable; category thumbs were re-fetching R2 on every paint and flooding HTTP/2. */
+const PROXY_CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=604800";
+
 export async function HEAD(request: NextRequest) {
   const key = proxyObjectKey(request);
   if (!key) {
@@ -36,7 +39,7 @@ export async function HEAD(request: NextRequest) {
     const contentType = contentTypeFromR2Key(key, meta.contentType || null);
     const headers: Record<string, string> = {
       "Content-Type": contentType,
-      "Cache-Control": "private, no-cache, must-revalidate",
+      "Cache-Control": PROXY_CACHE_CONTROL,
     };
     if (typeof meta.contentLength === "number") {
       headers["Content-Length"] = String(meta.contentLength);
@@ -72,7 +75,7 @@ export async function GET(request: NextRequest) {
       status: 200,
       headers: {
         "Content-Type": contentType,
-        "Cache-Control": "private, no-cache, must-revalidate",
+        "Cache-Control": PROXY_CACHE_CONTROL,
         "Content-Disposition": "inline",
       },
     });

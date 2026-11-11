@@ -847,10 +847,12 @@ function HeaderComponent() {
       !cleanPathname.startsWith("/dashboard/orders") &&
       !(cleanPathname === "/order" || cleanPathname.startsWith("/order/")))
   );
-  const { canTogglePortal = false, isSuperAdmin = false } = usePermissions();
-  const { hasAdminMerchantAccess } = useMerchantDashboardAccess();
+  const { canTogglePortal = false, isSuperAdmin = false, loading: permissionsLoading } = usePermissions();
+  const { hasAdminMerchantAccess, loading: merchantAccessLoading } = useMerchantDashboardAccess();
   const { canMutate: canCreateTickets } = useTicketDashboardAccess();
-  const canUseMerchantPortalToggle = canTogglePortal || hasAdminMerchantAccess;
+  const merchantPortalAccessReady = !permissionsLoading && !merchantAccessLoading;
+  const canUseMerchantPortalToggle =
+    isSuperAdmin || canTogglePortal || hasAdminMerchantAccess;
   const { data: dashboardAccessData } = useDashboardAccessQuery();
   /** Avoid SSR/client mismatch when React Query restores cached permissions before hydration. */
   const [queueLinkMounted, setQueueLinkMounted] = useState(false);
@@ -893,7 +895,7 @@ function HeaderComponent() {
   // Keep ?portal= in sync on Merchants sub-routes when the list omits it (e.g. old verification links).
   // Depend on portalParam (stable string), not searchParams object identity — avoids replace storms.
   useEffect(() => {
-    if (!isMerchantsArea || !canUseMerchantPortalToggle) return;
+    if (!isMerchantsArea || !merchantPortalAccessReady || !canUseMerchantPortalToggle) return;
     if (portalFromUrl) {
       writeStoredMerchantsPortal(portalFromUrl);
       return;
@@ -906,7 +908,15 @@ function HeaderComponent() {
     const qs = next.toString();
     router.replace(qs ? `${pathname}?${qs}` : `${pathname}?portal=${target}`);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- searchParams.toString() via portalParam
-  }, [isMerchantsArea, canUseMerchantPortalToggle, portalFromUrl, portalParam, pathname, router]);
+  }, [
+    isMerchantsArea,
+    merchantPortalAccessReady,
+    canUseMerchantPortalToggle,
+    portalFromUrl,
+    portalParam,
+    pathname,
+    router,
+  ]);
 
   const setPortal = (value: MerchantsPortal) => {
     setPendingPortal(value);
@@ -947,9 +957,12 @@ function HeaderComponent() {
   };
 
   // Force merchant portal unless explicit portal toggle access is granted.
+  // Wait until permissions settle — otherwise reload briefly treats super-admin as a
+  // normal user and rewrites ?portal=admin → ?portal=merchant.
   // Never navigate away from the current merchants page (preserve storeId/step on reload).
   useEffect(() => {
     if (!isMerchantsArea) return;
+    if (!merchantPortalAccessReady) return;
     if (canUseMerchantPortalToggle) return;
     if (portal === "merchant") return;
     writeStoredMerchantsPortal("merchant");
@@ -963,7 +976,15 @@ function HeaderComponent() {
     setPendingPortal("merchant");
     router.replace(qs ? `${pathname}?${qs}` : `${pathname}?portal=merchant`);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- searchParams via portalParam
-  }, [isMerchantsArea, canUseMerchantPortalToggle, portal, portalParam, pathname, router]);
+  }, [
+    isMerchantsArea,
+    merchantPortalAccessReady,
+    canUseMerchantPortalToggle,
+    portal,
+    portalParam,
+    pathname,
+    router,
+  ]);
   const handleOpenRightPanel = () => {
     leftSidebarMobile?.setMobileMenuOpen(false);
     rightSidebar?.onToggle();
@@ -1188,8 +1209,7 @@ function HeaderComponent() {
     !isGeoRiderAvailabilityPage &&
     !isAmOnboardingFailedPage &&
     !isParentOnboardingPage &&
-    !isMerchantStorePage &&
-    !effectivePathname.startsWith("/dashboard/merchants/verifications");
+    !isMerchantStorePage;
 
   return (
     <>
@@ -1502,7 +1522,9 @@ function HeaderComponent() {
               cleanPathname === "/order" ||
               cleanPathname.startsWith("/order/")
                 ? "orders-typo"
-                : ""
+                : cleanPathname.startsWith("/dashboard/merchants")
+                  ? "merchants-typo"
+                  : ""
             }`}
           >
             {pageName}

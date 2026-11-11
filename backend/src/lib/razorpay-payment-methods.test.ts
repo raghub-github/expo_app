@@ -82,20 +82,23 @@ describe("mapRazorpayMethodsPayload", () => {
     assert.ok(ids.includes("recommended"));
   });
 
-  it("adds QR and UPI ID whenever Razorpay has UPI on", () => {
+  it("adds Intent, QR and UPI ID whenever Razorpay has UPI on", () => {
     const mapped = mapRazorpayMethodsPayload({ upi: true, card: false }, false);
-    const other = mapped.sections.find((s) => s.id === "upi_other")?.items ?? [];
+    const other = mapped.sections.find((s) => s.id === "upi_qr_id")?.items ?? [];
     assert.deepEqual(
       other.map((item) => item.id),
-      ["upi:qr", "upi:collect"]
+      ["upi:intent", "upi:qr", "upi:collect"]
     );
-    assert.equal(other[0]?.upiFlow, "qr");
-    assert.equal(other[1]?.upiFlow, "collect");
+    assert.equal(other[0]?.upiFlow, "intent");
+    assert.equal(other[0]?.label, "Pay Without UPI ID");
+    assert.equal(other[1]?.upiFlow, "qr");
+    assert.equal(other[1]?.label, "Scan QR Code");
+    assert.equal(other[2]?.upiFlow, "collect");
   });
 
-  it("does not add QR or UPI ID when UPI is off", () => {
+  it("does not add Intent/QR/UPI ID when UPI is off", () => {
     const mapped = mapRazorpayMethodsPayload({ upi: false, card: true }, false);
-    assert.equal(mapped.sections.some((s) => s.id === "upi_other"), false);
+    assert.equal(mapped.sections.some((s) => s.id === "upi_qr_id"), false);
   });
 
   it("dummy catalog is explicit dummy mode only", () => {

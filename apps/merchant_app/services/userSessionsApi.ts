@@ -16,6 +16,8 @@ export type UserDeviceSession = {
   last_active: string;
   is_active: boolean;
   device_id: string | null;
+  app_source?: string | null;
+  user_agent?: string | null;
 };
 
 const { apiBaseUrl } = getConfig();
@@ -59,6 +61,28 @@ export async function logoutAllUserSessions(token: string, includeCurrent = fals
   if (res.status === 401) return;
   if (!res.ok) {
     throw new Error("Failed to logout all devices");
+  }
+}
+
+/** Best-effort refresh of this device's friendly name/OS on the server. */
+export async function syncCurrentDeviceCapture(
+  token: string,
+  payload: {
+    deviceId: string;
+    deviceName?: string;
+    deviceOs?: string;
+    deviceType?: "mobile" | "tablet" | "web";
+    appSource?: string;
+  }
+): Promise<void> {
+  try {
+    await authFetch(`${apiBaseUrl}/v1/merchant-partner/user-sessions/sync-device`, token, {
+      method: "POST",
+      body: JSON.stringify(payload),
+      timeoutMs: 8_000,
+    });
+  } catch {
+    /* ignore — display still works from last login capture */
   }
 }
 

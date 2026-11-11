@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useAppSearchParams } from "@/hooks/useAppSearchParams";
-import { X, Search, Users, Loader2 } from "lucide-react";
+import { X, Search, Loader2 } from "lucide-react";
 import { usePermission } from "@/hooks/usePermission";
 import { useMerchantsSearch } from "@/context/MerchantsSearchContext";
 
@@ -34,11 +34,44 @@ type SearchResult =
 type AreaManagerListItem = {
   id: number;
   full_name: string | null;
+  /** Formatted system user id (system_users.system_user_id) */
+  system_user_id: string | null;
   email: string | null;
   mobile: string | null;
+  city: string | null;
+  locality_code: string | null;
+  primary_role: string | null;
 };
 
+function isSuperAdminRole(role: string | null | undefined) {
+  return (role ?? "").toUpperCase() === "SUPER_ADMIN";
+}
+
 type AssignedAreaManagerInfo = AreaManagerListItem;
+
+function amPrimaryLabel(am: { id: number; full_name: string | null }) {
+  const name = am.full_name?.trim();
+  if (name) return name;
+  return `AM #${am.id}`;
+}
+
+function amLocationLine(am: { city: string | null; locality_code: string | null }) {
+  const parts: string[] = [];
+  const city = am.city?.trim();
+  const locality = am.locality_code?.trim();
+  if (city) parts.push(city);
+  if (locality) parts.push(locality);
+  return parts.join(" · ");
+}
+
+function amContactLine(am: { email: string | null; mobile: string | null }) {
+  const parts: string[] = [];
+  const email = am.email?.trim();
+  const mobile = am.mobile?.trim();
+  if (email) parts.push(email);
+  if (mobile) parts.push(mobile);
+  return parts.join(" · ");
+}
 
 type ChildStoreSummary = {
   store_internal_id: number;
@@ -146,7 +179,9 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
       setAreaManagersLoading(true);
       setAreaManagersError(null);
       try {
-        const res = await fetch("/api/area-manager/list?type=MERCHANT&limit=100");
+        const res = await fetch(
+          "/api/area-manager/list?type=MERCHANT&limit=100&includeSuperAdmins=1"
+        );
         const json = await res.json();
         if (cancelled) return;
         if (!res.ok || !json?.success) {
@@ -157,9 +192,17 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
         setAreaManagers(
           items.map((am) => ({
             id: am.id as number,
-            full_name: (am.full_name as string) ?? null,
+            // API returns camelCase (fullName); accept snake_case too
+            full_name: (am.fullName as string) ?? (am.full_name as string) ?? null,
+            system_user_id:
+              (am.systemUserId as string) ?? (am.system_user_id as string) ?? null,
             email: (am.email as string) ?? null,
             mobile: (am.mobile as string) ?? null,
+            city: (am.city as string) ?? null,
+            locality_code:
+              (am.localityCode as string) ?? (am.locality_code as string) ?? null,
+            primary_role:
+              (am.primaryRole as string) ?? (am.primary_role as string) ?? null,
           }))
         );
       } catch {
@@ -200,11 +243,21 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
 
   // Sync with URL: when header search updates ?search=..., run search so results appear without refresh.
   const urlSearch = searchParams.get("search")?.trim() ?? "";
-  const lastSearchedRef = useRef("");
+  const setAssignAmLoadingRef = useRef(merchantsSearch?.setAssignAmSearchLoading);
+  setAssignAmLoadingRef.current = merchantsSearch?.setAssignAmSearchLoading;
+
   useEffect(() => {
-    if (!isOpen || !urlSearch) return;
-    if (lastSearchedRef.current === urlSearch) return;
-    lastSearchedRef.current = urlSearch;
+    if (!isOpen) return;
+
+    // Empty input / no ?search= → never call search API; clear spinner + stale results
+    if (!urlSearch) {
+      setSearchLoading(false);
+      setSearchError(null);
+      setSearchResults([]);
+      setSearchQuery("");
+      setAssignAmLoadingRef.current?.(false);
+      return;
+    }
 
     // New search → clear any open selection so UX stays focused on the latest query
     setSelectedTarget(null);
@@ -218,11 +271,14 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
     setSearchLoading(true);
     setSearchError(null);
     setAssignMessage(null);
-    merchantsSearch?.setAssignAmSearchLoading(true);
+    setAssignAmLoadingRef.current?.(true);
+
+    const ac = new AbortController();
     const params = new URLSearchParams({ q: urlSearch, limit: "20" });
-    fetch(`/api/admin/parent-area-managers/search?${params.toString()}`)
+    fetch(`/api/admin/parent-area-managers/search?${params.toString()}`, { signal: ac.signal })
       .then((res) => res.json())
       .then((json) => {
+        if (ac.signal.aborted) return;
         if (!json?.success) {
           setSearchError(json?.error || "Search failed");
           setSearchResults([]);
@@ -230,27 +286,39 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
         }
         setSearchResults((json.results ?? []) as SearchResult[]);
       })
-      .catch(() => {
+      .catch((err) => {
+        if (ac.signal.aborted || err?.name === "AbortError") return;
         setSearchError("Search failed");
         setSearchResults([]);
       })
       .finally(() => {
+        if (ac.signal.aborted) return;
         setSearchLoading(false);
-        merchantsSearch?.setAssignAmSearchLoading(false);
+        setAssignAmLoadingRef.current?.(false);
       });
-  }, [isOpen, urlSearch, merchantsSearch]);
+
+    return () => {
+      ac.abort();
+    };
+  }, [isOpen, urlSearch]);
 
   const filteredAreaManagers = useMemo(() => {
     const term = areaManagerSearch.trim().toLowerCase();
     if (!term) return areaManagers;
     return areaManagers.filter((am) => {
       const name = am.full_name ?? "";
+      const systemId = am.system_user_id ?? "";
       const email = am.email ?? "";
       const mobile = am.mobile ?? "";
+      const city = am.city ?? "";
+      const locality = am.locality_code ?? "";
       return (
         name.toLowerCase().includes(term) ||
+        systemId.toLowerCase().includes(term) ||
         email.toLowerCase().includes(term) ||
-        mobile.toLowerCase().includes(term)
+        mobile.toLowerCase().includes(term) ||
+        city.toLowerCase().includes(term) ||
+        locality.toLowerCase().includes(term)
       );
     });
   }, [areaManagers, areaManagerSearch]);
@@ -276,7 +344,16 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
         setAssignedForSelected([]);
         return;
       }
-      const items = (json.items as AssignedAreaManagerInfo[]) ?? [];
+      const items = ((json.items as any[]) ?? []).map((am) => ({
+        id: Number(am.id),
+        full_name: (am.full_name as string) ?? null,
+        system_user_id: (am.system_user_id as string) ?? null,
+        email: (am.email as string) ?? null,
+        mobile: (am.mobile as string) ?? null,
+        city: (am.city as string) ?? null,
+        locality_code: (am.locality_code as string) ?? null,
+        primary_role: (am.primary_role as string) ?? null,
+      }));
       setAssignedForSelected(items);
       const overallCount =
         typeof json.parentAssignedAmsCount === "number" ? json.parentAssignedAmsCount : items.length;
@@ -449,61 +526,47 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
   if (!isOpen || !canAssign) return null;
 
   const content = (
-    <div className="w-full rounded-xl border border-[#121212]/10 bg-white shadow-[0_1px_2px_rgba(18,18,18,0.04)]">
-      {!asModal ? null : <div className="h-1 w-full rounded-t-xl bg-[#121212]" />}
-
-      <div className="flex items-center justify-between border-b border-[#121212]/08 px-4 py-3">
-        <div className="flex items-center gap-2">
-          <div className="rounded-lg bg-[#F3F7FA] p-1.5">
-            <Users className="w-4 h-4 text-[#121212]" />
-          </div>
-          <div>
-            {asModal ? (
-              <h2 className="text-sm font-semibold text-[#121212]">Assign AM to Stores</h2>
-            ) : (
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-[#121212]/45">
-                Search a parent or child store, then assign area managers
-              </p>
-            )}
-            <p className="text-[11px] text-[#121212]/50 mt-0.5">
-              Step 1: Search · Step 2: Assign
-            </p>
-          </div>
-        </div>
-        {asModal && (
+    <div className="w-full bg-white">
+      {asModal ? (
+        <div className="flex items-center justify-between border-b border-[#121212]/08 px-4 py-3">
+          <h2 className="text-sm font-semibold text-[#121212]">Assign AM to Stores</h2>
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-8 w-8 items-center justify-center rounded-full hover:bg-slate-100 text-slate-500 cursor-pointer"
+            className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-[#121212]/50 hover:bg-[#121212]/05"
           >
-            <X className="w-4 h-4" />
+            <X className="h-4 w-4" />
           </button>
-        )}
-      </div>
+        </div>
+      ) : null}
 
       {/* Main two-panel area */}
-      <div className="px-4 pt-3 pb-4 bg-slate-50/40 rounded-b-2xl">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className={asModal ? "px-4 py-3" : "py-1"}>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {/* Left panel: Search results */}
           <div className="space-y-3">
             <div className="flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-slate-800">Search Results</h3>
-              {searchQuery && (
-                <span className="text-[11px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
-                  <span className="font-mono uppercase">{searchQuery}</span>
+              <h3 className="text-sm font-semibold text-[#121212]">Search Results</h3>
+              {searchQuery ? (
+                <span className="rounded-md bg-[#F4F4F4] px-2 py-0.5 font-mono text-[11px] uppercase text-[#121212]/55">
+                  {searchQuery}
                 </span>
-              )}
+              ) : null}
             </div>
             {searchError && <p className="text-xs text-red-600">{searchError}</p>}
-            <div className="max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-sm min-h-0 flex flex-col ring-1 ring-slate-100">
+            <div className="flex max-h-72 min-h-0 flex-col overflow-y-auto rounded-md border border-[#121212]/12 bg-white">
               {searchLoading && (
                 <div className="flex flex-col items-center justify-center gap-2 py-8">
-                  <Loader2 className="h-8 w-8 animate-spin text-indigo-600" />
-                  <p className="text-xs text-slate-500">Searching…</p>
+                  <Loader2 className="h-6 w-6 animate-spin text-[#121212]/40" />
+                  <p className="text-xs text-[#121212]/50">Searching…</p>
                 </div>
               )}
               {!searchLoading && searchResults.length === 0 && (
-                <p className="px-3 py-4 text-xs text-slate-500">No results yet. Run a search.</p>
+                <p className="px-3 py-6 text-center text-xs text-[#121212]/50">
+                  {searchQuery
+                    ? `No merchants found for “${searchQuery}”.`
+                    : "No results yet. Search from the header."}
+                </p>
               )}
               {!searchLoading &&
                 searchResults.map((r) => {
@@ -521,35 +584,26 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                   return (
                     <div
                       key={`${r.kind}-${r.kind === "parent" ? r.parent_id : r.store_internal_id}`}
-                      className={`group flex items-stretch gap-2 px-2.5 py-1.5 text-xs border-b border-slate-100 last:border-b-0 transition-all rounded-lg mx-1 my-0.5 first:mt-1 ${
-                        isSelected
-                          ? "bg-gradient-to-r from-indigo-50 to-white shadow-sm ring-1 ring-indigo-200/60"
-                          : "bg-white hover:from-slate-50 hover:to-white hover:shadow-xs"
+                      className={`flex items-center gap-2 border-b-[0.5px] border-[#121212]/10 px-3 py-2.5 text-xs last:border-b-0 ${
+                        isSelected ? "bg-[#F3F7FA]" : "bg-white hover:bg-[#FAFAFA]"
                       }`}
                     >
-                      {/* Accent bar */}
-                      <div
-                        className={`w-0.5 rounded-full self-stretch shrink-0 ${
-                          assignedCount > 0
-                            ? "bg-emerald-500"
-                            : "bg-slate-200 group-hover:bg-indigo-400"
-                        }`}
-                      />
-                      <div className="min-w-0 flex-1 flex flex-col justify-center gap-0">
-                        <div className="flex items-center gap-1.5">
-                          <div className="font-semibold text-slate-900 truncate text-[11px]">{label}</div>
-                          <span className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <p className="truncate text-[12px] font-semibold text-[#121212]">{label}</p>
+                          <span className="shrink-0 rounded bg-[#F4F4F4] px-1.5 py-0.5 text-[10px] font-medium text-[#121212]/55">
                             {typeLabel}
                           </span>
                         </div>
-                        <div className="flex items-center gap-2 mt-0">
-                          {sub && <span className="text-[10px] text-slate-500 truncate">{sub}</span>}
-                          <span className="text-[10px] text-slate-500">
-                            AMs: <span className={`font-semibold ${assignedCount > 0 ? "text-emerald-600" : "text-slate-600"}`}>{assignedCount}</span>
+                        <div className="mt-0.5 flex items-center gap-2 text-[10px] text-[#121212]/50">
+                          {sub ? <span className="truncate">{sub}</span> : null}
+                          <span>
+                            AMs:{" "}
+                            <span className="font-semibold text-[#121212]/70">{assignedCount}</span>
                           </span>
                         </div>
                       </div>
-                      <div className="flex flex-wrap gap-1 shrink-0 items-center">
+                      <div className="flex shrink-0 items-center gap-1.5">
                         <button
                           type="button"
                           onClick={async () => {
@@ -565,7 +619,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                               loadChildStores(r.parent_id),
                             ]);
                           }}
-                          className="inline-flex items-center justify-center rounded-md border border-slate-300 px-2 py-1 text-[10px] font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                          className="inline-flex h-7 cursor-pointer items-center justify-center rounded-md border border-sky-500 bg-sky-50 px-2.5 text-[11px] font-semibold text-sky-700 hover:bg-sky-100"
                         >
                           View AMs
                         </button>
@@ -584,7 +638,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                               loadChildStores(r.parent_id),
                             ]);
                           }}
-                          className="inline-flex items-center justify-center rounded-md bg-indigo-600 px-2 py-1 text-[10px] font-medium text-white hover:bg-indigo-700 cursor-pointer"
+                          className="inline-flex h-7 cursor-pointer items-center justify-center rounded-md bg-emerald-600 px-2.5 text-[11px] font-semibold text-white hover:bg-emerald-700"
                         >
                           Assign AM
                         </button>
@@ -594,26 +648,26 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                 })}
             </div>
 
-            {/* Separate Child Stores card – show when parent or a child is selected (list stays visible) */}
+            {/* Child Stores list */}
             {(selectedTarget?.kind === "parent" || selectedTarget?.kind === "child") && (
-              <div className="rounded-xl border border-slate-200 bg-white shadow-sm ring-1 ring-slate-100 overflow-hidden">
-                <div className="flex items-center justify-between gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200">
-                  <span className="text-xs font-semibold text-slate-800">Child Stores</span>
-                  <span className="text-[10px] text-slate-500 bg-slate-200/80 px-2 py-0.5 rounded-md">
-                    Total: <span className="font-mono font-semibold text-slate-700">{childStores.length}</span>
+              <div className="overflow-hidden rounded-md border border-[#121212]/12 bg-white">
+                <div className="flex items-center justify-between gap-2 border-b border-[#121212]/08 px-3 py-2">
+                  <span className="text-xs font-semibold text-[#121212]">Child Stores</span>
+                  <span className="text-[10px] text-[#121212]/50">
+                    Total: <span className="font-semibold text-[#121212]">{childStores.length}</span>
                   </span>
                 </div>
                 {childStoresLoading && (
-                  <div className="flex items-center gap-2 py-3 px-3 text-[11px] text-slate-500">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-600" />
+                  <div className="flex items-center gap-2 px-3 py-3 text-[11px] text-[#121212]/50">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[#121212]/35" />
                     <span>Loading…</span>
                   </div>
                 )}
                 {!childStoresLoading && childStoresError && (
-                  <p className="text-[11px] text-red-600 py-2 px-3">{childStoresError}</p>
+                  <p className="px-3 py-2 text-[11px] text-red-600">{childStoresError}</p>
                 )}
                 {!childStoresLoading && !childStoresError && childStores.length === 0 && (
-                  <p className="text-[11px] text-slate-500 py-2 px-3">No child stores.</p>
+                  <p className="px-3 py-2 text-[11px] text-[#121212]/50">No child stores.</p>
                 )}
                 {!childStoresLoading && !childStoresError && childStores.length > 0 && (
                   <div
@@ -624,21 +678,20 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                       scrollbarGutter: "stable",
                     }}
                   >
-                    {/* Column titles */}
-                    <div className="flex items-center justify-between gap-2 px-3 py-1.5 mx-1 border-b border-slate-200 bg-slate-50/80 text-[10px] font-semibold text-slate-600 uppercase tracking-wide sticky top-0 z-10 shrink-0">
+                    <div className="sticky top-0 z-10 flex shrink-0 items-center justify-between gap-2 border-b-[0.5px] border-[#121212]/12 bg-[#F7F7F7] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-[#121212]/50">
                       <span className="min-w-0 flex-1">Store&apos;s Name</span>
-                      <span className="text-right min-w-[80px]">Assigned AMs</span>
+                      <span className="min-w-[80px] text-right">Assigned AMs</span>
                     </div>
-                    <div className="py-0.5">
+                    <div>
                     {childStores.map((cs) => {
                       const isActiveChild = selectedTarget?.kind === "child" && selectedTarget.store_internal_id === cs.store_internal_id;
                       return (
                         <div
                           key={cs.store_internal_id}
-                          className={`flex items-center justify-between gap-2 text-[10px] cursor-pointer rounded-md px-3 py-1.5 mx-1 transition-colors border-b border-slate-50 last:border-b-0 min-h-[2.5rem] ${
+                          className={`flex min-h-[2.5rem] cursor-pointer items-center justify-between gap-2 border-b-[0.5px] border-[#121212]/10 px-3 py-1.5 text-[12px] last:border-b-0 ${
                             isActiveChild
-                              ? "bg-indigo-100 ring-1 ring-indigo-300 font-medium"
-                              : "hover:bg-indigo-50/70"
+                              ? "bg-[#F3F7FA] font-medium"
+                              : "hover:bg-[#FAFAFA]"
                           }`}
                           onClick={async () => {
                             if (!selectedTarget) return;
@@ -665,15 +718,15 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                           }}
                         >
                           <div className="min-w-0 flex-1">
-                            <p className={`truncate font-medium ${isActiveChild ? "text-indigo-900" : "text-slate-700"}`}>
+                            <p className={`truncate font-medium ${isActiveChild ? "text-[#121212]" : "text-[#121212]/80"}`}>
                               {cs.store_name || cs.store_id}
                             </p>
-                            <p className="truncate text-[10px] text-slate-500 mt-0.5">
+                            <p className="mt-0.5 truncate text-[10px] text-[#121212]/45">
                               {cs.store_id}
                               {cs.city ? ` · ${cs.city}` : ""}
                             </p>
                           </div>
-                          <span className="truncate text-slate-500 text-right min-w-[80px] text-[10px]">
+                          <span className="min-w-[80px] truncate text-right text-[10px] text-[#121212]/50">
                             {cs.area_manager_id
                               ? cs.area_manager_name ||
                                 cs.area_manager_email ||
@@ -690,53 +743,45 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
             )}
           </div>
 
-          {/* Right panel: selection + warning + AM list / empty state */}
+          {/* Right panel */}
           <div className="space-y-3">
             {!selectedTarget && (
-              <div className="h-full rounded-xl border border-dashed border-slate-300 bg-white/70 px-4 py-6 flex flex-col items-center justify-center text-center">
-                <p className="text-xs font-semibold text-slate-800">
-                  Select a Parent or Child Store from the left to manage Area Managers.
-                </p>
-                <p className="mt-1 text-[11px] text-slate-500 max-w-xs">
-                  Use the buttons in the results list to view existing assignments or start assigning
-                  Area Managers.
+              <div className="flex h-full min-h-[12rem] flex-col items-center justify-center rounded-md border border-[#121212]/10 bg-[#FAFAFA] px-4 py-8 text-center">
+                <p className="text-xs font-medium text-[#121212]/70">
+                  Select a store from search results to assign Area Managers.
                 </p>
               </div>
             )}
 
             {selectedTarget && (
               <div className="space-y-3">
-                {/* Top: target summary – horizontal layout */}
-                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
-                  <p className="text-[11px] font-semibold text-slate-500 mb-1.5">Current target</p>
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                    <span className="font-semibold text-slate-900">
+                <div className="rounded-md border-[0.5px] border-[#121212]/12 bg-white px-3 py-2.5">
+                  <p className="mb-1 text-[11px] font-medium text-[#121212]/45">Current target</p>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
+                    <span className="font-semibold text-[#121212]">
                       {selectedTarget.kind === "parent"
                         ? selectedTarget.parent_name
                         : selectedTarget.store_name}
                     </span>
-                    <span className="text-slate-400">·</span>
-                    <span className="font-mono text-slate-600">
+                    <span className="text-[#121212]/30">·</span>
+                    <span className="font-mono text-[12px] text-[#121212]/60">
                       {selectedTarget.kind === "parent"
                         ? selectedTarget.parent_merchant_id
                         : selectedTarget.store_id}
                     </span>
-                    <span className="text-slate-400">·</span>
-                    <span className="text-slate-500">
-                      Parent ID <span className="font-mono font-semibold text-slate-700">{selectedTarget.parent_id}</span>
+                    <span className="text-[#121212]/30">·</span>
+                    <span className="text-[12px] text-[#121212]/50">
+                      Parent ID{" "}
+                      <span className="font-mono font-semibold text-[#121212]">
+                        {selectedTarget.parent_merchant_id}
+                      </span>
                     </span>
                   </div>
                 </div>
 
-            {/* Selection + warning + AM list */}
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-2">
-                <div>
-                  <h3 className="text-xs font-semibold text-slate-800">Select Area Managers</h3>
-                  <p className="text-[11px] text-slate-500">
-                    Search and select one or more Area Managers to assign to this store.
-                  </p>
-                </div>
+                <h3 className="text-xs font-semibold text-[#121212]">Select Area Managers</h3>
                 {selectedParentId && (
                   <button
                     type="button"
@@ -744,125 +789,160 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                       if (!selectedParentId) return;
                       setHistoryOpen(true);
                     }}
-                    className="inline-flex items-center justify-center rounded-full border border-slate-300 px-2.5 py-1 text-[10px] font-medium text-slate-700 hover:bg-slate-100 cursor-pointer"
+                    className="inline-flex cursor-pointer items-center justify-center rounded-md border border-[#121212]/15 px-2.5 py-1 text-[10px] font-medium text-[#121212] hover:bg-[#F7F7F7]"
                   >
                     Overall History
                   </button>
                 )}
               </div>
 
-              {/* Existing assignments */}
-              <div className="rounded-xl border border-amber-200 bg-amber-50/90 px-3 py-2 shadow-sm flex gap-2">
-                <div className="mt-1 h-2 w-2 rounded-full bg-amber-500" />
-                <div className="flex-1">
-                  <p className="text-[11px] text-amber-800 font-medium">
-                    Existing assignment warning
-                  </p>
-                  {assignedLoading && (
-                    <p className="mt-1 text-[11px] text-amber-800">
-                      Checking existing Area Manager assignments…
+              {/* Existing assignments — single-row layout */}
+              <div className="rounded-md border-[0.5px] border-[#121212]/12 bg-[#FAFAFA] px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] font-medium text-[#121212]/70">Current assignments</p>
+                  {assignedForSelected.length > 0 ? (
+                    <p className="text-[10px] text-[#121212]/40">
+                      New assign replaces existing after confirmation
                     </p>
-                  )}
-                  {!assignedLoading && (
-                    <>
-                      {assignedForSelected.length > 0 ? (
-                        <div className="mt-1 space-y-1.5">
-                          <p className="text-[11px] text-amber-800">
-                            This store already has assigned Area Managers. If you assign new Area
-                            Managers, the existing assignments will be replaced. Please confirm
-                            before proceeding. You will be responsible for this change.
-                          </p>
-                          <ul className="text-[11px] text-amber-900 list-none space-y-0.5">
-                            {assignedForSelected.map((am) => (
-                              <li
-                                key={am.id}
-                                className="flex items-center justify-between gap-2 rounded-md px-2 py-1 hover:bg-amber-100/80"
-                              >
-                                <div className="flex-1 min-w-0">
-                                  <span className="font-medium">
-                                    {am.full_name || am.email || `AM #${am.id}`}{" "}
-                                  </span>
-                                  <span className="text-amber-700">
-                                    ({am.email || "No email"}
-                                    {am.mobile ? ` · ${am.mobile}` : ""})
-                                  </span>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setRemoveTargetAm(am);
-                                    setRemoveReason("");
-                                    setConfirmModalMode("remove");
-                                    setConfirmModalOpen(true);
-                                  }}
-                                  className="inline-flex items-center justify-center rounded-full border border-red-400 px-2 py-0.5 text-[10px] font-medium text-red-700 hover:bg-red-600 hover:text-white cursor-pointer"
-                                >
-                                  Remove
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ) : (
-                        <p className="mt-1 text-[11px] text-amber-800">
-                          No Area Managers are currently assigned to this store.
-                        </p>
-                      )}
-                    </>
-                  )}
-                  {assignedError && (
-                    <p className="mt-1 text-[11px] text-red-600">{assignedError}</p>
-                  )}
+                  ) : null}
                 </div>
+                {assignedLoading && (
+                  <p className="mt-1.5 text-[11px] text-[#121212]/50">Checking…</p>
+                )}
+                {!assignedLoading && (
+                  <>
+                    {assignedForSelected.length > 0 ? (
+                      <ul className="mt-1.5 divide-y divide-[#121212]/08">
+                        {assignedForSelected.map((am) => {
+                          const location = amLocationLine(am);
+                          const contact = amContactLine(am);
+                          return (
+                            <li
+                              key={am.id}
+                              className="flex items-center gap-2 py-1.5 first:pt-1 last:pb-0"
+                            >
+                              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px]">
+                                <span className="truncate font-medium text-[#121212]">
+                                  {amPrimaryLabel(am)}
+                                </span>
+                                {isSuperAdminRole(am.primary_role) ? (
+                                  <span className="shrink-0 rounded bg-indigo-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-indigo-700">
+                                    Super Admin
+                                  </span>
+                                ) : null}
+                                {am.system_user_id ? (
+                                  <span className="truncate font-mono text-[10px] uppercase text-[#121212]/45">
+                                    {am.system_user_id}
+                                  </span>
+                                ) : null}
+                                {location ? (
+                                  <span className="truncate text-[11px] text-[#121212]/45">
+                                    · {location}
+                                  </span>
+                                ) : null}
+                                {contact ? (
+                                  <span className="min-w-0 truncate text-[11px] text-[#121212]/40">
+                                    · {contact}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRemoveTargetAm(am);
+                                  setRemoveReason("");
+                                  setConfirmModalMode("remove");
+                                  setConfirmModalOpen(true);
+                                }}
+                                className="inline-flex shrink-0 cursor-pointer items-center justify-center rounded-md border border-red-200 px-2 py-0.5 text-[10px] font-medium text-red-700 hover:bg-red-50"
+                              >
+                                Remove
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="mt-1.5 text-[11px] text-[#121212]/50">
+                        No Area Managers assigned yet.
+                      </p>
+                    )}
+                  </>
+                )}
+                {assignedError && (
+                  <p className="mt-1 text-[11px] text-red-600">{assignedError}</p>
+                )}
               </div>
 
               {/* Area Manager search + list */}
               <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="relative flex-1 max-w-xs">
-                    <Search className="absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
-                    <input
-                      type="text"
-                      value={areaManagerSearch}
-                      onChange={(e) => setAreaManagerSearch(e.target.value)}
-                      className="w-full rounded-lg border border-slate-300 pl-7 pr-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                      placeholder="Search Area Manager by name, email, or phone"
-                    />
-                  </div>
-                  {areaManagersLoading && (
-                    <span className="text-[11px] text-slate-500">Loading Area Managers…</span>
-                  )}
+                <div className="relative max-w-sm">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#121212]/35" />
+                  <input
+                    type="text"
+                    value={areaManagerSearch}
+                    onChange={(e) => setAreaManagerSearch(e.target.value)}
+                    className="h-9 w-full rounded-md border border-[#121212]/15 bg-white pl-8 pr-2 text-xs text-[#121212] placeholder:text-[#121212]/40 focus:border-[#121212]/35 focus:outline-none"
+                    placeholder="Search by name, ID, email, or phone"
+                  />
                 </div>
-
+                {areaManagersLoading && (
+                  <p className="text-[11px] text-[#121212]/45">Loading Area Managers…</p>
+                )}
                 {areaManagersError && <p className="text-xs text-red-600">{areaManagersError}</p>}
-                <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-200/80 bg-white">
+                <div className="max-h-64 overflow-y-auto rounded-md border-[0.5px] border-[#121212]/12 bg-white">
+                  <div className="sticky top-0 z-10 flex items-center gap-2 border-b-[0.5px] border-[#121212]/12 bg-[#F7F7F7] px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
+                    <span className="w-4 shrink-0" aria-hidden />
+                    <span className="min-w-0 flex-[1.3]">Name / ID</span>
+                    <span className="min-w-0 flex-[1]">City / Locality</span>
+                    <span className="min-w-0 flex-[1.2]">Email / Phone</span>
+                  </div>
                   {!areaManagersLoading && filteredAreaManagers.length === 0 && (
-                    <p className="px-3 py-4 text-xs text-slate-500">No Area Managers found.</p>
+                    <p className="px-3 py-6 text-center text-xs text-[#121212]/50">
+                      No Area Managers found.
+                    </p>
                   )}
                   {filteredAreaManagers.map((am) => {
                     const checked = selectedAreaManagerIds.includes(am.id);
+                    const location = amLocationLine(am);
+                    const contact = amContactLine(am);
+                    const superAdmin = isSuperAdminRole(am.primary_role);
                     return (
                       <label
                         key={am.id}
-                        className={`flex items-center gap-2 px-3 py-2 text-xs border-b border-slate-200/70 last:border-b-0 cursor-pointer ${
-                          checked ? "bg-indigo-50/60" : "hover:bg-slate-50"
+                        className={`flex cursor-pointer items-center gap-2 border-b-[0.5px] border-[#121212]/10 px-3 py-2.5 last:border-b-0 ${
+                          checked ? "bg-[#F3F7FA]" : "hover:bg-[#FAFAFA]"
                         }`}
                       >
                         <input
                           type="checkbox"
                           checked={checked}
                           onChange={() => toggleAreaManager(am.id)}
-                          className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                          className="h-3.5 w-3.5 shrink-0 rounded border-[#121212]/25 text-emerald-600 focus:ring-emerald-500/30"
                         />
-                        <div className="min-w-0">
-                          <div className="font-semibold text-slate-900 truncate">
-                            {am.full_name || am.email || `AM #${am.id}`}
-                          </div>
-                          <div className="text-[11px] text-slate-500 truncate">
-                            {am.email || "No email"}
-                            {am.mobile ? ` · ${am.mobile}` : ""}
-                          </div>
-                        </div>
+                        <span className="min-w-0 flex-[1.3]">
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span className="truncate text-[13px] font-medium text-[#121212]">
+                              {amPrimaryLabel(am)}
+                            </span>
+                            {superAdmin ? (
+                              <span className="shrink-0 rounded bg-indigo-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-indigo-700">
+                                Super Admin
+                              </span>
+                            ) : null}
+                          </span>
+                          {am.system_user_id ? (
+                            <span className="mt-0.5 block truncate font-mono text-[10px] font-normal uppercase text-[#121212]/45">
+                              {am.system_user_id}
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="min-w-0 flex-[1] truncate text-[12px] font-normal text-[#121212]/45">
+                          {location || "—"}
+                        </span>
+                        <span className="min-w-0 flex-[1.2] truncate text-[12px] font-normal text-[#121212]/40">
+                          {contact || "—"}
+                        </span>
                       </label>
                     );
                   })}
@@ -880,7 +960,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                   </p>
                 )}
 
-                <div className="flex justify-between items-center gap-2 pt-1">
+                <div className="flex items-center justify-between gap-2 pt-1">
                   <button
                     type="button"
                     onClick={() => {
@@ -892,7 +972,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                       setAssignMessage(null);
                       setConfirmingOverwrite(false);
                     }}
-                    className="inline-flex items-center justify-center rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                    className="inline-flex cursor-pointer items-center justify-center rounded-md border border-[#121212]/15 px-3 py-1.5 text-xs font-medium text-[#121212] hover:bg-[#F7F7F7]"
                   >
                     Close Selection
                   </button>
@@ -902,7 +982,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                       !selectedParentId || !selectedAreaManagerIds.length || assigning || assignedLoading
                     }
                     onClick={handleAssign}
-                    className="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-60 cursor-pointer"
+                    className="inline-flex cursor-pointer items-center justify-center rounded-md bg-[#121212] px-3 py-1.5 text-xs font-medium text-white hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {assigning
                       ? "Assigning…"
@@ -997,7 +1077,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
                 type="button"
                 onClick={handleConfirmOverwrite}
                 disabled={assigning}
-                className="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-60 cursor-pointer"
+                className="inline-flex cursor-pointer items-center justify-center rounded-md bg-[#121212] px-3 py-1.5 text-xs font-medium text-white hover:bg-black disabled:opacity-60"
               >
                 {assigning ? "Assigning…" : "Confirm & Assign"}
               </button>
@@ -1008,89 +1088,88 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
     </div>
   );
 
+  const historySidesheet = !historyOpen ? null : (
+    <div className="fixed inset-0 z-[2550] flex justify-end">
+      <button
+        type="button"
+        aria-label="Close history overlay"
+        className="absolute inset-0 cursor-pointer bg-black/30"
+        onClick={() => setHistoryOpen(false)}
+      />
+      <aside className="relative flex h-full w-full max-w-md flex-col border-l border-[#121212]/10 bg-white shadow-xl">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[#121212]/08 px-4 py-3">
+          <div>
+            <h3 className="text-[15px] font-semibold text-[#121212]">Area Manager History</h3>
+            <p className="mt-0.5 text-[12px] text-[#121212]/50">
+              Recent assignments and removals for this store/parent.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(false)}
+            className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-[#121212]/12 text-[#121212]/55 hover:bg-[#F7F7F7]"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+          {historyLoading && (
+            <p className="text-[12px] text-[#121212]/50">Loading history…</p>
+          )}
+          {!historyLoading && historyError && (
+            <p className="text-[12px] text-red-600">{historyError}</p>
+          )}
+          {!historyLoading && !historyError && historyItems.length === 0 && (
+            <p className="rounded-md border-[0.5px] border-[#121212]/10 bg-[#FAFAFA] px-3 py-6 text-center text-[12px] text-[#121212]/50">
+              No history recorded for this store/parent yet.
+            </p>
+          )}
+          {!historyLoading && !historyError && historyItems.length > 0 && (
+            <ul className="space-y-2">
+              {historyItems.map((item) => (
+                <li
+                  key={item.id}
+                  className="rounded-md border-[0.5px] border-[#121212]/12 bg-white px-3 py-2.5"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={`text-[12px] font-semibold ${
+                        item.action === "ASSIGN" ? "text-emerald-700" : "text-red-700"
+                      }`}
+                    >
+                      {item.action === "ASSIGN" ? "Assigned" : "Removed"}
+                    </span>
+                    <span className="text-[11px] text-[#121212]/45">
+                      {new Date(item.acted_at).toLocaleString()}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[13px] font-medium text-[#121212]">
+                    {item.area_manager_name || item.area_manager_email || "Unknown AM"}
+                  </p>
+                  {item.area_manager_name && item.area_manager_email ? (
+                    <p className="mt-0.5 text-[12px] text-[#121212]/40">{item.area_manager_email}</p>
+                  ) : null}
+                  <p className="mt-1 text-[11px] text-[#121212]/45">
+                    By: {item.actor_name || item.actor_email || "System / Unknown"}
+                  </p>
+                  {item.reason ? (
+                    <p className="mt-0.5 text-[11px] text-[#121212]/55">Reason: {item.reason}</p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </aside>
+    </div>
+  );
+
   if (!asModal) {
     return (
-      <div className="w-full py-2 relative">
+      <div className="relative w-full py-2">
         {content}
         {confirmationModal}
-        {historyOpen && (
-          <div className="fixed inset-0 z-[2550] flex items-center justify-center bg-black/50">
-            <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-slate-200 p-4 space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-900">
-                    Area Manager History
-                  </h3>
-                  <p className="mt-0.5 text-[11px] text-slate-600">
-                    Recent assignments and removals for this store/parent.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setHistoryOpen(false)}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 text-slate-500 hover:bg-slate-100 cursor-pointer"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              <div className="border border-slate-200 rounded-lg max-h-72 overflow-y-auto px-3 py-2 bg-slate-50/60">
-                {historyLoading && (
-                  <p className="text-[11px] text-slate-500">Loading history…</p>
-                )}
-                {!historyLoading && historyError && (
-                  <p className="text-[11px] text-red-600">{historyError}</p>
-                )}
-                {!historyLoading && !historyError && historyItems.length === 0 && (
-                  <p className="text-[11px] text-slate-500">
-                    No history recorded for this store/parent yet.
-                  </p>
-                )}
-                {!historyLoading && !historyError && historyItems.length > 0 && (
-                  <ul className="space-y-1.5 text-[11px] text-slate-700">
-                    {historyItems.map((item) => (
-                      <li
-                        key={item.id}
-                        className="rounded-md bg-white px-2 py-1.5 border border-slate-200"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span
-                            className={
-                              item.action === "ASSIGN"
-                                ? "text-emerald-700 font-semibold"
-                                : "text-red-700 font-semibold"
-                            }
-                          >
-                            {item.action === "ASSIGN" ? "Assigned" : "Removed"}
-                          </span>
-                          <span className="text-[10px] text-slate-500">
-                            {new Date(item.acted_at).toLocaleString()}
-                          </span>
-                        </div>
-                        <div className="mt-0.5 text-[11px] text-slate-700">
-                          AM:{" "}
-                          <span className="font-medium">
-                            {item.area_manager_name ||
-                              item.area_manager_email ||
-                              "Unknown AM"}
-                          </span>
-                        </div>
-                        <div className="mt-0.5 text-[10px] text-slate-500">
-                          By:{" "}
-                          {item.actor_name || item.actor_email || "System / Unknown"}
-                        </div>
-                        {item.reason && (
-                          <div className="mt-0.5 text-[10px] text-slate-600">
-                            Reason: {item.reason}
-                          </div>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
+        {historySidesheet}
       </div>
     );
   }
@@ -1099,84 +1178,7 @@ export function AssignAreaManagerPanel({ isOpen, onClose, asModal = true }: Assi
     <div className="fixed inset-0 z-[2500] flex items-center justify-center bg-black/40">
       {content}
       {confirmationModal}
-      {historyOpen && (
-        <div className="fixed inset-0 z-[2550] flex items-center justify-center bg-black/50">
-          <div className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-slate-200 p-4 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900">
-                  Area Manager History
-                </h3>
-                <p className="mt-0.5 text-[11px] text-slate-600">
-                  Recent assignments and removals for this store/parent.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setHistoryOpen(false)}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 text-slate-500 hover:bg-slate-100 cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <div className="border border-slate-200 rounded-lg max-h-72 overflow-y-auto px-3 py-2 bg-slate-50/60">
-              {historyLoading && (
-                <p className="text-[11px] text-slate-500">Loading history…</p>
-              )}
-              {!historyLoading && historyError && (
-                <p className="text-[11px] text-red-600">{historyError}</p>
-              )}
-              {!historyLoading && !historyError && historyItems.length === 0 && (
-                <p className="text-[11px] text-slate-500">
-                  No history recorded for this store/parent yet.
-                </p>
-              )}
-              {!historyLoading && !historyError && historyItems.length > 0 && (
-                <ul className="space-y-1.5 text-[11px] text-slate-700">
-                  {historyItems.map((item) => (
-                    <li
-                      key={item.id}
-                      className="rounded-md bg-white px-2 py-1.5 border border-slate-200"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span
-                          className={
-                            item.action === "ASSIGN"
-                              ? "text-emerald-700 font-semibold"
-                              : "text-red-700 font-semibold"
-                          }
-                        >
-                          {item.action === "ASSIGN" ? "Assigned" : "Removed"}
-                        </span>
-                        <span className="text-[10px] text-slate-500">
-                          {new Date(item.acted_at).toLocaleString()}
-                        </span>
-                      </div>
-                      <div className="mt-0.5 text-[11px] text-slate-700">
-                        AM:{" "}
-                        <span className="font-medium">
-                          {item.area_manager_name ||
-                            item.area_manager_email ||
-                            "Unknown AM"}
-                        </span>
-                      </div>
-                      <div className="mt-0.5 text-[10px] text-slate-500">
-                        By:{" "}
-                        {item.actor_name || item.actor_email || "System / Unknown"}
-                      </div>
-                      {item.reason && (
-                        <div className="mt-0.5 text-[10px] text-slate-600">
-                          Reason: {item.reason}
-                        </div>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {historySidesheet}
     </div>
   );
 }

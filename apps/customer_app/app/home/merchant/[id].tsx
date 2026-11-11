@@ -4,7 +4,16 @@
  * Data from merchant_menu_items via GET /v1/merchants/:id/menu.
  */
 
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, TouchableOpacity, StyleSheet, Platform, Modal, Pressable, TextInput, Share, Alert, InteractionManager, StatusBar } from "react-native";
@@ -77,16 +86,30 @@ import { useMerchantMenuRealtime } from "@/hooks/useMerchantMenuRealtime";
 import { useStoreOffersRealtime } from "@/hooks/useStoreOffersRealtime";
 import { prefetchMenuItemImagesForMenu } from "@/lib/prefetchMenuItemImages";
 import { resolveMerchantLiveStatus } from "@/lib/merchantListing";
-import { GroupOrderStartSheet } from "@/components/GroupOrderStartSheet";
-import { ItemCustomizationSheet } from "@/components/ItemCustomizationSheet";
-import { ReportFraudMenuIssueSheet } from "@/components/store/ReportFraudMenuIssueSheet";
 import { HiddenRestaurantAckModal } from "@/components/store/HiddenRestaurantAckModal";
 import { useHiddenStores } from "@/lib/hiddenStores";
 import {
   buildRestaurantShareMessage,
   buildRestaurantShareUrl,
 } from "@/lib/restaurantShareLink";
-import { StoreMenuItemDetailSheet } from "@/components/store/StoreMenuItemDetailSheet";
+
+/** Non-critical sheets — code-split so first store paint stays on hero + menu list. */
+const GroupOrderStartSheet = lazy(() =>
+  import("@/components/GroupOrderStartSheet").then((m) => ({ default: m.GroupOrderStartSheet }))
+);
+const ItemCustomizationSheet = lazy(() =>
+  import("@/components/ItemCustomizationSheet").then((m) => ({ default: m.ItemCustomizationSheet }))
+);
+const ReportFraudMenuIssueSheet = lazy(() =>
+  import("@/components/store/ReportFraudMenuIssueSheet").then((m) => ({
+    default: m.ReportFraudMenuIssueSheet,
+  }))
+);
+const StoreMenuItemDetailSheet = lazy(() =>
+  import("@/components/store/StoreMenuItemDetailSheet").then((m) => ({
+    default: m.StoreMenuItemDetailSheet,
+  }))
+);
 import {
   prefetchMenuItemFullConfig,
   prefetchMenuItemFullConfigsForMenu,
@@ -163,12 +186,25 @@ import {
   type StoreMenuSheetSection,
   type StoreMenuSheetOfferRow,
 } from "@/components/store/StoreMenuSheet";
-import { StoreOffersSheet } from "@/components/store/StoreOffersSheet";
-import { StoreScheduleSheet } from "@/components/store/StoreScheduleSheet";
-import { LongDistanceBottomSheet } from "@/components/store/LongDistanceBottomSheet";
 import { useFlashSaleQtyLimitSheetStore } from "@/store/flashSaleQtyLimitSheetStore";
 import { useFlashSaleQtyLimitAckStore } from "@/store/flashSaleQtyLimitAckStore";
-import { MerchantRatingExplainerSheet } from "@/components/store/MerchantRatingExplainerSheet";
+
+const StoreOffersSheet = lazy(() =>
+  import("@/components/store/StoreOffersSheet").then((m) => ({ default: m.StoreOffersSheet }))
+);
+const StoreScheduleSheet = lazy(() =>
+  import("@/components/store/StoreScheduleSheet").then((m) => ({ default: m.StoreScheduleSheet }))
+);
+const LongDistanceBottomSheet = lazy(() =>
+  import("@/components/store/LongDistanceBottomSheet").then((m) => ({
+    default: m.LongDistanceBottomSheet,
+  }))
+);
+const MerchantRatingExplainerSheet = lazy(() =>
+  import("@/components/store/MerchantRatingExplainerSheet").then((m) => ({
+    default: m.MerchantRatingExplainerSheet,
+  }))
+);
 import type { PastOrderItem } from "@/components/store/StorePastOrderRow";
 import { orderService, type OrderSummary } from "@/services/order.service";
 import { FOOD_HOME_FALLBACK, safeRouterBack } from "@/lib/safeRouterBack";
@@ -579,8 +615,10 @@ export default function MerchantDetailScreen() {
   });
 
   const hasCachedMenu = (merchant?.menu?.length ?? 0) > 0;
+  // Skeleton only while we truly have no rows yet. Don't keep menu_loading up
+  // for background refetches once items are on screen.
   const menuPending =
-    !hasCachedMenu && !isError && (isPlaceholderData || isPending || isFetching || !isFetched);
+    !hasCachedMenu && !isError && (isPlaceholderData || isPending || (!isFetched && isFetching));
 
   useEffect(() => {
     if (!merchantId) return;
@@ -2481,10 +2519,11 @@ export default function MerchantDetailScreen() {
             startMessageIndex={loadingMessageIndex}
             edgeToEdge
           />
-          <LongDistanceBottomSheet
-            visible={longDistanceSheetVisible}
-            onClose={closeLongDistanceSheet}
-          />
+          {longDistanceSheetVisible ? (
+            <Suspense fallback={null}>
+              <LongDistanceBottomSheet visible onClose={closeLongDistanceSheet} />
+            </Suspense>
+          ) : null}
         </View>
       </MerchantUiThemeProvider>
     );
@@ -2739,12 +2778,16 @@ export default function MerchantDetailScreen() {
         onRefresh={handleMenuRefresh}
       />
 
-      <StoreOffersSheet
-        visible={offersSheetVisible}
-        onClose={closeOffersSheet}
-        storeName={merchant.name}
-        offers={sheetOffers}
-      />
+      {offersSheetVisible ? (
+        <Suspense fallback={null}>
+          <StoreOffersSheet
+            visible
+            onClose={closeOffersSheet}
+            storeName={merchant.name}
+            offers={sheetOffers}
+          />
+        </Suspense>
+      ) : null}
 
       <StoreFilterSheet
         visible={filtersSheetVisible}
@@ -2756,26 +2799,35 @@ export default function MerchantDetailScreen() {
         showHighlyReordered={showHighlyReorderedChip}
       />
 
-      <StoreScheduleSheet
-        visible={scheduleSheetVisible}
-        onClose={closeScheduleSheet}
-        storeName={merchant.name}
-      />
+      {scheduleSheetVisible ? (
+        <Suspense fallback={null}>
+          <StoreScheduleSheet
+            visible
+            onClose={closeScheduleSheet}
+            storeName={merchant.name}
+          />
+        </Suspense>
+      ) : null}
 
-      <LongDistanceBottomSheet
-        visible={longDistanceSheetVisible}
-        onClose={closeLongDistanceSheet}
-      />
+      {longDistanceSheetVisible ? (
+        <Suspense fallback={null}>
+          <LongDistanceBottomSheet visible onClose={closeLongDistanceSheet} />
+        </Suspense>
+      ) : null}
 
-      <MerchantRatingExplainerSheet
-        visible={ratingSheetVisible}
-        onClose={closeRatingSheet}
-        storeName={pageMerchant.name}
-        overallRating={pageMerchant.avgRating ?? null}
-        totalReviews={pageMerchant.totalReviews ?? null}
-        forYouRating={ratingInsight.forYouRating}
-        userHasRatedStore={ratingInsight.userHasRatedStore}
-      />
+      {ratingSheetVisible ? (
+        <Suspense fallback={null}>
+          <MerchantRatingExplainerSheet
+            visible
+            onClose={closeRatingSheet}
+            storeName={pageMerchant.name}
+            overallRating={pageMerchant.avgRating ?? null}
+            totalReviews={pageMerchant.totalReviews ?? null}
+            forYouRating={ratingInsight.forYouRating}
+            userHasRatedStore={ratingInsight.userHasRatedStore}
+          />
+        </Suspense>
+      ) : null}
 
       <StoreMenuSheet
         visible={menuSheetVisible}
@@ -2871,84 +2923,93 @@ export default function MerchantDetailScreen() {
         </Pressable>
       </Modal>
 
-      <GroupOrderStartSheet
-        visible={groupOrderSheetVisible}
-        onClose={() => setGroupOrderSheetVisible(false)}
-        storeId={merchantId}
-        storeName={merchant?.name ?? ""}
-        onStarted={() => setGroupOrderSheetVisible(false)}
-      />
+      {groupOrderSheetVisible ? (
+        <Suspense fallback={null}>
+          <GroupOrderStartSheet
+            visible
+            onClose={() => setGroupOrderSheetVisible(false)}
+            storeId={merchantId}
+            storeName={merchant?.name ?? ""}
+            onStarted={() => setGroupOrderSheetVisible(false)}
+          />
+        </Suspense>
+      ) : null}
 
-      <StoreMenuItemDetailSheet
-        visible={detailItem != null}
-        item={detailItem}
-        storeType={displayMerchant?.storeType ?? merchant?.storeType}
-        initialSelection={detailInitialSelection}
-        isStoreClosed={isStoreClosedForStatus}
-        isBookmarked={
-          detailItem != null &&
-          (() => {
-            const itemPk = resolveMenuItemPk(detailItem);
-            return itemPk != null && bookmarkMenuItemIdSet.has(itemPk);
-          })()
-        }
-        itemOffer={
-          detailItem
-            ? itemOfferById.get(detailItem.id) ??
+      {detailItem != null ? (
+        <Suspense fallback={null}>
+          <StoreMenuItemDetailSheet
+            visible
+            item={detailItem}
+            storeType={displayMerchant?.storeType ?? merchant?.storeType}
+            initialSelection={detailInitialSelection}
+            isStoreClosed={isStoreClosedForStatus}
+            isBookmarked={(() => {
+              const itemPk = resolveMenuItemPk(detailItem);
+              return itemPk != null && bookmarkMenuItemIdSet.has(itemPk);
+            })()}
+            itemOffer={
+              itemOfferById.get(detailItem.id) ??
               (detailItem.menuItemId != null
                 ? itemOfferById.get(String(detailItem.menuItemId))
                 : undefined) ??
               null
-            : null
-        }
-        onClose={handleCloseItemDetails}
-        onAdd={handleAddFromItemDetails}
-        storeMenu={merchant?.menu ?? []}
-        grocerySheetHeightMode={grocerySheetHeightMode}
-        onSelectMenuItem={handleGroceryCarouselItemSelect}
-        onBookmark={handleBookmarkMenuItem}
-        onShare={handleShareMenuItem}
-      />
+            }
+            onClose={handleCloseItemDetails}
+            onAdd={handleAddFromItemDetails}
+            storeMenu={merchant?.menu ?? []}
+            grocerySheetHeightMode={grocerySheetHeightMode}
+            onSelectMenuItem={handleGroceryCarouselItemSelect}
+            onBookmark={handleBookmarkMenuItem}
+            onShare={handleShareMenuItem}
+          />
+        </Suspense>
+      ) : null}
 
-      {customizationItem && (
-        <ItemCustomizationSheet
-          visible={customizationSheetVisible}
-          onClose={() => {
-            setCustomizationSheetVisible(false);
-            setCustomizationItem(null);
-            setCustomizationInitialSelection(null);
-            setCustomizationEditLineId(null);
-            setCustomizationSiblingLineIds([]);
-            setGrocerySheetExpanded(false);
-          }}
-          storeId={merchantId}
-          item={customizationItem}
-          merchantName={merchant?.name ?? ""}
-          storeType={displayMerchant?.storeType ?? merchant?.storeType}
-          isStoreClosed={isStoreClosedForStatus}
-          storeMenu={merchant?.menu ?? []}
-          grocerySheetHeightMode={grocerySheetHeightMode}
-          onSelectMenuItem={handleGroceryCarouselItemSelect}
-          onAddCompanionItem={handleAddItem}
-          initialSelection={customizationInitialSelection}
-          itemOffer={
-            itemOfferById.get(customizationItem.id) ??
-            (customizationItem.menuItemId != null
-              ? itemOfferById.get(String(customizationItem.menuItemId))
-              : undefined) ??
-            null
-          }
-          onAdd={handleCustomizationAdd}
-        />
-      )}
+      {customizationItem ? (
+        <Suspense fallback={null}>
+          <ItemCustomizationSheet
+            visible={customizationSheetVisible}
+            onClose={() => {
+              setCustomizationSheetVisible(false);
+              setCustomizationItem(null);
+              setCustomizationInitialSelection(null);
+              setCustomizationEditLineId(null);
+              setCustomizationSiblingLineIds([]);
+              setGrocerySheetExpanded(false);
+            }}
+            storeId={merchantId}
+            item={customizationItem}
+            merchantName={merchant?.name ?? ""}
+            storeType={displayMerchant?.storeType ?? merchant?.storeType}
+            isStoreClosed={isStoreClosedForStatus}
+            storeMenu={merchant?.menu ?? []}
+            grocerySheetHeightMode={grocerySheetHeightMode}
+            onSelectMenuItem={handleGroceryCarouselItemSelect}
+            onAddCompanionItem={handleAddItem}
+            initialSelection={customizationInitialSelection}
+            itemOffer={
+              itemOfferById.get(customizationItem.id) ??
+              (customizationItem.menuItemId != null
+                ? itemOfferById.get(String(customizationItem.menuItemId))
+                : undefined) ??
+              null
+            }
+            onAdd={handleCustomizationAdd}
+          />
+        </Suspense>
+      ) : null}
 
-      <ReportFraudMenuIssueSheet
-        visible={reportSheetVisible}
-        storeId={merchantId}
-        storeNumericId={merchant?.storeNumericId ?? displayMerchant?.storeNumericId}
-        storeName={merchant?.name ?? displayMerchant?.name}
-        onClose={closeReportSheet}
-      />
+      {reportSheetVisible ? (
+        <Suspense fallback={null}>
+          <ReportFraudMenuIssueSheet
+            visible
+            storeId={merchantId}
+            storeNumericId={merchant?.storeNumericId ?? displayMerchant?.storeNumericId}
+            storeName={merchant?.name ?? displayMerchant?.name}
+            onClose={closeReportSheet}
+          />
+        </Suspense>
+      ) : null}
 
       <HiddenRestaurantAckModal
         visible={hideAckVisible}

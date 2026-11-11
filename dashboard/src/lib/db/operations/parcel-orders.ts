@@ -77,6 +77,85 @@ export const PARCEL_ACTIVE_STATUSES = [
 
 export { PARCEL_STATUSES };
 
+function sqlParcelCurrentStatusKey(): SQL {
+  return sql`upper(replace(replace(trim(coalesce(${ordersCore.currentStatus}, '')), ' ', '_'), '-', '_'))`;
+}
+
+function sqlParcelCoreStatusKey(): SQL {
+  return sql`lower(trim(coalesce(${ordersCore.status}::text, '')))`;
+}
+
+/**
+ * Delivered / completed / cancelled / failed — never shown on the parcel ops board.
+ * Checks core status, current_status label, and cancelled_at (core may lag).
+ */
+export function sqlParcelOrderIsTerminal(): SQL {
+  const cur = sqlParcelCurrentStatusKey();
+  const core = sqlParcelCoreStatusKey();
+  return sql`(
+    ${core} IN (
+      'delivered', 'completed', 'complete', 'cancelled', 'failed', 'rejected'
+    )
+    OR ${cur} IN (
+      'DELIVERED', 'COMPLETED', 'COMPLETE', 'CANCELLED', 'CANCELED',
+      'FAILED', 'REJECTED'
+    )
+    OR ${ordersCore.cancelledAt} IS NOT NULL
+  )`;
+}
+
+const PARCEL_CUR_ASSIGNED = sql`(
+  'ASSIGNED', 'SEARCHING_RIDER', 'CREATED', 'PENDING', 'PLACED',
+  'CONFIRMED', 'RIDER_ASSIGNED'
+)`;
+const PARCEL_CUR_ACCEPTED = sql`('ACCEPTED', 'RIDER_ON_THE_WAY', 'ON_THE_WAY')`;
+const PARCEL_CUR_REACHED = sql`(
+  'REACHED_STORE', 'REACHED_PICKUP', 'RIDER_AT_PICKUP',
+  'RIDER_REACHED_PICKUP', 'RIDER_WAITING_FOR_OTP', 'ARRIVED'
+)`;
+const PARCEL_CUR_PICKED = sql`('PICKED_UP', 'TRIP_STARTED', 'RIDE_IN_PROGRESS')`;
+const PARCEL_CUR_TRANSIT = sql`('IN_TRANSIT', 'NEAR_DROP', 'ARRIVED_AT_DROP')`;
+
+/** Any known ops current_status that maps to an active pipeline stage. */
+function sqlParcelCurrentMapsToActiveStage(): SQL {
+  const cur = sqlParcelCurrentStatusKey();
+  return sql`(
+    ${cur} IN ${PARCEL_CUR_ASSIGNED}
+    OR ${cur} IN ${PARCEL_CUR_ACCEPTED}
+    OR ${cur} IN ${PARCEL_CUR_REACHED}
+    OR ${cur} IN ${PARCEL_CUR_PICKED}
+    OR ${cur} IN ${PARCEL_CUR_TRANSIT}
+  )`;
+}
+
+/**
+ * Stage-tab match: prefer current_status when it maps to a pipeline stage;
+ * otherwise fall back to core status (avoids stale core vs advanced current).
+ */
+function sqlParcelMatchesStage(
+  stage: (typeof PARCEL_ACTIVE_STATUSES)[number]
+): SQL {
+  const cur = sqlParcelCurrentStatusKey();
+  const core = sqlParcelCoreStatusKey();
+  const curKnown = sqlParcelCurrentMapsToActiveStage();
+
+  const curAliases =
+    stage === "assigned"
+      ? PARCEL_CUR_ASSIGNED
+      : stage === "accepted"
+        ? PARCEL_CUR_ACCEPTED
+        : stage === "reached_store"
+          ? PARCEL_CUR_REACHED
+          : stage === "picked_up"
+            ? PARCEL_CUR_PICKED
+            : PARCEL_CUR_TRANSIT;
+
+  return sql`(
+    (${curKnown} AND ${cur} IN ${curAliases})
+    OR (NOT ${curKnown} AND ${core} = ${stage})
+  )`;
+}
+
 function isParcelDirectOrderIdLookup(filters: ListParcelOrdersFilters): boolean {
   const search = filters.search?.trim();
   if (!search) return false;
@@ -180,7 +259,20 @@ export async function listParcelOrders(
   const status = filters.status?.trim() ?? "";
   const skipActiveScope = isParcelDirectOrderIdLookup(filters);
 
-  if (status && isValidParcelStatus(status)) {
+  if (!skipActiveScope) {
+    // Hide completed / cancelled even when core.status still looks active.
+    conditions.push(sql`NOT ${sqlParcelOrderIsTerminal()}`);
+  }
+
+  if (
+    status &&
+    (PARCEL_ACTIVE_STATUSES as readonly string[]).includes(status)
+  ) {
+    conditions.push(
+      sqlParcelMatchesStage(status as (typeof PARCEL_ACTIVE_STATUSES)[number])
+    );
+  } else if (status && isValidParcelStatus(status)) {
+    // delivered / cancelled etc. — rare (UI strips these tabs); honor exact core match.
     conditions.push(
       eq(ordersCore.status, status as (typeof PARCEL_STATUSES)[number])
     );

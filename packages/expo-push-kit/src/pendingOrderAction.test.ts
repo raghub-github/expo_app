@@ -48,10 +48,20 @@ describe("native pending order action", () => {
     assert.equal(parsed?.httpStatus, 0);
   });
 
-  it("ignores anything that is not an accept or reject", () => {
-    assert.equal(parseNativePendingOrderAction(JSON.stringify({ ...base, action: "open" })), null);
+  it("parses OPEN TO ACCEPT as open (Home New redirect)", () => {
+    const parsed = parseNativePendingOrderAction(
+      JSON.stringify({ ...base, action: "open", foodOrderId: "100062", result: "ok" })
+    );
+    assert.equal(parsed?.action, "open");
+    assert.equal(parsed?.result, "ok");
+    assert.equal(parsed?.foodOrderId, "100062");
+  });
+
+  it("ignores garbage payloads", () => {
     assert.equal(parseNativePendingOrderAction("not json"), null);
     assert.equal(parseNativePendingOrderAction(""), null);
     assert.equal(parseNativePendingOrderAction(null), null);
+    assert.equal(parseNativePendingOrderAction(JSON.stringify({ ...base, action: "mute" })), null);
   });
 });
+

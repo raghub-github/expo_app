@@ -446,6 +446,16 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
             orderCoreId: existing.ordersCoreId,
             foodId: existing.id,
           });
+          // Cross-device accept/reject: stop THIS phone's buzzer immediately
+          // (GlobalOrderAlertStopSync also reconciles; this closes the FCM race).
+          void import("@/lib/newOrderAlertManager")
+            .then(({ applyGlobalOrderAlertStop }) =>
+              applyGlobalOrderAlertStop(
+                existing.id,
+                stage === "rejected" ? "rejected" : "accepted"
+              )
+            )
+            .catch(() => undefined);
         }
         const sid = existing.merchantStoreId;
         if (sid != null) {

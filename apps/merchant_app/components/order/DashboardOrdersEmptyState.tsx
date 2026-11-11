@@ -1,10 +1,33 @@
+import { Image as RNImage, StyleSheet, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet } from "react-native";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { GatiMitraMerchant } from "@/constants/theme";
 import { MX } from "@/lib/appAssetKeys";
 
 type Tab = "New" | "Active";
+
+const LOCAL_EMPTY_ART = require("../../assets/dis.png");
+
+function EmptyArtFallback({
+  label,
+  icon,
+}: {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}) {
+  return (
+    <View style={styles.fallbackIcon} accessibilityLabel={label}>
+      <RNImage source={LOCAL_EMPTY_ART} style={styles.localArt} resizeMode="contain" />
+      <Ionicons
+        name={icon}
+        size={36}
+        color={GatiMitraMerchant.primary}
+        style={styles.localBadge}
+      />
+    </View>
+  );
+}
 
 export function DashboardOrdersEmptyState({
   tab,
@@ -13,29 +36,24 @@ export function DashboardOrdersEmptyState({
   tab: Tab;
   fillAvailable?: boolean;
 }) {
-  if (tab === "Active") {
-    return (
-      <View style={[styles.emptyWrap, fillAvailable && styles.emptyWrapFill]}>
-        <AppAssetImage
-          assetKey={MX.orders.emptyActive}
-          style={styles.emptyImage}
-          resizeMode="contain"
-          accessibilityLabel="No active orders"
-        />
-        <Text style={styles.emptyTitle}>No active orders right now</Text>
-      </View>
-    );
-  }
+  const assetKey = tab === "Active" ? MX.orders.emptyActive : MX.orders.emptyNew;
+  const title = tab === "Active" ? "No active orders right now" : "Waiting for new orders";
 
   return (
     <View style={[styles.emptyWrap, fillAvailable && styles.emptyWrapFill]}>
       <AppAssetImage
-        assetKey={MX.orders.emptyNew}
+        assetKey={assetKey}
         style={styles.emptyImage}
         resizeMode="contain"
-        accessibilityLabel="Waiting for new orders"
+        accessibilityLabel={title}
+        fallback={
+          <EmptyArtFallback
+            label={title}
+            icon={tab === "Active" ? "receipt-outline" : "hourglass-outline"}
+          />
+        }
       />
-      <Text style={styles.emptyTitle}>Waiting for new orders</Text>
+      <Text style={styles.emptyTitle}>{title}</Text>
     </View>
   );
 }
@@ -58,6 +76,22 @@ const styles = StyleSheet.create({
     height: 260,
     marginBottom: 14,
     backgroundColor: "transparent",
+  },
+  fallbackIcon: {
+    width: 260,
+    height: 260,
+    marginBottom: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  localArt: {
+    width: 210,
+    height: 210,
+    opacity: 0.92,
+  },
+  localBadge: {
+    position: "absolute",
+    bottom: 28,
   },
   emptyTitle: {
     fontSize: 16,

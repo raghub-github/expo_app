@@ -8,14 +8,22 @@ import type {
 
 const DEFAULTS = {
   /** A fix this good ends the session straight away. */
-  goalAccuracyM: 25,
+  goalAccuracyM: 35,
   /** A fix this good ends the session once it has stopped improving for settleMs. */
-  settleAccuracyM: 65,
-  settleMs: 3_500,
-  /** Hard ceiling on GPS use — indoors the goal may never be reached. */
-  budgetMs: 12_000,
+  settleAccuracyM: 120,
+  /** Accept a usable fix quickly — fresh address target is ≤5–7s total. */
+  settleMs: 1_200,
+  /** Hard ceiling on GPS use — never hold the radio for minutes indoors. */
+  budgetMs: 6_500,
+  /** OS last-known window — instant paint, never labeled as a live GPS fix. */
   lastKnownMaxAgeMs: 120_000,
 } as const;
+
+/** Per-accuracy one-shot ceilings — Android can hang forever without these. */
+const ONE_SHOT_TIMEOUT_MS: Record<string, number> = {
+  low: 2_000,
+  balanced: 3_500,
+};
 
 /** Metres of possible travel charged per second of fix age (18 km/h). */
 const AGE_PENALTY_M_PER_S = 5;
@@ -149,27 +157,33 @@ export function acquireProgressivePosition(
       // no cached fix — the live sources below cover it
     });
 
-  // Coarse one-shots usually answer from Wi-Fi/cell within a second or so. They carry
-  // no timeout of their own: a late answer still counts until the session ends.
+  // Coarse one-shots — network/Wi-Fi first. Each has a hard timeout so a stuck
+  // Android provider cannot delay the fresh-address path for minutes.
   const oneShots: Array<[Location.Accuracy, ProgressiveFix["source"]]> = [
+    [Location.Accuracy.Lowest, "low"],
     [Location.Accuracy.Low, "low"],
     [Location.Accuracy.Balanced, "balanced"],
   ];
   // The watch only ends a pending count if it fails to start; once running it is live.
   liveSourcesPending = oneShots.length + 1;
   for (const [accuracy, source] of oneShots) {
-    Location.getCurrentPositionAsync({ accuracy, mayShowUserSettingsDialog: false })
+    const timeoutMs = ONE_SHOT_TIMEOUT_MS[source] ?? 3_000;
+    void withTimeout(
+      Location.getCurrentPositionAsync({ accuracy, mayShowUserSettingsDialog: false }),
+      timeoutMs
+    )
       .then((loc) => consider(loc, source))
       .catch(() => {
-        // the other sources may still answer
+        // Timed out / denied — watch + other one-shots may still answer.
       })
       .finally(liveSourceEnded);
   }
 
+  // High-accuracy watch refines in parallel — first valid one-shot already updated UI.
   Location.watchPositionAsync(
     {
       accuracy: Location.Accuracy.High,
-      timeInterval: 1_000,
+      timeInterval: 800,
       distanceInterval: 0,
       mayShowUserSettingsDialog: false,
     },

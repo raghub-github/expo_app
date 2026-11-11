@@ -1,5 +1,6 @@
 import { Image } from "react-native";
 import { getConfig } from "@/config/env";
+import { resolveAlertSoundUrl } from "@/lib/resolveAlertSoundUrl";
 import { requestMerchantHomeAdsRefresh } from "@/lib/merchantHomeAdsBus";
 
 export type HomeAdCtaAction = "bottom_sheet" | "share" | "redirect";
@@ -36,12 +37,25 @@ function normalizeCtaAction(raw: Record<string, unknown>): HomeAdCtaAction {
   return "share";
 }
 
+/** Backend absolutizes proxy paths with server API_BASE_URL (often a stale LAN IP). Rewrite to this device's API host. */
+function resolveHomeAdImageUrl(raw: Record<string, unknown>): string | null {
+  const rawUrl =
+    raw.imageUrl != null
+      ? String(raw.imageUrl)
+      : raw.image_url != null
+        ? String(raw.image_url)
+        : "";
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+  return resolveAlertSoundUrl(trimmed);
+}
+
 function normalizeAd(raw: Record<string, unknown>): HomeAd {
   return {
     id: Number(raw.id),
     title: String(raw.title ?? ""),
     body: String(raw.body ?? ""),
-    imageUrl: raw.imageUrl != null ? String(raw.imageUrl) : null,
+    imageUrl: resolveHomeAdImageUrl(raw),
     ctaLabel: raw.ctaLabel != null ? String(raw.ctaLabel) : null,
     ctaUrl: raw.ctaUrl != null ? String(raw.ctaUrl) : raw.cta_url != null ? String(raw.cta_url) : null,
     ctaAction: normalizeCtaAction(raw),

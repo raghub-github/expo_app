@@ -13,6 +13,7 @@ import { usePrefetchMenuCatalog } from "@/hooks/useMenuQueries";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
+import { partnerHasPermission } from "@/lib/staffPermissions";
 
 const LABEL_FONT_SIZE = 12;
 
@@ -39,12 +40,22 @@ function MerchantTabsShell() {
   const insets = useSafeAreaInsets();
   const bottomInset = insets.bottom;
   const tabBarTotalHeight = TAB_BAR_HEIGHT + bottomInset + TAB_BAR_FLOATING_GAP + 6;
+  const { partner } = useAuth();
+  const canMenu = partnerHasPermission(partner, "menu");
+  const canHome = partnerHasPermission(partner, "home");
+  const canOrders = partnerHasPermission(partner, "operations");
+  /**
+   * Prefer Home when allowed. Staff now has `home` — opening a href:null tab
+   * as initialRoute used to loop (blank crash); keep this guard for roles without home.
+   */
+  const initialRouteName = canHome ? "index" : canOrders ? "orders" : "profile";
   usePrefetchLiveOrderSupportTopics();
   usePrefetchMenuCatalog();
 
   return (
       <View style={{ flex: 1, backgroundColor: GatiMitraMerchant.surfaceWarm }}>
       <Tabs
+        initialRouteName={initialRouteName}
         tabBar={(props) => <FloatingTabBar {...props} />}
       screenOptions={{
         /** Custom FloatingTabBar honors this — hides bar while typing so inputs stay above the keyboard. */
@@ -84,7 +95,9 @@ function MerchantTabsShell() {
         name="index"
         options={{
           title: "Home",
-          lazy: false,
+          // Only eagerly mount when this is a visible / initial tab.
+          lazy: !canHome,
+          href: canHome ? undefined : null,
           tabBarIcon: ({ color, focused, size }) => (
             <TabIcon name={focused ? "home" : "home-outline"} color={color} size={size} />
           ),
@@ -95,6 +108,7 @@ function MerchantTabsShell() {
         options={{
           title: "Orders",
           lazy: false,
+          href: canOrders ? undefined : null,
           tabBarIcon: ({ color, focused, size }) => (
             <TabIcon name={focused ? "receipt" : "receipt-outline"} color={color} size={size} />
           ),
@@ -104,6 +118,8 @@ function MerchantTabsShell() {
         name="menu"
         options={{
           title: "Catalog",
+          lazy: !canMenu,
+          href: canMenu ? undefined : null,
           tabBarIcon: ({ color, focused, size }) => (
             <TabIcon name={focused ? "cube" : "cube-outline"} color={color} size={size} />
           ),

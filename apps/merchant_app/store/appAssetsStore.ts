@@ -24,14 +24,38 @@ function emit() {
   listeners.forEach((l) => l());
 }
 
-function resolvedUrlForItem(item: AppAssetItem | undefined): string | null {
-  if (!item) return null;
-  // Prefer stable proxy so expo-image disk cache survives signed-URL rotation.
-  const proxy = item.proxyUrl?.trim();
-  if (proxy) return resolveImageUrl(proxy) ?? proxy;
-  const signed = item.url?.trim();
+function resolvedProxyUrl(item: AppAssetItem | undefined): string | null {
+  const proxy = item?.proxyUrl?.trim();
+  if (!proxy) return null;
+  return resolveImageUrl(proxy) ?? proxy;
+}
+
+function resolvedSignedUrl(item: AppAssetItem | undefined): string | null {
+  const signed = item?.url?.trim();
   if (!signed) return null;
   return resolveImageUrl(signed) ?? signed;
+}
+
+function resolvedUrlForItem(item: AppAssetItem | undefined): string | null {
+  if (!item) return null;
+  // Prefer stable API proxy (same host as food-orders; expo-image disk cache survives
+  // signed-URL rotation). Signed R2 is the secondary candidate.
+  return resolvedProxyUrl(item) ?? resolvedSignedUrl(item);
+}
+
+/** Primary + alternate URLs so AppAssetImage can fall back if one host fails. */
+export function getAppAssetDisplayUrls(key: string): {
+  primary: string | null;
+  secondary: string | null;
+} {
+  const item = assets[key];
+  const proxy = resolvedProxyUrl(item);
+  const signed = resolvedSignedUrl(item);
+  if (proxy && signed && proxy !== signed) {
+    return { primary: proxy, secondary: signed };
+  }
+  const only = proxy ?? signed;
+  return { primary: only, secondary: null };
 }
 
 function applyAssets(next: Record<string, AppAssetItem>, opts?: { persist?: boolean }) {
@@ -155,10 +179,13 @@ async function seedFromDisk(): Promise<boolean> {
 /**
  * Disk seed first (instant welcome URLs), then network refresh.
  * Single in-flight network fetch — _layout + AppAssetsPrefetch must not stampede.
+ * Pass `{ force: true }` to re-hit the API (e.g. empty-state slots still missing URLs).
  */
-export async function ensureMerchantAppAssetsLoaded(): Promise<boolean> {
+export async function ensureMerchantAppAssetsLoaded(opts?: {
+  force?: boolean;
+}): Promise<boolean> {
   await seedFromDisk();
-  if (networkLoaded) return true;
+  if (networkLoaded && !opts?.force) return true;
   if (fetchInflight) return fetchInflight;
   fetchInflight = (async () => {
     try {

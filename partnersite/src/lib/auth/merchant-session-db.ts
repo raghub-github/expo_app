@@ -147,7 +147,15 @@ export async function replaceSessionForDevice(
         .eq("is_active", true)
         .limit(1)
         .maybeSingle();
-      if (existing) return { id: existing.id, expiresAt: existing.expires_at };
+      if (existing) {
+        void syncPartnersiteIntoUserDeviceSessions(merchantId, deviceId, {
+          userAgent,
+          ipAddress: meta?.ipAddress?.trim() || null,
+          deviceLabel,
+          loginMethod: meta?.loginMethod?.trim() || "unknown",
+        });
+        return { id: existing.id, expiresAt: existing.expires_at };
+      }
       console.warn(
         "[merchant-session-db] replaceSessionForDevice: 23505 but active row not yet visible (read lag) — treating as success",
       );
@@ -156,7 +164,120 @@ export async function replaceSessionForDevice(
     console.error("[merchant-session-db] replaceSessionForDevice insert error:", error);
     throw new Error("Failed to create session");
   }
+
+  // Dual-write into user_device_sessions so merchant app Contact details shows partnersite logins
+  // (Windows / macOS / Linux) alongside app devices. Best-effort — never fail partner login.
+  void syncPartnersiteIntoUserDeviceSessions(merchantId, deviceId, {
+    userAgent,
+    ipAddress: meta?.ipAddress?.trim() || null,
+    deviceLabel,
+    loginMethod: meta?.loginMethod?.trim() || "unknown",
+  });
+
   return { id: data.id, expiresAt: data.expires_at };
+}
+
+function osFromUserAgent(ua: string | null | undefined): string {
+  const s = (ua || "").trim();
+  if (/Windows NT/i.test(s)) return "Windows";
+  if (/Android/i.test(s)) return "Android";
+  if (/iPhone|iPad|iPod/i.test(s)) return "iOS";
+  if (/Mac OS X/i.test(s)) return "macOS";
+  if (/Linux/i.test(s)) return "Linux";
+  return "Web";
+}
+
+/**
+ * Mirror partnersite browser session into user_device_sessions (merchant app device list).
+ * I/O-light: one parent lookup + one upsert by (user_id, device_id). Errors are swallowed.
+ */
+async function syncPartnersiteIntoUserDeviceSessions(
+  merchantNumericId: number,
+  deviceId: string,
+  meta: {
+    userAgent: string | null;
+    ipAddress: string | null;
+    deviceLabel: string;
+    loginMethod: string;
+  }
+): Promise<void> {
+  try {
+    const db = getSupabase();
+    const { data: parent, error: parentErr } = await db
+      .from("merchant_parents")
+      .select("parent_merchant_id")
+      .eq("id", merchantNumericId)
+      .maybeSingle();
+    if (parentErr || !parent?.parent_merchant_id) return;
+
+    const userId = String(parent.parent_merchant_id).trim();
+    if (!userId) return;
+
+    const now = new Date().toISOString();
+    const os = osFromUserAgent(meta.userAgent);
+    const payload = {
+      user_id: userId,
+      parent_store_id: merchantNumericId,
+      child_store_id: null as number | null,
+      device_type: "web",
+      device_name: meta.deviceLabel.slice(0, 120) || `Browser on ${os}`,
+      os,
+      ip_address: meta.ipAddress,
+      location: null as string | null,
+      login_method: meta.loginMethod || "partnersite",
+      device_id: deviceId,
+      is_active: true,
+      last_active: now,
+      login_time: now,
+      app_source: "partnersite",
+      user_agent: meta.userAgent ? meta.userAgent.slice(0, 255) : null,
+    };
+
+    // Try update first (cheaper when row exists); else insert.
+    const { data: existing } = await db
+      .from("user_device_sessions")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("device_id", deviceId)
+      .maybeSingle();
+
+    if (existing?.id) {
+      const { error: updErr } = await db
+        .from("user_device_sessions")
+        .update({
+          is_active: true,
+          last_active: now,
+          device_type: payload.device_type,
+          device_name: payload.device_name,
+          os: payload.os,
+          ip_address: payload.ip_address,
+          login_method: payload.login_method,
+          app_source: payload.app_source,
+          user_agent: payload.user_agent,
+          parent_store_id: payload.parent_store_id,
+        })
+        .eq("id", existing.id);
+      if (updErr) {
+        console.warn("[merchant-session-db] user_device_sessions update skipped:", updErr.message);
+      }
+      return;
+    }
+
+    const { error: insErr } = await db.from("user_device_sessions").insert(payload);
+    if (insErr) {
+      // Pre-0650: retry without app_source/user_agent
+      const { app_source: _a, user_agent: _u, ...legacy } = payload;
+      const { error: legacyErr } = await db.from("user_device_sessions").insert(legacy);
+      if (legacyErr) {
+        console.warn("[merchant-session-db] user_device_sessions insert skipped:", legacyErr.message);
+      }
+    }
+  } catch (e) {
+    console.warn(
+      "[merchant-session-db] syncPartnersiteIntoUserDeviceSessions failed:",
+      e instanceof Error ? e.message : e
+    );
+  }
 }
 
 /** Legacy: create after deactivate (call replaceSessionForDevice instead). */
@@ -174,7 +295,10 @@ export async function deactivateSessionForDevice(deviceId: string): Promise<void
   return deactivateSessionsForDevice(deviceId);
 }
 
-/** Deactivate every active device session for this merchant (logout all devices). */
+/**
+ * Logout-all engine: deactivate every partnersite browser session AND remove
+ * merchant-app `user_device_sessions` for this parent so phone/tablet JWTs revoke.
+ */
 export async function deactivateAllSessionsForMerchant(merchantId: number): Promise<number> {
   if (!merchantId || merchantId < 1) return 0;
   const db = getSupabase();
@@ -191,8 +315,40 @@ export async function deactivateAllSessionsForMerchant(merchantId: number): Prom
     .select("id");
   if (error) {
     console.error("[merchant-session-db] deactivateAllSessionsForMerchant error:", error);
-    return 0;
   }
+
+  // Also kick merchant app + dual-written partnersite rows in user_device_sessions.
+  try {
+    const { data: parent } = await db
+      .from("merchant_parents")
+      .select("parent_merchant_id")
+      .eq("id", merchantId)
+      .maybeSingle();
+    const userId = parent?.parent_merchant_id != null ? String(parent.parent_merchant_id).trim() : "";
+    if (userId) {
+      const { error: udsErr } = await db.from("user_device_sessions").delete().eq("user_id", userId);
+      if (udsErr) {
+        // Soft-fallback if DELETE RLS blocks: mark inactive.
+        const { error: softErr } = await db
+          .from("user_device_sessions")
+          .update({ is_active: false, last_active: now })
+          .eq("user_id", userId)
+          .eq("is_active", true);
+        if (softErr) {
+          console.warn(
+            "[merchant-session-db] user_device_sessions logout-all skipped:",
+            softErr.message
+          );
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(
+      "[merchant-session-db] user_device_sessions logout-all failed:",
+      e instanceof Error ? e.message : e
+    );
+  }
+
   return Array.isArray(data) ? data.length : 0;
 }
 
@@ -217,6 +373,36 @@ export async function hasActiveSessionForDevice(
     return true;
   }
   return !!data?.id;
+}
+
+/**
+ * True when this device was explicitly logged out (remote logout-all, single-device logout, partner logout).
+ * Used to block self-heal while Supabase cookies may still be valid.
+ */
+export async function isMerchantDeviceSessionRevoked(
+  merchantId: number,
+  deviceId: string
+): Promise<boolean> {
+  if (!merchantId || !deviceId?.trim()) return false;
+  const db = getSupabase();
+  const trimmedDeviceId = deviceId.trim();
+  const active = await hasActiveSessionForDevice(merchantId, trimmedDeviceId);
+  if (active) return false;
+
+  const { data: latest, error } = await db
+    .from("merchant_sessions")
+    .select("is_active, logged_out_at")
+    .eq("merchant_id", merchantId)
+    .eq("device_id", trimmedDeviceId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error("[merchant-session-db] isMerchantDeviceSessionRevoked error (fail-open):", error);
+    return false;
+  }
+  if (!latest) return false;
+  return latest.is_active === false && latest.logged_out_at != null;
 }
 
 /** Heartbeat so device list shows recent activity without writing on every page. */

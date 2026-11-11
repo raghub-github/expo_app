@@ -156,7 +156,7 @@ function resolveProfileSubPage(pathname: string | undefined): string | null {
   if (pathname.includes("/address")) return "Delivery settings";
   if (pathname.includes("/hours")) return "Outlet timings";
   if (pathname.includes("/bank")) return "Bank account";
-  if (pathname.includes("/staff")) return "Manage staff";
+  if (pathname.includes("/staff")) return "Contact details";
   if (pathname.includes("/status")) return "Store status";
   if (pathname.includes("preparation-time")) return "Rush hour";
   if (pathname.includes("auto-accept")) return "Auto accept";
@@ -194,7 +194,7 @@ function resolveProfileSubPageSubtitle(pathname: string | undefined): string | n
   if (pathname.includes("edit-store")) return "Update outlet name, logo, and basic details.";
   if (pathname.includes("/address")) return "Delivery radius and pickup settings.";
   if (pathname.includes("/hours")) return "Set when your outlet accepts orders.";
-  if (pathname.includes("/staff")) return "Add staff and manage access.";
+  if (pathname.includes("/staff")) return "Invite users and manage access.";
   if (pathname.includes("/status")) return "Control online/offline and store availability.";
   if (pathname.includes("/offers")) return "Create and manage offers for customers.";
   if (pathname.includes("offer-insights")) return "See how your offers are performing.";
@@ -222,7 +222,9 @@ function isStandaloneScreenHeaderRoute(pathname: string | undefined): boolean {
   return (
     pathname.includes("/help") ||
     pathname.includes("/support/chat") ||
-    pathname.includes("/onboarding-benefits")
+    pathname.includes("/onboarding-benefits") ||
+    // Staff/Contact details owns its header (logo + View permissions) — avoid duplicate MerchantHeader.
+    pathname.includes("/staff")
   );
 }
 
@@ -342,13 +344,15 @@ function MainHeader({
   const earningsSubPageTitle = isEarningsSection ? resolveEarningsSubPage(pathname) : null;
   const subPageTitle =
     profileSubPageTitle ?? earningsSubPageTitle ?? (isProfileRootWithReturn ? "Profile" : null);
-  /** 3-line menu only on Flow hub (Earnings / Growth / Offers / Feedback) — not Zone/Home tabs. */
+  /** 3-line menu only on Flow hub (Earnings / Growth / Offers / Feedback) — not Zone/Home tabs.
+   * Staff has Feedback on the main dock (no Flow), so never show this menu for STAFF. */
   const showFlowMenuButton =
-    segments.includes("earnings") ||
-    segments.includes("growth") ||
-    segments.includes("reviews") ||
-    segments.includes("complaints") ||
-    (typeof pathname === "string" && pathname.includes("/offers"));
+    String(partner?.accessRole ?? "").trim().toUpperCase() !== "STAFF" &&
+    (segments.includes("earnings") ||
+      segments.includes("growth") ||
+      segments.includes("reviews") ||
+      segments.includes("complaints") ||
+      (typeof pathname === "string" && pathname.includes("/offers")));
   const pageTitle = PAGE_TITLES[String(tab)] ?? "Dashboard";
   const stores = (partner?.childStores ?? []).filter(
     (s) => String(s.approval_status || "").toUpperCase() === "APPROVED"
@@ -557,6 +561,9 @@ function MainHeader({
         selectedStore={selectedStore}
         managedStores={managedStores}
         activeStoreOnline={isOnline}
+        allowManageOrders={
+          String(partner?.accessRole ?? "").trim().toUpperCase() !== "STAFF"
+        }
         onClose={() => setPickerVisible(false)}
         onManagedStoresChange={(next) => {
           setManagedStores(next);
@@ -772,6 +779,11 @@ export function MerchantCustomHeader() {
   const router = useRouter();
   const { push: merchantNavPush } = useMerchantNavigate();
   const segments = useSegments();
+
+  // Staff page hides this header — but ONLY after all hooks below run (no early return).
+  const onStaffContactPage =
+    (typeof pathname === "string" && pathname.includes("staff")) ||
+    segments.some((s) => s === "staff");
 
   const tab = segments[segments.length - 1] ?? "index";
   const {
@@ -1442,7 +1454,11 @@ export function MerchantCustomHeader() {
     }
   }
 
-  if (isMenuStandaloneHeaderRoute(pathname) || isStandaloneScreenHeaderRoute(pathname)) {
+  if (
+    onStaffContactPage ||
+    isMenuStandaloneHeaderRoute(pathname) ||
+    isStandaloneScreenHeaderRoute(pathname)
+  ) {
     return null;
   }
 

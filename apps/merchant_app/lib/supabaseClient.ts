@@ -36,7 +36,13 @@ export function getSupabaseAuth(): SupabaseClient | null {
   const { supabaseUrl, supabaseAnonKey } = getConfig();
   if (!supabaseUrl || !supabaseAnonKey) return null;
   _client = createClient(supabaseUrl, supabaseAnonKey, {
-    auth: { persistSession: false },
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      // PKCE is required for Google OAuth on mobile (code → session exchange).
+      flowType: "pkce",
+    },
   });
   return _client;
 }

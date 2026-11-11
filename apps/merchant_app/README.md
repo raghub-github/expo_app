@@ -65,12 +65,15 @@ EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=your-google-web-client-id.apps.googleuserconten
 
 #### Supabase: Google provider and redirect URLs
 
-For "Continue with Google" to work, add the correct **Authorized redirect URIs** in [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials → your OAuth 2.0 **Web client** (the same one whose Client ID you put in `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`):
+In **Supabase** → Authentication → URL Configuration → **Redirect URLs**, add exactly:
 
-- **Development build / standalone**: `gatimitra-merchant://redirect`
-- **Expo Go**: If you use Expo Go, add the redirect URI shown in the app’s dev log when you tap "Continue with Google" (e.g. `https://auth.expo.io/@your-username/gatimitra-merchant`), or build a development build and use `gatimitra-merchant://redirect` only.
+```
+https://partner.gatimitra.com/auth/merchant-app-callback
+```
 
-Without the correct redirect URI, Google returns to a URL the app can’t handle and you see "Google sign-in failed".
+The app uses this stable HTTPS callback (not changing `exp://` LAN URLs). If it is missing, Supabase falls back to Site URL (`gatimitra.com`) and login shows **Sign-in was cancelled**.
+
+Also configure the Google provider Web client ID via `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`.
 
 - **iOS simulator**: `http://localhost:3000` is fine.
 - **Android emulator**: use `http://10.0.2.2:3000` (the app’s config resolves this automatically when it sees localhost).

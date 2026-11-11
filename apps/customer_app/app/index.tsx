@@ -48,6 +48,7 @@ export default function IndexScreen() {
   const segments = useSegments() as string[];
   const session = useAuthStore((s) => s.session);
   const hydrated = useAuthStore((s) => s.hydrated);
+  const sessionRestorePending = useAuthStore((s) => s.sessionRestorePending);
   const [checkingProfile, setCheckingProfile] = useState(true);
   const focusedRef = useRef(true);
   const segmentsRef = useRef(segments);
@@ -66,6 +67,8 @@ export default function IndexScreen() {
   useEffect(() => {
     if (!hydrated) return;
     if (!session?.accessToken) {
+      // Auth disk read still in flight after splash budget — hold index under cover.
+      if (sessionRestorePending) return;
       setCheckingProfile(false);
       if (
         !redirectedRef.current &&
@@ -127,8 +130,14 @@ export default function IndexScreen() {
         return;
       }
 
-      // Disk / AsyncStorage path (cold KV miss).
-      const cached = await readCachedProfile();
+      // Disk / AsyncStorage path (cold KV miss). Cap wait so splash cover isn't
+      // stuck behind a wedged AsyncStorage read — network fetch still follows.
+      const cached = await Promise.race([
+        readCachedProfile(),
+        new Promise<undefined>((resolve) => {
+          setTimeout(() => resolve(undefined), 450);
+        }),
+      ]);
       if (cancelled) return;
       if (cached) {
         setCheckingProfile(false);
@@ -234,7 +243,7 @@ export default function IndexScreen() {
     return () => {
       cancelled = true;
     };
-  }, [hydrated, session?.accessToken, router]);
+  }, [hydrated, sessionRestorePending, session?.accessToken, router]);
 
   // Mint hold under branded overlay — never near-white softBackground (looks blank).
   if (!hydrated || checkingProfile) {

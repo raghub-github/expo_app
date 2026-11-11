@@ -21,10 +21,8 @@ export function normalizeHeroImageUri(raw: string | null | undefined): string | 
 }
 
 function prefetchOneHeroUri(abs: string): void {
-  if (prefetchedUris.has(abs)) {
-    markHeroMediaSessionReady(abs);
-    return;
-  }
+  // In-flight ≠ paint-ready — never mark session-ready until prefetch resolves.
+  if (prefetchedUris.has(abs)) return;
   prefetchedUris.add(abs);
   void Image.prefetch(abs, { cachePolicy: "memory-disk" })
     .then(() => markHeroMediaSessionReady(abs))

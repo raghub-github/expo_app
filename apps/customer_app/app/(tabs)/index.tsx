@@ -3,7 +3,7 @@
  * Content scrolls independently under a true floating bottom nav.
  */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
 import {
   View,
   StyleSheet,
@@ -12,6 +12,7 @@ import {
   StatusBar as NativeStatusBar,
   Platform,
   AppState,
+  InteractionManager,
   type AppStateStatus,
 } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
@@ -43,7 +44,7 @@ import {
 import { resolveDeliveryLocationLabel } from "@/lib/resolveDeliveryLocationLabel";
 import { useAddresses } from "@/hooks/useAddresses";
 import { normalizeOfferLocationParams } from "@/lib/featuredOfferGeo";
-import { reloadCustomerAppAssets } from "@/store/appAssetsStore";
+import { reloadCustomerAppAssets, useAppAssetsStore } from "@/store/appAssetsStore";
 import { useNearbyGroceryAvailability } from "@/hooks/useNearbyGroceryAvailability";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { prioritizeVisibleMerchantBanners } from "@/lib/prefetchMerchantBanners";
@@ -52,6 +53,10 @@ import { warmFoodHomeEntry } from "@/lib/navigateToFoodHome";
 import { useTabScreenDebug } from "@/lib/tabNavDebug";
 import { markInitialShellReady } from "@/lib/startupShellReady";
 import { startupLaunchLog, startupProcessAgeMs } from "@/lib/startupPerf";
+import { collectCriticalHomeAssetUris } from "@/lib/homeCriticalAssets";
+import { enqueueImagePrefetchFront } from "@/lib/prefetchQueue";
+import { useHomeSkeletonFlags } from "@/hooks/useHomeSkeletonFlags";
+import { homeSkeletonLog } from "@/lib/homeSkeletonTelemetry";
 
 const PAGE_BG = GatiMitraColors.softBackground;
 const STATUS_CHROME = GatiMitraColors.softBackground;
@@ -62,15 +67,25 @@ export default function HomeScreen() {
   const queryClient = useQueryClient();
   const shellMarkedRef = useRef(false);
 
-  const onHomeShellLayout = useCallback(() => {
+  const markHomeShellReady = useCallback((reason: string) => {
     if (shellMarkedRef.current) return;
     shellMarkedRef.current = true;
-    markInitialShellReady("home");
+    markInitialShellReady(reason);
   }, []);
+
+  // Commit-time signal — don't wait for onLayout when Home is already mounted under splash.
+  useLayoutEffect(() => {
+    markHomeShellReady("home-layout-effect");
+  }, [markHomeShellReady]);
+
+  const onHomeShellLayout = useCallback(() => {
+    markHomeShellReady("home");
+  }, [markHomeShellReady]);
   const [refreshing, setRefreshing] = useState(false);
   const [weatherSheetVisible, setWeatherSheetVisible] = useState(false);
   /** Remount service grid after idle/resume — Android ScrollView+RefreshControl can eat taps. */
   const [servicesTouchEpoch, setServicesTouchEpoch] = useState(0);
+  const assets = useAppAssetsStore((s) => s.assets);
   const openBlockSheet = useCustomerServiceBlockSheetStore((s) => s.open);
   // Throttle the on-focus service-blocks refetch: returning to Home (e.g. rapid tab
   // toggling) previously fired a network invalidation + re-render every single time.
@@ -87,20 +102,34 @@ export default function HomeScreen() {
   const refetchLocation = useLocationStore((s) => s.refetchLocation);
 
   useEffect(() => {
-    startupLaunchLog("HOME_MOUNT");
-    startupLaunchLog("HOME_FIRST_RENDER");
-    const raf = requestAnimationFrame(() => {
-      startupLaunchLog("HOME_FIRST_USABLE_FRAME");
-      const ageMs = startupProcessAgeMs();
-      if (ageMs > 8000) {
-        startupLaunchLog("STARTUP_BLOCKER", {
-          stage: "home_first_usable_late",
-          durationMs: ageMs,
-          budgetMs: 8000,
+    const renderT0 = Date.now();
+    startupLaunchLog("HOME_MOUNT", { blocksHome: false });
+    startupLaunchLog("HOME_FIRST_RENDER", { blocksHome: false });
+    // Double-rAF ≈ first interactive frame; a single rAF was delayed 15s+ when
+    // GPS/warm effects blocked the JS thread before the callback ran.
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const sinceFirstRenderMs = Date.now() - renderT0;
+        startupLaunchLog("HOME_FIRST_USABLE_FRAME", {
+          sinceFirstRenderMs,
+          ageMs: startupProcessAgeMs(),
+          blocksHome: false,
         });
-      }
+        if (sinceFirstRenderMs > 3000) {
+          startupLaunchLog("STARTUP_BLOCKER", {
+            stage: "home_first_usable_late",
+            durationMs: sinceFirstRenderMs,
+            budgetMs: 3000,
+            blocksHome: false,
+          });
+        }
+      });
     });
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
   }, []);
 
   const onRefresh = useCallback(async () => {
@@ -128,22 +157,41 @@ export default function HomeScreen() {
   const gpsKickRef = useRef(false);
   useEffect(() => {
     if (!locationHydrated) return;
+    // Explicit delivery pin — never force GPS over it (Stage B / reconcile own policy).
     if (locationSource === "selected" && coords) return;
     if (gpsKickRef.current && coords) return;
-    gpsKickRef.current = true;
-    requestPermissionAndFetch({ forceDevice: true });
+    // After first interactions/splash — do not block Home's first usable frame.
+    const task = InteractionManager.runAfterInteractions(() => {
+      const loc = useLocationStore.getState();
+      if (loc.locationSource === "selected" && loc.coords) return;
+      if (gpsKickRef.current && loc.coords) return;
+      gpsKickRef.current = true;
+      // Never forceDevice here — selected delivery pins are owned by Stage B / reconcile.
+      // Empty or cached "current" still acquires / refines via progressive GPS.
+      void requestPermissionAndFetch({ forceDevice: false });
+    });
+    return () => task.cancel();
   }, [locationHydrated, locationSource, coords, requestPermissionAndFetch]);
 
+  // Food JS chunk ASAP — do not wait for InteractionManager (that was the Suspense blank).
   useEffect(() => {
-    // Warm JS bundle early; merchant seed no-ops until coords exist.
-    warmFoodHomeEntry();
+    void import("@/lib/foodHomeScreenModule")
+      .then((m) => m.preloadFoodHomeScreen())
+      .catch(() => {});
+    // Merchants/imagery after paint so Home stays responsive.
+    const task = InteractionManager.runAfterInteractions(() => {
+      warmFoodHomeEntry();
+    });
+    return () => task.cancel();
   }, []);
 
   useEffect(() => {
     if (!locationHydrated) return;
     if (coords?.latitude == null || coords?.longitude == null) return;
-    // Re-warm once location is known so prod paints store cards/banners from cache.
-    warmFoodHomeEntry();
+    const task = InteractionManager.runAfterInteractions(() => {
+      warmFoodHomeEntry();
+    });
+    return () => task.cancel();
   }, [locationHydrated, coords?.latitude, coords?.longitude]);
 
   const { data: addresses = [] } = useAddresses();
@@ -208,12 +256,9 @@ export default function HomeScreen() {
     locationPrimary,
     coords != null
   );
-  const { data: weather, isFetching: weatherFetching } = useLocationWeather(weatherParams);
-
-  const hasLiveWeather =
-    weather != null && weather.temperatureC != null && Number.isFinite(weather.temperatureC);
-  const showWeatherBlock = hasLiveWeather || (coords != null && weatherFetching && !hasLiveWeather);
-  const { promoCardH, serviceCardH, brandH } = useHomeScreenLayout(showWeatherBlock);
+  const { data: weather } = useLocationWeather(weatherParams);
+  // Layout always reserves weather height — header never uses skeleton chrome.
+  const { promoCardH, serviceCardH, brandH } = useHomeScreenLayout(true);
 
   const offerLocationParams = useMemo(
     () =>
@@ -238,6 +283,16 @@ export default function HomeScreen() {
     offerLocationParams,
     locationHydrated
   );
+
+  const { forceSkeletons, showPromoSkeleton, splashExited } = useHomeSkeletonFlags();
+
+  useEffect(() => {
+    if (!splashExited) return;
+    homeSkeletonLog("CONTENT_RENDERED", "location", "header_instant_after_splash", {
+      forceSkeletons,
+      showPromoSkeleton,
+    });
+  }, [splashExited, forceSkeletons, showPromoSkeleton]);
 
   // Home header always owns safe-top padding — keep root spacer off so first
   // paint never races splash/bootstrap (spacer 0 + header GAP-only = overlap).
@@ -281,6 +336,12 @@ export default function HomeScreen() {
     return () => sub.remove();
   }, []);
 
+  // Decode critical Home art ASAP (services + promo + brand) — do not wait for interactions.
+  useLayoutEffect(() => {
+    const critical = collectCriticalHomeAssetUris(assets);
+    if (critical.length > 0) enqueueImagePrefetchFront(critical, critical.length);
+  }, [assets]);
+
   return (
     <View style={styles.container} onLayout={onHomeShellLayout}>
       {/* Location header only — plain sticky, no shadow. Weather scrolls with body. */}
@@ -319,7 +380,7 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="always"
         nestedScrollEnabled
-        removeClippedSubviews={false}
+        removeClippedSubviews
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -329,9 +390,10 @@ export default function HomeScreen() {
           />
         }
       >
+        {/* Header weather: cached/live instantly — compact reserve only, never header skeleton. */}
         <HomeWeatherBanner
           weather={weather}
-          loading={coords != null && weatherFetching && !hasLiveWeather}
+          loading={false}
           onWeatherPress={() => setWeatherSheetVisible(true)}
         />
 
@@ -342,6 +404,7 @@ export default function HomeScreen() {
           cardHeight={promoCardH}
           mode="home"
           showDefaultWhenEmpty
+          skeletonWhileLoading={showPromoSkeleton}
         />
 
         <HomeServicesRow

@@ -56,7 +56,8 @@ export async function getParcelFareQuoteBatch(params: {
           }
         | { ok: false; code: string; message: string }
       >;
-    }>(`${PARCEL_PREFIX}/quote-batch`, body, { signal: params.signal, timeout: 20_000 });
+    // Match ride quote-batch — long hangs left the book card stuck on "—" under DB load.
+    }>(`${PARCEL_PREFIX}/quote-batch`, body, { signal: params.signal, timeout: 12_000 });
 
     if (!data?.ok || !data.quotes) return { ok: false, error: "Quote batch unavailable" };
 

@@ -237,7 +237,7 @@ export const RiderActionSlider = memo(function RiderActionSlider({
       shouldClaimSlide(g, ignoreRef.current);
 
     return PanResponder.create({
-      // Offer footer (claimOnTouchStart): claim immediately. Elsewhere wait for
+      // Offer/footer (claimOnTouchStart): claim immediately. Elsewhere wait for
       // horizontal slop so parent ScrollViews still scroll.
       onStartShouldSetPanResponder: () =>
         claimOnStartRef.current && !ignoreRef.current,
@@ -248,7 +248,14 @@ export const RiderActionSlider = memo(function RiderActionSlider({
       // Once a slide is genuinely under way it must not be yanked away
       // mid-drag; before that, let an ancestor scroll view take over.
       onPanResponderTerminationRequest: () => !activeDragRef.current,
+      // Android can hand the touch to a native parent (Modal / ScrollView)
+      // mid-drag unless the JS responder explicitly blocks it.
+      onShouldBlockNativeResponder: () => true,
       onPanResponderGrant: () => {
+        if (ignoreRef.current) {
+          activeDragRef.current = false;
+          return;
+        }
         activeDragRef.current = true;
         if (firedJsRef.current && !parentBusyRef.current) {
           firedJsRef.current = false;
@@ -258,7 +265,7 @@ export const RiderActionSlider = memo(function RiderActionSlider({
         isDragging.value = 1;
       },
       onPanResponderMove: (_, g) => {
-        if (firedJsRef.current) return;
+        if (ignoreRef.current || firedJsRef.current) return;
         const max = maxDrag();
         const cap = max > 0 ? max : Math.max(g.dx, SLIDE_COMPLETE_MIN_PX * 3);
         translateX.value = Math.max(0, Math.min(g.dx, cap));
@@ -272,6 +279,7 @@ export const RiderActionSlider = memo(function RiderActionSlider({
       onPanResponderRelease: (_, g) => {
         activeDragRef.current = false;
         isDragging.value = 0;
+        if (ignoreRef.current) return;
         // Already fired mid-drag: release is a no-op (tryComplete short-circuits).
         if (!tryComplete(g.dx)) {
           translateX.value = withSpring(0, RESET_SPRING);
@@ -327,6 +335,7 @@ export const RiderActionSlider = memo(function RiderActionSlider({
         </View>
       ) : null}
       <View
+        collapsable={false}
         style={[
           styles.track,
           { backgroundColor: trackBg, borderColor: trackBorder },

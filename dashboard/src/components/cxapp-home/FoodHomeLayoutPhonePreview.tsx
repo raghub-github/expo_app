@@ -1,5 +1,10 @@
 "use client";
 
+/**
+ * @deprecated Prefer `FoodHomeLayoutSchematicPreview` on CX App Home.
+ * This component mirrored live customer-app data and is kept only for
+ * reference / emergency rollback — it is no longer mounted in the admin UI.
+ */
 import { useEffect, useState } from "react";
 import type { FoodHomeLayoutKey } from "@/lib/cxapp-home/food-home-layout";
 import {

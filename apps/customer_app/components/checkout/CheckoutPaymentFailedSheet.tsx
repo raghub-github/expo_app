@@ -1,6 +1,6 @@
 import { View, Pressable, StyleSheet, Modal, ActivityIndicator, Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { usePathname, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { AppText } from "@/components/AppText";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
@@ -8,8 +8,7 @@ import { formatCheckoutSavingsRupees } from "@/lib/checkoutAppliedSavings";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
 import { useCheckoutPaymentFailureStore } from "@/store/checkoutPaymentFailureStore";
-import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
-import { useCartStore } from "@/store/cartStore";
+import { restoreCheckoutSurface } from "@/lib/restoreCheckoutSurface";
 
 type Props = {
   visible: boolean;
@@ -75,10 +74,12 @@ export function CheckoutPaymentFailedSheet({
             </View>
           </Pressable>
 
+          <View style={styles.actionButtonGap} />
+
           {onChooseMethod ? (
             <Pressable
               onPress={onChooseMethod}
-              style={({ pressed }) => [styles.ctaPressable, styles.ctaGap, pressed && styles.ctaPressed]}
+              style={({ pressed }) => [styles.ctaPressable, pressed && styles.ctaPressed]}
               accessibilityRole="button"
               accessibilityLabel="Choose another payment method"
             >
@@ -184,13 +185,16 @@ const styles = StyleSheet.create({
     width: "100%",
     alignSelf: "stretch",
   },
+  /** Dedicated spacer View — more reliable than margin between Pressables on Android. */
+  actionButtonGap: {
+    width: "100%",
+    height: 14,
+    flexShrink: 0,
+  },
   ctaPressable: {
     width: "100%",
     borderRadius: 14,
     overflow: "hidden",
-  },
-  ctaGap: {
-    marginTop: 10,
   },
   ctaPressed: {
     opacity: 0.9,
@@ -284,17 +288,13 @@ const overlayStyles = StyleSheet.create({
 /** Root overlay — keep outside CheckoutBottomSheetHost to avoid nested Modals on Android. */
 export function CheckoutPaymentFailureHost() {
   const router = useRouter();
+  const pathname = usePathname();
   const visible = useCheckoutPaymentFailureStore((s) => s.visible);
   const amountInr = useCheckoutPaymentFailureStore((s) => s.amountInr);
   const methodLabel = useCheckoutPaymentFailureStore((s) => s.methodLabel);
 
   const ensureCheckoutSurface = () => {
-    const cartItems = useCartStore.getState().items.length;
-    if (cartItems > 0) {
-      useCheckoutSheetStore.getState().show();
-    } else {
-      router.replace("/checkout");
-    }
+    restoreCheckoutSurface({ router, pathname });
   };
 
   return (

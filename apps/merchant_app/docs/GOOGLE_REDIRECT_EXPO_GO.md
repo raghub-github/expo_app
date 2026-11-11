@@ -1,21 +1,28 @@
-# Fix: Redirected to gatimitra.com after Google login (Expo Go)
+# Merchant app — Google sign-in redirect
 
-## Why it happens
+## Correct redirect (do this once)
 
-Supabase sends you to its **Site URL** (e.g. `https://gatimitra.com`) when the redirect URL your app sends is **not** in the **Redirect URLs** allow list. The URL must match **exactly** (including the path).
+Supabase → **Authentication** → **URL Configuration** → **Redirect URLs** — add **exactly**:
 
-## What to do (Expo Go)
+```
+https://partner.gatimitra.com/auth/merchant-app-callback
+```
 
-1. In the **terminal** where the app is running, tap **Continue with Google** and note the log: `[Google OAuth] redirectTo: exp://... (Expo Go)`.
-2. Open **Supabase** → **Authentication** → **URL Configuration** → **Redirect URLs**.
-3. Ensure that **exact** URL is in the list (e.g. `exp://10.190.225.181:8081/--/auth/callback`). If not, click **Add URL**, paste it, and **Save**.
-4. Try **Continue with Google** again. You should return to the app instead of gatimitra.com.
+Also keep Site URL as your partnersite or app home if needed; do **not** rely on `https://gatimitra.com` for merchant Google login.
 
-## If it still redirects to gatimitra.com
+The merchant app always sends this stable HTTPS callback (via `getMerchantGoogleOAuthRedirectTo()`).  
+`WebBrowser.openAuthSessionAsync` captures it and finishes login **inside the app**.
 
-- Check the **terminal log** when you tap "Continue with Google". It prints `[Google OAuth] redirectTo: <url>`. That `<url>` must be **exactly** one of the entries in Supabase **Redirect URLs**.
-- If you see a different URL (e.g. `exp://192.168.x.x:8081/...`), add that full URL to Supabase Redirect URLs as well. Note: that URL can change when your machine’s IP changes, so prefer adding the `https://auth.expo.io/...` URL above so the app uses it (the code uses the proxy URL when running in Expo Go).
+## Why gatimitra.com appeared before
 
-## Development build (not Expo Go)
+If `redirectTo` is **not** in the allow list (old Expo Go `exp://10.x.x.x:8081/--/auth/callback` changes with Wi‑Fi IP), Supabase falls back to **Site URL** → consumer site `gatimitra.com`. Closing that browser shows **Sign-in was cancelled**.
 
-For a custom dev build, the app uses `gatimitra-merchant://auth/callback`. Ensure that URL is in Supabase Redirect URLs.
+## Optional override
+
+```env
+EXPO_PUBLIC_GOOGLE_OAUTH_REDIRECT_URL=https://partner.gatimitra.com/auth/merchant-app-callback
+```
+
+## Partnersite route
+
+`partnersite/src/app/auth/merchant-app-callback/page.tsx` is the landing page for that URL (and deep-links to `gatimitra-merchant://` as a backup).

@@ -72,6 +72,7 @@ type RecentlyRemovedState = {
 };
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let recentlyRemovedHydrateInFlight: Promise<void> | null = null;
 const PERSIST_DEBOUNCE_MS = 180;
 
 function sanitizeEntries(raw: unknown): RecentlyRemovedEntry[] {
@@ -221,31 +222,37 @@ export const useRecentlyRemovedStore = create<RecentlyRemovedState>((set, get) =
 
   hydrate: async () => {
     if (get().hydrated) return;
-    try {
-      const raw = await getItem(STORAGE_KEYS.RECENTLY_REMOVED);
-      if (!raw) {
+    if (recentlyRemovedHydrateInFlight) return recentlyRemovedHydrateInFlight;
+    recentlyRemovedHydrateInFlight = (async () => {
+      try {
+        const raw = await getItem(STORAGE_KEYS.RECENTLY_REMOVED);
+        if (!raw) {
+          set({ hydrated: true });
+          return;
+        }
+        const parsed = JSON.parse(raw) as PersistedRecentlyRemoved;
+        const stamped = String(parsed?.customerId ?? "").trim() || null;
+        const active = getActiveCustomerScopeId();
+        // Only refuse when we know both sides and they disagree. Avoid wiping on
+        // a cold-start race before auth/scope finishes binding.
+        if (stamped && active && stamped !== active) {
+          await removeItem(STORAGE_KEYS.RECENTLY_REMOVED);
+          set({ entries: [], hydrated: true });
+          return;
+        }
+        const entries = sanitizeEntries(parsed.entries).map(withAbsoluteImage);
+        prefetchEntryImages(entries);
+        set({
+          entries,
+          hydrated: true,
+        });
+      } catch {
         set({ hydrated: true });
-        return;
       }
-      const parsed = JSON.parse(raw) as PersistedRecentlyRemoved;
-      const stamped = String(parsed?.customerId ?? "").trim() || null;
-      const active = getActiveCustomerScopeId();
-      // Only refuse when we know both sides and they disagree. Avoid wiping on
-      // a cold-start race before auth/scope finishes binding.
-      if (stamped && active && stamped !== active) {
-        await removeItem(STORAGE_KEYS.RECENTLY_REMOVED);
-        set({ entries: [], hydrated: true });
-        return;
-      }
-      const entries = sanitizeEntries(parsed.entries).map(withAbsoluteImage);
-      prefetchEntryImages(entries);
-      set({
-        entries,
-        hydrated: true,
-      });
-    } catch {
-      set({ hydrated: true });
-    }
+    })().finally(() => {
+      recentlyRemovedHydrateInFlight = null;
+    });
+    return recentlyRemovedHydrateInFlight;
   },
 
   persist: async () => {

@@ -22,6 +22,7 @@ import {
   Platform,
 } from "react-native";
 import { AppText as Text } from "@/components/AppText";
+import { useRequirePartnerPermission } from "@/hooks/useRequirePartnerPermission";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -814,6 +815,7 @@ function ComboCard({
 }
 
 export default function MenuScreen() {
+  const menuAllowed = useRequirePartnerPermission("menu", "/(tabs)/orders");
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const params = useLocalSearchParams<{ view?: string; from?: string }>();
@@ -2468,6 +2470,8 @@ export default function MenuScreen() {
       </View>
     );
   }
+
+  if (!menuAllowed) return null;
 
   return (
     <View style={styles.container}>

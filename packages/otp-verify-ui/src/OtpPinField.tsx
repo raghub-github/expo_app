@@ -9,7 +9,7 @@ import {
 } from "react-native";
 
 type Props = {
-  otpLength: 4 | 6;
+  otpLength: 4 | 6 | 8;
   loading?: boolean;
   visible: boolean;
   resetKey?: number;
@@ -189,12 +189,13 @@ const styles = StyleSheet.create({
     position: "relative",
     flexDirection: "row",
     justifyContent: "space-between",
-    gap: 8,
+    gap: 6,
     marginBottom: 10,
     overflow: "hidden",
   },
   box: {
     flex: 1,
+    minWidth: 0,
     height: 44,
     alignItems: "center",
     justifyContent: "flex-end",
@@ -202,14 +203,14 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   digit: {
-    fontSize: 24,
+    fontSize: 22,
     minHeight: 28,
     width: "100%",
     textAlign: "center",
     includeFontPadding: false,
   },
   digitFilled: {
-    fontSize: 26,
+    fontSize: 24,
   },
   digitEmpty: {},
   digitFallbackWeight: {

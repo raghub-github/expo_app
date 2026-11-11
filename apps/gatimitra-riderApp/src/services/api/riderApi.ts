@@ -708,8 +708,8 @@ type RiderRequestInit<T> = RequestInit & {
 };
 
 const RIDER_MUTATION_TIMEOUT_MS = 20_000;
-/** Accept claim can briefly outlast other mutations while GPS/GAP-2 runs — keep above p99 claim. */
-const RIDER_ACCEPT_TIMEOUT_MS = 35_000;
+/** Accept claim timeout — keep tight so low-internet reconciles instead of hanging the rider. */
+const RIDER_ACCEPT_TIMEOUT_MS = 15_000;
 const RIDER_QUERY_TIMEOUT_MS = 25_000;
 
 function apiErrorBody(err: ApiError): string | undefined {

@@ -48,7 +48,13 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
   const router = useRouter();
   const queryClient = useQueryClient();
   const setAddressAndCoords = useLocationStore((s) => s.setAddressAndCoords);
-  const { data: addresses = [], isPending: addressesPending } = useAddresses();
+  const {
+    data: addresses = [],
+    isLoading: addressesLoading,
+    isError: addressesError,
+    refetch: refetchAddresses,
+  } = useAddresses();
+  const showAddressesSpinner = addressesLoading && addresses.length === 0;
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<EnrichedPlaceResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -271,10 +277,17 @@ export function LocationAddressPickerSheet({ onBack, onComplete, autoFocusSearch
               <View style={styles.sectionRule} />
               <AppText style={styles.sectionLabel}>SAVED ADDRESSES</AppText>
 
-              {addressesPending && addresses.length === 0 ? (
+              {showAddressesSpinner ? (
                 <View style={styles.emptyWrap}>
                   <ActivityIndicator size="small" color={BRAND} />
                   <AppText style={styles.emptyText}>Loading saved addresses…</AppText>
+                </View>
+              ) : addressesError && addresses.length === 0 ? (
+                <View style={styles.emptyWrap}>
+                  <AppText style={styles.emptyText}>Could not load saved addresses.</AppText>
+                  <TouchableOpacity onPress={() => void refetchAddresses()} activeOpacity={0.85}>
+                    <AppText style={[styles.emptyText, { color: BRAND, marginTop: 8 }]}>Retry</AppText>
+                  </TouchableOpacity>
                 </View>
               ) : addresses.length === 0 ? (
                 <AppText style={styles.emptyText}>No saved addresses yet.</AppText>

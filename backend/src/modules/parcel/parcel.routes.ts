@@ -17,6 +17,7 @@ import {
   computeBillForParcel,
   resolveParcelBillingGeo,
 } from "../billing/parcelBilling.service.js";
+import type { ParcelFareQuoteResult } from "./parcelQuote.service.js";
 
 const vehicleSchema = z.enum(["2_wheeler", "3_wheeler", "4_wheeler_non_ac"]);
 
@@ -64,96 +65,126 @@ const cancelBodySchema = z.object({
   cancelMode: z.enum(["manual", "auto", "timeout"]).optional(),
 });
 
+/** Cap extra billing so the list always returns slab fares quickly (match ride). */
+const QUOTE_BATCH_BILLING_BUDGET_MS = 2800;
+
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export const parcelRoutes: FastifyPluginAsync = async (app) => {
+  // Public like /v1/rides/quote-batch — book UI must show fares without auth races.
+  app.post("/quote-batch", async (req, reply) => {
+    const parsed = batchBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "Validation failed",
+        details: parsed.error.flatten(),
+      });
+    }
+
+    try {
+      const { quotes } = await quoteParcelVehicleFareBatch(parsed.data);
+
+      // Enrich with PARCEL billing when possible, but never block the book list
+      // on slow fee/tax pipelines — slab fare is enough to unlock booking UX.
+      try {
+        const db = getDb();
+        let resolvedGeo: Awaited<ReturnType<typeof resolveParcelBillingGeo>> | undefined;
+        try {
+          resolvedGeo = await Promise.race([
+            resolveParcelBillingGeo({
+              pickupLat: parsed.data.pickupLat,
+              pickupLng: parsed.data.pickupLng,
+              pickupPincode: parsed.data.pickupPincode,
+              pickupState: parsed.data.pickupState,
+            }),
+            delayMs(QUOTE_BATCH_BILLING_BUDGET_MS).then(() => undefined),
+          ]);
+        } catch {
+          resolvedGeo = undefined;
+        }
+
+        const eligible: Array<[string, Extract<ParcelFareQuoteResult, { ok: true }>]> = [];
+        for (const [code, q] of Object.entries(quotes)) {
+          if (q && q.ok === true && q.eligible && q.finalFare > 0) {
+            eligible.push([code, q]);
+          }
+        }
+
+        const billOne = async (
+          code: string,
+          q: Extract<ParcelFareQuoteResult, { ok: true }>
+        ) => {
+          const slabFare = q.finalFare;
+          try {
+            const billRes = await computeBillForParcel(db, {
+              customerId: 0,
+              parcelFare: slabFare,
+              distanceKm: parsed.data.tripKm,
+              pickupLat: parsed.data.pickupLat,
+              pickupLng: parsed.data.pickupLng,
+              pickupPincode: parsed.data.pickupPincode,
+              pickupState: parsed.data.pickupState,
+              vehicleType: code,
+              paymentMode: parsed.data.paymentMode ?? null,
+              forceNoAutoOffer: true,
+              resolvedGeo,
+            });
+            if (!billRes.ok) return;
+            const b = billRes.billing;
+            const payable = Math.max(0, Math.round(Number(b.final_amount) * 100) / 100);
+            if (!(payable > 0)) return;
+            quotes[code] = {
+              ...q,
+              finalFare: payable,
+              slabFare,
+              bookingFee: Math.max(0, Number(b.platform_fee) || 0),
+              platformFee: Math.max(0, Number(b.platform_fee) || 0),
+              convenienceFee: Math.max(0, Number(b.convenience_fee) || 0),
+              surgeFee: Math.max(0, Number(b.surge_fee) || 0),
+              smallOrderFee: Math.max(0, Number(b.small_order_fee) || 0),
+              miscFee: Math.max(0, Number(b.misc_fee) || 0),
+              taxTotal: Math.max(0, Number(b.tax_total) || 0),
+              discountTotal: Math.max(0, Number(b.discount_total) || 0),
+            };
+          } catch {
+            // Keep slab fare.
+          }
+        };
+
+        const billingWave = (async () => {
+          await Promise.all(eligible.map(([code, q]) => billOne(code, q)));
+        })();
+        await Promise.race([billingWave, delayMs(QUOTE_BATCH_BILLING_BUDGET_MS)]);
+      } catch (billErr) {
+        req.log.warn({ err: billErr }, "parcel quote-batch billing enrich skipped");
+      }
+
+      const summary = Object.fromEntries(
+        Object.entries(quotes).map(([code, q]) => [
+          code,
+          q && q.ok === true
+            ? { eligible: q.eligible, finalFare: q.finalFare, geo: q.pricingGeoLevel }
+            : { ok: false, code: q && "code" in q ? q.code : "unknown" },
+        ])
+      );
+      req.log.info(
+        { tripKm: parsed.data.tripKm, paymentMode: parsed.data.paymentMode ?? null, summary },
+        "parcel quote-batch ok"
+      );
+      return reply.send({ ok: true, quotes });
+    } catch (e) {
+      req.log.error({ err: e }, "parcel quote-batch failed");
+      return reply.status(500).send({
+        error: e instanceof Error ? e.message : "Quote failed",
+        code: "PARCEL_QUOTE_FAILED",
+      });
+    }
+  });
+
   await app.register(async function authedParcelRoutes(sub) {
     await sub.register(auth, { required: true });
-
-    sub.post("/quote-batch", async (req, reply) => {
-      const parsed = batchBodySchema.safeParse(req.body);
-      if (!parsed.success) {
-        return reply.status(400).send({
-          error: "Validation failed",
-          details: parsed.error.flatten(),
-        });
-      }
-
-      try {
-        const { quotes } = await quoteParcelVehicleFareBatch(parsed.data);
-        // Apply active PARCEL billing charge rules (booking/platform fee, tax, …)
-        // on top of geo slab fare so book UI matches placement payable.
-        try {
-          const db = getDb();
-          const resolvedGeo = await resolveParcelBillingGeo({
-            pickupLat: parsed.data.pickupLat,
-            pickupLng: parsed.data.pickupLng,
-            pickupPincode: parsed.data.pickupPincode,
-            pickupState: parsed.data.pickupState,
-          });
-          await Promise.all(
-            Object.entries(quotes).map(async ([code, q]) => {
-              if (!q || q.ok !== true || !q.eligible || !(q.finalFare > 0)) return;
-              const slabFare = q.finalFare;
-              const billRes = await computeBillForParcel(db, {
-                customerId: 0,
-                parcelFare: slabFare,
-                distanceKm: parsed.data.tripKm,
-                pickupLat: parsed.data.pickupLat,
-                pickupLng: parsed.data.pickupLng,
-                pickupPincode: parsed.data.pickupPincode,
-                pickupState: parsed.data.pickupState,
-                vehicleType: code,
-                paymentMode: parsed.data.paymentMode ?? null,
-                forceNoAutoOffer: true,
-                resolvedGeo,
-              });
-              if (!billRes.ok) return;
-              const b = billRes.billing;
-              const payable = Math.max(
-                0,
-                Math.round(Number(b.final_amount) * 100) / 100
-              );
-              if (!(payable > 0)) return;
-              // finalFare = full billing payable (booking fee + taxes + active charges).
-              // platform_fee aggregate is the PARCEL "Booking fee" rule — never rename for UI here.
-              quotes[code] = {
-                ...q,
-                finalFare: payable,
-                slabFare,
-                bookingFee: Math.max(0, Number(b.platform_fee) || 0),
-                platformFee: Math.max(0, Number(b.platform_fee) || 0),
-                convenienceFee: Math.max(0, Number(b.convenience_fee) || 0),
-                surgeFee: Math.max(0, Number(b.surge_fee) || 0),
-                smallOrderFee: Math.max(0, Number(b.small_order_fee) || 0),
-                miscFee: Math.max(0, Number(b.misc_fee) || 0),
-                taxTotal: Math.max(0, Number(b.tax_total) || 0),
-                discountTotal: Math.max(0, Number(b.discount_total) || 0),
-              };
-            })
-          );
-        } catch (billErr) {
-          req.log.warn({ err: billErr }, "parcel quote-batch billing enrich skipped");
-        }
-        const summary = Object.fromEntries(
-          Object.entries(quotes).map(([code, q]) => [
-            code,
-            q && q.ok === true
-              ? { eligible: q.eligible, finalFare: q.finalFare, geo: q.pricingGeoLevel }
-              : { ok: false, code: q && "code" in q ? q.code : "unknown" },
-          ])
-        );
-        req.log.info(
-          { tripKm: parsed.data.tripKm, paymentMode: parsed.data.paymentMode ?? null, summary },
-          "parcel quote-batch ok"
-        );
-        return reply.send({ ok: true, quotes });
-      } catch (e) {
-        req.log.error({ err: e }, "parcel quote-batch failed");
-        return reply.status(500).send({
-          error: e instanceof Error ? e.message : "Quote failed",
-          code: "PARCEL_QUOTE_FAILED",
-        });
-      }
-    });
 
     sub.post("/", async (req, reply) => {
       const subAuth = req.auth?.sub;

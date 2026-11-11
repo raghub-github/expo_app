@@ -46,6 +46,8 @@ export const STORAGE_KEYS = {
   SAVED_DELIVERY_TIP: "gm_saved_delivery_tip_v1",
   /** Last known GatiCash balance for instant header paint */
   WALLET_BALANCE_CACHE: "gm_customer_wallet_balance_cache_v1",
+  /** Saved delivery addresses for instant Select-location paint */
+  ADDRESSES_CACHE: "gm_customer_addresses_cache_v1",
   /** Saved store ids so bookmark hearts survive restart */
   STORE_BOOKMARKS_CACHE: "gm_customer_store_bookmarks_cache_v1",
   /** Inbox notifications deleted by the user — inbox rows have no server-side delete */

@@ -3,7 +3,7 @@
  * Flat header (no wave), 10px controls, idle Dawao nudge after valid number.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -80,7 +80,7 @@ export default function LoginScreen() {
   const router = useRouter();
   const scrollRef = useRef<ScrollView>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     markInitialShellReady("login");
   }, []);
   const inputRef = useRef<TextInput>(null);

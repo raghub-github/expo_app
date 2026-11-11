@@ -48,6 +48,7 @@ export async function GET(request: NextRequest) {
     const fromDate = request.nextUrl.searchParams.get("fromDate")?.trim() || undefined;
     const toDate = request.nextUrl.searchParams.get("toDate")?.trim() || undefined;
     const storeType = request.nextUrl.searchParams.get("storeType")?.trim() || undefined;
+    const statusFilter = request.nextUrl.searchParams.get("status")?.trim().toLowerCase() || "";
     const trendDaysRaw = request.nextUrl.searchParams.get("trendDays");
     const trendFrom = request.nextUrl.searchParams.get("trendFrom")?.trim() || undefined;
     const trendTo = request.nextUrl.searchParams.get("trendTo")?.trim() || undefined;
@@ -57,6 +58,13 @@ export async function GET(request: NextRequest) {
       trendFrom && trendTo
         ? { fromDate: trendFrom, toDate: trendTo }
         : { days: trendDays };
+
+    let approval_status: string | undefined;
+    let draftedOnly = false;
+    if (statusFilter === "verified") approval_status = "APPROVED";
+    else if (statusFilter === "pending") approval_status = "PENDING";
+    else if (statusFilter === "rejected") approval_status = "REJECTED";
+    else if (statusFilter === "drafted") draftedOnly = true;
 
     const [growth, verificationTrend, listResult] = await Promise.all([
       getMerchantGrowthTrend(areaManagerId, trendRange),
@@ -68,6 +76,8 @@ export async function GET(request: NextRequest) {
         storeType,
         createdFrom: fromDate,
         createdTo: toDate,
+        approval_status,
+        draftedOnly,
       }),
     ]);
 
@@ -87,6 +97,7 @@ export async function GET(request: NextRequest) {
         parent_id: s.parent_id,
         name: s.store_display_name || s.store_name,
         city: s.city,
+        state: s.state ?? null,
         approval_status: s.approval_status,
         store_type: s.store_type ?? null,
         onboarding_step: s.current_onboarding_step,

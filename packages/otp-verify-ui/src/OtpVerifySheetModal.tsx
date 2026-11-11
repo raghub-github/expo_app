@@ -31,7 +31,7 @@ export type OtpVerifySheetModalProps = {
   visible: boolean;
   title: string;
   subtitle: string;
-  otpLength?: 4 | 6;
+  otpLength?: 4 | 6 | 8;
   /** Unused for digit rendering. Kept for reset/compat; digits live in OtpPinField. */
   value?: string;
   onChange?: (next: string) => void;

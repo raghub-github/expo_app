@@ -551,6 +551,8 @@ export default function IncomingOrderModal() {
   const sheetOrderRef = useRef<OrderRecord | null>(null);
   sheetOrderRef.current = sheetOrder;
   const { orders, upsertOrder, transitionOrder, getOrdersSnapshot } = useOrders();
+  const ordersRef = useRef(orders);
+  ordersRef.current = orders;
   const { settings: acceptanceSettings, acceptanceWindowMinutes } = useOrderAcceptanceSettings();
 
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -1086,6 +1088,25 @@ export default function IncomingOrderModal() {
         if (cancelled || !pending) return;
         const foodId =
           String(pending.foodOrderId || pending.orderId || "").trim() || null;
+        // OPEN TO ACCEPT → Home New (incoming sheet), never order-details.
+        if (pending.action === "open") {
+          const { router } = await import("expo-router");
+          const { merchantHomeNewOrdersHref } = await import("@/lib/merchantNavigation");
+          router.replace(merchantHomeNewOrdersHref() as never);
+          const board = ordersRef.current;
+          const target =
+            (foodId
+              ? board.find(
+                  (o) =>
+                    o.status === "created" &&
+                    (o.id === foodId || String(o.ordersCoreId) === foodId)
+                )
+              : null) ??
+            board.find((o) => o.status === "created" && !o.id.startsWith("core-"));
+          if (target) openSheetManually(target);
+          else void rescanParkedOrders();
+          return;
+        }
         if (!foodId || foodId.startsWith("core-")) return;
         const reason = pending.action === "reject" ? "rejected" : "accepted";
         if (__DEV__) {
@@ -1134,7 +1155,7 @@ export default function IncomingOrderModal() {
       cancelled = true;
       sub.remove();
     };
-  }, [advanceOrCloseSheet, orders, upsertOrder]);
+  }, [advanceOrCloseSheet, orders, upsertOrder, openSheetManually, rescanParkedOrders]);
 
   /**
    * X / backdrop: dismiss the viewed order — never auto-popup again for that order.
@@ -1350,10 +1371,25 @@ export default function IncomingOrderModal() {
     if (live && live.status !== "created") {
       if (rejectingFoodIdRef.current === sheetOrder.id) return;
       // Drop only the acted order; advanceOrClose keeps other pending cards open.
+      // Accepted elsewhere (portal / other phone) must use "accepted" so native
+      // FGS + overlay retire under Guarantee B — never mislabel as expired.
+      const pipeline = String(live.pipelineStatus ?? "").toUpperCase();
+      const remoteStopReason =
+        live.status === "rejected" || pipeline === "CANCELLED" || pipeline === "REJECTED"
+          ? "rejected"
+          : live.status === "preparing" ||
+              live.status === "ready" ||
+              pipeline === "ACCEPTED" ||
+              pipeline === "PREPARING" ||
+              pipeline === "READY_FOR_PICKUP"
+            ? "accepted"
+            : pipeline === "EXPIRED"
+              ? "expired"
+              : "cancelled";
       void advanceOrCloseSheet({
         markDismissed: true,
         parkIfLast: false,
-        stopReason: live.status === "rejected" ? "rejected" : "expired",
+        stopReason: remoteStopReason,
         forCoreId: sheetOrder.ordersCoreId,
         forFoodId: sheetOrder.id,
       });
@@ -1416,7 +1452,13 @@ export default function IncomingOrderModal() {
             markDismissed: true,
             parkIfLast: false,
             stopReason:
-              stage === "CANCELLED" || stage === "REJECTED" ? "cancelled" : "expired",
+              stage === "CANCELLED" || stage === "REJECTED"
+                ? "cancelled"
+                : stage === "ACCEPTED" || stage === "PREPARING" || stage === "READY_FOR_PICKUP"
+                  ? "accepted"
+                  : stage === "EXPIRED"
+                    ? "expired"
+                    : "cancelled",
             forCoreId: syncCoreId,
             forFoodId: String(foodId),
           });

@@ -77,29 +77,45 @@ export function fastRemove(key: string): void {
   void AsyncStorage.removeItem(key).catch(() => {});
 }
 
+/** Coalesce concurrent AsyncStorage pulls for the same key set (Expo Go stampede). */
+const hydrateInflight = new Map<string, Promise<void>>();
+
 /** Pull AsyncStorage into MMKV (when key missing) + memory so prod cold starts hit cache. */
 export async function hydrateFastKvFromAsyncStorage(keys: string[]): Promise<void> {
+  if (!keys.length) return;
+  const id = keys.slice().sort().join("\0");
+  const existing = hydrateInflight.get(id);
+  if (existing) {
+    await existing;
+    return;
+  }
   const store = tryInitMmkv();
-  try {
-    const pairs = await AsyncStorage.multiGet(keys);
-    for (const [k, v] of pairs) {
-      if (!k || v == null) continue;
-      if (store) {
-        try {
-          if (store.getString(k) == null) {
-            store.set(k, v);
+  const pending = (async () => {
+    try {
+      const pairs = await AsyncStorage.multiGet(keys);
+      for (const [k, v] of pairs) {
+        if (!k || v == null) continue;
+        if (store) {
+          try {
+            if (store.getString(k) == null) {
+              store.set(k, v);
+            }
+          } catch {
+            /* ignore */
           }
-        } catch {
-          /* ignore */
+        }
+        if (!memory.has(k)) {
+          memory.set(k, v);
         }
       }
-      if (!memory.has(k)) {
-        memory.set(k, v);
-      }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
-  }
+  })().finally(() => {
+    hydrateInflight.delete(id);
+  });
+  hydrateInflight.set(id, pending);
+  await pending;
 }
 
 export function isFastKvNative(): boolean {

@@ -1,10 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Filter, Search } from "lucide-react";
+import { Filter, Search } from "lucide-react";
 
-import { CxAppHomeStateLink } from "@/components/cxapp-home/CxAppHomeStateLink";
 import { CxAppHomeSectionToggle } from "@/components/cxapp-home/CxAppHomeSectionToggle";
+import { CxAppHomeStatesVirtualGrid } from "@/components/cxapp-home/CxAppHomeStatesVirtualGrid";
 import { useGeoStatesQuery } from "@/store/api/geoAdminApi";
 import type { GeoStateRow } from "@/lib/geo/list-active-states";
 
@@ -18,12 +18,10 @@ export function CxAppHomeClient({ initialStates }: Props) {
     refetchOnFocus: false,
     refetchOnReconnect: false,
   });
-  const states = data?.states ?? initialStates;
+  const states = data?.states?.length ? data.states : initialStates;
   const [query, setQuery] = useState("");
   const [sortDesc, setSortDesc] = useState(false);
-  const [page, setPage] = useState(1);
 
-  const pageSize = 21;
   const showInitialSkeleton = isLoading && states.length === 0;
 
   const filtered = useMemo(() => {
@@ -33,105 +31,66 @@ export function CxAppHomeClient({ initialStates }: Props) {
     return sortDesc ? sorted.reverse() : sorted;
   }, [states, query, sortDesc]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const pageSafe = Math.min(page, totalPages);
-  const paged = filtered.slice((pageSafe - 1) * pageSize, pageSafe * pageSize);
-
   return (
-    <div className="w-full min-w-0 max-w-none space-y-4">
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-lg font-semibold leading-tight text-slate-900">CXApp Home</h2>
-            <p className="mt-0.5 text-xs text-slate-500">States and UT coverage list.</p>
+    <div className="flex w-full min-w-0 max-w-none flex-col gap-3">
+      <div className="rounded-md border-[0.5px] border-[#121212]/40 bg-white">
+        <div className="flex flex-wrap items-center gap-2 border-b-[0.5px] border-[#121212]/10 px-3 py-2.5">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold tracking-tight text-[#121212] sm:text-base">
+              CXApp Home
+            </h2>
+            <p className="text-[11px] leading-snug text-[#121212]/50">
+              States / UT layout coverage
+            </p>
           </div>
           <CxAppHomeSectionToggle />
         </div>
 
-        <div className="mt-3 rounded-xl border border-gray-200 bg-white p-3">
-          <div className="flex flex-wrap items-start justify-between gap-2.5">
-            <div>
-              <h3 className="text-[24px] font-semibold leading-none text-slate-900">States / UT</h3>
-              <p className="mt-1 text-xs text-gray-500">Showing all available states and union territories from geo master.</p>
-            </div>
-            <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
-              <label className="relative block w-full sm:w-[250px]">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value);
-                    setPage(1);
-                  }}
-                  placeholder="Search state / UT..."
-                  className="h-10 w-full rounded-lg border border-gray-200 bg-white pl-9 pr-3 text-xs text-slate-700 outline-none placeholder:text-slate-400 focus:border-cyan-500"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setSortDesc((p) => !p);
-                  setPage(1);
-                }}
-                className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-slate-50"
-              >
-                <Filter className="h-4 w-4 text-slate-500" />
-                Filter
-              </button>
-            </div>
+        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto px-3 py-2 [scrollbar-width:thin]">
+          <div className="relative min-w-[12rem] flex-1 sm:max-w-sm">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#121212]/35" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search state / UT…"
+              className="h-9 w-full rounded-md border border-[#121212]/12 bg-white py-1.5 pl-8 pr-2 text-xs text-[#121212] placeholder:text-[#121212]/40 outline-none focus:border-[#121212]/35"
+            />
           </div>
-
-          {showInitialSkeleton ? (
-            <div className="relative mt-3 grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
-              {Array.from({ length: 9 }).map((_, i) => (
-                <div key={i} className="h-10 rounded-lg border border-gray-100 bg-slate-50" />
-              ))}
-            </div>
-          ) : isError ? (
-            <p className="py-8 text-sm text-red-600">
-              {error && "status" in error
-                ? "Failed to load states / UT."
-                : "Failed to load states / UT."}
-            </p>
-          ) : paged.length === 0 ? (
-            <p className="py-8 text-sm text-slate-500">No states/UT found.</p>
-          ) : (
-            <div className="relative mt-3">
-              <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
-                {paged.map((state) => (
-                  <CxAppHomeStateLink key={state.id} stateId={state.id} name={state.name} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2.5">
-            <p className="text-xs text-slate-500">
-              {showInitialSkeleton ? "Loading…" : `Showing ${filtered.length} items`}
-            </p>
-            <div className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white p-1">
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={pageSafe <= 1 || showInitialSkeleton}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-500 enabled:hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              <span className="inline-flex min-w-8 items-center justify-center rounded-md bg-cyan-600 px-2 py-1 text-xs font-semibold text-white">
-                {pageSafe}
-              </span>
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={pageSafe >= totalPages || showInitialSkeleton}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-500 enabled:hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={() => setSortDesc((p) => !p)}
+            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-[#121212]/12 bg-white px-3 text-xs font-semibold text-[#121212] hover:bg-[#F7F7F7]"
+          >
+            <Filter className="h-3.5 w-3.5 text-[#121212]/45" />
+            {sortDesc ? "Z–A" : "A–Z"}
+          </button>
+          <p className="ml-auto shrink-0 text-[11px] text-[#121212]/50">
+            {showInitialSkeleton ? "Loading…" : `${filtered.length} items`}
+          </p>
         </div>
+      </div>
+
+      <div className={`min-h-0 rounded-md border-[0.5px] border-[#121212]/40 bg-white p-2.5`}>
+        {showInitialSkeleton ? (
+          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 9 }).map((_, i) => (
+              <div
+                key={i}
+                className="h-10 animate-pulse rounded-md border border-[#121212]/08 bg-[#F7F7F7]"
+              />
+            ))}
+          </div>
+        ) : isError ? (
+          <p className="py-8 text-sm text-red-600">
+            {error && "status" in error
+              ? "Failed to load states / UT."
+              : "Failed to load states / UT."}
+          </p>
+        ) : filtered.length === 0 ? (
+          <p className="py-8 text-sm text-[#121212]/50">No states/UT found.</p>
+        ) : (
+          <CxAppHomeStatesVirtualGrid states={filtered} />
+        )}
       </div>
     </div>
   );

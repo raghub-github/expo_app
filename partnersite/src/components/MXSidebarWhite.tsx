@@ -30,6 +30,7 @@ import {
   Inbox
 } from 'lucide-react'
 import LogoutConfirmModal from './LogoutConfirmModal'
+import { partnerHasPermission, PARTNER_NAV_PERMISSION } from '@/lib/auth/merchant-staff-permissions'
 import { DarkSidebarMeshBackground } from '@/components/layout/DarkSidebarMeshBackground'
 
 const MOBILE_BREAKPOINT = 767
@@ -137,6 +138,10 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   const merchantSession = useMerchantSession();
   const userEmail = merchantSession?.user?.email ?? merchantSession?.user?.phone ?? 'Merchant';
   const userName = userEmail && userEmail.includes('@') ? userEmail.split('@')[0] : 'Merchant';
+  const accessRole = merchantSession?.parent?.accessRole ?? "OWNER";
+  const permissions = merchantSession?.parent?.permissions;
+  const navAllowed = (href: string) =>
+    partnerHasPermission(accessRole, permissions, PARTNER_NAV_PERMISSION[href] ?? "operations");
 
   const navigationItems: SidebarItem[] = [
     {
@@ -187,7 +192,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
       icon: <Inbox size={20} />,
       href: '/partners/support-inbox'
     }
-  ]
+  ].filter((item) => navAllowed(item.href))
 
   const storeSettingsItems: SidebarItem[] = [
     {
@@ -202,7 +207,7 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
       icon: <User size={20} />, 
       href: '/partners/profile'
     }
-  ]
+  ].filter((item) => navAllowed(item.href))
 
   const toggleMenu = (menuId: string) => {
     setExpandedMenus((prev) =>

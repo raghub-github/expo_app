@@ -85,6 +85,10 @@ export async function loadLastKnownLocation(now = Date.now()): Promise<Persisted
   const fast = peekLastKnownLocation(now);
   if (fast) return fast;
   try {
+    // Prefer shared fastKv hydrate (deduped) over a raw getItem stampede.
+    await hydrateFastKvFromAsyncStorage([STORAGE_KEY]);
+    const afterWarm = peekLastKnownLocation(now);
+    if (afterWarm) return afterWarm;
     return parsePersisted(await AsyncStorage.getItem(STORAGE_KEY), now);
   } catch {
     return null;

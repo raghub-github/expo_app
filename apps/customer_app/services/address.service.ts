@@ -55,14 +55,39 @@ export type ReconcileActiveLocationResult = ActiveLocation & {
   } | null;
 };
 
-const ADDRESSES_REQ_TIMEOUT_MS = 18_000;
+/**
+ * Short bound — Select location paints from cache; hanging 25s + axios retries
+ * flooded Metro with timeout warnings and held sockets on low internet.
+ */
+const ADDRESSES_REQ_TIMEOUT_MS = 8_000;
+
+/** Single-flight — home + picker + prefetch must not stampede the same GET. */
+let getAddressesInFlight: Promise<Address[]> | null = null;
 
 export const addressService = {
   async getAddresses(): Promise<Address[]> {
-    const { data } = await api.get<Address[]>("/v1/me/addresses", {
-      timeout: ADDRESSES_REQ_TIMEOUT_MS,
+    // Single-flight without AbortSignal — one observer unmounting must not cancel
+    // the shared refresh for home + picker + prefetch.
+    if (getAddressesInFlight) return getAddressesInFlight;
+    getAddressesInFlight = (async () => {
+      const { data } = await api.get<Address[] | { addresses?: Address[] }>("/v1/me/addresses", {
+        timeout: ADDRESSES_REQ_TIMEOUT_MS,
+        // Offline fallback is expected — don't spam [API] timeout lines / retries.
+        headers: { "X-Silent-Error": "1", "X-No-Retry": "1" },
+      });
+      if (Array.isArray(data)) return data;
+      if (
+        data &&
+        typeof data === "object" &&
+        Array.isArray((data as { addresses?: Address[] }).addresses)
+      ) {
+        return (data as { addresses: Address[] }).addresses;
+      }
+      return [];
+    })().finally(() => {
+      getAddressesInFlight = null;
     });
-    return Array.isArray(data) ? data : [];
+    return getAddressesInFlight;
   },
 
   async addAddress(body: {

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Platform, View, StyleSheet } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import {
+  getAppAssetDisplayUrls,
   getAppAssetUrl,
   isAppAssetsLoaded,
   needsAppAssetsFetch,
@@ -45,20 +46,23 @@ function prefetchKnownImages(): void {
   }
   prefetchWelcomeUris(welcomeUris);
   for (const key of [...EMPTY_ORDER_ASSET_KEYS, ...OFFERS_ASSET_KEYS]) {
-    const url = getAppAssetUrl(key);
-    if (!url) continue;
-    if (Platform.OS === "web") {
-      try {
-        const img = new (globalThis as unknown as {
-          Image: new () => HTMLImageElement;
-        }).Image();
-        img.decoding = "async";
-        img.src = url;
-      } catch {
-        /* ignore */
+    // Prefetch proxy + signed so whichever AppAssetImage picks is warm.
+    const { primary, secondary } = getAppAssetDisplayUrls(key);
+    for (const url of [primary, secondary]) {
+      if (!url) continue;
+      if (Platform.OS === "web") {
+        try {
+          const img = new (globalThis as unknown as {
+            Image: new () => HTMLImageElement;
+          }).Image();
+          img.decoding = "async";
+          img.src = url;
+        } catch {
+          /* ignore */
+        }
+      } else {
+        void ExpoImage.prefetch(url, { cachePolicy: "memory-disk" }).catch(() => undefined);
       }
-    } else {
-      void ExpoImage.prefetch(url, { cachePolicy: "memory-disk" }).catch(() => undefined);
     }
   }
 }

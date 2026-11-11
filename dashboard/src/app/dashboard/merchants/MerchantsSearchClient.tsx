@@ -404,8 +404,11 @@ export function MerchantsSearchClient({
     hasAdminMerchantAccess,
     canOnboard,
     isViewOnly,
+    isSuperAdmin,
+    loading: merchantAccessLoading,
   } = useMerchantDashboardAccess();
   const canVerifyStores = canOnboard && !isViewOnly;
+  const canUseAdminPortal = isSuperAdmin || hasAdminMerchantAccess || canTogglePortal;
   const [listRefreshKey, setListRefreshKey] = useState(0);
   const verificationSheetWasOpen = useRef(false);
 
@@ -423,6 +426,8 @@ export function MerchantsSearchClient({
   const toDate = useMemo(() => searchParams.get("toDate") ?? "", [searchParams]);
   const storeTypeFilterRaw = useMemo(() => searchParams.get("storeType") ?? "", [searchParams]);
   const storeTypeFilter = storeTypeFilterRaw.trim() || undefined;
+  const statusFilterRaw = useMemo(() => searchParams.get("status") ?? "", [searchParams]);
+  const statusFilter = statusFilterRaw.trim().toLowerCase();
   const statsQuery = useMerchantStoresStatsQuery(fromDate || undefined, toDate || undefined, storeTypeFilter);
   const stats: StoreStats | null =
     statsQuery.data && (statsQuery.data as { success?: boolean }).success
@@ -490,17 +495,22 @@ export function MerchantsSearchClient({
 
   const portal = resolveMerchantsPortal({
     portalFromUrl: parsePortalParam(searchParams.get("portal")),
-    canTogglePortal: hasAdminMerchantAccess || canTogglePortal,
+    canTogglePortal: canUseAdminPortal,
     storedPortal: typeof window !== "undefined" ? readStoredMerchantsPortal() : null,
   });
-  const effectivePortal =
-    hasAdminMerchantAccess || canTogglePortal ? portal : "merchant";
+  // While access is loading, trust URL/stored portal — do not force merchant
+  // (that was flipping super-admin into the empty merchant portal on reload).
+  const effectivePortal = merchantAccessLoading
+    ? portal
+    : canUseAdminPortal
+      ? portal
+      : "merchant";
 
   const isExpiredResubmittedView =
     category === "resubmitted" && effectivePortal === "admin" && hasAdminMerchantAccess;
   const showAdminHome =
     effectivePortal === "admin" &&
-    hasAdminMerchantAccess &&
+    (hasAdminMerchantAccess || isSuperAdmin || merchantAccessLoading) &&
     !hasSearchParams &&
     !hasCategory &&
     filter !== "parent";
@@ -796,8 +806,15 @@ export function MerchantsSearchClient({
     router.push(`/dashboard/merchants?${next.toString()}`);
   };
 
+  const handleStatusFilterChange = (nextStatus: string) => {
+    const next = new URLSearchParams(searchParams.toString());
+    if (nextStatus) next.set("status", nextStatus);
+    else next.delete("status");
+    router.push(`/dashboard/merchants?${next.toString()}`);
+  };
+
   return (
-    <div className="space-y-3">
+    <div className={showAdminHome ? "flex h-full min-h-0 flex-col" : "space-y-3"}>
       {showAdminHome ? (
         <MerchantsAdminHome
           stats={stats}
@@ -807,12 +824,14 @@ export function MerchantsSearchClient({
           fromDate={fromDate || undefined}
           toDate={toDate || undefined}
           storeType={storeTypeFilter}
+          statusFilter={statusFilter}
           dateFromInput={dateFromInput}
           dateToInput={dateToInput}
           storeTypeFilter={storeTypeFilterRaw}
           onDateFromChange={setDateFromInput}
           onDateToChange={setDateToInput}
           onStoreTypeChange={handleStoreTypeChange}
+          onStatusFilterChange={handleStatusFilterChange}
           onApplyFilters={applyDateFilter}
           onClearFilters={clearDateFilter}
           portalQuery={portalQuery}
@@ -851,12 +870,93 @@ export function MerchantsSearchClient({
         loading || !hasSearched ? (
           <MerchantAdminStoreListSkeleton />
         ) : (
+          isExpiredResubmittedView ? (
+            <div className="merchants-typo flex min-h-0 flex-1 flex-col">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
+                  {EXPIRED_RESUBMITTED_DOCS_LABEL} · {childItems?.length ?? 0}
+                </p>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto bg-white rounded-md border-[0.5px] border-[#121212]/40">
+                <table className="w-full min-w-[760px] border-collapse text-left text-sm">
+                  <thead className="text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
+                    <tr>
+                      <th className="sticky top-0 z-20 border-b-[0.5px] border-[#121212]/12 bg-[#F7F7F7] px-3 py-2.5">
+                        Store name
+                      </th>
+                      <th className="sticky top-0 z-20 border-b-[0.5px] border-[#121212]/12 bg-[#F7F7F7] px-3 py-2.5">
+                        Store ID
+                      </th>
+                      <th className="sticky top-0 z-20 border-b-[0.5px] border-[#121212]/12 bg-[#F7F7F7] px-3 py-2.5">
+                        Type
+                      </th>
+                      <th className="sticky top-0 z-20 border-b-[0.5px] border-[#121212]/12 bg-[#F7F7F7] px-3 py-2.5">
+                        City
+                      </th>
+                      <th className="sticky top-0 z-20 border-b-[0.5px] border-[#121212]/12 bg-[#F7F7F7] px-3 py-2.5">
+                        Status
+                      </th>
+                      <th className="sticky top-0 z-20 border-b-[0.5px] border-[#121212]/12 bg-[#F7F7F7] px-3 py-2.5 text-right">
+                        Action
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {hasSearched && !loading && childItems != null && childItems.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="border-b-[0.5px] border-[#121212]/10 px-3 py-14 text-center text-sm text-[#121212]/50"
+                        >
+                          No stores in this list.
+                        </td>
+                      </tr>
+                    ) : (
+                      (childItems ?? []).map((child) => (
+                        <tr key={child.id} className="bg-amber-50/40 hover:bg-amber-50/80">
+                          <td className="max-w-[220px] border-b-[0.5px] border-[#121212]/10 px-3 py-2.5 font-medium text-[#121212]">
+                            <span className="block truncate" title={child.name}>
+                              {child.name}
+                            </span>
+                          </td>
+                          <td className="merchants-num whitespace-nowrap border-b-[0.5px] border-[#121212]/10 px-3 py-2.5 text-[#121212]/70">
+                            {child.store_id}
+                          </td>
+                          <td className="whitespace-nowrap border-b-[0.5px] border-[#121212]/10 px-3 py-2.5 text-[#121212]/70">
+                            {storeTypeLabel(child.store_type)}
+                          </td>
+                          <td className="max-w-[120px] border-b-[0.5px] border-[#121212]/10 px-3 py-2.5 text-[#121212]/70">
+                            <span className="block truncate" title={child.city ?? undefined}>
+                              {child.city ?? "—"}
+                            </span>
+                          </td>
+                          <td className="whitespace-nowrap border-b-[0.5px] border-[#121212]/10 px-3 py-2.5">
+                            <span className="inline-flex items-center gap-0.5 rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                              <Clock className="h-3 w-3" />
+                              Docs pending
+                            </span>
+                          </td>
+                          <td className="border-b-[0.5px] border-[#121212]/10 px-3 py-2.5 text-right">
+                            <ChildActionButton
+                              child={child}
+                              returnTo={returnTo}
+                              portal={effectivePortal}
+                              onNavigate={() => handleChildClick(child)}
+                              resubmittedDocReview
+                              onReviewDocs={() => handleResubmittedDocReview(child)}
+                              canVerify={canVerifyStores}
+                              viewOnly={isViewOnly}
+                            />
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
           <MerchantAdminListShell
-            description={
-              isExpiredResubmittedView
-                ? "Stores that re-submitted expired documents. Review docs to continue verification."
-                : undefined
-            }
             countLabel={`${
               category === "total"
                 ? "All stores"
@@ -866,11 +966,9 @@ export function MerchantsSearchClient({
                     ? "Pending"
                     : category === "drafted"
                       ? "Drafted stores"
-                      : category === "resubmitted"
-                        ? EXPIRED_RESUBMITTED_DOCS_LABEL
-                        : category === "new"
-                          ? "New (30d)"
-                          : "Rejected"
+                      : category === "new"
+                        ? "New (30d)"
+                        : "Rejected"
             } · ${childItems?.length ?? 0}`}
           >
             {hasSearched && !loading && childItems != null && childItems.length === 0 ? (
@@ -886,8 +984,6 @@ export function MerchantsSearchClient({
                     returnTo={returnTo}
                     portal={effectivePortal}
                     onChildClick={handleChildClick}
-                    resubmittedDocReview={isExpiredResubmittedView}
-                    onReviewDocs={() => handleResubmittedDocReview(child)}
                     canVerify={canVerifyStores}
                     viewOnly={isViewOnly}
                   />
@@ -895,6 +991,7 @@ export function MerchantsSearchClient({
               </div>
             ) : null}
           </MerchantAdminListShell>
+          )
         )
       ) : !hasSearchParams && filter !== "parent" ? (
         <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-4 text-center">

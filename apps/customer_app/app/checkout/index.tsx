@@ -58,6 +58,19 @@ import { CheckoutRiderUnavailableBanner } from "@/components/checkout/CheckoutRi
 import { CheckoutTakeawayConfirmModal } from "@/components/checkout/CheckoutTakeawayConfirmModal";
 import { CheckoutAlmostThereModal } from "@/components/checkout/CheckoutAlmostThereModal";
 import { CheckoutPayUsingButton } from "@/components/checkout/CheckoutPayUsingButton";
+import { CheckoutPaymentMethodsSheet } from "@/components/checkout/CheckoutPaymentMethodsSheet";
+import { CheckoutUpiQrPayModal } from "@/components/checkout/CheckoutUpiQrPayModal";
+import {
+  DEFAULT_PAY_INSTRUMENT,
+  ensureUpiQrAndCollectVisible,
+  FALLBACK_PAY_METHODS,
+  isOpenCheckoutPayInstrument,
+  orderPayloadPaymentMethod,
+  pickDefaultCheckoutPayInstrument,
+  toRazorpayCheckoutMethod,
+  type CheckoutPayMethodItem,
+  type CheckoutPayMethodsResponse,
+} from "@/lib/razorpayPaymentMethods";
 import { CheckoutPaymentReturnOverlay } from "@/components/checkout/CheckoutPaymentFailedSheet";
 import { useCheckoutPaymentFailureStore, presentCheckoutPaymentFailure } from "@/store/checkoutPaymentFailureStore";
 import { DietIndicator } from "@/components/store/DietIndicator";
@@ -92,6 +105,10 @@ import { useCartCheckoutGateStore } from "@/store/cartCheckoutGateStore";
 import { useCheckoutPresentation } from "@/lib/checkoutPresentation";
 import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
 import { isNetworkError, getNetworkErrorMessage } from "@/utils/networkError";
+import {
+  getCheckoutBillStatusMessage,
+  isCanceledRequestError,
+} from "@/lib/checkoutBillStatus";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useAnimatedCount } from "@/hooks/useAnimatedCount";
 import { CouponApplyCelebration } from "@/components/checkout/CouponApplyCelebration";
@@ -1137,6 +1154,8 @@ function CheckoutScreen() {
   const queryClient = useQueryClient();
   const scrollRef = useRef<ScrollView>(null);
   const missedOfferSheetPromptKeyRef = useRef<string | null>(null);
+  /** Once user dismisses unlock sheet (X / backdrop), never auto-open again this checkout. */
+  const missedOfferAutoPromptDismissedRef = useRef(false);
   const pendingMissedOfferWalletRef = useRef<import("@/lib/checkout-missed-offer-wallet").MissedOfferWalletCompensation | null>(null);
   const merchantMenuRef = useRef<import("@/services/merchant.service").MenuItem[] | undefined>(undefined);
 
@@ -1259,6 +1278,25 @@ function CheckoutScreen() {
 
   const [selectedAddressId, setSelectedAddressId] = useState<number | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<string>("upi");
+  const [payMethodsVisible, setPayMethodsVisible] = useState(false);
+  const [payMethodsLoading, setPayMethodsLoading] = useState(false);
+  const [payMethodsFailed, setPayMethodsFailed] = useState(false);
+  const [payMethodsCatalog, setPayMethodsCatalog] = useState<CheckoutPayMethodsResponse>(() =>
+    ensureUpiQrAndCollectVisible(FALLBACK_PAY_METHODS)
+  );
+  const [selectedPayInstrument, setSelectedPayInstrument] = useState<CheckoutPayMethodItem>(
+    () => pickDefaultCheckoutPayInstrument([]) ?? DEFAULT_PAY_INSTRUMENT
+  );
+  /** null = open Razorpay with all enabled methods (default "UPI, Cards & more"). */
+  const [checkoutMethod, setCheckoutMethod] = useState<ReturnType<
+    typeof toRazorpayCheckoutMethod
+  > | null>(null);
+  const [upiQrVisible, setUpiQrVisible] = useState(false);
+  const [upiQrLoading, setUpiQrLoading] = useState(false);
+  const [upiQrError, setUpiQrError] = useState<string | null>(null);
+  const [upiQrImageUrl, setUpiQrImageUrl] = useState<string | null>(null);
+  const [upiQrAmountPaise, setUpiQrAmountPaise] = useState<number | null>(null);
+  const [upiQrExpiresAt, setUpiQrExpiresAt] = useState<number | null>(null);
   /** Delivery / Self pickup toggle. Self pickup waives the delivery fee server-side. */
   const [deliveryType, setDeliveryType] = useState<"delivery" | "self_pickup">("delivery");
   const [tipSliderValue, setTipSliderValue] = useState(0);
@@ -1359,9 +1397,54 @@ function CheckoutScreen() {
   const [donationPreset, setDonationPreset] = useState<5 | 10 | 15 | 20 | "custom" | null>(null);
   const [razorpayOrderParams, setRazorpayOrderParams] = useState<(RazorpayOrderParams & { pendingId?: string }) | null>(null);
   const [razorpayModalVisible, setRazorpayModalVisible] = useState(false);
+
+  const loadPayMethods = useCallback(async () => {
+    setPayMethodsLoading(true);
+    setPayMethodsFailed(false);
+    try {
+      const data = await paymentService.getAvailableMethods();
+      const catalog = ensureUpiQrAndCollectVisible(data);
+      setPayMethodsCatalog(catalog);
+      setSelectedPayInstrument((prev) => {
+        // Keep the open "UPI, Cards & more" default — do not replace with PhonePe/GPay.
+        if (isOpenCheckoutPayInstrument(prev)) return prev;
+        const stillValid = catalog.sections.some((s) =>
+          s.items.some((i) => i.id === prev.id && i.action === "pay")
+        );
+        if (stillValid) return prev;
+        const next = pickDefaultCheckoutPayInstrument(catalog.sections);
+        setPaymentMethod(orderPayloadPaymentMethod(next));
+        setCheckoutMethod(toRazorpayCheckoutMethod(next));
+        return next;
+      });
+    } catch {
+      setPayMethodsFailed(true);
+      const catalog = ensureUpiQrAndCollectVisible(FALLBACK_PAY_METHODS);
+      setPayMethodsCatalog(catalog);
+      setSelectedPayInstrument((prev) => {
+        if (isOpenCheckoutPayInstrument(prev)) return prev;
+        const stillValid = catalog.sections.some((s) =>
+          s.items.some((i) => i.id === prev.id && i.action === "pay")
+        );
+        if (stillValid) return prev;
+        const next = pickDefaultCheckoutPayInstrument(catalog.sections);
+        setPaymentMethod(orderPayloadPaymentMethod(next));
+        setCheckoutMethod(toRazorpayCheckoutMethod(next));
+        return next;
+      });
+    } finally {
+      setPayMethodsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPayMethods();
+  }, [loadPayMethods]);
   const [razorpayCreating, setRazorpayCreating] = useState(false);
   const [paymentReturnBusy, setPaymentReturnBusy] = useState(false);
   const paymentFailureRetryNonce = useCheckoutPaymentFailureStore((s) => s.retryNonce);
+  const paymentFailureChooseMethodNonce = useCheckoutPaymentFailureStore((s) => s.chooseMethodNonce);
+  const paymentFailureVisible = useCheckoutPaymentFailureStore((s) => s.visible);
   const [simulatedPaymentOrder, setSimulatedPaymentOrder] = useState<{ orderId: string; amount: number; pendingId?: string } | null>(null);
 
   const paymentInProgress =
@@ -2338,6 +2421,25 @@ function CheckoutScreen() {
 
   const debouncedTipForBilling = useDebouncedValue(tipValue, BILLING_INPUT_DEBOUNCE_MS);
   const debouncedDonationForBilling = useDebouncedValue(donationValue, BILLING_INPUT_DEBOUNCE_MS);
+  // Offer / coupon pins must settle before re-keying billing — otherwise each
+  // sync effect aborts the in-flight POST /billing/calculate (AbortSignal) and
+  // the bill never lands while the UI falsely says "check your connection".
+  const debouncedPlatformOfferIdForBilling = useDebouncedValue(
+    selectedPlatformOfferId,
+    BILLING_INPUT_DEBOUNCE_MS
+  );
+  const debouncedMerchantOfferIdForBilling = useDebouncedValue(
+    selectedMerchantOfferId,
+    BILLING_INPUT_DEBOUNCE_MS
+  );
+  const debouncedCouponCodeForBilling = useDebouncedValue(
+    appliedCouponCode,
+    BILLING_INPUT_DEBOUNCE_MS
+  );
+  const debouncedForceNoAutoOfferForBilling = useDebouncedValue(
+    forceNoAutoOffer,
+    BILLING_INPUT_DEBOUNCE_MS
+  );
 
   const clearCheckoutDonation = useCallback(() => {
     setDonationEnabled(false);
@@ -2451,8 +2553,10 @@ function CheckoutScreen() {
           p: i.basePrice,
           v: i.variantId ?? null,
           n: i.specialInstructions ?? null,
-          // Eligibility from menu/offer math (not cart-store sync) — stable for a given cart+offers.
-          e: i.isDiscountEligible !== false,
+          // Do NOT fingerprint eligibility (`e`) here. Offer/menu settle flips
+          // isDiscountEligible after the first calculate starts; including it
+          // re-keys React Query, aborts the request via AbortSignal, and leaves
+          // checkout with no bill. Eligibility is still sent in the request body.
           a: (i.addons ?? []).map((ad) => [ad.addonId, ad.quantity, ad.addonPrice]),
         }))
       ),
@@ -2501,10 +2605,12 @@ function CheckoutScreen() {
     tipAmount: debouncedTipForBilling,
     donationAmount: debouncedDonationForBilling,
     // Platform offers apply by id — omit their display code from the billing coupon slot.
-    couponCode: selectedPlatformOfferId != null ? null : appliedCouponCode,
-    selectedPlatformOfferId,
-    selectedMerchantOfferId,
-    forceNoAutoOffer,
+    // Debounced so pin/sync churn does not abort in-flight calculate.
+    couponCode:
+      debouncedPlatformOfferIdForBilling != null ? null : debouncedCouponCodeForBilling,
+    selectedPlatformOfferId: debouncedPlatformOfferIdForBilling,
+    selectedMerchantOfferId: debouncedMerchantOfferIdForBilling,
+    forceNoAutoOffer: debouncedForceNoAutoOfferForBilling,
     // Keep subscription fields out of the key unless the upsell is actually offered —
     // otherwise plans/membership settling re-keys billing after the first settle.
     subscriptionOptIn: showSubscriptionPromo ? subscriptionOptIn : false,
@@ -2548,18 +2654,21 @@ function CheckoutScreen() {
         }),
         { signal }
       ),
-    // Store offers load in parallel. Their eligibility is part of billingCartKey,
-    // so a later offer payload changes the key and aborts this request instead
-    // of holding the first bill until offers return.
+    // Offers load in parallel; their soft fields are debounced into the key so the
+    // first calculate is not aborted by AbortSignal on every offer settle tick.
     enabled: canRequestBilling && billingItemsHaveResolvableIds,
     /** Keeps last bill on screen while cart/tip/donation refetch — avoids skeleton layout jump. */
     placeholderData: keepPreviousData,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
-    // Axios already retries network/503 once. Extra RQ retries stacked to ~60–80s of
-    // "Loading bill…" with no CTA recovery — fail fast and let the user tap retry.
-    retry: 0,
+    // Axios owns transport retries for GETs; calculate is POST — fail fast + user retry.
+    // Never retry cancelled key-churn aborts as if they were real failures.
+    retry: (failureCount, err) => {
+      if (isCanceledRequestError(err)) return false;
+      return failureCount < 1;
+    },
+    retryDelay: 800,
   });
 
   // [PERF][CHECKOUT] billing calculate timing — logs each fetch cycle's duration so a
@@ -3107,13 +3216,13 @@ function CheckoutScreen() {
   const liveRulesetVersion = useQuery({
     queryKey: ["billing-ruleset-version"],
     queryFn: () => billingService.getRulesetVersion(),
-    enabled: canRequestBilling && !paymentInProgress,
-    staleTime: 15_000,
-    gcTime: 30_000,
-    // 1s polling flooded the connection and helped starve POST /billing/calculate
-    // (client saw Network Error while GETs still succeeded). 8s was still chatty
-    // on idle checkout; admin ruleset bumps are rare.
-    refetchInterval: paymentInProgress ? false : 20_000,
+    // Wait until cart lines can actually bill — otherwise this poll competes with
+    // menu/offers while calculate is still gated off.
+    enabled: canRequestBilling && billingItemsHaveResolvableIds && !paymentInProgress,
+    staleTime: 30_000,
+    gcTime: 60_000,
+    // Admin ruleset bumps are rare; keep idle checkout quiet so calculate wins.
+    refetchInterval: paymentInProgress ? false : 60_000,
     refetchIntervalInBackground: false,
     retry: 1,
   });
@@ -3358,7 +3467,16 @@ function CheckoutScreen() {
     setSelectedMissedOfferKey(null);
     setMissedOfferSheetVisible(false);
     missedOfferSheetPromptKeyRef.current = null;
-  }, [missedOffersFingerprint, merchantId]);
+    // Fingerprint churn (bill recalcs) must NOT re-arm auto-prompt after a dismiss.
+  }, [missedOffersFingerprint]);
+
+  // New merchant / new checkout surface — allow one fresh auto-prompt.
+  useEffect(() => {
+    missedOfferAutoPromptDismissedRef.current = false;
+    missedOfferSheetPromptKeyRef.current = null;
+    setMissedOfferSheetVisible(false);
+    setFreeDeliveryUnlockSheetVisible(false);
+  }, [merchantId]);
 
   const displayMissedOfferWalletComp = useMemo(() => {
     const pendingComp = pendingMissedOfferWalletRef.current;
@@ -3395,10 +3513,22 @@ function CheckoutScreen() {
     if (missedOfferWalletComp?.key) {
       setSelectedMissedOfferKey(missedOfferWalletComp.key);
     }
+    // Manual open is always allowed — clears dismiss latch for this open only.
+    missedOfferAutoPromptDismissedRef.current = false;
     setMissedOfferSheetVisible(true);
   }, [hasEligibleCheckoutOfferBase, missedOfferWalletComp?.key]);
 
+  const dismissMissedOfferUnlockSheet = useCallback(() => {
+    missedOfferAutoPromptDismissedRef.current = true;
+    if (missedOffersFingerprint) {
+      missedOfferSheetPromptKeyRef.current = missedOffersFingerprint;
+    }
+    setMissedOfferSheetVisible(false);
+    setFreeDeliveryUnlockSheetVisible(false);
+  }, [missedOffersFingerprint]);
+
   const handleMissedOfferAddMoreItems = useCallback(() => {
+    missedOfferAutoPromptDismissedRef.current = true;
     setMissedOfferSheetVisible(false);
     setFreeDeliveryUnlockSheetVisible(false);
     if (merchantId) {
@@ -4272,6 +4402,21 @@ function CheckoutScreen() {
   // Intentionally do not auto-close the coupons sheet when checkout offers are
   // ineligible — user must still open it to see Flash deals + locked APPLY rows.
 
+  // Payment selector / Razorpay / QR / failure sheet must never be covered by the unlock sheet.
+  const paymentFlowUiOpen =
+    payMethodsVisible ||
+    razorpayModalVisible ||
+    upiQrVisible ||
+    razorpayCreating ||
+    paymentReturnBusy ||
+    paymentFailureVisible;
+
+  useEffect(() => {
+    if (!paymentFlowUiOpen) return;
+    setMissedOfferSheetVisible(false);
+    setFreeDeliveryUnlockSheetVisible(false);
+  }, [paymentFlowUiOpen]);
+
   useEffect(() => {
     if (!hasEligibleCheckoutOfferBase) {
       setMissedOfferSheetVisible(false);
@@ -4287,6 +4432,7 @@ function CheckoutScreen() {
       return;
     }
     if (
+      paymentFlowUiOpen ||
       missedOfferWalletPending ||
       checkoutOffersQuery.isLoading ||
       billingQuery.isLoading ||
@@ -4297,9 +4443,14 @@ function CheckoutScreen() {
     ) {
       return;
     }
+    // User already closed this sheet — only manual tap should reopen it.
+    if (missedOfferAutoPromptDismissedRef.current) return;
     if (missedOfferSheetPromptKeyRef.current === missedOffersFingerprint) return;
     missedOfferSheetPromptKeyRef.current = missedOffersFingerprint;
-    const timer = setTimeout(() => setMissedOfferSheetVisible(true), 700);
+    const timer = setTimeout(() => {
+      if (missedOfferAutoPromptDismissedRef.current) return;
+      setMissedOfferSheetVisible(true);
+    }, 700);
     return () => clearTimeout(timer);
   }, [
     hasEligibleCheckoutOfferBase,
@@ -4312,6 +4463,7 @@ function CheckoutScreen() {
     couponAvailablePrompt.visible,
     couponCelebrationVisible,
     missedOfferCelebration,
+    paymentFlowUiOpen,
   ]);
 
   const removeAllCheckoutOffers = useCallback(() => {
@@ -4881,6 +5033,10 @@ function CheckoutScreen() {
             : gatiCashApplyAmount > 0.005
               ? gatiCashApplyAmount
               : null;
+      // Keep unlock sheet closed so payment-failed is the only overlay (no double X).
+      missedOfferAutoPromptDismissedRef.current = true;
+      setMissedOfferSheetVisible(false);
+      setFreeDeliveryUnlockSheetVisible(false);
       presentCheckoutPaymentFailure({
         amountInr: payable,
         methodLabel: gatiCashApplyAmount > 0.005 && (toPayAmount == null || toPayAmount <= 0.005)
@@ -4924,34 +5080,93 @@ function CheckoutScreen() {
    * Bill stall guard.
    *
    * The skeleton is cleared only by a settled bill or by `billingQuery.isError`, but
-   * the query has two states that are neither: it sits `pending`/idle whenever
-   * `enabled` is false (merchant coords or numeric menu ids never resolved), and a
-   * key change after a failure opens a fresh, error-free cache entry. Both rendered
-   * "Loading bill…" indefinitely with no way out. Bound the wait on the *outcome*
-   * instead of on one query flag, so every cause of "still no bill" ends in a retry.
+   * the query can sit idle when `enabled` is false (menu PKs / coords not ready), or
+   * open a fresh error-free cache entry after a key change. Bound the wait on the
+   * *outcome* once billing is actually allowed to run — never start the stall clock
+   * (or blame "connection") while calculate is still gated off locally.
    */
   const [billStalled, setBillStalled] = useState(false);
   const [billRetryNonce, setBillRetryNonce] = useState(0);
+  const billingEnabled = canRequestBilling && billingItemsHaveResolvableIds;
+  // Primitive fingerprint — object identity of billingCalculateKeyParams changes every render.
+  const billingKeyFingerprint = JSON.stringify(
+    buildBillingCalculateQueryKey(billingCalculateKeyParams)
+  );
   useEffect(() => {
     if (toPayAmount != null) {
       setBillStalled(false);
       return;
     }
+    if (!billingEnabled) {
+      setBillStalled(false);
+      return;
+    }
     const timer = setTimeout(() => setBillStalled(true), CHECKOUT_BILL_STALL_MS);
     return () => clearTimeout(timer);
-  }, [toPayAmount, billRetryNonce]);
+  }, [toPayAmount, billRetryNonce, billingEnabled, billingKeyFingerprint]);
 
-  /** Bill is not coming on its own — show the error row + retry instead of a skeleton. */
-  const billNeedsRetry = (billingQuery.isError || billStalled) && toPayAmount == null;
+  const merchantMenuLoading =
+    !!merchantId && (merchant == null || !Array.isArray(merchant.menu) || merchant.menu.length === 0);
+  const needsDeliveryAddressForBill =
+    deliveryType === "delivery" &&
+    selectedAddress == null &&
+    (provisionalDropLat == null || provisionalDropLon == null);
+
+  const billStatusMessage = useMemo(
+    () =>
+      getCheckoutBillStatusMessage({
+        toPayAmount,
+        canRequestBilling,
+        billingItemsHaveResolvableIds,
+        menuLoading: merchantMenuLoading,
+        hasPickupCoords,
+        needsDeliveryAddress: needsDeliveryAddressForBill,
+        isFetching: billingQuery.isFetching,
+        isError: billingQuery.isError && !isCanceledRequestError(billingQuery.error),
+        error: billingQuery.error,
+      }),
+    [
+      toPayAmount,
+      canRequestBilling,
+      billingItemsHaveResolvableIds,
+      merchantMenuLoading,
+      hasPickupCoords,
+      needsDeliveryAddressForBill,
+      billingQuery.isFetching,
+      billingQuery.isError,
+      billingQuery.error,
+    ]
+  );
+
+  const billingHardError =
+    billingQuery.isError && !isCanceledRequestError(billingQuery.error);
+  /** Waiting on menu / address — show status, not a forever skeleton. */
+  const billWaitingOnPrereq =
+    toPayAmount == null &&
+    !billingEnabled &&
+    items.length > 0 &&
+    !!merchantId &&
+    (merchantMenuLoading || needsDeliveryAddressForBill || !hasPickupCoords);
+  /** Bill is not coming on its own — show the status row + retry instead of a skeleton. */
+  const billNeedsRetry =
+    toPayAmount == null && (billStalled || billingHardError || billWaitingOnPrereq);
 
   const retryBillingCalculate = useCallback(() => {
     setBillStalled(false);
     setBillRetryNonce((n) => n + 1);
-    // Offers feed the billing key (and the free-delivery row), so a bill that failed
-    // because offers never arrived has to refetch both to recover.
+    // When menu PKs never resolved, refetch() is a no-op (enabled=false) — heal catalog first.
+    if (merchantId && !billingItemsHaveResolvableIds) {
+      void queryClient.invalidateQueries({ queryKey: ["merchant", merchantId] });
+    }
     void billingQuery.refetch();
     void checkoutOffersQuery.refetch();
-  }, [billingQuery.refetch, checkoutOffersQuery.refetch]);
+  }, [
+    billingQuery.refetch,
+    checkoutOffersQuery.refetch,
+    merchantId,
+    billingItemsHaveResolvableIds,
+    queryClient,
+  ]);
   // The two animated totals used to be driven from here, which re-rendered this
   // entire component once per animation tick on every bill change. They now live
   // inside <AnimatedRupeeAmount>, so each tick re-renders only that leaf.
@@ -5343,6 +5558,17 @@ function CheckoutScreen() {
       if (!orderId) {
         console.warn("[checkout] finalize success but no orderId in response", order);
         const { label: etaLabel } = checkoutDeliveryEtaRef.current;
+        if (recoveryPendingId) {
+          void persistPendingCheckoutPayment({
+            pendingId: recoveryPendingId,
+            idempotencyKey: idempotencyKeyRef.current ?? undefined,
+            merchantName: merchantName ?? undefined,
+            amount: typeof toPayAmount === "number" ? String(toPayAmount) : undefined,
+            method: selectedPayInstrument?.label ?? "UPI / Cards",
+            deliveryEtaLabel: etaLabel || undefined,
+            paymentAttemptInitiated: true,
+          });
+        }
         router.replace({
           pathname: "/orders/payment-confirming",
           params: {
@@ -5411,6 +5637,16 @@ function CheckoutScreen() {
 
         if (shouldDeferToRecovery && finalizeArgs) {
           const { label: etaLabel } = checkoutDeliveryEtaRef.current;
+          // Razorpay already returned a payment — keep resume token for cold-start.
+          void persistPendingCheckoutPayment({
+            pendingId: finalizeArgs.pendingId,
+            idempotencyKey: idempotencyKeyRef.current ?? undefined,
+            merchantName: merchantName ?? undefined,
+            amount: typeof toPayAmount === "number" ? String(toPayAmount) : undefined,
+            method: selectedPayInstrument?.label ?? "UPI / Cards",
+            deliveryEtaLabel: etaLabel || undefined,
+            paymentAttemptInitiated: true,
+          });
           router.replace({
             pathname: "/orders/payment-confirming",
             params: {
@@ -5450,12 +5686,11 @@ function CheckoutScreen() {
       );
       return;
     }
-    if (deliveryType === "delivery") {
-      // Pre-placement serviceability gate (delivery). Fail-open on API/network error so a
-      // transient issue never blocks checkout — only a definitive "not serviceable" stops it.
-      const allowed = await recheckDeliveryUnavailableGate(true);
-      if (!allowed) return;
-    }
+    // Rider / delivery gate: enforced by canPlaceOrder + riderBlocksPlaceOrder above
+    // (and the Pay button disable). Background effect polls while blocked. Do NOT
+    // await a fresh serviceability round-trip on every Pay tap — it delayed
+    // pending/Razorpay creation without changing payment truth (wallet / Razorpay
+    // / finalize still run only after this gate passes).
     if (hasValidPayment) {
       placeOrderInFlightRef.current = true;
       setRazorpayCreating(true);
@@ -5473,20 +5708,31 @@ function CheckoutScreen() {
         if (!idempotencyKeyRef.current) {
           idempotencyKeyRef.current = `chk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
         }
+        const gatewayMethod = selectedPayInstrument
+          ? orderPayloadPaymentMethod(selectedPayInstrument)
+          : paymentMethod;
         const pending = await orderService.createPendingOrderWithRetry({
           ...payload,
-          paymentMethod,
+          paymentMethod: gatewayMethod,
           idempotencyKey: idempotencyKeyRef.current,
         });
         const { label: etaLabel } = checkoutDeliveryEtaRef.current;
-        void persistPendingCheckoutPayment({
+        const pendingSessionMeta = {
           pendingId: pending.pendingId,
           idempotencyKey: idempotencyKeyRef.current ?? undefined,
           merchantName: merchantName ?? undefined,
           amount: typeof toPayAmount === "number" ? String(toPayAmount) : undefined,
-          method: "UPI / Cards",
+          method: selectedPayInstrument?.label ?? "UPI / Cards",
           deliveryEtaLabel: etaLabel || undefined,
-        });
+          // Session context only — NOT a payment attempt. Cold-start will resume
+          // Confirming only if paymentAttemptInitiated becomes true, or backend
+          // already shows money in flight (paid / captured_unfinalized / …).
+          paymentAttemptInitiated: false as const,
+        };
+        const pendingAttemptMeta = {
+          ...pendingSessionMeta,
+          paymentAttemptInitiated: true as const,
+        };
         // GatiCash covered the whole bill: there is nothing to charge, so skip Razorpay
         // entirely and let the backend settle the order off the wallet ledger. Minting a
         // ₹0 gateway order is impossible and used to fail checkout outright.
@@ -5508,39 +5754,97 @@ function CheckoutScreen() {
             showPaymentFailedSheet(toPayAmount);
             return;
           }
+          // Wallet settle is the payment attempt — safe to resume if the app dies mid-flight.
+          void persistPendingCheckoutPayment(pendingAttemptMeta);
           // Lock stays until finalizeOrder onSuccess / onError.
           finalizeOrder.mutate({ pendingId: pending.pendingId, result: null });
           return;
         }
+        // Default "UPI, Cards & more" → null lock → full Razorpay (UPI + cards + more).
+        // Specific picks (PhonePe / QR / Collect / card) lock the gateway accordingly.
+        const methodLock = selectedPayInstrument
+          ? toRazorpayCheckoutMethod(selectedPayInstrument)
+          : null;
+        const wantsQr =
+          selectedPayInstrument?.id === "upi:qr" ||
+          (methodLock?.method === "upi" && methodLock.upiFlow === "qr");
+        setCheckoutMethod(methodLock);
+
+        // Scan QR Code always mints a live Razorpay Orders API id + real upi_qr.
+        // Never route this flow through the dummy simulated-payment sheet.
         const razorpayOrder = await paymentService.createRazorpayOrderWithRetry({
           amountPaise: pending.amount,
           receipt: pending.pendingId,
           pendingId: pending.pendingId,
+          ...(wantsQr ? { purpose: "checkout_qr" as const } : {}),
         });
-        // Dummy / simulated payment: backend has PAYMENT_DUMMY_MODE=true or no
-        // Razorpay creds in dev. We render an in-app Success/Failed sheet
-        // instead of opening the Razorpay native SDK or browser fallback.
         const isDummyKey =
           razorpayOrder.keyId === "dummy_key" ||
           razorpayOrder.keyId === "dev_sim_key";
-        if (isDummyKey) {
-          setSimulatedPaymentOrder({
-            orderId: razorpayOrder.orderId,
-            amount: razorpayOrder.amount,
-            pendingId: pending.pendingId,
-          });
-        } else {
-          await new Promise<void>((resolve) => {
-            InteractionManager.runAfterInteractions(() => resolve());
-          });
-          // Open full Razorpay Standard Checkout (all enabled methods). Method is
-          // chosen there — do not lock to a preselected UPI app / custom sheet.
+
+        if (wantsQr) {
+          // Open QR sheet immediately (no InteractionManager wait) while the image loads.
+          void persistPendingCheckoutPayment(pendingSessionMeta);
+          setRazorpayModalVisible(false);
+          setSimulatedPaymentOrder(null);
           setRazorpayOrderParams({
             orderId: razorpayOrder.orderId,
             keyId: razorpayOrder.keyId,
             amount: razorpayOrder.amount,
             pendingId: pending.pendingId,
           });
+          setUpiQrVisible(true);
+          setUpiQrLoading(true);
+          setUpiQrError(null);
+          setUpiQrImageUrl(null);
+          setUpiQrExpiresAt(null);
+          setUpiQrAmountPaise(razorpayOrder.amount);
+          // Sheet is visible — drop the Pay spinner, but keep placeOrderInFlightRef
+          // until QR mint finishes so a second Pay tap cannot create a duplicate session.
+          setRazorpayCreating(false);
+          if (isDummyKey || razorpayOrder.orderId.startsWith("dummy_")) {
+            setUpiQrError(
+              "Scan QR Code requires live Razorpay credentials. Configure the server and retry."
+            );
+            setUpiQrLoading(false);
+          } else {
+            try {
+              const qr = await paymentService.createCheckoutQr({
+                pendingId: pending.pendingId,
+                razorpayOrderId: razorpayOrder.orderId,
+                amountPaise: razorpayOrder.amount,
+              });
+              setUpiQrImageUrl(qr.imageUrl);
+              setUpiQrExpiresAt(qr.expiresAt);
+              setUpiQrAmountPaise(qr.amountPaise);
+            } catch (qrErr) {
+              console.warn("[checkout] checkout-qr failed", qrErr);
+              const msg =
+                (qrErr as { response?: { data?: { message?: string } } })?.response?.data
+                  ?.message ||
+                (qrErr as Error)?.message ||
+                "Could not create Razorpay QR. Please try PhonePe / Google Pay, or retry.";
+              setUpiQrError(msg);
+            } finally {
+              setUpiQrLoading(false);
+            }
+          }
+        } else if (isDummyKey) {
+          void persistPendingCheckoutPayment(pendingSessionMeta);
+          setSimulatedPaymentOrder({
+            orderId: razorpayOrder.orderId,
+            amount: razorpayOrder.amount,
+            pendingId: pending.pendingId,
+          });
+        } else {
+          // Open Razorpay immediately — waiting on runAfterInteractions felt like a stuck Pay button.
+          setRazorpayOrderParams({
+            orderId: razorpayOrder.orderId,
+            keyId: razorpayOrder.keyId,
+            amount: razorpayOrder.amount,
+            pendingId: pending.pendingId,
+          });
+          void persistPendingCheckoutPayment(pendingSessionMeta);
           setRazorpayModalVisible(true);
         }
         // Gateway UI owns the rest of the attempt — allow cancel / retry.
@@ -5569,11 +5873,12 @@ function CheckoutScreen() {
     checkoutReceiverName,
     checkoutReceiverMobile,
     openReceiverSheet,
-    recheckDeliveryUnavailableGate,
     toPayAmount,
     showPaymentFailedSheet,
     paymentMethod,
     merchantName,
+    selectedPayInstrument,
+    checkoutMethod,
   ]);
 
   const handlePlaceOrderPress = useCallback(async () => {
@@ -5605,6 +5910,7 @@ function CheckoutScreen() {
   const handlePlaceOrderPressRef = useRef(handlePlaceOrderPress);
   handlePlaceOrderPressRef.current = handlePlaceOrderPress;
   const lastPaymentFailureRetryNonceRef = useRef(0);
+  const lastPaymentFailureChooseMethodNonceRef = useRef(0);
 
   // Only react to a NEW retry tap — never re-fire when handlePlaceOrderPress identity changes
   // (that used to place a second order while the first already succeeded).
@@ -5615,16 +5921,42 @@ function CheckoutScreen() {
     void handlePlaceOrderPressRef.current();
   }, [paymentFailureRetryNonce]);
 
+  useEffect(() => {
+    if (paymentFailureChooseMethodNonce < 1) return;
+    if (paymentFailureChooseMethodNonce === lastPaymentFailureChooseMethodNonceRef.current) return;
+    lastPaymentFailureChooseMethodNonceRef.current = paymentFailureChooseMethodNonce;
+    setPayMethodsVisible(true);
+  }, [paymentFailureChooseMethodNonce]);
+
   const handleRazorpaySuccess = useCallback(
     (result: RazorpayPaymentResult) => {
       const pendingId = razorpayOrderParams?.pendingId ?? simulatedPaymentOrder?.pendingId;
       if (pendingId) {
+        const { label: etaLabel } = checkoutDeliveryEtaRef.current;
+        // SDK success = genuine payment attempt — persist for cold-start recovery.
+        void persistPendingCheckoutPayment({
+          pendingId,
+          idempotencyKey: idempotencyKeyRef.current ?? undefined,
+          merchantName: merchantName ?? undefined,
+          amount: typeof toPayAmount === "number" ? String(toPayAmount) : undefined,
+          method: selectedPayInstrument?.label ?? "UPI / Cards",
+          deliveryEtaLabel: etaLabel || undefined,
+          paymentAttemptInitiated: true,
+        });
         finalizeOrder.mutate({ pendingId, result });
       } else {
         placeOrder.mutate(result);
       }
     },
-    [finalizeOrder, placeOrder, razorpayOrderParams?.pendingId, simulatedPaymentOrder?.pendingId]
+    [
+      finalizeOrder,
+      merchantName,
+      placeOrder,
+      razorpayOrderParams?.pendingId,
+      selectedPayInstrument?.label,
+      simulatedPaymentOrder?.pendingId,
+      toPayAmount,
+    ]
   );
 
   const handleRazorpayCancel = useCallback(() => {
@@ -5632,6 +5964,8 @@ function CheckoutScreen() {
     setRazorpayOrderParams(null);
     setPaymentReturnBusy(false);
     setRazorpayCreating(false);
+    // User backed out before paying — never resume into "Confirming payment".
+    void clearPendingCheckoutPayment();
     // Let the user re-tap "Place order" with a fresh intent — most cancels mean
     // "I changed my mind" not "retry the same idempotent attempt".
     idempotencyKeyRef.current = null;
@@ -5646,6 +5980,18 @@ function CheckoutScreen() {
       showPaymentFailedSheet(amount);
       return;
     }
+
+    const { label: etaLabel } = checkoutDeliveryEtaRef.current;
+    // Leaving to a UPI app is a genuine payment attempt — allow cold-start Confirming.
+    void persistPendingCheckoutPayment({
+      pendingId,
+      idempotencyKey: idempotencyKeyRef.current ?? undefined,
+      merchantName: merchantName ?? undefined,
+      amount: amount != null ? String(amount) : undefined,
+      method: selectedPayInstrument?.label ?? "UPI / Cards",
+      deliveryEtaLabel: etaLabel || undefined,
+      paymentAttemptInitiated: true,
+    });
 
     setPaymentReturnBusy(true);
     try {
@@ -5667,7 +6013,6 @@ function CheckoutScreen() {
         }
         await new Promise((r) => setTimeout(r, 2000));
       }
-      const { label: etaLabel } = checkoutDeliveryEtaRef.current;
       router.replace({
         pathname: "/orders/payment-confirming",
         params: {
@@ -5689,6 +6034,7 @@ function CheckoutScreen() {
     merchantName,
     razorpayOrderParams?.pendingId,
     router,
+    selectedPayInstrument?.label,
     showPaymentFailedSheet,
     toPayAmount,
   ]);
@@ -6876,21 +7222,37 @@ function CheckoutScreen() {
 
             {billNeedsRetry ? (
               <View style={[styles.billErrorRow, styles.gmCardPadH]}>
-                <Ionicons name="cloud-offline-outline" size={18} color={isDiscoveryDark ? "#FCA5A5" : "#DC2626"} />
+                <Ionicons
+                  name={
+                    billingHardError || billStalled
+                      ? "alert-circle-outline"
+                      : billingQuery.isFetching || merchantMenuLoading
+                        ? "time-outline"
+                        : "information-circle-outline"
+                  }
+                  size={18}
+                  color={
+                    billingHardError || billStalled
+                      ? isDiscoveryDark
+                        ? "#FCA5A5"
+                        : "#DC2626"
+                      : isDiscoveryDark
+                        ? "#93C5FD"
+                        : "#2563EB"
+                  }
+                />
                 <CheckoutText style={[styles.billErrorText, dMuted]} numberOfLines={2}>
-                  {billingQuery.isFetching
-                    ? "Still working out your bill — check your connection."
-                    : "We couldn't work out your bill. Check your connection and try again."}
+                  {billStatusMessage ?? "We couldn't calculate your bill. Tap retry."}
                 </CheckoutText>
                 <TouchableOpacity
                   style={[styles.billErrorRetryBtn, isDiscoveryDark && styles.darkBillErrorRetryBtn]}
                   onPress={retryBillingCalculate}
-                  disabled={billingQuery.isFetching}
+                  disabled={billingQuery.isFetching && billingEnabled}
                   activeOpacity={0.85}
                   accessibilityRole="button"
                   accessibilityLabel="Retry loading your bill"
                 >
-                  {billingQuery.isFetching ? (
+                  {billingQuery.isFetching && billingEnabled ? (
                     <ActivityIndicator size="small" color={isDiscoveryDark ? "#FCA5A5" : "#DC2626"} />
                   ) : (
                     <CheckoutText style={[styles.billErrorRetryText, isDiscoveryDark && styles.darkBillErrorRetryText]}>
@@ -7019,6 +7381,7 @@ function CheckoutScreen() {
 
       <MissedOfferUnlockSheet
         visible={
+          !paymentFlowUiOpen &&
           hasEligibleCheckoutOfferBase &&
           ((missedOfferSheetVisible && missedOfferWalletComp != null) ||
             (freeDeliveryUnlockSheetVisible && freeDeliveryUnlockComp != null))
@@ -7035,10 +7398,7 @@ function CheckoutScreen() {
             ? pendingMissedOfferWalletRef.current?.key === freeDeliveryUnlockComp?.key
             : true)
         }
-        onClose={() => {
-          setMissedOfferSheetVisible(false);
-          setFreeDeliveryUnlockSheetVisible(false);
-        }}
+        onClose={dismissMissedOfferUnlockSheet}
         onAddToWallet={handleSelectMissedOfferWallet}
         onRemoveFromWallet={handleRemoveMissedOfferWallet}
         onAddMoreItems={handleMissedOfferAddMoreItems}
@@ -7169,8 +7529,11 @@ function CheckoutScreen() {
           <View style={styles.footerRow}>
             <View style={styles.footerToggleCol}>
               <CheckoutPayUsingButton
+                methodLabel={selectedPayInstrument?.label ?? null}
                 onPress={() => {
-                  void handlePlaceOrderPress();
+                  // Explicit user action — the only path that opens Payment Options.
+                  setPayMethodsVisible(true);
+                  if (payMethodsCatalog.sections.length === 0) void loadPayMethods();
                 }}
                 disabled={
                   needsDeliveryAddress ||
@@ -7221,6 +7584,8 @@ function CheckoutScreen() {
                     setAlmostThereModal({ title: "Almost there", message: reason });
                     return;
                   }
+                  // Default instrument is already selected — do not auto-open Payment
+                  // Options. Sheet opens only when the user taps PAY USING.
                   handlePlaceOrderPress();
                 }}
                 disabled={
@@ -8074,10 +8439,30 @@ function CheckoutScreen() {
         showDonation={showCheckoutDonation}
       />
 
+      <CheckoutPaymentMethodsSheet
+        visible={payMethodsVisible}
+        onClose={() => setPayMethodsVisible(false)}
+        billTotal={typeof toPayAmount === "number" ? toPayAmount : null}
+        sections={payMethodsCatalog.sections}
+        loading={payMethodsLoading}
+        loadFailed={payMethodsFailed}
+        onRetryLoad={() => {
+          void loadPayMethods();
+        }}
+        selectedId={selectedPayInstrument?.id ?? null}
+        onSelect={(item) => {
+          // Manual change only — close sheet; user taps Place Order when ready.
+          setSelectedPayInstrument(item);
+          setPaymentMethod(orderPayloadPaymentMethod(item));
+          setCheckoutMethod(toRazorpayCheckoutMethod(item));
+          setPayMethodsVisible(false);
+        }}
+      />
+
       <RazorpayCheckoutModal
         visible={razorpayModalVisible && !!razorpayOrderParams}
         orderParams={razorpayOrderParams}
-        checkoutMethod={null}
+        checkoutMethod={checkoutMethod}
         prefill={{
           contact: checkoutReceiverMobile.trim() || profileContactMobile || null,
           name: checkoutReceiverName.trim() || profileContactName || null,
@@ -8099,9 +8484,84 @@ function CheckoutScreen() {
         }}
         onServerConfirmed={(orderId) => {
           setRazorpayModalVisible(false);
+          setUpiQrVisible(false);
           setRazorpayOrderParams(null);
           setPaymentReturnBusy(false);
           goToOrderPlacedSuccess(orderId);
+        }}
+      />
+
+      <CheckoutUpiQrPayModal
+        visible={upiQrVisible}
+        imageUrl={upiQrImageUrl}
+        amountPaise={upiQrAmountPaise}
+        expiresAt={upiQrExpiresAt}
+        loading={upiQrLoading}
+        error={upiQrError}
+        onClose={() => {
+          setUpiQrVisible(false);
+          setUpiQrExpiresAt(null);
+          void handleRazorpayCancel();
+        }}
+        onRetry={() => {
+          if (!razorpayOrderParams?.pendingId || !razorpayOrderParams.orderId) return;
+          if (
+            razorpayOrderParams.keyId === "dummy_key" ||
+            razorpayOrderParams.orderId.startsWith("dummy_")
+          ) {
+            setUpiQrError(
+              "Scan QR Code requires live Razorpay credentials. Configure the server and retry."
+            );
+            return;
+          }
+          setUpiQrLoading(true);
+          setUpiQrError(null);
+          setUpiQrExpiresAt(null);
+          void paymentService
+            .createCheckoutQr({
+              pendingId: razorpayOrderParams.pendingId,
+              razorpayOrderId: razorpayOrderParams.orderId,
+              amountPaise: razorpayOrderParams.amount,
+            })
+            .then((qr) => {
+              setUpiQrImageUrl(qr.imageUrl);
+              setUpiQrExpiresAt(qr.expiresAt);
+              setUpiQrAmountPaise(qr.amountPaise);
+            })
+            .catch((e) => {
+              const msg =
+                (e as { response?: { data?: { message?: string } } })?.response?.data
+                  ?.message ||
+                (e as Error)?.message ||
+                "Could not load Razorpay QR. Try again.";
+              setUpiQrError(msg);
+            })
+            .finally(() => setUpiQrLoading(false));
+        }}
+        onPollStatus={async () => {
+          const pid = razorpayOrderParams?.pendingId;
+          if (!pid) return { finalized: false };
+          const s = await orderService.getPendingOrderStatus(pid);
+          return {
+            finalized: Boolean(s.finalized && s.orderId),
+            orderId: s.orderId ?? null,
+            failed:
+              s.paymentState === "failed" ||
+              s.paymentState === "refunded" ||
+              s.paymentState === "refund_pending",
+          };
+        }}
+        onPaid={(orderId) => {
+          setUpiQrVisible(false);
+          setUpiQrExpiresAt(null);
+          setRazorpayOrderParams(null);
+          setPaymentReturnBusy(false);
+          goToOrderPlacedSuccess(orderId);
+        }}
+        onFailed={() => {
+          setUpiQrVisible(false);
+          setUpiQrExpiresAt(null);
+          showPaymentFailedSheet(typeof toPayAmount === "number" ? toPayAmount : null);
         }}
       />
 

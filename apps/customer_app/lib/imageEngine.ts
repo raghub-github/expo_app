@@ -12,9 +12,14 @@ import {
 } from "@/lib/merchantBanner";
 import { resolveMerchantFoodHeroPrimaryUri } from "@/lib/merchantHeroMedia";
 import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
-import { enqueueImagePrefetch } from "@/lib/prefetchQueue";
+import { enqueueImagePrefetch, enqueueImagePrefetchFront } from "@/lib/prefetchQueue";
 import { sizedImageUrl } from "@/lib/imageSizing";
 import type { MerchantSummary } from "@/services/merchant.service";
+
+/** First list rows under the Food header — never ViewportGate-lazy. */
+export const FOOD_LIST_EAGER_MEDIA_COUNT = 6;
+/** Predictive prefetch window ahead of the lowest visible list index. */
+export const FOOD_LIST_PREFETCH_AHEAD = 5;
 
 /**
  * Default width (layout points) to warm list-card banners at. Matches the
@@ -43,9 +48,10 @@ export function resolveImageUri(url: string | null | undefined): string | null {
 }
 
 function prefetchUriNow(uri: string): Promise<boolean> {
+  // In-flight ≠ ready. Premature session-ready skipped shimmer while the bitmap
+  // was still downloading → blank white deal / list heroes.
   if (prefetched.has(uri)) {
-    markHeroMediaSessionReady(uri);
-    return Promise.resolve(true);
+    return Promise.resolve(false);
   }
   prefetched.add(uri);
   return Image.prefetch(uri, { cachePolicy: IMAGE_CACHE_POLICY })
@@ -167,8 +173,8 @@ export function prefetchMerchantCardImages(
 }
 
 /**
- * First Food-home paint: the recommended rail and the first list cards only.
- * Both widths, immediately. A wider prefetch downloads originals the user
+ * First Food-home paint: above-the-fold rail + first list heroes only.
+ * Both widths, high priority. A wider prefetch downloads originals the user
  * cannot see yet and keeps these banners blank.
  */
 export function prefetchFoodHomeVisibleImages(
@@ -178,7 +184,8 @@ export function prefetchFoodHomeVisibleImages(
   const railW = foodRailCardPrefetchWidth();
   const urls: Array<string | null> = [];
   const seen = new Set<string>();
-  for (const m of merchants.slice(0, 6)) {
+  // Top-K Recommended rail + first list heroes — all high priority, no lazy.
+  for (const m of merchants.slice(0, 12)) {
     const raw = resolveMerchantBannerUri(m as MerchantSummary);
     for (const w of [railW, listW]) {
       const sized = sizedImageUrl(raw, w);
@@ -187,5 +194,38 @@ export function prefetchFoodHomeVisibleImages(
       urls.push(sized);
     }
   }
-  prefetchImages(urls, { priority: "high", limit: 12 });
+  // Front of queue — below-fold work must not jump ahead of visible heroes.
+  prefetchImages(urls, { priority: "high", limit: 24 });
+}
+
+/**
+ * Predictive list prefetch: warm list-sized banners for the visible window +
+ * a short ahead buffer. Front-of-queue so distant catalogue work yields.
+ * Does not download the entire merchant catalogue.
+ */
+export function prefetchFoodHomeUpcomingImages(
+  merchants: MerchantSummary[],
+  fromIndex: number,
+  opts?: { ahead?: number; limit?: number }
+): void {
+  if (!merchants.length) return;
+  const ahead = opts?.ahead ?? FOOD_LIST_PREFETCH_AHEAD;
+  const limit = opts?.limit ?? 8;
+  const start = Math.max(0, fromIndex);
+  const end = Math.min(merchants.length, start + ahead + 1);
+  if (start >= end) return;
+  const listW = foodListCardPrefetchWidth();
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (let i = start; i < end; i++) {
+    const raw = resolveMerchantBannerUri(merchants[i]);
+    const sized = sizedImageUrl(raw, listW);
+    if (!sized || seen.has(sized)) continue;
+    seen.add(sized);
+    urls.push(sized);
+    if (urls.length >= limit) break;
+  }
+  if (urls.length === 0) return;
+  // Jump the queue — currently visible / next cards beat distant prefetch.
+  enqueueImagePrefetchFront(urls, limit);
 }

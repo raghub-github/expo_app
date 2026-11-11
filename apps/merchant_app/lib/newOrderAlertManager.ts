@@ -1081,6 +1081,31 @@ export async function takeoverNewOrderAlertByModal(args: ContinueArgs): Promise<
   await continueOrStartNewOrderAlert({ ...args, source: "MODAL" });
 }
 
+function orderTokenFromAlertSession(sid: string): string {
+  const s = String(sid ?? "").trim();
+  if (!s) return "";
+  if (s.startsWith("MERCHANT_NEW_ORDER:")) {
+    const rest = s.slice("MERCHANT_NEW_ORDER:".length);
+    const colon = rest.indexOf(":");
+    return colon >= 0 ? rest.slice(0, colon) : rest;
+  }
+  if (s.startsWith("merchant-order-")) return s.slice("merchant-order-".length);
+  return "";
+}
+
+function nativeTokensMatchOrder(
+  active: { sessionId?: string; orderId?: string; offerId?: string } | null | undefined,
+  orderId: string
+): boolean {
+  const want = String(orderId ?? "").trim();
+  if (!want || !active) return false;
+  const sid = String(active.sessionId ?? "").trim();
+  const oid = String(active.orderId ?? active.offerId ?? "").trim();
+  if (oid && oid === want) return true;
+  if (sid && (sid === want || orderTokenFromAlertSession(sid) === want)) return true;
+  return false;
+}
+
 export async function stopNewOrderAlert(
   orderId: string | null | undefined,
   reason: NewOrderAlertStopReason
@@ -1090,15 +1115,29 @@ export async function stopNewOrderAlert(
   const parked = id ? parkedSessions.get(id) : undefined;
 
   /** Stop every known native session token for this order (format mismatches). */
-  const stopNativeForOrder = (foodId: string, alertSessionId?: string | null) => {
+  const stopNativeForOrder = async (foodId: string, alertSessionId?: string | null) => {
     const tokens = new Set<string>();
     if (foodId) {
       tokens.add(foodId);
       tokens.add(merchantAlertSessionId(foodId));
       tokens.add(`merchant-order-${foodId}`);
+      // Store-scoped FCM session (START/STOP). Without store id we still pass the
+      // prefix-friendly food id; native matches() unifies merchant-order-* ↔ MERCHANT_*.
+      tokens.add(`MERCHANT_NEW_ORDER:${foodId}`);
     }
     const sid = String(alertSessionId ?? "").trim();
     if (sid) tokens.add(sid);
+    // Always tear down whatever FGS is actually ringing when it belongs to this order.
+    // JS may have no session after process death while native MediaPlayer still loops.
+    try {
+      const active = await getActiveNativeOrderAlert();
+      if (active?.sessionId && (!foodId || nativeTokensMatchOrder(active, foodId))) {
+        tokens.add(active.sessionId);
+        if (active.orderId) tokens.add(String(active.orderId));
+      }
+    } catch {
+      /* native optional */
+    }
     for (const t of tokens) {
       if (t) void stopNativeOrderAlert(t);
     }
@@ -1112,7 +1151,7 @@ export async function stopNewOrderAlert(
     parked.state = "stopped";
     parked.stopReason = reason;
     parkedSessions.set(id, parked);
-    stopNativeForOrder(parked.orderId, parked.alertSessionId);
+    await stopNativeForOrder(parked.orderId, parked.alertSessionId);
     logAlert({
       orderId: id,
       sessionId: parked.sessionId,
@@ -1122,17 +1161,17 @@ export async function stopNewOrderAlert(
   }
   if (session && id && session.orderId !== id) {
     // Different active order is still alerting — only tear down the acted order.
-    stopNativeForOrder(id, parked?.alertSessionId ?? merchantAlertSessionId(id));
+    await stopNativeForOrder(id, parked?.alertSessionId ?? merchantAlertSessionId(id));
     return;
   }
   if (!session) {
     stopOrderAlertSound();
-    stopNativeForOrder(id, id ? merchantAlertSessionId(id) : null);
+    await stopNativeForOrder(id, id ? merchantAlertSessionId(id) : null);
     return;
   }
   playGeneration += 1;
   stopOrderAlertSound();
-  stopNativeForOrder(session.orderId, session.alertSessionId);
+  await stopNativeForOrder(session.orderId, session.alertSessionId);
   void dismissNativeNewOrderAlerts(session.orderId);
   session.state = "stopped";
   session.stopReason = reason;

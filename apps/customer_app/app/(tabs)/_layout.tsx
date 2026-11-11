@@ -1,5 +1,5 @@
 import { Tabs, useRouter } from "expo-router";
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { View, StyleSheet } from "react-native";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { CustomerTabBar, customerTabBarOffset } from "@/components/CustomerTabBar";
@@ -48,10 +48,10 @@ export default function TabsLayout() {
   const tabsReady = hydrated && Boolean(accessToken) && hasCompletedProfileSync();
   if (tabsReady) tabsUnlockedRef.current = true;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!tabsUnlockedRef.current) return;
-    // Tabs chrome is about to paint Home under the splash — arm fade now so we
-    // don't wait solely on Home's first onLayout (which can lag on cold Metro).
+    // Tabs chrome is committed under the splash — signal before paint so the
+    // mint cover can dismiss as soon as the initial destination is ready.
     markInitialShellReady("tabs-unlocked");
   }, [tabsReady]);
 

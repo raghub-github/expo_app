@@ -36,6 +36,7 @@ import {
   refreshMerchantSessionIfNeeded,
 } from "@/services/merchantSessionRefresh";
 import { authTokenFingerprint, logMerchantAuth } from "@/lib/merchantAuthLog";
+import { mergePartnerAccess } from "@/lib/mergePartnerAccess";
 
 export type PartnerParent = {
   id: number;
@@ -70,6 +71,9 @@ export type PartnerData = {
   parent: PartnerParent;
   childStores: ChildStore[];
   activeDevices?: number;
+  accessRole?: "OWNER" | "MANAGER" | "STAFF";
+  staffId?: number | null;
+  permissions?: string[];
 };
 
 export type MerchantAuthSession = {
@@ -198,7 +202,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const authEpochRef = useRef(0);
 
   const token = authState.status === "authenticated" ? authState.session.token : null;
-  const partner = authState.status === "authenticated" ? authState.session.partner : null;
+  const partner = useMemo(() => {
+    if (authState.status !== "authenticated") return null;
+    return mergePartnerAccess(authState.session.partner, authState.session.token);
+  }, [authState]);
   const supabaseUserId =
     authState.status === "authenticated" ? authState.session.supabaseUserId : null;
   tokenRef.current = token;
@@ -213,7 +220,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     tokenRef.current = session.token;
-    setAuthState({ status: "authenticated", session });
+    const mergedPartner = mergePartnerAccess(session.partner, session.token);
+    setAuthState({
+      status: "authenticated",
+      session: { ...session, partner: mergedPartner },
+    });
   }, []);
 
   const applyUnauthenticated = useCallback((epoch: number, reason?: string) => {
@@ -277,13 +288,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         sb = await getStoredSupabaseUserId();
       }
 
-      await persistPartner(newPartner);
+      const mergedLoginPartner = mergePartnerAccess(newPartner, newToken) ?? newPartner;
+      await persistPartner(mergedLoginPartner);
       logMerchantAuth("AUTH_MERCHANT_RESOLVED", {
         parentId: newPartner.parent.id,
         merchantId: newPartner.parent.parent_merchant_id,
       });
 
-      applyAuthenticated({ token: newToken, partner: newPartner, supabaseUserId: sb }, epoch);
+      applyAuthenticated({ token: newToken, partner: mergedLoginPartner, supabaseUserId: sb }, epoch);
       logMerchantAuth("AUTH_LOGIN_SUCCESS", {
         tokenFp: authTokenFingerprint(newToken),
         epoch,
@@ -299,8 +311,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const data = await res.json();
           const partnerData = parsePartnerData(data);
           if (partnerData) {
-            await persistPartner(partnerData);
-            applyAuthenticated({ token: newToken, partner: partnerData, supabaseUserId: sb }, epoch);
+            const merged = mergePartnerAccess(partnerData, newToken) ?? partnerData;
+            await persistPartner(merged);
+            applyAuthenticated({ token: newToken, partner: merged, supabaseUserId: sb }, epoch);
           }
         }
       } catch {
@@ -349,9 +362,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const data = await res.json();
       const partnerData = parsePartnerData(data);
       if (!partnerData) return;
-      await persistPartner(partnerData);
+      const merged = mergePartnerAccess(partnerData, t) ?? partnerData;
+      await persistPartner(merged);
       const sb = await getStoredSupabaseUserId();
-      applyAuthenticated({ token: t, partner: partnerData, supabaseUserId: sb }, epoch);
+      applyAuthenticated({ token: t, partner: merged, supabaseUserId: sb }, epoch);
     } catch {
       // keep existing partner
     }

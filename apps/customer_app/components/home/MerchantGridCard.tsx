@@ -17,7 +17,7 @@ import {
   getWarmMerchantHeroUri,
   prefetchMerchantHeroImageUri,
 } from "@/lib/merchantHeroWarmCache";
-import { isHeroMediaSessionReady, markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
+import { markHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { useScrollSafePress } from "@/hooks/useScrollSafePress";
 import { useInstantPressScale } from "@/components/InstantPressable";
@@ -62,6 +62,8 @@ type MerchantGridCardProps = {
   weatherDelayMinutes?: number;
   /** Override default tile width (e.g. horizontal rail). */
   width?: number;
+  /** Above-the-fold rail tiles — high-priority decode. */
+  eager?: boolean;
 };
 
 function MerchantGridCardInner({
@@ -70,6 +72,7 @@ function MerchantGridCardInner({
   onPressIn,
   weatherDelayMinutes = 0,
   width = MERCHANT_RAIL_CARD_W,
+  eager = true,
 }: MerchantGridCardProps) {
   const { foodLocked } = usePreventServicesAtPin();
   const bannerUri = useMemo(() => {
@@ -83,8 +86,8 @@ function MerchantGridCardInner({
     [bannerUri, width]
   );
   const [imageUri, setImageUri] = useState(paintUri);
-  // Prefetch can mark a URL ready before this card has drawn it. Keep the
-  // skeleton up until this Image actually paints.
+  // Always keep card-image skeleton until this Image actually paints.
+  // Session-ready alone caused soft-white blanks with no shimmer.
   const [imagePainted, setImagePainted] = useState(false);
   if (imageUri !== paintUri && paintUri && imageUri !== bannerUri) {
     setImageUri(paintUri);
@@ -92,6 +95,7 @@ function MerchantGridCardInner({
   }
   useLayoutEffect(() => {
     if (!bannerUri) return;
+    // Front of queue for above-the-fold rail tiles.
     prefetchMerchantHeroImageUri(bannerUri, width);
     warmMerchantHeroImage(merchant.id, bannerUri);
   }, [merchant.id, bannerUri, width]);
@@ -100,12 +104,13 @@ function MerchantGridCardInner({
     if (foodLocked) return;
     onPress();
   };
+  const pressScale = useInstantPressScale(0.96);
   // Shutter only on committed onPress (via navigateToMerchant) — not pressIn,
   // so cancelled scrolls never flash a full-screen Modal over the next tap.
   const cardPress = useScrollSafePress(handlePress, {
     onPressIn: foodLocked ? undefined : onPressIn,
+    onPressCancel: () => pressScale.pressOut(),
   });
-  const pressScale = useInstantPressScale(0.97);
 
   const offerBadge = formatGridOfferBadge(merchant.offerText);
   const { label: baseDeliveryLabel, isFast } = gridDeliveryLabel(merchant, weatherDelayMinutes);
@@ -148,7 +153,7 @@ function MerchantGridCardInner({
                 contentFit="cover"
                 cachePolicy="memory-disk"
                 transition={0}
-                priority="high"
+                priority={eager ? "high" : "normal"}
                 recyclingKey={`loved-${merchant.id}-${imageUri}`}
                 onLoad={() => {
                   setImagePainted(true);
@@ -161,12 +166,12 @@ function MerchantGridCardInner({
                 onError={() => {
                   if (bannerUri && imageUri !== bannerUri) {
                     setImageUri(bannerUri);
-                    setImagePainted(isHeroMediaSessionReady(bannerUri));
+                    setImagePainted(false);
                   }
                 }}
               />
             ) : null}
-            {imageUri && !imagePainted ? (
+            {(imageUri && !imagePainted) || !bannerUri ? (
               <GMSkeleton
                 style={{
                   position: "absolute",
@@ -260,7 +265,8 @@ const styles = StyleSheet.create({
     borderRadius: CARD_RADIUS,
     borderBottomLeftRadius: 0,
     overflow: "hidden",
-    backgroundColor: GatiMitraColors.softBackground,
+    // Match GMSkeleton base so missing/loading heroes never read as blank white.
+    backgroundColor: "#eceff1",
   },
   bannerDimmed: {
     opacity: 0.55,

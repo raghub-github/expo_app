@@ -13,7 +13,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as SplashScreen from "expo-splash-screen";
 import * as Location from "expo-location";
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useCallback, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useCallback, useRef, useState } from "react";
 import {
   View,
   StyleSheet,
@@ -80,7 +80,12 @@ import { WeatherPrefetch } from "@/components/WeatherPrefetch";
 import { WeatherRealtimeSync } from "@/components/WeatherRealtimeSync";
 import * as Linking from "expo-linking";
 import { resumePendingAddressShare, storePendingAddressShareToken, peekPendingAddressShareToken } from "@/lib/pendingAddressShare";
-import { peekPendingCheckoutPayment } from "@/lib/pendingCheckoutPayment";
+import {
+  canResumeConfirmingAfterColdStart,
+  clearPendingCheckoutPayment,
+  peekPendingCheckoutPayment,
+} from "@/lib/pendingCheckoutPayment";
+import { orderService } from "@/services/order.service";
 import { extractAddressShareToken } from "@/lib/addressShareLink";
 import { extractRestaurantShareSlug } from "@/lib/restaurantShareLink";
 import {
@@ -105,9 +110,12 @@ import {
   SPLASH_SHELL_SOFT_MS,
   useSplashDeadlineHit,
 } from "@/lib/splashLifecycle";
+import { hasCompletedProfileSync, readCachedProfile } from "@/lib/profileCache";
+import { hrefForRequestedPrimaryTab } from "@/lib/customerPrimaryTabNav";
 import {
   bootstrapFreshDeviceLocation,
   bootstrapLastKnownLocation,
+  kickEarlyFreshGpsIfReady,
 } from "@/lib/sessionLocationBootstrap";
 import { STORAGE_KEYS } from "@/constants";
 import { hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
@@ -178,6 +186,8 @@ function getSafeAreaInitialMetrics() {
   };
 }
 const SPLASH_CHROME_COLOR = "#14b8a6";
+/** Process-lifetime guard so RootLayout remounts do not re-stack cold-start I/O. */
+let coldStartBootstrapArmed = false;
 
 /**
  * Perceived-luminance test so status-bar icons ALWAYS contrast with their
@@ -278,11 +288,14 @@ export default function RootLayout() {
   // Keep icon font load warm; brand fonts alone drive splash typography polish.
   void iconFontsLoaded;
   const hardDeadlineHit = useSplashDeadlineHit();
-  // Never seed exited=true from a prior Metro session — that skipped the cover and
-  // flashed near-white softBackground for seconds before Home mounted.
-  const [splashExited, setSplashExited] = useState(false);
+  const router = useRouter();
+  const segments = useSegments() as string[];
+  // Survive Fast Refresh — remounting with exited=false re-covered Home then
+  // force-dismissed onto blank Index mint.
+  const [splashExited, setSplashExited] = useState(() => isSplashExited());
   const [homeDataPrefetched, setHomeDataPrefetched] = useState(false);
-  const [startupTimedOut, setStartupTimedOut] = useState(false);
+  const rootSegment = segments[0] ?? "";
+  const onRootIndexHold = !rootSegment || rootSegment === "index";
 
   // Only reset shell gate on a true cold construct — never after splash has left
   // (globalThis flag survives Fast Refresh; module `let` did not).
@@ -309,65 +322,107 @@ export default function RootLayout() {
   // Auth session restore alone unblocks the navigator. Cart / GPS / weather /
   // fonts-of-icons / network must never gate Home.
   const criticalReady = hydrated;
-  // ONLY reveal Home when a real destination has painted under the mint cover.
-  // Hard deadline / prior-session flags must NOT remove the cover into white.
-  const destinationReady = criticalReady && (initialShellReady || startupTimedOut);
+  // Never dismiss onto root Index mint hold — wait until Home/Login/Onboarding.
+  const destinationReady =
+    criticalReady && initialShellReady && !onRootIndexHold;
   const appReady = destinationReady;
   /** Keep GatiMitra mint branding up until Home/Login is actually underneath. */
   const showBrandedCover = !destinationReady || !splashExited;
 
   const dismissBrandingSplash = useCallback((reason: string) => {
-    markSplashExited(reason);
+    const first = markSplashExited(reason);
     setSplashExited(true);
+    if (!first) return;
     startupMeasure("branding_splash_exit", "process_start");
+    // Branded-layer on-screen duration (excludes native-only time before JS brand).
+    startupMeasure("splash_visible_duration", "branding_visible");
     startupMeasure("usable_home_ready", "process_start");
+    startupLaunchLog("BRANDED_SPLASH_DISMISS", {
+      reason,
+      blocksHome: true,
+    });
     void SplashScreen.hideAsync().catch(() => {});
+    // Non-blocking map asset warm — must not sit on the dismiss path.
     void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike")).catch(() => {});
   }, []);
 
   const handleSplashReady = useCallback(() => {
     startupMeasure("native_splash_hide", "process_start");
-    startupLaunchLog("NATIVE_SPLASH_VISIBLE", { phase: "js_brand_laid_out" });
+    startupLaunchLog("NATIVE_SPLASH_HIDE", {
+      phase: "js_brand_laid_out",
+      blocksHome: false,
+    });
     // Native splash can hide once JS brand is up — JS mint cover still owns the frame.
     void SplashScreen.hideAsync().catch(() => {});
   }, []);
 
+  /** Visual fade only — parent useLayoutEffect owns real dismiss (avoids 7s dual-path lag). */
   const handleSplashExitComplete = useCallback(() => {
-    dismissBrandingSplash("bootstrap_exit_complete");
-  }, [dismissBrandingSplash]);
+    if (!splashExited) dismissBrandingSplash("bootstrap_exit_complete");
+  }, [dismissBrandingSplash, splashExited]);
 
   useEffect(() => {
-    startupLaunchLog("ROOT_LAYOUT_READY");
+    startupLaunchLog("ROOT_LAYOUT_READY", { blocksHome: true });
   }, []);
 
   useEffect(() => {
+    // Process-once — Fast Refresh / Strict Mode remounts were re-entering this
+    // effect and stacking AsyncStorage work (duplicate AUTH_RESTORE / CART_HYDRATE).
+    if (coldStartBootstrapArmed) return;
+    coldStartBootstrapArmed = true;
     void (async () => {
-      startupLaunchLog("AUTH_RESTORE_START");
+      startupLaunchLog("AUTH_RESTORE_START", { blocksHome: true });
       const authT0 = Date.now();
-      // Profile KV warm is parallel — never ahead-of-auth on the critical path.
-      void hydrateFastKvFromAsyncStorage([STORAGE_KEYS.PROFILE_CACHE]).catch(() => {});
-      await hydrateAuth();
-      const authMs = Date.now() - authT0;
-      startupLaunchLog("AUTH_RESTORE_DONE", { durationMs: authMs });
-      if (authMs > 1500) {
-        startupLaunchLog("STARTUP_BLOCKER", { stage: "auth_restore", durationMs: authMs });
-      }
-      // Cart after auth is published — never await before mounting navigator/Home.
-      void Promise.all([hydrateCart(), hydrateRecentlyRemoved()]).then(() => {
-        startupLaunchLog("CART_HYDRATE_DONE");
+      // Auth alone is the splash critical path. Profile / location / cart must not
+      // inflate AUTH_RESTORE_DONE (Promise.all with profileWarm caused 15–32s).
+      void hydrateFastKvFromAsyncStorage([
+        STORAGE_KEYS.PROFILE_CACHE,
+        STORAGE_KEYS.AUTH_SESSION,
+      ]).catch(() => {});
+      // Stage A last-known is sync-peek first — safe alongside auth (no weather await).
+      void bootstrapLastKnownLocation().then(() => {
+        const { coords, address } = useLocationStore.getState();
+        if (coords) {
+          void restoreAndPrefetchLocationWeather(queryClient, address, coords);
+        }
+        // Retry GPS right after cache paint — permission APIs are often ready by then.
+        void kickEarlyFreshGpsIfReady();
       });
-    })();
-    hydrateLanguage();
-    // Stage A: last-known location — parallel with auth, never waits for splash/Home.
-    // Seed weather RQ from disk as soon as coords exist (before Home/WeatherPrefetch mounts).
-    void bootstrapLastKnownLocation().then(() => {
-      const { coords, address } = useLocationStore.getState();
-      if (coords) {
-        void restoreAndPrefetchLocationWeather(queryClient, address, coords);
+      // Fresh GPS in parallel with auth when permission already granted — do not wait
+      // for splash, weather, cart, profile, banners, or reverse geocode.
+      void kickEarlyFreshGpsIfReady();
+      // Short retries — Expo Go permission/services probes can miss on the first tick.
+      const gpsRetryTimers = [1200, 3000, 5500].map((ms) =>
+        setTimeout(() => {
+          void kickEarlyFreshGpsIfReady();
+        }, ms)
+      );
+      await hydrateAuth();
+      for (const t of gpsRetryTimers) clearTimeout(t);
+      // durationMs = local session work only (hydrated already true). ageMs is process age.
+      const authMs = Date.now() - authT0;
+      startupLaunchLog("AUTH_RESTORE_DONE", {
+        durationMs: authMs,
+        localSessionMs: authMs,
+        blocksHome: true,
+      });
+      if (authMs > 1500) {
+        startupLaunchLog("STARTUP_BLOCKER", {
+          stage: "auth_restore",
+          durationMs: authMs,
+          blocksHome: true,
+        });
       }
-    });
-    void hydrateRecentLocations();
-    void hydrateFavoriteLocations();
+      // Retry if the parallel kick skipped (permission not ready yet).
+      void kickEarlyFreshGpsIfReady();
+      // Everything below is fire-and-forget — never gates splash / Home.
+      void Promise.all([hydrateCart(), hydrateRecentlyRemoved()]).then(() => {
+        startupLaunchLog("CART_HYDRATE_DONE", { blocksHome: false });
+      });
+      hydrateLanguage();
+      void hydrateRecentLocations();
+      void hydrateFavoriteLocations();
+    })();
   }, [
     hydrateAuth,
     hydrateCart,
@@ -384,57 +439,87 @@ export default function RootLayout() {
   }, [session?.userId]);
 
   useEffect(() => {
-    if (!criticalReady || !session) {
+    // Home data prefetch is non-essential — start only after splash has left.
+    if (!splashExited || !session) {
       setHomeDataPrefetched(!session);
       return;
     }
     let cancelled = false;
     setHomeDataPrefetched(false);
-    // Prefetch after splash is free to exit — never block startup on home data.
     void prefetchHomeScreenData(queryClient).finally(() => {
       if (!cancelled) setHomeDataPrefetched(true);
     });
     return () => {
       cancelled = true;
     };
-  }, [criticalReady, session]);
-
-  useEffect(() => {
-    if (!criticalReady) {
-      setStartupTimedOut(false);
-      return;
-    }
-    // Safety if Home onLayout is slow (Metro) — still only after auth, never into white.
-    const timeout = setTimeout(() => {
-      startupMeasure("startup_shell_timeout", "process_start");
-      setStartupTimedOut(true);
-    }, Math.max(SPLASH_SHELL_SOFT_MS, 1_200));
-    return () => clearTimeout(timeout);
-  }, [criticalReady]);
-
-  // Wall-clock deadline only accelerates shell soft-timeout after auth — never
-  // strips the mint cover while the navigator is still empty.
-  useEffect(() => {
-    if (!hardDeadlineHit || !criticalReady || splashExited) return;
-    setStartupTimedOut(true);
-  }, [hardDeadlineHit, criticalReady, splashExited]);
+  }, [splashExited, session, queryClient]);
 
   useEffect(() => {
     if (!criticalReady) return;
     startupMeasure("critical_ready", "process_start");
   }, [criticalReady]);
 
+  // Watchdog only — never strips the branded cover into blank mint.
   useEffect(() => {
+    if (!criticalReady || initialShellReady || splashExited) return;
+    const timeout = setTimeout(() => {
+      startupMeasure("startup_shell_timeout", "process_start");
+      startupLaunchLog("STARTUP_BLOCKER", {
+        stage: "shell_ready_lag",
+        durationMs: SPLASH_SHELL_SOFT_MS,
+        note: "cover_held_until_shell",
+      });
+    }, SPLASH_SHELL_SOFT_MS);
+    return () => clearTimeout(timeout);
+  }, [criticalReady, initialShellReady, splashExited]);
+
+  // Absolute budget: unblock auth + kick real destination under the branded cover.
+  // Never force shell-ready here — that dismissed onto blank Index mint.
+  useEffect(() => {
+    if (!hardDeadlineHit || splashExited) return;
+    if (!criticalReady) {
+      useAuthStore.getState().forceSplashUnblock();
+    }
+    const auth = useAuthStore.getState();
+    // Kick real destination under cover — never dismiss onto Index mint.
+    if (auth.session?.accessToken && onRootIndexHold) {
+      if (hasCompletedProfileSync()) {
+        router.replace(hrefForRequestedPrimaryTab() as never);
+      } else {
+        void readCachedProfile().then((profile) => {
+          if (isSplashExited()) return;
+          if (useAuthStore.getState().session?.accessToken == null) return;
+          if (profile?.profile_completed === true) {
+            router.replace(hrefForRequestedPrimaryTab() as never);
+          }
+        });
+      }
+    } else if (!auth.session?.accessToken && !auth.sessionRestorePending && onRootIndexHold) {
+      router.replace("/(auth)/login");
+    }
+    startupLaunchLog("SPLASH_HARD_DEADLINE", {
+      phase: initialShellReady && !onRootIndexHold ? "destination_ready" : "kick_destination",
+      note: "cover_held_until_real_shell",
+      blocksHome: true,
+    });
+  }, [
+    hardDeadlineHit,
+    criticalReady,
+    initialShellReady,
+    splashExited,
+    onRootIndexHold,
+    router,
+  ]);
+
+  // useLayoutEffect: dismiss before paint once shell is under the cover — useEffect
+  // previously ran after Home's heavy commit work and left branding up ~7s.
+  useLayoutEffect(() => {
     if (!appReady) return;
     markSplashArmed();
     startupMeasure("splash_fade_armed", "process_start");
-  }, [appReady]);
-
-  // Dismiss only when destinationReady — Home/Login is mounted under the cover.
-  useEffect(() => {
-    if (!appReady || splashExited) return;
-    dismissBrandingSplash(hardDeadlineHit ? "hard_deadline_after_shell" : "app_ready");
-  }, [appReady, splashExited, hardDeadlineHit, dismissBrandingSplash]);
+    if (splashExited) return;
+    dismissBrandingSplash("shell_ready");
+  }, [appReady, splashExited, dismissBrandingSplash]);
 
   useEffect(() => {
     if (!criticalReady || session) return;
@@ -451,11 +536,12 @@ export default function RootLayout() {
     }
   }, [hydrated]);
 
-  // Stage B: fresh GPS — starts with auth ready, in parallel with Home (not after splash).
+  // Stage B after splash: permission sheet UX + backend selected + reconcile.
+  // Fresh GPS itself starts earlier via kickEarlyFreshGpsIfReady (joined here).
   useEffect(() => {
-    if (!hydrated) return;
+    if (!splashExited || !hydrated) return;
     void bootstrapFreshDeviceLocation(queryClient);
-  }, [hydrated, queryClient]);
+  }, [splashExited, hydrated, queryClient]);
 
   const onLayoutRootView = useCallback(() => {
     if (criticalReady && splashExited) {
@@ -479,25 +565,21 @@ export default function RootLayout() {
                 : GatiMitraColors.softBackground,
             }}
           >
+            {/* Home illustrations must warm DURING splash — gating this on splashExited
+                left service cards + brand banner blank on first Home paint. */}
             <AppAssetsPrefetch />
             <UserAppCategoriesPrefetch />
+            {/* Saved addresses during splash — Select location must never spin for known list. */}
+            <AddressesPrefetch />
+            {/* Warm Home progressive sections during splash — never block dismiss. */}
+            <AppErrorBoundary source="home-shell-prefetch" fallback={() => null}>
+              <FeaturedOffersPrefetch />
+              <WeatherPrefetch />
+            </AppErrorBoundary>
             {criticalReady ? (
               <>
-                {/* Headless syncs render null — if one throws, the navigator must
-                    survive it, so they get their own boundary with no fallback UI. */}
-                <AppErrorBoundary source="background-sync" fallback={() => null}>
-                  <ReactQueryFocusSync />
-                  <StoreStatusRealtimeSync />
-                  <PreventServicesRealtimeSync />
-                  <RiderOnlineCheckRealtimeSync />
-                  <OrderRealtimeSync />
-                  <SessionRevokedHandler />
-                  <CustomerPermissionsRealtimeSync />
-                  <LocationPermissionResumeCheck />
-                  <LocationWatchSync />
-                  <CustomerResumeReconcile />
-                  <LanguageSync />
-                </AppErrorBoundary>
+                {/* Essential while splash covers: auth gate + navigator + chrome.
+                    Heavy realtime/overlays still wait until splash exits. */}
                 <AuthNavigationGate />
                 <AddressShareLinkCapture />
                 <CustomerSystemChrome />
@@ -505,88 +587,74 @@ export default function RootLayout() {
                 <NavigatorWithRecovery>
                   <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
                 </NavigatorWithRecovery>
-                {/* Overlay hosts: a throw here must not blank the navigator behind them.
-                    absoluteFill host so floating cart / edge peeks have a real window box. */}
-                <AppErrorBoundary source="overlay-hosts" fallback={() => null}>
-                  <View
-                    pointerEvents="box-none"
-                    style={[StyleSheet.absoluteFillObject, { zIndex: 40, elevation: 40 }]}
-                  >
-                    <CheckoutBottomSheetHost />
-                    <CheckoutPaymentFailureHost />
-                    <CartCheckoutGateHost />
-                    <CartUpdatedModal />
-                    <CustomerPermissionSheetsHost />
-                    <ServiceBlockedGateHost />
-                    <CustomerAccountBlockedGateHost />
-                    <CustomerServiceBlockSheetHost />
-                    <LiveOrderProgressNotification />
-                    <LegalConsentGate />
-                    {/* Absolute shutter over home — no Modal fade; drops when store page is ready */}
-                    <MerchantNavTransitionShutter />
-                  </View>
-                </AppErrorBoundary>
-                {/*
-                  Classic Food Search pill MUST sit outside the elev-40 overlay host.
-                  CustomerTabBar uses absoluteFill + elevation 50; on Android a child
-                  cannot outrank a higher-elevation sibling of its parent — so mounting
-                  the pill inside elev-40 left only a ghost white “Search” over food cards.
-                  Own host elev ≥ 100 paints above TabBar; pointerEvents box-none keeps
-                  HOME edge / nav taps working.
-                */}
-                <View
-                  pointerEvents="box-none"
-                  style={[
-                    StyleSheet.absoluteFillObject,
-                    // zIndex only — elevation on a transparent fill breaks child
-                    // backgrounds on Android (ghost Search label over food cards).
-                    { zIndex: 110 },
-                  ]}
-                >
-                  <ClassicFloatingSearchPill />
-                </View>
-                {/*
-                  Floating cart/track MUST also sit above CustomerTabBar (elev 50).
-                  Inside elev-40 it painted under the tab sheet → overlap on Food home.
-                */}
-                <View
-                  pointerEvents="box-none"
-                  style={[StyleSheet.absoluteFillObject, { zIndex: 120 }]}
-                >
-                  <FloatingCartErrorBoundary />
-                </View>
-                {/*
-                  Flash Sale qty-limit sheet MUST sit above floating cart / Continue dock
-                  (Android elevation). Absolute overlay host — not RN Modal — so footer
-                  CTAs cannot paint under merchant chrome.
-                */}
-                <View
-                  pointerEvents="box-none"
-                  style={[StyleSheet.absoluteFillObject, { zIndex: 400, elevation: 400 }]}
-                >
-                  <FlashSaleQtyLimitSheetHost />
-                </View>
-                {/* Above navigator content so mint paints in the system-nav inset (tab bar
-                    already draws this on main Home; Food / merchant pages need this layer). */}
                 <AndroidSystemNavigationFill />
-                {/* Fire-and-forget prefetch/bootstrap — never user-visible. */}
-                <AppErrorBoundary source="prefetch" fallback={() => null}>
-                  <PushNotificationBootstrap />
-                  <AbandonedCartReminderBootstrap />
-                  <PlayInAppUpdateBootstrap />
-                  <AddressesPrefetch />
-                  <FeaturedOffersPrefetch />
-                  <WeatherPrefetch />
-                  <WeatherRealtimeSync />
-                  <PendingAddressShareResume />
-                  <PendingCheckoutPaymentResume />
-                  <PendingReferralResume />
-                  <FoodHomeLayoutPrefetch />
-                  <ProfilePrefetch />
-                  <WalletBalancePrefetch />
-                  <CustomerServiceBlocksSync />
-                  <SubscriptionPlansPrefetch />
-                </AppErrorBoundary>
+                {splashExited ? (
+                  <>
+                    <AppErrorBoundary source="background-sync" fallback={() => null}>
+                      <ReactQueryFocusSync />
+                      <StoreStatusRealtimeSync />
+                      <PreventServicesRealtimeSync />
+                      <RiderOnlineCheckRealtimeSync />
+                      <OrderRealtimeSync />
+                      <SessionRevokedHandler />
+                      <CustomerPermissionsRealtimeSync />
+                      <LocationPermissionResumeCheck />
+                      <LocationWatchSync />
+                      <CustomerResumeReconcile />
+                      <LanguageSync />
+                    </AppErrorBoundary>
+                    <AppErrorBoundary source="overlay-hosts" fallback={() => null}>
+                      <View
+                        pointerEvents="box-none"
+                        style={[StyleSheet.absoluteFillObject, { zIndex: 40, elevation: 40 }]}
+                      >
+                        <CheckoutBottomSheetHost />
+                        <CheckoutPaymentFailureHost />
+                        <CartCheckoutGateHost />
+                        <CartUpdatedModal />
+                        <CustomerPermissionSheetsHost />
+                        <ServiceBlockedGateHost />
+                        <CustomerAccountBlockedGateHost />
+                        <CustomerServiceBlockSheetHost />
+                        <LiveOrderProgressNotification />
+                        <LegalConsentGate />
+                        <MerchantNavTransitionShutter />
+                      </View>
+                    </AppErrorBoundary>
+                    <View
+                      pointerEvents="box-none"
+                      style={[StyleSheet.absoluteFillObject, { zIndex: 110 }]}
+                    >
+                      <ClassicFloatingSearchPill />
+                    </View>
+                    <View
+                      pointerEvents="box-none"
+                      style={[StyleSheet.absoluteFillObject, { zIndex: 120 }]}
+                    >
+                      <FloatingCartErrorBoundary />
+                    </View>
+                    <View
+                      pointerEvents="box-none"
+                      style={[StyleSheet.absoluteFillObject, { zIndex: 400, elevation: 400 }]}
+                    >
+                      <FlashSaleQtyLimitSheetHost />
+                    </View>
+                    <AppErrorBoundary source="prefetch" fallback={() => null}>
+                      <PushNotificationBootstrap />
+                      <AbandonedCartReminderBootstrap />
+                      <PlayInAppUpdateBootstrap />
+                      <WeatherRealtimeSync />
+                      <PendingAddressShareResume />
+                      <PendingCheckoutPaymentResume />
+                      <PendingReferralResume />
+                      <FoodHomeLayoutPrefetch />
+                      <ProfilePrefetch />
+                      <WalletBalancePrefetch />
+                      <CustomerServiceBlocksSync />
+                      <SubscriptionPlansPrefetch />
+                    </AppErrorBoundary>
+                  </>
+                ) : null}
               </>
             ) : null}
             {showBrandedCover ? (
@@ -805,6 +873,35 @@ function PendingCheckoutPaymentResume() {
         return;
       }
       attemptedRef.current = true;
+
+      // Gate on genuine attempt + backend state. Opening Razorpay/QR flips
+      // paymentState → pending_confirmation server-side, but that is NOT a
+      // payment attempt — only resume Confirming when we recorded one, or when
+      // money is already in flight (paid / captured_unfinalized / …).
+      try {
+        const status = await orderService.getPendingOrderStatus(pending.pendingId);
+        if (status.finalized && status.orderId) {
+          await clearPendingCheckoutPayment();
+          router.replace({
+            pathname: "/orders/payment-success",
+            params: {
+              orderId: status.orderId,
+              ...(pending.merchantName ? { merchantName: pending.merchantName } : {}),
+              ...(pending.deliveryEtaLabel ? { deliveryEtaLabel: pending.deliveryEtaLabel } : {}),
+            },
+          });
+          return;
+        }
+        if (!canResumeConfirmingAfterColdStart(pending, status.paymentState)) {
+          await clearPendingCheckoutPayment();
+          return;
+        }
+      } catch {
+        // 404 / network: stale local token without a live payment — drop it.
+        await clearPendingCheckoutPayment();
+        return;
+      }
+
       router.replace({
         pathname: "/orders/payment-confirming",
         params: {

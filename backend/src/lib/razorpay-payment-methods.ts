@@ -17,7 +17,7 @@ export type CheckoutPayMethodItem = {
   upiApp?: string;
   wallet?: string;
   /** Set only when Razorpay reports that UPI flow as enabled. */
-  upiFlow?: "qr" | "collect";
+  upiFlow?: "intent" | "qr" | "collect";
 };
 
 export type CheckoutPayMethodSection = {
@@ -115,11 +115,20 @@ function upiAllowlist(methods: Record<string, unknown>): Set<string> | null {
   return null;
 }
 
-function upiQrAndCollectItems(): CheckoutPayMethodItem[] {
+/** Intent / QR / Collect — only listed when account has UPI enabled. */
+function upiExtraFlowItems(): CheckoutPayMethodItem[] {
   return [
     {
+      id: "upi:intent",
+      label: "Pay Without UPI ID",
+      method: "upi",
+      action: "pay",
+      logoKey: "upi",
+      upiFlow: "intent",
+    },
+    {
       id: "upi:qr",
-      label: "Pay via QR Code",
+      label: "Scan QR Code",
       method: "upi",
       action: "pay",
       logoKey: "qr",
@@ -172,8 +181,12 @@ export function defaultCheckoutPayMethods(dummy: boolean): CheckoutPayMethodsRes
           },
         ],
       },
+      {
+        id: "upi_qr_id",
+        title: "SCAN QR & UPI ID",
+        items: upiExtraFlowItems(),
+      },
       { id: "upi", title: "PAY BY ANY UPI APP", items: extraUpi },
-      { id: "upi_other", title: "UPI", items: upiQrAndCollectItems() },
     ],
   };
 }
@@ -224,6 +237,12 @@ export function mapRazorpayMethodsPayload(raw: unknown, dummy: boolean): Checkou
     if (recommended.length > 0) {
       sections.push({ id: "recommended", title: "RECOMMENDED", items: recommended });
     }
+    // Pin Intent / Scan QR / UPI ID near the top — Razorpay mobile UI hides these.
+    sections.push({
+      id: "upi_qr_id",
+      title: "SCAN QR & UPI ID",
+      items: upiExtraFlowItems(),
+    });
   }
 
   if (cardOn) {
@@ -255,10 +274,6 @@ export function mapRazorpayMethodsPayload(raw: unknown, dummy: boolean): Checkou
     }
     if (extra.length > 0) {
       sections.push({ id: "upi", title: "PAY BY ANY UPI APP", items: extra });
-    }
-    const qrAndCollect = upiQrAndCollectItems();
-    if (qrAndCollect.length > 0) {
-      sections.push({ id: "upi_other", title: "UPI", items: qrAndCollect });
     }
   }
 

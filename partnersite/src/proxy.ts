@@ -14,6 +14,7 @@ import {
   generateDeviceId,
   hasActiveSessionForDevice,
   replaceSessionForDevice,
+  isMerchantDeviceSessionRevoked,
 } from "@/lib/auth/merchant-session-db";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
 import {
@@ -89,10 +90,16 @@ export async function proxy(request: NextRequest) {
   const oauthCode = request.nextUrl.searchParams.get("code");
   // Never treat API query `code=` as a Supabase OAuth code. Referral preview uses
   // `?code=MX…` and must not be redirected to /api/auth/callback.
+  // Merchant Expo Google OAuth lands on /auth/merchant-app-callback — leave it alone
+  // so WebBrowser can capture ?code= and finish login in the app.
+  const isMerchantAppOAuthCallback =
+    pathname === "/auth/merchant-app-callback" ||
+    pathname === "/auth/merchant-app-callback/";
   if (
     oauthCode &&
     pathname !== "/auth/callback" &&
     pathname !== "/api/auth/callback" &&
+    !isMerchantAppOAuthCallback &&
     !pathname.startsWith("/api/")
   ) {
     const callbackUrl = new URL("/auth/callback", request.url);
@@ -390,19 +397,28 @@ export async function proxy(request: NextRequest) {
           deviceSessionValid = await hasActiveSessionForDevice(validation.merchantParentId, deviceId);
 
           // Self-heal: if missing (new device / cleared DB row), create it instead of bouncing back to login.
+          // Do not self-heal after remote logout-all from the merchant app (merchant_sessions row deactivated).
           if (!deviceSessionValid) {
-            try {
-              await replaceSessionForDevice(deviceId, validation.merchantParentId, {
-                loginMethod: "self_heal",
-                deviceLabel: "Restored session",
-              });
-              deviceSessionValid = true;
-            } catch {
-              // Transient insert failure (e.g. read-lag on the unique-violation
-              // recovery for a row the OAuth callback just wrote). The Supabase
-              // session is valid and the merchant is confirmed — fail OPEN so we
-              // don't log a freshly-authenticated user out over bookkeeping.
-              deviceSessionValid = true;
+            const revoked = await isMerchantDeviceSessionRevoked(
+              validation.merchantParentId,
+              deviceId
+            );
+            if (revoked) {
+              deviceSessionValid = false;
+            } else {
+              try {
+                await replaceSessionForDevice(deviceId, validation.merchantParentId, {
+                  loginMethod: "self_heal",
+                  deviceLabel: "Restored session",
+                });
+                deviceSessionValid = true;
+              } catch {
+                // Transient insert failure (e.g. read-lag on the unique-violation
+                // recovery for a row the OAuth callback just wrote). The Supabase
+                // session is valid and the merchant is confirmed — fail OPEN so we
+                // don't log a freshly-authenticated user out over bookkeeping.
+                deviceSessionValid = true;
+              }
             }
           }
         }

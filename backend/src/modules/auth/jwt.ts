@@ -9,6 +9,10 @@ type IssueJwtArgs = {
   phoneE164: string;
   deviceId: string;
   exp: number; // unix seconds
+  /** Merchant staff access role when not the brand owner. */
+  merchantAccessRole?: "OWNER" | "MANAGER" | "STAFF";
+  merchantStaffId?: number | null;
+  merchantStoreId?: number | null;
 };
 
 /**
@@ -22,11 +26,22 @@ export async function issueSupabaseCompatibleJwt(args: IssueJwtArgs): Promise<st
   const key = createSecretKey(Buffer.from(args.jwtSecret, "utf-8"));
 
   // Keep claims minimal; anything sensitive should stay server-side.
-  return await new SignJWT({
+  const claims: Record<string, unknown> = {
     role: args.role,
     phone: args.phoneE164,
     device_id: args.deviceId,
-  })
+  };
+  if (args.role === "merchant") {
+    claims.merchant_access_role = args.merchantAccessRole ?? "OWNER";
+  }
+  if (args.merchantStaffId != null && Number.isFinite(args.merchantStaffId)) {
+    claims.merchant_staff_id = args.merchantStaffId;
+  }
+  if (args.merchantStoreId != null && Number.isFinite(args.merchantStoreId)) {
+    claims.merchant_store_id = args.merchantStoreId;
+  }
+
+  return await new SignJWT(claims)
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setSubject(args.sub)
     .setIssuedAt()

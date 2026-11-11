@@ -18,6 +18,7 @@ import { useRouter, useNavigation, Redirect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
+import * as WebBrowser from "expo-web-browser";
 import { OtpVerifySheetModal } from "@gatimitra/otp-verify-ui";
 import { useAuth, type PartnerData } from "@/context/AuthContext";
 import {
@@ -25,6 +26,8 @@ import {
   isMerchantAuthError,
 } from "@/services/auth.service";
 import { getOrCreateMerchantDeviceId } from "@/lib/merchantDeviceId";
+import { getSupabaseAuth } from "@/lib/supabaseClient";
+import { getMerchantGoogleOAuthRedirectTo } from "@/lib/merchantGoogleOAuthRedirect";
 import { GatiMitraMerchant, SAFE_AREA_TOP_MIN } from "@/constants/theme";
 import { getPartnerLegalUrls } from "@/lib/partnerLegalUrls";
 import { merchantOtpVerifyTheme } from "@/lib/otpVerifyTheme";
@@ -32,14 +35,24 @@ import { MerchantBottomSheetShell } from "@/components/order/MerchantBottomSheet
 import { MerchantBootstrapScreen } from "@/components/MerchantBootstrapScreen";
 import { logMerchantAuth } from "@/lib/merchantAuthLog";
 import { hasValidMerchantIdentity, parsePartnerData } from "@/lib/merchantPartnerIdentity";
+import { GoogleMark } from "@/components/GoogleMark";
 
-const OTP_LEN = 6;
+WebBrowser.maybeCompleteAuthSession();
+
+const PHONE_OTP_LEN = 6;
+/** Supabase Partner email OTP is configured as 8 digits (same as partnersite). */
+const EMAIL_OTP_LEN = 8;
 const legalUrls = getPartnerLegalUrls();
 const LORA_BOLD = "Lora_700Bold";
 const POPPINS_BOLD = "Poppins_700Bold";
 const NOT_REGISTERED_SHEET_MESSAGE = "No Partner Account registered with this no";
+const NOT_REGISTERED_EMAIL_SHEET_MESSAGE = "No Partner Account registered with this email";
 const NO_MERCHANT_MESSAGE =
   "Merchant account not found. Please use a registered merchant number or contact support.";
+const GOOGLE_TEMP_UNAVAILABLE_MESSAGE =
+  "Google Sign-In is temporarily unavailable. Please use Phone or Email Login.";
+
+type LoginChannel = "phone" | "email";
 
 function isNotRegisteredPartnerError(e: unknown): boolean {
   if (isMerchantAuthError(e) && e.code === "not_registered") return true;
@@ -65,19 +78,25 @@ export default function LoginScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { setTokenAndPartner, authState } = useAuth();
+  const [loginChannel, setLoginChannel] = useState<LoginChannel>("phone");
   const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [step, setStep] = useState<"phone" | "otp">("phone");
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState("");
   const [notRegisteredSheetOpen, setNotRegisteredSheetOpen] = useState(false);
+  const [notRegisteredKind, setNotRegisteredKind] = useState<"phone" | "email">("phone");
   const [deviceSessionMode, setDeviceSessionMode] = useState(false);
   const [lastExchange, setLastExchange] = useState<LastExchange>(null);
   const [resendSeconds, setResendSeconds] = useState(0);
   const [resending, setResending] = useState(false);
   const phoneInputRef = useRef<TextInput>(null);
+  const emailInputRef = useRef<TextInput>(null);
   const sheetScrollRef = useRef<ScrollView>(null);
   const [phoneFieldFocused, setPhoneFieldFocused] = useState(false);
+  const [emailFieldFocused, setEmailFieldFocused] = useState(false);
   const [phoneKeyboardVisible, setPhoneKeyboardVisible] = useState(false);
   /**
    * Hard re-entry guards for OTP verify. `loading` is React state, so it only
@@ -130,11 +149,19 @@ export default function LoginScreen() {
     phone.replace(/\D/g, "").length >= 10
       ? "+91" + phone.replace(/\D/g, "").slice(-10)
       : "";
+  const emailNormalized = email.trim().toLowerCase();
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNormalized);
 
   const clearErrors = () => {
     setError("");
     setNotRegisteredSheetOpen(false);
     setDeviceSessionMode(false);
+  };
+
+  const switchLoginChannel = (next: LoginChannel) => {
+    if (next === loginChannel || loading || googleLoading || step === "otp") return;
+    clearErrors();
+    setLoginChannel(next);
   };
 
   const openRegisterStore = () => {
@@ -143,6 +170,36 @@ export default function LoginScreen() {
   };
 
   const handleRequestOtp = async () => {
+    if (loginChannel === "email") {
+      if (!emailValid) {
+        setError("Enter a valid email address");
+        return;
+      }
+      clearErrors();
+      setLastExchange(null);
+      setLoading(true);
+      try {
+        await merchantAuthService.sendEmailOtp({ email: emailNormalized });
+        verifySucceededRef.current = false;
+        verifyInFlightRef.current = false;
+        setOtp("");
+        setResendSeconds(60);
+        setStep("otp");
+      } catch (e: unknown) {
+        if (isNotRegisteredPartnerError(e)) {
+          setNotRegisteredKind("email");
+          setNotRegisteredSheetOpen(true);
+          setError("");
+        } else {
+          const msg = e instanceof Error ? e.message : "Could not send OTP. Try again.";
+          setError(msg);
+        }
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     if (!phoneE164 || phoneE164.length < 12) {
       setError("Enter a valid 10-digit mobile number");
       return;
@@ -159,6 +216,7 @@ export default function LoginScreen() {
       setStep("otp");
     } catch (e: unknown) {
       if (isNotRegisteredPartnerError(e)) {
+        setNotRegisteredKind("phone");
         setNotRegisteredSheetOpen(true);
         setError("");
       } else {
@@ -171,7 +229,26 @@ export default function LoginScreen() {
   };
 
   const handleResendOtp = async () => {
-    if (resendSeconds > 0 || resending || !phoneE164) return;
+    if (resendSeconds > 0 || resending) return;
+    if (loginChannel === "email") {
+      if (!emailValid) return;
+      clearErrors();
+      setResending(true);
+      try {
+        await merchantAuthService.sendEmailOtp({ email: emailNormalized });
+        verifySucceededRef.current = false;
+        verifyInFlightRef.current = false;
+        setOtp("");
+        setResendSeconds(60);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Could not resend OTP. Try again.";
+        setError(msg);
+      } finally {
+        setResending(false);
+      }
+      return;
+    }
+    if (!phoneE164) return;
     clearErrors();
     setResending(true);
     try {
@@ -199,10 +276,16 @@ export default function LoginScreen() {
     return msg || "Invalid OTP. Please try again.";
   }
 
+  const otpLen = loginChannel === "email" ? EMAIL_OTP_LEN : PHONE_OTP_LEN;
+
   const handleVerifyOtp = async (codeArg?: string) => {
-    const code = (codeArg ?? otp).replace(/\D/g, "").slice(0, OTP_LEN);
-    if (!code || code.length !== OTP_LEN) {
-      setError("Enter the 6-digit code from SMS");
+    const code = (codeArg ?? otp).replace(/\D/g, "").slice(0, otpLen);
+    if (!code || code.length !== otpLen) {
+      setError(
+        loginChannel === "email"
+          ? `Enter the ${EMAIL_OTP_LEN}-digit code from email`
+          : `Enter the ${PHONE_OTP_LEN}-digit code from SMS`
+      );
       return;
     }
     if (verifyInFlightRef.current || verifySucceededRef.current) return;
@@ -212,11 +295,18 @@ export default function LoginScreen() {
     setLastExchange("otp");
     try {
       const deviceId = await getOrCreateMerchantDeviceId();
-      const session = await merchantAuthService.verifyOtp({
-        phoneE164,
-        otp: code,
-        deviceId,
-      });
+      const session =
+        loginChannel === "email"
+          ? await merchantAuthService.verifyEmailOtp({
+              email: emailNormalized,
+              otp: code,
+              deviceId,
+            })
+          : await merchantAuthService.verifyOtp({
+              phoneE164,
+              otp: code,
+              deviceId,
+            });
       logMerchantAuth("AUTH_OTP_VERIFIED", {});
       verifySucceededRef.current = true;
       const partner = partnerDataFromExchange(session.partner);
@@ -252,6 +342,120 @@ export default function LoginScreen() {
     setLastExchange(null);
   }, []);
 
+  const handleGoogleSignIn = async () => {
+    const supabase = getSupabaseAuth();
+    if (!supabase) {
+      setError(GOOGLE_TEMP_UNAVAILABLE_MESSAGE);
+      return;
+    }
+    clearErrors();
+    setGoogleLoading(true);
+    try {
+      // Stable HTTPS callback (partnersite) — must be allowlisted in Supabase Redirect URLs.
+      // Do NOT use exp://LAN IPs; those change and Supabase falls back to gatimitra.com.
+      const redirectTo = getMerchantGoogleOAuthRedirectTo();
+      if (__DEV__) {
+        // eslint-disable-next-line no-console
+        console.log("[Google OAuth] redirectTo:", redirectTo);
+      }
+
+      const { data: oauthData, error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo,
+          skipBrowserRedirect: true,
+          queryParams: { prompt: "select_account" },
+        },
+      });
+      if (oauthError || !oauthData?.url) {
+        setError(GOOGLE_TEMP_UNAVAILABLE_MESSAGE);
+        return;
+      }
+
+      const result = await WebBrowser.openAuthSessionAsync(oauthData.url, redirectTo);
+      WebBrowser.maybeCompleteAuthSession();
+
+      if (result.type === "cancel" || result.type === "dismiss") {
+        setError(GOOGLE_TEMP_UNAVAILABLE_MESSAGE);
+        return;
+      }
+      if (result.type !== "success" || !("url" in result) || !result.url) {
+        setError(GOOGLE_TEMP_UNAVAILABLE_MESSAGE);
+        return;
+      }
+
+      const url = result.url;
+      // Reject Site URL fallback (consumer site) — means redirectTo was not allowlisted.
+      if (/gatimitra\.com/i.test(url) && !/partner\.gatimitra\.com/i.test(url)) {
+        setError(GOOGLE_TEMP_UNAVAILABLE_MESSAGE);
+        return;
+      }
+
+      const hash = url.includes("#") ? url.split("#")[1] : "";
+      const query = url.includes("?") ? url.split("?")[1]?.split("#")[0] : "";
+      const hashParams = new URLSearchParams(hash || "");
+      const queryParams = new URLSearchParams(query || "");
+      const errDesc =
+        queryParams.get("error_description") ||
+        hashParams.get("error_description") ||
+        queryParams.get("error") ||
+        hashParams.get("error");
+      if (errDesc) {
+        setError(GOOGLE_TEMP_UNAVAILABLE_MESSAGE);
+        return;
+      }
+
+      let accessToken =
+        hashParams.get("access_token") || queryParams.get("access_token") || "";
+      const refreshToken =
+        hashParams.get("refresh_token") || queryParams.get("refresh_token") || "";
+      const authCode = queryParams.get("code") || hashParams.get("code");
+
+      // Modern Supabase Google OAuth returns ?code= (PKCE). Exchange it for a session.
+      if (!accessToken && authCode) {
+        const { data: exchanged, error: exchangeErr } =
+          await supabase.auth.exchangeCodeForSession(authCode);
+        if (exchangeErr) {
+          setError(GOOGLE_TEMP_UNAVAILABLE_MESSAGE);
+          return;
+        }
+        accessToken = exchanged.session?.access_token ?? "";
+        if (!accessToken) {
+          setError(GOOGLE_TEMP_UNAVAILABLE_MESSAGE);
+          return;
+        }
+      } else if (accessToken) {
+        await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+      } else {
+        setError(GOOGLE_TEMP_UNAVAILABLE_MESSAGE);
+        return;
+      }
+
+      const deviceId = await getOrCreateMerchantDeviceId();
+      const session = await merchantAuthService.exchangeSupabaseOAuth({
+        accessToken,
+        deviceId,
+      });
+      const partner = partnerDataFromExchange(session.partner);
+      await setTokenAndPartner(session.accessToken, partner, session.userId, session.expiresAt);
+      router.replace("/");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Google sign-in failed.";
+      if (/partner_not_found|no partner/i.test(msg)) {
+        setNotRegisteredKind("email");
+        setNotRegisteredSheetOpen(true);
+        setError("");
+      } else {
+        setError(GOOGLE_TEMP_UNAVAILABLE_MESSAGE);
+      }
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
   /** Android back: return to phone step when on OTP sheet. */
   useEffect(() => {
     if (step !== "otp") return;
@@ -266,7 +470,7 @@ export default function LoginScreen() {
   useEffect(() => {
     if (step !== "otp") return;
     const unsub = navigation.addListener("beforeRemove", (e) => {
-      if (otp.length >= OTP_LEN || loading || deviceSessionMode) return;
+      if (otp.length >= otpLen || loading || deviceSessionMode) return;
       const act = e.data.action;
       const actionType =
         typeof act === "object" && act !== null && "type" in act
@@ -276,7 +480,7 @@ export default function LoginScreen() {
       e.preventDefault();
     });
     return unsub;
-  }, [navigation, step, otp.length, loading, deviceSessionMode]);
+  }, [navigation, step, otp.length, otpLen, loading, deviceSessionMode]);
 
   const handleRetryDeviceSession = async () => {
     if (!lastExchange) return;
@@ -285,10 +489,15 @@ export default function LoginScreen() {
     try {
       const deviceId = await getOrCreateMerchantDeviceId();
       if (lastExchange === "otp") {
-        const session = await merchantAuthService.exchangeMerchantFromCurrentSupabaseSession({
-          phoneE164,
-          deviceId,
-        });
+        const session =
+          loginChannel === "email"
+            ? await merchantAuthService.exchangeGoogleMerchantFromCurrentSupabaseSession({
+                deviceId,
+              })
+            : await merchantAuthService.exchangeMerchantFromCurrentSupabaseSession({
+                phoneE164,
+                deviceId,
+              });
         const partner = partnerDataFromExchange(session.partner);
         await setTokenAndPartner(session.accessToken, partner, session.userId, session.expiresAt);
         setLastExchange(null);
@@ -311,11 +520,14 @@ export default function LoginScreen() {
   const topPad = Math.max(insets.top, SAFE_AREA_TOP_MIN) + 8;
   const bottomPad = Math.max(insets.bottom, 16);
   const phoneReady = phone.replace(/\D/g, "").length === 10;
+  const proceedReady = loginChannel === "email" ? emailValid : phoneReady;
   const resendMins = Math.floor(resendSeconds / 60);
   const resendSecs = resendSeconds % 60;
   const phoneDigits = phone.replace(/\D/g, "").slice(-10);
   const otpSentPhone =
     phoneDigits.length === 10 ? `+91 ${phoneDigits}` : phoneE164 || phone;
+  const otpSentTarget =
+    loginChannel === "email" ? emailNormalized || email : otpSentPhone;
 
   const otpSheetError =
     step === "otp" && !deviceSessionMode && error.trim() ? error : null;
@@ -355,49 +567,129 @@ export default function LoginScreen() {
             <Ionicons name="chevron-back" size={20} color={GatiMitraMerchant.textPrimary} />
           </Pressable>
 
-          <Text style={styles.title}>Enter Your Mobile Number</Text>
+          <View style={styles.channelToggle} accessibilityRole="tablist">
+            <Pressable
+              style={[styles.channelTab, loginChannel === "phone" && styles.channelTabActive]}
+              onPress={() => switchLoginChannel("phone")}
+              disabled={step === "otp" || loading || googleLoading}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: loginChannel === "phone" }}
+            >
+              <Text
+                style={[
+                  styles.channelTabText,
+                  loginChannel === "phone" && styles.channelTabTextActive,
+                ]}
+              >
+                Phone
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.channelTab, loginChannel === "email" && styles.channelTabActive]}
+              onPress={() => switchLoginChannel("email")}
+              disabled={step === "otp" || loading || googleLoading}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: loginChannel === "email" }}
+            >
+              <Text
+                style={[
+                  styles.channelTabText,
+                  loginChannel === "email" && styles.channelTabTextActive,
+                ]}
+              >
+                Email
+              </Text>
+            </Pressable>
+          </View>
+
+          <Text style={styles.title}>
+            {loginChannel === "email" ? "Enter Your Email" : "Enter Your Mobile Number"}
+          </Text>
           <Text style={styles.subtitle}>
-            Please enter the mobile number registered with your GatiMitra partner account to
-            continue.
+            {loginChannel === "email"
+              ? "Please enter the email registered with your GatiMitra partner account to continue."
+              : "Please enter the mobile number registered with your GatiMitra partner account to continue."}
           </Text>
 
-          <Pressable
-            onPress={() => phoneInputRef.current?.focus()}
-            accessibilityLabel="Mobile number, country code India plus nine one"
-            style={({ pressed }) => [
-              styles.phoneShell,
-              phoneFieldFocused && styles.phoneShellFocused,
-              pressed && styles.pressed,
-            ]}
-          >
-            <View style={styles.ccBlock} importantForAccessibility="no">
-              <Text style={styles.flagEmoji}>🇮🇳</Text>
-              <Text style={styles.ccText}>+91</Text>
-              <Ionicons name="chevron-down" size={14} color={GatiMitraMerchant.textSecondary} />
-            </View>
-            <View style={styles.ccDivider} />
-            <TextInput
-              ref={phoneInputRef}
-              style={styles.phoneInput}
-              placeholder="Mobile Number"
-              placeholderTextColor={GatiMitraMerchant.textTertiary}
-              value={phone}
-              onChangeText={(t) => {
-                clearErrors();
-                setPhone(t.replace(/\D/g, "").slice(0, 10));
-              }}
-              onFocus={() => {
-                setPhoneFieldFocused(true);
-                scrollPhoneFormIntoView();
-              }}
-              onBlur={() => setPhoneFieldFocused(false)}
-              keyboardType="phone-pad"
-              maxLength={10}
-              editable={!loading && step === "phone"}
-              selectionColor={GatiMitraMerchant.primary}
-              autoFocus={step === "phone"}
-            />
-          </Pressable>
+          {loginChannel === "email" ? (
+            <Pressable
+              onPress={() => emailInputRef.current?.focus()}
+              accessibilityLabel="Email address"
+              style={({ pressed }) => [
+                styles.phoneShell,
+                emailFieldFocused && styles.phoneShellFocused,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Ionicons
+                name="mail-outline"
+                size={20}
+                color={GatiMitraMerchant.textSecondary}
+                style={styles.emailIcon}
+              />
+              <TextInput
+                ref={emailInputRef}
+                style={styles.phoneInput}
+                placeholder="Email address"
+                placeholderTextColor={GatiMitraMerchant.textTertiary}
+                value={email}
+                onChangeText={(t) => {
+                  clearErrors();
+                  setEmail(t.replace(/\s/g, ""));
+                }}
+                onFocus={() => {
+                  setEmailFieldFocused(true);
+                  scrollPhoneFormIntoView();
+                }}
+                onBlur={() => setEmailFieldFocused(false)}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                textContentType="emailAddress"
+                editable={!loading && !googleLoading && step === "phone"}
+                selectionColor={GatiMitraMerchant.primary}
+                autoFocus={step === "phone"}
+              />
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={() => phoneInputRef.current?.focus()}
+              accessibilityLabel="Mobile number, country code India plus nine one"
+              style={({ pressed }) => [
+                styles.phoneShell,
+                phoneFieldFocused && styles.phoneShellFocused,
+                pressed && styles.pressed,
+              ]}
+            >
+              <View style={styles.ccBlock} importantForAccessibility="no">
+                <Text style={styles.flagEmoji}>🇮🇳</Text>
+                <Text style={styles.ccText}>+91</Text>
+                <Ionicons name="chevron-down" size={14} color={GatiMitraMerchant.textSecondary} />
+              </View>
+              <View style={styles.ccDivider} />
+              <TextInput
+                ref={phoneInputRef}
+                style={styles.phoneInput}
+                placeholder="Mobile Number"
+                placeholderTextColor={GatiMitraMerchant.textTertiary}
+                value={phone}
+                onChangeText={(t) => {
+                  clearErrors();
+                  setPhone(t.replace(/\D/g, "").slice(0, 10));
+                }}
+                onFocus={() => {
+                  setPhoneFieldFocused(true);
+                  scrollPhoneFormIntoView();
+                }}
+                onBlur={() => setPhoneFieldFocused(false)}
+                keyboardType="phone-pad"
+                maxLength={10}
+                editable={!loading && !googleLoading && step === "phone"}
+                selectionColor={GatiMitraMerchant.primary}
+                autoFocus={step === "phone"}
+              />
+            </Pressable>
+          )}
 
           {step === "phone" && deviceSessionMode && lastExchange ? (
             <View style={styles.warnBanner}>
@@ -427,16 +719,43 @@ export default function LoginScreen() {
           <Pressable
             style={[
               styles.proceedBtn,
-              phoneReady && !loading ? styles.proceedBtnReady : styles.proceedBtnIdle,
-              loading && styles.btnDisabled,
+              proceedReady && !loading && !googleLoading
+                ? styles.proceedBtnReady
+                : styles.proceedBtnIdle,
+              (loading || googleLoading) && styles.btnDisabled,
             ]}
             onPress={handleRequestOtp}
-            disabled={loading || !phoneReady || step !== "phone"}
+            disabled={loading || googleLoading || !proceedReady || step !== "phone"}
           >
             {loading && step === "phone" ? (
               <ActivityIndicator color="#fff" size="small" />
             ) : (
               <Text style={styles.proceedBtnText}>Proceed</Text>
+            )}
+          </Pressable>
+
+          <View style={styles.orRow}>
+            <View style={styles.orLine} />
+            <Text style={styles.orText}>or</Text>
+            <View style={styles.orLine} />
+          </View>
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.googleBtn,
+              (loading || googleLoading) && styles.btnDisabled,
+              pressed && styles.pressed,
+            ]}
+            onPress={() => void handleGoogleSignIn()}
+            disabled={loading || googleLoading || step !== "phone"}
+          >
+            {googleLoading ? (
+              <ActivityIndicator color={GatiMitraMerchant.textPrimary} size="small" />
+            ) : (
+              <>
+                <GoogleMark size={20} />
+                <Text style={styles.googleBtnText}>Sign in with Google</Text>
+              </>
             )}
           </Pressable>
 
@@ -478,8 +797,8 @@ export default function LoginScreen() {
       <OtpVerifySheetModal
         visible={step === "otp"}
         title="Verify OTP"
-        subtitle={`The One Time Password is sent to ${otpSentPhone}. Please enter the One Time Password.`}
-        otpLength={6}
+        subtitle={`The One Time Password is sent to ${otpSentTarget}. Please enter the One Time Password.`}
+        otpLength={otpLen}
         value={otp}
         onChange={(next) => {
           clearErrors();
@@ -556,7 +875,11 @@ export default function LoginScreen() {
           <View style={styles.notRegIconWrap}>
             <Ionicons name="alert-circle" size={28} color={GatiMitraMerchant.error} />
           </View>
-          <Text style={styles.notRegTitle}>{NOT_REGISTERED_SHEET_MESSAGE}</Text>
+          <Text style={styles.notRegTitle}>
+            {notRegisteredKind === "email"
+              ? NOT_REGISTERED_EMAIL_SHEET_MESSAGE
+              : NOT_REGISTERED_SHEET_MESSAGE}
+          </Text>
           <Pressable
             style={({ pressed }) => [styles.registerStoreBtn, pressed && styles.pressed]}
             onPress={openRegisterStore}
@@ -586,10 +909,41 @@ const styles = StyleSheet.create({
     height: 40,
     alignItems: "flex-start",
     justifyContent: "center",
-    marginBottom: 18,
+    marginBottom: 12,
   },
   pressed: {
     opacity: 0.72,
+  },
+  channelToggle: {
+    flexDirection: "row",
+    alignSelf: "stretch",
+    backgroundColor: "#F1F5F9",
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 18,
+  },
+  channelTab: {
+    flex: 1,
+    height: 40,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  channelTabActive: {
+    backgroundColor: "#FFFFFF",
+    shadowColor: "#0F172A",
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  channelTabText: {
+    fontFamily: POPPINS_BOLD,
+    fontSize: 14,
+    color: GatiMitraMerchant.textSecondary,
+  },
+  channelTabTextActive: {
+    color: GatiMitraMerchant.textPrimary,
   },
   title: {
     fontFamily: LORA_BOLD,
@@ -619,6 +973,9 @@ const styles = StyleSheet.create({
   },
   phoneShellFocused: {
     borderColor: GatiMitraMerchant.primary,
+  },
+  emailIcon: {
+    marginRight: 10,
   },
   ccBlock: {
     flexDirection: "row",
@@ -671,6 +1028,41 @@ const styles = StyleSheet.create({
   },
   btnDisabled: {
     opacity: 0.7,
+  },
+  orRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 22,
+    marginBottom: 16,
+    gap: 12,
+  },
+  orLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "#CBD5E1",
+  },
+  orText: {
+    fontFamily: POPPINS_BOLD,
+    fontSize: 12,
+    color: GatiMitraMerchant.textTertiary,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+  googleBtn: {
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 1.5,
+    borderColor: "#CBD5E1",
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 10,
+  },
+  googleBtnText: {
+    fontFamily: LORA_BOLD,
+    fontSize: 15,
+    color: GatiMitraMerchant.textPrimary,
   },
   registerBlock: {
     flexDirection: "row",

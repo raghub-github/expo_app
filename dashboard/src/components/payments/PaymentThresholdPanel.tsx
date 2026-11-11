@@ -65,19 +65,19 @@ function PartyLimitCard({
     draft.id == null;
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+    <div className="rounded-md border-[0.5px] border-[#121212]/40 bg-white p-4">
       <div className="flex items-center gap-2.5">
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-slate-700">
+        <div className="flex h-9 w-9 items-center justify-center rounded-md bg-[#F7F7F7] text-[#121212]">
           {icon}
         </div>
         <div>
-          <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
-          <p className="text-xs text-gray-500">Manual withdrawal amount limits</p>
+          <h3 className="text-sm font-semibold text-[#121212]">{title}</h3>
+          <p className="text-xs text-[#121212]/50">Manual withdrawal amount limits</p>
         </div>
       </div>
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
+        <label className="flex flex-col gap-1 text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
           Min withdrawal (₹)
           <input
             type="number"
@@ -85,10 +85,10 @@ function PartyLimitCard({
             step="1"
             value={draft.min}
             onChange={(e) => onChange({ ...draft, min: e.target.value })}
-            className="h-10 rounded-lg border border-gray-200 px-3 text-sm font-medium text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+            className="h-9 rounded-md border border-[#121212]/12 px-3 text-sm font-medium text-[#121212] outline-none focus:border-[#121212]/35"
           />
         </label>
-        <label className="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
+        <label className="flex flex-col gap-1 text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
           Max withdrawal (₹)
           <input
             type="number"
@@ -96,18 +96,18 @@ function PartyLimitCard({
             step="1"
             value={draft.max}
             onChange={(e) => onChange({ ...draft, max: e.target.value })}
-            className="h-10 rounded-lg border border-gray-200 px-3 text-sm font-medium text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+            className="h-9 rounded-md border border-[#121212]/12 px-3 text-sm font-medium text-[#121212] outline-none focus:border-[#121212]/35"
           />
         </label>
       </div>
 
-      <p className="mt-2 text-xs text-gray-500">
+      <p className="mt-2 text-xs text-[#121212]/50">
         Preview: {formatInr(Number.isFinite(minN) ? minN : 0)} –{" "}
         {formatInr(Number.isFinite(maxN) ? maxN : 0)} per request
       </p>
 
       {draft.id == null ? (
-        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+        <p className="mt-3 rounded-md border-[0.5px] border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
           No active payout rule found for this party. Run payment migrations (0239 / 0351 / 0465), then
           refresh.
         </p>
@@ -117,9 +117,9 @@ function PartyLimitCard({
         type="button"
         disabled={saving || invalid}
         onClick={onSave}
-        className="mt-4 inline-flex h-10 items-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+        className="mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-[#121212] px-4 text-xs font-semibold text-white hover:bg-black disabled:cursor-not-allowed disabled:opacity-50"
       >
-        <Save className="h-4 w-4" />
+        <Save className="h-3.5 w-3.5" />
         {saving ? "Saving…" : "Save limits"}
       </button>
     </div>
@@ -198,25 +198,22 @@ export function PaymentThresholdPanel() {
 
   if (loading) {
     return (
-      <div className="flex min-h-[200px] items-center justify-center rounded-xl border border-gray-200 bg-white">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+      <div className="flex min-h-[160px] items-center justify-center rounded-md border-[0.5px] border-[#121212]/40 bg-white text-sm text-[#121212]/45">
+        <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-[#121212]/30 border-t-[#121212]" />
+        Loading thresholds…
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-        <div className="flex items-start gap-2">
-          <Gauge className="mt-0.5 h-4 w-4 shrink-0 text-slate-600" />
-          <p className="text-sm text-slate-600">
-            Set minimum and maximum manual withdrawal amounts for Merchant and Rider apps (and Partner
-            Site). Requests outside this range are blocked.
-          </p>
-        </div>
-      </div>
+    <div className="space-y-3">
+      <p className="text-xs text-[#121212]/55">
+        <Gauge className="mr-1.5 inline-block h-3.5 w-3.5 align-text-bottom text-[#121212]/45" />
+        Set minimum and maximum manual withdrawal amounts for Merchant and Rider apps (and Partner
+        Site). Requests outside this range are blocked.
+      </p>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <PartyLimitCard
           title="Merchant"
           icon={<Store className="h-4 w-4" />}

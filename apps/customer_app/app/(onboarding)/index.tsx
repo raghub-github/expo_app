@@ -3,7 +3,7 @@
  * Splash-teal layout matching login / OTP screens.
  */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { AppText } from "@/components/AppText";
 import {
   View,
@@ -93,7 +93,7 @@ export default function OnboardingProfileScreen() {
   const setStatusBarBackground = useScreenChromeStore((s) => s.setStatusBarBackground);
   const resetStatusBarBackground = useScreenChromeStore((s) => s.resetStatusBarBackground);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     markInitialShellReady("onboarding");
   }, []);
   const [fullName, setFullName] = useState("");

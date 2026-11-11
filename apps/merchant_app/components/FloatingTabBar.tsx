@@ -2,6 +2,7 @@
  * Floating dual-dock bottom nav (GatiMitra light theme — not dark mode).
  * Main dock: Home, Orders, Catalog, Profile + Flow satellite to open the Flow hub.
  * Hub dock: Earnings, Insight, Feedback (scroll) + Home satellite to return.
+ * Staff: Home, Orders, Feedback, Profile only — Flow/Zone satellites hidden.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -27,12 +28,16 @@ import {
   TAB_BAR_FLOATING_GAP,
 } from "@/constants/theme";
 import { useActiveTab } from "@/context/ActiveTabContext";
+import { useAuth } from "@/context/AuthContext";
 import { useProfileNav } from "@/context/ProfileNavContext";
 import { hubTabFromPath, isHubPath } from "@/lib/merchantNavigation";
 import { OffersPercentBadgeIcon } from "@/components/OffersPercentBadgeIcon";
 import { useMerchantChromeDimmed } from "@/lib/merchantChromeDim";
+import { isStaffAccessRole, partnerHasPermission } from "@/lib/staffPermissions";
 
 const MAIN_TAB_ORDER = ["index", "orders", "menu", "profile"] as const;
+/** Staff main dock: Home, Orders, Feedback, Profile — no Catalog / Flow / Zone. */
+const STAFF_MAIN_TAB_ORDER = ["index", "orders", "reviews", "profile"] as const;
 
 const DOCK_CLIP_PADDING = 6;
 const CAPSULE_RADIUS = 26;
@@ -73,7 +78,7 @@ function isMenuStackAtRoot(tabState: BottomTabBarProps["state"]): boolean {
   return isTabStackAtRoot(tabState, "menu");
 }
 
-type MainTabName = (typeof MAIN_TAB_ORDER)[number];
+type MainTabName = (typeof MAIN_TAB_ORDER)[number] | "reviews";
 /** Zone dock — active tab pill (green). */
 const TAB_ACTIVE_BG = GatiMitraMerchant.primary;
 /** Flow hub dock — active tab pill (blue). Home satellite stays green. */
@@ -101,7 +106,10 @@ function useIsKeyboardShown(): boolean {
   return shown;
 }
 
-function isMainTab(name: string): name is MainTabName {
+function isMainTab(name: string, staffDock = false): name is MainTabName {
+  if (staffDock) {
+    return (STAFF_MAIN_TAB_ORDER as readonly string[]).includes(name) || name === "complaints";
+  }
   return (MAIN_TAB_ORDER as readonly string[]).includes(name);
 }
 
@@ -159,20 +167,27 @@ function DockSwitchPill({
   variant: "flow" | "home";
   accessibilityLabel: string;
 }) {
+  const isHome = variant === "home";
   return (
     <Pressable
       onPress={onPress}
       style={({ pressed }) => [
         styles.dockSwitchPill,
-        variant === "home" ? styles.dockSwitchPillHome : styles.dockSwitchPillFlow,
+        isHome ? styles.dockSwitchPillHome : styles.dockSwitchPillFlow,
         pressed && styles.pressed,
         GatiMitraMerchant.cursorPointer,
       ]}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
     >
-      <Ionicons name={icon} size={18} color={TAB_ACTIVE_FG} />
-      <Text style={styles.dockSwitchLabel}>{label}</Text>
+      <Ionicons
+        name={icon}
+        size={18}
+        color={isHome ? GatiMitraMerchant.primary : TAB_ACTIVE_FG}
+      />
+      <Text style={[styles.dockSwitchLabel, isHome && styles.dockSwitchLabelHome]}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -181,10 +196,34 @@ function isHubTab(name: string): boolean {
   return (HUB_TAB_ORDER as readonly string[]).includes(name) || name === "complaints";
 }
 
+/** Offers lives under profile stack — match any offers path shape from expo-router. */
+function isOffersHubPath(pathname: string | null | undefined): boolean {
+  const p = String(pathname ?? "").toLowerCase();
+  if (!p) return false;
+  return (
+    p.includes("/profile/offers") ||
+    p.includes("/offers") ||
+    /(^|\/)offers(\/|$)/.test(p)
+  );
+}
+
 export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const pathname = usePathname();
+  const { partner } = useAuth();
+  const isStaffRole = isStaffAccessRole(partner);
+  const canHome = partnerHasPermission(partner, "home");
+  const canOrders = partnerHasPermission(partner, "operations");
+  const canMenu = partnerHasPermission(partner, "menu");
+  const canReviews = partnerHasPermission(partner, "operations");
+  const canEarnings =
+    !isStaffRole &&
+    (partnerHasPermission(partner, "payouts") || partnerHasPermission(partner, "home"));
+  const canGrowth = !isStaffRole && partnerHasPermission(partner, "home");
+  const canOffers =
+    !isStaffRole &&
+    (partnerHasPermission(partner, "promo") || partnerHasPermission(partner, "ads"));
   const { setActiveTab } = useActiveTab();
   const {
     returnRoute,
@@ -205,14 +244,22 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
     currentName === "profile" && returnRoute != null && isHubPath(returnRoute);
   const overlayHubTab = profileHubOverlay ? hubTabFromPath(returnRoute) : null;
   /** Offers is a Profile stack screen but belongs to the Flow hub dock. */
-  const offersHubPage =
-    typeof pathname === "string" && pathname.includes("/profile/offers");
+  const offersHubPage = isOffersHubPath(pathname);
   /** Hide Zone/Flow dock on Profile nested screens unless opened as Flow overlay / Offers. */
   const profileInnerPage =
     currentName === "profile" &&
     !isProfileStackAtRoot(state) &&
     !profileHubOverlay &&
     !offersHubPage;
+  /**
+   * Derive dock from the open route so the bar always matches the page
+   * (avoids stale state: Offers open + Profile/Home highlighted).
+   */
+  const effectiveDock: "main" | "hub" = isStaffRole
+    ? "main"
+    : offersHubPage || profileHubOverlay || isHubTab(currentName)
+      ? "hub"
+      : "main";
   const packagingTipsPage = (pathname ?? "").includes("packaging-tips");
   const tabBarHidden =
     (hideTabBarOnKeyboard && keyboardShown) ||
@@ -221,10 +268,21 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
     chromeDimmed;
 
   const [dock, setDock] = useState<"main" | "hub">(() =>
-    isHubTab(currentName) ? "hub" : "main"
+    isStaffRole ? "main" : isHubTab(currentName) ? "hub" : "main"
   );
+  const defaultMainTab: MainTabName = canHome
+    ? "index"
+    : canOrders
+      ? "orders"
+      : canMenu
+        ? "menu"
+        : "profile";
   const lastMainRoute = useRef<MainTabName>(
-    isMainTab(currentName) ? currentName : "index"
+    isMainTab(currentName, isStaffRole)
+      ? currentName === "complaints"
+        ? "reviews"
+        : (currentName as MainTabName)
+      : defaultMainTab
   );
   const [switchOverlay, setSwitchOverlay] = useState(false);
   const [switchKind, setSwitchKind] = useState<"flow" | "home">("flow");
@@ -237,28 +295,60 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   }, []);
 
   useEffect(() => {
-    const offersOpen =
-      typeof pathname === "string" && pathname.includes("/profile/offers");
-    if (offersOpen) {
-      setDock("hub");
+    // Keep local dock in sync with the open page (used by switch guards).
+    setDock(effectiveDock);
+
+    // Staff never uses Flow/Zone hub — Feedback lives on the main dock.
+    if (isStaffRole) {
+      if (currentName === "reviews" || currentName === "complaints") {
+        lastMainRoute.current = "reviews";
+        setActiveTab("reviews");
+        return;
+      }
+      if (isMainTab(currentName, true)) {
+        lastMainRoute.current = currentName as MainTabName;
+        setActiveTab(currentName);
+      }
+      return;
+    }
+    if (offersHubPage) {
       setActiveTab("offers");
       return;
     }
     if (profileHubOverlay) {
-      setDock("hub");
       const hubTab = hubTabFromPath(returnRoute);
       if (hubTab) setActiveTab(hubTab);
       return;
     }
     if (isHubTab(currentName)) {
-      setDock("hub");
       setActiveTab(currentName);
     } else if (isMainTab(currentName)) {
-      setDock("main");
       lastMainRoute.current = currentName;
       setActiveTab(currentName);
     }
-  }, [currentName, setActiveTab, profileHubOverlay, returnRoute, pathname]);
+  }, [
+    currentName,
+    setActiveTab,
+    profileHubOverlay,
+    returnRoute,
+    offersHubPage,
+    isStaffRole,
+    effectiveDock,
+  ]);
+
+  /** Staff landing on earnings/growth (old Flow entry) → Feedback instead of blank redirect. */
+  useEffect(() => {
+    if (!isStaffRole) return;
+    if (currentName !== "earnings" && currentName !== "growth") return;
+    const tabNav = navigation as typeof navigation & { jumpTo?: (name: string) => void };
+    if (typeof tabNav.jumpTo === "function") {
+      tabNav.jumpTo(canReviews ? "reviews" : defaultMainTab);
+    } else {
+      navigation.dispatch(
+        CommonActions.navigate({ name: canReviews ? "reviews" : defaultMainTab } as never)
+      );
+    }
+  }, [isStaffRole, currentName, navigation, canReviews, defaultMainTab]);
 
   const runDockSwitch = useCallback(
     (nextDock: "main" | "hub", kind: "flow" | "home", navigate: () => void) => {
@@ -277,7 +367,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const navigateToMainTab = useCallback(
     (routeName: MainTabName) => {
       // Optimistic highlight first so Catalog/Home feel instant on tap.
-      setActiveTab(routeName);
+      setActiveTab(routeName === "reviews" ? "reviews" : routeName);
       lastMainRoute.current = routeName;
       // jumpTo switches tabs without stack push overhead.
       const tabNav = navigation as typeof navigation & {
@@ -368,7 +458,8 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const lastHubTabPressAt = useRef(0);
 
   const goHub = useCallback(() => {
-    if (dock === "hub") return;
+    if (isStaffRole) return;
+    if (effectiveDock === "hub") return;
     const now = Date.now();
     if (now - lastHubTabPressAt.current < DOCK_PRESS_DEBOUNCE_MS) return;
     lastHubTabPressAt.current = now;
@@ -376,32 +467,76 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
       setActiveTab("earnings");
       navigation.dispatch(CommonActions.navigate({ name: "earnings" } as never));
     });
-  }, [navigation, runDockSwitch, setActiveTab, dock]);
+  }, [navigation, runDockSwitch, setActiveTab, effectiveDock, isStaffRole]);
 
   const goMainDock = useCallback(() => {
-    const offersOpen =
-      typeof pathname === "string" && pathname.includes("/profile/offers");
-    if (dock === "main" && !profileHubOverlay && !offersOpen) return;
+    if (effectiveDock === "main" && !profileHubOverlay && !offersHubPage) return;
     const now = Date.now();
     if (now - lastHubTabPressAt.current < DOCK_PRESS_DEBOUNCE_MS) return;
     lastHubTabPressAt.current = now;
-    // From Offers / Flow overlay, always land on Home (Zone index).
+    // Flow "Home" → last Zone page the user was on (Home / Orders / Catalog / Profile).
     runDockSwitch("main", "home", () => {
       clearReturnRoute();
       setLastProfileSlug(null);
-      navigateToMainTab("index");
+      const target: MainTabName =
+        lastMainRoute.current &&
+        ((lastMainRoute.current === "index" && canHome) ||
+          (lastMainRoute.current === "orders" && canOrders) ||
+          (lastMainRoute.current === "menu" && canMenu) ||
+          (lastMainRoute.current === "reviews" && canReviews) ||
+          lastMainRoute.current === "profile")
+          ? lastMainRoute.current
+          : defaultMainTab;
+      lastMainRoute.current = target;
+      setActiveTab(target);
+      // Leave Offers / hub tabs with replace so the Zone page actually mounts
+      // (avoid openProfileRootOnNextFocus → POP_TO_TOP crash).
+      if (offersHubPage || profileHubOverlay || isHubTab(currentName)) {
+        const href =
+          target === "index"
+            ? "/(tabs)"
+            : target === "reviews"
+              ? "/(tabs)/reviews"
+              : `/(tabs)/${target}`;
+        router.replace(href as never);
+        return;
+      }
+      navigateToMainTab(target);
     });
   }, [
     navigateToMainTab,
     runDockSwitch,
-    dock,
+    effectiveDock,
     profileHubOverlay,
+    offersHubPage,
     clearReturnRoute,
-    pathname,
     setLastProfileSlug,
+    canHome,
+    canOrders,
+    canMenu,
+    canReviews,
+    defaultMainTab,
+    setActiveTab,
+    currentName,
+    router,
   ]);
 
-  const orderedMain = MAIN_TAB_ORDER.map((name) => {
+  const mainTabOrder = isStaffRole ? STAFF_MAIN_TAB_ORDER : MAIN_TAB_ORDER;
+  const visibleMainTabs = mainTabOrder.filter((name) => {
+    if (name === "index") return canHome;
+    if (name === "orders") return canOrders;
+    if (name === "menu") return canMenu;
+    if (name === "reviews") return canReviews;
+    return true;
+  });
+  const visibleHubTabs = HUB_TAB_ORDER.filter((routeName) => {
+    if (routeName === "earnings") return canEarnings;
+    if (routeName === "growth") return canGrowth;
+    if (routeName === "offers") return canOffers;
+    if (routeName === "reviews") return canReviews;
+    return false;
+  });
+  const orderedMain = visibleMainTabs.map((name) => {
     const route = state.routes.find((r) => r.name === name);
     if (!route) return null;
     return { route };
@@ -489,11 +624,15 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
         ]}
         pointerEvents="box-none"
       >
-        {dock === "main" ? (
+        {effectiveDock === "main" || isStaffRole ? (
           <View style={styles.row} pointerEvents="box-none">
             <View style={styles.mainCapsule} collapsable={false}>
               {orderedMain.map(({ route }) => {
-                const isActive = route.name === focusedRouteName;
+                // Never highlight a Zone tab while a Flow page (Offers/Earnings/…) is open.
+                const isActive =
+                  effectiveDock === "main" &&
+                  (route.name === focusedRouteName ||
+                    (route.name === "reviews" && focusedRouteName === "complaints"));
                 const { options } = descriptors[route.key];
                 const label = options.title ?? route.name;
                 const iconColor = isActive ? TAB_ACTIVE_FG : TAB_INACTIVE_FG;
@@ -530,13 +669,15 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
               })}
             </View>
 
-            <DockSwitchPill
-              label="Flow"
-              icon="swap-horizontal"
-              onPress={goHub}
-              variant="flow"
-              accessibilityLabel="Open Flow hub"
-            />
+            {!isStaffRole ? (
+              <DockSwitchPill
+                label="Flow"
+                icon="swap-horizontal"
+                onPress={goHub}
+                variant="flow"
+                accessibilityLabel="Open Flow hub"
+              />
+            ) : null}
           </View>
         ) : (
           <View style={styles.row} pointerEvents="box-none">
@@ -554,12 +695,10 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.hubScrollInner}
               >
-                {HUB_TAB_ORDER.map((routeName) => {
+                {visibleHubTabs.map((routeName) => {
                   const complaintsActive = focusedRouteName === "complaints";
-                  const offersHubActive =
-                    typeof pathname === "string" && pathname.includes("/profile/offers");
-                  // Offers lives under the Profile stack — prefer pathname over returnRoute
-                  // so the Offers pill stays selected while that screen is open.
+                  const offersHubActive = offersHubPage;
+                  // Only the open Flow page is highlighted — never Home switch + another tab.
                   const isFocused =
                     routeName === "offers"
                       ? offersHubActive
@@ -599,7 +738,9 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
                           return;
                         }
                         if (isFocused) return;
-                        if (profileHubOverlay) clearReturnRoute();
+                        // Leaving Offers / Flow-profile overlay → jump to the tapped hub tab.
+                        if (offersHubActive || profileHubOverlay) clearReturnRoute();
+                        setDock("hub");
                         setActiveTab(routeName);
                         navigation.dispatch(CommonActions.navigate({ name: routeName } as never));
                       }}
@@ -882,15 +1023,21 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.navy,
     borderRadius: CAPSULE_RADIUS,
   },
+  /** Outline — must not look like the selected Zone "Home" tab while on Earnings/Offers. */
   dockSwitchPillHome: {
-    backgroundColor: GatiMitraMerchant.primary,
+    backgroundColor: GatiMitraMerchant.cardBg,
     borderRadius: CAPSULE_RADIUS,
+    borderWidth: 1.5,
+    borderColor: GatiMitraMerchant.primary,
   },
   dockSwitchLabel: {
     fontSize: 9,
     fontWeight: "700",
     color: TAB_ACTIVE_FG,
     letterSpacing: 0.2,
+  },
+  dockSwitchLabelHome: {
+    color: GatiMitraMerchant.primary,
   },
   pressed: {
     opacity: 0.88,

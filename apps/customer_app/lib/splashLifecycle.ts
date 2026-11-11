@@ -10,11 +10,13 @@
 import { useSyncExternalStore } from "react";
 import { startupLaunchLog, startupProcessAgeMs } from "@/lib/startupPerf";
 
-/** Hard product requirement: branded splash must be gone by this age. */
+/**
+ * Absolute auth-unblock + destination-kick budget. Root layout must NOT dismiss
+ * the branded cover onto root Index mint — only Home/Login/Onboarding mark shell.
+ */
 export const SPLASH_HARD_DEADLINE_MS = 5_000;
 /**
- * After auth+cart are local-ready, wait at most this for index→Home redirect
- * before fading anyway (soft hold under overlay prevents blank mint).
+ * Watchdog after auth for shell-ready lag logging.
  */
 export const SPLASH_SHELL_SOFT_MS = 400;
 
@@ -93,7 +95,13 @@ export function markSplashExited(reason: string): boolean {
     clearTimeout(s.deadlineTimer);
     s.deadlineTimer = null;
   }
-  startupLaunchLog("SPLASH_HIDE", { reason, ageMs: startupProcessAgeMs() });
+  const ageMs = startupProcessAgeMs();
+  startupLaunchLog("SPLASH_HIDE", {
+    reason,
+    // ageMs = process age; do not confuse with branded-cover duration.
+    processAgeMs: ageMs,
+    blocksHome: true,
+  });
   emit();
   return true;
 }

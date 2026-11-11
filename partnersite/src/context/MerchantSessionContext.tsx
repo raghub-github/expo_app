@@ -39,6 +39,10 @@ export interface MerchantParentSummary {
   block_message?: string;
   /** Brand logo: `/api/attachments/proxy?key=...` from merchant_parents.store_logo */
   store_logo?: string | null;
+  accessRole?: "OWNER" | "MANAGER" | "STAFF";
+  staffId?: number | null;
+  storeId?: number | null;
+  permissions?: string[];
 }
 
 export interface MerchantSessionContextValue {
@@ -132,6 +136,14 @@ export function MerchantSessionProvider({ children }: { children: React.ReactNod
           setUser(null);
           setParent(null);
           setSessionStatus({ authenticated: false, expired: true });
+          const code = String(sessionData.code || "");
+          if (code === "DEVICE_SESSION_INVALID" && typeof window !== "undefined") {
+            const path = window.location.pathname.replace(/\/$/, "") || "/";
+            if (path !== "/auth" && path !== "/auth/login") {
+              const q = new URLSearchParams({ reason: "device_session_invalid" });
+              window.location.href = `/auth/login?${q.toString()}`;
+            }
+          }
           return;
         }
 

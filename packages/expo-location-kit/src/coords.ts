@@ -68,16 +68,28 @@ export function coordsMovedSignificantly(
 
 export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error("Location request timed out")), ms);
+    let settled = false;
+    const t = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("Location request timed out"));
+    }, ms);
     promise.then(
       (v) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(t);
         resolve(v);
       },
       (e) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(t);
         reject(e);
       }
     );
+    // After we settle via timeout, the underlying GPS promise may still reject.
+    // Attach a no-op so Hermes/LogBox do not surface "Uncaught (in promise)".
+    void promise.catch(() => {});
   });
 }

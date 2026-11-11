@@ -12,8 +12,23 @@
 
 import { getSupabaseAuth } from "@/lib/supabaseClient";
 import { getConfig } from "@/config/env";
+import { getMerchantDeviceMeta } from "@/lib/merchantDeviceMeta";
 
 const AUTH_PREFIX = "/v1/auth";
+
+async function deviceCaptureFields(): Promise<Record<string, string>> {
+  try {
+    const meta = await getMerchantDeviceMeta();
+    return {
+      deviceName: meta.deviceName,
+      deviceOs: meta.os,
+      deviceType: meta.deviceType,
+      appSource: meta.appSource,
+    };
+  } catch {
+    return { appSource: "merchant_app" };
+  }
+}
 
 /** Thrown when backend returns structured auth errors (e.g. device session could not be created). */
 export class MerchantAuthError extends Error {
@@ -33,6 +48,12 @@ export function isMerchantAuthError(e: unknown): e is MerchantAuthError {
 export type SendOtpPayload = { phoneE164: string };
 export type VerifyOtpPayload = {
   phoneE164: string;
+  otp: string;
+  deviceId: string;
+};
+export type SendEmailOtpPayload = { email: string };
+export type VerifyEmailOtpPayload = {
+  email: string;
   otp: string;
   deviceId: string;
 };
@@ -194,6 +215,91 @@ export const merchantAuthService = {
   },
 
   /**
+   * Email OTP: existence check on backend, then Supabase email OTP delivery.
+   */
+  async sendEmailOtp(payload: SendEmailOtpPayload): Promise<void> {
+    const email = payload.email.trim().toLowerCase();
+    const res = await fetchWithTimeout(`${apiBaseUrl}${AUTH_PREFIX}/merchant/email-otp/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    const raw = await res.text();
+    let dataJson: any;
+    try {
+      dataJson = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error("Invalid response from server while requesting email OTP.");
+    }
+    if (!res.ok) {
+      const code =
+        typeof dataJson?.error === "string" && dataJson.error.trim()
+          ? String(dataJson.error).trim()
+          : "";
+      const msg =
+        (typeof dataJson?.message === "string" && dataJson.message) ||
+        code ||
+        `Could not send OTP (HTTP ${res.status}).`;
+      if (code === "not_registered" || /isn't registered/i.test(msg)) {
+        throw new MerchantAuthError("not_registered", msg);
+      }
+      throw new Error(msg);
+    }
+
+    const supabase = getSupabaseAuth();
+    if (!supabase) {
+      throw new Error(
+        "Supabase is not configured for merchant OTP. Check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.",
+      );
+    }
+    // Existence already checked against merchant_parents. Allow Supabase user
+    // creation so first-time email login works for existing partners.
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: true },
+    });
+    if (error) {
+      const msg = error.message || "Could not send email OTP.";
+      if ((error as { status?: number }).status === 429 || /rate.?limit|too many/i.test(msg)) {
+        throw new Error("Too many OTP attempts on this email. Wait a bit and try again.");
+      }
+      throw new Error(msg);
+    }
+  },
+
+  async verifyEmailOtp(payload: VerifyEmailOtpPayload): Promise<{
+    accessToken: string;
+    expiresAt: number;
+    role: string;
+    userId: string;
+    partner: { parent: unknown; childStores: unknown[] };
+  }> {
+    const email = payload.email.trim().toLowerCase();
+    const supabase = getSupabaseAuth();
+    if (!supabase) {
+      throw new Error(
+        "Supabase is not configured for merchant OTP. Check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.",
+      );
+    }
+    const { data, error } = await supabase.auth.verifyOtp({
+      email,
+      token: payload.otp,
+      type: "email",
+    });
+    if (error) {
+      throw new Error(error.message || "Invalid OTP.");
+    }
+    const sbToken = data?.session?.access_token;
+    if (!sbToken) {
+      throw new Error("No session returned from Supabase after OTP verify.");
+    }
+    return this.exchangeSupabaseOAuth({
+      accessToken: sbToken,
+      deviceId: payload.deviceId,
+    });
+  },
+
+  /**
    * Verify OTP via Supabase Auth, then exchange the Supabase access token
    * for a backend merchant session (JWT + partner parent/child stores).
    */
@@ -215,6 +321,7 @@ export const merchantAuthService = {
           otp: payload.otp,
           deviceId: payload.deviceId,
           appType: "merchant",
+          ...(await deviceCaptureFields()),
         }),
       });
       const raw = await res.text();
@@ -258,6 +365,7 @@ export const merchantAuthService = {
         accessToken: sbToken,
         phoneE164: payload.phoneE164,
         deviceId: payload.deviceId,
+        ...(await deviceCaptureFields()),
       }),
     });
     const raw = await res.text();
@@ -299,6 +407,7 @@ export const merchantAuthService = {
         accessToken: data.session.access_token,
         phoneE164: payload.phoneE164,
         deviceId: payload.deviceId,
+        ...(await deviceCaptureFields()),
       }),
     });
     const raw = await res.text();
@@ -334,6 +443,7 @@ export const merchantAuthService = {
       body: JSON.stringify({
         accessToken: payload.accessToken,
         deviceId: payload.deviceId,
+        ...(await deviceCaptureFields()),
       }),
     });
     const raw = await res.text();
@@ -369,6 +479,7 @@ export const merchantAuthService = {
       body: JSON.stringify({
         accessToken: data.session.access_token,
         deviceId: payload.deviceId,
+        ...(await deviceCaptureFields()),
       }),
     });
     const raw = await res.text();

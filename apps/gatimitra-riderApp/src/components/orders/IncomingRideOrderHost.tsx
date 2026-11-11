@@ -12,6 +12,9 @@ import {
   useRejectOrder,
   useMissOrderOffer,
   RIDER_ACTIVE_ORDERS_QUERY_KEY,
+  RIDER_AVAILABLE_ORDERS_QUERY_KEY,
+  RIDER_PENDING_OFFERS_QUERY_KEY,
+  persistLastActiveOrders,
   seedRiderOrderDetailCache,
 } from "@/src/hooks/useOrders";
 import { useRiderOrderAcceptanceSettings } from "@/src/hooks/useRiderOrderAcceptanceSettings";
@@ -76,12 +79,11 @@ import {
 import { refreshRiderLocationBeforeAccept } from "@/src/lib/refreshRiderLocationBeforeAccept";
 
 /**
- * Hard deadline on a retryable accept. The background retry queue gets this
- * long to land the accept; after that the slider is handed back to the rider
- * rather than spinning on "Accepting..." forever.
+ * Hard deadline on a retryable accept when the offer sheet is still open.
+ * Optimistic accept navigates away immediately; this only covers the rare
+ * path where we stay on the sheet (e.g. stacked active trip).
  */
-/** Cover accept HTTP timeout (35s) + reconcile probe — don't release mid-claim. */
-const ACCEPT_WEDGE_RELEASE_MS = 40_000;
+const ACCEPT_WEDGE_RELEASE_MS = 20_000;
 
 const EMPTY_ORDERS: RiderOrderSummary[] = [];
 
@@ -725,6 +727,7 @@ export function IncomingRideOrderHost() {
     setAcceptLatencyOrderId(id);
     const acceptRef = order.formattedOrderId?.trim() || id;
     const snap = order;
+    const rawOffer = stickyOfferRef.current;
 
     setAcceptingOrderId(id);
     setAcceptBusyLabel(t("orders.incoming.accepting", "Accepting..."));
@@ -736,20 +739,7 @@ export function IncomingRideOrderHost() {
       }
     };
 
-    /** Hand the slider back so the rider can swipe again. */
-    const releaseAccept = () => {
-      clearWatchdog();
-      acceptingRef.current = false;
-      acceptingOrderIdRef.current = null;
-      // Allow the offer back into the pool only if accept truly failed / released.
-      locallyAcceptedRef.current.delete(id);
-      setAcceptingOrderId(null);
-      setAcceptBusyLabel(null);
-      setAcceptSwipeResetKey((k) => k + 1);
-      bumpPool();
-    };
-
-    const finishAccept = () => {
+    const finishAcceptUi = () => {
       clearWatchdog();
       acceptingOrderIdRef.current = null;
       acceptingRef.current = false;
@@ -768,36 +758,81 @@ export function IncomingRideOrderHost() {
       });
     };
 
+    const rollbackOptimisticAccept = () => {
+      clearWatchdog();
+      acceptingRef.current = false;
+      acceptingOrderIdRef.current = null;
+      locallyAcceptedRef.current.delete(id);
+      setAcceptingOrderId(null);
+      setAcceptBusyLabel(null);
+      queryClient.setQueryData<RiderOrderSummary[]>(RIDER_ACTIVE_ORDERS_QUERY_KEY, (prev) => {
+        const next = (Array.isArray(prev) ? prev : []).filter(
+          (o) =>
+            o.id !== id &&
+            o.id !== acceptRef &&
+            (!snap.formattedOrderId || o.formattedOrderId !== snap.formattedOrderId)
+        );
+        persistLastActiveOrders(next);
+        return next;
+      });
+      queryClient.removeQueries({ queryKey: ["rider", "orders", "detail", id] });
+      if (acceptRef !== id) {
+        queryClient.removeQueries({ queryKey: ["rider", "orders", "detail", acceptRef] });
+      }
+    };
+
+    // Optimistic: seed active/detail caches + leave the offer sheet immediately.
+    // Network confirm runs in the background so low internet never blocks the swipe UX.
+    if (rawOffer && rawOffer.id === id) {
+      const optimistic: RiderOrderSummary = {
+        ...rawOffer,
+        status: "assigned",
+      };
+      seedRiderOrderDetailCache(queryClient, optimistic, [id, acceptRef]);
+      queryClient.setQueryData<RiderOrderSummary[]>(RIDER_ACTIVE_ORDERS_QUERY_KEY, (prev) => {
+        const list = Array.isArray(prev) ? prev : [];
+        const next = list.some((o) => o.id === optimistic.id || o.id === id)
+          ? list.map((o) => (o.id === optimistic.id || o.id === id ? optimistic : o))
+          : [optimistic, ...list];
+        persistLastActiveOrders(next);
+        return next;
+      });
+      const dropOffer = (list: RiderOrderSummary[] | undefined) =>
+        Array.isArray(list)
+          ? list.filter(
+              (o) =>
+                o.id !== id &&
+                o.id !== acceptRef &&
+                (!snap.formattedOrderId || o.formattedOrderId !== snap.formattedOrderId)
+            )
+          : list;
+      queryClient.setQueryData(RIDER_AVAILABLE_ORDERS_QUERY_KEY, dropOffer);
+      queryClient.setQueryData(RIDER_PENDING_OFFERS_QUERY_KEY, dropOffer);
+    }
+
+    finishAcceptUi();
+
     void (async () => {
-      // Best-effort fresh ping so GAP-2 does not evaluate a killed-app last-known point.
-      await refreshRiderLocationBeforeAccept();
+      // Never await GPS — ping in parallel so accept POST starts on the same tick.
+      void refreshRiderLocationBeforeAccept().catch(() => {});
 
       acceptMutate(acceptRef, {
         onSuccess: (data) => {
           riderDispatchLog("ACCEPT_RESPONSE_RECEIVED", { orderId: id, status: "ok" });
           riderDispatchLog("ORDER_ASSIGNED", { orderId: id });
           seedRiderOrderDetailCache(queryClient, data, [id, acceptRef]);
-          finishAccept();
         },
         onError: async (err) => {
           if (isRetryableRiderActionError(err) || classifyRiderActionFailure(err) === "busy") {
-            acceptingRef.current = true;
-            acceptingOrderIdRef.current = id;
-            setAcceptingOrderId(id);
-            const kind = classifyRiderActionFailure(err);
-            setAcceptBusyLabel(
-              kind === "timeout"
-                ? t("orders.incoming.checkingStatus", "Connection lost. Checking order status...")
-                : t("orders.incoming.waitingConnection", "Waiting for connection...")
-            );
-            // The background retry queue may still land this accept, so stay
-            // busy for now — but never indefinitely. Without this deadline a
-            // single flaky accept left the slider spinning forever: it could
-            // not be swiped again and the offer could not expire.
+            // Keep optimistic assignment. Pending-action runtime retries + reconciles
+            // in the background — do not bounce the rider back to the offer sheet.
+            riderDispatchLog("ACCEPT_BACKGROUND_RETRY", {
+              orderId: id,
+              kind: classifyRiderActionFailure(err),
+            });
             clearWatchdog();
             acceptWatchdogRef.current = setTimeout(() => {
               acceptWatchdogRef.current = null;
-              if (acceptingOrderIdRef.current !== id) return;
               void (async () => {
                 try {
                   const active = await riderApi.getActiveOrders();
@@ -806,25 +841,18 @@ export function IncomingRideOrderHost() {
                     acceptOrderRefs(id, acceptRef, snap.formattedOrderId)
                   );
                   if (hit) {
-                    finishAccept();
+                    seedRiderOrderDetailCache(queryClient, hit, [id, acceptRef]);
                     return;
                   }
                 } catch {
-                  /* fall through to release */
+                  /* ignore — pending retry queue may still land */
                 }
-                if (acceptingOrderIdRef.current !== id) return;
-                riderDispatchLog("ACCEPT_WEDGE_RELEASED", { orderId: id });
-                releaseAccept();
+                riderDispatchLog("ACCEPT_WEDGE_STILL_PENDING", { orderId: id });
               })();
             }, ACCEPT_WEDGE_RELEASE_MS);
             return;
           }
 
-          acceptingRef.current = false;
-          acceptingOrderIdRef.current = null;
-          clearWatchdog();
-          setAcceptingOrderId(null);
-          setAcceptBusyLabel(null);
           riderDispatchLog("ACCEPT_RESPONSE_RECEIVED", {
             orderId: id,
             status: "error",
@@ -837,9 +865,16 @@ export function IncomingRideOrderHost() {
               cancelIncomingDispatchOffer(queryClient, id, "accept_409");
               expiredRef.current.add(id);
               offerShownAtRef.current.delete(id);
+              rollbackOptimisticAccept();
               bumpPool();
-              closeModal();
-              setActiveOrderId(null);
+              Alert.alert(
+                t("orders.incoming.acceptFailedTitle", "Could not accept"),
+                t(
+                  "orders.incoming.orderNoLongerAvailable",
+                  "This order is no longer available."
+                )
+              );
+              router.replace("/(tabs)/orders");
               return;
             }
 
@@ -850,14 +885,13 @@ export function IncomingRideOrderHost() {
                 acceptOrderRefs(id, acceptRef, snap.formattedOrderId)
               );
               if (hit) {
-                finishAccept();
+                seedRiderOrderDetailCache(queryClient, hit, [id, acceptRef]);
                 return;
               }
             } catch {
               /* ignore recovery probe */
             }
 
-            // One more active probe — late claim often lands after a premature 409.
             try {
               await new Promise((r) => setTimeout(r, 600));
               const active2 = await riderApi.getActiveOrders();
@@ -866,13 +900,17 @@ export function IncomingRideOrderHost() {
                 acceptOrderRefs(id, acceptRef, snap.formattedOrderId)
               );
               if (hit2) {
-                finishAccept();
+                seedRiderOrderDetailCache(queryClient, hit2, [id, acceptRef]);
                 return;
               }
             } catch {
               /* ignore */
             }
 
+            rollbackOptimisticAccept();
+            expiredRef.current.add(id);
+            offerShownAtRef.current.delete(id);
+            bumpPool();
             Alert.alert(
               t("orders.incoming.acceptFailedTitle", "Could not accept"),
               isOrderNoLongerAvailableError(err)
@@ -886,16 +924,11 @@ export function IncomingRideOrderHost() {
                       "Could not accept this order. Please try another offer."
                     )
             );
-            locallyAcceptedRef.current.delete(id);
-            expiredRef.current.add(id);
-            offerShownAtRef.current.delete(id);
-            bumpPool();
-            closeModal();
-            setActiveOrderId(null);
+            router.replace("/(tabs)/orders");
             return;
           }
 
-          locallyAcceptedRef.current.delete(id);
+          rollbackOptimisticAccept();
           Alert.alert(
             t("orders.incoming.acceptFailedTitle", "Could not accept"),
             apiMessage ??
@@ -904,7 +937,7 @@ export function IncomingRideOrderHost() {
                 "Something went wrong. Check your connection and try again."
               )
           );
-          setAcceptSwipeResetKey((k) => k + 1);
+          router.replace("/(tabs)/orders");
           bumpPool();
         },
       });

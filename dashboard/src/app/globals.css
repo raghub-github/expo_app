@@ -87,6 +87,26 @@
   font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
 }
 
+/* Merchants dashboard lists — Lora copy, Poppins for IDs/digits */
+.merchants-typo {
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
+  font-optical-sizing: auto;
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: 0.005em;
+  color: #121212;
+}
+
+.merchants-typo .merchants-num,
+.merchants-num,
+.merchants-typo .tabular-nums,
+.merchants-typo .font-mono {
+  font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  font-optical-sizing: auto;
+}
+
 /* Merchant store verification flow — Lora copy, Poppins for IDs/digits */
 .verification-typo {
   font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
@@ -107,23 +127,34 @@
   font-optical-sizing: auto;
 }
 
-/* Person ride order detail — Lora headings / Poppins body (isolated from food) */
+/* Person ride order detail — Lora copy, Poppins for digits / IDs / money */
 .person-ride-typo {
-  font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
   font-optical-sizing: auto;
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: 0.005em;
   color: #121212;
 }
 
+.person-ride-typo .pr-body,
 .person-ride-typo .pr-heading {
   font-family: var(--font-tickets-text), Georgia, "Times New Roman", serif;
   font-optical-sizing: auto;
 }
 
-.person-ride-typo .pr-body,
-.person-ride-typo .pr-num {
+.person-ride-typo .pr-num,
+.person-ride-typo .orders-num,
+.person-ride-typo .tabular-nums,
+.person-ride-typo .font-mono,
+.person-ride-typo input,
+.person-ride-typo textarea,
+.person-ride-typo select,
+.person-ride-typo button {
   font-family: var(--font-tickets-num), ui-sans-serif, system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.01em;
+  font-optical-sizing: auto;
 }
 
 /* Parcel order detail — Lora Bold copy, Poppins for digits / IDs / money */

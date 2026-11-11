@@ -1,16 +1,26 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useEffect } from "react";
 import { View, StyleSheet, useWindowDimensions } from "react-native";
+import { usePathname } from "expo-router";
 import CheckoutScreen from "@/app/checkout/index";
 import { StoreBottomSheetShell } from "@/components/store/StoreBottomSheetShell";
 import { CheckoutPresentationProvider } from "@/lib/checkoutPresentation";
 import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
 import { useMealsUnderPriceCartUiStore } from "@/store/mealsUnderPriceCartUiStore";
 import { useCartStore } from "@/store/cartStore";
+import { isOnCheckoutRoute } from "@/lib/restoreCheckoutSurface";
 
 /** Root-level checkout drawer — avoids nested modal issues on inner screens. */
 export function CheckoutBottomSheetHost() {
   const { height: windowHeight } = useWindowDimensions();
+  const pathname = usePathname();
   const visible = useCheckoutSheetStore((s) => s.visible);
+
+  // Full-page `/checkout` + this drawer both mount CheckoutScreen — never allow both.
+  useEffect(() => {
+    if (!visible) return;
+    if (!isOnCheckoutRoute(pathname)) return;
+    useCheckoutSheetStore.getState().hide();
+  }, [pathname, visible]);
 
   const handleClose = useCallback(() => {
     const fromMealsUnderPrice = useMealsUnderPriceCartUiStore.getState().suppressFloatingCart;
@@ -22,18 +32,19 @@ export function CheckoutBottomSheetHost() {
   }, []);
 
   const sheetBodyHeight = Math.max(360, Math.round(windowHeight * 0.9) - 56);
+  const sheetVisible = visible && !isOnCheckoutRoute(pathname);
 
   return (
     <CheckoutPresentationProvider variant="sheet" onSheetClose={handleClose}>
       <StoreBottomSheetShell
-        visible={visible}
+        visible={sheetVisible}
         onClose={handleClose}
         maxHeightRatio={0.94}
         flushBottom
         keyboardAvoiding
         sheetStyle={styles.sheet}
       >
-        {visible ? (
+        {sheetVisible ? (
           <View style={[styles.content, { height: sheetBodyHeight }]}>
             <CheckoutScreen />
           </View>

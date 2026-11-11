@@ -56,6 +56,12 @@ function isRetryableRequest(err: AxiosError): boolean {
 
 function shouldRetry(err: AxiosError): boolean {
   if (!isRetryableRequest(err)) return false;
+  const config = err.config as RetryConfig | undefined;
+  if (config?.headers?.["X-No-Retry"] === "1" || config?.headers?.["x-no-retry"] === "1") {
+    return false;
+  }
+  // Timeouts already waited the full budget — retrying multiplies hangs (25s×3).
+  if (err.code === "ECONNABORTED" || err.code === "ETIMEDOUT") return false;
   const status = err.response?.status;
   if (status === 503) return true;
   return isNetworkError(err);

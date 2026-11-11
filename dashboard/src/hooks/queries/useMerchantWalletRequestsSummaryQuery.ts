@@ -51,11 +51,16 @@ export function useMerchantWalletRequestsSummaryQuery(storeId: string | null | u
     : "/api/merchant/wallet-requests/summary";
 
   const isOnMerchantsHome = cleanPathname === "/dashboard/merchants";
+  const isOnWalletRequests =
+    cleanPathname === "/dashboard/merchants/wallet-requests" ||
+    cleanPathname.startsWith("/dashboard/merchants/wallet-requests/");
 
   // Strict enabled condition:
-  // - global summary only runs on /dashboard/merchants
+  // - global summary on merchants home + wallet-requests list (sidebar badge)
   // - store-scoped summary runs on store pages (only gated by auth)
-  const enabled = Boolean(session && authReady && url && (storeId ? true : isOnMerchantsHome));
+  const enabled = Boolean(
+    session && authReady && url && (storeId ? true : isOnMerchantsHome || isOnWalletRequests)
+  );
 
   const fetchSummary = useCallback(
     ({ signal }: { signal?: AbortSignal }) => fetchWalletRequestsSummary(url, signal),

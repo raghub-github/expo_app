@@ -203,9 +203,12 @@ export function FoodHomeGridFirstHeader({
   const inFlowSearchFadeStyle = useAnimatedStyle(() => {
     if (!stickyEnabled) return { opacity: 1 };
     const stickAt = stickAtSv.value;
-    // Same threshold as the pinned search. A late fade left two search bars
-    // on screen and the row jumped.
-    return { opacity: scrollYSv.value >= stickAt ? 0 : 1 };
+    if (stickAt <= 1) return { opacity: 1 };
+    // Sticky search snaps ~28px early (FoodHomeGridFirstStickyChrome). Fade the
+    // in-flow copy slightly after that so a fast fling never blanks the pill.
+    const early = 28;
+    const snapAt = Math.max(1, stickAt - early);
+    return { opacity: scrollYSv.value >= snapAt + 10 ? 0 : 1 };
   });
 
   const locationRow = showLocation ? (
@@ -440,7 +443,7 @@ const styles = StyleSheet.create({
     textShadowRadius: 0,
   },
   locationSecondaryCompact: {
-    color: "#64748B",
+    color: "#0F172A",
     textShadowColor: "transparent",
     textShadowRadius: 0,
   },
@@ -532,7 +535,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     fontSize: 14,
-    color: "#9CA3AF",
+    color: "#111827",
     fontWeight: "500",
   },
   vegSlot: {

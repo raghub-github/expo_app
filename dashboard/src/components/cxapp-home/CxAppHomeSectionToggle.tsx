@@ -49,10 +49,10 @@ export function CxAppHomeSectionToggle() {
       onMouseEnter={() => ctx?.warmTab(goTo)}
       onFocus={() => ctx?.warmTab(goTo)}
       onClick={() => onSelect(goTo)}
-      className="inline-flex shrink-0 items-center gap-0.5 text-[13px] font-semibold text-teal-700 transition hover:text-teal-800"
+      className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-[#121212]/12 bg-white px-3 text-xs font-semibold text-[#121212] transition-colors hover:bg-[#F7F7F7]"
     >
       {label}
-      <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+      <ChevronRight className="h-3.5 w-3.5 text-[#121212]/50" aria-hidden />
     </button>
   );
 }
