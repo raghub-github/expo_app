@@ -4,8 +4,10 @@
  * plus owner email when available (invite/remove/logout).
  */
 
+import { randomInt } from "crypto";
 import { ulid } from "ulid";
 import { getEnv } from "../config/env.js";
+import { checkAndRecordOtpSend } from "../modules/auth/otpSendGuard.js";
 import { deliverSupabaseOtpViaMsg91 } from "../services/otp/msg91DeliverSupabaseOtp.js";
 import { createSmtpTransporter, formatSmtpFrom, getSmtpConfig } from "./smtp-config.js";
 import {
@@ -30,7 +32,7 @@ const OTP_EXPIRY_MS = 5 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
 
 function generateOtp(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return String(randomInt(100000, 1000000));
 }
 
 function maskPhone(phone: string): string {
@@ -83,6 +85,20 @@ export async function sendMerchantActionOtp(args: {
   const email = args.email?.trim().toLowerCase() || null;
   if (!phone || phone.replace(/\D/g, "").length < 10) {
     throw Object.assign(new Error("Phone is required to send OTP."), { statusCode: 400 });
+  }
+
+  // Same per-phone cooldown + 24h cap as the login OTP chokepoints. This path fires every
+  // MSG91 channel, so an unguarded resend loop would multiply real SMS spend.
+  const sendGuard = await checkAndRecordOtpSend(phone);
+  if (!sendGuard.allowed) {
+    args.log?.warn?.(
+      { phoneTail: phone.slice(-4), reason: sendGuard.reason, purpose: args.purpose },
+      "merchant action OTP per-phone rate limit — SMS NOT sent"
+    );
+    throw Object.assign(
+      new Error("Too many OTP requests for this number. Please wait a bit and try again."),
+      { statusCode: 429 }
+    );
   }
 
   const otp = generateOtp();

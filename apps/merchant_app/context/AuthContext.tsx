@@ -188,7 +188,9 @@ function bestEffortBackgroundCleanup(accessToken: string | null): void {
     }
     try {
       const { getSupabaseAuth } = await import("@/lib/supabaseClient");
-      await getSupabaseAuth()?.auth.signOut();
+      // Local scope: the default (global) revokes this Supabase user's sessions on every
+      // device and site (partnersite shares the project).
+      await getSupabaseAuth()?.auth.signOut({ scope: "local" });
     } catch {
       /* best-effort */
     }
