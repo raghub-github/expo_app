@@ -2806,8 +2806,7 @@ export default function FoodMerchantsScreen() {
           // FlashList 2 turns this on unless disabled. Its anchor starts at
           // y=1_000_000, and the list clamps to the last store on entry.
           maintainVisibleContentPosition={{ disabled: true }}
-          // Virtualization sizing — stable row height cuts layout thrash / over-mount.
-          estimatedItemSize={RESTAURANT_CARD_ESTIMATED_SIZE}
+          // FlashList 2 measures rows itself (estimatedItemSize was removed in v2).
           // Render-ahead so next banners mount + decode before they enter view.
           drawDistance={960}
           overrideProps={{ initialDrawBatchSize: 8 }}

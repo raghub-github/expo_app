@@ -188,7 +188,8 @@ export function mergeAddressesIntoQuery(
   rows: AddressLike[] | AddressLike
 ): Address[] {
   const list = Array.isArray(rows) ? rows : [rows];
-  let merged = queryClient.getQueryData<Address[]>(ADDRESSES_QUERY_KEY) ?? readSyncCachedAddresses() ?? [];
+  const current: unknown = queryClient.getQueryData<Address[]>(ADDRESSES_QUERY_KEY);
+  let merged: Address[] = Array.isArray(current) ? current : readSyncCachedAddresses() ?? [];
   for (const row of list) {
     const next = toAddress(row);
     const without = merged.filter((a) => a.id !== next.id);

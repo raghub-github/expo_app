@@ -2,8 +2,9 @@
  * Food tab Suspense / cold-chunk fallback.
  * Header chrome paints immediately; listing uses card skeletons (no full-screen spinner).
  */
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
+import { useRouter } from "expo-router";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { FoodHomeGridFirstHeader } from "@/components/home/FoodHomeGridFirstHeader";
 import { RestaurantListSkeleton, GMSkeleton } from "@/components/ShimmerSkeleton";
@@ -44,6 +45,11 @@ export function FoodTabLoadingShell() {
   const address = useLocationStore((s) => s.address);
   const vegOnly = useDietaryPreferenceStore((s) => s.vegOnly);
   const setVegOnly = useDietaryPreferenceStore((s) => s.setVegOnly);
+  const router = useRouter();
+  // The search pill is visible while the food home module loads — keep it live.
+  const onSearchPress = useCallback(() => {
+    router.push({ pathname: "/search", params: { storeType: "FOOD" } });
+  }, [router]);
 
   const labels = useMemo(() => {
     const primaryRaw = address?.primary?.trim() || "";
@@ -67,6 +73,7 @@ export function FoodTabLoadingShell() {
         locationPrimary={labels.primary}
         locationSecondary={labels.secondary}
         vegOnly={vegOnly}
+        onSearchPress={onSearchPress}
         onVegChange={setVegOnly}
         showVegToggle
         heroReady={false}

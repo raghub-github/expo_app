@@ -90,7 +90,7 @@ export function HomeAdsStrip({ placement }: Props) {
   const [ads, setAds] = useState<HomeAd[]>([]);
   const [sheetAd, setSheetAd] = useState<HomeAd | null>(null);
   const [trackW, setTrackW] = useState(0);
-  const [visibleIds, setVisibleIds] = useState<Set<string>>(() => new Set());
+  const [visibleIds, setVisibleIds] = useState<Set<HomeAd["id"]>>(() => new Set());
 
   const onTrackLayout = useCallback((e: LayoutChangeEvent) => {
     const w = Math.round(e.nativeEvent.layout.width);

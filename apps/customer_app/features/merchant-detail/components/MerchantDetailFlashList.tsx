@@ -480,7 +480,7 @@ const MerchantDetailFlashListInner = forwardRef<
     [categoryChips, data]
   );
 
-  const renderRow = (item: MerchantFlashListItem, listIndex: number) => {
+  const renderRow = (item: MerchantFlashListItem) => {
     switch (item.type) {
       case "hero":
         return (
@@ -811,7 +811,7 @@ const MerchantDetailFlashListInner = forwardRef<
   ).current;
 
   const renderItem = useCallback<ListRenderItem<MerchantFlashListItem>>(
-    ({ item, index }) => (
+    ({ item }) => (
       <View
         collapsable={false}
         style={[
@@ -829,7 +829,7 @@ const MerchantDetailFlashListInner = forwardRef<
           recordRowLayout(item.key, event.nativeEvent.layout.height);
         }}
       >
-        {renderRow(item, index)}
+        {renderRow(item)}
       </View>
     ),
     // renderRow closes over many props — depend on data identity + chrome that affects cells.

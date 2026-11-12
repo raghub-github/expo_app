@@ -277,12 +277,14 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
       : canMenu
         ? "menu"
         : "profile";
+  // Staff Complaints is reached via the Feedback toggle → remember it as "reviews".
+  // Checked before isMainTab() because that predicate narrows away "complaints".
   const lastMainRoute = useRef<MainTabName>(
-    isMainTab(currentName, isStaffRole)
-      ? currentName === "complaints"
-        ? "reviews"
-        : (currentName as MainTabName)
-      : defaultMainTab
+    isStaffRole && currentName === "complaints"
+      ? "reviews"
+      : isMainTab(currentName, isStaffRole)
+        ? currentName
+        : defaultMainTab
   );
   const [switchOverlay, setSwitchOverlay] = useState(false);
   const [switchKind, setSwitchKind] = useState<"flow" | "home">("flow");

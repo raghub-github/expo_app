@@ -247,7 +247,7 @@ export default function StaffScreen() {
   const ownerName = parent?.owner_name || parent?.parent_name || "Owner";
   const ownerPhone = parent?.registered_phone || "";
   const ownerEmail = parent?.owner_email || "";
-  const storeLabel = selectedStore?.name || selectedStore?.store_name || "Outlet";
+  const storeLabel = selectedStore?.store_name || "Outlet";
   const storeIdLabel = selectedStore?.id != null ? `ID: ${selectedStore.id}` : "";
 
   const managers = useMemo(

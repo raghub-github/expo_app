@@ -4,6 +4,7 @@
  * and auth can reject JWTs whose store_staff row was deleted.
  */
 
+import type { Sql } from "postgres";
 import { writeDeviceSessionCache } from "./device-session-cache.js";
 
 type StaffActiveCacheEntry = { active: boolean; checkedAt: number };
@@ -36,16 +37,12 @@ export function writeMerchantStaffActiveCache(staffId: number, active: boolean):
   staffActiveCache.set(staffId, { active, checkedAt: Date.now() });
 }
 
-type SqlTag = {
-  (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown>;
-};
-
 /**
  * Hard-delete device sessions tagged for this staff invite and clear caches so
  * the removed user is kicked on the next authenticated request.
  */
 export async function revokeMerchantStaffDeviceSessions(
-  sql: SqlTag,
+  sql: Sql,
   args: { parentMerchantId: string; staffId: number }
 ): Promise<number> {
   const { parentMerchantId, staffId } = args;

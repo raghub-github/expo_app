@@ -48,8 +48,13 @@ export async function applySelectedDeliveryAddress(
     { latitude: addr.latitude, longitude: addr.longitude },
     { source: "selected", selectionKind, boundAddressId: addr.id }
   );
-  // Keep Select-location list warm offline even if the list API is slow.
-  mergeAddressesIntoQuery(queryClient, { ...addr, isSelected: true, isLastUsed: true });
+  // Keep Select-location list warm offline even if the list API is slow. Best-effort:
+  // a cache problem must never stop the pick from reaching the server below.
+  try {
+    mergeAddressesIntoQuery(queryClient, { ...addr, isSelected: true, isLastUsed: true });
+  } catch {
+    /* list cache only */
+  }
   void invalidateFoodHomeLocationQueries(queryClient);
 
   if (__DEV__) {

@@ -92,7 +92,9 @@ export function LovedMerchantsHorizontal({
     return cols;
   }, [merchants, paired]);
 
-  const estimatedItemSize = MERCHANT_RAIL_CARD_W + MERCHANT_RAIL_GAP;
+  // One rail column (card + gap). FlashList 2 measures items itself — this only
+  // sizes drawDistance so the whole small top-K rail stays mounted.
+  const columnWidth = MERCHANT_RAIL_CARD_W + MERCHANT_RAIL_GAP;
 
   const renderItem = useCallback<ListRenderItem<MerchantSummary[]>>(
     ({ item: pair }) => (
@@ -114,16 +116,12 @@ export function LovedMerchantsHorizontal({
       data={columns}
       keyExtractor={(pair) => pair.map((m) => m.id).join("-")}
       renderItem={renderItem}
-      estimatedItemSize={estimatedItemSize}
       // Keep the whole top-K rail hot — small set, must paint instantly.
-      drawDistance={Math.max(screenW * 2, estimatedItemSize * columns.length)}
+      drawDistance={Math.max(screenW * 2, columnWidth * columns.length)}
       initialScrollIndex={0}
       showsHorizontalScrollIndicator={false}
       contentContainerStyle={styles.content}
       decelerationRate={NATURAL_DECELERATION_RATE}
-      overrideItemLayout={(layout) => {
-        layout.size = estimatedItemSize;
-      }}
     />
   );
 }
