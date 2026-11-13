@@ -243,6 +243,14 @@ export default function NotificationSetup() {
         router.push("/(tabs)/orders" as never);
         return;
       }
+      // New-order taps always go Home → New (never order-details inner page).
+      if (
+        String(data?.screen ?? "").toLowerCase() === "new_order" ||
+        isMerchantNewOrderPush(data)
+      ) {
+        router.replace(merchantHomeNewOrdersHref() as never);
+        return;
+      }
       if (data?.orderId != null) {
         const numeric = extractMerchantFoodOrderIdFromPush(data);
         if (numeric) {

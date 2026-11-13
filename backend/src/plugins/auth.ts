@@ -21,6 +21,10 @@ export type AuthContext = {
   device_id?: string;
   /** customers.id — populated for customer JWTs to avoid per-route PK lookups */
   customerPk?: number;
+  /** Merchant staff access (from JWT). Absent / OWNER = brand owner. */
+  merchant_access_role?: "OWNER" | "MANAGER" | "STAFF";
+  merchant_staff_id?: number;
+  merchant_store_id?: number;
 };
 
 declare module "fastify" {
@@ -126,11 +130,32 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
       const role = String((payload as any).role ?? "");
       const sub = String(payload.sub ?? "");
 
+      const accessRoleRaw = (payload as any).merchant_access_role;
+      const merchantAccessRole =
+        accessRoleRaw === "OWNER" || accessRoleRaw === "MANAGER" || accessRoleRaw === "STAFF"
+          ? (accessRoleRaw as "OWNER" | "MANAGER" | "STAFF")
+          : role === "merchant"
+            ? "OWNER"
+            : undefined;
+      const staffIdRaw = (payload as any).merchant_staff_id;
+      const storeIdRaw = (payload as any).merchant_store_id;
+      const coercePositiveInt = (raw: unknown): number | undefined => {
+        if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return Math.trunc(raw);
+        if (typeof raw === "string" && /^\d+$/.test(raw.trim())) {
+          const n = Number(raw.trim());
+          return Number.isFinite(n) && n > 0 ? n : undefined;
+        }
+        return undefined;
+      };
+
       req.auth = {
         sub,
         role,
         phone: typeof (payload as any).phone === "string" ? (payload as any).phone : undefined,
         device_id: typeof (payload as any).device_id === "string" ? (payload as any).device_id : undefined,
+        merchant_access_role: merchantAccessRole,
+        merchant_staff_id: coercePositiveInt(staffIdRaw),
+        merchant_store_id: coercePositiveInt(storeIdRaw),
       };
 
       if (!req.auth.sub || !req.auth.role) {
@@ -190,6 +215,60 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
               { err: sessionErr, sub },
               "[auth] customer session check skipped — DB unavailable after JWT verify"
             );
+          }
+        }
+      }
+
+      // Invited manager/staff JWTs share the owner `sub`. If the store_staff row
+      // was removed, reject immediately so Contact-details delete forces logout.
+      if (role === "merchant") {
+        const accessRole = req.auth!.merchant_access_role;
+        const staffId = req.auth!.merchant_staff_id;
+        if (accessRole === "MANAGER" || accessRole === "STAFF") {
+          if (staffId == null || !Number.isFinite(staffId) || staffId < 1) {
+            throwAuthError(
+              401,
+              "session_revoked",
+              "Your access was removed. Please sign in again."
+            );
+          } else {
+            const {
+              readMerchantStaffActiveCache,
+              writeMerchantStaffActiveCache,
+            } = await import("../lib/merchant-staff-session.js");
+            const cachedActive = readMerchantStaffActiveCache(staffId);
+            if (cachedActive === false) {
+              throwAuthError(
+                401,
+                "session_revoked",
+                "Your access was removed. Please sign in again."
+              );
+            } else if (cachedActive !== true) {
+              try {
+                await withSqlRetry(async () => {
+                  const sql = getSql();
+                  const rows = await sql`
+                    SELECT id FROM store_staff WHERE id = ${staffId} LIMIT 1
+                  `;
+                  const active = Boolean(rows[0]);
+                  writeMerchantStaffActiveCache(staffId, active);
+                  if (!active) {
+                    throwAuthError(
+                      401,
+                      "session_revoked",
+                      "Your access was removed. Please sign in again."
+                    );
+                  }
+                });
+              } catch (staffErr) {
+                if (staffErr instanceof AuthHttpError) throw staffErr;
+                if (!isDbUnavailable(staffErr)) throw staffErr;
+                req.log?.warn?.(
+                  { err: staffErr, sub, staffId },
+                  "[auth] staff active check skipped — DB unavailable after JWT verify"
+                );
+              }
+            }
           }
         }
       }

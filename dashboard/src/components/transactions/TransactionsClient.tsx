@@ -2,11 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Download, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Loader2 } from "lucide-react";
 import { ExportTransactionsSheet } from "@/components/transactions/ExportTransactionsSheet";
-import { TablePagination } from "@/components/riders/TablePagination";
 import { usePermissions } from "@/hooks/usePermissions";
 import { fetchJsonWithTimeout } from "@/lib/fetch-json-with-timeout";
+
+const rowBorder = "border-b-[0.5px] border-[#121212]/10";
+const outerBorder = "rounded-md border-[0.5px] border-[#121212]/40";
+const controlClass =
+  "h-9 rounded-md border border-[#121212]/12 bg-white px-2.5 text-xs text-[#121212] outline-none focus:border-[#121212]/35";
 
 /* ----------------------------- types ----------------------------- */
 type TxnApp = "customer" | "merchant" | "rider";
@@ -83,20 +87,53 @@ const STATUS_OPTIONS = [
 ];
 
 const STATUS_STYLE: Record<string, string> = {
-  paid: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
-  created: "bg-gray-100 text-gray-600 ring-gray-500/20",
-  pending: "bg-amber-50 text-amber-700 ring-amber-600/20",
-  captured_unfinalized: "bg-indigo-50 text-indigo-700 ring-indigo-600/20",
-  reconciliation_required: "bg-orange-50 text-orange-700 ring-orange-600/20",
-  failed: "bg-rose-50 text-rose-700 ring-rose-600/20",
-  refund_pending: "bg-sky-50 text-sky-700 ring-sky-600/20",
-  refunded: "bg-violet-50 text-violet-700 ring-violet-600/20",
-  refund_failed: "bg-rose-50 text-rose-700 ring-rose-600/20",
-  cancelled: "bg-gray-100 text-gray-500 ring-gray-400/20",
-  unknown: "bg-gray-50 text-gray-500 ring-gray-400/20",
+  paid: "bg-emerald-50 text-emerald-800",
+  created: "bg-[#F4F4F4] text-[#121212]/60",
+  pending: "bg-amber-50 text-amber-800",
+  captured_unfinalized: "bg-indigo-50 text-indigo-800",
+  reconciliation_required: "bg-orange-50 text-orange-800",
+  failed: "bg-rose-50 text-rose-700",
+  refund_pending: "bg-sky-50 text-sky-800",
+  refunded: "bg-violet-50 text-violet-800",
+  refund_failed: "bg-rose-50 text-rose-700",
+  cancelled: "bg-[#F4F4F4] text-[#121212]/50",
+  unknown: "bg-[#F4F4F4] text-[#121212]/50",
 };
 
-const INPUT_CLS = "h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200";
+const KNOWN_STATUSES = new Set(Object.keys(STATUS_STYLE));
+
+/** Prefer API normStatus; fall back to raw payment status so badges stay accurate. */
+function resolveDisplayStatus(normStatus: string, raw: string): string {
+  const n = String(normStatus ?? "").trim().toLowerCase();
+  if (n && KNOWN_STATUSES.has(n) && n !== "unknown") return n;
+  const s = String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+  if (
+    s === "paid" ||
+    s === "finalized" ||
+    s === "captured" ||
+    s === "success" ||
+    s === "completed" ||
+    s === "settled"
+  ) {
+    return "paid";
+  }
+  if (s === "pending" || s === "pending_confirmation" || s === "initiated" || s === "processing") {
+    return "pending";
+  }
+  if (s === "created") return "created";
+  if (s === "captured_unfinalized") return "captured_unfinalized";
+  if (s === "reconciliation_required") return "reconciliation_required";
+  if (s === "failed") return "failed";
+  if (s === "refund_pending") return "refund_pending";
+  if (s === "refunded" || s === "partially_refunded") return "refunded";
+  if (s === "refund_failed") return "refund_failed";
+  if (s === "cancelled" || s === "canceled") return "cancelled";
+  if (n && KNOWN_STATUSES.has(n)) return n;
+  return "unknown";
+}
 
 /* ----------------------------- helpers ----------------------------- */
 const inr = (paise: number): string =>
@@ -172,6 +209,25 @@ export function TransactionsClient() {
 
   const rows = query.data?.rows ?? [];
   const total = query.data?.total ?? rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const rangeEnd = Math.min(page * pageSize, total);
+
+  const pageNumbers = useMemo(() => {
+    const pages: Array<number | "..."> = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+      return pages;
+    }
+    pages.push(1);
+    if (page > 3) pages.push("...");
+    for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) {
+      pages.push(i);
+    }
+    if (page < totalPages - 2) pages.push("...");
+    pages.push(totalPages);
+    return pages;
+  }, [page, totalPages]);
 
   const resetFilters = () => {
     setService(""); setStatus(""); setMode(""); setDateFrom(""); setDateTo("");
@@ -184,30 +240,114 @@ export function TransactionsClient() {
   }), [app, service, status, mode, dateFrom, dateTo]);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex w-fit gap-1 rounded-lg border border-gray-200 bg-gray-100 p-1">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="sticky top-0 z-30 shrink-0 border-b-[0.5px] border-[#121212]/10 bg-white py-2">
+        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto rounded-md border-[0.5px] border-[#121212]/15 bg-white px-2.5 py-2 [scrollbar-width:thin]">
+          <select
+            value={app}
+            onChange={(e) => setApp(e.target.value as TxnApp | "all")}
+            className={`${controlClass} w-[5.75rem] shrink-0`}
+            aria-label="App"
+          >
             {APP_TABS.map((t) => (
-              <button
-                key={t.key}
-                type="button"
-                onClick={() => setApp(t.key)}
-                className={`rounded-md px-4 py-1.5 text-sm font-medium transition ${
-                  app === t.key ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
-                }`}
-              >
+              <option key={t.key} value={t.key}>
                 {t.label}
-              </button>
+              </option>
             ))}
-          </div>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={resetFilters} className="inline-flex h-9 items-center rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-600 hover:bg-gray-50">Reset</button>
+          </select>
+
+          <input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="GMF… / payment id"
+            title="Search formatted order id, Razorpay id, ref, entity id"
+            className={`${controlClass} w-[11rem] shrink-0 sm:w-52`}
+          />
+          {(SERVICE_OPTIONS[app] ?? []).length > 0 ? (
+            <select
+              value={service}
+              onChange={(e) => setService(e.target.value)}
+              className={`${controlClass} w-[8rem] shrink-0 capitalize`}
+              aria-label="Service"
+            >
+              <option value="">All services</option>
+              {SERVICE_OPTIONS[app].map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className={`${controlClass} w-[8.5rem] shrink-0 capitalize`}
+            aria-label="Status"
+          >
+            <option value="">All statuses</option>
+            {STATUS_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s.replace(/_/g, " ")}
+              </option>
+            ))}
+          </select>
+          <select
+            value={mode}
+            onChange={(e) => setMode(e.target.value)}
+            className={`${controlClass} w-[7.5rem] shrink-0`}
+            aria-label="Mode"
+          >
+            <option value="">All modes</option>
+            <option value="razorpay">Razorpay</option>
+            <option value="wallet">Wallet</option>
+            <option value="gati_cash">GatiCash</option>
+            <option value="cash">Cash</option>
+            <option value="online">Online</option>
+          </select>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className={`${controlClass} w-[7.25rem] shrink-0 px-1.5`}
+            aria-label="From date"
+          />
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            className={`${controlClass} w-[7.25rem] shrink-0 px-1.5`}
+            aria-label="To date"
+          />
+          <input
+            type="number"
+            value={amountMin}
+            onChange={(e) => setAmountMin(e.target.value)}
+            placeholder="Min ₹"
+            className={`${controlClass} w-[5rem] shrink-0`}
+            aria-label="Min amount"
+          />
+          <input
+            type="number"
+            value={amountMax}
+            onChange={(e) => setAmountMax(e.target.value)}
+            placeholder="Max ₹"
+            className={`${controlClass} w-[5rem] shrink-0`}
+            aria-label="Max amount"
+          />
+
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2 pr-0.5">
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="inline-flex h-9 items-center rounded-md border border-[#121212]/12 bg-white px-2.5 text-xs font-semibold text-[#121212]/65 hover:bg-[#F7F7F7]"
+            >
+              Reset
+            </button>
             {isSuperAdmin ? (
               <button
                 type="button"
                 onClick={() => setExportOpen(true)}
-                className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                className="inline-flex h-9 items-center gap-1.5 rounded-md border border-[#121212]/12 bg-white px-2.5 text-xs font-semibold text-[#121212] hover:bg-[#F7F7F7]"
               >
                 <Download className="h-3.5 w-3.5" aria-hidden />
                 Export
@@ -217,95 +357,111 @@ export function TransactionsClient() {
               type="button"
               onClick={() => void query.refetch()}
               disabled={query.isFetching}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-80"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[#121212] px-2.5 text-xs font-semibold text-white hover:bg-black disabled:opacity-80"
             >
               {query.isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
               Refresh
             </button>
           </div>
         </div>
-
-        <div className="flex flex-nowrap items-end gap-2 overflow-x-auto pb-0.5">
-          <div className="flex w-[200px] shrink-0 flex-col gap-1">
-            <label className="text-xs text-gray-500">Search</label>
-            <input
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="GMF… / payment id"
-              className={INPUT_CLS}
-              title="Search formatted order id, Razorpay id, ref, entity id"
-            />
-          </div>
-          {(SERVICE_OPTIONS[app] ?? []).length > 0 && (
-            <Select label="Service" value={service} onChange={setService} options={SERVICE_OPTIONS[app]} placeholder="All services" />
-          )}
-          <Select label="Status" value={status} onChange={setStatus} options={STATUS_OPTIONS.map((s) => ({ value: s, label: s.replace(/_/g, " ") }))} placeholder="All statuses" />
-          <Select label="Mode" value={mode} onChange={setMode} options={[
-            { value: "razorpay", label: "Razorpay" }, { value: "wallet", label: "Wallet" },
-            { value: "gati_cash", label: "GatiCash" }, { value: "cash", label: "Cash" }, { value: "online", label: "Online" },
-          ]} placeholder="All modes" />
-          <Field label="From"><input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className={`${INPUT_CLS} w-[9.5rem] shrink-0`} /></Field>
-          <Field label="To"><input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className={`${INPUT_CLS} w-[9.5rem] shrink-0`} /></Field>
-          <Field label="Min ₹"><input type="number" value={amountMin} onChange={(e) => setAmountMin(e.target.value)} className={`${INPUT_CLS} w-20 shrink-0`} /></Field>
-          <Field label="Max ₹"><input type="number" value={amountMax} onChange={(e) => setAmountMax(e.target.value)} className={`${INPUT_CLS} w-20 shrink-0`} /></Field>
-        </div>
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
-        <table className="min-w-full divide-y divide-gray-200 text-sm">
-          <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
+      <div className={`mt-3 min-h-0 flex-1 overflow-auto bg-white ${outerBorder}`}>
+        <table className="w-full min-w-[980px] border-collapse text-left text-sm">
+          <thead className="text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
             <tr>
-              <th className="px-3 py-2.5 font-medium">When</th>
-              <th className="px-3 py-2.5 font-medium">App</th>
-              <th className="px-3 py-2.5 font-medium">Service</th>
-              <th className="px-3 py-2.5 font-medium">Status</th>
-              <th className="px-3 py-2.5 text-right font-medium">Amount</th>
-              <th className="px-3 py-2.5 text-right font-medium">Paid</th>
-              <th className="px-3 py-2.5 font-medium">Mode</th>
-              <th className="px-3 py-2.5 font-medium">Order ID</th>
-              <th className="px-3 py-2.5 font-medium">Entity</th>
+              <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>When</th>
+              <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>App</th>
+              <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Service</th>
+              <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Status</th>
+              <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 text-right ${rowBorder}`}>
+                Amount
+              </th>
+              <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 text-right ${rowBorder}`}>
+                Paid
+              </th>
+              <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Mode</th>
+              <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Order ID</th>
+              <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Entity</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
-            {query.isLoading ? (
-              <tr><td colSpan={9} className="px-3 py-10 text-center text-gray-400">Loading…</td></tr>
+          <tbody>
+            {query.isLoading && rows.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="px-3 py-12 text-center text-sm text-[#121212]/45">
+                  Loading…
+                </td>
+              </tr>
             ) : query.isError ? (
               <tr>
-                <td colSpan={9} className="px-3 py-10 text-center">
-                  <p className="text-rose-500">{(query.error as Error)?.message ?? "Error loading transactions"}</p>
-                  <p className="mt-1 text-xs text-gray-400">Auto-refresh is paused until this succeeds.</p>
+                <td colSpan={9} className="px-3 py-12 text-center">
+                  <p className="text-sm text-rose-600">
+                    {(query.error as Error)?.message ?? "Error loading transactions"}
+                  </p>
+                  <p className="mt-1 text-[11px] text-[#121212]/40">
+                    Auto-refresh is paused until this succeeds.
+                  </p>
                   <button
                     type="button"
                     onClick={() => void query.refetch()}
                     disabled={query.isFetching}
-                    className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-lg bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-80"
+                    className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-md bg-[#121212] px-4 text-xs font-semibold text-white hover:bg-black disabled:opacity-80"
                   >
-                    {query.isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
+                    {query.isFetching ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                    ) : null}
                     Retry
                   </button>
                 </td>
               </tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="px-3 py-10 text-center text-gray-400">No transactions match these filters.</td></tr>
+              <tr>
+                <td colSpan={9} className="px-3 py-12 text-center text-sm text-[#121212]/45">
+                  No transactions match these filters.
+                </td>
+              </tr>
             ) : (
               rows.map((r) => (
-                <tr key={r.uid} onClick={() => setSelectedUid(r.uid)} className="cursor-pointer hover:bg-gray-50">
-                  <td className="whitespace-nowrap px-3 py-2.5 text-gray-600">{fmtTime(r.createdAt)}</td>
-                  <td className="px-3 py-2.5 capitalize text-gray-800">{r.app}</td>
-                  <td className="px-3 py-2.5 capitalize text-gray-800">
+                <tr
+                  key={r.uid}
+                  onClick={() => setSelectedUid(r.uid)}
+                  className="cursor-pointer hover:bg-[#F7F7F7]/70"
+                >
+                  <td
+                    className={`whitespace-nowrap px-3 py-2.5 text-xs text-[#121212]/60 ${rowBorder}`}
+                  >
+                    {fmtTime(r.createdAt)}
+                  </td>
+                  <td className={`px-3 py-2.5 capitalize text-[#121212] ${rowBorder}`}>{r.app}</td>
+                  <td className={`px-3 py-2.5 capitalize text-[#121212] ${rowBorder}`}>
                     {r.service === "person_ride" ? "Ride" : r.service.replace(/_/g, " ")}
                   </td>
-                  <td className="px-3 py-2.5"><StatusBadge status={r.normStatus} raw={r.status} /></td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-right font-medium text-gray-900">{inr(r.grossPaise)}</td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-right text-gray-600">{inr(r.paidPaise)}</td>
-                  <td className="px-3 py-2.5 capitalize text-gray-500">{(r.paymentMode ?? "—").replace(/_/g, " ")}</td>
-                  <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs text-gray-800">
+                  <td className={`px-3 py-2.5 ${rowBorder}`}>
+                    <StatusBadge status={r.normStatus} raw={r.status} />
+                  </td>
+                  <td
+                    className={`whitespace-nowrap px-3 py-2.5 text-right font-semibold tabular-nums text-[#121212] ${rowBorder}`}
+                  >
+                    {inr(r.grossPaise)}
+                  </td>
+                  <td
+                    className={`whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-[#121212]/65 ${rowBorder}`}
+                  >
+                    {inr(r.paidPaise)}
+                  </td>
+                  <td className={`px-3 py-2.5 capitalize text-[#121212]/55 ${rowBorder}`}>
+                    {(r.paymentMode ?? "—").replace(/_/g, " ")}
+                  </td>
+                  <td
+                    className={`whitespace-nowrap px-3 py-2.5 font-mono text-xs text-[#121212] ${rowBorder}`}
+                  >
                     {displayOrderId(r.businessOrderId) ?? "—"}
                   </td>
-                  <td className="px-3 py-2.5">
-                    <div className="text-gray-800">{r.entityName ?? "—"}</div>
-                    <div className="text-xs text-gray-400">{r.entityDisplayId ?? `${r.entityType} #${r.entityId ?? "—"}`}</div>
+                  <td className={`px-3 py-2.5 ${rowBorder}`}>
+                    <div className="font-medium text-[#121212]">{r.entityName ?? "—"}</div>
+                    <div className="text-[10px] text-[#121212]/40">
+                      {r.entityDisplayId ?? `${r.entityType} #${r.entityId ?? "—"}`}
+                    </div>
                   </td>
                 </tr>
               ))
@@ -314,29 +470,73 @@ export function TransactionsClient() {
         </table>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <label className="inline-flex items-center gap-2 text-sm text-gray-600">
-          <span>Rows</span>
-          <select
-            value={pageSize}
-            disabled={query.isFetching}
-            onChange={(e) => setPageSize(Number(e.target.value) as PageSize)}
-            className="h-8 rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-700 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200 disabled:opacity-50"
-            aria-label="Rows per page"
-          >
-            {PAGE_SIZE_OPTIONS.map((n) => (
-              <option key={n} value={n}>{n}</option>
-            ))}
-          </select>
-        </label>
-        <TablePagination
-          page={page}
-          pageSize={pageSize}
-          total={total}
-          onPageChange={setPage}
-          disabled={query.isFetching}
-          ariaLabel="Transactions"
-        />
+      <div className="sticky bottom-0 z-30 mt-1 shrink-0 border-t-[0.5px] border-[#121212]/10 bg-white px-3 py-1 sm:px-4">
+        <div className="flex flex-col items-center justify-between gap-1.5 sm:flex-row sm:gap-3">
+          <div className="flex flex-col items-center gap-1.5 sm:flex-row sm:gap-2.5">
+            <div className="text-center text-[11px] leading-none text-[#121212]/70 sm:text-left">
+              Showing <span className="font-semibold text-[#121212]">{rangeStart}</span> to{" "}
+              <span className="font-semibold text-[#121212]">{rangeEnd}</span> of{" "}
+              <span className="font-semibold text-[#121212]">{total}</span> entries
+            </div>
+            <label className="inline-flex items-center gap-1.5 text-[11px] leading-none text-[#121212]/70">
+              <span className="whitespace-nowrap">Rows per page</span>
+              <select
+                value={pageSize}
+                disabled={query.isFetching}
+                onChange={(e) => setPageSize(Number(e.target.value) as PageSize)}
+                className="h-7 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-1.5 text-[11px] font-medium text-[#121212] focus:border-[#121212]/40 focus:outline-none disabled:opacity-50"
+                aria-label="Rows per page"
+              >
+                {PAGE_SIZE_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-1">
+            <button
+              type="button"
+              disabled={query.isFetching || page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="flex h-7 items-center gap-1 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-2 text-[11px] font-medium text-[#121212] hover:bg-[#F7F7F7] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Previous</span>
+            </button>
+            {pageNumbers.map((p, i) =>
+              p === "..." ? (
+                <span key={`e-${i}`} className="px-1.5 text-[11px] text-[#121212]/40">
+                  …
+                </span>
+              ) : (
+                <button
+                  key={p}
+                  type="button"
+                  disabled={query.isFetching}
+                  onClick={() => setPage(p)}
+                  className={`flex h-7 min-w-[28px] items-center justify-center rounded-md px-1.5 text-[11px] font-semibold ${
+                    p === page
+                      ? "bg-[#121212] text-white"
+                      : "border-[0.5px] border-[#121212]/20 bg-white text-[#121212] hover:bg-[#F7F7F7]"
+                  }`}
+                >
+                  {p}
+                </button>
+              )
+            )}
+            <button
+              type="button"
+              disabled={query.isFetching || page >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className="flex h-7 items-center gap-1 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-2 text-[11px] font-medium text-[#121212] hover:bg-[#F7F7F7] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <span className="hidden sm:inline">Next</span>
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
       </div>
 
       {selectedUid && <DetailDrawer uid={selectedUid} onClose={() => setSelectedUid(null)} />}
@@ -348,22 +548,17 @@ export function TransactionsClient() {
 }
 
 /* ----------------------------- sub-components ----------------------------- */
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <div className="flex shrink-0 flex-col gap-1"><label className="text-xs text-gray-500">{label}</label>{children}</div>;
-}
-function Select({ label, value, onChange, options, placeholder }: { label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; placeholder: string }) {
-  return (
-    <Field label={label}>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className={`${INPUT_CLS} capitalize`}>
-        <option value="">{placeholder}</option>
-        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-    </Field>
-  );
-}
 function StatusBadge({ status, raw }: { status: string; raw: string }) {
-  const style = STATUS_STYLE[status] ?? STATUS_STYLE.unknown;
-  return <span title={raw} className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ring-1 ring-inset ${style}`}>{status.replace(/_/g, " ")}</span>;
+  const display = resolveDisplayStatus(status, raw);
+  const style = STATUS_STYLE[display] ?? STATUS_STYLE.unknown;
+  return (
+    <span
+      title={raw || display}
+      className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${style}`}
+    >
+      {display.replace(/_/g, " ")}
+    </span>
+  );
 }
 
 function DetailDrawer({ uid, onClose }: { uid: string; onClose: () => void }) {

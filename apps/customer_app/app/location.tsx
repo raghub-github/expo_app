@@ -52,7 +52,8 @@ import { AddressConfirmBottomSheet } from "@/components/address/AddressConfirmBo
 import { NearbyLocationConfirmBottomSheet } from "@/components/address/NearbyLocationConfirmBottomSheet";
 import { LocationWeatherBanner, WeatherDetailsSheet } from "@/components/weather";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
-import { useAddresses, useActiveLocation } from "@/hooks/useAddresses";
+import { useAddresses, useActiveLocation, prefetchAddresses } from "@/hooks/useAddresses";
+import { hydrateAddressesQuery } from "@/lib/addressesCache";
 import { invalidateFoodHomeLocationQueries } from "@/lib/invalidateFoodHomeLocationQueries";
 import { SavedAddressLocationCard } from "@/components/address/SavedAddressLocationCard";
 import { distanceMeters } from "@/lib/addressGeo";
@@ -335,6 +336,12 @@ export default function SelectLocationScreen() {
   }, [hydrateRecentLocations]);
 
   useEffect(() => {
+    // Cache-first: seed RQ from disk and refresh in background — never block paint.
+    void hydrateAddressesQuery(queryClient);
+    void prefetchAddresses(queryClient);
+  }, [queryClient]);
+
+  useEffect(() => {
     if (params.focusSearch !== "1") return;
     const timer = setTimeout(() => searchInputRef.current?.focus(), 320);
     return () => clearTimeout(timer);
@@ -342,11 +349,31 @@ export default function SelectLocationScreen() {
 
   const {
     data: savedAddressesData,
-    isPending: addressesPending,
+    isLoading: addressesLoading,
     isError: addressesError,
     refetch: refetchAddresses,
   } = useAddresses();
   const savedAddresses = savedAddressesData ?? [];
+  // Hard UI ceiling — never leave the teal spinner up if the request hangs.
+  const [addressesLoadTimedOut, setAddressesLoadTimedOut] = useState(false);
+  useEffect(() => {
+    if (!addressesLoading) {
+      setAddressesLoadTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setAddressesLoadTimedOut(true), 6_000);
+    return () => clearTimeout(timer);
+  }, [addressesLoading]);
+  const showAddressesSpinner =
+    addressesLoading && !addressesLoadTimedOut && savedAddresses.length === 0;
+
+  useFocusEffect(
+    useCallback(() => {
+      // Every open: seed cache + kick a network refresh (prefetch no-ops if signed out).
+      void hydrateAddressesQuery(queryClient);
+      void prefetchAddresses(queryClient);
+    }, [queryClient])
+  );
 
   const { data: activeLocation, refetch: refetchActiveLocation } = useActiveLocation();
 
@@ -1128,17 +1155,23 @@ export default function SelectLocationScreen() {
         <View style={styles.sectionHeadRow}>
           <AppText style={styles.sectionHeading}>SAVED ADDRESSES</AppText>
         </View>
-        {addressesPending && savedAddressesData === undefined ? (
+        {showAddressesSpinner ? (
           <View style={styles.emptySaved}>
             <ActivityIndicator size="small" color={BRAND} />
             <AppText style={[styles.emptySavedText, { marginTop: 12 }]}>Loading saved addresses...</AppText>
           </View>
-        ) : addressesError ? (
+        ) : (addressesError || addressesLoadTimedOut) && savedAddresses.length === 0 ? (
           <View style={styles.emptySaved}>
             <AppText style={styles.emptySavedText}>
               Could not load saved addresses. Check your connection and try again.
             </AppText>
-            <TouchableOpacity onPress={() => refetchAddresses()} activeOpacity={0.85}>
+            <TouchableOpacity
+              onPress={() => {
+                setAddressesLoadTimedOut(false);
+                void refetchAddresses();
+              }}
+              activeOpacity={0.85}
+            >
               <AppText style={[styles.addAddressLink, { marginTop: 12 }]}>Retry</AppText>
             </TouchableOpacity>
           </View>

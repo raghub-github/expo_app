@@ -29,6 +29,8 @@ import { formatOfferRupee, computeCatalogDiscountPercent, resolveMenuOfferPriceD
 import { MENU_MASONRY_CARD_RADIUS } from "@/features/merchant-detail/constants/layout";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
 import { ClassicCornerRatingPill } from "@/components/home/ClassicCornerRatingPill";
+import { ViewportGate } from "@/components/ViewportGate";
+import { GMSkeleton } from "@/components/ShimmerSkeleton";
 
 export type StoreMenuMasonryCardProps = {
   item: MenuItem;
@@ -45,6 +47,8 @@ export type StoreMenuMasonryCardProps = {
   onItemPress?: (item: MenuItem) => void;
   onBookmark?: (item: MenuItem) => void;
   itemOffer?: ItemOfferDisplay | null;
+  /** First masonry tiles — high priority; rest gate near viewport. */
+  eagerImage?: boolean;
 };
 
 const TAP_MOVE_SLOP = 8;
@@ -77,6 +81,7 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
   onItemPress,
   onBookmark,
   itemOffer = null,
+  eagerImage = false,
 }: StoreMenuMasonryCardProps) {
   const dark = useMerchantUiDark();
   const cartQty = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
@@ -106,8 +111,9 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
     setUseOriginalImage(false);
     setImageFailed(false);
     const first = sizedImageUri ?? originalImageUri;
-    if (first) ensureMenuItemImageWarm(first);
-  }, [sizedImageUri, originalImageUri]);
+    // Above-fold only — below-fold warms when ViewportGate mounts.
+    if (eagerImage && first) ensureMenuItemImageWarm(first);
+  }, [sizedImageUri, originalImageUri, eagerImage]);
 
   const handleImageError = useCallback(() => {
     if (
@@ -225,25 +231,46 @@ export const StoreMenuMasonryCard = React.memo(function StoreMenuMasonryCard({
             ]}
           >
             {showRemoteImage ? (
-              <Image
-                source={{ uri: imageUri! }}
-                style={{
-                  width: photoPx,
-                  height: photoPx,
-                  borderTopLeftRadius: MENU_MASONRY_CARD_RADIUS,
-                  borderTopRightRadius: MENU_MASONRY_CARD_RADIUS,
-                }}
-                contentFit="cover"
-                cachePolicy="memory-disk"
-                recyclingKey={`${item.listRowKey ?? item.id}:${useOriginalImage ? "raw" : "sized"}`}
-                transition={0}
-                priority="high"
-                allowDownscaling
-                onLoad={() => {
+              <ViewportGate
+                eager={eagerImage}
+                rootMargin={120}
+                placeholderHeight={photoPx}
+                style={{ width: photoPx, height: photoPx }}
+                placeholder={
+                  <GMSkeleton
+                    dark={dark}
+                    style={{
+                      width: photoPx,
+                      height: photoPx,
+                      borderTopLeftRadius: MENU_MASONRY_CARD_RADIUS,
+                      borderTopRightRadius: MENU_MASONRY_CARD_RADIUS,
+                    }}
+                  />
+                }
+                onVisible={() => {
                   if (imageUri) ensureMenuItemImageWarm(imageUri);
                 }}
-                onError={handleImageError}
-              />
+              >
+                <Image
+                  source={{ uri: imageUri! }}
+                  style={{
+                    width: photoPx,
+                    height: photoPx,
+                    borderTopLeftRadius: MENU_MASONRY_CARD_RADIUS,
+                    borderTopRightRadius: MENU_MASONRY_CARD_RADIUS,
+                  }}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  recyclingKey={`${item.listRowKey ?? item.id}:${useOriginalImage ? "raw" : "sized"}`}
+                  transition={0}
+                  priority={eagerImage ? "high" : "normal"}
+                  allowDownscaling
+                  onLoad={() => {
+                    if (imageUri) ensureMenuItemImageWarm(imageUri);
+                  }}
+                  onError={handleImageError}
+                />
+              </ViewportGate>
             ) : (
               <View style={[styles.placeholderFill, dark && styles.placeholderFillDark]}>
                 <MenuItemImagePlaceholder size="lg" fill />

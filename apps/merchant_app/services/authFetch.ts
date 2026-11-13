@@ -127,7 +127,8 @@ export async function authFetch(
         if (code === "session_revoked") {
           const isForcedDeviceLogout =
             msg.includes("Signed out from all devices") ||
-            msg.includes("Signed out from this device");
+            msg.includes("Signed out from this device") ||
+            msg.includes("Your access was removed");
           if (isForcedDeviceLogout) {
             logMerchantAuth("AUTH_401", {
               code: "session_revoked",

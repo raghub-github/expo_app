@@ -40,6 +40,7 @@ import {
 import { triggerOrderEtaRecalcAfterAccept } from '@/lib/trigger-order-eta-recalc';
 import { broadcastMerchantIncomingResolved } from '@/lib/merchant-incoming-resolved-broadcast';
 import { notifyCustomerMerchantAccepted } from '@/lib/notify-customer-merchant-accepted';
+import { notifyMerchantIncomingAlertStop } from '@/lib/notify-merchant-incoming-alert-stop';
 import { notifyOrderCancelled } from '@/lib/notify-order-cancelled';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
@@ -555,6 +556,19 @@ export async function PATCH(
     });
 
     if (newStatus === 'ACCEPTED' || newStatus === 'CANCELLED') {
+      // Await FCM global stop so other Partner phones drop buzzer/overlay before
+      // this serverless handler freezes. Broadcast remains a second fan-out for
+      // open dashboard / Partner App tabs listening on dash-mx-incoming.
+      try {
+        await notifyMerchantIncomingAlertStop({
+          storeId: storeInternalId,
+          foodOrderId: orderIdNum,
+          ordersCoreId: Number(existing.order_id) || null,
+          status: newStatus,
+        });
+      } catch (alertStopErr) {
+        console.warn('[food-orders PATCH] merchant-alert-stop failed:', alertStopErr);
+      }
       void broadcastMerchantIncomingResolved({
         storeId: storeInternalId,
         coreId: Number(existing.order_id) || null,

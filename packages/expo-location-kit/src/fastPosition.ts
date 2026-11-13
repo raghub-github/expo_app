@@ -90,6 +90,11 @@ export async function getFastPosition(
     liveQuickFix(Location.Accuracy.Low, "low", quickTimeoutMs, log, "fast-low", deviceOptions),
     liveQuickFix(Location.Accuracy.Balanced, "balanced", quickTimeoutMs, log, "fast-balanced", deviceOptions),
   ];
+  // Promise.any ignores losers once one fulfills, but Hermes still reports their
+  // later "Location request timed out" rejects as uncaught without a handler.
+  for (const p of liveRace) {
+    void p.catch(() => {});
+  }
 
   try {
     return await Promise.any(liveRace);

@@ -30,6 +30,7 @@ import { requestFoodHomeFlashDealFilter } from "@/lib/foodHomePendingFilters";
 import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import { useQueryClient } from "@tanstack/react-query";
 import { useIsFocused } from "@react-navigation/native";
+import { HomePromoBannerSkeleton } from "@/components/home/HomeTabSkeletons";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -322,7 +323,8 @@ function PromoSlideCard({ slide, index, cardHeight, mode, decodeImage, onPress }
             contentFit="cover"
             cachePolicy="memory-disk"
             transition={0}
-            priority="high"
+            // Hero / active slide: high priority. Neighbors: normal (windowed decode).
+            priority={index === 0 ? "high" : "normal"}
             recyclingKey={slide.id}
             placeholder={typeof bgSource === "object" && "uri" in bgSource && bgSource.uri ? { uri: bgSource.uri } : undefined}
             placeholderContentFit="cover"
@@ -342,6 +344,11 @@ type Props = {
   mode?: "home" | "food" | "ride";
   /** When no live offers, show default GatiMitra art banners (food page). */
   showDefaultWhenEmpty?: boolean;
+  /**
+   * When true and no offers yet, paint a shimmer card matching promo size
+   * (Zomato-style progressive Home). Cached/live offers skip the skeleton.
+   */
+  skeletonWhileLoading?: boolean;
 };
 
 export function HomePromoCarousel({
@@ -349,6 +356,7 @@ export function HomePromoCarousel({
   cardHeight = DEFAULT_CARD_H,
   mode = "home",
   showDefaultWhenEmpty = false,
+  skeletonWhileLoading = false,
 }: Props) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -361,10 +369,12 @@ export function HomePromoCarousel({
   const slides: Slide[] = useMemo(() => {
     const picked = pickOffersForCarousel(offers, mode);
     if (picked.length > 0) return picked.map((offer) => offerToSlide(offer, mode));
+    // Hold empty while Home paints a matching skeleton — avoid fallback flash.
+    if (skeletonWhileLoading) return [];
     // Prefer default art banners over a loading skeleton so home never flashes grey.
     if (showDefaultWhenEmpty || mode === "home") return DEFAULT_FALLBACK_SLIDES;
     return [];
-  }, [offers, mode, showDefaultWhenEmpty]);
+  }, [offers, mode, showDefaultWhenEmpty, skeletonWhileLoading]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -440,6 +450,11 @@ export function HomePromoCarousel({
   );
 
   if (slides.length === 0) {
+    if (skeletonWhileLoading) {
+      return (
+        <HomePromoBannerSkeleton cardHeight={cardHeight} reason="awaiting_offers_or_force" />
+      );
+    }
     return <View style={[styles.wrap, { minHeight: cardHeight + 20 }]} />;
   }
 

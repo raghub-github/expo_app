@@ -3,6 +3,7 @@ import { resetFoodHomeListScrollGuard, scrollFoodHomeListToTop } from "@/lib/foo
 import { useLocationStore } from "@/store/locationStore";
 import { useDietaryPreferenceStore } from "@/store/dietaryPreferenceStore";
 import {
+  prefetchMerchantsList,
   readSyncMerchantsList,
   seedMerchantsListQueryIfCached,
 } from "@/lib/merchantsListCache";
@@ -21,6 +22,7 @@ import { prioritizeVisibleMerchantBanners } from "@/lib/prefetchMerchantBanners"
 import { prefetchFoodHomeVisibleImages } from "@/lib/imageEngine";
 import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 import { foodFixDbg, foodNavDbg } from "@/lib/tabNavDebug";
+import { preloadFoodHomeScreen } from "@/lib/foodHomeScreenModule";
 
 /** True while a Food listing instance (tab or /home) is mounted. */
 let foodHomeRouteMounted = false;
@@ -77,7 +79,8 @@ function seedNearbyMerchantsListOnly(): void {
   const lat = coords.latitude;
   const lng = coords.longitude;
   const vegOnly = useDietaryPreferenceStore.getState().vegOnly;
-  // Seed only the active dietary list — both veg modes caused redundant work.
+  // Seed both diet buckets so Food mount never blanks while prefs settle.
+  seedMerchantsListQueryIfCached(queryClient, lat, lng, false, "FOOD");
   seedMerchantsListQueryIfCached(queryClient, lat, lng, vegOnly, "FOOD");
 
   const hints = extractCustomerGeoHints(address, coords);
@@ -94,7 +97,7 @@ function seedNearbyMerchantsListOnly(): void {
       pincode: address?.pincode?.trim() || undefined,
       state: address?.state?.trim() || undefined,
       city: address?.city?.trim() || undefined,
-    }),
+    })
   );
 }
 
@@ -120,6 +123,29 @@ function warmNearbyMerchantImagery(): void {
   }
 }
 
+/** Kick network merchants fetch so Food does not wait on a cold query after mount. */
+function prefetchNearbyMerchantsListNow(): void {
+  const { coords } = useLocationStore.getState();
+  if (coords?.latitude == null || coords?.longitude == null) return;
+  const vegOnly = useDietaryPreferenceStore.getState().vegOnly;
+  void prefetchMerchantsList(
+    queryClient,
+    coords.latitude,
+    coords.longitude,
+    vegOnly,
+    "FOOD"
+  ).catch(() => {});
+  if (vegOnly) {
+    void prefetchMerchantsList(
+      queryClient,
+      coords.latitude,
+      coords.longitude,
+      false,
+      "FOOD"
+    ).catch(() => {});
+  }
+}
+
 /**
  * Open Food listing via the Food TAB (same path as Orders/Profile).
  * Never awaits APIs — navigate first, warm cache after interactions.
@@ -136,6 +162,15 @@ export function navigateToFoodHome(
   router: Router,
   opts?: { fromOverlay?: boolean }
 ): void {
+  // Seed + network BEFORE tab switch so FoodMerchantsScreen mounts with data.
+  try {
+    seedNearbyMerchantsListOnly();
+    prefetchNearbyMerchantsListNow();
+    warmNearbyMerchantImagery();
+  } catch {
+    /* ignore */
+  }
+  void preloadFoodHomeScreen().catch(() => {});
   resetFoodHomeListScrollGuard();
   scrollFoodHomeListToTop();
 
@@ -186,13 +221,6 @@ export function navigateToFoodHome(
   } catch {
     /* ignore — Food tab is already selected */
   }
-
-  try {
-    seedNearbyMerchantsListOnly();
-    warmNearbyMerchantImagery();
-  } catch {
-    /* ignore */
-  }
 }
 
 /**
@@ -201,12 +229,13 @@ export function navigateToFoodHome(
  */
 export function warmFoodHomeEntry(): void {
   seedNearbyMerchantsListOnly();
+  prefetchNearbyMerchantsListNow();
   try {
     warmNearbyMerchantImagery();
   } catch {
     /* ignore */
   }
-  void import("@/app/home/index").catch(() => {
+  void preloadFoodHomeScreen().catch(() => {
     /* route may already be in the graph; ignore */
   });
 }

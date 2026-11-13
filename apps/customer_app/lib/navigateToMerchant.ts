@@ -54,6 +54,10 @@ export function navigateToMerchant(
   // and the inner page paints a white blank instead of menu rows.
   seedMerchantMenuQueryIfCached(queryClient, merchantId);
 
+  // Start menu fetch BEFORE the route mounts — hero shell paints from list
+  // placeholder; menu must already be in flight or skeletons linger.
+  prefetchMerchantDetail(queryClient, merchantId);
+
   // Visit bookkeeping only — do NOT open the full-screen shutter Modal (Food Home blur).
   useMerchantNavTransitionStore.getState().beginVisit(merchantId, { dark: discovery });
 
@@ -68,7 +72,6 @@ export function navigateToMerchant(
   } else {
     router.push(route);
   }
-  prefetchMerchantDetail(queryClient, merchantId);
 }
 
 /** @deprecated No-op — shutter overlay removed (caused Food Home blur/overlap). */

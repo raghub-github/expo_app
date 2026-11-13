@@ -37,6 +37,7 @@ import { applyActiveLocationFromBackend } from "@/lib/applyActiveLocationFromBac
 import { promptCartIfLocationBrokeServiceability } from "@/lib/promptCartIfLocationBrokeServiceability";
 import { metresBetween } from "@/lib/locationFixSelection";
 import { classifyFreshness } from "@/lib/lastKnownLocationCache";
+import { mergeAddressesIntoQuery } from "@/lib/addressesCache";
 
 /** Background accurate refine: skip POST if GPS moved less than this vs the fast pin. */
 const ACCURATE_REFINE_MIN_MOVE_M = 40;
@@ -112,7 +113,10 @@ async function restoreRemoteSelection(
       { source: "selected", selectionKind: "remote", boundAddressId: saved.id }
     );
     if (queryClient) {
+      // Full server list — replace, don't merge one-by-one.
+      const { writeCachedAddresses } = await import("@/lib/addressesCache");
       queryClient.setQueryData(["addresses"], addresses);
+      void writeCachedAddresses(addresses);
       await queryClient.invalidateQueries({ queryKey: ["active-location"] });
     }
     if (__DEV__) {
@@ -186,6 +190,14 @@ async function applyReconcileResult(
       { latitude: a.latitude, longitude: a.longitude },
       { source: "selected", selectionKind: kind, boundAddressId: a.id }
     );
+    // Seed Select-location list instantly — low internet must not wait on list fetch.
+    if (queryClient) {
+      mergeAddressesIntoQuery(queryClient, {
+        ...a,
+        isSelected: true,
+        isLastUsed: true,
+      });
+    }
   } else if (!options?.gpsIsCachedFallback || prior.locationSource !== "current" || !prior.coords) {
     applyCurrentGpsPin(gps);
   }
@@ -204,7 +216,8 @@ async function applyReconcileResult(
     // Same delivery pin — don't refetch geo/offers/merchants/addresses again.
     if (!pinUnchanged) {
       await queryClient.invalidateQueries({ queryKey: ["active-location"] });
-      await queryClient.invalidateQueries({ queryKey: ["addresses"] });
+      // Soft refresh only — keep seeded list if the network is slow.
+      void queryClient.invalidateQueries({ queryKey: ["addresses"] });
       if (result.switchedToCurrent) {
         debouncedInvalidateFoodHomeListingQueries(queryClient);
       } else if (result.source === "selected") {

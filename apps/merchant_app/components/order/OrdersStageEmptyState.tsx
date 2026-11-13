@@ -1,5 +1,6 @@
+import { Image as RNImage, StyleSheet, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet } from "react-native";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { GatiMitraMerchant } from "@/constants/theme";
 import {
@@ -16,6 +17,17 @@ const STAGE_LABELS: Record<OrderStageEmptyKey, string> = {
   scheduled: "Scheduled",
 };
 
+const STAGE_FALLBACK_ICON: Record<OrderStageEmptyKey, keyof typeof Ionicons.glyphMap> = {
+  preparing: "restaurant-outline",
+  ready: "checkmark-circle-outline",
+  picked_up: "bicycle-outline",
+  completed: "ribbon-outline",
+  rto: "return-down-back-outline",
+  scheduled: "calendar-outline",
+};
+
+const LOCAL_EMPTY_ART = require("../../assets/dis.png");
+
 export function OrdersStageEmptyState({
   stage,
   message,
@@ -25,6 +37,7 @@ export function OrdersStageEmptyState({
 }) {
   const assetKey = orderStageEmptyAssetKey(stage);
   const label = STAGE_LABELS[stage];
+  const caption = message ?? `No ${label.toLowerCase()} orders right now`;
 
   return (
     <View style={styles.wrap}>
@@ -33,19 +46,28 @@ export function OrdersStageEmptyState({
           assetKey={assetKey}
           style={styles.image}
           resizeMode="contain"
-          accessibilityLabel={message ?? `No ${label.toLowerCase()} orders`}
+          accessibilityLabel={caption}
+          fallback={
+            <View style={styles.fallbackIcon} accessibilityLabel={caption}>
+              <RNImage source={LOCAL_EMPTY_ART} style={styles.localArt} resizeMode="contain" />
+              <Ionicons
+                name={STAGE_FALLBACK_ICON[stage]}
+                size={36}
+                color={GatiMitraMerchant.primary}
+                style={styles.localBadge}
+              />
+            </View>
+          }
         />
       </View>
-      <Text style={styles.text}>
-        {message ?? `No ${label.toLowerCase()} orders right now`}
-      </Text>
+      <Text style={styles.text}>{caption}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: {
-    flex: 1,
+    flexGrow: 1,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 24,
@@ -63,6 +85,21 @@ const styles = StyleSheet.create({
     width: 268,
     height: 268,
     backgroundColor: "transparent",
+  },
+  fallbackIcon: {
+    width: 268,
+    height: 268,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  localArt: {
+    width: 220,
+    height: 220,
+    opacity: 0.92,
+  },
+  localBadge: {
+    position: "absolute",
+    bottom: 36,
   },
   text: {
     fontSize: 15,

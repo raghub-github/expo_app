@@ -65,7 +65,7 @@ function DiscoveryRestaurantCardInner({ merchant, weatherDelayMinutes = 0 }: Pro
   const saved = useIsStoreBookmarked(merchant.id);
   const { syncBookmark } = useStoreBookmarkMutations();
   const { foodLocked } = usePreventServicesAtPin();
-  const pressScale = useInstantPressScale(0.98);
+  const pressScale = useInstantPressScale(0.97);
   const liveStatus = useMerchantLiveStatus(merchant);
   const isOpen = liveStatus === "OPEN";
   const listingBlocked = foodLocked;

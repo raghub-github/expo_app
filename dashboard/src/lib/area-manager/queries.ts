@@ -2,7 +2,7 @@
  * Area manager scoped queries: riders list, metrics, availability, activity logs.
  */
 
-import { getDb } from "@/lib/db/client";
+import { getDb, getSql } from "@/lib/db/client";
 import { riders, activityLogs, stores, areaManagers, systemUsers } from "@/lib/db/schema";
 import {
   eq,
@@ -31,7 +31,30 @@ export interface AreaManagerListRow {
   city: string | null;
   status: string;
   fullName: string | null;
+  /** Formatted system_users.system_user_id (e.g. GMSU…) */
+  systemUserId: string | null;
   email: string | null;
+  mobile: string | null;
+  /** system_users.primary_role — used to surface Super Admins in assign lists */
+  primaryRole: string | null;
+}
+
+/**
+ * Ensure every active Super Admin has an area_managers row so they can be
+ * assigned to stores (parent_area_managers.area_manager_id FK).
+ */
+export async function ensureSuperAdminsAsMerchantAreaManagers(): Promise<void> {
+  const sqlClient = getSql();
+  await sqlClient`
+    INSERT INTO area_managers (user_id, manager_type, status)
+    SELECT su.id, 'MERCHANT'::area_manager_type, 'ACTIVE'::area_manager_status
+    FROM system_users su
+    WHERE su.primary_role = 'SUPER_ADMIN'
+      AND su.deleted_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM area_managers am WHERE am.user_id = su.id
+      )
+  `;
 }
 
 /**
@@ -63,16 +86,26 @@ export async function listAreaManagersByType(params: {
   managerType: "MERCHANT" | "RIDER";
   limit?: number;
   cursor?: string;
+  /** When true (MERCHANT only), also include SUPER_ADMIN users as assignable AMs */
+  includeSuperAdmins?: boolean;
 }): Promise<{ items: AreaManagerListRow[]; nextCursor: string | null }> {
   const db = getDb();
   const limit = Math.min(params.limit ?? 50, 100);
   const limitVal = limit + 1;
 
+  if (params.includeSuperAdmins && params.managerType === "MERCHANT") {
+    await ensureSuperAdminsAsMerchantAreaManagers();
+  }
+
   const cursorId = params.cursor ? parseInt(params.cursor, 10) : undefined;
+  const typeOrSuperAdmin =
+    params.includeSuperAdmins && params.managerType === "MERCHANT"
+      ? or(eq(areaManagers.managerType, params.managerType), eq(systemUsers.primaryRole, "SUPER_ADMIN"))
+      : eq(areaManagers.managerType, params.managerType);
   const whereConditions =
     cursorId != null && !isNaN(cursorId)
-      ? and(eq(areaManagers.managerType, params.managerType), lt(areaManagers.id, cursorId))
-      : eq(areaManagers.managerType, params.managerType);
+      ? and(typeOrSuperAdmin, lt(areaManagers.id, cursorId))
+      : typeOrSuperAdmin;
 
   const rows = await db
     .select({
@@ -84,7 +117,10 @@ export async function listAreaManagersByType(params: {
       city: areaManagers.city,
       status: areaManagers.status,
       fullName: systemUsers.fullName,
+      systemUserId: systemUsers.systemUserId,
       email: systemUsers.email,
+      mobile: systemUsers.mobile,
+      primaryRole: systemUsers.primaryRole,
     })
     .from(areaManagers)
     .innerJoin(systemUsers, eq(areaManagers.userId, systemUsers.id))
@@ -106,7 +142,10 @@ export async function listAreaManagersByType(params: {
       city: r.city,
       status: r.status,
       fullName: r.fullName ?? null,
+      systemUserId: r.systemUserId ?? null,
       email: r.email ?? null,
+      mobile: r.mobile ?? null,
+      primaryRole: r.primaryRole ?? null,
     })),
     nextCursor,
   };

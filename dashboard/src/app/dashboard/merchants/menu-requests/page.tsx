@@ -61,6 +61,7 @@ export default function MenuRequestsPage() {
   const [photoRejectReason, setPhotoRejectReason] = useState("");
   const [photoRejectError, setPhotoRejectError] = useState<string | null>(null);
   const [photoActionLoading, setPhotoActionLoading] = useState<"APPROVE" | "REJECT" | null>(null);
+  const [activeTab, setActiveTab] = useState<"images" | "changes">("images");
 
   useEffect(() => {
     if (portal === "merchant") {
@@ -249,211 +250,267 @@ export default function MenuRequestsPage() {
     );
   }
 
+  const rowBorder = "border-b-[0.5px] border-[#121212]/10";
+  const photoCount = reviewSummary?.pending_photo_reviews ?? 0;
+  const changeCount = reviewSummary?.pending_change_requests ?? 0;
+
   return (
-    <div className="space-y-4">
-        <p className="text-xs text-[#121212]/55">
-          Review merchant edit/delete requests and pending item photo uploads across all stores.
-        </p>
-        {reviewSummary ? (
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
-              {reviewSummary.total_pending} total pending
-            </span>
-            <span className="rounded-full bg-[#F3F7FA] px-2 py-0.5 text-[11px] font-semibold text-[#121212]/70">
-              {reviewSummary.pending_change_requests} change requests
-            </span>
-            <span className="rounded-full bg-purple-50 px-2 py-0.5 text-[11px] font-semibold text-purple-800">
-              {reviewSummary.pending_photo_reviews} photo reviews
-            </span>
-          </div>
-        ) : null}
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="rounded-md bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-900">
+            {reviewSummary?.total_pending ?? 0} total pending
+          </span>
+          <span className="rounded-md bg-purple-50 px-2 py-1 text-[10px] font-semibold text-purple-800">
+            {photoCount} image
+          </span>
+          <span className="rounded-md bg-[#F3F7FA] px-2 py-1 text-[10px] font-semibold text-[#121212]/65">
+            {changeCount} changes
+          </span>
+        </div>
 
-        <section>
-          <div className="flex items-center gap-1.5 text-sm font-bold text-gray-900">
-            <ImageIcon className="h-4 w-4 text-purple-600" aria-hidden />
-            Photo reviews
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="h-8 cursor-pointer rounded-lg border border-[#121212]/12 bg-white px-2.5 text-xs text-[#121212]"
+            aria-label="Filter by status"
+          >
+            <option value="">Status: All</option>
+            <option value="PENDING">Status: Pending</option>
+            <option value="APPROVED">Status: Approved</option>
+            <option value="REJECTED">Status: Rejected</option>
+          </select>
+          <div className="inline-flex rounded-lg border border-[#121212]/12 bg-white p-0.5">
+            <button
+              type="button"
+              onClick={() => setActiveTab("images")}
+              className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+                activeTab === "images"
+                  ? "bg-[#121212] text-white"
+                  : "text-[#121212]/65 hover:bg-[#F7F7F7]"
+              }`}
+            >
+              <ImageIcon className="h-3.5 w-3.5" aria-hidden />
+              Image review
+              {photoCount > 0 ? (
+                <span
+                  className={`rounded px-1 py-0.5 text-[9px] font-bold ${
+                    activeTab === "images" ? "bg-white/20 text-white" : "bg-purple-100 text-purple-800"
+                  }`}
+                >
+                  {photoCount}
+                </span>
+              ) : null}
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("changes")}
+              className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+                activeTab === "changes"
+                  ? "bg-[#121212] text-white"
+                  : "text-[#121212]/65 hover:bg-[#F7F7F7]"
+              }`}
+            >
+              Changes Review
+              {changeCount > 0 ? (
+                <span
+                  className={`rounded px-1 py-0.5 text-[9px] font-bold ${
+                    activeTab === "changes" ? "bg-white/20 text-white" : "bg-amber-100 text-amber-900"
+                  }`}
+                >
+                  {changeCount}
+                </span>
+              ) : null}
+            </button>
           </div>
-          <p className="mt-0.5 text-[11px] text-gray-500">Tap Review to open the photo side sheet.</p>
-          <div className="mt-2 overflow-hidden rounded-xl border border-gray-200 bg-white">
-            {photosLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
-              </div>
-            ) : photoItems.length === 0 ? (
-              <div className="py-8 text-center text-xs text-gray-500">No pending photo reviews.</div>
-            ) : (
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50">
-                  <tr className="text-[11px] text-gray-500 border-b border-gray-200">
-                    <th className="px-3 py-2 text-left font-semibold">Item</th>
-                    <th className="px-3 py-2 text-left font-semibold">Store</th>
-                    <th className="px-3 py-2 text-left font-semibold">Photo</th>
-                    <th className="px-3 py-2 text-right font-semibold">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {photoItems.map((item) => {
-                    const key = `${item.store_id}:${item.id}`;
-                    const storeHref = item.store_id
-                      ? `/dashboard/merchants/stores/${item.store_id}/menu-change-requests?portal=admin`
-                      : null;
-                    return (
-                      <tr key={key} className="border-t border-gray-100">
-                        <td className="px-3 py-2.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPhotoRejectReason("");
-                              setPhotoRejectError(null);
-                              setPhotoReviewItem(item);
-                            }}
-                            className="cursor-pointer text-left text-sm font-semibold text-blue-700 hover:text-blue-900 hover:underline underline-offset-2"
-                          >
-                            {item.item_name}
-                          </button>
-                          {item.selling_price != null ? (
-                            <div className="text-[11px] text-gray-500">₹{item.selling_price}</div>
-                          ) : null}
-                        </td>
-                        <td className="px-3 py-2.5 text-xs text-gray-600">
-                          {storeHref ? (
-                            <Link href={storeHref} className="font-medium text-blue-700 hover:underline">
-                              {item.store_name || item.store_public_id || `Store #${item.store_id}`}
-                            </Link>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPhotoRejectReason("");
-                              setPhotoRejectError(null);
-                              setPhotoReviewItem(item);
-                            }}
-                            className="h-10 w-10 overflow-hidden rounded-lg border border-gray-200 bg-gray-50"
-                          >
-                            <R2Image
-                              src={item.item_image_url}
-                              alt={item.item_name}
-                              className="h-full w-full object-cover"
-                            />
-                          </button>
-                        </td>
-                        <td className="px-3 py-2.5 text-right">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPhotoRejectReason("");
-                              setPhotoRejectError(null);
-                              setPhotoReviewItem(item);
-                            }}
-                            className="rounded-lg border border-gray-300 px-2.5 py-1 text-[11px] font-bold text-gray-700 hover:bg-gray-50"
-                          >
-                            Review
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </section>
+          <button
+            type="button"
+            onClick={() => {
+              void fetchRequests();
+              fetchReviewSummary();
+            }}
+            disabled={loading || photosLoading}
+            className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-[#121212]/12 bg-white px-2.5 text-[11px] font-semibold text-[#121212] hover:bg-[#F7F7F7] disabled:opacity-50"
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${loading || photosLoading ? "animate-spin" : ""}`}
+            />
+            Refresh
+          </button>
+        </div>
+      </div>
 
-        <section className="mt-6">
-          <div className="flex flex-wrap items-end justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-bold text-gray-900">Change requests</h2>
-              <p className="text-[11px] text-gray-500">Filter by status.</p>
+      {activeTab === "images" ? (
+        <div className="min-h-0 flex-1 overflow-auto bg-white">
+          {photosLoading ? (
+            <div className="flex items-center justify-center py-12 text-[#121212]/45">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Loading…
             </div>
-            <div className="flex items-center gap-2">
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-900"
-                aria-label="Filter change requests by status"
-              >
-                <option value="">Status: All</option>
-                <option value="PENDING">Status: Pending</option>
-                <option value="APPROVED">Status: Approved</option>
-                <option value="REJECTED">Status: Rejected</option>
-              </select>
-              <button
-                type="button"
-                onClick={() => {
-                  void fetchRequests();
-                  fetchReviewSummary();
-                }}
-                disabled={loading}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-                Refresh
-              </button>
+          ) : photoItems.length === 0 ? (
+            <div className="px-3 py-12 text-center text-sm text-[#121212]/50">
+              No pending photo reviews.
             </div>
-          </div>
+          ) : (
+            <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+              <thead className="text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
+                <tr>
+                  <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Photo</th>
+                  <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Item</th>
+                  <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Store</th>
+                  <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 text-right ${rowBorder}`}>
+                    Action
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {photoItems.map((item) => {
+                  const key = `${item.store_id}:${item.id}`;
+                  const storeHref = item.store_id
+                    ? `/dashboard/merchants/stores/${item.store_id}/menu-change-requests?portal=admin`
+                    : null;
+                  return (
+                    <tr key={key} className="bg-white hover:bg-[#FAFAFA]">
+                      <td className={`px-3 py-2.5 ${rowBorder}`}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPhotoRejectReason("");
+                            setPhotoRejectError(null);
+                            setPhotoReviewItem(item);
+                          }}
+                          className="h-11 w-11 cursor-pointer overflow-hidden rounded-md border-[0.5px] border-[#121212]/15 bg-[#F7F7F7]"
+                        >
+                          <R2Image
+                            src={item.item_image_url}
+                            alt={item.item_name}
+                            className="h-full w-full object-cover"
+                          />
+                        </button>
+                      </td>
+                      <td className={`px-3 py-2.5 ${rowBorder}`}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPhotoRejectReason("");
+                            setPhotoRejectError(null);
+                            setPhotoReviewItem(item);
+                          }}
+                          className="cursor-pointer truncate text-left text-[13px] font-medium text-[#121212] hover:underline"
+                        >
+                          {item.item_name}
+                        </button>
+                        {item.selling_price != null ? (
+                          <p className="text-[11px] text-[#121212]/45">₹{item.selling_price}</p>
+                        ) : null}
+                      </td>
+                      <td className={`px-3 py-2.5 text-[12px] text-[#121212]/65 ${rowBorder}`}>
+                        {storeHref ? (
+                          <Link href={storeHref} className="font-medium text-sky-700 hover:underline">
+                            {item.store_name || item.store_public_id || `Store #${item.store_id}`}
+                          </Link>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className={`px-3 py-2.5 text-right ${rowBorder}`}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPhotoRejectReason("");
+                            setPhotoRejectError(null);
+                            setPhotoReviewItem(item);
+                          }}
+                          className="cursor-pointer rounded-md bg-[#121212] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-black"
+                        >
+                          Review
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-2">
+          {total > 0 ? (
+            <p className="text-[10px] text-[#121212]/45">
+              Showing {requests.length} of {total}
+            </p>
+          ) : null}
 
-          <div className="mt-2 overflow-hidden rounded-xl border border-gray-200 bg-white">
+          <div className="min-h-0 flex-1 overflow-auto bg-white">
             {loading && requests.length === 0 ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+              <div className="flex items-center justify-center py-12 text-[#121212]/45">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Loading…
               </div>
             ) : requests.length === 0 ? (
-              <div className="py-8 text-center text-xs text-gray-500">No change requests found.</div>
+              <div className="px-3 py-12 text-center text-sm text-[#121212]/50">
+                No change requests found.
+              </div>
             ) : (
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50">
-                  <tr className="text-[11px] text-gray-500 border-b border-gray-200">
-                    <th className="px-3 py-2 text-left font-semibold">Item</th>
-                    <th className="px-3 py-2 text-left font-semibold">Type</th>
-                    <th className="px-3 py-2 text-left font-semibold">Status</th>
-                    <th className="px-3 py-2 text-left font-semibold">Created</th>
-                    <th className="px-3 py-2 text-right font-semibold">Action</th>
+              <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+                <thead className="text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
+                  <tr>
+                    <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Item</th>
+                    <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Type</th>
+                    <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
+                      Status
+                    </th>
+                    <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
+                      Created
+                    </th>
+                    <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 text-right ${rowBorder}`}>
+                      Action
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {requests.map((r) => (
-                    <tr key={r.id} className="border-t border-gray-100">
-                      <td className="px-3 py-2.5">
-                        <div className="text-sm font-semibold text-gray-900">
+                    <tr key={r.id} className="bg-white hover:bg-[#FAFAFA]">
+                      <td className={`px-3 py-2.5 ${rowBorder}`}>
+                        <p className="truncate text-[13px] font-medium text-[#121212]">
                           {r.item_name ?? `Item #${r.menu_item_id}`}
-                        </div>
+                        </p>
                         {r.menu_item_public_id ? (
-                          <div className="text-[11px] text-gray-400">{r.menu_item_public_id}</div>
+                          <p className="truncate font-mono text-[10px] text-[#121212]/40">
+                            {r.menu_item_public_id}
+                          </p>
                         ) : null}
                       </td>
-                      <td className="px-3 py-2.5">
-                        <span className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] font-bold">
+                      <td className={`px-3 py-2.5 ${rowBorder}`}>
+                        <span className="rounded-md border border-[#121212]/10 bg-[#F7F7F7] px-1.5 py-0.5 text-[10px] font-semibold uppercase text-[#121212]/65">
                           {r.request_type}
                         </span>
                       </td>
-                      <td className="px-3 py-2.5">
+                      <td className={`px-3 py-2.5 ${rowBorder}`}>
                         <span
-                          className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          className={`inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
                             r.status === "PENDING"
-                              ? "bg-amber-100 text-amber-800"
+                              ? "bg-amber-50 text-amber-800"
                               : r.status === "APPROVED"
-                                ? "bg-green-100 text-green-800"
-                                : "bg-red-100 text-red-800"
+                                ? "bg-emerald-50 text-emerald-800"
+                                : "bg-red-50 text-red-700"
                           }`}
                         >
                           {r.status}
                         </span>
                       </td>
-                      <td className="px-3 py-2.5 text-[11px] text-gray-500">
-                        {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
+                      <td className={`px-3 py-2.5 text-[11px] text-[#121212]/50 ${rowBorder}`}>
+                        {r.created_at ? new Date(r.created_at).toLocaleString("en-IN") : "—"}
                       </td>
-                      <td className="px-3 py-2.5 text-right">
+                      <td className={`px-3 py-2.5 text-right ${rowBorder}`}>
                         {r.status === "PENDING" ? (
                           <div className="inline-flex items-center gap-1.5">
                             <button
                               type="button"
                               onClick={() => setShowRejectModal(r.id)}
                               disabled={actioningId !== null}
-                              className="rounded-lg border border-gray-300 px-2 py-1 text-[11px] font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                              className="cursor-pointer rounded-md border border-[#121212]/15 px-2 py-1 text-[11px] font-semibold text-[#121212] hover:bg-[#F7F7F7] disabled:opacity-50"
                             >
                               Reject
                             </button>
@@ -461,25 +518,27 @@ export default function MenuRequestsPage() {
                               type="button"
                               onClick={() => void handleApprove(r.id)}
                               disabled={actioningId !== null}
-                              className="rounded-lg bg-green-600 px-2 py-1 text-[11px] font-bold text-white hover:bg-green-700 disabled:opacity-50"
+                              className="cursor-pointer rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                             >
                               {actioningId === r.id ? "…" : "Approve"}
                             </button>
                           </div>
                         ) : (
-                          <span className="text-[11px] text-gray-400">—</span>
+                          <span className="text-[11px] text-[#121212]/35">—</span>
                         )}
                         {showRejectModal === r.id ? (
                           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
                             <div className="w-full max-w-md rounded-lg bg-white p-4 shadow">
-                              <h3 className="font-semibold text-gray-900">Reject request</h3>
-                              <p className="mt-1 text-sm text-gray-500">Optional reason (shown to merchant):</p>
+                              <h3 className="font-semibold text-[#121212]">Reject request</h3>
+                              <p className="mt-1 text-sm text-[#121212]/50">
+                                Optional reason (shown to merchant):
+                              </p>
                               <textarea
                                 value={rejectReason[r.id] ?? ""}
                                 onChange={(e) =>
                                   setRejectReason((prev) => ({ ...prev, [r.id]: e.target.value }))
                                 }
-                                className="mt-2 w-full rounded border border-gray-300 p-2 text-sm"
+                                className="mt-2 w-full rounded border border-[#121212]/15 p-2 text-sm"
                                 rows={3}
                                 placeholder="e.g. Price change not allowed"
                               />
@@ -487,7 +546,7 @@ export default function MenuRequestsPage() {
                                 <button
                                   type="button"
                                   onClick={() => setShowRejectModal(null)}
-                                  className="rounded border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700"
+                                  className="cursor-pointer rounded border border-[#121212]/15 px-3 py-1.5 text-sm font-medium text-[#121212]"
                                 >
                                   Cancel
                                 </button>
@@ -495,7 +554,7 @@ export default function MenuRequestsPage() {
                                   type="button"
                                   onClick={() => void handleReject(r.id)}
                                   disabled={actioningId === r.id}
-                                  className="rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                                  className="cursor-pointer rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
                                 >
                                   {actioningId === r.id ? "Rejecting…" : "Reject"}
                                 </button>
@@ -510,12 +569,8 @@ export default function MenuRequestsPage() {
               </table>
             )}
           </div>
-          {total > 0 ? (
-            <p className="mt-1.5 text-[11px] text-gray-500">
-              Showing {requests.length} of {total} request(s).
-            </p>
-          ) : null}
-        </section>
+        </div>
+      )}
 
       {photoReviewItem &&
         typeof document !== "undefined" &&

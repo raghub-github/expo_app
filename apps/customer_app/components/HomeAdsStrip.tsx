@@ -1,16 +1,18 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
-  Image,
+  FlatList,
   Linking,
   Modal,
   Pressable,
-  ScrollView,
   Share,
   StyleSheet,
   Text,
   View,
+  type ListRenderItem,
+  type ViewToken,
   type LayoutChangeEvent,
 } from "react-native";
+import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useFocusEffect, useRouter } from "expo-router";
 import { fetchCustomerHomeAds, type HomeAd } from "@/services/homeAdsApi";
@@ -29,16 +31,28 @@ const TEAL = "#03C3B2";
 function AdCard({
   ad,
   width,
+  decodeImage,
+  priority,
   onCta,
 }: {
   ad: HomeAd;
   width: number | `${number}%`;
+  decodeImage: boolean;
+  priority: "high" | "normal" | "low";
   onCta: (ad: HomeAd) => void;
 }) {
   return (
     <View style={[styles.card, { width, height: CARD_H }]}>
-      {ad.imageUrl ? (
-        <Image source={{ uri: ad.imageUrl }} style={styles.image} resizeMode="cover" />
+      {ad.imageUrl && decodeImage ? (
+        <Image
+          source={{ uri: ad.imageUrl }}
+          style={styles.image}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={0}
+          priority={priority}
+          recyclingKey={`home-ad-${ad.id}`}
+        />
       ) : (
         <View style={[styles.image, styles.fallback]} />
       )}
@@ -76,6 +90,7 @@ export function HomeAdsStrip({ placement }: Props) {
   const [ads, setAds] = useState<HomeAd[]>([]);
   const [sheetAd, setSheetAd] = useState<HomeAd | null>(null);
   const [trackW, setTrackW] = useState(0);
+  const [visibleIds, setVisibleIds] = useState<Set<HomeAd["id"]>>(() => new Set());
 
   const onTrackLayout = useCallback((e: LayoutChangeEvent) => {
     const w = Math.round(e.nativeEvent.layout.width);
@@ -132,7 +147,27 @@ export function HomeAdsStrip({ placement }: Props) {
     [router]
   );
 
-  if (ads.length === 0) return null;
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: ViewToken[] }) => {
+      setVisibleIds((prev) => {
+        const next = new Set(prev);
+        let changed = false;
+        for (const token of viewableItems) {
+          const id = (token.item as HomeAd | undefined)?.id;
+          if (id && !next.has(id)) {
+            next.add(id);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+  ).current;
+
+  const viewabilityConfig = useMemo(
+    () => ({ itemVisiblePercentThreshold: 25, minimumViewTime: 40 }),
+    []
+  );
 
   const multi = ads.length > 1;
   const cardW = multi
@@ -141,28 +176,53 @@ export function HomeAdsStrip({ placement }: Props) {
       ? trackW
       : ("100%" as const);
 
+  const renderItem = useCallback<ListRenderItem<HomeAd>>(
+    ({ item, index }) => {
+      const width = typeof cardW === "number" ? cardW : 280;
+      const decodeImage = index === 0 || visibleIds.has(item.id);
+      return (
+        <AdCard
+          ad={item}
+          width={width}
+          decodeImage={decodeImage}
+          priority={index === 0 ? "high" : "low"}
+          onCta={(a) => void onCta(a)}
+        />
+      );
+    },
+    [cardW, onCta, visibleIds]
+  );
+
+  if (ads.length === 0) return null;
+
   return (
     <>
       <View style={styles.wrap} onLayout={onTrackLayout}>
         {multi ? (
-          <ScrollView
+          <FlatList
+            data={ads}
+            keyExtractor={(ad) => String(ad.id)}
+            renderItem={renderItem}
             horizontal
             showsHorizontalScrollIndicator={false}
             decelerationRate="fast"
             snapToInterval={typeof cardW === "number" ? cardW + GAP : undefined}
             contentContainerStyle={styles.row}
-          >
-            {ads.map((ad) => (
-              <AdCard
-                key={ad.id}
-                ad={ad}
-                width={typeof cardW === "number" ? cardW : 280}
-                onCta={(a) => void onCta(a)}
-              />
-            ))}
-          </ScrollView>
+            initialNumToRender={1}
+            maxToRenderPerBatch={2}
+            windowSize={3}
+            removeClippedSubviews
+            onViewableItemsChanged={onViewableItemsChanged}
+            viewabilityConfig={viewabilityConfig}
+          />
         ) : (
-          <AdCard ad={ads[0]!} width={cardW} onCta={(a) => void onCta(a)} />
+          <AdCard
+            ad={ads[0]!}
+            width={cardW}
+            decodeImage
+            priority="high"
+            onCta={(a) => void onCta(a)}
+          />
         )}
       </View>
 

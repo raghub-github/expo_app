@@ -22,7 +22,9 @@ export function useNearbyRideAvailability(
     Number.isFinite(pickupLng);
 
   const tripKmKey =
-    tripKm != null && Number.isFinite(tripKm) && tripKm > 0 ? tripKm : null;
+    tripKm != null && Number.isFinite(tripKm) && tripKm > 0
+      ? Math.round(tripKm * 10) / 10
+      : null;
   const serviceType = geoHints?.serviceType ?? "person_ride";
 
   return useQuery({
@@ -56,10 +58,11 @@ export function useNearbyRideAvailability(
     },
     refetchIntervalInBackground: false,
     staleTime: 10_000,
-    retry: 1,
-    retryDelay: 600,
+    // Keep prior riders visible while a refined tripKm refetch runs.
     placeholderData: keepPreviousData,
-    // Don't leave the book sheet stuck on a spinner if the API hangs.
+    retry: 1,
+    retryDelay: 400,
+    // Fail soft — book UI must not spin forever on a hung availability call.
     networkMode: "online",
   });
 }

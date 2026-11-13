@@ -6,8 +6,7 @@ import { useEffect, useRef } from "react";
 import { View, ActivityIndicator, StyleSheet } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { presentCheckoutPaymentFailure } from "@/store/checkoutPaymentFailureStore";
-import { useCheckoutSheetStore } from "@/store/checkoutSheetStore";
-import { useCartStore } from "@/store/cartStore";
+import { leavePaymentOverlayToCheckout } from "@/lib/restoreCheckoutSurface";
 import { GatiMitraColors } from "@/constants/gatimitra";
 
 export default function PaymentFailureScreen() {
@@ -28,14 +27,7 @@ export default function PaymentFailureScreen() {
       amountInr: Number.isFinite(amount) ? amount : null,
       methodLabel: methodRaw?.trim() || "UPI",
     });
-    if (useCartStore.getState().items.length > 0) {
-      useCheckoutSheetStore.getState().show();
-    }
-    if (router.canGoBack()) {
-      router.back();
-    } else {
-      router.replace("/checkout");
-    }
+    leavePaymentOverlayToCheckout({ router });
   }, [params.amount, params.method, router]);
 
   return (

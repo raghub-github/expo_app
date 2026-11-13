@@ -63,7 +63,7 @@ export const MerchantMenuMasonrySection = React.memo(function MerchantMenuMasonr
 
   const cards = useMemo(
     () =>
-      items.map((menuItem) => {
+      items.map((menuItem, index) => {
         const menuItemPk = resolveMenuItemPk(menuItem);
         const itemOffer =
           itemOfferById?.get(menuItem.id) ??
@@ -97,6 +97,7 @@ export const MerchantMenuMasonrySection = React.memo(function MerchantMenuMasonr
               highlighted={highlighted}
               onBookmark={onBookmark}
               itemOffer={itemOffer}
+              eagerImage={index < 6}
             />
           </View>
         );

@@ -314,6 +314,7 @@ export function FoodNavigateBottomSheetInner({
           geoLocked={reachCustomerGeo.locked}
           geoHint={reachCustomerGeo.hintText}
           actionName="reached_drop"
+          claimOnTouchStart
         />
       ) : null}
 
@@ -333,6 +334,7 @@ export function FoodNavigateBottomSheetInner({
           geoLocked={markDeliveredGeo.locked}
           geoHint={markDeliveredGeo.hintText}
           actionName="delivered"
+          claimOnTouchStart
         />
       ) : null}
     </>
@@ -353,6 +355,7 @@ export function FoodNavigateBottomSheetInner({
           geoLocked={reachStoreGeo.locked}
           geoHint={reachStoreGeo.hintText}
           actionName="reached_pickup"
+          claimOnTouchStart
         />
       ) : null}
 
@@ -366,6 +369,7 @@ export function FoodNavigateBottomSheetInner({
           completedLabel={t("orders.activeParcel.paymentCollected", "Payment collected ✓")}
           actionName="collect_payment"
           resetKey={collectPaymentResetKey}
+          claimOnTouchStart
         />
       ) : null}
 
@@ -388,6 +392,7 @@ export function FoodNavigateBottomSheetInner({
             geoLocked={markPickupGeo.locked}
             geoHint={markPickupGeo.hintText}
             actionName="mark_pickup"
+            claimOnTouchStart
           />
         </>
       ) : null}

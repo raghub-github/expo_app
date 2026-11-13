@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { User, Search, Filter, Plus, Edit, Trash2, CheckCircle, XCircle, ChevronDown, ChevronLeft, ChevronRight, Clock, ShieldPlus } from "lucide-react";
+import { User, Search, Filter, Plus, Edit, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, Clock, ShieldPlus } from "lucide-react";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import Link from "next/link";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
@@ -11,6 +11,43 @@ import { SystemRolesListPanel } from "./SystemRolesListPanel";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { DashboardErrorBanner } from "@/components/ui/DashboardErrorBanner";
+import {
+  generateInitialsAvatarDataUrl,
+  getGravatarUrl,
+  getUserInitials,
+} from "@/lib/user-avatar";
+
+const rowBorder = "border-b-[0.5px] border-[#121212]/10";
+const outerBorder = "rounded-md border-[0.5px] border-[#121212]/40";
+
+function UserProfileAvatar({
+  email,
+  fullName,
+  size = 36,
+}: {
+  email: string;
+  fullName: string;
+  size?: number;
+}) {
+  const [failed, setFailed] = useState(false);
+  const initials = getUserInitials(fullName, email);
+  const fallback = generateInitialsAvatarDataUrl(email || fullName, initials, size);
+  // Gravatar is keyed by email (works for many Gmail accounts with a linked profile photo).
+  const src = failed || !email ? fallback : getGravatarUrl(email, size * 2);
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt=""
+      width={size}
+      height={size}
+      className="h-9 w-9 shrink-0 rounded-full object-cover ring-1 ring-[#121212]/10"
+      onError={() => setFailed(true)}
+      referrerPolicy="no-referrer"
+    />
+  );
+}
 
 interface UserListProps {
   onUserSelect?: (user: SystemUser) => void;
@@ -399,17 +436,9 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     return pages;
   };
 
-  if (listTab === "users" && isLoading && users.length === 0) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <LoadingSpinner size="lg" text="Loading users..." />
-      </div>
-    );
-  }
-
   const usersRolesTabToggle = isSuperAdmin ? (
     <div
-      className="inline-flex shrink-0 rounded-lg border border-gray-200 bg-gray-100 p-0.5 shadow-sm"
+      className="inline-flex shrink-0 rounded-lg border border-[#121212]/12 bg-[#F4F4F4] p-0.5"
       role="tablist"
       aria-label="Users or roles list"
     >
@@ -418,10 +447,10 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
         role="tab"
         aria-selected={listTab === "users"}
         onClick={() => setListTab("users")}
-        className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors sm:px-4 sm:py-2 ${
+        className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold transition-colors sm:px-3.5 ${
           listTab === "users"
-            ? "bg-blue-600 text-white shadow-sm"
-            : "text-gray-600 hover:bg-gray-200/80 hover:text-gray-900"
+            ? "bg-[#121212] text-white"
+            : "text-[#121212]/65 hover:bg-white hover:text-[#121212]"
         }`}
       >
         Users
@@ -431,10 +460,10 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
         role="tab"
         aria-selected={listTab === "roles"}
         onClick={() => setListTab("roles")}
-        className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors sm:px-4 sm:py-2 ${
+        className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold transition-colors sm:px-3.5 ${
           listTab === "roles"
-            ? "bg-blue-600 text-white shadow-sm"
-            : "text-gray-600 hover:bg-gray-200/80 hover:text-gray-900"
+            ? "bg-[#121212] text-white"
+            : "text-[#121212]/65 hover:bg-white hover:text-[#121212]"
         }`}
       >
         Roles
@@ -442,62 +471,31 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
     </div>
   ) : null;
 
-  return (
-    <div className="space-y-4 sm:space-y-6 px-2 sm:px-0">
-      {/* Header */}
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4">
-          <h2 className="text-xl sm:text-2xl font-bold text-gray-900">
-            {listTab === "users" ? "Users" : "Roles"}
-          </h2>
-        </div>
-        {showActions && (
-          <div className="flex flex-row flex-wrap items-center gap-2 lg:justify-end">
-            {isSuperAdmin && (
-              <Link
-                href="/dashboard/users/roles/new"
-                prefetch
-                className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm hover:shadow-md text-sm sm:text-base shrink-0"
-              >
-                <ShieldPlus className="h-4 w-4 shrink-0" aria-hidden />
-                <span>Add Role</span>
-              </Link>
-            )}
-            <Link
-              href="/dashboard/users/new"
-              className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm hover:shadow-md text-sm sm:text-base shrink-0"
-            >
-              <Plus className="h-4 w-4 shrink-0" aria-hidden />
-              <span>Add User</span>
-            </Link>
-          </div>
-        )}
-      </div>
-
-      {/* Users: search, filters, and tab toggle */}
-      {listTab === "users" && (
-        <div className="rounded-lg border border-gray-200 bg-white p-2.5 shadow-sm sm:p-3">
-          <div className="flex flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin]">
+  const stickyFilterRow = (
+    <div className="sticky top-0 z-30 shrink-0 border-b-[0.5px] border-[#121212]/10 bg-white py-2">
+      <div className="flex flex-nowrap items-center gap-2 overflow-x-auto rounded-md border-[0.5px] border-[#121212]/15 bg-white px-2.5 py-2 [scrollbar-width:thin]">
+        {listTab === "users" ? (
+          <>
             <div className="relative w-[10rem] shrink-0 sm:w-52 md:w-64">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 transform text-gray-400" />
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#121212]/35" />
               <input
                 type="text"
                 placeholder="Search users..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-2 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                className="h-9 w-full rounded-md border border-[#121212]/12 bg-white py-1.5 pl-8 pr-2 text-xs text-[#121212] placeholder:text-[#121212]/40 focus:border-[#121212]/35 focus:outline-none"
               />
             </div>
 
-            <div className="relative w-[7.5rem] shrink-0 sm:w-40">
-              <Filter className="pointer-events-none absolute left-2.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 transform text-gray-400" />
+            <div className="relative w-[7.5rem] shrink-0 sm:w-36">
+              <Filter className="pointer-events-none absolute left-2.5 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-[#121212]/35" />
               <select
                 value={filters.status}
                 onChange={(e) => {
                   setFilters({ ...filters, status: e.target.value });
                   setPagination((prev) => ({ ...prev, page: 1 }));
                 }}
-                className="w-full cursor-pointer appearance-none rounded-md border border-gray-300 bg-white py-2 pl-9 pr-7 text-sm text-gray-900 hover:border-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                className="h-9 w-full cursor-pointer appearance-none rounded-md border border-[#121212]/12 bg-white py-1.5 pl-8 pr-7 text-xs text-[#121212] focus:border-[#121212]/35 focus:outline-none"
               >
                 <option value="">All Status</option>
                 <option value="ACTIVE">Active</option>
@@ -506,11 +504,11 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                 <option value="PENDING_ACTIVATION">Pending</option>
                 <option value="LOCKED">Locked</option>
               </select>
-              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 transform text-gray-400" />
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#121212]/35" />
             </div>
 
             <div className="relative w-[7.5rem] shrink-0 sm:w-40">
-              <User className="pointer-events-none absolute left-2.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 transform text-gray-400" />
+              <User className="pointer-events-none absolute left-2.5 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-[#121212]/35" />
               <select
                 value={filters.role}
                 onChange={(e) => {
@@ -518,33 +516,62 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                   setPagination((prev) => ({ ...prev, page: 1 }));
                 }}
                 disabled={rolesLoading}
-                className="w-full cursor-pointer appearance-none rounded-md border border-gray-300 bg-white py-2 pl-9 pr-7 text-sm text-gray-900 hover:border-gray-400 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                className="h-9 w-full cursor-pointer appearance-none rounded-md border border-[#121212]/12 bg-white py-1.5 pl-8 pr-7 text-xs text-[#121212] focus:border-[#121212]/35 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <option value="">All Roles</option>
-                {Array.isArray(availableRoles) && availableRoles.length > 0 ? (
-                  availableRoles.map((role) => (
-                    <option key={role} value={role}>
-                      {formatRoleName(role)}
-                    </option>
-                  ))
-                ) : null}
+                {Array.isArray(availableRoles) && availableRoles.length > 0
+                  ? availableRoles.map((role) => (
+                      <option key={role} value={role}>
+                        {formatRoleName(role)}
+                      </option>
+                    ))
+                  : null}
               </select>
-              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 transform text-gray-400" />
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#121212]/35" />
             </div>
+          </>
+        ) : (
+          <p className="shrink-0 text-xs font-medium text-[#121212]/55">System roles</p>
+        )}
 
-            {usersRolesTabToggle ? (
-              <div className="ml-auto shrink-0 pl-1">{usersRolesTabToggle}</div>
-            ) : null}
-          </div>
+        <div className="ml-auto flex shrink-0 items-center gap-2 pl-1">
+          {usersRolesTabToggle}
+          {showActions ? (
+            <>
+              {isSuperAdmin ? (
+                <Link
+                  href="/dashboard/users/roles/new"
+                  prefetch
+                  className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md border border-[#121212]/12 bg-white px-3 text-xs font-semibold text-[#121212] hover:bg-[#F7F7F7]"
+                >
+                  <ShieldPlus className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  <span>Add Role</span>
+                </Link>
+              ) : null}
+              <Link
+                href="/dashboard/users/new"
+                className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md bg-[#121212] px-3 text-xs font-semibold text-white hover:bg-black"
+              >
+                <Plus className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                <span>Add User</span>
+              </Link>
+            </>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex h-full min-h-0 flex-1 flex-col gap-0 overflow-hidden px-0">
+      {stickyFilterRow}
+
+      {listTab === "roles" && isSuperAdmin && (
+        <div className="min-h-0 flex-1 overflow-auto pt-3">
+          <SystemRolesListPanel enabled toolbarTrailing={null} />
         </div>
       )}
 
-      {/* Roles: filters + tab toggle + table (from system_roles) */}
-      {listTab === "roles" && isSuperAdmin && (
-        <SystemRolesListPanel enabled toolbarTrailing={usersRolesTabToggle} />
-      )}
-
-      {/* Error Message — auth failures logout instead of showing "Not authenticated" */}
       {listTab === "users" ? (
         <DashboardErrorBanner
           error={
@@ -557,43 +584,46 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
         />
       ) : null}
 
-      {/* Users Table */}
       {listTab === "users" && (
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
+      <div className={`mt-3 min-h-0 flex-1 overflow-auto bg-white ${outerBorder}`}>
+        {isLoading && users.length === 0 ? (
+          <div className="flex items-center justify-center py-16 text-sm text-[#121212]/50">
+            <LoadingSpinner size="lg" text="Loading users..." />
+          </div>
+        ) : (
+        <table className="w-full min-w-[860px] border-collapse text-left text-sm">
+              <thead className="text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
                 <tr>
-                  <th className="px-3 sm:px-6 py-3 sm:py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">
+                  <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
                     User
                   </th>
-                  <th className="px-3 sm:px-6 py-3 sm:py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">
+                  <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
                     Email
                   </th>
-                  <th className="px-3 sm:px-6 py-3 sm:py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">
+                  <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
                     Role
                   </th>
-                  <th className="px-3 sm:px-6 py-3 sm:py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">
+                  <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
                     Status
                   </th>
-                  <th className="px-3 sm:px-6 py-3 sm:py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap hidden md:table-cell">
+                  <th className={`sticky top-0 z-20 hidden bg-[#F7F7F7] px-3 py-2.5 md:table-cell ${rowBorder}`}>
                     Department
                   </th>
                   {showActions && (
-                    <th className="px-3 sm:px-6 py-3 sm:py-4 text-right text-xs font-semibold text-gray-700 uppercase tracking-wider whitespace-nowrap">
+                    <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 text-right ${rowBorder}`}>
                       Actions
                     </th>
                   )}
                 </tr>
               </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
+            <tbody>
               {users.length === 0 ? (
                 <tr>
-                  <td colSpan={showActions ? 6 : 5} className="px-6 py-12 text-center text-gray-500">
+                  <td colSpan={showActions ? 6 : 5} className={`px-3 py-14 text-center text-[#121212]/50 ${rowBorder}`}>
                     <div className="flex flex-col items-center gap-2">
-                      <User className="h-12 w-12 text-gray-300" />
-                      <p className="text-sm font-medium">No users found</p>
-                      <p className="text-xs text-gray-400">Try adjusting your search or filters</p>
+                      <User className="h-10 w-10 text-[#121212]/20" />
+                      <p className="text-sm font-medium text-[#121212]">No users found</p>
+                      <p className="text-xs text-[#121212]/40">Try adjusting your search or filters</p>
                     </div>
                   </td>
                 </tr>
@@ -608,32 +638,30 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
                 const isDropdownOpen = openDropdownId === user.id;
 
                   return (
-                    <tr key={user.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <div className="flex-shrink-0 h-8 w-8 sm:h-10 sm:w-10 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center shadow-sm">
-                            <User className="h-4 w-4 sm:h-6 sm:w-6 text-white" />
-                          </div>
-                          <div className="ml-2 sm:ml-4 min-w-0">
-                            <div className="text-xs sm:text-sm font-semibold text-gray-900 truncate">{user.fullName}</div>
-                            <div className="text-xs sm:text-sm text-gray-500 font-mono truncate">{user.systemUserId}</div>
+                    <tr key={user.id} className="bg-white hover:bg-[#FAFAFA]">
+                      <td className={`px-3 py-2.5 align-middle ${rowBorder}`}>
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <UserProfileAvatar email={user.email} fullName={user.fullName} />
+                          <div className="min-w-0">
+                            <div className="truncate text-[13px] font-medium text-[#121212]">{user.fullName}</div>
+                            <div className="truncate font-mono text-[10px] uppercase text-[#121212]/40">{user.systemUserId}</div>
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
-                        <div className="text-xs sm:text-sm text-gray-900 truncate max-w-[200px] sm:max-w-none">{user.email}</div>
-                        <div className="text-xs sm:text-sm text-gray-500">{user.mobile}</div>
+                      <td className={`px-3 py-2.5 align-middle ${rowBorder}`}>
+                        <div className="max-w-[220px] truncate text-[12px] text-[#121212]" title={user.email}>{user.email}</div>
+                        <div className="text-[11px] text-[#121212]/45">{user.mobile}</div>
                       </td>
-                      <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
-                        <span className="inline-flex items-center px-2 sm:px-2.5 py-0.5 sm:py-1 rounded-md text-xs font-medium bg-blue-50 text-blue-700">
+                      <td className={`px-3 py-2.5 align-middle ${rowBorder}`}>
+                        <span className="inline-flex rounded-md bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800">
                           {user.primaryRole.replace(/_/g, " ")}
                         </span>
                       </td>
-                      <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
+                      <td className={`px-3 py-2.5 align-middle ${rowBorder}`}>
                         {getStatusBadge(st, user.suspensionExpiresAt)}
                       </td>
-                      <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap text-xs sm:text-sm text-gray-500 hidden md:table-cell">
-                        {user.department || "-"}
+                      <td className={`hidden px-3 py-2.5 align-middle text-[12px] text-[#121212]/55 md:table-cell ${rowBorder}`}>
+                        {user.department || "—"}
                       </td>
                       {showActions && (
                         <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap text-right text-xs sm:text-sm font-medium">
@@ -759,7 +787,7 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
               )}
             </tbody>
           </table>
-        </div>
+        )}
       </div>
       )}
 
@@ -769,76 +797,86 @@ export function UserList({ onUserSelect, showActions = true }: UserListProps) {
         </div>
       )}
 
-      {/* Pagination + page size */}
+      {/* Pagination + page size — pinned to bottom under the table scroll area */}
       {listTab === "users" && pagination.total > 0 && (
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-white px-4 sm:px-6 py-4 rounded-lg border border-gray-200 shadow-sm">
-          <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-4">
-            <div className="text-xs sm:text-sm text-gray-700 text-center sm:text-left">
-              Showing <span className="font-semibold text-gray-900">{((pagination.page - 1) * pagination.limit) + 1}</span> to{" "}
-              <span className="font-semibold text-gray-900">{Math.min(pagination.page * pagination.limit, pagination.total)}</span> of{" "}
-              <span className="font-semibold text-gray-900">{pagination.total}</span> users
+        <div className="sticky bottom-0 z-30 mt-1 shrink-0 border-t-[0.5px] border-[#121212]/10 bg-white px-3 py-1 sm:px-4">
+          <div className="flex flex-col items-center justify-between gap-1.5 sm:flex-row sm:gap-3">
+            <div className="flex flex-col items-center gap-1.5 sm:flex-row sm:gap-2.5">
+              <div className="text-center text-[11px] leading-none text-[#121212]/70 sm:text-left">
+                Showing{" "}
+                <span className="font-semibold text-[#121212]">
+                  {((pagination.page - 1) * pagination.limit) + 1}
+                </span>{" "}
+                to{" "}
+                <span className="font-semibold text-[#121212]">
+                  {Math.min(pagination.page * pagination.limit, pagination.total)}
+                </span>{" "}
+                of{" "}
+                <span className="font-semibold text-[#121212]">{pagination.total}</span>{" "}
+                users
+              </div>
+              <label className="inline-flex items-center gap-1.5 text-[11px] leading-none text-[#121212]/70">
+                <span className="whitespace-nowrap">Rows per page</span>
+                <select
+                  value={pagination.limit}
+                  onChange={(e) => {
+                    const limit = Number(e.target.value) || 20;
+                    setPagination((prev) => ({ ...prev, limit, page: 1 }));
+                  }}
+                  className="h-7 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-1.5 text-[11px] font-medium text-[#121212] focus:border-[#121212]/40 focus:outline-none"
+                  aria-label="Rows per page"
+                >
+                  <option value={10}>10</option>
+                  <option value={20}>20</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </label>
             </div>
-            <label className="inline-flex items-center gap-2 text-xs sm:text-sm text-gray-700">
-              <span className="whitespace-nowrap">Rows per page</span>
-              <select
-                value={pagination.limit}
-                onChange={(e) => {
-                  const limit = Number(e.target.value) || 20;
-                  setPagination((prev) => ({ ...prev, limit, page: 1 }));
-                }}
-                className="h-8 rounded-lg border-2 border-gray-300 bg-white px-2 text-sm font-medium text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
-                aria-label="Rows per page"
+            <div className="flex flex-wrap items-center justify-center gap-1">
+              <button
+                onClick={() => setPagination({ ...pagination, page: pagination.page - 1 })}
+                disabled={pagination.page === 1}
+                className="flex h-7 items-center gap-1 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-2 text-[11px] font-medium text-[#121212] transition-colors hover:bg-[#F7F7F7] disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <option value={10}>10</option>
-                <option value={20}>20</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-              </select>
-            </label>
-          </div>
-          <div className="flex items-center gap-1.5 flex-wrap justify-center">
-            <button
-              onClick={() => setPagination({ ...pagination, page: pagination.page - 1 })}
-              disabled={pagination.page === 1}
-              className="px-3 py-2 bg-white border-2 border-gray-300 text-gray-700 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50 hover:border-gray-400 active:bg-gray-100 transition-all flex items-center gap-1.5 text-sm font-medium shadow-sm"
-            >
-              <ChevronLeft className="h-4 w-4" />
-              <span className="hidden sm:inline">Previous</span>
-            </button>
-            <div className="flex items-center gap-1">
-              {generatePageNumbers().map((page, index) => {
-                if (page === "...") {
+                <ChevronLeft className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Previous</span>
+              </button>
+              <div className="flex items-center gap-0.5">
+                {generatePageNumbers().map((page, index) => {
+                  if (page === "...") {
+                    return (
+                      <span key={`ellipsis-${index}`} className="px-1.5 text-[11px] font-medium text-[#121212]/40">
+                        ...
+                      </span>
+                    );
+                  }
+                  const pageNum = page as number;
+                  const isActive = pageNum === pagination.page;
                   return (
-                    <span key={`ellipsis-${index}`} className="px-2 text-gray-500 font-medium">
-                      ...
-                    </span>
+                    <button
+                      key={pageNum}
+                      onClick={() => setPagination({ ...pagination, page: pageNum })}
+                      className={`flex h-7 min-w-[28px] items-center justify-center rounded-md px-1.5 text-[11px] font-semibold transition-colors ${
+                        isActive
+                          ? "bg-[#121212] text-white"
+                          : "border-[0.5px] border-[#121212]/20 bg-white text-[#121212] hover:bg-[#F7F7F7]"
+                      }`}
+                    >
+                      {pageNum}
+                    </button>
                   );
-                }
-                const pageNum = page as number;
-                const isActive = pageNum === pagination.page;
-                return (
-                  <button
-                    key={pageNum}
-                    onClick={() => setPagination({ ...pagination, page: pageNum })}
-                    className={`px-3 py-2 min-w-[40px] text-sm font-semibold rounded-lg transition-all ${
-                      isActive
-                        ? "bg-blue-600 text-white shadow-md ring-2 ring-blue-200"
-                        : "bg-white border-2 border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400 active:bg-gray-100 shadow-sm"
-                    }`}
-                  >
-                    {pageNum}
-                  </button>
-                );
-              })}
+                })}
+              </div>
+              <button
+                onClick={() => setPagination({ ...pagination, page: pagination.page + 1 })}
+                disabled={pagination.page >= pagination.totalPages}
+                className="flex h-7 items-center gap-1 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-2 text-[11px] font-medium text-[#121212] transition-colors hover:bg-[#F7F7F7] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <span className="hidden sm:inline">Next</span>
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
             </div>
-            <button
-              onClick={() => setPagination({ ...pagination, page: pagination.page + 1 })}
-              disabled={pagination.page >= pagination.totalPages}
-              className="px-3 py-2 bg-white border-2 border-gray-300 text-gray-700 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50 hover:border-gray-400 active:bg-gray-100 transition-all flex items-center gap-1.5 text-sm font-medium shadow-sm"
-            >
-              <span className="hidden sm:inline">Next</span>
-              <ChevronRight className="h-4 w-4" />
-            </button>
           </div>
         </div>
       )}

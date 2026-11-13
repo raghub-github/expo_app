@@ -12,30 +12,43 @@ import {
 } from "@/hooks/queries/useOrderDetailQuery";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { useToast } from "@/context/ToastContext";
+import { useAuthOptional } from "@/providers/AuthProvider";
 import { OrderNotFoundState } from "@/components/orders/OrderNotFoundState";
 import RiderRouteMap from "../RiderRouteMap";
+import RiderDetails, { type ForceAssignmentLiveState } from "../RiderDetails";
+import OrderTimeline, { type OrderTimelineEntry } from "../OrderTimeline";
+import PaymentDetails from "../PaymentDetails";
+import {
+  OrderCustomerFeedbackSideSheet,
+  type FeedbackSheetTarget,
+} from "../OrderCustomerFeedbackSideSheet";
 import PersonRideRefundModal from "./PersonRideRefundModal";
 import {
   mapCoreRowToPersonRideDetail,
   type PersonRideDetailOrder,
 } from "./person-ride-detail-types";
 import PersonRideOrderHeader, {
+  type PersonRideStatusHistoryEntry,
   type PersonRideTicketSummary,
 } from "./PersonRideOrderHeader";
 import {
-  CaptainCard,
-  FareSummaryCard,
+  DropCard,
   PassengerCard,
-  TripDetailsCard,
+  PickupCard,
   type CaptainInfo,
   type RideRatings,
   type TimelineStamp,
 } from "./PersonRideDetailSections";
 import PersonRideRightSidebar from "./PersonRideRightSidebar";
-import { PR_BLACK, PR_MUTED, PR_WHITE, normalizeStatus } from "./person-ride-utils";
+import { PR_MUTED, PR_WHITE, normalizeStatus } from "./person-ride-utils";
 import { buildRideInvoiceLinesFromSnapshot } from "@/lib/orders/ride-invoice-lines";
 import { isRideFarePaymentPending } from "@/lib/riders/ride-wallet-credit-pending";
 import { readCustomerOrderStats } from "@/lib/orders/customer-order-stats";
+import { formatDeliveredByLabel } from "@/lib/orders/order-detail-display";
+import {
+  MANUAL_STATUS_LABELS,
+  type ManualStatusValue,
+} from "@/lib/orders/order-dispatch-status";
 import OrderNthUserBanner from "../OrderNthUserBanner";
 
 type OrderRefundListItem = {
@@ -52,25 +65,80 @@ type OrderRefundListItem = {
   initiatedByEmail?: string | null;
 };
 
+type TimelineEntryFromApi = Omit<OrderTimelineEntry, "occurredAt" | "expectedByAt"> & {
+  occurredAt?: unknown;
+  expectedByAt?: unknown;
+  stageKey?: string | null;
+  stage_key?: string | null;
+  occurred_at?: string | null;
+  createdAt?: string | null;
+  timestamp?: string | null;
+};
+
 type CoreResponse = {
   success?: boolean;
   data?: unknown[];
   error?: string;
   paymentDetail?: OrderPaymentDetail;
-  timeline?: Array<{
-    stageKey?: string | null;
-    stage_key?: string | null;
-    status?: string | null;
-    occurredAt?: string | null;
-    occurred_at?: string | null;
-    createdAt?: string | null;
-    timestamp?: string | null;
-  }>;
+  timeline?: TimelineEntryFromApi[];
+  statusHistory?: unknown[];
+  riderDispatchUi?: {
+    dispatchSessionActive?: boolean;
+    riderId?: number | null;
+    riderName?: string | null;
+    riderMobile?: string | null;
+  } | null;
   routedToHistory?: Array<{
     actorEmail?: string | null;
     actorName?: string | null;
   }>;
 };
+
+function parseStatusHistoryEntry(raw: unknown): PersonRideStatusHistoryEntry | null {
+  if (raw == null || typeof raw !== "object") return null;
+  const h = raw as Record<string, unknown>;
+  if (typeof h.toStatus !== "string" || typeof h.updatedByEmail !== "string") return null;
+  return {
+    toStatus: h.toStatus,
+    updatedByEmail: h.updatedByEmail,
+    updatedByRole:
+      typeof h.updatedByRole === "string" && h.updatedByRole.trim()
+        ? h.updatedByRole.trim()
+        : "AGENT",
+    createdAt: typeof h.createdAt === "string" ? h.createdAt : String(h.createdAt ?? ""),
+  };
+}
+
+function normalizeTimelineAt(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value).toISOString();
+  }
+  return new Date().toISOString();
+}
+
+function normalizeTimelineAtNullable(value: unknown): string | null {
+  if (value == null) return null;
+  return normalizeTimelineAt(value);
+}
+
+function mapTimelineEntries(raw: TimelineEntryFromApi[]): OrderTimelineEntry[] {
+  return raw.map((e, index) => ({
+    id: typeof e.id === "number" ? e.id : -(index + 1),
+    orderId: typeof e.orderId === "number" ? e.orderId : 0,
+    status: String(e.status ?? e.stageKey ?? e.stage_key ?? "").trim() || "Created",
+    previousStatus: e.previousStatus != null ? String(e.previousStatus) : null,
+    actorType: String(e.actorType ?? "system"),
+    actorId: typeof e.actorId === "number" ? e.actorId : null,
+    actorName: e.actorName != null ? String(e.actorName) : null,
+    statusMessage: e.statusMessage != null ? String(e.statusMessage) : null,
+    occurredAt: normalizeTimelineAt(
+      e.occurredAt ?? e.occurred_at ?? e.createdAt ?? e.timestamp
+    ),
+    expectedByAt: normalizeTimelineAtNullable(e.expectedByAt),
+  }));
+}
 
 function routedToLabelFrom(
   name: string | null | undefined,
@@ -178,12 +246,16 @@ export default function PersonRideOrderDetailClient({
 }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const auth = useAuthOptional();
+  const loggedInEmail = auth?.user?.email?.trim() || null;
   const normalizedId = orderPublicId.trim().replace(/^#/, "");
   const cachedQuery = useOrderDetailQuery(normalizedId);
 
   const [order, setOrder] = useState<PersonRideDetailOrder | null>(null);
   const [paymentDetail, setPaymentDetail] = useState<OrderPaymentDetail | null>(null);
+  const [timelineEntries, setTimelineEntries] = useState<OrderTimelineEntry[] | null>(null);
   const [stamps, setStamps] = useState<TimelineStamp[]>([]);
+  const [statusHistory, setStatusHistory] = useState<PersonRideStatusHistoryEntry[]>([]);
   const [captain, setCaptain] = useState<CaptainInfo | null>(null);
   const [ratings, setRatings] = useState<RideRatings | null>(null);
   const [tickets, setTickets] = useState<PersonRideTicketSummary[]>([]);
@@ -199,6 +271,15 @@ export default function PersonRideOrderDetailClient({
   const [refundModalOpen, setRefundModalOpen] = useState(false);
   const [routedToLabel, setRoutedToLabel] = useState<string | null>(null);
   const [nthOrdinal, setNthOrdinal] = useState<number | null>(null);
+  const [activityLogRefreshKey, setActivityLogRefreshKey] = useState(0);
+  const [feedbackSheetTarget, setFeedbackSheetTarget] = useState<FeedbackSheetTarget | null>(
+    null
+  );
+  const [forceAssignment, setForceAssignment] = useState<ForceAssignmentLiveState | null>(null);
+  const [watchForceAssignment, setWatchForceAssignment] = useState(false);
+  const [dispatchSessionActive, setDispatchSessionActive] = useState(false);
+  const [watchRiderAssignment, setWatchRiderAssignment] = useState(false);
+  const [pageVisible, setPageVisible] = useState(true);
 
   const applyRoutedTo = useCallback((info: { email: string | null; name: string | null }) => {
     const label = routedToLabelFrom(info.name, info.email);
@@ -228,6 +309,27 @@ export default function PersonRideOrderDetailClient({
       setError(null);
       setPaymentDetail(body.paymentDetail ?? null);
       setStamps(extractStamps(body.timeline, mapped));
+      setTimelineEntries(
+        Array.isArray(body.timeline) && body.timeline.length > 0
+          ? mapTimelineEntries(body.timeline)
+          : []
+      );
+      if (Array.isArray(body.statusHistory)) {
+        setStatusHistory(
+          body.statusHistory
+            .map(parseStatusHistoryEntry)
+            .filter((h): h is PersonRideStatusHistoryEntry => h != null)
+        );
+      } else {
+        setStatusHistory([]);
+      }
+      const dispatchUi = body.riderDispatchUi;
+      if (dispatchUi && typeof dispatchUi === "object") {
+        setDispatchSessionActive(Boolean(dispatchUi.dispatchSessionActive));
+        setWatchRiderAssignment(Boolean(dispatchUi.dispatchSessionActive));
+      } else {
+        setDispatchSessionActive(false);
+      }
       setHoldCleared(Boolean(mapped.rideDetail?.adminRiderPaymentClearedAt?.trim()));
       const latestRouted = Array.isArray(body.routedToHistory) ? body.routedToHistory[0] : null;
       setRoutedToLabel(
@@ -239,6 +341,13 @@ export default function PersonRideOrderDetailClient({
     },
     [onNotFoundChange]
   );
+
+  useEffect(() => {
+    const onVis = () => setPageVisible(document.visibilityState === "visible");
+    onVis();
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
 
   const loadTickets = useCallback(async (orderId: number) => {
     try {
@@ -424,12 +533,29 @@ export default function PersonRideOrderDetailClient({
         } | null;
         if (json?.success && Array.isArray(json.data)) {
           setStamps(extractStamps(json.data, mapped));
+          setTimelineEntries(
+            json.data.length > 0 ? mapTimelineEntries(json.data) : []
+          );
         }
       } catch {
         // keep booked stamp
       }
     },
     []
+  );
+
+  const handleCopy = useCallback(
+    async (text: string) => {
+      const value = text?.trim();
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        toast("Copied", "success");
+      } catch {
+        toast("Copy failed", "error");
+      }
+    },
+    [toast]
   );
 
   const hydrateExtras = useCallback(
@@ -511,6 +637,235 @@ export default function PersonRideOrderDetailClient({
       setRefreshing(false);
     }
   };
+
+  useEffect(() => {
+    const coreId = order?.id;
+    if (coreId == null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/orders/${coreId}/force-assignment`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          success?: boolean;
+          forceAssignment?: ForceAssignmentLiveState | null;
+        };
+        if (cancelled || !res.ok || !body.success) return;
+        const next = body.forceAssignment ?? null;
+        if (next?.status === "pending") {
+          setForceAssignment({
+            status: next.status,
+            newRiderId: next.newRiderId,
+            newRiderName: next.newRiderName ?? null,
+            oldRiderId: next.oldRiderId ?? null,
+            oldRiderName: next.oldRiderName ?? null,
+            reasonText: next.reasonText ?? "",
+            offerExpiresAt: next.offerExpiresAt,
+            startedAt: next.startedAt,
+          });
+          setWatchForceAssignment(true);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [order?.id]);
+
+  useEffect(() => {
+    const coreId = order?.id;
+    if (!pageVisible || coreId == null || !order) return;
+
+    const statusUpper = String(order.currentStatus ?? order.status ?? "").toUpperCase();
+    const isTerminal =
+      statusUpper === "DELIVERED" ||
+      ["CANCELLED", "FAILED", "REJECTED", "COMPLETED"].includes(statusUpper);
+    const hasRider =
+      order.riderId != null &&
+      Number.isFinite(Number(order.riderId)) &&
+      Number(order.riderId) > 0;
+    const shouldPoll =
+      !isTerminal && !hasRider && (watchRiderAssignment || dispatchSessionActive);
+
+    if (!shouldPoll) return;
+
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/orders/${coreId}/rider-assignment-snapshot`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          success?: boolean;
+          riderId?: number | null;
+          riderName?: string | null;
+          riderMobile?: string | null;
+          dispatchSessionActive?: boolean;
+        };
+        if (cancelled || !res.ok || !body.success) return;
+
+        setDispatchSessionActive(Boolean(body.dispatchSessionActive));
+
+        setOrder((prev) => {
+          if (!prev || prev.id !== coreId) return prev;
+          const previousRiderId =
+            prev.riderId != null && Number.isFinite(Number(prev.riderId))
+              ? Number(prev.riderId)
+              : null;
+          const nextRiderId =
+            body.riderId != null && Number.isFinite(Number(body.riderId))
+              ? Number(body.riderId)
+              : null;
+
+          if (nextRiderId != null && nextRiderId !== previousRiderId) {
+            setWatchRiderAssignment(false);
+            setActivityLogRefreshKey((k) => k + 1);
+          } else if (!body.dispatchSessionActive && nextRiderId == null) {
+            setWatchRiderAssignment(false);
+          }
+
+          if (
+            previousRiderId === nextRiderId &&
+            (prev.riderName ?? null) === (body.riderName ?? null) &&
+            (prev.riderMobile ?? null) === (body.riderMobile ?? null)
+          ) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            riderId: nextRiderId,
+            riderName: body.riderName ?? null,
+            riderMobile: body.riderMobile ?? null,
+          };
+        });
+      } catch {
+        /* ignore */
+      }
+    };
+
+    void poll();
+    const timer = window.setInterval(() => void poll(), 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [order, pageVisible, watchRiderAssignment, dispatchSessionActive]);
+
+  useEffect(() => {
+    const coreId = order?.id;
+    if (!pageVisible || coreId == null) return;
+    if (!watchForceAssignment && forceAssignment?.status !== "pending") return;
+
+    let cancelled = false;
+    const pollForce = async () => {
+      try {
+        const res = await fetch(`/api/orders/${coreId}/force-assignment`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          success?: boolean;
+          forceAssignment?: ForceAssignmentLiveState | null;
+        };
+        if (cancelled || !res.ok || !body.success) return;
+
+        const next = body.forceAssignment ?? null;
+        setForceAssignment(
+          next && next.status
+            ? {
+                status: next.status,
+                newRiderId: next.newRiderId,
+                newRiderName: next.newRiderName ?? null,
+                oldRiderId: next.oldRiderId ?? null,
+                oldRiderName: next.oldRiderName ?? null,
+                reasonText: next.reasonText ?? "",
+                offerExpiresAt: next.offerExpiresAt,
+                startedAt: next.startedAt,
+              }
+            : null
+        );
+
+        if (next?.status === "pending") {
+          setWatchForceAssignment(true);
+          return;
+        }
+
+        if (next?.status === "accepted") {
+          setWatchForceAssignment(false);
+          setActivityLogRefreshKey((k) => k + 1);
+          void handleRefresh();
+          return;
+        }
+
+        if (next && ["rejected", "timeout", "cancelled"].includes(next.status)) {
+          setWatchForceAssignment(false);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    void pollForce();
+    const timer = window.setInterval(() => void pollForce(), 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order?.id, pageVisible, watchForceAssignment, forceAssignment?.status]);
+
+  const handleManualStatusApplied = useCallback(
+    async (status: ManualStatusValue) => {
+      const label =
+        status === "delivered" ? "DELIVERED" : MANUAL_STATUS_LABELS[status];
+      setOrder((prev) =>
+        prev
+          ? {
+              ...prev,
+              status,
+              currentStatus: label,
+              manualStatusUpdatedByEmail:
+                loggedInEmail || prev.manualStatusUpdatedByEmail,
+            }
+          : prev
+      );
+      setTimelineEntries((prev) => {
+        const newEntry: OrderTimelineEntry = {
+          id: -Date.now(),
+          orderId: order?.id ?? 0,
+          status: label,
+          previousStatus: order?.currentStatus ?? order?.status ?? null,
+          actorType: "agent",
+          actorId: null,
+          actorName: loggedInEmail,
+          statusMessage: null,
+          occurredAt: new Date().toISOString(),
+        };
+        return [...(prev ?? []), newEntry];
+      });
+      toast(
+        status === "delivered"
+          ? "Ride marked complete."
+          : `Status updated to ${
+              status === "picked_up"
+                ? "Trip started"
+                : status === "in_transit"
+                  ? "In transit"
+                  : MANUAL_STATUS_LABELS[status]
+            }.`,
+        "success"
+      );
+      setActivityLogRefreshKey((k) => k + 1);
+      await handleRefresh();
+    },
+    [loggedInEmail, order?.id, order?.currentStatus, order?.status, toast]
+  );
 
   const handleClearRiderHold = async () => {
     if (!order?.id || clearingHold) return;
@@ -616,12 +971,20 @@ export default function PersonRideOrderDetailClient({
   ]);
 
   const hasAssignedRider = order?.riderId != null && order.riderId > 0;
-  const rideTerminal =
+  const hasRouteCoords =
     order != null &&
-    ["delivered", "cancelled", "completed"].includes(
-      normalizeStatus(order.currentStatus ?? order.status)
-    );
-  const showLiveRiderMap = !rideTerminal;
+    order.pickupLat != null &&
+    order.pickupLon != null &&
+    order.dropLat != null &&
+    order.dropLon != null;
+  const rideStatusNorm = order
+    ? normalizeStatus(order.currentStatus ?? order.status)
+    : "";
+  /** Hide live map after trip ends — rider card stays half width. */
+  const showLiveRiderMap =
+    rideStatusNorm !== "delivered" &&
+    rideStatusNorm !== "completed" &&
+    rideStatusNorm !== "cancelled";
 
   const tripStartedAt = useMemo(() => {
     if (!order) return null;
@@ -633,6 +996,51 @@ export default function PersonRideOrderDetailClient({
     }
     return null;
   }, [order, stamps]);
+
+  const displayId =
+    order?.formattedOrderId?.trim() ||
+    order?.orderId?.trim() ||
+    (order?.id != null ? `GMP${String(order.id).padStart(6, "0")}` : "—");
+
+  const mapBlock =
+    order && showLiveRiderMap && hasAssignedRider && hasRouteCoords ? (
+      <RiderRouteMap
+        key={`person-ride-map-${order.riderId}-${order.id}`}
+        className="h-[300px] min-h-[300px] flex flex-col"
+        orderId={order.id}
+        orderIdText={displayId !== "—" ? displayId : null}
+        orderChannelIds={[
+          order.formattedOrderId,
+          order.orderId,
+          order.id != null ? `GMP${String(order.id).padStart(6, "0")}` : null,
+        ]}
+        riderId={order.riderId}
+        riderName={order.riderName}
+        storeName="Pickup"
+        customerName={order.rideDetail?.passengerName ?? order.customerName}
+        dropAddressFallback={
+          order.dropAddressNormalized ?? order.dropAddressRaw ?? null
+        }
+        merchantStoreLat={order.pickupLat}
+        merchantStoreLon={order.pickupLon}
+        pickupAddressGeocoded={order.pickupAddressGeocoded}
+        orderStatus={order.currentStatus ?? order.status}
+        coreStatus={order.status}
+        foodOrderStatus={null}
+        pickedUpAt={tripStartedAt}
+        riderPickedUpAt={tripStartedAt}
+        pickupLat={order.pickupLat}
+        pickupLon={order.pickupLon}
+        dropLat={order.dropLat}
+        dropLon={order.dropLon}
+        pickupLegendLabel="Pickup"
+        dropLegendLabel="Drop"
+        prePickupMovementLabel="Rider → pickup"
+        postPickupMovementLabel="Rider → drop"
+        alwaysShowDropMarker
+        pickupPinStyle="person"
+      />
+    ) : null;
 
   if (loading && !order) {
     return (
@@ -648,108 +1056,161 @@ export default function PersonRideOrderDetailClient({
 
   return (
     <>
-      <div className="person-ride-typo relative flex h-full min-h-0 flex-1 flex-col text-[12px] text-slate-700 md:text-[13px] lg:overflow-hidden">
+      <div className="person-ride-typo relative flex h-full min-h-0 flex-1 flex-col text-[13px] leading-relaxed text-slate-700 lg:overflow-hidden">
         <OrderNthUserBanner ordinal={nthOrdinal} customerName={order.customerName} />
-        <div className="flex min-h-0 flex-1 flex-col gap-2 px-3 pt-3 sm:px-4 md:px-6 lg:flex-row lg:gap-3 lg:overflow-hidden">
-        <div className="w-full min-w-0 space-y-2 bg-[#F8FAFC] pt-0 lg:min-h-0 lg:flex-[4] lg:overflow-y-auto lg:overscroll-y-contain lg:pr-3">
-          <PersonRideOrderHeader
-            order={order}
-            tickets={tickets}
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            routedToLabel={routedToLabel}
-          />
+        <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 pt-4 sm:px-4 md:gap-4 md:px-6 lg:flex-row lg:overflow-hidden">
+          <div className="w-full min-w-0 space-y-3 bg-[#F8FAFC] pt-0 lg:min-h-0 lg:flex-[4] lg:overflow-y-auto lg:overscroll-y-contain lg:pr-3">
+            <PersonRideOrderHeader
+              order={order}
+              tickets={tickets}
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              routedToLabel={routedToLabel}
+              statusHistory={statusHistory}
+              onStatusHistoryChange={setStatusHistory}
+              loggedInEmail={loggedInEmail}
+              onManualStatusApplied={(status) => void handleManualStatusApplied(status)}
+            />
 
-          <div className="space-y-3 pt-1">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              <CaptainCard
-                captain={captain}
-                fallbackName={order.riderName}
-                fallbackMobile={order.riderMobile}
-                ratings={ratings}
-                orderId={order.id}
-                riderId={order.riderId}
-              />
-              <PassengerCard
-                order={order}
-                ratings={ratings}
-                walletBalance={walletBalance}
-              />
-              <FareSummaryCard order={order} paymentDetail={paymentDetail} />
-            </div>
+            <OrderTimeline
+              orderId={order.id}
+              orderType="person_ride"
+              initialEntries={timelineEntries}
+              currentStatus={order.currentStatus ?? order.status ?? undefined}
+              orderCreatedAt={order.createdAt ? new Date(order.createdAt) : undefined}
+              completedAt={
+                rideStatusNorm === "delivered" || rideStatusNorm === "completed"
+                  ? order.updatedAt
+                  : null
+              }
+            />
 
-            <div className="flex flex-col gap-3 md:flex-row md:items-stretch">
-              <div className="w-full md:w-1/2 md:max-w-[50%] md:shrink-0">
-                <TripDetailsCard order={order} />
+            <div className="space-y-3.5 pt-1">
+              <div className="grid items-stretch gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <PassengerCard
+                  order={order}
+                  ratings={ratings}
+                  walletBalance={walletBalance}
+                />
+                <PickupCard order={order} />
+                <DropCard order={order} />
               </div>
-              {showLiveRiderMap ? (
-              <div className="w-full min-h-[360px] md:w-1/2 md:shrink-0">
-                  <RiderRouteMap
-                    key={`person-ride-map-${order.riderId ?? "unassigned"}`}
-                    className="h-full min-h-[360px] flex flex-col"
-                    orderId={order.id}
-                    orderIdText={
-                      order.formattedOrderId?.trim() ||
-                      order.orderId?.trim() ||
-                      (order.id != null ? `GMP${String(order.id).padStart(6, "0")}` : null)
-                    }
-                    orderChannelIds={[
-                      order.formattedOrderId,
-                      order.orderId,
-                      order.id != null ? `GMP${String(order.id).padStart(6, "0")}` : null,
-                    ]}
-                    riderId={order.riderId}
-                    riderName={order.riderName}
-                    storeName="Pickup"
-                    customerName={
-                      order.rideDetail?.passengerName ?? order.customerName
-                    }
-                    dropAddressFallback={
-                      order.dropAddressNormalized ?? order.dropAddressRaw ?? null
-                    }
-                    merchantStoreLat={order.pickupLat}
-                    merchantStoreLon={order.pickupLon}
-                    pickupAddressGeocoded={order.pickupAddressGeocoded}
-                    orderStatus={order.currentStatus ?? order.status}
-                    coreStatus={order.status}
-                    foodOrderStatus={null}
-                    pickedUpAt={tripStartedAt}
-                    riderPickedUpAt={tripStartedAt}
-                    pickupLat={order.pickupLat}
-                    pickupLon={order.pickupLon}
-                    dropLat={order.dropLat}
-                    dropLon={order.dropLon}
-                    pickupLegendLabel="Pickup"
-                    dropLegendLabel="Drop"
-                    prePickupMovementLabel="Rider → pickup"
-                    postPickupMovementLabel="Rider → drop"
-                    alwaysShowDropMarker
-                    pickupPinStyle="person"
+
+              {/* Rider stays half-width always — never expand when map is hidden. */}
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:gap-3">
+                <div className="w-full min-w-0 md:w-1/2 md:max-w-[50%] md:shrink-0">
+                  <RiderDetails
+                    className="flex flex-col"
+                    activityLogRefreshKey={activityLogRefreshKey}
+                    riderSelfieUrl={captain?.selfieUrl ?? null}
+                    forceAssignment={forceAssignment}
+                    dispatchSessionActive={dispatchSessionActive}
+                    order={{
+                      orderId: order.id,
+                      formattedOrderId: displayId !== "—" ? displayId : null,
+                      riderId: order.riderId ?? null,
+                      riderName: order.riderName,
+                      riderMobile: order.riderMobile,
+                      riderProvider: hasAssignedRider
+                        ? formatDeliveredByLabel(null, order.riderId)
+                        : null,
+                      trackingOrderId: hasAssignedRider ? displayId : null,
+                      trackingUrl: null,
+                      deliveryOtp: order.rideDetail?.pickupOtp ?? null,
+                      status: order.status,
+                      currentStatus: order.currentStatus,
+                      createdAt: order.createdAt,
+                      distanceKm: order.distanceKm,
+                      orderType: "person_ride",
+                    }}
+                    customerFeedback={order.customerFeedback ?? null}
+                    tipAmount={order.tipAmount}
+                    onOpenFeedback={() => setFeedbackSheetTarget("rider")}
+                    onCopy={handleCopy}
+                    onRiderManagementComplete={(detail) => {
+                      if (detail.action === "force_assignment") {
+                        setWatchForceAssignment(true);
+                        setWatchRiderAssignment(false);
+                      } else if (detail.action === "hard_assign") {
+                        setWatchForceAssignment(false);
+                        setForceAssignment(null);
+                        setDispatchSessionActive(false);
+                        setWatchRiderAssignment(false);
+                      } else if (
+                        detail.action === "assign_rider" ||
+                        detail.action === "cancel_reassign"
+                      ) {
+                        setWatchForceAssignment(false);
+                        setDispatchSessionActive(true);
+                        setWatchRiderAssignment(true);
+                      } else {
+                        setWatchForceAssignment(false);
+                        setDispatchSessionActive(false);
+                        setWatchRiderAssignment(false);
+                      }
+                      setActivityLogRefreshKey((k) => k + 1);
+                      void handleRefresh();
+                    }}
                   />
+                </div>
+                {mapBlock ? (
+                  <div className="w-full min-w-0 min-h-[300px] h-[300px] md:flex-1 md:basis-0">
+                    {mapBlock}
+                  </div>
+                ) : null}
               </div>
-              ) : null}
             </div>
           </div>
-        </div>
 
-        <div className="w-full min-w-0 space-y-3 bg-[#F8FAFC] pt-0 lg:min-h-0 lg:w-[320px] lg:max-w-[320px] lg:flex-none lg:overflow-y-auto lg:overscroll-y-contain lg:pl-2 xl:w-[360px] xl:max-w-[360px]">
-          <PersonRideRightSidebar
-            order={order}
-            stamps={stamps}
-            onClearHold={() => setClearHoldModalOpen(true)}
-            clearingHold={clearingHold}
-            holdCleared={holdCleared}
-            onCreateRefund={() => setRefundModalOpen(true)}
-            refundDisabled={refundLock.noActionsLeft}
-            refundDisabledReason={refundLock.disabledReason}
-            refunds={orderRefunds}
-            paymentStatus={
-              paymentDetail?.records?.[0]?.paymentStatus ?? order.paymentStatus
-            }
-            onRoutedTo={applyRoutedTo}
-          />
+          <div className="w-full min-w-0 space-y-4 bg-[#F8FAFC] pt-0 lg:min-h-0 lg:w-[320px] lg:max-w-[320px] lg:flex-none lg:overflow-y-auto lg:overscroll-y-contain lg:pl-3 xl:w-[360px] xl:max-w-[360px]">
+            <PersonRideRightSidebar
+              order={order}
+              paymentPanel={
+                <PaymentDetails
+                  order={{
+                    id: order.id,
+                    orderType: "person_ride",
+                    orderSource: order.orderSource,
+                    paymentStatus: order.paymentStatus,
+                    paymentMethod: order.paymentMethod,
+                    fareAmount: order.fareAmount,
+                    itemTotal: order.itemTotal,
+                    totalAmount:
+                      order.grandTotal ?? order.fareAmount ?? order.itemTotal,
+                    grandTotal: order.grandTotal ?? order.fareAmount,
+                    tipAmount: order.tipAmount,
+                  }}
+                  displayId={displayId}
+                  orderRefunds={orderRefunds.map((r) => ({
+                    id: r.id,
+                    refundReason: r.refundReason ?? "",
+                    refundAmount: r.refundAmount,
+                    refundStatus: r.refundStatus,
+                    executionStatus: r.executionStatus ?? null,
+                    refundType: r.refundType ?? null,
+                    initiatedByEmail: r.initiatedByEmail ?? null,
+                    createdAt:
+                      r.createdAt instanceof Date
+                        ? r.createdAt.toISOString()
+                        : String(r.createdAt ?? ""),
+                  }))}
+                  paymentDetail={paymentDetail}
+                />
+              }
+              onClearHold={() => setClearHoldModalOpen(true)}
+              clearingHold={clearingHold}
+              holdCleared={holdCleared}
+              onCreateRefund={() => setRefundModalOpen(true)}
+              refundDisabled={refundLock.noActionsLeft}
+              refundDisabledReason={refundLock.disabledReason}
+              refunds={orderRefunds}
+              paymentStatus={
+                paymentDetail?.records?.[0]?.paymentStatus ?? order.paymentStatus
+              }
+              onRoutedTo={applyRoutedTo}
+            />
+          </div>
         </div>
-      </div>
       </div>
 
       <ConfirmModal
@@ -785,6 +1246,16 @@ export default function PersonRideOrderDetailClient({
         }}
         onToast={(message, tone) => toast(message, tone === "error" ? "error" : "success")}
       />
+
+      {feedbackSheetTarget != null && order.customerFeedback ? (
+        <OrderCustomerFeedbackSideSheet
+          target={feedbackSheetTarget}
+          feedback={order.customerFeedback}
+          tipAmount={order.tipAmount}
+          riderName={order.riderName}
+          onClose={() => setFeedbackSheetTarget(null)}
+        />
+      ) : null}
     </>
   );
 }

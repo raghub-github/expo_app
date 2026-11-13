@@ -573,6 +573,9 @@ export function FoodPickOrderDetailScreen({
             completed={false}
             completedLabel={t("orders.activeFood.pickedUp", "Order picked up ✓")}
             actionName="mark_pickup"
+            // Footer sits outside ScrollView — claim immediately so Android
+            // does not drop the gesture before horizontal slop.
+            claimOnTouchStart
           />
         </View>
 

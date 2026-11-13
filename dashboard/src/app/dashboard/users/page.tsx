@@ -8,10 +8,8 @@ import { useHydrated } from "@/hooks/useHydrated";
 
 function UsersLoadingShell() {
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <div className="w-full max-w-full overflow-x-auto">
-        <div className="text-gray-500">Loading...</div>
-      </div>
+    <div className="flex h-full min-h-0 w-full max-w-full flex-1 flex-col overflow-hidden">
+      <div className="text-gray-500">Loading...</div>
     </div>
   );
 }
@@ -55,10 +53,8 @@ export default function UsersPage() {
   }
 
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden">
-      <div className="w-full max-w-full overflow-x-auto">
-        <UserList showActions={true} />
-      </div>
+    <div className="flex h-full min-h-0 w-full max-w-full flex-1 flex-col overflow-hidden">
+      <UserList showActions={true} />
     </div>
   );
 }

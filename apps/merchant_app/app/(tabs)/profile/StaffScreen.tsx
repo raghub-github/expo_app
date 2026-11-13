@@ -1,749 +1,2020 @@
-import { useEffect, useState } from "react";
+/**
+ * Manage staff / Contact details — light UI.
+ * Owner · Manager · Staff sections, Invite user, View permissions, Logged-in devices + OTP.
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert, Modal, TextInput, KeyboardAvoidingView, Platform } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import {
+  View,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+  Modal,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
+} from "react-native";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, BUTTON_RADIUS } from "@/constants/theme";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import {
   getStaff,
   createStaff,
-  updateStaff,
   deleteStaff,
+  updateOwnerContact,
+  sendMerchantActionOtp,
+  verifyMerchantActionOtp,
+  type MerchantActionOtpPurpose,
   type StaffMember,
-  type StoreSession,
 } from "@/services/staffApi";
 import {
   getUserSessions,
   logoutAllUserSessions,
   logoutUserSessions,
+  syncCurrentDeviceCapture,
   type UserDeviceSession,
 } from "@/services/userSessionsApi";
 import { getOrCreateMerchantDeviceId } from "@/lib/merchantDeviceId";
+import { getMerchantDeviceMeta } from "@/lib/merchantDeviceMeta";
+import {
+  STAFF_PERMISSIONS,
+  STAFF_ROLE_OPTIONS,
+  normalizeStaffRole,
+  partnerHasPermission,
+  roleHasPermission,
+  type StaffRoleKey,
+} from "@/lib/staffPermissions";
+import { AuthProxyImage } from "@/components/AuthProxyImage";
+import { resolveImageUrl } from "@/services/outletApi";
+import { useMerchantGoBack } from "@/lib/merchantNavigation";
+
+const C = {
+  bg: "#F8FAFC",
+  card: "#FFFFFF",
+  cardAlt: "#F1F5F9",
+  border: "#E2E8F0",
+  section: "#F1F5F9",
+  text: "#0F172A",
+  textMuted: "#64748B",
+  textDim: "#94A3B8",
+  blue: "#2D7CF6",
+  blueSoft: "#DBEAFE",
+  green: "#22C55E",
+  red: "#EF4444",
+  redSoft: "#DC2626",
+  inputBorder: "#CBD5E1",
+  btnBlack: "#111111",
+  btnDisabled: "#CBD5E1",
+};
+
+type PageView = "home" | "invite" | "devices" | "ownerEdit";
+type OtpPurpose = "one" | "all" | "remove_staff" | "invite" | null;
+type InfoModalState = { title: string; message: string } | null;
+type ConfirmModalState = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+} | null;
 
 function parsePgTimestamp(iso: string): Date | null {
   if (!iso) return null;
   const raw = String(iso).trim();
-
-  // First try native parsing for already-normal forms.
   let d = new Date(raw);
   if (!Number.isNaN(d.getTime())) return d;
-
-  // Handle Postgres style: "YYYY-MM-DD hh:mm:ss[.ffffff][+/-HH[MM]]"
   const m =
     /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:([+-]\d{2})(?::?(\d{2}))?)?$/.exec(
-      raw,
+      raw
     );
   if (!m) return null;
-
   const [, y, mo, da, h, mi, s, frac, offH, offM] = m;
-  const year = Number(y);
-  const month = Number(mo) - 1;
-  const day = Number(da);
-  const hour = Number(h);
-  const minute = Number(mi);
-  const sec = Number(s);
-  const ms = frac ? Number(frac.slice(0, 3).padEnd(3, "0")) : 0;
-
-  let utcMs = Date.UTC(year, month, day, hour, minute, sec, ms);
-
+  let utcMs = Date.UTC(
+    Number(y),
+    Number(mo) - 1,
+    Number(da),
+    Number(h),
+    Number(mi),
+    Number(s),
+    frac ? Number(frac.slice(0, 3).padEnd(3, "0")) : 0
+  );
   if (offH) {
     const sign = offH.startsWith("-") ? -1 : 1;
     const absH = Math.abs(Number(offH));
     const absM = offM ? Number(offM) : 0;
-    const offsetMinutes = sign * (absH * 60 + absM);
-    utcMs -= offsetMinutes * 60 * 1000;
+    utcMs -= sign * (absH * 60 + absM) * 60 * 1000;
   }
-
   return new Date(utcMs);
 }
 
-function formatDateTime(iso: string): string {
+function formatLoginStamp(iso: string): string {
   const d = parsePgTimestamp(iso);
   if (!d) return iso;
-  return d.toLocaleString("en-IN", {
-    timeZone: "Asia/Kolkata",
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function formatRelative(iso: string): string {
-  const d = parsePgTimestamp(iso);
-  if (!d) return "";
-  const diffMs = Date.now() - d.getTime();
-  const mins = Math.round(diffMs / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins} min ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours} hr${hours > 1 ? "s" : ""} ago`;
-  const days = Math.round(hours / 24);
-  return `${days} day${days > 1 ? "s" : ""} ago`;
+/** Strip non-digits; for IN mobiles keep the *last* 10 (so +917367878981 → 7367878981). */
+function onlyDigits(v: string): string {
+  const d = String(v ?? "").replace(/\D/g, "");
+  return d.length > 10 ? d.slice(-10) : d;
 }
 
-function isValidPhone(num: string): boolean {
-  const cleaned = num.replace(/[\s\-]/g, "");
-  return /^(\+?\d{10,15})$/.test(cleaned);
+function toE164In(phone10: string): string {
+  const d = onlyDigits(phone10);
+  return d.length === 10 ? `+91${d}` : `+91${d}`;
 }
 
-type StaffModalState = {
-  visible: boolean;
-  mode: "add" | "edit";
-  staff?: StaffMember;
-  name: string;
-  phone: string;
-  role: string;
-};
+function maskPhone(phone: string | null | undefined): string {
+  const d = String(phone ?? "").replace(/\D/g, "");
+  if (d.length < 4) return "91XXXXXX****";
+  const last4 = d.slice(-4);
+  return `91XXXXXX${last4}`;
+}
+
+function labelFromUserAgent(ua: string | null | undefined): string | null {
+  const s = String(ua ?? "").trim();
+  if (!s) return null;
+  const browser =
+    /Edg\//i.test(s) ? "Edge"
+    : /Chrome\//i.test(s) && !/Edg\//i.test(s) ? "Chrome"
+    : /Firefox\//i.test(s) ? "Firefox"
+    : /Safari\//i.test(s) && !/Chrome/i.test(s) ? "Safari"
+    : "Browser";
+  const os =
+    /Windows NT/i.test(s) ? "Windows"
+    : /Android/i.test(s) ? "Android"
+    : /iPhone|iPad|iPod/i.test(s) ? "iOS"
+    : /Mac OS X/i.test(s) ? "macOS"
+    : /Linux/i.test(s) ? "Linux"
+    : "Web";
+  return `${browser} on ${os}`;
+}
+
+function deviceFriendlyName(sess: UserDeviceSession): string {
+  const source = String(sess.app_source ?? "").toLowerCase();
+  const isPartnerSite =
+    source === "partnersite" ||
+    sess.device_type === "web" ||
+    String(sess.login_method ?? "").toLowerCase().includes("partner");
+
+  const rawName = String(sess.device_name ?? "").trim();
+  const looksLikeId =
+    !rawName ||
+    rawName.startsWith("merchant_") ||
+    rawName.startsWith("partnersite_") ||
+    /^[a-f0-9-]{16,}$/i.test(rawName);
+
+  let core =
+    !looksLikeId
+      ? rawName
+      : labelFromUserAgent(sess.user_agent) ||
+        (() => {
+          const os = String(sess.os ?? "").trim();
+          if (os) return os;
+          return isPartnerSite ? "Web browser" : "Mobile device";
+        })();
+
+  if (isPartnerSite && !/^partner/i.test(core)) {
+    return `Partner site · ${core}`;
+  }
+  if (source === "merchant_app" && !/merchant app/i.test(core) && sess.device_type !== "web") {
+    return core;
+  }
+  return core;
+}
 
 export default function StaffScreen() {
   const router = useRouter();
+  const goBack = useMerchantGoBack();
+  const insets = useSafeAreaInsets();
   const { selectedStore } = useSelectedStore();
-  const { token, partner, signOut } = useAuth();
+  const { token, partner, signOut, refreshPartner } = useAuth();
   const storeId = selectedStore?.id ?? null;
+  const storeLogoUrl = resolveImageUrl(
+    selectedStore?.parent_logo_url ?? partner?.parent?.store_logo ?? null
+  );
 
+  const [page, setPage] = useState<PageView>("home");
   const [staff, setStaff] = useState<StaffMember[]>([]);
-  const [sessions, setSessions] = useState<StoreSession[]>([]);
   const [userSessions, setUserSessions] = useState<UserDeviceSession[]>([]);
   const [currentDeviceId, setCurrentDeviceId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [staffModal, setStaffModal] = useState<StaffModalState | null>(null);
 
-  const load = async () => {
+  const [inviteName, setInviteName] = useState("");
+  const [invitePhone, setInvitePhone] = useState("");
+  const [inviteRole, setInviteRole] = useState<StaffRoleKey>("STAFF");
+  const [inviteByEmail, setInviteByEmail] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+
+  const [permsVisible, setPermsVisible] = useState(false);
+  const [permsRole, setPermsRole] = useState<StaffRoleKey>("OWNER");
+
+  const [otpVisible, setOtpVisible] = useState(false);
+  const [otpDigits, setOtpDigits] = useState("");
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const [otpResendSec, setOtpResendSec] = useState(0);
+  const [otpUi, setOtpUi] = useState<{ title: string; body: string; maskedLine: string }>({
+    title: "Verify that it's you",
+    body: "We need to verify your account in order to proceed",
+    maskedLine: "",
+  });
+  const otpActionRef = useRef<OtpPurpose>(null);
+  const otpSessionIdRef = useRef<number | null>(null);
+  const otpRequestIdRef = useRef<string | null>(null);
+  const pendingRemoveStaffRef = useRef<StaffMember | null>(null);
+  const pendingInviteRef = useRef<{
+    name: string;
+    phone: string;
+    role: StaffRoleKey;
+  } | null>(null);
+  const otpInputRef = useRef<TextInput>(null);
+
+  const [infoModal, setInfoModal] = useState<InfoModalState>(null);
+  const [confirmModal, setConfirmModal] = useState<ConfirmModalState>(null);
+
+  const [editName, setEditName] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [editField, setEditField] = useState<"name" | "phone" | "email" | null>(null);
+
+  const parent = partner?.parent;
+  const ownerName = parent?.owner_name || parent?.parent_name || "Owner";
+  const ownerPhone = parent?.registered_phone || "";
+  const ownerEmail = parent?.owner_email || "";
+  const storeLabel = selectedStore?.store_name || "Outlet";
+  const storeIdLabel = selectedStore?.id != null ? `ID: ${selectedStore.id}` : "";
+
+  const managers = useMemo(
+    () => staff.filter((s) => normalizeStaffRole(s.role) === "MANAGER" && s.status !== false),
+    [staff]
+  );
+  const staffMembers = useMemo(
+    () => staff.filter((s) => normalizeStaffRole(s.role) === "STAFF" && s.status !== false),
+    [staff]
+  );
+  // Always prefer live sessions list so logout updates Contact details instantly.
+  const totalDevices = userSessions.length;
+
+  const load = useCallback(async () => {
     if (!storeId || !token) {
-      setLoading(false);
       if (!token) setError("Not signed in.");
-      else if (!storeId) setError("No store selected.");
+      else setError("No store selected.");
       return;
     }
-    setLoading(true);
+    // Keep Contact details visible — refresh in background (no full-page spinner).
     try {
-      const [staffList, storeSess, userSess, deviceId] = await Promise.all([
+      const [staffList, deviceId, meta] = await Promise.all([
         getStaff(storeId, token),
-        // keep store sessions for future use; currently we surface account-level sessions in UI
-        Promise.resolve<StoreSession[]>([]),
-        getUserSessions(token),
         getOrCreateMerchantDeviceId().catch(() => null),
+        getMerchantDeviceMeta().catch(() => null),
       ]);
+      if (deviceId && meta) {
+        await syncCurrentDeviceCapture(token, {
+          deviceId,
+          deviceName: meta.deviceName,
+          deviceOs: meta.os,
+          deviceType: meta.deviceType,
+          appSource: meta.appSource,
+        });
+      }
+      const userSess = await getUserSessions(token);
       setStaff(staffList);
-      setSessions(storeSess);
       setUserSessions(userSess);
       setCurrentDeviceId(deviceId);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load staff details");
-    } finally {
-      setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    load();
   }, [storeId, token]);
 
-  const openAddStaff = () => {
-    setStaffModal({
-      visible: true,
-      mode: "add",
-      name: "",
-      phone: "",
-      role: "STAFF",
-    });
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (!partnerHasPermission(partner, "users")) {
+      router.replace("/(tabs)/profile" as any);
+    }
+  }, [partner, router]);
+
+  useEffect(() => {
+    if (otpResendSec <= 0) return;
+    const id = setInterval(() => setOtpResendSec((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(id);
+  }, [otpResendSec]);
+
+  const openInvite = (role?: StaffRoleKey) => {
+    setInviteRole(role ?? "STAFF");
+    setInviteName("");
+    setInvitePhone("");
+    setInviteEmail("");
+    setInviteByEmail(false);
+    setPage("invite");
   };
 
-  const openEditStaff = (s: StaffMember) => {
-    setStaffModal({
-      visible: true,
-      mode: "edit",
-      staff: s,
-      name: s.name,
-      phone: s.phone_number,
-      role: s.role,
-    });
+  const phoneLast10 = (raw: string) => onlyDigits(raw).slice(-10);
+
+  const findDuplicatePhoneConflict = (phone10: string): string | null => {
+    if (phone10.length !== 10) return null;
+    if (phoneLast10(ownerPhone) === phone10) {
+      return "This number is already registered as the Owner. Use a different number.";
+    }
+    const existing = staff.find(
+      (s) => s.status !== false && phoneLast10(s.phone_number) === phone10
+    );
+    if (!existing) return null;
+    const roleLabel =
+      normalizeStaffRole(existing.role) === "MANAGER" ? "Manager" : "Staff";
+    return `This number is already invited as ${roleLabel} (${existing.name}). Each number can only have one role.`;
   };
 
-  const saveStaff = async () => {
-    if (!staffModal || !storeId || !token) return;
-    const name = staffModal.name.trim();
-    const phone = staffModal.phone.trim();
-    const role = staffModal.role.trim() || "STAFF";
-    if (!name || !phone) {
-      Alert.alert("Missing details", "Please enter staff name and phone number.");
+  const purposeForAction = (action: OtpPurpose): MerchantActionOtpPurpose => {
+    if (action === "invite") return "invite";
+    if (action === "remove_staff") return "remove_staff";
+    if (action === "all") return "logout_all";
+    return "logout_device";
+  };
+
+  const sendInvite = async () => {
+    if (!storeId || !token) return;
+    const name = inviteName.trim();
+    if (!name || name.length < 2) {
+      setInfoModal({ title: "Name required", message: "Enter the invited user's name." });
       return;
     }
-    if (!isValidPhone(phone)) {
-      Alert.alert("Invalid number", "Please enter a valid phone number (10–15 digits).");
+    if (inviteByEmail) {
+      const email = inviteEmail.trim();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        setInfoModal({ title: "Invalid email", message: "Enter a valid email address." });
+        return;
+      }
+      setInfoModal({
+        title: "Email invite",
+        message: "Email invites will be enabled soon. Please invite by phone for now.",
+      });
+      return;
+    }
+    const phone = onlyDigits(invitePhone);
+    if (phone.length !== 10) {
+      setInfoModal({ title: "Invalid number", message: "Enter a valid 10-digit mobile number." });
+      return;
+    }
+    const conflict = findDuplicatePhoneConflict(phone);
+    if (conflict) {
+      setInfoModal({ title: "Number already used", message: conflict });
+      return;
+    }
+    pendingInviteRef.current = { name, phone, role: inviteRole };
+    await startOtpFlow("invite");
+  };
+
+  const startOtpFlow = async (action: OtpPurpose, sessionId?: number) => {
+    if (!token) return;
+    if (!ownerPhone) {
+      setInfoModal({
+        title: "Phone missing",
+        message: "Owner phone is required to verify this action.",
+      });
+      return;
+    }
+    otpActionRef.current = action;
+    otpSessionIdRef.current = sessionId ?? null;
+    otpRequestIdRef.current = null;
+    setOtpDigits("");
+    setOtpVisible(true);
+    setOtpSending(true);
+    try {
+      const sent = await sendMerchantActionOtp(token, purposeForAction(action));
+      otpRequestIdRef.current = sent.requestId;
+      const channels = [
+        sent.maskedPhone,
+        sent.maskedEmail,
+      ]
+        .filter(Boolean)
+        .join(" or ");
+      setOtpUi({
+        title:
+          action === "remove_staff"
+            ? "Confirm removal"
+            : action === "invite"
+              ? "Verify that it's you"
+              : "Verify that it's you",
+        body:
+          action === "invite"
+            ? "Confirm this invite. OTP is sent to the owner phone and email — not the invited number."
+            : action === "remove_staff"
+              ? "Enter the OTP sent to the owner phone and email to permanently remove this user."
+              : action === "all"
+                ? "Enter the OTP sent to the owner phone and email to log out all devices."
+                : "We need to verify your account. OTP is sent to the owner phone and email.",
+        maskedLine: channels
+          ? `Enter the OTP sent on ${channels}`
+          : `Enter the OTP sent on ${maskPhone(ownerPhone)}`,
+      });
+      if (typeof sent.devOtp === "string" && sent.devOtp.length === 6) {
+        setOtpDigits(sent.devOtp);
+        setOtpUi((prev) => ({
+          ...prev,
+          maskedLine: `${prev.maskedLine}\nDev OTP (SMS not delivering): ${sent.devOtp}`,
+        }));
+      }
+      setOtpResendSec(30);
+      setTimeout(() => otpInputRef.current?.focus(), 250);
+    } catch (e) {
+      setOtpVisible(false);
+      otpActionRef.current = null;
+      pendingRemoveStaffRef.current = null;
+      pendingInviteRef.current = null;
+      setInfoModal({
+        title: "OTP failed",
+        message: e instanceof Error ? e.message : "Could not send OTP.",
+      });
+    } finally {
+      setOtpSending(false);
+    }
+  };
+
+  const confirmRemoveStaff = (s: StaffMember) => {
+    setConfirmModal({
+      title: "Remove user?",
+      message: `This will permanently remove ${s.name}'s access. We'll send an OTP to your phone and email to confirm.`,
+      confirmLabel: "Continue",
+      onConfirm: () => {
+        setConfirmModal(null);
+        pendingRemoveStaffRef.current = s;
+        void startOtpFlow("remove_staff");
+      },
+    });
+  };
+
+  const startOtpForLogout = async (action: "one" | "all", sessionId?: number) => {
+    await startOtpFlow(action, sessionId);
+  };
+
+  const resendOtp = async () => {
+    if (otpResendSec > 0 || !token || !otpActionRef.current) return;
+    setOtpSending(true);
+    try {
+      const sent = await sendMerchantActionOtp(token, purposeForAction(otpActionRef.current));
+      otpRequestIdRef.current = sent.requestId;
+      const channels = [sent.maskedPhone, sent.maskedEmail].filter(Boolean).join(" or ");
+      setOtpUi((prev) => ({
+        ...prev,
+        maskedLine: channels
+          ? typeof sent.devOtp === "string" && sent.devOtp.length === 6
+            ? `Enter the OTP sent on ${channels}\nDev OTP (SMS not delivering): ${sent.devOtp}`
+            : `Enter the OTP sent on ${channels}`
+          : `Enter the OTP sent on ${maskPhone(ownerPhone)}`,
+      }));
+      if (typeof sent.devOtp === "string" && sent.devOtp.length === 6) {
+        setOtpDigits(sent.devOtp);
+      }
+      setOtpResendSec(30);
+    } catch (e) {
+      setInfoModal({
+        title: "OTP failed",
+        message: e instanceof Error ? e.message : "Could not resend OTP.",
+      });
+    } finally {
+      setOtpSending(false);
+    }
+  };
+
+  const openOwnerEdit = () => {
+    setEditName(ownerName);
+    setEditPhone(onlyDigits(ownerPhone));
+    setEditEmail(ownerEmail);
+    setEditField(null);
+    setPage("ownerEdit");
+  };
+
+  const saveOwnerEdit = async () => {
+    if (!token) return;
+    const name = editName.trim();
+    const phone = onlyDigits(editPhone);
+    const email = editEmail.trim();
+    if (!name) {
+      setInfoModal({ title: "Name required", message: "Enter the owner name." });
+      return;
+    }
+    if (phone.length !== 10) {
+      setInfoModal({ title: "Invalid number", message: "Enter a valid 10-digit mobile number." });
+      return;
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setInfoModal({ title: "Invalid email", message: "Enter a valid email address." });
       return;
     }
     setSaving(true);
     try {
-      if (staffModal.mode === "add") {
-        const created = await createStaff(storeId, { name, phone_number: phone, role }, token);
-        setStaff((prev) => [...prev, created]);
-      } else if (staffModal.staff) {
-        const updated = await updateStaff(
-          storeId,
-          staffModal.staff.id,
-          { name, phone_number: phone, role },
-          token
-        );
-        setStaff((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
-      }
-      setStaffModal(null);
+      await updateOwnerContact(token, {
+        owner_name: name,
+        owner_email: email,
+        registered_phone: toE164In(phone),
+      });
+      await refreshPartner();
+      setPage("home");
+      setInfoModal({ title: "Saved", message: "Owner contact details updated." });
     } catch (e) {
-      Alert.alert("Save failed", e instanceof Error ? e.message : "Could not save staff details.");
+      setInfoModal({
+        title: "Save failed",
+        message: e instanceof Error ? e.message : "Could not update owner details.",
+      });
     } finally {
       setSaving(false);
     }
   };
 
-  const confirmRemoveStaff = (s: StaffMember) => {
-    Alert.alert(
-      "Remove staff?",
-      `This will disable ${s.name}'s access.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Remove",
-          style: "destructive",
-          onPress: async () => {
-            if (!storeId || !token) return;
-            setSaving(true);
-            try {
-              await deleteStaff(storeId, s.id, token);
-              setStaff((prev) => prev.filter((x) => x.id !== s.id));
-            } catch (e) {
-              Alert.alert("Failed", e instanceof Error ? e.message : "Could not remove staff.");
-            } finally {
-              setSaving(false);
-            }
-          },
-        },
-      ],
-      { cancelable: true }
-    );
-  };
-
-  const handleLogoutSession = async (sess: UserDeviceSession) => {
+  const completeActionAfterOtp = async () => {
     if (!token) return;
-    const isCurrent =
-      !!sess.device_id &&
-      !!currentDeviceId &&
-      String(sess.device_id) === String(currentDeviceId);
-    try {
-      await logoutUserSessions(token, [sess.id]);
-      setUserSessions((prev) => prev.filter((s) => s.id !== sess.id));
-    } catch (e) {
-      if (!isCurrent) {
-        Alert.alert("Failed", e instanceof Error ? e.message : "Could not logout device.");
-        return;
-      }
-    }
-    if (isCurrent) {
-      await signOut();
-      router.replace("/(auth)/login");
-    }
-  };
+    const action = otpActionRef.current;
 
-  const handleLogoutAll = async () => {
-    if (!token) {
-      await signOut();
-      router.replace("/(auth)/login");
+    if (action === "invite") {
+      const pending = pendingInviteRef.current;
+      pendingInviteRef.current = null;
+      otpActionRef.current = null;
+      if (!pending || !storeId) return;
+      setSaving(true);
+      try {
+        const created = await createStaff(
+          storeId,
+          {
+            name: pending.name,
+            phone_number: toE164In(pending.phone),
+            role: pending.role,
+          },
+          token
+        );
+        setStaff((prev) => [...prev, created]);
+        setInviteName("");
+        setInvitePhone("");
+        setPage("home");
+        setInfoModal({
+          title: "Invite sent",
+          message: `${pending.name} will receive access details. They can sign in with this phone number.`,
+        });
+      } catch (e) {
+        setInfoModal({
+          title: "Invite failed",
+          message: e instanceof Error ? e.message : "Could not send invite.",
+        });
+      } finally {
+        setSaving(false);
+      }
       return;
     }
-    try {
-      await logoutAllUserSessions(token, true);
-    } catch {
-      /* still sign out this device */
+
+    if (action === "remove_staff") {
+      const target = pendingRemoveStaffRef.current;
+      pendingRemoveStaffRef.current = null;
+      otpActionRef.current = null;
+      if (!target || !storeId) return;
+      setSaving(true);
+      try {
+        await deleteStaff(storeId, target.id, token);
+        setStaff((prev) => prev.filter((x) => x.id !== target.id));
+        setInfoModal({
+          title: "User removed",
+          message: `${target.name} has been removed and can no longer sign in.`,
+        });
+      } catch (e) {
+        setInfoModal({
+          title: "Remove failed",
+          message: e instanceof Error ? e.message : "Could not remove user.",
+        });
+      } finally {
+        setSaving(false);
+      }
+      return;
     }
-    setUserSessions([]);
-    await signOut();
-    router.replace("/(auth)/login");
+
+    if (action === "one" && otpSessionIdRef.current != null) {
+      const targetId = otpSessionIdRef.current;
+      const sess = userSessions.find((s) => s.id === targetId);
+      const isCurrent =
+        !!sess?.device_id &&
+        !!currentDeviceId &&
+        String(sess.device_id) === String(currentDeviceId);
+      otpActionRef.current = null;
+      otpSessionIdRef.current = null;
+      // Instant UI update, then confirm with server (re-sync if needed).
+      setUserSessions((prev) => prev.filter((s) => s.id !== targetId));
+      try {
+        await logoutUserSessions(token, [targetId]);
+        const fresh = await getUserSessions(token).catch(() => null);
+        if (fresh) setUserSessions(fresh);
+      } catch (e) {
+        if (!isCurrent) {
+          void load();
+          setInfoModal({
+            title: "Failed",
+            message: e instanceof Error ? e.message : "Could not logout device.",
+          });
+          return;
+        }
+      }
+      if (isCurrent) {
+        await signOut();
+        router.replace("/(auth)/login");
+      }
+      return;
+    }
+    if (action === "all") {
+      otpActionRef.current = null;
+      try {
+        await logoutAllUserSessions(token, true);
+      } catch {
+        /* still sign out */
+      }
+      setUserSessions([]);
+      await signOut();
+      router.replace("/(auth)/login");
+    }
   };
 
-  if (loading) {
-    return (
-      <View style={styles.centered}>
-        <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
-        <Text style={styles.loadingText}>Loading staff & devices…</Text>
-      </View>
-    );
-  }
+  const verifyOtpAndContinue = async () => {
+    if (otpDigits.trim().length < 6 || !token || !otpRequestIdRef.current || !otpActionRef.current) {
+      return;
+    }
+    setOtpVerifying(true);
+    try {
+      await verifyMerchantActionOtp(token, {
+        requestId: otpRequestIdRef.current,
+        otp: otpDigits.trim(),
+        purpose: purposeForAction(otpActionRef.current),
+      });
+      setOtpVisible(false);
+      otpRequestIdRef.current = null;
+      await completeActionAfterOtp();
+    } catch (e) {
+      setInfoModal({
+        title: "Invalid OTP",
+        message: e instanceof Error ? e.message : "Please try again.",
+      });
+    } finally {
+      setOtpVerifying(false);
+    }
+  };
 
-  if (error && !staff.length && !sessions.length) {
+  const inviteReady =
+    inviteName.trim().length >= 2 &&
+    (!inviteByEmail
+      ? onlyDigits(invitePhone).length === 10
+      : inviteEmail.trim().includes("@"));
+
+  if (error && !staff.length && !parent) {
     return (
-      <View style={styles.centered}>
-        <Ionicons name="alert-circle-outline" size={48} color={GatiMitraMerchant.textTertiary} />
+      <View style={[styles.root, styles.centered]}>
+        <Ionicons name="alert-circle-outline" size={48} color={C.textDim} />
         <Text style={styles.errorText}>{error}</Text>
+        <Pressable style={styles.retryChip} onPress={() => void load()}>
+          <Text style={styles.retryChipText}>Retry</Text>
+        </Pressable>
       </View>
     );
   }
-
-  const parent = partner?.parent;
-  const activeUserSessions = userSessions;
-  const totalDevices =
-    typeof partner?.activeDevices === "number" ? partner.activeDevices : activeUserSessions.length;
 
   return (
-    <View style={styles.container}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* Owner */}
-        {parent && (
-          <View style={styles.ownerCard}>
-            <Text style={styles.sectionLabel}>Owner</Text>
-            <View style={styles.ownerRow}>
-              <View style={styles.ownerAvatar}>
-                <Ionicons name="person-outline" size={24} color={GatiMitraMerchant.textSecondary} />
-              </View>
-              <View style={styles.ownerTextWrap}>
-                <Text style={styles.ownerName}>{parent.owner_name || parent.parent_name}</Text>
-                <Text style={styles.ownerPhone}>{parent.registered_phone}</Text>
-                <Text style={styles.ownerEmail}>{parent.owner_email || "—"}</Text>
-                <Text style={styles.ownerMeta}>
-                  Logged in on {totalDevices} device{totalDevices === 1 ? "" : "s"}
-                </Text>
-              </View>
-            </View>
-          </View>
-        )}
+    <View style={[styles.root, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+      {page === "home" ? (
+        <HomeView
+          ownerName={ownerName}
+          ownerPhone={ownerPhone}
+          ownerEmail={ownerEmail}
+          totalDevices={totalDevices}
+          managers={managers}
+          staffMembers={staffMembers}
+          bottomInset={Math.max(insets.bottom, 12)}
+          topInset={insets.top}
+          storeLogoUrl={storeLogoUrl}
+          token={token}
+          onBack={goBack}
+          onOpenPermissions={() => {
+            setPermsRole("OWNER");
+            setPermsVisible(true);
+          }}
+          onOpenDevices={() => setPage("devices")}
+          onInvite={(role) => openInvite(role)}
+          onRemove={confirmRemoveStaff}
+          onEditOwner={openOwnerEdit}
+        />
+      ) : null}
 
-        {/* Staff members */}
-        <View style={styles.sectionHeaderRow}>
-          <View style={styles.sectionHeaderLeft}>
-            <Ionicons name="people-outline" size={18} color={GatiMitraMerchant.textSecondary} />
-            <Text style={styles.sectionTitle}>Staff members</Text>
-          </View>
-          <Pressable
-            style={({ pressed }) => [styles.addBtn, pressed && styles.addBtnPressed]}
-            onPress={openAddStaff}
-          >
-            <Ionicons name="add" size={18} color="#fff" />
-            <Text style={styles.addBtnText}>Add staff</Text>
-          </Pressable>
-        </View>
-        {staff.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>No staff added yet</Text>
-            <Text style={styles.emptySubtitle}>Add staff members who can manage orders and store operations.</Text>
-          </View>
-        ) : (
-          staff.map((s) => (
-            <View key={s.id} style={styles.staffCard}>
-              <View style={styles.staffMainRow}>
-                <View style={styles.staffAvatar}>
-                  <Ionicons name="person-circle-outline" size={26} color={GatiMitraMerchant.primary} />
-                </View>
-                <View style={styles.staffTextWrap}>
-                  <Text style={styles.staffName}>{s.name}</Text>
-                  <Text style={styles.staffPhone}>{s.phone_number}</Text>
-                  <View style={styles.staffMetaRow}>
-                    <View style={styles.rolePill}>
-                      <Text style={styles.rolePillText}>{s.role}</Text>
-                    </View>
-                    <Text style={styles.staffMetaText}>Added {formatRelative(s.created_at)}</Text>
-                  </View>
-                </View>
-                <View style={styles.staffActions}>
-                  <Pressable onPress={() => openEditStaff(s)} style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}>
-                    <Ionicons name="pencil-outline" size={18} color={GatiMitraMerchant.textSecondary} />
-                  </Pressable>
-                  <Pressable onPress={() => confirmRemoveStaff(s)} style={({ pressed }) => [styles.iconBtn, pressed && styles.iconBtnPressed]}>
-                    <Ionicons name="trash-outline" size={18} color={GatiMitraMerchant.error} />
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          ))
-        )}
+      {page === "ownerEdit" ? (
+        <OwnerEditView
+          topInset={insets.top}
+          bottomInset={Math.max(insets.bottom, 12)}
+          name={editName}
+          phone={editPhone}
+          email={editEmail}
+          editField={editField}
+          saving={saving}
+          storeLogoUrl={storeLogoUrl}
+          token={token}
+          onNameChange={setEditName}
+          onPhoneChange={(t) => setEditPhone(onlyDigits(t))}
+          onEmailChange={setEditEmail}
+          onEditField={setEditField}
+          onBack={() => setPage("home")}
+          onSave={() => void saveOwnerEdit()}
+        />
+      ) : null}
 
-        {/* Active devices */}
-        <View style={styles.sectionHeaderRow}>
-          <View style={styles.sectionHeaderLeft}>
-            <Ionicons name="phone-portrait-outline" size={18} color={GatiMitraMerchant.textSecondary} />
-            <Text style={styles.sectionTitle}>Active devices</Text>
-          </View>
-          {activeUserSessions.length > 0 && (
-            <Pressable
-              style={({ pressed }) => [styles.logoutAllBtn, pressed && styles.logoutAllBtnPressed]}
-              onPress={() =>
-                Alert.alert(
-                  "Logout all devices?",
-                  "All other devices will be signed out from this account.",
-                  [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Logout all",
-                      style: "destructive",
-                      onPress: handleLogoutAll,
-                    },
-                  ],
-                  { cancelable: true },
-                )
-              }
-            >
-              <Ionicons name="power-outline" size={16} color={GatiMitraMerchant.error} />
-              <Text style={styles.logoutAllText}>Logout all</Text>
-            </Pressable>
-          )}
-        </View>
-        {activeUserSessions.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>No active devices</Text>
-            <Text style={styles.emptySubtitle}>Devices will appear here when staff log in to this store.</Text>
-          </View>
-        ) : (
-          activeUserSessions.map((sess) => {
-            const isWeb = sess.device_type === "web";
-            const isAndroid = (sess.os || "").toLowerCase().includes("android");
-            const isIos = (sess.os || "").toLowerCase().includes("ios");
-            const friendlyName =
-              sess.device_name && !sess.device_name.startsWith("merchant_")
-                ? sess.device_name
-                : isWeb
-                  ? "Web browser"
-                  : isAndroid
-                    ? "Android device"
-                    : isIos
-                      ? "iOS device"
-                      : "Mobile device";
-            const metaParts: string[] = [];
-            if (sess.os) metaParts.push(sess.os);
-            if (sess.ip_address) metaParts.push(sess.ip_address);
-            if (sess.location) metaParts.push(sess.location);
-            const metaLine = metaParts.join(" • ");
+      {page === "invite" ? (
+        <InviteView
+          name={inviteName}
+          onNameChange={setInviteName}
+          phone={invitePhone}
+          onPhoneChange={(t) => setInvitePhone(onlyDigits(t))}
+          role={inviteRole}
+          onRoleChange={setInviteRole}
+          byEmail={inviteByEmail}
+          onToggleEmail={() => setInviteByEmail((v) => !v)}
+          email={inviteEmail}
+          onEmailChange={setInviteEmail}
+          saving={saving}
+          canSend={!!inviteReady && !saving}
+          topInset={insets.top}
+          onBack={() => setPage("home")}
+          onSend={() => void sendInvite()}
+          onOpenPermissions={() => {
+            setPermsRole(inviteRole);
+            setPermsVisible(true);
+          }}
+        />
+      ) : null}
 
-            return (
-              <View key={sess.id} style={styles.sessionCard}>
-                <View style={styles.sessionTopRow}>
-                  <View style={styles.sessionIconWrap}>
-                    <Ionicons
-                      name={isWeb ? "laptop-outline" : "phone-portrait-outline"}
-                      size={18}
-                      color={GatiMitraMerchant.primary}
-                    />
-                  </View>
-                  <View style={styles.sessionTextWrap}>
-                    <Text style={styles.sessionDevice}>{friendlyName}</Text>
-                    {!!metaLine && (
-                      <Text style={styles.sessionMeta} numberOfLines={1}>
-                        {metaLine}
-                      </Text>
-                    )}
-                    <Text style={styles.sessionMeta}>
-                      Login: {formatDateTime(sess.login_time)} • Last active: {formatRelative(sess.last_active)}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.sessionFooterRow}>
-                  <Text
-                    style={[
-                      styles.sessionStatus,
-                      sess.is_active ? styles.sessionStatusActive : styles.sessionStatusInactive,
-                    ]}
-                  >
-                    {sess.is_active ? "Active" : "Logged out"}
-                  </Text>
-                  {sess.is_active && (
-                    <Pressable
-                      style={({ pressed }) => [styles.logoutBtn, pressed && styles.logoutBtnPressed]}
-                      onPress={() =>
-                        Alert.alert(
-                          "Logout device?",
-                          "This device will be signed out of your account.",
-                          [
-                            { text: "Cancel", style: "cancel" },
-                            {
-                              text: "Logout",
-                              style: "destructive",
-                              onPress: () => handleLogoutSession(sess),
-                            },
-                          ],
-                          { cancelable: true },
-                        )
-                      }
-                    >
-                      <Text style={styles.logoutBtnText}>Logout this device</Text>
-                    </Pressable>
-                  )}
-                </View>
-              </View>
-            );
-          })
-        )}
-      </ScrollView>
+      {page === "devices" ? (
+        <DevicesView
+          ownerName={ownerName}
+          ownerEmail={ownerEmail}
+          storeLabel={storeLabel}
+          storeIdLabel={storeIdLabel}
+          sessions={userSessions}
+          currentDeviceId={currentDeviceId}
+          storeLogoUrl={storeLogoUrl}
+          token={token}
+          topInset={insets.top}
+          onBack={() => setPage("home")}
+          onLogoutOne={(id) => void startOtpForLogout("one", id)}
+          onLogoutAll={() => void startOtpForLogout("all")}
+        />
+      ) : null}
 
-      {/* Add/Edit staff modal */}
-      <Modal
-        visible={!!staffModal?.visible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setStaffModal(null)}
-      >
-        <Pressable style={styles.modalOverlay} onPress={() => setStaffModal(null)}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-            style={styles.modalKeyboard}
-          >
-            <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-              <Text style={styles.modalTitle}>
-                {staffModal?.mode === "add" ? "Add staff member" : "Edit staff member"}
-              </Text>
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Name</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  value={staffModal?.name ?? ""}
-                  onChangeText={(t) =>
-                    setStaffModal((prev) => (prev ? { ...prev, name: t } : prev))
-                  }
-                  placeholder="Staff name"
-                  placeholderTextColor={GatiMitraMerchant.textTertiary}
-                />
-              </View>
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Phone number</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  value={staffModal?.phone ?? ""}
-                  onChangeText={(t) =>
-                    setStaffModal((prev) => (prev ? { ...prev, phone: t } : prev))
-                  }
-                  placeholder="10–15 digits"
-                  placeholderTextColor={GatiMitraMerchant.textTertiary}
-                  keyboardType="phone-pad"
-                />
-              </View>
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Role</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  value={staffModal?.role ?? ""}
-                  onChangeText={(t) =>
-                    setStaffModal((prev) => (prev ? { ...prev, role: t.toUpperCase() } : prev))
-                  }
-                  placeholder="STAFF, MANAGER"
-                  placeholderTextColor={GatiMitraMerchant.textTertiary}
-                />
-              </View>
-              <View style={styles.modalActions}>
-                <Pressable
-                  style={({ pressed }) => [styles.modalBtn, styles.modalBtnSecondary, pressed && styles.pressed]}
-                  onPress={() => setStaffModal(null)}
-                >
-                  <Text style={styles.modalBtnSecondaryText}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  style={({ pressed }) => [styles.modalBtn, styles.modalBtnPrimary, pressed && styles.pressed]}
-                  onPress={saveStaff}
-                  disabled={saving}
-                >
-                  {saving ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <Text style={styles.modalBtnPrimaryText}>Save</Text>
-                  )}
-                </Pressable>
-              </View>
-            </Pressable>
-          </KeyboardAvoidingView>
-        </Pressable>
-      </Modal>
+      <PermissionsSheet
+        visible={permsVisible}
+        role={permsRole}
+        onRoleChange={setPermsRole}
+        onClose={() => setPermsVisible(false)}
+        bottomInset={Math.max(insets.bottom, 12)}
+      />
+
+      <OtpVerifySheet
+        visible={otpVisible}
+        maskedLine={
+          otpUi.maskedLine || `Enter the OTP sent on ${maskPhone(ownerPhone)}`
+        }
+        digits={otpDigits}
+        onDigitsChange={(t) => setOtpDigits(t.replace(/\D/g, "").slice(0, 6))}
+        resendSec={otpResendSec}
+        sending={otpSending}
+        verifying={otpVerifying}
+        inputRef={otpInputRef}
+        onClose={() => {
+          setOtpVisible(false);
+          otpActionRef.current = null;
+          otpRequestIdRef.current = null;
+          pendingRemoveStaffRef.current = null;
+          pendingInviteRef.current = null;
+        }}
+        onResend={() => void resendOtp()}
+        onContinue={() => void verifyOtpAndContinue()}
+        bottomInset={Math.max(insets.bottom, 16)}
+        title={otpUi.title}
+        body={otpUi.body}
+      />
+
+      <InfoModal
+        state={infoModal}
+        onClose={() => setInfoModal(null)}
+      />
+      <ConfirmModal
+        state={confirmModal}
+        onCancel={() => setConfirmModal(null)}
+      />
     </View>
   );
 }
 
+/* ─── Home (Contact details) ───────────────────────────────────────── */
+
+function HomeView({
+  ownerName,
+  ownerPhone,
+  ownerEmail,
+  totalDevices,
+  managers,
+  staffMembers,
+  bottomInset,
+  topInset,
+  storeLogoUrl,
+  token,
+  onBack,
+  onOpenPermissions,
+  onOpenDevices,
+  onInvite,
+  onRemove,
+  onEditOwner,
+}: {
+  ownerName: string;
+  ownerPhone: string;
+  ownerEmail: string;
+  totalDevices: number;
+  managers: StaffMember[];
+  staffMembers: StaffMember[];
+  bottomInset: number;
+  topInset: number;
+  storeLogoUrl: string | null;
+  token: string | null;
+  onBack: () => void;
+  onOpenPermissions: () => void;
+  onOpenDevices: () => void;
+  onInvite: (role?: StaffRoleKey) => void;
+  onRemove: (s: StaffMember) => void;
+  onEditOwner: () => void;
+}) {
+  return (
+    <>
+      <View style={[styles.contactHeader, { paddingTop: Math.max(topInset, 8) }]}>
+        <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={22} color={C.text} />
+        </Pressable>
+        <View style={styles.contactHeaderText}>
+          <Text style={styles.topTitleLeft}>Contact details</Text>
+          <Text style={styles.topSub} numberOfLines={1}>
+            Invite users and manage access.
+          </Text>
+        </View>
+        <Pressable onPress={onOpenPermissions} hitSlop={8} style={styles.headerPermBtn}>
+          <Text style={styles.topLink}>View permissions</Text>
+        </Pressable>
+      </View>
+
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: 100 + bottomInset }]}
+        showsVerticalScrollIndicator={false}
+      >
+        <SectionLabel>Owner</SectionLabel>
+        <View style={styles.personCard}>
+          <View style={styles.avatar}>
+            {storeLogoUrl && token ? (
+              <AuthProxyImage
+                uri={storeLogoUrl}
+                token={token}
+                style={styles.avatarImg}
+                resizeMode="cover"
+                accessibilityLabel="Store logo"
+              />
+            ) : (
+              <Ionicons name="person" size={22} color={C.textMuted} />
+            )}
+          </View>
+          <View style={styles.personBody}>
+            <Text style={styles.personName}>{ownerName}</Text>
+            {!!ownerPhone && <Text style={styles.personLine}>{ownerPhone}</Text>}
+            {!!ownerEmail && <Text style={styles.personLine}>{ownerEmail}</Text>}
+            <Pressable style={styles.devicesLinkRow} onPress={onOpenDevices}>
+              <Text style={styles.devicesLink}>
+                Logged in {totalDevices} device{totalDevices === 1 ? "" : "s"}
+              </Text>
+              <Ionicons name="chevron-forward" size={14} color={C.blue} />
+            </Pressable>
+          </View>
+          <Pressable onPress={onEditOwner} hitSlop={10} style={styles.editBtn}>
+            <Ionicons name="pencil" size={16} color={C.blue} />
+          </Pressable>
+        </View>
+
+        <SectionLabel>Manager</SectionLabel>
+        {managers.length === 0 ? (
+          <EmptyInviteRow
+            message="No one added as manager yet."
+            onInvite={() => onInvite("MANAGER")}
+          />
+        ) : (
+          managers.map((s) => (
+            <StaffRow key={s.id} member={s} onRemove={() => onRemove(s)} />
+          ))
+        )}
+
+        <SectionLabel>Staff</SectionLabel>
+        {staffMembers.length === 0 ? (
+          <EmptyInviteRow
+            message="No one added as staff yet."
+            onInvite={() => onInvite("STAFF")}
+          />
+        ) : (
+          staffMembers.map((s) => (
+            <StaffRow key={s.id} member={s} onRemove={() => onRemove(s)} />
+          ))
+        )}
+      </ScrollView>
+
+      <View style={[styles.fabWrap, { bottom: 16 + bottomInset }]}>
+        <Pressable style={styles.fab} onPress={() => onInvite("STAFF")}>
+          <Text style={styles.fabText}>Invite user</Text>
+        </Pressable>
+      </View>
+    </>
+  );
+}
+
+function SectionLabel({ children }: { children: string }) {
+  return (
+    <View style={styles.sectionBanner}>
+      <Text style={styles.sectionBannerText}>{children}</Text>
+    </View>
+  );
+}
+
+function EmptyInviteRow({ message, onInvite }: { message: string; onInvite: () => void }) {
+  return (
+    <View style={styles.emptyBlock}>
+      <Text style={styles.emptyMsg}>{message}</Text>
+      <Pressable onPress={onInvite}>
+        <Text style={styles.inviteNow}>Invite someone now</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function StaffRow({ member, onRemove }: { member: StaffMember; onRemove: () => void }) {
+  return (
+    <View style={styles.personCard}>
+      <View style={styles.avatar}>
+        <Ionicons name="person" size={20} color={C.textMuted} />
+      </View>
+      <View style={styles.personBody}>
+        <Text style={styles.personName}>{member.name}</Text>
+        <Text style={styles.personLine}>{member.phone_number}</Text>
+      </View>
+      <Pressable onPress={onRemove} hitSlop={10} style={styles.editBtn}>
+        <Ionicons name="trash-outline" size={16} color={C.redSoft} />
+      </Pressable>
+    </View>
+  );
+}
+
+/* ─── Invite user ──────────────────────────────────────────────────── */
+
+function InviteView({
+  name,
+  onNameChange,
+  phone,
+  onPhoneChange,
+  role,
+  onRoleChange,
+  byEmail,
+  onToggleEmail,
+  email,
+  onEmailChange,
+  saving,
+  canSend,
+  topInset,
+  onBack,
+  onSend,
+  onOpenPermissions,
+}: {
+  name: string;
+  onNameChange: (t: string) => void;
+  phone: string;
+  onPhoneChange: (t: string) => void;
+  role: StaffRoleKey;
+  onRoleChange: (r: StaffRoleKey) => void;
+  byEmail: boolean;
+  onToggleEmail: () => void;
+  email: string;
+  onEmailChange: (t: string) => void;
+  saving: boolean;
+  canSend: boolean;
+  topInset: number;
+  onBack: () => void;
+  onSend: () => void;
+  onOpenPermissions: () => void;
+}) {
+  return (
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
+      <View style={[styles.topBar, { paddingTop: Math.max(topInset, 8) }]}>
+        <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={22} color={C.text} />
+        </Pressable>
+        <Text style={styles.topTitle}>Invite user</Text>
+        <Pressable onPress={onOpenPermissions} hitSlop={8}>
+          <Text style={styles.topLink}>View permissions</Text>
+        </Pressable>
+      </View>
+
+      <ScrollView
+        contentContainerStyle={styles.inviteScroll}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={[styles.phoneField, styles.inviteFieldGap]}>
+          <TextInput
+            style={styles.phoneInputFlex}
+            value={name}
+            onChangeText={onNameChange}
+            placeholder="Full name"
+            placeholderTextColor={C.textDim}
+            autoCapitalize="words"
+            maxLength={80}
+          />
+        </View>
+
+        {byEmail ? (
+          <View style={styles.phoneField}>
+            <TextInput
+              style={styles.phoneInputFlex}
+              value={email}
+              onChangeText={onEmailChange}
+              placeholder="Enter email address"
+              placeholderTextColor={C.textDim}
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
+          </View>
+        ) : (
+          <View style={styles.phoneField}>
+            <View style={styles.ccRow}>
+              <Text style={styles.flag}>🇮🇳</Text>
+              <Text style={styles.ccText}>+91</Text>
+              <Ionicons name="chevron-down" size={14} color={C.textMuted} />
+            </View>
+            <TextInput
+              style={styles.phoneInputFlex}
+              value={phone}
+              onChangeText={onPhoneChange}
+              placeholder="Enter phone number"
+              placeholderTextColor={C.textDim}
+              keyboardType="number-pad"
+              maxLength={10}
+            />
+          </View>
+        )}
+
+        <Text style={styles.helper}>
+          {byEmail
+            ? "This user will receive an email invite to join your outlet."
+            : "This user will receive a link by SMS which they need to click on to accept the invite and be added to your outlet."}
+        </Text>
+        <Pressable onPress={onToggleEmail}>
+          <Text style={styles.inviteAlt}>
+            {byEmail ? "Invite by phone" : "Invite by email"}
+          </Text>
+        </Pressable>
+
+        <View style={styles.roleBanner}>
+          <Text style={styles.roleBannerText}>Select user role</Text>
+        </View>
+        {(["STAFF", "MANAGER"] as StaffRoleKey[]).map((r, idx) => (
+          <Pressable
+            key={r}
+            style={[styles.roleRow, idx > 0 && styles.roleRowBorder]}
+            onPress={() => onRoleChange(r)}
+          >
+            <Text style={styles.roleRowLabel}>
+              {r === "STAFF" ? "Staff" : "Manager"}
+            </Text>
+            <View style={[styles.radio, role === r && styles.radioOn]}>
+              {role === r ? <View style={styles.radioDot} /> : null}
+            </View>
+          </Pressable>
+        ))}
+      </ScrollView>
+
+      <View style={styles.inviteFooter}>
+        <Pressable
+          style={[styles.sendBtn, !canSend && styles.sendBtnDisabled]}
+          disabled={!canSend}
+          onPress={onSend}
+        >
+          {saving ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.sendBtnText}>Send invite</Text>
+          )}
+        </Pressable>
+      </View>
+    </KeyboardAvoidingView>
+  );
+}
+
+/* ─── Logged in devices ────────────────────────────────────────────── */
+
+function DevicesView({
+  ownerName,
+  ownerEmail,
+  storeLabel,
+  storeIdLabel,
+  sessions,
+  currentDeviceId,
+  storeLogoUrl,
+  token,
+  topInset,
+  onBack,
+  onLogoutOne,
+  onLogoutAll,
+}: {
+  ownerName: string;
+  ownerEmail: string;
+  storeLabel: string;
+  storeIdLabel: string;
+  sessions: UserDeviceSession[];
+  currentDeviceId: string | null;
+  storeLogoUrl: string | null;
+  token: string | null;
+  topInset: number;
+  onBack: () => void;
+  onLogoutOne: (id: number) => void;
+  onLogoutAll: () => void;
+}) {
+  return (
+    <>
+      <View style={[styles.topBarLeft, { paddingTop: Math.max(topInset, 8) }]}>
+        <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={22} color={C.text} />
+        </Pressable>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.topTitleLeft}>Logged in devices</Text>
+          <Text style={styles.topSub} numberOfLines={1}>
+            {[storeIdLabel, storeLabel].filter(Boolean).join(" • ")}
+          </Text>
+        </View>
+      </View>
+
+      <ScrollView
+        contentContainerStyle={styles.devicesScroll}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.deviceProfileCard}>
+          <View style={styles.avatar}>
+            {storeLogoUrl && token ? (
+              <AuthProxyImage
+                uri={storeLogoUrl}
+                token={token}
+                style={styles.avatarImg}
+                resizeMode="cover"
+                accessibilityLabel="Store logo"
+              />
+            ) : (
+              <Ionicons name="person" size={22} color={C.textMuted} />
+            )}
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.personName}>{ownerName}</Text>
+            {!!ownerEmail && <Text style={styles.personLine}>{ownerEmail}</Text>}
+          </View>
+        </View>
+
+        <View style={styles.devicesHeaderRow}>
+          <Text style={styles.devicesCount}>Devices ({sessions.length})</Text>
+          {sessions.length > 0 ? (
+            <Pressable onPress={onLogoutAll}>
+              <Text style={styles.logoutAllLink}>Log-out all</Text>
+            </Pressable>
+          ) : null}
+        </View>
+
+        <View style={styles.devicesListCard}>
+          {sessions.length === 0 ? (
+            <Text style={styles.emptyMsg}>No active devices</Text>
+          ) : (
+            sessions.map((sess, idx) => {
+              const isCurrent =
+                !!sess.device_id &&
+                !!currentDeviceId &&
+                String(sess.device_id) === String(currentDeviceId);
+              return (
+                <View
+                  key={sess.id}
+                  style={[styles.deviceRow, idx > 0 && styles.deviceRowBorder]}
+                >
+                  <View style={{ flex: 1, paddingRight: 10 }}>
+                    <Text style={styles.deviceName}>
+                      {deviceFriendlyName(sess)}
+                      {isCurrent ? " (this device)" : ""}
+                    </Text>
+                    <Text style={styles.deviceMeta}>
+                      Logged in on {formatLoginStamp(sess.login_time)}
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={styles.logoutRowBtn}
+                    onPress={() => onLogoutOne(sess.id)}
+                  >
+                    <Ionicons name="log-out-outline" size={16} color={C.redSoft} />
+                    <Text style={styles.logoutRowText}>Log-out</Text>
+                  </Pressable>
+                </View>
+              );
+            })
+          )}
+        </View>
+      </ScrollView>
+    </>
+  );
+}
+
+/* ─── View permissions sheet ───────────────────────────────────────── */
+
+function PermissionsSheet({
+  visible,
+  role,
+  onRoleChange,
+  onClose,
+  bottomInset,
+}: {
+  visible: boolean;
+  role: StaffRoleKey;
+  onRoleChange: (r: StaffRoleKey) => void;
+  onClose: () => void;
+  bottomInset: number;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.sheetRoot}>
+        <Pressable style={styles.sheetDim} onPress={onClose} />
+        <View style={[styles.sheetCard, { paddingBottom: bottomInset + 8 }]}>
+          <View style={styles.sheetHeader}>
+            <Text style={styles.sheetTitle}>View permissions</Text>
+            <Pressable onPress={onClose} hitSlop={12}>
+              <Ionicons name="close" size={22} color={C.text} />
+            </Pressable>
+          </View>
+
+          <View style={styles.roleTabs}>
+            {STAFF_ROLE_OPTIONS.map((opt) => {
+              const on = opt.key === role;
+              return (
+                <Pressable
+                  key={opt.key}
+                  style={[styles.roleTab, on && styles.roleTabOn]}
+                  onPress={() => onRoleChange(opt.key)}
+                >
+                  <MaterialCommunityIcons
+                    name={
+                      opt.key === "OWNER"
+                        ? "account-group"
+                        : opt.key === "MANAGER"
+                          ? "account-cog"
+                          : "account-multiple"
+                    }
+                    size={22}
+                    color={on ? "#fff" : C.textMuted}
+                  />
+                  <Text style={[styles.roleTabLabel, on && styles.roleTabLabelOn]}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <ScrollView
+            style={styles.permScroll}
+            contentContainerStyle={{ paddingBottom: 24 }}
+            showsVerticalScrollIndicator={false}
+          >
+            {STAFF_PERMISSIONS.map((p, idx) => {
+              const allowed = roleHasPermission(role, p.id);
+              return (
+                <View
+                  key={p.id}
+                  style={[styles.permRow, idx > 0 && styles.permRowBorder]}
+                >
+                  <View style={{ flex: 1, paddingRight: 12 }}>
+                    <Text style={[styles.permTitle, !allowed && styles.permTitleOff]}>
+                      {p.title}
+                    </Text>
+                    <Text style={styles.permDesc}>{p.description}</Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.permBadge,
+                      allowed ? styles.permBadgeOn : styles.permBadgeOff,
+                    ]}
+                  >
+                    <Ionicons
+                      name={allowed ? "checkmark" : "close"}
+                      size={14}
+                      color="#fff"
+                    />
+                  </View>
+                </View>
+              );
+            })}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+/* ─── OTP verify sheet ─────────────────────────────────────────────── */
+
+function OtpVerifySheet({
+  visible,
+  maskedLine,
+  digits,
+  onDigitsChange,
+  resendSec,
+  sending,
+  verifying,
+  inputRef,
+  onClose,
+  onResend,
+  onContinue,
+  bottomInset,
+  title,
+  body,
+}: {
+  visible: boolean;
+  maskedLine: string;
+  digits: string;
+  onDigitsChange: (t: string) => void;
+  resendSec: number;
+  sending: boolean;
+  verifying: boolean;
+  inputRef: React.RefObject<TextInput | null>;
+  onClose: () => void;
+  onResend: () => void;
+  onContinue: () => void;
+  bottomInset: number;
+  title?: string;
+  body?: string;
+}) {
+  const ready = digits.length === 6 && !verifying && !sending;
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={() => {}}>
+      <View style={styles.sheetRoot}>
+        {/* Backdrop does not dismiss — close only via X. */}
+        <View style={styles.sheetDim} pointerEvents="auto" />
+        <View style={styles.otpCloseFloat}>
+          <Pressable
+            style={styles.otpCloseBtn}
+            onPress={onClose}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+          >
+            <Ionicons name="close" size={20} color="#fff" />
+          </Pressable>
+        </View>
+        <View style={[styles.otpSheet, { paddingBottom: bottomInset + 12 }]}>
+          <Text style={styles.otpTitle}>{title || "Verify that it's you"}</Text>
+          <Text style={styles.otpBody}>
+            {body || "We need to verify your account in order to proceed"}
+          </Text>
+          <Text style={styles.otpBody}>{maskedLine}</Text>
+
+          <Pressable style={styles.otpBoxes} onPress={() => inputRef.current?.focus()}>
+            {Array.from({ length: 6 }).map((_, i) => (
+              <View key={i} style={styles.otpBox}>
+                <Text style={styles.otpDigit}>{digits[i] ?? ""}</Text>
+                <View style={styles.otpUnderline} />
+              </View>
+            ))}
+            <TextInput
+              ref={inputRef}
+              value={digits}
+              onChangeText={onDigitsChange}
+              keyboardType="number-pad"
+              maxLength={6}
+              style={styles.otpHiddenInput}
+              caretHidden
+              autoFocus
+            />
+          </Pressable>
+
+          <View style={styles.otpResendRow}>
+            {resendSec > 0 ? (
+              <Text style={styles.otpResend}>Resend OTP in {resendSec} secs</Text>
+            ) : (
+              <Pressable onPress={onResend} disabled={sending}>
+                <Text style={styles.otpResendActive}>
+                  {sending ? "Sending…" : "Resend OTP"}
+                </Text>
+              </Pressable>
+            )}
+          </View>
+
+          <Pressable
+            style={[styles.sendBtn, !ready && styles.sendBtnDisabled]}
+            disabled={!ready}
+            onPress={onContinue}
+          >
+            {verifying ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.sendBtnText}>Continue</Text>
+            )}
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+/* ─── Owner edit (Zomato-style, light, no delete account) ──────────── */
+
+function OwnerEditView({
+  topInset,
+  bottomInset,
+  name,
+  phone,
+  email,
+  editField,
+  saving,
+  storeLogoUrl,
+  token,
+  onNameChange,
+  onPhoneChange,
+  onEmailChange,
+  onEditField,
+  onBack,
+  onSave,
+}: {
+  topInset: number;
+  bottomInset: number;
+  name: string;
+  phone: string;
+  email: string;
+  editField: "name" | "phone" | "email" | null;
+  saving: boolean;
+  storeLogoUrl: string | null;
+  token: string | null;
+  onNameChange: (t: string) => void;
+  onPhoneChange: (t: string) => void;
+  onEmailChange: (t: string) => void;
+  onEditField: (f: "name" | "phone" | "email" | null) => void;
+  onBack: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+    >
+      <View style={[styles.topBarLeft, { paddingTop: Math.max(topInset, 8) }]}>
+        <Pressable onPress={onBack} hitSlop={12} style={styles.backBtn}>
+          <Ionicons name="arrow-back" size={22} color={C.text} />
+        </Pressable>
+        <Text style={styles.topTitleLeft}>Contact details</Text>
+      </View>
+
+      <ScrollView
+        contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.ownerPhotoRow}>
+          <View style={styles.ownerPhoto}>
+            {storeLogoUrl && token ? (
+              <AuthProxyImage
+                uri={storeLogoUrl}
+                token={token}
+                style={styles.ownerPhotoImg}
+                resizeMode="cover"
+              />
+            ) : (
+              <Ionicons name="person" size={36} color={C.textMuted} />
+            )}
+          </View>
+        </View>
+
+        <OutlinedField
+          label="Name"
+          value={name}
+          editable={editField === "name"}
+          onChangeText={onNameChange}
+          onPressEdit={() => onEditField(editField === "name" ? null : "name")}
+        />
+        <OutlinedField
+          label="Phone number"
+          value={phone}
+          editable={editField === "phone"}
+          onChangeText={onPhoneChange}
+          keyboardType="number-pad"
+          maxLength={10}
+          onPressEdit={() => onEditField(editField === "phone" ? null : "phone")}
+        />
+        <OutlinedField
+          label="Email"
+          value={email}
+          editable={editField === "email"}
+          onChangeText={onEmailChange}
+          keyboardType="email-address"
+          autoCapitalize="none"
+          onPressEdit={() => onEditField(editField === "email" ? null : "email")}
+        />
+      </ScrollView>
+
+      <View style={[styles.inviteFooter, { paddingBottom: bottomInset }]}>
+        <Pressable
+          style={[styles.sendBtn, saving && styles.sendBtnDisabled]}
+          disabled={saving}
+          onPress={onSave}
+        >
+          {saving ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.sendBtnText}>Save</Text>
+          )}
+        </Pressable>
+      </View>
+    </KeyboardAvoidingView>
+  );
+}
+
+function OutlinedField({
+  label,
+  value,
+  editable,
+  onChangeText,
+  onPressEdit,
+  keyboardType,
+  maxLength,
+  autoCapitalize,
+}: {
+  label: string;
+  value: string;
+  editable: boolean;
+  onChangeText: (t: string) => void;
+  onPressEdit: () => void;
+  keyboardType?: "default" | "number-pad" | "email-address";
+  maxLength?: number;
+  autoCapitalize?: "none" | "sentences";
+}) {
+  return (
+    <View style={styles.outlinedField}>
+      <Text style={styles.outlinedLabel}>{label}</Text>
+      <View style={styles.outlinedRow}>
+        <TextInput
+          style={styles.outlinedInput}
+          value={value}
+          editable={editable}
+          onChangeText={onChangeText}
+          keyboardType={keyboardType}
+          maxLength={maxLength}
+          autoCapitalize={autoCapitalize}
+          placeholderTextColor={C.textDim}
+        />
+        <Pressable onPress={onPressEdit} hitSlop={10} style={styles.outlinedEditBtn}>
+          <Ionicons name="pencil" size={16} color={C.blue} />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function InfoModal({
+  state,
+  onClose,
+}: {
+  state: InfoModalState;
+  onClose: () => void;
+}) {
+  if (!state) return null;
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.modalRoot}>
+        <Pressable style={styles.modalDim} onPress={onClose} />
+        <View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>{state.title}</Text>
+          <Text style={styles.modalMsg}>{state.message}</Text>
+          <Pressable style={styles.modalPrimaryBtn} onPress={onClose}>
+            <Text style={styles.modalPrimaryText}>OK</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function ConfirmModal({
+  state,
+  onCancel,
+}: {
+  state: ConfirmModalState;
+  onCancel: () => void;
+}) {
+  if (!state) return null;
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
+      <View style={styles.modalRoot}>
+        <Pressable style={styles.modalDim} onPress={onCancel} />
+        <View style={styles.modalCard}>
+          <Text style={styles.modalTitle}>{state.title}</Text>
+          <Text style={styles.modalMsg}>{state.message}</Text>
+          <View style={styles.modalActions}>
+            <Pressable style={styles.modalGhostBtn} onPress={onCancel}>
+              <Text style={styles.modalGhostText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={styles.modalPrimaryBtn}
+              onPress={() => {
+                state.onConfirm();
+              }}
+            >
+              <Text style={styles.modalPrimaryText}>{state.confirmLabel}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+/* ─── Styles ───────────────────────────────────────────────────────── */
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: GatiMitraMerchant.surfaceWarm },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center", padding: H_PADDING },
-  loadingText: { marginTop: 12, fontSize: 14, color: GatiMitraMerchant.textSecondary },
-  errorText: { marginTop: 12, fontSize: 15, color: GatiMitraMerchant.textSecondary, textAlign: "center" },
+  root: { flex: 1, backgroundColor: C.bg },
+  centered: { justifyContent: "center", alignItems: "center", padding: 24 },
+  loadingText: { marginTop: 12, color: C.textMuted, fontSize: 14 },
+  errorText: { marginTop: 12, color: C.textMuted, fontSize: 15, textAlign: "center" },
+  retryChip: {
+    marginTop: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: C.btnBlack,
+  },
+  retryChipText: { color: "#fff", fontWeight: "700" },
+
+  topBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: C.border,
+    backgroundColor: C.card,
+  },
+  topBarLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: C.border,
+    backgroundColor: C.card,
+  },
+  contactHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: C.border,
+    backgroundColor: C.card,
+  },
+  contactHeaderText: { flex: 1, minWidth: 0 },
+  headerLogoWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    overflow: "hidden",
+    backgroundColor: C.cardAlt,
+  },
+  headerLogo: { width: 36, height: 36 },
+  headerPermBtn: { paddingLeft: 4, maxWidth: 120 },
+  backBtn: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
+  topTitle: { color: C.text, fontSize: 17, fontWeight: "700" },
+  topTitleLeft: { color: C.text, fontSize: 17, fontWeight: "700" },
+  topSub: { color: C.textMuted, fontSize: 12, marginTop: 2 },
+  topLink: { color: C.blue, fontSize: 13, fontWeight: "600" },
 
   scroll: { flex: 1 },
-  scrollContent: { padding: H_PADDING, paddingBottom: 40 },
+  scrollContent: { paddingBottom: 40 },
 
-  sectionLabel: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.textSecondary, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.4 },
-  ownerCard: {
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderRadius: CARD_RADIUS,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    marginBottom: 14,
-    ...GatiMitraMerchant.shadowSm,
+  sectionBanner: {
+    backgroundColor: C.section,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    marginTop: 8,
   },
-  ownerRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  ownerAvatar: {
+  sectionBannerText: { color: C.textMuted, fontSize: 13, fontWeight: "600" },
+
+  personCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: C.card,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 12,
+  },
+  avatar: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
+    backgroundColor: C.cardAlt,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  avatarImg: { width: 44, height: 44 },
+  personBody: { flex: 1, minWidth: 0 },
+  personName: { color: C.text, fontSize: 15, fontWeight: "700" },
+  personLine: { color: C.textMuted, fontSize: 13, marginTop: 2 },
+  devicesLinkRow: { flexDirection: "row", alignItems: "center", gap: 2, marginTop: 6 },
+  devicesLink: { color: C.blue, fontSize: 13, fontWeight: "600" },
+  editBtn: { padding: 6 },
+
+  emptyBlock: { backgroundColor: C.card, paddingHorizontal: 16, paddingVertical: 18 },
+  emptyMsg: { color: C.textMuted, fontSize: 13 },
+  inviteNow: { color: C.blue, fontSize: 13, fontWeight: "700", marginTop: 8 },
+
+  fabWrap: { position: "absolute", right: 16, left: 16 },
+  fab: {
+    backgroundColor: C.btnBlack,
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  fabText: { color: "#fff", fontSize: 15, fontWeight: "700" },
+
+  inviteScroll: { padding: 16, paddingBottom: 120 },
+  phoneField: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: C.inputBorder,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    minHeight: 52,
+    backgroundColor: C.card,
+  },
+  /** Space between Full name and phone/email on Invite user. */
+  inviteFieldGap: {
+    marginBottom: 14,
+  },
+  ccRow: { flexDirection: "row", alignItems: "center", gap: 4, marginRight: 10 },
+  flag: { fontSize: 16 },
+  ccText: { color: C.text, fontSize: 15, fontWeight: "600" },
+  phoneInputFlex: { flex: 1, color: C.text, fontSize: 15, paddingVertical: 12 },
+  helper: { color: C.textDim, fontSize: 12, marginTop: 10, lineHeight: 17 },
+  inviteAlt: { color: C.blue, fontSize: 13, fontWeight: "700", marginTop: 12 },
+  roleBanner: {
+    backgroundColor: C.section,
+    marginHorizontal: -16,
+    marginTop: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  roleBannerText: { color: C.text, fontSize: 14, fontWeight: "700" },
+  roleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 16,
+    backgroundColor: C.card,
+    marginHorizontal: -16,
+    paddingHorizontal: 16,
+  },
+  roleRowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
+  roleRowLabel: { color: C.text, fontSize: 15, fontWeight: "600" },
+  radio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: C.textDim,
     alignItems: "center",
     justifyContent: "center",
   },
-  ownerTextWrap: { flex: 1 },
-  ownerName: { fontSize: 15, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
-  ownerPhone: { fontSize: 13, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
-  ownerEmail: { fontSize: 13, color: GatiMitraMerchant.textSecondary },
-  ownerMeta: { fontSize: 12, color: GatiMitraMerchant.textTertiary, marginTop: 2 },
+  radioOn: { borderColor: C.blue },
+  radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: C.blue },
+  inviteFooter: { padding: 16, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
+  sendBtn: {
+    backgroundColor: C.btnBlack,
+    borderRadius: 10,
+    minHeight: 50,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sendBtnDisabled: { backgroundColor: C.btnDisabled },
+  sendBtnText: { color: "#fff", fontSize: 15, fontWeight: "700" },
 
-  sectionHeaderRow: {
+  devicesScroll: { padding: 16, paddingBottom: 40 },
+  deviceProfileCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: C.card,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+  },
+  devicesHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     marginBottom: 8,
-    marginTop: 8,
   },
-  sectionHeaderLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
-  sectionTitle: { fontSize: 15, fontWeight: "700", color: GatiMitraMerchant.textPrimary },
-
-  addBtn: {
+  devicesCount: { color: C.text, fontSize: 15, fontWeight: "700" },
+  logoutAllLink: { color: C.redSoft, fontSize: 13, fontWeight: "700" },
+  devicesListCard: {
+    backgroundColor: C.card,
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+  deviceRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: BUTTON_RADIUS,
-    backgroundColor: GatiMitraMerchant.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
   },
-  addBtnPressed: { opacity: 0.9 },
-  addBtnText: { fontSize: 13, fontWeight: "600", color: "#fff" },
+  deviceRowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
+  deviceName: { color: C.text, fontSize: 14, fontWeight: "700" },
+  deviceMeta: { color: C.textMuted, fontSize: 12, marginTop: 4 },
+  logoutRowBtn: { flexDirection: "row", alignItems: "center", gap: 4 },
+  logoutRowText: { color: C.redSoft, fontSize: 13, fontWeight: "700" },
 
-  emptyCard: {
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderRadius: CARD_RADIUS,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    marginBottom: 14,
-    alignItems: "flex-start",
+  sheetRoot: { flex: 1, justifyContent: "flex-end" },
+  sheetDim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(15,23,42,0.45)" },
+  sheetCard: {
+    backgroundColor: C.card,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    maxHeight: "94%",
+    minHeight: "72%",
+    paddingTop: 8,
   },
-  emptyTitle: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.textPrimary, marginBottom: 4 },
-  emptySubtitle: { fontSize: 13, color: GatiMitraMerchant.textSecondary },
-
-  staffCard: {
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderRadius: CARD_RADIUS,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    marginBottom: 10,
-    ...GatiMitraMerchant.shadowSm,
-  },
-  staffMainRow: { flexDirection: "row", alignItems: "center" },
-  staffAvatar: { marginRight: 10 },
-  staffTextWrap: { flex: 1 },
-  staffName: { fontSize: 15, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
-  staffPhone: { fontSize: 13, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
-  staffMetaRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
-  rolePill: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 999,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-  },
-  rolePillText: { fontSize: 11, fontWeight: "700", color: GatiMitraMerchant.textSecondary },
-  staffMetaText: { fontSize: 11, color: GatiMitraMerchant.textTertiary },
-  staffActions: { flexDirection: "row", alignItems: "center", gap: 4, marginLeft: 8 },
-  iconBtn: { padding: 6, borderRadius: 18 },
-  iconBtnPressed: { backgroundColor: GatiMitraMerchant.surfaceSubtle },
-
-  sessionCard: {
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderRadius: CARD_RADIUS,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
-    marginBottom: 10,
-  },
-  sessionTopRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
-  sessionIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: GatiMitraMerchant.surfaceSubtle,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sessionTextWrap: { flex: 1 },
-  sessionDevice: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.textPrimary },
-  sessionMeta: { fontSize: 12, color: GatiMitraMerchant.textSecondary, marginTop: 2 },
-  sessionFooterRow: {
+  sheetHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
-  sessionStatus: { fontSize: 12, fontWeight: "600" },
-  sessionStatusActive: { color: GatiMitraMerchant.success },
-  sessionStatusInactive: { color: GatiMitraMerchant.textTertiary },
-  logoutBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: BUTTON_RADIUS,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.error,
+  sheetTitle: { color: C.text, fontSize: 17, fontWeight: "700" },
+  roleTabs: {
+    flexDirection: "row",
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: C.bg,
+    borderRadius: 12,
+    padding: 6,
   },
-  logoutBtnPressed: { backgroundColor: "#FEF2F2" },
-  logoutBtnText: { fontSize: 12, fontWeight: "600", color: GatiMitraMerchant.error },
-
-  logoutAllBtn: {
+  roleTab: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 12,
+    borderRadius: 10,
+    gap: 6,
+  },
+  roleTabOn: { backgroundColor: C.blue },
+  roleTabLabel: { color: C.textMuted, fontSize: 12, fontWeight: "700" },
+  roleTabLabelOn: { color: "#fff" },
+  permScroll: { maxHeight: 560, paddingHorizontal: 16 },
+  permRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.error,
+    paddingVertical: 14,
   },
-  logoutAllBtnPressed: { backgroundColor: "#FEF2F2" },
-  logoutAllText: { fontSize: 11, fontWeight: "600", color: GatiMitraMerchant.error },
-
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.4)",
+  permRowBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: C.border },
+  permTitle: { color: C.text, fontSize: 14, fontWeight: "700" },
+  permTitleOff: { color: C.textDim },
+  permDesc: { color: C.textMuted, fontSize: 12, marginTop: 3 },
+  permBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: "center",
     justifyContent: "center",
+  },
+  permBadgeOn: { backgroundColor: C.green },
+  permBadgeOff: { backgroundColor: "#52525B" },
+
+  otpCloseFloat: { alignItems: "center", marginBottom: 10 },
+  otpCloseBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.75)",
     alignItems: "center",
-    padding: 20,
+    justifyContent: "center",
   },
-  modalKeyboard: { width: "100%", maxWidth: 400 },
-  modalCard: {
-    width: "100%",
-    maxWidth: 400,
-    backgroundColor: GatiMitraMerchant.cardBg,
-    borderRadius: CARD_RADIUS,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
+  otpSheet: {
+    backgroundColor: C.card,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 20,
+    paddingTop: 20,
   },
-  modalTitle: { fontSize: 17, fontWeight: "700", color: GatiMitraMerchant.textPrimary, marginBottom: 10 },
-  fieldGroup: { marginBottom: 10 },
-  fieldLabel: { fontSize: 13, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
-  fieldInput: {
-    marginTop: 4,
+  otpTitle: {
+    color: C.text,
+    fontSize: 18,
+    fontWeight: "800",
+    textAlign: "center",
+    marginBottom: 14,
+  },
+  otpBody: { color: C.textMuted, fontSize: 13, marginBottom: 4 },
+  otpBoxes: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 20,
+    marginBottom: 10,
+    position: "relative",
+  },
+  otpBox: { width: 40, alignItems: "center" },
+  otpDigit: { color: C.text, fontSize: 22, fontWeight: "700", minHeight: 28 },
+  otpUnderline: { width: "100%", height: 2, backgroundColor: C.inputBorder, marginTop: 4 },
+  otpHiddenInput: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.02,
+    color: "transparent",
+  },
+  otpResendRow: { alignItems: "flex-end", marginBottom: 18 },
+  otpResend: { color: C.textDim, fontSize: 12 },
+  otpResendActive: { color: C.blue, fontSize: 12, fontWeight: "700" },
+
+  ownerPhotoRow: { alignItems: "center", marginBottom: 28, marginTop: 8 },
+  ownerPhoto: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: C.cardAlt,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  ownerPhotoImg: { width: 88, height: 88 },
+  outlinedField: {
     borderWidth: 1,
-    borderColor: GatiMitraMerchant.border,
+    borderColor: C.inputBorder,
     borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 15,
-    color: GatiMitraMerchant.textPrimary,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 8,
+    marginBottom: 16,
+    backgroundColor: C.card,
   },
-  modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: 10, marginTop: 10 },
-  modalBtn: {
+  outlinedLabel: {
+    position: "absolute",
+    top: -8,
+    left: 12,
+    paddingHorizontal: 4,
+    backgroundColor: C.bg,
+    color: C.textMuted,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  outlinedRow: { flexDirection: "row", alignItems: "center" },
+  outlinedInput: {
+    flex: 1,
+    color: C.text,
+    fontSize: 15,
+    fontWeight: "600",
     paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: BUTTON_RADIUS,
-    minWidth: 90,
+  },
+  outlinedEditBtn: { padding: 6 },
+
+  modalRoot: { flex: 1, justifyContent: "center", paddingHorizontal: 28 },
+  modalDim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(15,23,42,0.45)" },
+  modalCard: {
+    backgroundColor: C.card,
+    borderRadius: 14,
+    padding: 20,
+    zIndex: 2,
+  },
+  modalTitle: { color: C.text, fontSize: 17, fontWeight: "800", marginBottom: 8 },
+  modalMsg: { color: C.textMuted, fontSize: 14, lineHeight: 20, marginBottom: 18 },
+  modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: 10 },
+  modalGhostBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  modalGhostText: { color: C.textMuted, fontWeight: "700", fontSize: 14 },
+  modalPrimaryBtn: {
+    backgroundColor: C.btnBlack,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 8,
     alignItems: "center",
   },
-  modalBtnPrimary: { backgroundColor: GatiMitraMerchant.primary },
-  modalBtnSecondary: { backgroundColor: GatiMitraMerchant.surfaceSubtle },
-  modalBtnPrimaryText: { fontSize: 14, fontWeight: "600", color: "#fff" },
-  modalBtnSecondaryText: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.textSecondary },
-
-  pressed: { opacity: 0.8 },
+  modalPrimaryText: { color: "#fff", fontWeight: "700", fontSize: 14 },
 });
-

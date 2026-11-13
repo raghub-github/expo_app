@@ -21,7 +21,7 @@ export default async function MerchantVerificationsPage({
   const returnTo = params.returnTo?.trim() || null;
 
   return (
-    <div className="verification-typo w-full max-w-full overflow-x-hidden">
+    <div className={`${storeId ? "verification-typo" : "merchants-typo"} flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden`}>
       {storeId ? (
         <Suspense fallback={<VerificationPageSkeleton />}>
           <StoreVerificationInnerWrapper

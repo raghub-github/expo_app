@@ -3,7 +3,10 @@ import { CX } from "@/lib/appAssetKeys";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { enqueueImagePrefetchFront, prefetchImagesNow } from "@/lib/prefetchQueue";
 
-/** CMS images required for a fully painted home tab (no placeholder flash). */
+/**
+ * CMS images required for a complete first Home paint (services + hero + brand).
+ * Do not defer these — missing art after splash looks like a broken Home.
+ */
 export const HOME_CRITICAL_ASSET_KEYS = [
   CX.home.serviceFood,
   CX.home.serviceRide,
@@ -15,6 +18,9 @@ export const HOME_CRITICAL_ASSET_KEYS = [
   CX.home.promoOffer,
   CX.home.promoOffer2,
 ] as const;
+
+/** Reserved for truly secondary art (none currently — keep API stable). */
+export const HOME_DEFERRED_ASSET_KEYS = [] as const;
 
 function collectUrisForAsset(item: AppAssetItem | undefined, into: string[]): void {
   if (!item) return;

@@ -56,8 +56,8 @@ export async function refreshRiderLocationBeforeAccept(): Promise<"ok" | "skippe
       return "skipped";
     }
 
-    const result = await Promise.race([
-      (async (): Promise<"ok" | "failed"> => {
+    const acquireWork = (async (): Promise<"ok" | "failed"> => {
+      try {
         const acquired = await acquireAndCommitRiderLocation({
           assumeReady: false,
           requireFresh: true,
@@ -86,7 +86,18 @@ export async function refreshRiderLocationBeforeAccept(): Promise<"ok" | "skippe
         });
         riderDispatchLog("accept location refreshed");
         return "ok";
-      })(),
+      } catch (err) {
+        riderDispatchWarn("accept location refresh failed", {
+          message: err instanceof Error ? err.message : String(err),
+        });
+        return "failed";
+      }
+    })();
+    // Race loser must not become an unhandled rejection after the budget wins.
+    void acquireWork.catch(() => {});
+
+    const result = await Promise.race([
+      acquireWork,
       new Promise<"skipped">((resolve) =>
         setTimeout(() => resolve("skipped"), ACCEPT_LOCATION_REFRESH_MS)
       ),

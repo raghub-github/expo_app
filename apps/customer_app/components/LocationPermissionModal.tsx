@@ -43,7 +43,13 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
   const queryClient = useQueryClient();
   const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
   const promptLocationPermissionIfNeeded = useLocationStore((s) => s.promptLocationPermissionIfNeeded);
-  const { data: addresses = [], isPending: addressesPending } = useAddresses();
+  const {
+    data: addresses = [],
+    isLoading: addressesLoading,
+    isError: addressesError,
+    refetch: refetchAddresses,
+  } = useAddresses();
+  const showAddressesSpinner = addressesLoading && addresses.length === 0;
   const [enabling, setEnabling] = useState(false);
   const [selectingId, setSelectingId] = useState<number | null>(null);
 
@@ -241,10 +247,17 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
             </View>
 
             <View style={styles.addressList}>
-              {addressesPending && addresses.length === 0 ? (
+              {showAddressesSpinner ? (
                 <View style={styles.emptyWrap}>
                   <ActivityIndicator size="small" color={BRAND} />
                   <AppText style={styles.emptyText}>Loading saved addresses…</AppText>
+                </View>
+              ) : addressesError && visibleAddresses.length === 0 ? (
+                <View style={styles.emptyWrap}>
+                  <AppText style={styles.emptyText}>Could not load saved addresses</AppText>
+                  <TouchableOpacity onPress={() => void refetchAddresses()} activeOpacity={0.85}>
+                    <AppText style={styles.addAddressLink}>Retry</AppText>
+                  </TouchableOpacity>
                 </View>
               ) : visibleAddresses.length === 0 ? (
                 <View style={styles.emptyWrap}>

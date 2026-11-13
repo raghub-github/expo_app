@@ -15,6 +15,8 @@ import {
   getPaymentDetails,
   fetchRazorpayAccountMethods,
   createRazorpayUpiIntent,
+  createRazorpayQrCode,
+  closeRazorpayQrCode,
 } from "../../services/payment/razorpayService.js";
 import {
   defaultCheckoutPayMethods,
@@ -179,7 +181,7 @@ export async function paymentRoutes(app: FastifyInstance) {
             return reply.status(400).send({ error: "invalid_payload" });
           }
           try {
-            // Route by payment row source — parcel vs ride online QR.
+            // Route by payment row source — food checkout / parcel / ride online QR.
             const { ordersCorePayments } = await import("../../db/schema.js");
             const { eq } = await import("drizzle-orm");
             const [payLookup] = await db
@@ -187,9 +189,85 @@ export async function paymentRoutes(app: FastifyInstance) {
               .from(ordersCorePayments)
               .where(eq(ordersCorePayments.transactionId, qrId))
               .limit(1);
-            const source = String(
-              ((payLookup?.gatewayResponse ?? {}) as { source?: string }).source ?? ""
-            );
+            const gw = (payLookup?.gatewayResponse ?? {}) as {
+              source?: string;
+              pendingId?: string;
+              razorpayOrderId?: string;
+              amountPaise?: number;
+            };
+            const source = String(gw.source ?? "");
+            const notes =
+              (qrEntity?.notes as Record<string, unknown> | undefined) ??
+              (paymentEntity?.notes as Record<string, unknown> | undefined) ??
+              {};
+            const foodPendingId = String(
+              gw.pendingId ?? notes.pending_id ?? notes.pendingId ?? ""
+            ).trim();
+            const foodRazorpayOrderId = String(
+              gw.razorpayOrderId ?? notes.razorpay_order_id ?? notes.order_id ?? ""
+            ).trim();
+            const isFoodCheckoutQr =
+              source === "food_checkout_qr" || String(notes.source ?? "") === "food_checkout_qr";
+
+            if (isFoodCheckoutQr && foodPendingId && foodRazorpayOrderId && razorpayPaymentId) {
+              const expectedPaise = Number(gw.amountPaise ?? 0);
+              if (expectedPaise > 0 && amountPaise > 0 && Math.abs(expectedPaise - amountPaise) > 1) {
+                await logPaymentEvent(db, {
+                  eventType: "WEBHOOK_REJECTED_INVALID_PAYLOAD",
+                  source: "webhook",
+                  razorpayPaymentId,
+                  payload: {
+                    event,
+                    eventId,
+                    handler: "food_checkout_qr",
+                    reason: "amount_mismatch",
+                    expectedPaise,
+                    amountPaise,
+                  },
+                });
+                return reply.send({ ok: false, error: "amount_mismatch" });
+              }
+              const result = await finalizePendingOrderFromWebhook(db, {
+                razorpayOrderId: foodRazorpayOrderId,
+                razorpayPaymentId,
+                paymentMethod: "upi",
+                gatewayPayload: {
+                  verifiedBy: "razorpay_qr_webhook",
+                  event,
+                  qrId,
+                  pendingId: foodPendingId,
+                },
+              });
+              try {
+                await closeRazorpayQrCode(qrId);
+              } catch {
+                /* best-effort close after credit */
+              }
+              await markWebhookProcessed(db, eventId);
+              await logPaymentEvent(db, {
+                eventType: "WEBHOOK_HANDLED_OK",
+                source: "webhook",
+                razorpayPaymentId,
+                razorpayOrderId: foodRazorpayOrderId,
+                payload: {
+                  event,
+                  eventId,
+                  handler: "food_checkout_qr",
+                  finalizedOk: result.ok,
+                  finalizeCode: result.code ?? null,
+                  amountPaise,
+                  durationMs: Date.now() - startedAtMs,
+                },
+              });
+              if (result.ok) {
+                notifyCustomerPaymentSettled({
+                  razorpayOrderId: foodRazorpayOrderId,
+                  status: "SUCCESS",
+                });
+              }
+              return reply.send({ ok: result.ok, handler: "food_checkout_qr" });
+            }
+
             const isParcelQr = source === "parcel_online_qr";
             const res = isParcelQr
               ? await (
@@ -814,7 +892,7 @@ export async function paymentRoutes(app: FastifyInstance) {
           // Direct-online person-ride fare: the backend computes the authoritative
           // amount + durably anchors the attempt (RIDE_FARE_PAYMENT_INITIATED) so a
           // captured fare is recoverable if the client callback is lost.
-          purpose: z.enum(["ride_fare", "parcel_fare"]).optional(),
+          purpose: z.enum(["ride_fare", "parcel_fare", "checkout_qr"]).optional(),
           businessOrderId: z.string().max(64).optional(),
           /** parcel_fare only: GatiCash the customer applies; the gateway charges the rest. */
           gatiCashAmount: z.number().nonnegative().optional(),
@@ -827,6 +905,7 @@ export async function paymentRoutes(app: FastifyInstance) {
             currency: z.string(),
           }),
           400: z.object({ error: z.string(), message: z.string() }),
+          503: z.object({ error: z.string(), message: z.string() }),
         },
       },
     },
@@ -837,7 +916,7 @@ export async function paymentRoutes(app: FastifyInstance) {
           currency?: string;
           receipt?: string;
           pendingId?: string;
-          purpose?: "ride_fare" | "parcel_fare";
+          purpose?: "ride_fare" | "parcel_fare" | "checkout_qr";
           businessOrderId?: string;
           gatiCashAmount?: number;
         };
@@ -893,15 +972,25 @@ export async function paymentRoutes(app: FastifyInstance) {
         });
       }
 
+      // Scan QR Code always needs a real Razorpay Orders API id so webhook
+      // finalize can bind qr_code.credited → pending_orders. Never mint dummy_*.
+      const requireLiveGateway = purpose === "checkout_qr";
+      const hasRazorpayKeys = Boolean(env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET);
+      if (requireLiveGateway && !hasRazorpayKeys) {
+        return reply.status(503).send({
+          error: "RAZORPAY_NOT_CONFIGURED",
+          message: "Scan QR Code requires Razorpay API credentials on the server.",
+        });
+      }
+
       // Dummy mode: bypass Razorpay entirely. Returns synthetic order/key IDs
       // that the customer app recognizes (keyId starting with "dummy_") and
       // renders the Simulate Success / Failure sheet. The pending row still
       // gets razorpayOrderId set so the existing finalize flow + reconciler
-      // continue to work unchanged.
+      // continue to work unchanged. Skipped for checkout_qr (real QR only).
       const dummyModeActive =
-        env.PAYMENT_DUMMY_MODE ||
-        !env.RAZORPAY_KEY_ID ||
-        !env.RAZORPAY_KEY_SECRET;
+        !requireLiveGateway &&
+        (env.PAYMENT_DUMMY_MODE || !hasRazorpayKeys);
 
       if (dummyModeActive) {
         if (!env.PAYMENT_DUMMY_MODE && env.NODE_ENV !== "development") {
@@ -927,7 +1016,14 @@ export async function paymentRoutes(app: FastifyInstance) {
         amount,
         currency: currency ?? "INR",
         receipt: receipt ?? pendingId ?? `food_${Date.now()}`,
-        notes: pendingId ? { pending_id: pendingId } : {},
+        notes: pendingId
+          ? {
+              pending_id: pendingId,
+              ...(requireLiveGateway ? { source: "food_checkout_qr" } : {}),
+            }
+          : requireLiveGateway
+            ? { source: "food_checkout_qr" }
+            : {},
       });
       if (pendingId) {
         await markPendingOrderPaymentStarted(getDb(), {
@@ -937,7 +1033,7 @@ export async function paymentRoutes(app: FastifyInstance) {
       }
       return {
         orderId: order.id,
-        keyId: env.RAZORPAY_KEY_ID,
+        keyId: env.RAZORPAY_KEY_ID!,
         amount: order.amount,
         currency: order.currency,
       };
@@ -952,6 +1048,7 @@ export async function paymentRoutes(app: FastifyInstance) {
     logoKey: z.string(),
     upiApp: z.string().optional(),
     wallet: z.string().optional(),
+    upiFlow: z.enum(["intent", "qr", "collect"]).optional(),
   });
 
   /**
@@ -1006,6 +1103,212 @@ export async function paymentRoutes(app: FastifyInstance) {
         app.log.warn({ err }, "Razorpay methods fetch failed");
         return { dummy: false, sections: [] };
       }
+    }
+  );
+
+  /**
+   * Food checkout — Scan QR Code (REAL Razorpay only).
+   * Mobile Standard Checkout hides UPI QR under ~485px width, so we mint a
+   * Razorpay upi_qr via POST /v1/payments/qr_codes and return the gateway
+   * `image_url`. Settlement is webhook-only (`qr_code.credited` →
+   * finalizePendingOrderFromWebhook). Never mint local/dummy QR images.
+   *
+   * Auth: JWT is required by `await app.register(auth, { required: true })`
+   * above. Do not pass the `auth` plugin itself as `preHandler` (it is a
+   * Fastify plugin, not a hook handler). Customer role is re-checked here.
+   */
+  app.post(
+    "/checkout-qr",
+    {
+      schema: {
+        body: z.object({
+          pendingId: z.string().min(1).max(100),
+          razorpayOrderId: z.string().min(1).max(80),
+          amountPaise: z.number().int().positive(),
+        }),
+        response: {
+          200: z.object({
+            qrId: z.string(),
+            imageUrl: z.string().url(),
+            expiresAt: z.number().int(),
+            amountPaise: z.number().int(),
+            currency: z.literal("INR"),
+            status: z.string(),
+          }),
+          400: z.object({ error: z.string(), message: z.string() }),
+          401: z.object({ error: z.string(), message: z.string() }),
+          403: z.object({ error: z.string(), message: z.string() }),
+          502: z.object({ error: z.string(), message: z.string() }),
+          503: z.object({ error: z.string(), message: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const env = getEnv();
+      if (!req.auth?.sub || req.auth.role !== "customer") {
+        return reply.status(401).send({
+          error: "UNAUTHORIZED",
+          message: "Sign in to pay with Scan QR Code.",
+        });
+      }
+      if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+        return reply.status(503).send({
+          error: "RAZORPAY_NOT_CONFIGURED",
+          message: "Scan QR Code requires Razorpay API credentials on the server.",
+        });
+      }
+
+      const customerPk = await resolveCustomerPkForRequest(req.auth, req);
+      if (customerPk === null) {
+        return reply.status(403).send({
+          error: "FORBIDDEN",
+          message: "Sign in to pay.",
+        });
+      }
+
+      const { pendingId, razorpayOrderId, amountPaise } = req.body as {
+        pendingId: string;
+        razorpayOrderId: string;
+        amountPaise: number;
+      };
+
+      if (
+        razorpayOrderId.startsWith("dummy_") ||
+        razorpayOrderId.startsWith("order_dummy")
+      ) {
+        return reply.status(400).send({
+          error: "LIVE_ORDER_REQUIRED",
+          message: "Scan QR Code needs a live Razorpay order. Retry checkout.",
+        });
+      }
+
+      const db = getDb();
+      const [pending] = await db
+        .select({
+          pendingId: pendingOrders.pendingId,
+          customerId: pendingOrders.customerId,
+          grandTotal: pendingOrders.grandTotal,
+          gatiCashApplied: pendingOrders.gatiCashApplied,
+          razorpayOrderId: pendingOrders.razorpayOrderId,
+          paymentState: pendingOrders.paymentState,
+          finalizedOrderId: pendingOrders.finalizedOrderId,
+        })
+        .from(pendingOrders)
+        .where(
+          and(eq(pendingOrders.pendingId, pendingId), eq(pendingOrders.customerId, customerPk))
+        )
+        .limit(1);
+
+      if (!pending) {
+        return reply.status(400).send({
+          error: "PENDING_NOT_FOUND",
+          message: "Checkout session expired. Please try again.",
+        });
+      }
+      if (pending.finalizedOrderId || String(pending.paymentState ?? "").toUpperCase() === "PAID") {
+        return reply.status(400).send({
+          error: "ALREADY_PAID",
+          message: "This order is already paid.",
+        });
+      }
+
+      const grand = Number(pending.grandTotal ?? 0);
+      const gati = Number(pending.gatiCashApplied ?? 0);
+      const pendingPaise = Math.round(Math.max(0, grand - gati) * 100);
+      if (pendingPaise > 0 && Math.abs(pendingPaise - amountPaise) > 1) {
+        return reply.status(400).send({
+          error: "AMOUNT_MISMATCH",
+          message: "Payment amount no longer matches your bill.",
+        });
+      }
+      if (
+        pending.razorpayOrderId &&
+        String(pending.razorpayOrderId) !== razorpayOrderId
+      ) {
+        return reply.status(400).send({
+          error: "ORDER_MISMATCH",
+          message: "Payment session mismatch. Please retry checkout.",
+        });
+      }
+
+      const closeBy = Math.floor(Date.now() / 1000) + 15 * 60;
+      let qr: Awaited<ReturnType<typeof createRazorpayQrCode>>;
+      try {
+        qr = await createRazorpayQrCode({
+          amountPaise,
+          name: "GatiMitra",
+          description: `Food order ${pendingId}`,
+          closeBy,
+          notes: {
+            source: "food_checkout_qr",
+            pending_id: pendingId,
+            razorpay_order_id: razorpayOrderId,
+            customer_id: String(customerPk),
+          },
+        });
+      } catch (err) {
+        const rawStatus = Number((err as { statusCode?: number })?.statusCode ?? 502);
+        const code = String((err as { code?: string })?.code ?? "QR_CREATE_FAILED");
+        const message =
+          rawStatus === 400
+            ? ((err as Error)?.message || "Could not create QR for this amount.")
+            : "Razorpay could not create a QR Code. Please try again or use another UPI method.";
+        const statusCode: 400 | 502 | 503 =
+          rawStatus === 400 ? 400 : rawStatus === 401 || rawStatus === 403 || rawStatus === 503 ? 503 : 502;
+        console.warn(
+          "[checkout-qr] Razorpay create failed",
+          JSON.stringify({ pendingId, amountPaise, code, statusCode, rawStatus })
+        );
+        return reply.status(statusCode).send({
+          error: code,
+          message,
+        });
+      }
+
+      const imageUrl = String(qr.image_url ?? "").trim();
+      if (!qr.id || !imageUrl || !/^https?:\/\//i.test(imageUrl)) {
+        return reply.status(502).send({
+          error: "QR_INVALID_RESPONSE",
+          message: "Razorpay returned an incomplete QR Code. Please retry.",
+        });
+      }
+
+      const expiresAt =
+        typeof qr.close_by === "number" && qr.close_by > 0 ? qr.close_by : closeBy;
+
+      // orderId stays null until finalize — FK points at orders_core, not pending_id.
+      const { ordersCorePayments } = await import("../../db/schema.js");
+      await db.insert(ordersCorePayments).values({
+        orderId: null,
+        paymentGateway: "razorpay",
+        paymentMethod: "upi_qr",
+        transactionId: qr.id,
+        amount: String((amountPaise / 100).toFixed(2)),
+        currency: "INR",
+        paymentStatus: "INITIATED",
+        gatewayResponse: {
+          source: "food_checkout_qr",
+          qrId: qr.id,
+          imageUrl,
+          pendingId,
+          razorpayOrderId,
+          amountPaise,
+          currency: "INR",
+          closeBy: expiresAt,
+          usage: qr.usage,
+          status: qr.status,
+          paymentAmount: qr.payment_amount,
+        },
+      });
+
+      return {
+        qrId: qr.id,
+        imageUrl,
+        expiresAt,
+        amountPaise: Number(qr.payment_amount ?? amountPaise),
+        currency: "INR" as const,
+        status: String(qr.status ?? "active"),
+      };
     }
   );
 

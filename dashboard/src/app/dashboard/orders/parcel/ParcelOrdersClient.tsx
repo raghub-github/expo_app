@@ -8,6 +8,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, RefreshCw, Filter, User, Package } from "lucide-react";
 import { normalizeParcelSearchType } from "@/lib/orders/parcel-search";
 import { formatRiderOrderStatusDisplayLabel } from "@/lib/riders/rider-order-status-display";
+import { resolveParcelListStatus } from "@/lib/orders/parcel-order-list-status";
 import { loadClientSnapshot, saveClientSnapshot } from "@/lib/client-route-snapshot";
 import {
   endOrderListSearch,
@@ -86,8 +87,12 @@ const STATUS_BADGE: Record<string, { bg: string; text: string }> = {
 };
 
 function formatStatus(order: ParcelOrder): string {
-  const raw = order.currentStatus?.trim() || order.status?.trim() || "—";
-  return formatRiderOrderStatusDisplayLabel(raw, "parcel");
+  const { labelSource } = resolveParcelListStatus(order);
+  return formatRiderOrderStatusDisplayLabel(labelSource, "parcel");
+}
+
+function statusBadgeKey(order: ParcelOrder): string {
+  return resolveParcelListStatus(order).boardKey;
 }
 
 function formatVehicle(order: ParcelOrder): string {
@@ -554,7 +559,7 @@ export default function ParcelOrdersClient() {
               orders.map((order) => {
                 const publicId = displayOrderId(order);
                 const receiver = formatReceiver(order);
-                const statusKey = (order.status || "").toLowerCase();
+                const statusKey = statusBadgeKey(order);
                 const badge = STATUS_BADGE[statusKey] ?? { bg: "#F3F4F6", text: "#374151" };
 
                 return (

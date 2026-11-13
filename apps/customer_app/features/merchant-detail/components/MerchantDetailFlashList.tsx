@@ -16,6 +16,7 @@ import {
   type ListRenderItem,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ViewToken,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { AppText } from "@/components/AppText";
@@ -68,6 +69,10 @@ import {
   NATURAL_DECELERATION_RATE,
   SCROLL_FLING_VELOCITY_EPS,
 } from "@/lib/naturalScrollProps";
+import {
+  MENU_EAGER_IMAGE_COUNT,
+  prefetchMenuItemImagesAround,
+} from "@/lib/prefetchMenuItemImages";
 
 /**
  * Virtualized merchant menu.
@@ -172,9 +177,18 @@ export type MerchantDetailFlashListProps = {
   menu?: MenuItem[] | undefined;
 };
 
-/** Viewports kept mounted above + below the screen. Large enough that a fling never uncovers empty cells. */
-const MENU_WINDOW_SIZE = 31;
-const MENU_INITIAL_RENDER = Math.min(16, Math.max(8, Math.ceil(SCREEN_HEIGHT / 160)));
+/**
+ * FlatList windowing — enough for smooth fling, small enough that below-fold
+ * menu thumbs are not all decoded at once (was 31 ≈ multi-screen decode storm).
+ * Images still gate via ViewportGate; keep the native window modest.
+ */
+const MENU_WINDOW_SIZE = 9;
+const MENU_INITIAL_RENDER = Math.min(
+  MENU_EAGER_IMAGE_COUNT + 6,
+  Math.max(8, Math.ceil(SCREEN_HEIGHT / 160))
+);
+const MENU_MAX_RENDER_PER_BATCH = 6;
+const MENU_UPDATE_CELLS_MS = 50;
 
 const PINNED_HEADER_TYPES = new Set<MerchantFlashListItem["type"]>([
   "hero",
@@ -310,6 +324,18 @@ const MerchantDetailFlashListInner = forwardRef<
   listLengthRef.current = listItems.length;
 
   const dataLayoutKey = useMemo(() => data.map((row) => row.key).join("\0"), [data]);
+
+  /** First N classic menu rows — listIndex includes hero/chrome so do not use raw index. */
+  const eagerMenuItemKeys = useMemo(() => {
+    const keys = new Set<string>();
+    let n = 0;
+    for (const row of data) {
+      if (row.type !== "menu_item") continue;
+      keys.add(row.key);
+      if (++n >= MENU_EAGER_IMAGE_COUNT) break;
+    }
+    return keys;
+  }, [data]);
 
   const rebuildRowOffsets = useCallback(() => {
     rebuildScheduledRef.current = false;
@@ -665,6 +691,7 @@ const MerchantDetailFlashListInner = forwardRef<
             onBookmark={onBookmark}
             onShare={onShare}
             itemOffer={itemOffer}
+            eagerImage={eagerMenuItemKeys.has(item.key)}
           />
         );
       }
@@ -750,6 +777,39 @@ const MerchantDetailFlashListInner = forwardRef<
     }
   };
 
+  const menuPrefetchLastMinRef = useRef(-1);
+  const menuItemsForPrefetchRef = useRef<MenuItem[]>([]);
+  useEffect(() => {
+    menuItemsForPrefetchRef.current = menuForRecentlyRemoved ?? [];
+    menuPrefetchLastMinRef.current = -1;
+  }, [menuForRecentlyRemoved]);
+
+  const menuViewabilityConfig = useMemo(
+    () => ({
+      itemVisiblePercentThreshold: 1,
+      minimumViewTime: 40,
+    }),
+    []
+  );
+
+  const onMenuViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: ViewToken[]; changed: ViewToken[] }) => {
+      let minIdx = Number.POSITIVE_INFINITY;
+      for (const token of viewableItems) {
+        if (typeof token.index === "number" && token.index >= 0) {
+          minIdx = Math.min(minIdx, token.index);
+        }
+      }
+      if (!Number.isFinite(minIdx)) return;
+      if (minIdx === menuPrefetchLastMinRef.current) return;
+      menuPrefetchLastMinRef.current = minIdx;
+      // Warm only visible neighbourhood — never the full catalogue.
+      const menu = menuItemsForPrefetchRef.current;
+      const approxMenuIdx = Math.max(0, minIdx - 8);
+      prefetchMenuItemImagesAround(menu, approxMenuIdx, 4);
+    }
+  ).current;
+
   const renderItem = useCallback<ListRenderItem<MerchantFlashListItem>>(
     ({ item }) => (
       <View
@@ -799,6 +859,7 @@ const MerchantDetailFlashListInner = forwardRef<
       filtersActive,
       showHighlyReordered,
       showFlashDeal,
+      eagerMenuItemKeys,
     ]
   );
 
@@ -905,9 +966,11 @@ const MerchantDetailFlashListInner = forwardRef<
           removeClippedSubviews={false}
           windowSize={MENU_WINDOW_SIZE}
           initialNumToRender={MENU_INITIAL_RENDER}
-          maxToRenderPerBatch={16}
-          updateCellsBatchingPeriod={16}
+          maxToRenderPerBatch={MENU_MAX_RENDER_PER_BATCH}
+          updateCellsBatchingPeriod={MENU_UPDATE_CELLS_MS}
           onEndReachedThreshold={2}
+          viewabilityConfig={menuViewabilityConfig}
+          onViewableItemsChanged={onMenuViewableItemsChanged}
           contentContainerStyle={[styles.listContent, dark && styles.listContentDark, contentContainerStyle]}
           onScroll={scrollHandler}
           scrollEventThrottle={16}

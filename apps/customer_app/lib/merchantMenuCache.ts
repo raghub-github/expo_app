@@ -186,7 +186,10 @@ export async function fetchMerchantByIdWithCache(
     throw new Error("Merchant menu unavailable");
   }
   if (!searchInMenu?.trim()) {
-    await writeCachedMerchantMenu(merchantId, detail);
+    // Memory + React Query must resolve immediately — never await disk I/O before
+    // returning (that kept menu_loading skeletons up after the network already answered).
+    rememberInMemory(merchantId, detail);
+    void writeCachedMerchantMenu(merchantId, detail);
     void prefetchMenuItemImagesForMenu(detail.menu ?? []);
   }
   return detail;

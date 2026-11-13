@@ -4,11 +4,13 @@ import {
   type MerchantSummary,
 } from "@/services/merchant.service";
 import {
+  fetchMerchantByIdWithCache,
   hydrateMerchantMenuQuery,
   MERCHANT_DETAIL_GC_MS,
   MERCHANT_DETAIL_QUERY_KEY,
   MERCHANT_DETAIL_STALE_MS,
   readSyncMerchantMenu,
+  seedMerchantMenuQueryIfCached,
 } from "@/lib/merchantMenuCache";
 import { syncMerchantMenuInBackground } from "@/lib/merchantMenuSync";
 import { STORE_LIVE_STATUS_QUERY_KEY } from "@/hooks/useStoreDetailLiveStatus";
@@ -109,7 +111,8 @@ function prefetchMerchantHeroImage(merchant: MerchantDetail | MerchantSummary | 
 
 /**
  * Warm store page: memory-first instant render.
- * Full menu download only on first visit; revisits use version check + delta.
+ * Full menu download starts immediately on cold miss (pressIn / navigate) so the
+ * inner page does not sit on menu_loading skeletons after hero already painted.
  */
 export function prefetchMerchantDetail(
   queryClient: QueryClient,
@@ -117,7 +120,33 @@ export function prefetchMerchantDetail(
 ): void {
   if (!merchantId) return;
 
+  // Seed sync/disk cache into React Query first.
+  seedMerchantMenuQueryIfCached(queryClient, merchantId);
   void hydrateMerchantMenuQuery(queryClient, merchantId);
+
+  const cachedMenu = readSyncMerchantMenu(merchantId);
+  const hasMenu = (cachedMenu?.menu?.length ?? 0) > 0
+    || ((queryClient.getQueryData<MerchantDetail>(MERCHANT_DETAIL_QUERY_KEY(merchantId))?.menu?.length) ?? 0) > 0;
+
+  if (hasMenu) {
+    const detail =
+      queryClient.getQueryData<MerchantDetail>(MERCHANT_DETAIL_QUERY_KEY(merchantId)) ??
+      cachedMenu;
+    if (detail?.menu?.length) {
+      void prefetchMenuItemImagesForMenu(detail.menu);
+      prefetchMerchantHeroImage(detail);
+    }
+    // Cheap version check — does not block first paint.
+    void syncMerchantMenuInBackground(queryClient, merchantId);
+  } else {
+    // Cold open: start the same query the store page uses — ASAP, before route mount.
+    void queryClient.prefetchQuery({
+      queryKey: MERCHANT_DETAIL_QUERY_KEY(merchantId),
+      queryFn: () => fetchMerchantByIdWithCache(merchantId),
+      staleTime: MERCHANT_DETAIL_STALE_MS,
+      gcTime: MERCHANT_DETAIL_GC_MS,
+    });
+  }
 
   const { address, coords } = useLocationStore.getState();
   seedStoreOffersQueryIfCached(queryClient, merchantId, {
@@ -141,12 +170,4 @@ export function prefetchMerchantDetail(
     warmMerchantHeroImage(merchantId, resolveMerchantCarouselBannerUri(summary));
     prefetchMerchantHeroImage(summary);
   }
-
-  const cachedMenu = readSyncMerchantMenu(merchantId);
-  if (cachedMenu?.menu?.length) {
-    void prefetchMenuItemImagesForMenu(cachedMenu.menu);
-    prefetchMerchantHeroImage(cachedMenu);
-  }
-
-  void syncMerchantMenuInBackground(queryClient, merchantId);
 }

@@ -2,11 +2,13 @@
  * Zomato-style promo ad cards.
  * 2+ ads → 20s forward auto-slide loop (clone first after last = smooth, no jerk).
  * 1 ad → static.
+ *
+ * IMPORTANT: never setState in a way that re-triggers useFocusEffect (Maximum update depth).
+ * Focus is tracked with a ref; ads state only updates when the payload signature changes.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppState,
-  Image,
   Linking,
   Modal,
   Pressable,
@@ -18,6 +20,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
+import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useFocusEffect, useRouter } from "expo-router";
 import { AppText as Text } from "@/components/AppText";
@@ -26,7 +29,6 @@ import { subscribeMerchantHomeAdsRefresh } from "@/lib/merchantHomeAdsBus";
 import { openHomeAdRedirect } from "@/lib/openHomeAdRedirect";
 import {
   fetchMerchantHomeAds,
-  invalidateMerchantHomeAdsCache,
   peekMerchantHomeAds,
   type HomeAd,
 } from "@/services/homeAdsApi";
@@ -45,6 +47,15 @@ const CARD_GAP = 10;
 
 type SlideItem = { key: string; ad: HomeAd; realIndex: number; isClone: boolean };
 
+function adsSignature(ads: HomeAd[]): string {
+  return ads
+    .map(
+      (a) =>
+        `${a.id}:${a.sortOrder}:${a.title}:${a.ctaAction}:${a.imageUrl ?? ""}:${a.ctaLabel ?? ""}`
+    )
+    .join("|");
+}
+
 function AdCard({
   ad,
   width,
@@ -57,7 +68,13 @@ function AdCard({
   return (
     <View style={[styles.card, { width, height: CARD_H }]}>
       {ad.imageUrl ? (
-        <Image source={{ uri: ad.imageUrl }} style={styles.image} resizeMode="cover" />
+        <Image
+          source={{ uri: ad.imageUrl }}
+          style={styles.image}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          recyclingKey={`home-ad-${ad.id}`}
+        />
       ) : (
         <View style={[styles.image, styles.imageFallback]} />
       )}
@@ -97,7 +114,6 @@ export function HomeAdsStrip({ placement }: Props) {
   const [trackW, setTrackW] = useState(0);
   /** Dot / logical index into real ads (never the clone). */
   const [index, setIndex] = useState(0);
-  const [focused, setFocused] = useState(true);
 
   const scrollRef = useRef<ScrollView>(null);
   /** Current page in the scroll list (may be clone page). */
@@ -107,8 +123,65 @@ export function HomeAdsStrip({ placement }: Props) {
   const stepRef = useRef(0);
   const userPausedUntilRef = useRef(0);
   const resettingRef = useRef(false);
+  /** Avoid useFocusEffect ↔ setState infinite loops — never put this in effect deps. */
+  const focusedRef = useRef(true);
+  const placementRef = useRef(placement);
+  placementRef.current = placement;
+  const loadGenRef = useRef(0);
 
   adsLenRef.current = ads.length;
+
+  const applyAds = useCallback((next: HomeAd[]) => {
+    setAds((prev) => {
+      if (adsSignature(prev) === adsSignature(next)) return prev;
+      return next;
+    });
+    setIndex((i) => {
+      const clamped = next.length === 0 ? 0 : Math.min(i, next.length - 1);
+      pageRef.current = clamped;
+      return clamped;
+    });
+  }, []);
+
+  const load = useCallback(
+    async (force = false) => {
+      const gen = ++loadGenRef.current;
+      const place = placementRef.current;
+      try {
+        const next = await fetchMerchantHomeAds(place, { force });
+        if (gen !== loadGenRef.current) return;
+        applyAds(next);
+      } catch {
+        /* keep cached */
+      }
+    },
+    [applyAds]
+  );
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
+  // Stable focus callback — NEVER setState here (that re-subscribed focus and
+  // caused Maximum update depth / blank Orders screen).
+  useFocusEffect(
+    useCallback(() => {
+      focusedRef.current = true;
+      void loadRef.current(false);
+      return () => {
+        focusedRef.current = false;
+      };
+    }, [])
+  );
+
+  useEffect(() => {
+    void load(false);
+  }, [placement, load]);
+
+  useEffect(() => {
+    return subscribeMerchantHomeAdsRefresh(() => {
+      applyAds(peekMerchantHomeAds(placementRef.current));
+      void loadRef.current(true);
+    });
+  }, [applyAds]);
 
   const slides: SlideItem[] = useMemo(() => {
     if (ads.length === 0) return [];
@@ -121,7 +194,6 @@ export function HomeAdsStrip({ placement }: Props) {
       realIndex: i,
       isClone: false,
     }));
-    // Clone of first after last → last→first is a forward slide, then silent reset.
     real.push({
       key: `ad-${ads[0]!.id}-clone`,
       ad: ads[0]!,
@@ -138,41 +210,6 @@ export function HomeAdsStrip({ placement }: Props) {
     }
   }, []);
 
-  const load = useCallback(
-    async (force = false) => {
-      try {
-        const next = await fetchMerchantHomeAds(placement, { force });
-        setAds(next);
-        setIndex((i) => {
-          const clamped = next.length === 0 ? 0 : Math.min(i, next.length - 1);
-          pageRef.current = clamped;
-          return clamped;
-        });
-      } catch {
-        /* keep cached */
-      }
-    },
-    [placement]
-  );
-
-  useFocusEffect(
-    useCallback(() => {
-      setFocused(true);
-      // Drop stale CTA actions (e.g. share) so redirect updates apply immediately.
-      invalidateMerchantHomeAdsCache();
-      void load(true);
-      return () => setFocused(false);
-    }, [load])
-  );
-
-  useEffect(() => {
-    return subscribeMerchantHomeAdsRefresh(() => {
-      const peeked = peekMerchantHomeAds(placement);
-      setAds(peeked);
-      void load(true);
-    });
-  }, [load, placement]);
-
   const scrollToPage = useCallback((page: number, animated: boolean) => {
     const step = stepRef.current;
     if (step <= 0) return;
@@ -180,17 +217,15 @@ export function HomeAdsStrip({ placement }: Props) {
     pageRef.current = page;
   }, []);
 
-  /** After landing on clone of first, snap to real first with no animation. */
   const settleIfClone = useCallback(
     (page: number) => {
       const len = adsLenRef.current;
       if (len < 2) return;
-      // Clone page index === ads.length
       if (page === len) {
         resettingRef.current = true;
         scrollToPage(0, false);
         pageRef.current = 0;
-        setIndex(0);
+        setIndex((prev) => (prev === 0 ? prev : 0));
         requestAnimationFrame(() => {
           resettingRef.current = false;
         });
@@ -198,38 +233,36 @@ export function HomeAdsStrip({ placement }: Props) {
       }
       const real = Math.max(0, Math.min(len - 1, page));
       pageRef.current = real;
-      setIndex(real);
+      setIndex((prev) => (prev === real ? prev : real));
     },
     [scrollToPage]
   );
 
-  // 2+ ads → auto-slide every 20s forward (including last → first via clone).
   useEffect(() => {
-    if (ads.length < 2 || trackW <= 0 || !focused) return undefined;
+    if (ads.length < 2 || trackW <= 0) return undefined;
 
     const tick = () => {
+      if (!focusedRef.current) return;
       if (AppState.currentState !== "active") return;
       if (Date.now() < userPausedUntilRef.current) return;
       if (resettingRef.current) return;
       const len = adsLenRef.current;
       if (len < 2) return;
       const nextPage = pageRef.current + 1;
-      // pages: 0..len-1 real, len = clone of first
       const target = nextPage > len ? 0 : nextPage;
       scrollToPage(target, true);
       if (target === len) {
-        // Wait for slide to finish, then silent reset to page 0.
         setTimeout(() => settleIfClone(len), 320);
-        setIndex(0);
+        setIndex((prev) => (prev === 0 ? prev : 0));
       } else {
         pageRef.current = target;
-        setIndex(target);
+        setIndex((prev) => (prev === target ? prev : target));
       }
     };
 
     const id = setInterval(tick, AUTO_SLIDE_MS);
     return () => clearInterval(id);
-  }, [ads.length, trackW, focused, scrollToPage, settleIfClone]);
+  }, [ads.length, trackW, scrollToPage, settleIfClone]);
 
   useEffect(() => {
     if (trackW <= 0 || ads.length === 0) return;
@@ -259,7 +292,6 @@ export function HomeAdsStrip({ placement }: Props) {
         return;
       }
 
-      // Redirect (or in-app path) — never open the system share sheet.
       const inAppPath =
         url.startsWith("/") ||
         /^gatimitra:\/\//i.test(url) ||
@@ -270,7 +302,6 @@ export function HomeAdsStrip({ placement }: Props) {
         return;
       }
 
-      // Explicit share only
       if (action === "share") {
         const message = [ad.title, ad.body, url].filter(Boolean).join("\n");
         if (!message) return;
@@ -287,7 +318,6 @@ export function HomeAdsStrip({ placement }: Props) {
   if (ads.length === 0) return null;
 
   const multi = ads.length >= 2;
-  // 1 ad = full width; 2+ = leave NEXT_PEEK so the next card shows (Zomato-style).
   const cardW = trackW <= 0 ? 0 : multi ? Math.max(200, trackW - NEXT_PEEK) : trackW;
   const step = cardW > 0 ? cardW + CARD_GAP : 0;
   stepRef.current = step;
@@ -378,7 +408,6 @@ const styles = StyleSheet.create({
     width: "100%",
     marginBottom: 10,
   },
-  /** Break out of parent right padding so next-card peek reaches the screen edge. */
   wrapMulti: {
     marginRight: -H_PADDING,
   },

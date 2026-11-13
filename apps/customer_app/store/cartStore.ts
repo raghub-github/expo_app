@@ -175,6 +175,8 @@ const defaultState = {
 
 let cartPersistTimer: ReturnType<typeof setTimeout> | null = null;
 const CART_PERSIST_DEBOUNCE_MS = 180;
+/** Single-flight cold-start hydrate — RootLayout remounts must not double-read disk. */
+let cartHydrateInFlight: Promise<void> | null = null;
 
 async function writeCartToStorage(state: {
   merchantId: string | null;
@@ -795,51 +797,59 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   hydrate: async () => {
     if (get().hydrated) return;
-    try {
-      const raw = await getItem(STORAGE_KEYS.CART);
-      if (raw) {
-        const parsed = JSON.parse(raw) as {
-          merchantId: string | null;
-          merchantName: string | null;
-          merchantBannerUrl?: string | null;
-          merchantStoreType?: string | null;
-          items: CartItem[];
-          stashedCarts?: Record<string, StashedMerchantCart>;
-          lastUpdatedAt?: number;
-          deliveryAnchor?: CartDeliveryAnchor | null;
-        };
-        const hydratedItems = Array.isArray(parsed.items)
-          ? parsed.items.map((i) => hydrateCartLine(i))
-          : [];
-        const stashed =
-          parsed.stashedCarts && typeof parsed.stashedCarts === "object"
-            ? Object.fromEntries(
-                Object.entries(parsed.stashedCarts).map(([k, v]) => [
-                  k,
-                  {
-                    ...v,
-                    items: Array.isArray(v.items) ? v.items.map((i) => hydrateCartLine(i)) : [],
-                  },
-                ]),
-              )
-            : {};
-        set({
-          merchantId: parsed.merchantId ?? null,
-          merchantName: parsed.merchantName ?? null,
-          merchantBannerUrl: parsed.merchantBannerUrl ?? null,
-          merchantStoreType: parsed.merchantStoreType ?? null,
-          ...withCartItems(hydratedItems),
-          stashedCarts: stashed,
-          lastUpdatedAt: parsed.lastUpdatedAt ?? 0,
-          deliveryAnchor: parsed.deliveryAnchor ?? null,
-          hydrated: true,
-        });
-      } else {
+    if (cartHydrateInFlight) return cartHydrateInFlight;
+    cartHydrateInFlight = (async () => {
+      try {
+        const raw = await getItem(STORAGE_KEYS.CART);
+        if (raw) {
+          const parsed = JSON.parse(raw) as {
+            merchantId: string | null;
+            merchantName: string | null;
+            merchantBannerUrl?: string | null;
+            merchantStoreType?: string | null;
+            items: CartItem[];
+            stashedCarts?: Record<string, StashedMerchantCart>;
+            lastUpdatedAt?: number;
+            deliveryAnchor?: CartDeliveryAnchor | null;
+          };
+          // If the user mutated the cart while disk read was in flight, keep live state.
+          if (get().hydrated && get().lastUpdatedAt > 0) return;
+          const hydratedItems = Array.isArray(parsed.items)
+            ? parsed.items.map((i) => hydrateCartLine(i))
+            : [];
+          const stashed =
+            parsed.stashedCarts && typeof parsed.stashedCarts === "object"
+              ? Object.fromEntries(
+                  Object.entries(parsed.stashedCarts).map(([k, v]) => [
+                    k,
+                    {
+                      ...v,
+                      items: Array.isArray(v.items) ? v.items.map((i) => hydrateCartLine(i)) : [],
+                    },
+                  ]),
+                )
+              : {};
+          set({
+            merchantId: parsed.merchantId ?? null,
+            merchantName: parsed.merchantName ?? null,
+            merchantBannerUrl: parsed.merchantBannerUrl ?? null,
+            merchantStoreType: parsed.merchantStoreType ?? null,
+            ...withCartItems(hydratedItems),
+            stashedCarts: stashed,
+            lastUpdatedAt: parsed.lastUpdatedAt ?? 0,
+            deliveryAnchor: parsed.deliveryAnchor ?? null,
+            hydrated: true,
+          });
+        } else {
+          set({ hydrated: true });
+        }
+      } catch {
         set({ hydrated: true });
       }
-    } catch {
-      set({ hydrated: true });
-    }
+    })().finally(() => {
+      cartHydrateInFlight = null;
+    });
+    return cartHydrateInFlight;
   },
 
   persist: async () => {

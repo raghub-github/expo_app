@@ -16,6 +16,29 @@ import { getConfig } from "@/config/env";
 import { getSupabaseAuth, getSupabaseOtpEnvDebugInfo } from "@/lib/supabaseClient";
 import { getItem, setItem, removeItem } from "@/utils/storage";
 import { STORAGE_KEYS } from "@/constants";
+import {
+  fastGetString,
+  fastRemove,
+  fastSetString,
+  hydrateFastKvFromAsyncStorage,
+} from "@/lib/fastKv";
+
+/** Warm session into MMKV/memory ASAP so hydrate can sync-peek on cold start. */
+void hydrateFastKvFromAsyncStorage([STORAGE_KEYS.AUTH_SESSION]);
+
+function parseStoredSession(raw: string | null): Session | null {
+  if (!raw) return null;
+  try {
+    const session = JSON.parse(raw) as Session;
+    if (!session?.accessToken || !session?.userId) return null;
+    if (typeof session.expiresAt === "number" && session.expiresAt * 1000 <= Date.now()) {
+      return null;
+    }
+    return session;
+  } catch {
+    return null;
+  }
+}
 
 const AUTH_PREFIX = "/v1/auth";
 
@@ -278,10 +301,14 @@ export const authService = {
 
   async persistSession(session: Session): Promise<void> {
     await setItem(STORAGE_KEYS.AUTH_TOKEN, session.accessToken);
-    await setItem(STORAGE_KEYS.AUTH_SESSION, JSON.stringify(session));
+    const raw = JSON.stringify(session);
+    // Sync mirror for next cold start — splash must not wait on AsyncStorage.
+    fastSetString(STORAGE_KEYS.AUTH_SESSION, raw);
+    await setItem(STORAGE_KEYS.AUTH_SESSION, raw);
   },
 
   async clearSession(): Promise<void> {
+    fastRemove(STORAGE_KEYS.AUTH_SESSION);
     await removeItem(STORAGE_KEYS.AUTH_TOKEN);
     await removeItem(STORAGE_KEYS.AUTH_SESSION);
   },
@@ -290,21 +317,26 @@ export const authService = {
     await api.post("/v1/me/logout-all", {}, { timeout: 10000 });
   },
 
+  /** Sync peek — never touches AsyncStorage/SecureStore. */
+  peekStoredSessionSync(): Session | null {
+    return parseStoredSession(fastGetString(STORAGE_KEYS.AUTH_SESSION));
+  },
+
   async getStoredSession(): Promise<Session | null> {
+    const sync = this.peekStoredSessionSync();
+    if (sync) return sync;
+
     const raw = await getItem(STORAGE_KEYS.AUTH_SESSION);
-    if (!raw) return null;
-    try {
-      const session = JSON.parse(raw) as Session;
-      if (!session?.accessToken || !session?.userId) return null;
-      // Reject clearly expired local sessions before first paint.
-      if (typeof session.expiresAt === "number" && session.expiresAt * 1000 <= Date.now()) {
+    const session = parseStoredSession(raw);
+    if (!session) {
+      if (raw) {
+        // Expired / corrupt — clear disk so next launch is cheap.
         await this.clearSession();
-        return null;
       }
-      return session;
-    } catch {
       return null;
     }
+    fastSetString(STORAGE_KEYS.AUTH_SESSION, raw!);
+    return session;
   },
 
   /**

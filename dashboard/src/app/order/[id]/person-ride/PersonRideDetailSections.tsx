@@ -40,10 +40,10 @@ import {
   normalizeStatus,
 } from "./person-ride-utils";
 
-/** Food-order style compact card shell */
+/** Compact card shell — Lora via .person-ride-typo ancestor */
 function CompactCard({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-lg border border-[#e5e5e5] bg-white px-3 py-2 shadow-sm transition-all hover:border-neutral-300 hover:shadow-md">
+    <div className="rounded-xl border border-[#e5e5e5] bg-white px-3.5 py-3 shadow-sm transition-all hover:border-neutral-300 hover:shadow-md">
       {children}
     </div>
   );
@@ -59,8 +59,8 @@ function CardHeader({
   right?: ReactNode;
 }) {
   return (
-    <div className="mb-2 flex items-start justify-between gap-2 border-b border-[#e5e5e5] pb-1.5">
-      <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-900">
+    <div className="mb-2.5 flex items-start justify-between gap-2 border-b border-[#e5e5e5] pb-2">
+      <span className="pr-heading flex items-center gap-1.5 text-[13px] font-semibold text-slate-900">
         {icon}
         {title}
       </span>
@@ -71,7 +71,7 @@ function CardHeader({
 
 function Row({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="grid min-h-[20px] grid-cols-[96px_1fr] items-start gap-1">
+    <div className="grid min-h-[22px] grid-cols-[7.25rem_1fr] items-start gap-x-2 gap-y-0.5 py-0.5">
       <div className="pr-body text-[12px] font-medium" style={{ color: PR_MUTED }}>
         {label}
       </div>
@@ -418,7 +418,7 @@ export function PassengerCard({
           </>
         }
       />
-      <div className="grid gap-1">
+      <div className="grid gap-0.5">
         <Row
           label="Customer ID"
           value={
@@ -470,7 +470,7 @@ export function PassengerCard({
               <span className="inline-flex items-center gap-1.5">
                 <a
                   href={`tel:${phone}`}
-                  className="font-semibold hover:underline"
+                  className="pr-num font-semibold hover:underline"
                   style={{ color: PR_GREEN }}
                 >
                   {phone}
@@ -569,33 +569,8 @@ function DetailField({
   );
 }
 
-/** Food-style details card (beside live map): pickup / drop / OTP & trip meta. */
-export function TripDetailsCard({
-  order,
-}: {
-  order: PersonRideDetailOrder;
-}) {
+function rideDistanceMeta(order: PersonRideDetailOrder) {
   const ride = order.rideDetail;
-  const pickup =
-    order.pickupAddressNormalized?.trim() ||
-    order.pickupAddressRaw?.trim() ||
-    order.pickupAddressGeocoded?.trim() ||
-    "—";
-  const drop =
-    order.dropAddressNormalized?.trim() ||
-    order.dropAddressRaw?.trim() ||
-    order.dropAddressGeocoded?.trim() ||
-    "—";
-  const otp = ride?.pickupOtp?.trim() || null;
-  const locationMismatch =
-    order.distanceMismatchFlagged ||
-    (order.pickupAddressDeviationMeters ?? 0) > 800 ||
-    (order.dropAddressDeviationMeters ?? 0) > 800;
-  const scheduled = ride?.scheduledRide
-    ? ride.scheduledPickupTime
-      ? formatDateTime(ride.scheduledPickupTime)
-      : "Yes"
-    : null;
   const riderPayout = readRiderPayoutSnapshotFromBilling(order.billingSnapshot);
   const payoutPickupKm = riderPayout?.pickupDistanceKm ?? null;
   const payoutTripKm = riderPayout?.tripDistanceKm ?? null;
@@ -614,122 +589,152 @@ export function TripDetailsCard({
     formatDurationFromSeconds(order.etaSeconds) !== "—"
       ? formatDurationFromSeconds(order.etaSeconds)
       : formatEtaLabel(order.etaSeconds);
+  return { ride, pickupDistLabel, dropDistKm, durationLabel };
+}
+
+/** Parcel-style pickup card (separate from drop). */
+export function PickupCard({ order }: { order: PersonRideDetailOrder }) {
+  const { ride, pickupDistLabel, durationLabel } = rideDistanceMeta(order);
+  const pickup =
+    order.pickupAddressNormalized?.trim() ||
+    order.pickupAddressRaw?.trim() ||
+    order.pickupAddressGeocoded?.trim() ||
+    "—";
+  const pickupMismatch = (order.pickupAddressDeviationMeters ?? 0) > 800;
+  const scheduled = ride?.scheduledRide
+    ? ride.scheduledPickupTime
+      ? formatDateTime(ride.scheduledPickupTime)
+      : "Yes"
+    : null;
 
   return (
-    <div className="flex h-full flex-col rounded-lg border border-[#e5e5e5] bg-white px-3 py-2 shadow-sm">
-      <div className="mb-2 flex items-center justify-between gap-2 border-b border-[#e5e5e5] pb-1.5">
-        <span className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-900">
+    <CompactCard>
+      <CardHeader
+        icon={
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-[11px] font-semibold text-emerald-700">
-            ↕
+            P
           </span>
-          Ride details
-        </span>
-        {locationMismatch ? (
-          <span className="inline-flex rounded-full border border-red-100 bg-red-50 px-1.5 py-0.5 text-[10px] font-medium text-red-700">
-            Address mismatch
-          </span>
+        }
+        title="Pickup"
+        right={
+          pickupMismatch ? (
+            <span className="inline-flex rounded-full border border-red-100 bg-red-50 px-1.5 py-0.5 text-[9px] font-medium text-red-700">
+              Mismatch
+            </span>
+          ) : (
+            <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-700">
+              Pickup
+            </span>
+          )
+        }
+      />
+      <div className="space-y-0.5">
+        <Row label="Dist." value={<span className="pr-num">{pickupDistLabel}</span>} />
+        <Row label="ETA" value={<span className="pr-num">{durationLabel}</span>} />
+        <Row
+          label="Passengers"
+          value={<span className="pr-num">{ride?.passengerCount ?? 1}</span>}
+        />
+        <Row
+          label="Booked for"
+          value={ride?.bookedForSelf === false ? "Someone else" : "Self"}
+        />
+        {!ride?.bookedForSelf && order.customerName ? (
+          <Row label="Booked by" value={order.customerName} />
         ) : null}
-      </div>
+        <Row
+          label="Ride type"
+          value={formatLabel(ride?.rideType ?? ride?.vehicleTypeRequired)}
+        />
+        {scheduled ? (
+          <Row label="Scheduled" value={<span className="pr-num">{scheduled}</span>} />
+        ) : null}
 
-      <div className="grid flex-1 gap-3 sm:grid-cols-2">
-        {/* Col 1: Pickup + Drop */}
-        <div className="space-y-2.5 border-b border-slate-100 pb-2 sm:border-b-0 sm:border-r sm:pb-0 sm:pr-3">
-          <div className="grid grid-cols-2 gap-2">
-            <DetailField label="Pickup dist.">{pickupDistLabel}</DetailField>
-            <DetailField label="Drop dist.">{formatKm(dropDistKm)}</DetailField>
-          </div>
-
-          <div className="border-t border-slate-100 pt-2.5" />
-
-          <DetailField label="Pickup">
-            <span>{pickup}</span>
-          </DetailField>
-          <DetailField label="Pickup lat/lon">
-            {order.pickupLat != null && order.pickupLon != null ? (
-              <span className="inline-flex flex-wrap items-center gap-1.5">
-                <span className="pr-num text-[11px]">
-                  {order.pickupLat}, {order.pickupLon}
-                </span>
-                <MapLink lat={order.pickupLat} lon={order.pickupLon} />
+        <div className="mt-2.5 space-y-1.5 rounded-lg border border-emerald-100/80 bg-emerald-50/40 px-2.5 py-2">
+          <p className="pr-body text-[12px] leading-snug text-slate-700">{pickup}</p>
+          {order.pickupLat != null && order.pickupLon != null ? (
+            <div className="flex items-center gap-1.5">
+              <span className="pr-num text-[11px] text-slate-500">
+                {order.pickupLat.toFixed(5)}, {order.pickupLon.toFixed(5)}
               </span>
-            ) : (
-              "—"
-            )}
-          </DetailField>
-
-          <div className="border-t border-slate-100 pt-2.5" />
-
-          <DetailField label="Drop">
-            <span>{drop}</span>
-          </DetailField>
-          <DetailField label="Drop lat/lon">
-            {order.dropLat != null && order.dropLon != null ? (
-              <span className="inline-flex flex-wrap items-center gap-1.5">
-                <span className="pr-num text-[11px]">
-                  {order.dropLat}, {order.dropLon}
-                </span>
-                <MapLink lat={order.dropLat} lon={order.dropLon} />
-              </span>
-            ) : (
-              "—"
-            )}
-          </DetailField>
-        </div>
-
-        {/* Col 2: Total / Duration + unwrapped meta */}
-        <div className="space-y-2">
-          <DetailField label="Total trip distance" inline>
-            <span className="pr-num font-semibold">{formatKm(order.distanceKm)}</span>
-          </DetailField>
-          <DetailField label="Duration / ETA" inline>
-            <span className="pr-num">{durationLabel}</span>
-          </DetailField>
-
-          <div className="border-t border-slate-100 pt-2" />
-
-          <DetailField label="Pickup OTP" inline>
-            {otp ? (
-              <span className="inline-flex items-center rounded-md border border-dashed border-emerald-400 bg-emerald-50 px-2 py-0.5 pr-num text-[13px] font-bold tracking-[0.2em] text-emerald-800">
-                {otp}
-              </span>
-            ) : (
-              "—"
-            )}
-          </DetailField>
-          <DetailField label="Passengers" inline>
-            {ride?.passengerCount ?? 1}
-          </DetailField>
-          <DetailField label="Booked for" inline>
-            {ride?.bookedForSelf === false ? "Someone else" : "Self"}
-          </DetailField>
-          {!ride?.bookedForSelf && order.customerName ? (
-            <DetailField label="Booked by" inline>
-              {order.customerName}
-            </DetailField>
-          ) : null}
-          <DetailField label="Ride type" inline>
-            {formatLabel(ride?.rideType ?? ride?.vehicleTypeRequired)}
-          </DetailField>
-          <DetailField label="Account" inline>
-            {formatLabel(order.customerAccountStatus)}
-          </DetailField>
-          {ride?.returnTrip ? (
-            <DetailField label="Return trip" inline>
-              Yes
-            </DetailField>
-          ) : null}
-          {scheduled ? (
-            <DetailField label="Scheduled" inline>
-              {scheduled}
-            </DetailField>
-          ) : null}
-          {ride?.intermediateStopsCount ? (
-            <DetailField label="Stops" inline>
-              {ride.intermediateStopsCount}
-            </DetailField>
+              <MapLink lat={order.pickupLat} lon={order.pickupLon} />
+            </div>
           ) : null}
         </div>
       </div>
+    </CompactCard>
+  );
+}
+
+/** Parcel-style drop card (separate from pickup). */
+export function DropCard({ order }: { order: PersonRideDetailOrder }) {
+  const { dropDistKm } = rideDistanceMeta(order);
+  const ride = order.rideDetail;
+  const drop =
+    order.dropAddressNormalized?.trim() ||
+    order.dropAddressRaw?.trim() ||
+    order.dropAddressGeocoded?.trim() ||
+    "—";
+  const dropMismatch = (order.dropAddressDeviationMeters ?? 0) > 800;
+
+  return (
+    <CompactCard>
+      <CardHeader
+        icon={
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-sky-100 text-[11px] font-semibold text-sky-700">
+            D
+          </span>
+        }
+        title="Drop"
+        right={
+          dropMismatch ? (
+            <span className="inline-flex rounded-full border border-red-100 bg-red-50 px-1.5 py-0.5 text-[9px] font-medium text-red-700">
+              Mismatch
+            </span>
+          ) : (
+            <span className="rounded-full bg-sky-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-sky-700">
+              Drop
+            </span>
+          )
+        }
+      />
+      <div className="space-y-0.5">
+        <Row label="Drop dist." value={<span className="pr-num">{formatKm(dropDistKm)}</span>} />
+        <Row
+          label="Trip dist."
+          value={<span className="pr-num font-semibold">{formatKm(order.distanceKm)}</span>}
+        />
+        {ride?.returnTrip ? <Row label="Return trip" value="Yes" /> : null}
+        {ride?.intermediateStopsCount ? (
+          <Row
+            label="Stops"
+            value={<span className="pr-num">{ride.intermediateStopsCount}</span>}
+          />
+        ) : null}
+        <Row label="Account" value={formatLabel(order.customerAccountStatus)} />
+
+        <div className="mt-2.5 space-y-1.5 rounded-lg border border-sky-100/80 bg-sky-50/40 px-2.5 py-2">
+          <p className="pr-body text-[12px] leading-snug text-slate-700">{drop}</p>
+          {order.dropLat != null && order.dropLon != null ? (
+            <div className="flex items-center gap-1.5">
+              <span className="pr-num text-[11px] text-slate-500">
+                {order.dropLat.toFixed(5)}, {order.dropLon.toFixed(5)}
+              </span>
+              <MapLink lat={order.dropLat} lon={order.dropLon} />
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </CompactCard>
+  );
+}
+
+/** @deprecated Prefer PickupCard + DropCard (parcel parity). */
+export function TripDetailsCard({ order }: { order: PersonRideDetailOrder }) {
+  return (
+    <div className="grid h-full gap-2.5 sm:grid-cols-2">
+      <PickupCard order={order} />
+      <DropCard order={order} />
     </div>
   );
 }

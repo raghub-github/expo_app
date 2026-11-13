@@ -60,3 +60,50 @@ test("clearPendingCheckoutPayment removes the resume token", async () => {
   await clearPendingCheckoutPayment();
   assert.equal(await peekPendingCheckoutPayment(), null);
 });
+
+test("shouldResumePendingCheckoutConfirming only for in-flight payment states", async () => {
+  const { shouldResumePendingCheckoutConfirming } = await load();
+  assert.equal(shouldResumePendingCheckoutConfirming("created"), false);
+  assert.equal(shouldResumePendingCheckoutConfirming("failed"), false);
+  assert.equal(shouldResumePendingCheckoutConfirming("refunded"), false);
+  assert.equal(shouldResumePendingCheckoutConfirming("pending_confirmation"), true);
+  assert.equal(shouldResumePendingCheckoutConfirming("paid"), true);
+  assert.equal(shouldResumePendingCheckoutConfirming("captured_unfinalized"), true);
+});
+
+test("canResumeConfirmingAfterColdStart requires attempt for pending_confirmation", async () => {
+  const { canResumeConfirmingAfterColdStart } = await load();
+  // Scenario A: opened checkout / QR / Razorpay sheet but never paid.
+  assert.equal(
+    canResumeConfirmingAfterColdStart({ paymentUiOpened: true }, "pending_confirmation"),
+    false
+  );
+  assert.equal(
+    canResumeConfirmingAfterColdStart({}, "pending_confirmation"),
+    false
+  );
+  // Scenario B: genuine attempt recorded locally.
+  assert.equal(
+    canResumeConfirmingAfterColdStart(
+      { paymentAttemptInitiated: true },
+      "pending_confirmation"
+    ),
+    true
+  );
+  // Money already moved — resume even without local attempt flag (QR + kill).
+  assert.equal(canResumeConfirmingAfterColdStart({}, "paid"), true);
+  assert.equal(canResumeConfirmingAfterColdStart({}, "captured_unfinalized"), true);
+  assert.equal(canResumeConfirmingAfterColdStart({}, "created"), false);
+  assert.equal(canResumeConfirmingAfterColdStart({ paymentAttemptInitiated: true }, "failed"), false);
+});
+
+test("persist + peek round-trips paymentAttemptInitiated", async () => {
+  store = {};
+  const { persistPendingCheckoutPayment, peekPendingCheckoutPayment } = await load();
+  await persistPendingCheckoutPayment({
+    pendingId: "pend_attempt",
+    paymentAttemptInitiated: true,
+  });
+  const peeked = await peekPendingCheckoutPayment();
+  assert.equal(peeked?.paymentAttemptInitiated, true);
+});

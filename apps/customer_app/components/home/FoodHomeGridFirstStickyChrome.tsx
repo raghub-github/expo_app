@@ -20,6 +20,12 @@ import {
 } from "@/lib/gridFirstStickyLayout";
 
 const PAGE_BG = GatiMitraColors.softBackground;
+/**
+ * Snap sticky chrome early so JS onScroll lag during a fast fling never leaves a
+ * hole where the in-flow rail has already scrolled away (black/blank flash).
+ * Literals in worklets — Reanimated cannot read JS module consts on the UI thread.
+ */
+const STICK_EARLY_PX = 28;
 
 type Props = {
   scrollY: SharedValue<number>;
@@ -54,7 +60,7 @@ type Props = {
 function stickyOn(y: number, stickAt: number): boolean {
   "worklet";
   if (stickAt <= 1) return false;
-  return y >= stickAt;
+  return y >= gridFirstStickySnapY(stickAt, STICK_EARLY_PX);
 }
 
 export function FoodHomeGridFirstStickyChrome({
@@ -128,31 +134,35 @@ export function FoodHomeGridFirstStickyChrome({
     }
     const stickAt = searchStickAt.value;
     if (stickAt <= 1) {
-      return { opacity: 0, backgroundColor: "transparent", zIndex: -1 };
+      return { opacity: 0, backgroundColor: PAGE_BG, zIndex: -1 };
     }
-    const on = scrollY.value >= stickAt;
+    const snapY = gridFirstStickySnapY(stickAt, STICK_EARLY_PX);
+    const on = scrollY.value >= snapY;
     return {
       opacity: on ? 1 : 0,
-      backgroundColor: on ? PAGE_BG : "transparent",
+      backgroundColor: PAGE_BG,
       zIndex: on ? 32 : -1,
     };
   }, [pinAtRest]);
 
   const categoryBarStyle = useAnimatedStyle(() => {
     if (!enableCategorySticky) {
-      return { opacity: 0, backgroundColor: "transparent", zIndex: -1 };
+      return { opacity: 0, backgroundColor: PAGE_BG, zIndex: -1 };
     }
     if (pinAtRest) {
       return { opacity: 1, backgroundColor: PAGE_BG, zIndex: 31 };
     }
     const stickAt = categoryStickAt.value;
     if (stickAt <= 1) {
-      return { opacity: 0, backgroundColor: "transparent", zIndex: -1 };
+      return { opacity: 0, backgroundColor: PAGE_BG, zIndex: -1 };
     }
-    const on = scrollY.value >= stickAt;
+    // Early snap — sticky rail is painted before the in-flow row leaves the
+    // viewport, so a fast fling never shows a black hole.
+    const snapY = gridFirstStickySnapY(stickAt, STICK_EARLY_PX);
+    const on = scrollY.value >= snapY;
     return {
       opacity: on ? 1 : 0,
-      backgroundColor: on ? PAGE_BG : "transparent",
+      backgroundColor: PAGE_BG,
       zIndex: on ? 31 : -1,
     };
   }, [enableCategorySticky, pinAtRest]);
@@ -165,7 +175,7 @@ export function FoodHomeGridFirstStickyChrome({
     if (stickAt <= 1) {
       return { opacity: 0, backgroundColor: "transparent", zIndex: -1 };
     }
-    const snapY = gridFirstStickySnapY(stickAt, 8);
+    const snapY = gridFirstStickySnapY(stickAt, STICK_EARLY_PX);
     const handoff = 4;
     const opacity = interpolate(
       scrollY.value,
@@ -187,7 +197,9 @@ export function FoodHomeGridFirstStickyChrome({
       <Animated.View
         style={[styles.searchLayer, searchBarStyle, { top: 0 }]}
         pointerEvents={searchStickyOn ? "box-none" : "none"}
+        collapsable={false}
       >
+        <View style={styles.opaqueFill} pointerEvents="none" collapsable={false} />
         <View
           style={{
             paddingTop: searchTop,
@@ -224,6 +236,8 @@ export function FoodHomeGridFirstStickyChrome({
           pointerEvents={categoryStickyOn ? "box-none" : "none"}
           collapsable={false}
         >
+          {/* Opaque fill — covers the faded in-flow rail under the pin (no black hole). */}
+          <View style={styles.opaqueFill} pointerEvents="none" collapsable={false} />
           <View
             style={[
               styles.categoryInner,
@@ -259,6 +273,10 @@ const styles = StyleSheet.create({
   wrap: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 40,
+  },
+  opaqueFill: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: PAGE_BG,
   },
   searchLayer: {
     position: "absolute",

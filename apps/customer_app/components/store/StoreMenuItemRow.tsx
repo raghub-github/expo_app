@@ -27,9 +27,9 @@ import { useMenuItemCartQty } from "@/hooks/useMenuItemCartQty";
 import { isMenuItemImageReady, ensureMenuItemImageWarm } from "@/lib/prefetchMenuItemImages";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { sizedImageUrl } from "@/lib/imageSizing";
-import { isHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
 import { formatOfferRupee, computeCatalogDiscountPercent, resolveMenuOfferPriceDisplay, type ItemOfferDisplay } from "@/lib/itemOfferDisplay";
 import { MENU_ITEM_ROW_HEIGHT } from "@/features/merchant-detail/constants/layout";
+import { ViewportGate } from "@/components/ViewportGate";
 
 export type StoreMenuItemRowProps = {
   item: MenuItem;
@@ -50,6 +50,11 @@ export type StoreMenuItemRowProps = {
   onShare?: (item: MenuItem) => void;
   /** Live merchant offer for this item (Boost % / BOGO). */
   itemOffer?: ItemOfferDisplay | null;
+  /**
+   * Above-the-fold / first visible rows: mount image immediately at high priority.
+   * Below-fold: ViewportGate mounts near the viewport (RN stand-in for Intersection Observer).
+   */
+  eagerImage?: boolean;
 };
 
 const IMAGE_SIZE = 128;
@@ -91,6 +96,7 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   onBookmark,
   onShare,
   itemOffer = null,
+  eagerImage = false,
 }: StoreMenuItemRowProps) {
   const cartQty = useMenuItemCartQty(item.id, item.menuItemId, merchantId);
   const originalImageUri = useMemo(
@@ -110,14 +116,18 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
   const [imageFailed, setImageFailed] = useState(false);
   /** Once painted, never show the placeholder again — prevents scroll recycle flicker. */
   const [imagePainted, setImagePainted] = useState(() =>
-    !!(
-      imageUri &&
-      (isMenuItemImageReady(imageUri) || isHeroMediaSessionReady(imageUri))
-    )
+    !!(eagerImage && imageUri && isMenuItemImageReady(imageUri))
   );
   const warmedRef = useRef<string | null>(null);
 
   const isCustomisable = !!(item.hasVariants || item.hasAddons || item.hasCustomizations);
+
+  const warmImage = useCallback((uri: string | null | undefined) => {
+    if (!uri) return;
+    if (warmedRef.current === uri) return;
+    warmedRef.current = uri;
+    ensureMenuItemImageWarm(uri);
+  }, []);
 
   useEffect(() => {
     setUseOriginalImage(false);
@@ -127,11 +137,10 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
       setImagePainted(false);
       return;
     }
-    setImagePainted(isMenuItemImageReady(first) || isHeroMediaSessionReady(first));
-    if (warmedRef.current === first) return;
-    warmedRef.current = first;
-    ensureMenuItemImageWarm(first);
-  }, [sizedImageUri, originalImageUri]);
+    // Eager above-fold: skip shimmer when already decoded; still mount Image now.
+    setImagePainted(Boolean(eagerImage && isMenuItemImageReady(first)));
+    if (eagerImage) warmImage(first);
+  }, [sizedImageUri, originalImageUri, eagerImage, warmImage]);
 
   const handleImageError = useCallback(() => {
     if (
@@ -141,14 +150,12 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
       originalImageUri !== sizedImageUri
     ) {
       setUseOriginalImage(true);
-      setImagePainted(
-        isMenuItemImageReady(originalImageUri) || isHeroMediaSessionReady(originalImageUri)
-      );
-      ensureMenuItemImageWarm(originalImageUri);
+      setImagePainted(false);
+      warmImage(originalImageUri);
       return;
     }
     setImageFailed(true);
-  }, [useOriginalImage, originalImageUri, sizedImageUri]);
+  }, [useOriginalImage, originalImageUri, sizedImageUri, warmImage]);
 
   const outOfStock = item.inStock === false;
   const controlsDisabled = isStoreClosed || outOfStock;
@@ -384,27 +391,36 @@ export const StoreMenuItemRow = React.memo(function StoreMenuItemRow({
             ]}
           >
             <View style={styles.imageWrap} pointerEvents="none">
-              {!imagePainted ? (
-                showRemoteImage ? (
-                  <GMSkeleton style={StyleSheet.absoluteFill} />
-                ) : (
-                  <MenuItemImagePlaceholder />
-                )
-              ) : null}
-              {showRemoteImage ? (
-                <Image
-                  source={{ uri: imageUri! }}
-                  style={styles.image}
-                  contentFit="cover"
-                  cachePolicy="memory-disk"
-                  recyclingKey={`${item.listRowKey ?? item.id}:${useOriginalImage ? "raw" : "sized"}`}
-                  transition={0}
-                  priority="high"
-                  allowDownscaling
-                  onLoad={() => setImagePainted(true)}
-                  onError={handleImageError}
-                />
-              ) : null}
+              {!showRemoteImage ? (
+                <MenuItemImagePlaceholder />
+              ) : (
+                <ViewportGate
+                  eager={eagerImage}
+                  // Small lead so scroll feels instant — not so large that half the menu mounts.
+                  rootMargin={120}
+                  placeholderHeight={IMAGE_SIZE}
+                  style={styles.imageGate}
+                  placeholder={<GMSkeleton style={styles.imageSkeleton} />}
+                  onVisible={() => warmImage(imageUri)}
+                >
+                  <View style={styles.imageGateInner}>
+                    {!imagePainted ? <GMSkeleton style={styles.imageSkeleton} /> : null}
+                    <Image
+                      source={{ uri: imageUri! }}
+                      style={styles.image}
+                      contentFit="cover"
+                      cachePolicy="memory-disk"
+                      recyclingKey={`${item.listRowKey ?? item.id}:${useOriginalImage ? "raw" : "sized"}`}
+                      transition={0}
+                      priority={eagerImage ? "high" : "normal"}
+                      allowDownscaling
+                      onLoad={() => setImagePainted(true)}
+                      onDisplay={() => setImagePainted(true)}
+                      onError={handleImageError}
+                    />
+                  </View>
+                </ViewportGate>
+              )}
               {isStoreClosed ? <View style={styles.closedOverlay} /> : null}
               {isCustomisable ? (
                 <View style={styles.customisableOnImage} pointerEvents="none">
@@ -673,7 +689,20 @@ const styles = StyleSheet.create({
     height: IMAGE_SIZE,
     borderRadius: 12,
     overflow: "hidden",
-    backgroundColor: "#F3F4F6",
+    backgroundColor: "#eceff1",
+  },
+  imageGate: {
+    width: IMAGE_SIZE,
+    height: IMAGE_SIZE,
+  },
+  imageGateInner: {
+    width: IMAGE_SIZE,
+    height: IMAGE_SIZE,
+  },
+  imageSkeleton: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 12,
+    zIndex: 2,
   },
   image: {
     ...StyleSheet.absoluteFillObject,

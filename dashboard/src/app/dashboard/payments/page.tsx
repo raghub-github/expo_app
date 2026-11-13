@@ -7,7 +7,7 @@ export default async function PaymentsPage() {
   await requireSuperAdminAccess();
 
   return (
-    <div className="w-full min-w-0 max-w-full overflow-x-hidden px-4 pt-1 pb-4 sm:px-6 sm:pt-2">
+    <div className="flex h-full min-h-0 w-full max-w-full flex-1 flex-col overflow-hidden">
       <PaymentManagementClient />
     </div>
   );

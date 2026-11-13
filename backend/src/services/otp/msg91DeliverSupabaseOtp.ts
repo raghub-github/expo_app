@@ -213,7 +213,7 @@ export async function deliverSupabaseOtpViaMsg91(
   env: Env,
   phoneRaw: string,
   otp: string,
-  options?: { preferLegacyOtpApi?: boolean },
+  options?: { preferLegacyOtpApi?: boolean; tryAllChannels?: boolean },
 ): Promise<{ ok: true; channel: string } | { ok: false; error: string; attempts?: Msg91Attempt[] }> {
   const authKey = env.MSG91_AUTH_KEY?.trim();
   if (!authKey) {
@@ -234,6 +234,7 @@ export async function deliverSupabaseOtpViaMsg91(
   const otpExpiryMin = Math.max(1, Math.ceil((env.MSG91_OTP_EXPIRY_SEC ?? 300) / 60));
   const attempts: Msg91Attempt[] = [];
   const preferLegacyOtpApi = options?.preferLegacyOtpApi === true;
+  const tryAllChannels = options?.tryAllChannels === true;
 
   const tryChannel = async (
     attempt: Msg91Attempt,
@@ -292,15 +293,26 @@ export async function deliverSupabaseOtpViaMsg91(
 
   try {
     // Order matters. Callers that already know v5 lies for their account pass
-    // preferLegacyOtpApi:true to skip it.
-    const channelOrder = preferLegacyOtpApi
-      ? [tryFlowApi, tryLegacy, tryV2]
-      : [tryV5OtpApi, tryLegacy, tryFlowApi, tryV2];
+    // preferLegacyOtpApi:true to skip it. Prefer v2 transactional SMS first in
+    // that mode — v5 and legacy sendotp.php both return HTTP 200 "success"
+    // without delivering on our MSG91 account.
+    // tryAllChannels: fire every channel (v5/v2 often false-succeed). Used by
+    // merchant-action OTP so at least one real DLT path can still push SMS.
+    const channelOrder = tryAllChannels
+      ? [tryFlowApi, tryV5OtpApi, tryLegacy, tryV2]
+      : preferLegacyOtpApi
+        ? [tryFlowApi, tryLegacy, tryV2]
+        : [tryV5OtpApi, tryLegacy, tryFlowApi, tryV2];
 
+    let lastOk: { ok: true; channel: string } | null = null;
     for (const fn of channelOrder) {
       const result = await fn();
-      if (result) return result;
+      if (result) {
+        lastOk = result;
+        if (!tryAllChannels) return result;
+      }
     }
+    if (lastOk) return lastOk;
 
     const lastError =
       attempts.map((a) => `${a.channel}: ${a.error ?? "unknown"}`).join("; ") || "All MSG91 channels failed";

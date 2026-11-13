@@ -1,30 +1,54 @@
 /**
  * Cold-start shell gate: keep the branded splash covering until the first real
- * destination (Home / Login / Onboarding) has painted. Prevents the blank mint
+ * destination (Home / Login / Onboarding) has committed. Prevents the blank mint
  * flash between splash fade and Home mount.
  *
- * Module bridge + React subscription — RootLayout owns the boolean via
- * useSyncExternalStore so Fast Refresh remounts start clean without racing
- * Strict Mode double-effects against a sticky true flag.
+ * Survives Fast Refresh via globalThis — a module `let` used to be wiped on
+ * RootLayout remount AFTER Home had marked ready but BEFORE splash exited, which
+ * left the branded cover up for many seconds with no re-mark from surviving Home.
  */
 
 import { useCallback, useSyncExternalStore } from "react";
-import { startupMeasure } from "@/lib/startupPerf";
+import { startupLaunchLog, startupMeasure } from "@/lib/startupPerf";
 import { isSplashDeadlineHit, isSplashExited } from "@/lib/splashLifecycle";
 
-let shellReady = false;
-let shellReadyReason: string | null = null;
-const listeners = new Set<() => void>();
+type ShellGlobal = {
+  __gatimitraShellReady?: {
+    ready: boolean;
+    reason: string | null;
+    readyAtMs: number | null;
+    listeners: Set<() => void>;
+  };
+};
+
+function store() {
+  const g = globalThis as ShellGlobal;
+  if (!g.__gatimitraShellReady) {
+    g.__gatimitraShellReady = {
+      ready: false,
+      reason: null,
+      readyAtMs: null,
+      listeners: new Set(),
+    };
+  }
+  return g.__gatimitraShellReady;
+}
 
 function emit() {
-  listeners.forEach((l) => l());
+  store().listeners.forEach((l) => l());
 }
 
 export function markInitialShellReady(reason: string): void {
-  if (shellReady) return;
-  shellReady = true;
-  shellReadyReason = reason;
+  const s = store();
+  if (s.ready) return;
+  s.ready = true;
+  s.reason = reason;
+  s.readyAtMs = Date.now();
   startupMeasure("initial_shell_ready", "process_start");
+  startupLaunchLog("INITIAL_SHELL_READY", {
+    reason,
+    blocksHome: true,
+  });
   if (__DEV__) {
     // eslint-disable-next-line no-console
     console.log("[startup-perf] shell_ready_reason=", reason);
@@ -33,34 +57,37 @@ export function markInitialShellReady(reason: string): void {
 }
 
 export function isInitialShellReady(): boolean {
-  return shellReady;
+  return store().ready;
 }
 
 export function getInitialShellReadyReason(): string | null {
-  return shellReadyReason;
+  return store().reason;
 }
 
 /**
- * Clear for a new RootLayout instance.
- * @param opts.silent — no listener emit (required when clearing during render
- *   before useSyncExternalStore subscribe, to avoid "update while rendering").
+ * Clear for a true cold RootLayout construct only.
+ * Once shell has been ready this process, NEVER wipe — remount resets were the
+ * root cause of multi-second branded-cover holds after Home was already up.
  */
 export function resetInitialShellReady(
   reason = "reset",
   opts?: { silent?: boolean }
 ): void {
-  // Never wipe shell-ready after splash has armed/exited — Fast Refresh used to
-  // clear this mid-launch and re-cover Home with mint for tens of seconds.
-  if (isSplashExited() || isSplashDeadlineHit()) {
+  const s = store();
+  if (s.ready || isSplashExited() || isSplashDeadlineHit()) {
     if (__DEV__) {
       // eslint-disable-next-line no-console
-      console.log("[startup-perf] shell_ready_reset_skipped=", reason);
+      console.log("[startup-perf] shell_ready_reset_skipped=", reason, {
+        ready: s.ready,
+        splashExited: isSplashExited(),
+      });
     }
     return;
   }
-  if (!shellReady && shellReadyReason == null) return;
-  shellReady = false;
-  shellReadyReason = null;
+  if (!s.ready && s.reason == null) return;
+  s.ready = false;
+  s.reason = null;
+  s.readyAtMs = null;
   if (__DEV__) {
     // eslint-disable-next-line no-console
     console.log("[startup-perf] shell_ready_reset=", reason);
@@ -70,19 +97,24 @@ export function resetInitialShellReady(
 
 /** @deprecated use resetInitialShellReady */
 export function resetInitialShellReadyForTests(): void {
-  resetInitialShellReady("tests");
+  const s = store();
+  s.ready = false;
+  s.reason = null;
+  s.readyAtMs = null;
+  emit();
 }
 
 export function useInitialShellReady(): boolean {
   return useSyncExternalStore(
     (onStoreChange) => {
-      listeners.add(onStoreChange);
+      const s = store();
+      s.listeners.add(onStoreChange);
       return () => {
-        listeners.delete(onStoreChange);
+        s.listeners.delete(onStoreChange);
       };
     },
-    () => shellReady,
-    () => shellReady
+    () => store().ready,
+    () => store().ready
   );
 }
 

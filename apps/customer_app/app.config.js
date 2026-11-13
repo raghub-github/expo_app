@@ -205,6 +205,9 @@ module.exports = {
         process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN ||
         process.env.EXPO_PUBLIC_MAPBOX_PUBLIC_TOKEN ||
         "",
+      // Opt-in only: hold Home content skeletons after splash (ms). Unset/"0" = never force.
+      EXPO_PUBLIC_FORCE_HOME_SKELETON_MS:
+        process.env.EXPO_PUBLIC_FORCE_HOME_SKELETON_MS ?? null,
       eas: {
         ...(appJson.expo.extra?.eas && typeof appJson.expo.extra.eas === "object"
           ? appJson.expo.extra.eas

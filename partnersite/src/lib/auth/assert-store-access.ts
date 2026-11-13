@@ -192,6 +192,18 @@ export async function assertStoreAccess(storeIdParam: string | null): Promise<As
     phone: user.phone ?? null,
   })
 
+  if (
+    validation.isValid &&
+    validation.accessRole &&
+    validation.accessRole !== "OWNER" &&
+    validation.storeId != null
+  ) {
+    if (Number(storeRow.id) !== Number(validation.storeId)) {
+      return { ok: false, error: "This store is outside your staff access.", status: 403 };
+    }
+    return { ok: true, storeIdNum };
+  }
+
   // Canonical ownership: session merchant parent owns this store.
   // Prefer parent_id match over re-joining auth fields (avoids false 403s when
   // email/phone formatting differs but supabase_user_id already resolved the parent).

@@ -237,6 +237,16 @@ function DashboardLayoutClientInner({
         if (key.includes("bootstrap")) return false;
         if (root === "permissions" || root === "dashboard-access") return false;
 
+        // Soft-nav into a store: do not cancel that store's just-started ops/menu
+        // fetches (list → store used to abort them and leave Store Status on skeleton).
+        if (
+          nextStoreId &&
+          root === "merchant-store" &&
+          String(key[1] ?? "") === String(nextStoreId)
+        ) {
+          return false;
+        }
+
         return typeof root === "string" && prevRoots.includes(root);
       },
     });
@@ -743,6 +753,39 @@ function DashboardLayoutContent({
     [cleanPathname]
   );
 
+  /** All Merchants / Verifications list — contain scroll so filter + table header stay sticky. */
+  const isMerchantsAdminListPage = useMemo(() => {
+    const p = cleanPathname.replace(/\/$/, "") || "/";
+    if (p === "/dashboard/merchants") return true;
+    if (p === "/dashboard/merchants/verifications") {
+      return !searchParams.get("storeId");
+    }
+    return false;
+  }, [cleanPathname, searchParams]);
+
+  /** Users management list — pin filter under header + pagination at bottom. */
+  const isUsersManagementListPage = useMemo(() => {
+    const p = cleanPathname.replace(/\/$/, "") || "/";
+    return p === "/dashboard/users";
+  }, [cleanPathname]);
+
+  /** Payments management — same contain-scroll chrome as users/merchants lists. */
+  const isPaymentsManagementPage = useMemo(() => {
+    const p = cleanPathname.replace(/\/$/, "") || "/";
+    return p === "/dashboard/payments";
+  }, [cleanPathname]);
+
+  const isTransactionsPage = useMemo(() => {
+    const p = cleanPathname.replace(/\/$/, "") || "/";
+    return p === "/dashboard/transactions";
+  }, [cleanPathname]);
+
+  const isContainedScrollListPage =
+    isMerchantsAdminListPage ||
+    isUsersManagementListPage ||
+    isPaymentsManagementPage ||
+    isTransactionsPage;
+
   /** Ticket detail mounts the properties rail via RightSidebar; list/hub pages use filters/sub-nav instead.
    * Keep the rail mounted when merely collapsed so the expand chevron stays available. */
   const shouldRenderRightSidebar =
@@ -843,6 +886,8 @@ function DashboardLayoutContent({
                           ? "overflow-hidden bg-white p-0 sm:p-0"
                         : isMerchantStorePath
                           ? "overflow-hidden bg-[#f8fafc] p-0 sm:p-0"
+                        : isContainedScrollListPage
+                          ? "overflow-hidden bg-white p-3 sm:p-4"
                         : isTicketsHubGreyPage
                           ? "overflow-y-auto bg-[#f4f5f7] p-4 sm:p-6"
                           : isOrdersSectionPage
@@ -858,7 +903,9 @@ function DashboardLayoutContent({
                   >
                     <div
                       className={`relative flex min-h-0 w-full max-w-full min-w-0 flex-1 flex-col ${
-                        isAddChildPage || isParentOnboardingPage ? "h-full" : ""
+                        isAddChildPage || isParentOnboardingPage || isContainedScrollListPage
+                          ? "h-full"
+                          : ""
                       }`}
                     >
                       {children}

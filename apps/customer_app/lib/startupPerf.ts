@@ -29,9 +29,16 @@ export type LaunchMilestone =
   | "SPLASH_HIDE"
   | "HOME_FIRST_RENDER"
   | "LOCATION_PERMISSION_RESULT"
+  | "GPS_EARLY_KICK"
   | "GPS_FETCH_START"
   | "GPS_FETCH_DONE"
+  | "CACHED_LOCATION_RESTORE"
+  | "OS_LAST_KNOWN_FIX"
+  | "FIRST_FRESH_GPS_FIX"
+  | "ACCURATE_GPS_FIX"
+  | "REVERSE_GEOCODE_START"
   | "REVERSE_GEOCODE_DONE"
+  | "HOME_LOCATION_VISIBLE"
   | "HOME_LOCATION_UPDATED";
 
 export function startupLaunchLog(
@@ -40,6 +47,7 @@ export function startupLaunchLog(
 ): void {
   if (!__DEV__) return;
   const ageMs = Date.now() - PROCESS_START;
+  // Prefer callers to pass blocksHome: true|false for Home-critical stages.
   // eslint-disable-next-line no-console
   console.log(`[startup] ${milestone}`, { ageMs, ...extra });
 }

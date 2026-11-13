@@ -1,4 +1,5 @@
 "use client";
+import { useEffect } from "react";
 import { useAppPathname } from "@/hooks/useAppSearchParams";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -96,7 +97,7 @@ export function useStoreOperationsQuery(storeId: string | null) {
   const url = storeId ? `/api/merchant/stores/${storeId}/store-operations` : null;
   const seedOps = storeId ? placeholderStoreOperations(storeId) : undefined;
 
-  return useQuery({
+  const query = useQuery({
     queryKey: queryKeys.merchantStore.storeOperations(storeId ?? ""),
     queryFn: async () => {
       const data = await fetchJson(url!);
@@ -113,6 +114,18 @@ export function useStoreOperationsQuery(storeId: string | null) {
     refetchOnWindowFocus: true,
     refetchOnMount: true,
   });
+
+  // If a route-change cancel aborted the first fetch, RQ can sit pending+idle with no data
+  // (Store Status skeleton forever until poll/focus). Kick a recovery refetch.
+  useEffect(() => {
+    if (!storeId) return;
+    const ops = query.data as { operational_status?: unknown } | undefined;
+    if (ops?.operational_status != null) return;
+    if (!(query.isPending && query.fetchStatus === "idle")) return;
+    void query.refetch();
+  }, [storeId, query.data, query.isPending, query.fetchStatus, query.refetch]);
+
+  return query;
 }
 
 /** Dashboard/merchants page: aggregated stats (total, verified, pending, etc.). Cached 2min for fast revisit. */

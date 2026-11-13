@@ -329,7 +329,12 @@ async function getStateFoodHomeLayoutRow(stateId: string): Promise<{
   let gridFirstHeroMedia: GridFirstHeroMediaItem[] = [];
   if (layoutKey === "grid_first") {
     try {
-      gridFirstHeroMedia = parseGridFirstHeroMediaItems(row?.grid_first_hero_media);
+      gridFirstHeroMedia = parseGridFirstHeroMediaItems(row?.grid_first_hero_media).map(
+        (item) => ({
+          ...item,
+          url: toAbsoluteClientMediaUrl(item.url) ?? item.url,
+        })
+      );
     } catch {
       gridFirstHeroMedia = [];
     }

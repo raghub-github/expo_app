@@ -23,8 +23,6 @@ import type { GridFirstHeroMediaItem } from "@/lib/gridFirstHeroMedia";
 import type { HomeBannerOffer } from "@/services/offers.service";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
 import { prefetchFoodHomeImageUri, markHeroMediaSessionReady, isHeroMediaSessionReady } from "@/lib/prefetchGridFirstHeroMedia";
-import { FOOD_OFFERS_HERO_ROW_H } from "@/components/home/FoodOffersRibbonCarousel";
-
 import {
   GRID_FIRST_HEADER_OVERLAY_H,
   GRID_FIRST_HERO_WIDTH_RATIO,
@@ -186,13 +184,8 @@ const HeroMediaSlide = memo(function HeroMediaSlide({
   const playVideo = showVideo && isActive && shouldPlay;
   const sessionHit = isHeroMediaSessionReady(slide.mediaUrl);
   const lastGoodUrlRef = useRef<string | null>(sessionHit ? slide.mediaUrl : null);
-
-  useEffect(() => {
-    if (isHeroMediaSessionReady(slide.mediaUrl)) {
-      lastGoodUrlRef.current = slide.mediaUrl;
-      onMediaReady?.();
-    }
-  }, [slide.mediaUrl, slide.id, onMediaReady]);
+  // Never call onMediaReady from session cache alone — prefetch can mark the URI
+  // ready before this Image paints, which expanded a blank white hero band.
 
   const onImageLoad = useCallback(
     (_e: ImageLoadEventData) => {
@@ -311,11 +304,9 @@ export function FoodHomeHeroCarousel({
         prefetchFoodHomeImageUri(slide.mediaUrl);
       }
     }
-    // If any slide was already decoded this session, mark hero ready immediately.
-    if (slides.some((s) => isHeroMediaSessionReady(s.mediaUrl))) {
-      onHeroReadyChange?.(true);
-    }
-  }, [slides, onHeroReadyChange]);
+    // Do not mark ready from session cache here — layout expands only after
+    // the first slide's onLoad / video onReady (see onMediaReady).
+  }, [slides]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -364,13 +355,8 @@ export function FoodHomeHeroCarousel({
       prevFirstSlideIdRef.current = id;
       return;
     }
-    // Never hide a hero that already decoded this session (navigate away/back).
-    if (isHeroMediaSessionReady(firstSlide?.mediaUrl)) {
-      onHeroReadyChange?.(true);
-      prevFirstSlideIdRef.current = id;
-      return;
-    }
     prevFirstSlideIdRef.current = id;
+    // New first slide / empty — collapse until this mount's media paints.
     if (!id) onHeroReadyChange?.(false);
   }, [firstSlide?.id, firstSlide?.mediaUrl, allSlidesFailed, onHeroReadyChange]);
 
@@ -429,7 +415,7 @@ export function FoodHomeHeroCarousel({
           ))}
       </ScrollView>
       {slides.length > 1 ? (
-        <View style={[styles.dots, immersive && styles.dotsImmersive]}>
+        <View style={[styles.dots, styles.dotsOnMedia]}>
           {slides.map((s, i) => (
             <View key={s.id} style={[styles.dot, i === activeIndex && styles.dotActive]} />
           ))}
@@ -478,26 +464,23 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "center",
     gap: 5,
-    marginTop: 6,
-    marginBottom: 2,
   },
-  dotsImmersive: {
+  /** Pagination over the banner (Zomato-style) — never grows wrap height. */
+  dotsOnMedia: {
     position: "absolute",
-    bottom: FOOD_OFFERS_HERO_ROW_H + 6,
+    bottom: 10,
     left: 0,
     right: 0,
-    marginTop: 0,
-    marginBottom: 0,
     zIndex: 2,
   },
   dot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: "rgba(0,0,0,0.15)",
+    backgroundColor: "rgba(255,255,255,0.45)",
   },
   dotActive: {
     width: 16,
-    backgroundColor: GatiMitraColors.primaryMint,
+    backgroundColor: "#FFFFFF",
   },
 });

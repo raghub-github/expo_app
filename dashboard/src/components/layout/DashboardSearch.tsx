@@ -124,7 +124,14 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
   const merchantsHasSearched = merchantsSearch?.hasSearched ?? false;
   useEffect(() => {
     if (dashboardType === "MERCHANT") setLoading(false);
-  }, [pathname, queryString, dashboardType]);
+    // Assign-AM: no ?search= means no in-flight merchant search — drop stuck spinner
+    if (
+      pathname.startsWith("/dashboard/merchants/assign-am") &&
+      !searchParams.get("search")?.trim()
+    ) {
+      merchantsSearch?.setAssignAmSearchLoading(false);
+    }
+  }, [pathname, queryString, dashboardType, searchParams, merchantsSearch]);
 
   // Empty / completed merchant search must always release the header spinner,
   // even when the URL did not change (same wrong ID searched again).
@@ -154,6 +161,7 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
   // Render merchant-specific search with dropdowns
   if (dashboardType === "MERCHANT") {
     const isAssignAmPage = pathname.startsWith("/dashboard/merchants/assign-am");
+    const isVerificationsPage = pathname.startsWith("/dashboard/merchants/verifications");
     const searchButtonLoading = loading || (isAssignAmPage && (merchantsSearch?.assignAmSearchLoading ?? false));
     return (
       <div className={`flex items-center gap-2 ${compact ? "w-full max-w-md" : "w-full max-w-2xl"}`}>
@@ -161,21 +169,36 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
           e.preventDefault();
           const basePath = isAssignAmPage
             ? "/dashboard/merchants/assign-am"
-            : currentDashboard?.href || "/dashboard";
+            : isVerificationsPage
+              ? "/dashboard/merchants/verifications"
+              : currentDashboard?.href || "/dashboard";
           const normalized = normalizeMerchantSearch(localSearchValue, merchantType);
           if (!normalized) {
+            // Empty input — never start a search / spinner
+            if (isAssignAmPage) merchantsSearch?.setAssignAmSearchLoading(false);
+            else setLoading(false);
             const keep = new URLSearchParams(searchParams.toString());
             keep.delete("search");
             keep.delete("parent");
             keep.delete("child");
             if (currentPortal === "merchant") keep.set("portal", "merchant");
+            else if (isVerificationsPage) keep.set("portal", "admin");
             const qs = keep.toString();
             router.push(qs ? `${basePath}?${qs}` : basePath);
             return;
           }
-          // Show spinner immediately on click (before any async work)
-          if (isAssignAmPage) merchantsSearch?.setAssignAmSearchLoading(true);
-          else setLoading(true);
+          const currentSearch = (searchParams.get("search") || "").trim().toUpperCase();
+          const sameAssignAmSearch =
+            isAssignAmPage && currentSearch === normalized;
+
+          // Show spinner immediately on click (before any async work).
+          // Same Assign-AM query won't remount the effect — don't leave spinner stuck.
+          if (isAssignAmPage) {
+            if (sameAssignAmSearch) merchantsSearch?.setAssignAmSearchLoading(false);
+            else merchantsSearch?.setAssignAmSearchLoading(true);
+          } else {
+            setLoading(true);
+          }
 
           const params = new URLSearchParams(searchParams.toString());
           params.set("search", normalized);
@@ -185,8 +208,12 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
           if (merchantType === "parent") params.set("parent", "true");
           else params.set("child", "true");
           if (currentPortal === "merchant") params.set("portal", "merchant");
+          else if (isVerificationsPage) params.set("portal", "admin");
           setLocalSearchValue(normalized);
-          if (!pathname.startsWith("/dashboard/merchants/assign-am")) {
+          if (
+            !pathname.startsWith("/dashboard/merchants/assign-am") &&
+            !pathname.startsWith("/dashboard/merchants/verifications")
+          ) {
             merchantsSearch?.triggerMerchantSearch(normalized, merchantType);
           }
           router.push(`${basePath}?${params.toString()}`);
@@ -213,8 +240,20 @@ function DashboardSearchInner({ compact = false }: DashboardSearchProps) {
                 const value = e.target.value.toUpperCase();
                 setLocalSearchValue(value);
                 if (loading) setLoading(false);
-                if (!value.trim() && currentDashboard?.href) {
-                  router.replace(currentDashboard.href);
+                if (!value.trim()) {
+                  if (isAssignAmPage) merchantsSearch?.setAssignAmSearchLoading(false);
+                  const clearPath = isAssignAmPage
+                    ? "/dashboard/merchants/assign-am"
+                    : isVerificationsPage
+                      ? "/dashboard/merchants/verifications"
+                      : currentDashboard?.href;
+                  if (clearPath) {
+                    const keep = new URLSearchParams();
+                    if (currentPortal === "merchant") keep.set("portal", "merchant");
+                    else if (isVerificationsPage) keep.set("portal", "admin");
+                    const qs = keep.toString();
+                    router.replace(qs ? `${clearPath}?${qs}` : clearPath);
+                  }
                 }
               }}
               onKeyDown={handleKeyDown}

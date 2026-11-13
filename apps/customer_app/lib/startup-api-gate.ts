@@ -19,6 +19,9 @@ const GATE_BYPASS_URL_PARTS = [
   // Book screens must not wait behind home-layout / offers storms.
   "/v1/parcel/quote-batch",
   "/v1/rides/quote-batch",
+  // Select-location saved list must never queue behind home/layout prefetch.
+  "/v1/me/addresses",
+  "/v1/me/active-location",
 ];
 
 export function shouldBypassStartupGate(url: string | undefined): boolean {

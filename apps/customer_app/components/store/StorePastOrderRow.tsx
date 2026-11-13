@@ -259,7 +259,8 @@ const styles = StyleSheet.create({
   row: {
     width: "100%",
     flexDirection: "row",
-    alignItems: "flex-start",
+    // Keep ADD + centered vs thumb/text — flex-start left it sitting too high.
+    alignItems: "center",
     paddingVertical: 12,
   },
   rowPressed: {
@@ -391,8 +392,7 @@ const styles = StyleSheet.create({
     width: ACTION_W,
     flexShrink: 0,
     alignItems: "stretch",
-    justifyContent: "flex-start",
-    paddingTop: 2,
+    justifyContent: "center",
   },
   addStack: {
     width: ACTION_W,

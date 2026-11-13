@@ -370,6 +370,14 @@ public class OrderAlertForegroundService extends Service {
     if (sessionId != null) launch.putExtra("alertSessionId", sessionId);
     if (orderId != null) launch.putExtra("orderId", orderId);
     launch.putExtra("gmOverlayAction", "open");
+    // Merchant: tray tap / OPEN TO ACCEPT → Home New, never order-details.
+    if ("merchant".equals("{{ROLE}}")) {
+      try {
+        launch.setData(android.net.Uri.parse(OrderAlertActions.MERCHANT_HOME_NEW_ORDERS_URI));
+        launch.putExtra("gmOpenHomeNewOrders", "1");
+      } catch (Throwable ignored) {
+      }
+    }
 
     int flags = PendingIntent.FLAG_UPDATE_CURRENT;
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {

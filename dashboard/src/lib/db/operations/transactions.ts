@@ -445,10 +445,18 @@ const UNION_CTE = sql`
       spmt.payment_status::text AS status,
       CASE lower(COALESCE(spmt.payment_status::text,''))
         WHEN 'paid' THEN 'paid'
+        WHEN 'captured' THEN 'paid'
+        WHEN 'success' THEN 'paid'
+        WHEN 'completed' THEN 'paid'
         WHEN 'refunded' THEN 'refunded'
         WHEN 'refund_pending' THEN 'refund_pending'
         WHEN 'failed' THEN 'failed'
-        ELSE 'paid'
+        WHEN 'pending' THEN 'pending'
+        WHEN 'created' THEN 'created'
+        WHEN 'cancelled' THEN 'cancelled'
+        WHEN 'canceled' THEN 'cancelled'
+        WHEN '' THEN 'unknown'
+        ELSE 'unknown'
       END AS norm_status,
       COALESCE(spmt.payment_gateway,'razorpay') AS payment_mode,
       COALESCE(spmt.total_paise, ROUND(COALESCE(spmt.amount,0) * 100))::bigint AS gross_paise,
@@ -669,16 +677,66 @@ export function orderIdAliases(raw: string): string[] {
   return [...set];
 }
 
+/** Map raw payment/order status strings onto the canonical vocabulary. */
+function coerceNormStatus(raw: unknown): TxnNormStatus {
+  const s = String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+  if (!s) return "unknown";
+  if (
+    s === "paid" ||
+    s === "finalized" ||
+    s === "captured" ||
+    s === "success" ||
+    s === "completed" ||
+    s === "settled"
+  ) {
+    return "paid";
+  }
+  if (s === "pending" || s === "pending_confirmation" || s === "initiated" || s === "processing") {
+    return "pending";
+  }
+  if (s === "created") return "created";
+  if (s === "captured_unfinalized") return "captured_unfinalized";
+  if (s === "reconciliation_required") return "reconciliation_required";
+  if (s === "failed") return "failed";
+  if (s === "refund_pending") return "refund_pending";
+  if (s === "refunded" || s === "partially_refunded") return "refunded";
+  if (s === "refund_failed") return "refund_failed";
+  if (s === "cancelled" || s === "canceled") return "cancelled";
+  return "unknown";
+}
+
 /** Map one raw union row → normalized TransactionRow. Shared by list + detail. */
 function mapTxnRow(r: Record<string, unknown>): TransactionRow {
+  const rawStatus = String(r.status ?? "");
+  const fromSql = String(r.norm_status ?? "").trim().toLowerCase();
+  const known: TxnNormStatus[] = [
+    "created",
+    "pending",
+    "paid",
+    "captured_unfinalized",
+    "failed",
+    "reconciliation_required",
+    "refund_pending",
+    "refunded",
+    "refund_failed",
+    "cancelled",
+    "unknown",
+  ];
+  const normStatus = (known.includes(fromSql as TxnNormStatus)
+    ? (fromSql as TxnNormStatus)
+    : coerceNormStatus(rawStatus)) as TxnNormStatus;
+
   return {
     uid: String(r.uid),
     source: String(r.source),
     app: String(r.app) as TxnApp,
     service: String(r.service ?? ""),
     purpose: String(r.purpose ?? ""),
-    status: String(r.status ?? ""),
-    normStatus: String(r.norm_status ?? "unknown") as TxnNormStatus,
+    status: rawStatus,
+    normStatus,
     paymentMode: r.payment_mode != null ? String(r.payment_mode) : null,
     grossPaise: Number(r.gross_paise ?? 0),
     paidPaise: Number(r.paid_paise ?? 0),

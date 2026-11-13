@@ -32,6 +32,7 @@ import {
 } from "@/constants/theme";
 import { useStoreStatus } from "@/context/StoreStatusContext";
 import { useAuth } from "@/context/AuthContext";
+import { useRequirePartnerPermission } from "@/hooks/useRequirePartnerPermission";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useOrders, type OrderRecord } from "@/hooks/useOrders";
 import { LiveOrderCard } from "@/components/order/LiveOrderCard";
@@ -151,6 +152,7 @@ function formatTodayDate(): string {
 }
 
 export default function DashboardScreen() {
+  const homeAllowed = useRequirePartnerPermission("home", "/(tabs)/orders");
   const router = useRouter();
   const { push: navPush, pathname } = useMerchantNavigate();
   const { setReturnRoute } = useProfileNav();
@@ -158,9 +160,14 @@ export default function DashboardScreen() {
   const { selectedStore, managedStores } = useSelectedStore();
   const storeId = selectedStore?.id ?? null;
   const menuStoreId = selectedStore?.store_id ?? null;
+  // Skip heavy store hooks when redirecting staff away from Home.
   const { orders, refetch: refetchOrders, transitionOrder, extendPrepDelay, acceptanceWindowMinutes } = useOrders();
   const { isOnline, refresh } = useStoreStatus();
-  const { data: menuCatalog } = useMenuItems(menuStoreId, token, MENU_CATALOG_LIST_FILTERS);
+  const { data: menuCatalog } = useMenuItems(
+    homeAllowed ? menuStoreId : null,
+    homeAllowed ? token : null,
+    MENU_CATALOG_LIST_FILTERS
+  );
 
   const catalogItems = menuCatalog?.items ?? [];
   const hasCatalogItems = catalogItems.length > 0;
@@ -421,6 +428,8 @@ export default function DashboardScreen() {
       setRefreshing(false);
     }
   }, [refresh, refetchOrders, loadDashboardStats]);
+
+  if (!homeAllowed) return null;
 
   return (
     <View style={styles.screenWrap}>

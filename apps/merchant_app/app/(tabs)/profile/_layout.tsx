@@ -20,9 +20,8 @@ export default function ProfileLayout() {
       setOpenProfileRootOnNextFocus(false);
       setLastProfileSlug(null);
       clearReturnRoute();
-      if (router.canDismiss?.()) {
-        router.dismissAll();
-      }
+      // replace alone resets to Profile root — avoid dismissAll/POP_TO_TOP which
+      // throws when the stack has no screens to pop (dev redbox).
       router.replace("/(tabs)/profile");
     }, [openProfileRootOnNextFocus, setOpenProfileRootOnNextFocus, setLastProfileSlug, clearReturnRoute, router])
   );

@@ -1578,8 +1578,20 @@ export const MXPartnerTopBar: React.FC<MXPartnerTopBarProps> = ({
       } catch {
         /* ignore */
       }
+      // Stop in-flight React Query refetches that would 401 after cookies clear.
+      try {
+        queryClient.cancelQueries();
+        queryClient.clear();
+      } catch {
+        /* ignore */
+      }
       if (res.ok) {
         toast.success('Signed out from all devices');
+        // Hard navigation clears SPA state so dashboard hooks stop calling APIs.
+        if (typeof window !== 'undefined') {
+          window.location.href = '/auth';
+          return;
+        }
         router.push('/auth');
       } else {
         toast.error('Could not sign out everywhere. Try again.');

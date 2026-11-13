@@ -7,6 +7,7 @@ import { GatiMitraMerchant, H_PADDING, CARD_RADIUS, BUTTON_RADIUS } from "@/cons
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { getOutlet, updateOutlet, type OutletInfo } from "@/services/outletApi";
+import { partnerHasPermission } from "@/lib/staffPermissions";
 
 function isValidPhone(num: string): boolean {
   // Basic validation: 10–15 digits (can include + at start)
@@ -16,8 +17,9 @@ function isValidPhone(num: string): boolean {
 
 export default function ContactScreen() {
   const { selectedStore } = useSelectedStore();
-  const { token } = useAuth();
+  const { token, partner } = useAuth();
   const router = useRouter();
+  const canManageUsers = partnerHasPermission(partner, "users");
   const storeId = selectedStore?.id ?? null;
 
   const [outlet, setOutlet] = useState<OutletInfo | null>(null);
@@ -231,6 +233,7 @@ export default function ContactScreen() {
         </View>
 
         {/* Staff contact management */}
+        {canManageUsers ? (
         <View style={styles.card}>
           <Pressable
             onPress={() => router.push("/(tabs)/profile/staff" as any)}
@@ -248,6 +251,7 @@ export default function ContactScreen() {
             <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
           </Pressable>
         </View>
+        ) : null}
       </ScrollView>
 
       <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => setModalVisible(false)}>

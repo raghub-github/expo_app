@@ -62,10 +62,20 @@ export function isOwnedByActiveCustomer(ownerId: string | null | undefined): boo
   return !!ownerId && ownerId === active;
 }
 
+let scopeHydratePromise: Promise<void> | null = null;
+
 export async function hydrateCustomerScopeFromStorage(): Promise<void> {
-  await hydrateFastKvFromAsyncStorage([SCOPE_KEY]);
-  hydrated = false;
-  hydrateSync();
+  // Single-flight — auth hydrate + module boot used to stampede AsyncStorage.
+  if (!scopeHydratePromise) {
+    scopeHydratePromise = (async () => {
+      await hydrateFastKvFromAsyncStorage([SCOPE_KEY]);
+      hydrated = false;
+      hydrateSync();
+    })().catch(() => {
+      hydrateSync();
+    });
+  }
+  await scopeHydratePromise;
 }
 
 void hydrateCustomerScopeFromStorage();

@@ -2,7 +2,10 @@ import { useEffect, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { STORAGE_KEYS } from "@/constants";
 import { fetchCustomerAppAssets, type AppAssetItem } from "@/services/appAssets.service";
-import { prefetchCriticalHomeAssetImages } from "@/lib/homeCriticalAssets";
+import {
+  prefetchCriticalHomeAssetImages,
+  prefetchCriticalHomeAssetImagesSync,
+} from "@/lib/homeCriticalAssets";
 import { prefetchCriticalRideAssetImages } from "@/lib/rideCriticalAssets";
 import { readSyncAppAssets } from "@/lib/appAssetsCache";
 import { hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
@@ -31,8 +34,9 @@ function prefetchRemainingAssetUrls(assets: Record<string, AppAssetItem>) {
 function warmFromStoreAssets() {
   const seeded = useAppAssetsStore.getState().assets;
   if (Object.keys(seeded).length === 0) return;
-  // Mark ready immediately so home isn't gated; warm cache in background.
+  // Mark ready immediately so home isn't gated; queue critical decode sync first.
   useAppAssetsStore.getState().setHomeImagesPrefetched(true);
+  prefetchCriticalHomeAssetImagesSync(seeded);
   void (async () => {
     await prefetchCriticalHomeAssetImages(seeded);
     void prefetchCriticalRideAssetImages(seeded);
@@ -52,6 +56,20 @@ async function loadAppAssets(): Promise<boolean> {
   return true;
 }
 
+/** Sync seed once at import — Home must not wait for effect/network for cached art. */
+(function seedAppAssetsFromDiskSync() {
+  try {
+    if (Object.keys(useAppAssetsStore.getState().assets).length > 0) return;
+    const cached = readSyncAppAssets();
+    if (cached) {
+      useAppAssetsStore.getState().setAssets(cached);
+      useAppAssetsStore.getState().setHomeImagesPrefetched(true);
+    }
+  } catch {
+    /* ignore */
+  }
+})();
+
 /** Load customer app static images from backend on startup (seed from disk first). */
 export function AppAssetsPrefetch() {
   const setLoading = useAppAssetsStore((s) => s.setLoading);
@@ -66,7 +84,13 @@ export function AppAssetsPrefetch() {
     let removeAppState: (() => void) | undefined;
 
     const bootstrap = async () => {
-      // Expo Go: hydrate AsyncStorage → memory so cached ride icons paint before network.
+      // Paint from sync MMKV/memory first, then upgrade AsyncStorage → memory on Expo Go.
+      if (Object.keys(useAppAssetsStore.getState().assets).length === 0) {
+        const cached = readSyncAppAssets();
+        if (cached) useAppAssetsStore.getState().setAssets(cached);
+      }
+      if (!cancelled) warmFromStoreAssets();
+
       await hydrateFastKvFromAsyncStorage([STORAGE_KEYS.APP_ASSETS_CACHE]);
       if (cancelled) return;
       if (Object.keys(useAppAssetsStore.getState().assets).length === 0) {

@@ -10,11 +10,9 @@ import {
   prefetchImageUriNow,
 } from "@/lib/prefetchQueue";
 
-/** First screen of menu rows — warm these before the rest of the queue. */
-const PRIORITY_PREFETCH_COUNT = 12;
-
-/** Background queue after priority batch. */
-const BACKGROUND_PREFETCH_COUNT = 24;
+/** First screen of menu rows — warm these only. Rest wait for viewport / scroll. */
+export const MENU_EAGER_IMAGE_COUNT = 6;
+const PRIORITY_PREFETCH_COUNT = MENU_EAGER_IMAGE_COUNT;
 
 /** Matches StoreMenuItemRow thumbnail width so store-open hits memory-disk. */
 const MENU_ROW_IMAGE_WIDTH = 128;
@@ -50,18 +48,18 @@ function collectMenuImageUris(menu: MenuItem[]): string[] {
 }
 
 export function prefetchMenuItemImages(menu: MenuItem[]): void {
-  enqueueImagePrefetch(collectMenuImageUris(menu), BACKGROUND_PREFETCH_COUNT);
+  // Above-fold only — never dump the whole catalogue into the download queue.
+  enqueueImagePrefetch(collectMenuImageUris(menu), PRIORITY_PREFETCH_COUNT);
 }
 
-/** Priority batch awaited (above-fold), the rest jumped to the front of the queue. */
+/**
+ * Warm only the first viewport of menu thumbnails.
+ * Below-fold images load when ViewportGate / viewability brings them near screen.
+ */
 export async function prefetchMenuItemImagesForMenu(menu: MenuItem[]): Promise<void> {
   const uris = collectMenuImageUris(menu);
   if (uris.length === 0) return;
-
   const priority = uris.slice(0, PRIORITY_PREFETCH_COUNT);
-  const rest = uris.slice(PRIORITY_PREFETCH_COUNT);
-  // Start the first screen immediately, and put the next rows ahead of home banners.
-  enqueueImagePrefetchFront(rest, BACKGROUND_PREFETCH_COUNT);
   await prefetchImagesNow(priority, PRIORITY_PREFETCH_COUNT);
 }
 
@@ -70,4 +68,27 @@ export function ensureMenuItemImageWarm(uri: string | null | undefined): void {
   if (!uri?.trim()) return;
   const resolved = toAbsoluteImageUrl(uri) ?? uri;
   void prefetchImageUriNow(resolved);
+}
+
+/**
+ * Predictive prefetch from FlatList viewability — warm visible + next rows only.
+ * Does not download the entire menu catalogue.
+ */
+export function prefetchMenuItemImagesAround(
+  menu: MenuItem[],
+  fromIndex: number,
+  ahead = 6
+): void {
+  if (!menu.length) return;
+  const start = Math.max(0, fromIndex);
+  const end = Math.min(menu.length, start + ahead + 1);
+  const uris: string[] = [];
+  const seen = new Set<string>();
+  for (let i = start; i < end; i++) {
+    const uri = resolveMenuImageUri(menu[i]?.imageUrl);
+    if (!uri || seen.has(uri)) continue;
+    seen.add(uri);
+    uris.push(uri);
+  }
+  if (uris.length) enqueueImagePrefetchFront(uris, uris.length);
 }

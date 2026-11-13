@@ -20,11 +20,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 const LORA_BOLD = "Lora_700Bold";
 const LORA_REGULAR = "Lora_400Regular";
 
-/** Darker brand teal — matches native splash handoff. */
-const CANVAS = "#026F68";
+/** Brighter brand teal — black branding for contrast. */
+const CANVAS = "#0D9B8A";
 const TITLE_COLOR = "#000000";
 const SUBTITLE_COLOR = "#000000";
-const RULE_COLOR = "rgba(0,0,0,0.28)";
+const RULE_COLOR = "rgba(0,0,0,0.35)";
 const SPINNER_COLOR = "rgba(0,0,0,0.55)";
 /** Status/nav bar colour while the splash owns the screen. */
 export const MERCHANT_SPLASH_BG = CANVAS;
@@ -127,7 +127,6 @@ export function MerchantBootstrapScreen({
         pointerEvents="none"
         style={[styles.canvas, { top: bleedTop, height: bleedHeight, backgroundColor: CANVAS }]}
       />
-      {/* Soft depth — very light center glow, no mint blobs / logo duplicates */}
       <View pointerEvents="none" style={styles.glow} />
 
       <View
@@ -188,7 +187,7 @@ const styles = StyleSheet.create({
   },
   glow: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.08)",
   },
   statusFill: {
     position: "absolute",

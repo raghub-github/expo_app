@@ -10,6 +10,8 @@ import {
 } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
+import { useRequirePartnerPermission } from "@/hooks/useRequirePartnerPermission";
+import { partnerHasPermission } from "@/lib/staffPermissions";
 import {
   fetchWalletSummary, fetchLedger, createPayoutRequest, fetchPayoutSettlement, fetchPayoutRequests,
   fetchPayoutCycles,
@@ -111,7 +113,12 @@ export default function EarningsScreen() {
   const { tab: tabParam } = useLocalSearchParams<{ tab?: string }>();
   const scrollBottom = TAB_BAR_SCROLL_CONTENT_PADDING_LOOSE;
   const { selectedStore } = useSelectedStore();
-  const { token } = useAuth();
+  const { token, partner } = useAuth();
+  const earningsAllowed =
+    partnerHasPermission(partner, "payouts") || partnerHasPermission(partner, "home");
+  useEffect(() => {
+    if (!earningsAllowed) router.replace("/(tabs)/orders");
+  }, [earningsAllowed, router]);
   const storeId = selectedStore?.id ?? null;
   const liveFreeze = useMerchantWalletFreezeState(storeId);
 
@@ -675,6 +682,8 @@ export default function EarningsScreen() {
       </View>
     );
   };
+
+  if (!earningsAllowed) return null;
 
   return (
     <View style={s.container}>

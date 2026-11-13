@@ -59,13 +59,15 @@ const FARE_QUOTE_MAX_ATTEMPTS = 4;
 /** Short gap between quick failures; network/timeouts use the longer backoff below. */
 const FARE_QUOTE_RETRY_MS = 900;
 const FARE_QUOTE_NETWORK_RETRY_MS = 2_500;
-/** Match ride-book — coalesce haversine→road km churn before hammering quote-batch. */
-const FARE_QUOTE_DEBOUNCE_MS = 320;
+/** Tiny coalesce only — haversine is ready on first paint; don't add a visible wait. */
+const FARE_QUOTE_DEBOUNCE_MS = 40;
 /**
  * Ignore only tiny GPS/route jitter (≈50 m). Was 0.8 km and kept stale fares while
  * the UI showed a newer distance — billing must track displayed trip km.
  */
 const FARE_KM_REQUOTE_DELTA = 0.05;
+/** Bucket availability tripKm so haversine→road refine does not remount the query. */
+const AVAILABILITY_KM_BUCKET = 0.1;
 
 const INDIA_STATE_HINTS = new Set(
   [
@@ -196,6 +198,8 @@ export function ParcelBookScreen() {
   const fareQuoteRequestRef = useRef(0);
   const fareQuoteAbortRef = useRef<AbortController | null>(null);
   const committedFareKmRef = useRef<number | null>(null);
+  const fareByVehicleRef = useRef(fareByVehicle);
+  fareByVehicleRef.current = fareByVehicle;
   const vehicleCodesRef = useRef(vehicleCodes);
   vehicleCodesRef.current = vehicleCodes;
   const [bottomSheetHeight, setBottomSheetHeight] = useState(
@@ -276,9 +280,6 @@ export function ParcelBookScreen() {
     return Math.round(tripKm * 100) / 100;
   }, [tripKm]);
 
-  /** Stable fare km — absorb haversine→road jitter so quote-batch is not restarted. */
-  const [fareTripKm, setFareTripKm] = useState<number | null>(null);
-
   useEffect(() => {
     committedFareKmRef.current = null;
     lastOkQuoteKeyRef.current = null;
@@ -289,21 +290,24 @@ export function ParcelBookScreen() {
     dropPoint?.longitude,
   ]);
 
-  useEffect(() => {
+  /**
+   * Stable fare km on the same render as haversine/route — avoid a useState tick
+   * that deferred quote-batch by a frame and left the sheet on a spinner.
+   */
+  const fareTripKm = useMemo(() => {
     if (fareTripKmRaw == null) {
-      setFareTripKm(null);
-      return;
+      committedFareKmRef.current = null;
+      return null;
     }
     const committed = committedFareKmRef.current;
     if (
       committed != null &&
       Math.abs(committed - fareTripKmRaw) < FARE_KM_REQUOTE_DELTA
     ) {
-      setFareTripKm(committed);
-      return;
+      return committed;
     }
     committedFareKmRef.current = fareTripKmRaw;
-    setFareTripKm(fareTripKmRaw);
+    return fareTripKmRaw;
   }, [fareTripKmRaw]);
 
   // When endpoints change, also clear sticky fares so we don't show the previous trip's price.
@@ -317,16 +321,32 @@ export function ParcelBookScreen() {
     dropPoint?.longitude,
   ]);
 
+  const pickupGeoHints = useMemo(() => geoHintsFromParcelStop(pickup), [pickup]);
+
+  /** Coarse km for supply — avoids refetch when Mapbox refines haversine by <100 m. */
+  const availabilityTripKm = useMemo(() => {
+    if (fareTripKm == null || !(fareTripKm > 0)) return null;
+    return Math.round(fareTripKm / AVAILABILITY_KM_BUCKET) * AVAILABILITY_KM_BUCKET;
+  }, [fareTripKm]);
+
   const {
     data: availability,
+    isLoading: availabilityLoading,
+    isError: availabilityError,
     isFetched: availabilityFetched,
   } = useNearbyRideAvailability(
     pickupPoint?.latitude ?? null,
     pickupPoint?.longitude ?? null,
-    tripKm,
-    { serviceType: "parcel" }
+    availabilityTripKm,
+    {
+      serviceType: "parcel",
+      pickupPincode: pickupGeoHints.pickupPincode,
+      pickupState: pickupGeoHints.pickupState,
+    }
   );
   const nearbyRiders = availability?.riders ?? [];
+  const supplyReady =
+    availability != null || availabilityFetched || availabilityError;
 
   const { data: parcelOffersData, isSuccess: parcelOffersReady } = useFeaturedOffersParcel(
     {
@@ -353,8 +373,6 @@ export function ParcelBookScreen() {
     }
     return next;
   }, [allVehicles, routeEtaMins, tripKm, nearbyRiders]);
-
-  const pickupGeoHints = useMemo(() => geoHintsFromParcelStop(pickup), [pickup]);
 
   useEffect(() => {
     if (!pickupPoint || vehicleCodesKey.length === 0) {
@@ -446,12 +464,14 @@ export function ParcelBookScreen() {
                 vehicles: codes,
               });
             }
-            // Keep sticky fares if we had any; unlock sheet without wiping supply.
+            // Keep sticky fares if we had any. Soft-retry a few more times so a
+            // transient Network Error does not leave the card stuck on "—".
             if (requestId === fareQuoteRequestRef.current) {
               setFaresLoading(false);
-              setFaresSettled(false);
-              if (networkish && fareRetryTick < 2) {
-                setTimeout(() => setFareRetryTick((n) => n + 1), 4_000);
+              const hadSticky = Object.keys(fareByVehicleRef.current).length > 0;
+              setFaresSettled(hadSticky);
+              if (fareRetryTick < 4) {
+                setTimeout(() => setFareRetryTick((n) => n + 1), networkish ? 3_000 : 1_500);
               }
             }
             return;
@@ -498,22 +518,37 @@ export function ParcelBookScreen() {
   ]);
 
   /**
-   * Unlock once catalog + nearby supply are known.
-   * Do NOT wait on quote-batch or availability *refetch* (tripKm road update).
+   * Catalog is ready immediately (fallback codes). Do NOT block the list on
+   * availabilityFetched — tripKm key churn used to keep "Finding available…" forever.
    */
-  const vehiclesFilterReady = vehicleCodesReady && availabilityFetched;
+  const vehiclesFilterReady = vehicleCodesReady;
 
-  // Only nearby on-duty parcel categories. Fare filter applies after quotes settle.
+  // Show catalog right away; apply supply filter once availability settles.
+  // Fare filter applies after quotes settle (cards still show with fare spinner before that).
   const displayVehicles = useMemo(() => {
     if (!vehiclesFilterReady) return [];
-    let list = allVehicles.filter((v) =>
-      parcelCategoryHasNearbySupply(nearbyRiders, v.id as ParcelVehicleCategoryCode)
-    );
+    let list = allVehicles;
+    if (supplyReady) {
+      list = list.filter((v) =>
+        parcelCategoryHasNearbySupply(nearbyRiders, v.id as ParcelVehicleCategoryCode)
+      );
+    }
     if (faresSettled) {
       list = list.filter((v) => (fareByVehicle[v.id] ?? 0) > 0);
     }
     return list;
-  }, [vehiclesFilterReady, allVehicles, fareByVehicle, faresSettled, nearbyRiders]);
+  }, [
+    vehiclesFilterReady,
+    allVehicles,
+    fareByVehicle,
+    faresSettled,
+    nearbyRiders,
+    supplyReady,
+  ]);
+
+  const showVehiclesLoading =
+    !vehiclesFilterReady ||
+    (displayVehicles.length === 0 && availabilityLoading && !supplyReady);
 
   const selectedVehicle =
     displayVehicles.find((v) => v.id === selectedVehicleId) ?? displayVehicles[0] ?? null;
@@ -536,6 +571,8 @@ export function ParcelBookScreen() {
   const noVehiclesAvailable = useMemo(() => {
     if (!pickupPoint || !dropPoint) return false;
     if (!vehiclesFilterReady) return false;
+    // Still waiting on first supply response — don't flash unavailable.
+    if (!supplyReady || availabilityLoading) return false;
 
     if (allVehicles.length > 0 && !hasCaptainSupply) {
       return true;
@@ -556,6 +593,8 @@ export function ParcelBookScreen() {
     hasCaptainSupply,
     faresSettled,
     fareTripKm,
+    supplyReady,
+    availabilityLoading,
   ]);
 
   const unavailableMessage = useMemo(() => {
@@ -792,15 +831,14 @@ export function ParcelBookScreen() {
           ) : null}
 
           <View style={styles.vehicleList}>
-            {!vehiclesFilterReady ? (
+            {showVehiclesLoading ? (
               <View style={styles.vehiclesLoading}>
                 <ActivityIndicator size="small" color={GatiMitraColors.deepMintStart} />
                 <AppText style={styles.vehiclesLoadingText}>Finding available vehicles…</AppText>
               </View>
             ) : null}
-            {vehiclesFilterReady
-              ? displayVehicles.map((vehicle) => {
-              const selected = vehicle.id === selectedVehicle?.id;
+            {!showVehiclesLoading
+              ? displayVehicles.map((vehicle) => {              const selected = vehicle.id === selectedVehicle?.id;
               const img =
                 vehicle.imageKey === "van" ? null : resolveRideImage(vehicle.imageKey);
               const fare = fareByVehicle[vehicle.id];

@@ -16,11 +16,13 @@ import type { CustomerAccountBlocksMap } from "@/services/customerServiceBlocks.
 import { FrozenServiceIconCircle } from "@/components/FrozenServiceIconCircle";
 import type { CustomerHomeServiceId } from "@/lib/customerHomeServiceMeta";
 import { prefetchCriticalHomeAssetImagesSync, HOME_CRITICAL_ASSET_KEYS } from "@/lib/homeCriticalAssets";
-import { navigateToFoodHome } from "@/lib/navigateToFoodHome";
+import { navigateToFoodHome, warmFoodHomeEntry } from "@/lib/navigateToFoodHome";
 import { foodFixDbg } from "@/lib/tabNavDebug";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
 import { useServiceCardOfferPills } from "@/hooks/useServiceCardOfferPills";
 import { InstantPressable } from "@/components/InstantPressable";
+import { HomeServicesGridSkeleton } from "@/components/home/HomeTabSkeletons";
+import { homeSkeletonLog } from "@/lib/homeSkeletonTelemetry";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -43,8 +45,8 @@ const OFFER_PILL_GREEN = "#15803D";
 const OFFER_PILL_GREEN_TOP = OFFER_PILL_GREEN;
 /** Uniform illustration box for every service tile (prevents grocery art looking larger). */
 const SERVICE_IMAGE_BOX = 52;
-/** Only show image skeleton if load takes longer than this (avoids flash on cache hit). */
-const SERVICE_IMAGE_SKELETON_DELAY_MS = 220;
+/** Delay illustration shimmer so disk-cache hits never flash grey. */
+const SERVICE_IMAGE_SKELETON_DELAY_MS = 180;
 
 function ServiceCardImage({
   assetKey,
@@ -57,31 +59,40 @@ function ServiceCardImage({
   const assetUrl = useAppAssetsStore(
     (s) => s.assets[assetKey]?.proxyUrl ?? s.assets[assetKey]?.url ?? null
   );
-  const hasCachedUrl = Boolean(assetUrl?.trim());
-  const imageReadyRef = useRef(hasCachedUrl);
+  const homeImagesPrefetched = useAppAssetsStore((s) => s.homeImagesPrefetched);
+  const hasUrl = Boolean(assetUrl?.trim());
+  // Cached CMS URL + prefetch complete → paint immediately (no tile shimmer).
+  const imageReadyRef = useRef(hasUrl && homeImagesPrefetched);
+  const [imageVisible, setImageVisible] = useState(hasUrl && homeImagesPrefetched);
   const [showSkeleton, setShowSkeleton] = useState(false);
-  // Keep image visible once painted — never hide on URL refresh (stale-while-revalidate).
-  const [imageVisible, setImageVisible] = useState(hasCachedUrl);
 
   useEffect(() => {
-    // Only reset skeleton timer when switching to a different asset key.
-    // URL churn (signed URL rotate / CMS refresh) must not blank the tile.
     if (imageReadyRef.current || imageVisible) {
       setShowSkeleton(false);
       return;
     }
-    setShowSkeleton(false);
+    homeSkeletonLog("SKELETON_MOUNTED", "service_image", assetKey);
     const timer = setTimeout(() => {
       if (!imageReadyRef.current) setShowSkeleton(true);
     }, SERVICE_IMAGE_SKELETON_DELAY_MS);
     return () => clearTimeout(timer);
   }, [assetKey, imageVisible]);
 
+  useEffect(() => {
+    if (hasUrl && homeImagesPrefetched) {
+      imageReadyRef.current = true;
+      setImageVisible(true);
+      setShowSkeleton(false);
+      homeSkeletonLog("SKELETON_SKIPPED_CACHE_HIT", "service_image", assetKey);
+    }
+  }, [assetKey, hasUrl, homeImagesPrefetched]);
+
   const handleImageLoad = useCallback(() => {
     imageReadyRef.current = true;
     setShowSkeleton(false);
     setImageVisible(true);
-  }, []);
+    homeSkeletonLog("CONTENT_RENDERED", "service_image", assetKey);
+  }, [assetKey]);
 
   const drawSize = Math.round(SERVICE_IMAGE_BOX * Math.min(1, Math.max(0.5, imageScale)));
 
@@ -101,7 +112,11 @@ function ServiceCardImage({
       ) : null}
       <AppAssetImage
         assetKey={assetKey}
-        style={{ width: drawSize, height: drawSize }}
+        style={{
+          width: drawSize,
+          height: drawSize,
+          opacity: imageVisible || !showSkeleton ? 1 : 0,
+        }}
         contentFit="contain"
         transition={0}
         onLoad={handleImageLoad}
@@ -230,6 +245,8 @@ type Props = {
     grocery?: boolean;
   };
   accountBlocks?: CustomerAccountBlocksMap;
+  /** Full-grid shimmer while CMS service art map is still cold. */
+  skeleton?: boolean;
   onAccountBlockedPress?: (
     serviceId: CustomerHomeServiceId,
     reason: string,
@@ -312,6 +329,8 @@ function ServiceTile({
         disabled={!canPress}
         onPressIn={() => {
           if (canPress) setPressed(true);
+          // Warm merchants cache + imagery before the Food tab mounts.
+          if (canPress && item.id === "food") warmFoodHomeEntry();
         }}
         onPressOut={() => setPressed(false)}
         onPress={() => {
@@ -409,6 +428,7 @@ export function HomeServicesRow({
   cardHeight = DEFAULT_CARD_H,
   enabledServices,
   accountBlocks,
+  skeleton = false,
   onAccountBlockedPress,
 }: Props) {
   const assets = useAppAssetsStore((s) => s.assets);
@@ -434,6 +454,10 @@ export function HomeServicesRow({
       ),
     [enabledServices]
   );
+
+  if (skeleton) {
+    return <HomeServicesGridSkeleton cardHeight={cardHeight} />;
+  }
 
   return (
     <View style={styles.grid}>

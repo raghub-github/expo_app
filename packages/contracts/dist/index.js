@@ -46,6 +46,11 @@ export const OtpVerifySchema = z.object({
     otp: z.string().min(4).max(8),
     deviceId: z.string().min(6),
     appType: z.enum(["customer", "rider", "merchant"]).optional(),
+    /** Optional merchant device capture (friendly label for logged-in devices). */
+    deviceName: z.string().max(120).optional(),
+    deviceOs: z.string().max(64).optional(),
+    deviceType: z.enum(["mobile", "tablet", "web"]).optional(),
+    appSource: z.string().max(32).optional(),
 });
 /**
  * Dev-only flow:

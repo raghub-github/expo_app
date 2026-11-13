@@ -225,9 +225,20 @@ async function resolveExistingObjectKey(r2Key: string): Promise<string | null> {
 export async function getObjectByKey(
   r2Key: string
 ): Promise<{ buffer: Buffer; contentType?: string } | null> {
+  const client = getR2Client();
+  const bucket = getBucketName();
+  const { normalizeR2ObjectKey } = await import("@/lib/r2-proxy-url");
+  const normalized = normalizeR2ObjectKey(r2Key) || r2Key.replace(/^\/+/, "").trim();
+
+  // Fast path: most dashboard keys are already exact — skip HEAD/list variants.
+  if (normalized) {
+    const direct = await bufferFromGetObject(client, bucket, normalized);
+    if (direct) return direct;
+  }
+
   const resolved = await resolveExistingObjectKey(r2Key);
-  if (!resolved) return null;
-  return bufferFromGetObject(getR2Client(), getBucketName(), resolved);
+  if (!resolved || resolved === normalized) return null;
+  return bufferFromGetObject(client, bucket, resolved);
 }
 
 /** True when the object exists in R2 (HEAD). Missing/invalid keys → false. */

@@ -682,11 +682,18 @@ export async function createRazorpayQrCode(
     });
     if (res.ok) {
       const json = JSON.parse(text) as CreateQrCodeResponse;
+      if (!json.id || !String(json.image_url ?? "").trim()) {
+        throw Object.assign(new Error("Razorpay QR response missing id/image_url"), {
+          statusCode: 502,
+          code: "QR_CREATE_FAILED",
+        });
+      }
       return {
         ...json,
         usage: "single_use",
         fixed_amount: true,
         close_by: json.close_by ?? closeBy,
+        payment_amount: Number(json.payment_amount ?? amountPaise),
       };
     }
     // Only fall through on Razorpay-side 5xx / SERVER_ERROR — client errors stay hard fails.

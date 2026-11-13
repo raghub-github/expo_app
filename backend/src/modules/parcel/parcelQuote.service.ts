@@ -5,7 +5,11 @@
 import { withSqlRetry } from "../../db/client.js";
 import { calculateProgressiveSlabAmount } from "../delivery-slab-pricing/deliverySlabPricing.service.js";
 import type { DeliveryActorType, DeliveryRateSlabRow, DeliveryServiceType } from "../delivery-slab-pricing/types.js";
-import type { RideCustomerPricingRow, RideVehiclePricingType } from "../rider-payout-pricing/types.js";
+import type {
+  GeoHierarchyLevel,
+  RideCustomerPricingRow,
+  RideVehiclePricingType,
+} from "../rider-payout-pricing/types.js";
 import { loadEffectiveParcelCustomerPricing } from "../rider-payout-pricing/riderPayoutPricing.repository.js";
 import { resolveRidePricingGeoFromPickup } from "../ride-state-config/rideStateConfig.repository.js";
 
@@ -69,17 +73,24 @@ export async function quoteParcelVehicleFare(args: {
   vehicleType: RideVehiclePricingType;
   pickupPincode?: string | null;
   pickupState?: string | null;
+  /** Shared across a batch so reverse-geocode + geo walk run once. */
+  pricingGeo?: { level: GeoHierarchyLevel; refId: string } | null;
 }): Promise<ParcelFareQuoteResult> {
   // Pooler blips (CONNECTION_ENDED) must not 500 the book screen — retry once
   // the postgres.js client opens a fresh socket.
   return withSqlRetry(async () => {
     const tripKm = Math.max(0, args.tripKm);
-    const { pricingGeo } = await resolveRidePricingGeoFromPickup({
-      pickupLat: args.pickupLat,
-      pickupLng: args.pickupLng,
-      pickupPincode: args.pickupPincode,
-      pickupState: args.pickupState,
-    });
+    const pricingGeo =
+      args.pricingGeo !== undefined
+        ? args.pricingGeo
+        : (
+            await resolveRidePricingGeoFromPickup({
+              pickupLat: args.pickupLat,
+              pickupLng: args.pickupLng,
+              pickupPincode: args.pickupPincode,
+              pickupState: args.pickupState,
+            })
+          ).pricingGeo;
 
     if (!pricingGeo) {
       return {
@@ -158,6 +169,13 @@ export async function quoteParcelVehicleFareBatch(args: {
   if (types.length === 0) {
     return { quotes: {} };
   }
+  // One geo resolve for the whole batch — avoids N reverse-geocodes under load.
+  const { pricingGeo } = await resolveRidePricingGeoFromPickup({
+    pickupLat: args.pickupLat,
+    pickupLng: args.pickupLng,
+    pickupPincode: args.pickupPincode,
+    pickupState: args.pickupState,
+  });
   const quotes: Record<string, ParcelFareQuoteResult> = {};
   await Promise.all(
     types.map(async (vehicleType) => {
@@ -168,6 +186,7 @@ export async function quoteParcelVehicleFareBatch(args: {
         vehicleType,
         pickupPincode: args.pickupPincode,
         pickupState: args.pickupState,
+        pricingGeo,
       });
     })
   );

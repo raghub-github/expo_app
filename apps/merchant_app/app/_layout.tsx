@@ -45,6 +45,7 @@ import { hydrateMenuCatalogCache } from "@/lib/menuCatalogCache";
 import OrderAlertPushHandler from "../components/OrderAlertPushHandler";
 import OrderAlertAppOpenMute from "../components/OrderAlertAppOpenMute";
 import GlobalOrderAlertStopSync from "../components/GlobalOrderAlertStopSync";
+import OpenToAcceptHomeRedirect from "../components/OpenToAcceptHomeRedirect";
 import BackgroundNewOrderLocalAlert from "../components/BackgroundNewOrderLocalAlert";
 import StoreStatusPushHandler from "../components/StoreStatusPushHandler";
 import WaitingForOrderNotifier from "../components/WaitingForOrderNotifier";
@@ -153,6 +154,7 @@ function AuthenticatedAppHosts() {
       <OrderAlertPushHandler />
       <OrderAlertAppOpenMute />
       <GlobalOrderAlertStopSync />
+      <OpenToAcceptHomeRedirect />
       <BackgroundNewOrderLocalAlert />
       <StoreStatusPushHandler />
       <LiveOrdersStickyPushRefresh />
@@ -166,7 +168,6 @@ function AuthenticatedAppHosts() {
       <PreventServicesRealtime />
       <LearningCentreRealtime />
       <ServiceRestrictedNotice />
-      <SessionRevokedGate />
       <MerchantReferralAttribution />
     </AppErrorBoundary>
   );
@@ -194,6 +195,8 @@ function MerchantNavigator() {
   return (
     <>
       {signedIn ? <AuthenticatedAppHosts /> : <AppAssetsPrefetch />}
+      {/* Must stay mounted after signOut so the session-ended bottom sheet can show. */}
+      <SessionRevokedGate />
       <MerchantStackRecovery>
         <Stack
           screenOptions={{

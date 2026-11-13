@@ -78,9 +78,16 @@ public final class OrderAlertHeadsUp {
 
     Intent launch = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
     if (launch == null) launch = new Intent();
-    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
     launch.putExtra("alertSessionId", sid);
     launch.putExtra("gmOverlayAction", "open");
+    if ("merchant".equals("{{ROLE}}")) {
+      try {
+        launch.setData(android.net.Uri.parse(OrderAlertActions.MERCHANT_HOME_NEW_ORDERS_URI));
+        launch.putExtra("gmOpenHomeNewOrders", "1");
+      } catch (Throwable ignored) {
+      }
+    }
 
     PendingIntent content = PendingIntent.getActivity(context, NOTIFICATION_ID, launch, flags);
 

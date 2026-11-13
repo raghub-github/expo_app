@@ -34,11 +34,6 @@ import Animated, {
   withSequence,
   withTiming,
 } from "react-native-reanimated";
-import { GatiMitraColors } from "@/constants/gatimitra";
-
-/** Soft white shell under list-card banners — matches grocery/food grid-first hero placeholder. */
-const CARD_BANNER_SHELL = GatiMitraColors.softBackground;
-
 export type StoreBannerCarouselProps = {
   bannerUri: string | null | undefined;
   galleryUris?: (string | null | undefined)[];
@@ -68,6 +63,11 @@ export type StoreBannerCarouselProps = {
   enableInfiniteLoop?: boolean;
   /** Called when a swipe/drag gesture finishes (used to unblock parent press). */
   onGestureComplete?: () => void;
+  /**
+   * Above-the-fold / first visible cards: high-priority decode + warm gallery.
+   * Below-fold: normal priority and only warm the primary banner (saves memory).
+   */
+  eager?: boolean;
 };
 
 export const LIST_CARD_CAROUSEL_HOLD_MS = 3200;
@@ -96,12 +96,14 @@ const BannerImage = React.memo(function BannerImage({
   height,
   onLoadOk,
   onLoadFail,
+  priority = "high",
 }: {
   uri: string;
   width: number;
   height: number;
   onLoadOk?: (uri: string) => void;
   onLoadFail?: (uri: string) => void;
+  priority?: "high" | "normal" | "low";
 }) {
   // Paint the same display-width WebP the prefetch warms. Cold misses fail-open
   // to the original (onError strips w/q/f) so a slow resize never stays blank.
@@ -109,8 +111,8 @@ const BannerImage = React.memo(function BannerImage({
   const lastGoodRef = useRef(paintSource);
   const [paintUri, setPaintUri] = useState(paintSource);
   const [trackedSource, setTrackedSource] = useState(paintSource);
-  // Prefetch can mark a URL "ready" before this card has drawn it. Keep the
-  // skeleton up until this Image actually paints, same as the deals rail.
+  // Always show card skeleton until onDisplay — session-ready alone left blank
+  // soft-white heroes with Open badge and no shimmer.
   const [painted, setPainted] = useState(false);
   // Recycled list cells keep state. Swap the URI during render so the next
   // restaurant does not flash the previous banner or an empty shell.
@@ -131,7 +133,8 @@ const BannerImage = React.memo(function BannerImage({
         flexGrow: 0,
         flexShrink: 0,
         overflow: "hidden",
-        backgroundColor: CARD_BANNER_SHELL,
+        // Skeleton base (#eceff1) — soft mint shell looked like a removed skeleton.
+        backgroundColor: "#eceff1",
       }}
       collapsable={false}
     >
@@ -141,7 +144,7 @@ const BannerImage = React.memo(function BannerImage({
         contentFit="cover"
         cachePolicy="memory-disk"
         transition={0}
-        priority="high"
+        priority={priority}
         allowDownscaling
         recyclingKey={stableImageRecyclingKey(paintUri)}
         placeholder={
@@ -258,7 +261,9 @@ export function StoreBannerCarousel({
   enableAutoRotate = true,
   enableInfiniteLoop,
   onGestureComplete,
+  eager = true,
 }: StoreBannerCarouselProps) {
+  const imagePriority = eager ? "high" : "normal";
   const resolvedHoldMs = holdMs ?? slideIntervalMs ?? initialBannerHoldMs ?? DEFAULT_HOLD;
   const resolvedSlideMs = slideMs ?? slideDurationMs ?? DEFAULT_SLIDE;
 
@@ -440,14 +445,13 @@ export function StoreBannerCarousel({
     [syncTranslateToPhysical, useInfiniteLoop]
   );
 
-  // Runs once per mounted card. Unbounded `Image.prefetch` here meant a list of
-  // N cards issued N x slides downloads at once; the shared queue caps in-flight
-  // work so on-screen images are not starved by off-screen ones.
-  // Prefetch the first slides immediately so the card paints from disk/memory cache.
+  // Cap in-flight work: above-fold warms banner + a couple gallery frames;
+  // below-fold only warms the primary banner so visible heroes are not starved.
   useEffect(() => {
     if (slides.length === 0) return;
-    void prefetchImagesNow(slides, Math.min(4, slides.length));
-  }, [dataKey, slides]);
+    const limit = eager ? Math.min(3, slides.length) : 1;
+    void prefetchImagesNow(slides.slice(0, limit), limit);
+  }, [dataKey, slides, eager]);
 
   useLayoutEffect(() => {
     setActiveIndex(0);
@@ -758,7 +762,12 @@ export function StoreBannerCarousel({
       return (
         <View style={[{ width, height }, radiusStyle, style]} collapsable={false}>
           <View style={styles.clip}>
-            <BannerImage uri={bannerAbs} width={width} height={height} />
+            <BannerImage
+              uri={bannerAbs}
+              width={width}
+              height={height}
+              priority={imagePriority}
+            />
           </View>
           {dimmed ? <View style={[styles.dim, { borderRadius }]} pointerEvents="none" /> : null}
         </View>
@@ -786,6 +795,7 @@ export function StoreBannerCarousel({
               width={width}
               height={height}
               onLoadFail={onSlideLoadFail}
+              priority={imagePriority}
             />
           </Animated.View>
         ) : (
@@ -794,6 +804,7 @@ export function StoreBannerCarousel({
             width={width}
             height={height}
             onLoadFail={onSlideLoadFail}
+            priority={imagePriority}
           />
         )}
         {dimmed ? <View style={[styles.dim, { borderRadius }]} pointerEvents="none" /> : null}
@@ -826,7 +837,12 @@ export function StoreBannerCarousel({
           {/* Permanent banner underlay — never blank while the strip recycles / slides. */}
           {bannerAbs ? (
             <View style={StyleSheet.absoluteFillObject} pointerEvents="none" collapsable={false}>
-              <BannerImage uri={bannerAbs} width={width} height={height} />
+              <BannerImage
+                uri={bannerAbs}
+                width={width}
+                height={height}
+                priority={imagePriority}
+              />
             </View>
           ) : null}
           <Animated.View
@@ -843,6 +859,8 @@ export function StoreBannerCarousel({
                 width={width}
                 height={height}
                 onLoadFail={onSlideLoadFail}
+                // Only the active / primary frames need high priority when eager.
+                priority={eager && i <= 1 ? "high" : imagePriority}
               />
             ))}
           </Animated.View>

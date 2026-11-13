@@ -31,7 +31,7 @@ export function WeatherPrefetch() {
     startupMeasure("weather_prefetch_start", "process_start");
     // Read latest address at call time — do not depend on address for triggering.
     const latestAddress = useLocationStore.getState().address ?? address;
-    // Disk seed is sync inside restore; "done" marks seed+kickoff, not network finish.
+    // Non-blocking: disk seed is sync inside restore; never gates Home.
     void restoreAndPrefetchLocationWeather(queryClient, latestAddress, coords)
       .then(() => {
         startupMeasure("weather_prefetch_seeded", "weather_prefetch_start");

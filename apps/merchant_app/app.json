@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/images/splash-blank.png",
       "resizeMode": "contain",
-      "backgroundColor": "#026F68"
+      "backgroundColor": "#0D9B8A"
     },
     "androidStatusBar": {
       "hidden": false,

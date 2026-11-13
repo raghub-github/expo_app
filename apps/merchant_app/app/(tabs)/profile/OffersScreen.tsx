@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { AppText as Text } from "@/components/AppText";
-import { View, StyleSheet, ActivityIndicator, Alert, Platform } from "react-native";
+import { View, StyleSheet, Alert, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant } from "@/constants/theme";
@@ -123,7 +123,8 @@ export default function OffersScreen() {
   const [trackStoreFilter, setTrackStoreFilter] = useState<number | "all">("all");
   const [trackFilter, setTrackFilter] = useState<OfferTrackFilter>("active");
   const [offers, setOffers] = useState<Offer[]>([]);
-  const [loading, setLoading] = useState(true);
+  /** Only blocks Track tab — Create promo cards are static and must not wait on listOffers. */
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [showForm, setShowForm] = useState(false);
   /** Hide form Modal while Android image picker runs (avoids ActivityResultLauncher crash). */
@@ -164,15 +165,20 @@ export default function OffersScreen() {
 
   const reload = useCallback(
     async (opts?: { silent?: boolean }) => {
-      if (!token || offerStoreIds.length === 0) return;
-      if (!opts?.silent) setLoading(true);
+      if (!token || offerStoreIds.length === 0) {
+        setLoading(false);
+        return;
+      }
+      // Create tab stays interactive; only Track shows a blocking spinner.
+      const blockUi = opts?.silent !== true;
+      if (blockUi) setLoading(true);
       try {
         const lists = await Promise.all(offerStoreIds.map((id) => listOffers(id, token)));
         setOffers(lists.flat());
       } catch {
         /* ignore */
       } finally {
-        if (!opts?.silent) setLoading(false);
+        setLoading(false);
       }
     },
     [offerStoreIds, token]
@@ -210,8 +216,10 @@ export default function OffersScreen() {
   }, [reload]);
 
   useEffect(() => {
-    reload();
-  }, [reload]);
+    // Create tab: silent prefetch (badge). Track tab with empty list: show spinner.
+    const silent = pageTab !== "track";
+    void reload({ silent });
+  }, [reload, pageTab]);
 
   const offersByItemId = useMemo(() => {
     const map = new Map<string, { total: number; active: number }>();
@@ -498,12 +506,6 @@ export default function OffersScreen() {
         />
       )}
 
-      {loading && pageTab === "create" && offers.length === 0 ? (
-        <View style={styles.loadingOverlay} pointerEvents="none">
-          <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
-        </View>
-      ) : null}
-
       <OfferFormSheet
         visible={showForm && !pickerSuspended}
         formSessionKey={formSessionKey}
@@ -542,10 +544,4 @@ export default function OffersScreen() {
 const styles = StyleSheet.create({
   centered: { flex: 1, alignItems: "center", justifyContent: "center", padding: 40 },
   emptyText: { fontSize: 14, color: GatiMitraMerchant.textTertiary, marginTop: 10 },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(255,255,255,0.7)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
 });

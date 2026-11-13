@@ -3,7 +3,12 @@ import { cookies } from "next/headers";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validateMerchantFromSessionPreferParent } from "@/lib/auth/validate-merchant";
 import { isNetworkOrTransientError } from "@/lib/auth/session-errors";
-import { hasActiveSessionForDevice, replaceSessionForDevice, generateDeviceId } from "@/lib/auth/merchant-session-db";
+import {
+  hasActiveSessionForDevice,
+  replaceSessionForDevice,
+  generateDeviceId,
+  isMerchantDeviceSessionRevoked,
+} from "@/lib/auth/merchant-session-db";
 import { deviceIdCookie } from "@/lib/auth/auth-cookie-names";
 import { createClient } from "@supabase/supabase-js";
 import { fetchVerificationRejectionsByStoreIds } from "@/lib/onboarding/partner-verification-rejections";
@@ -71,6 +76,16 @@ export async function GET(request: NextRequest) {
       : false;
     let setDeviceCookieOnResponse = false;
     if (!hasDeviceSession) {
+      if (deviceId && (await isMerchantDeviceSessionRevoked(parentId, deviceId))) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Session expired or invalid for this device. Please sign in again.",
+            code: "DEVICE_SESSION_INVALID",
+          },
+          { status: 401 }
+        );
+      }
       try {
         deviceId = deviceId || generateDeviceId();
         await replaceSessionForDevice(deviceId, parentId);

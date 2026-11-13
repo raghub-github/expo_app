@@ -10,6 +10,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { navigateToMerchant } from "@/lib/navigateToMerchant";
+import { prefetchMerchantDetail } from "@/lib/prefetchMerchantDetail";
 import { warmMerchantHeroImage, prefetchMerchantHeroImageUri } from "@/lib/merchantHeroWarmCache";
 import { useScrollSafePress } from "@/hooks/useScrollSafePress";
 import { useInstantPressScale } from "@/components/InstantPressable";
@@ -19,6 +20,8 @@ import { setStoreBookmark } from "@/services/merchant.service";
 import { useStoreBookmarkMutations, useStoreBookmarks } from "@/hooks/useStoreBookmarks";
 import { useMerchantLiveStatus } from "@/hooks/useMerchantLiveStatus";
 import { StoreBannerCarousel, LIST_CARD_CAROUSEL_HOLD_MS, LIST_CARD_CAROUSEL_SLIDE_MS } from "@/components/StoreBannerCarousel";
+import { ViewportGate } from "@/components/ViewportGate";
+import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { NearFastDeliveryMeta } from "@/components/NearFastDeliveryMeta";
 import { MerchantRatingBadge } from "@/components/home/MerchantRatingBadge";
 import { MerchantOfferRow } from "@/components/home/MerchantOfferRow";
@@ -52,6 +55,11 @@ export type GMRestaurantCardV2Props = {
   initialSaved?: boolean;
   weatherDelayMinutes?: number;
   bottomSpacing?: number;
+  /**
+   * Above-the-fold list heroes decode immediately (high priority).
+   * Below-fold cards mount media via ViewportGate to cut memory / JS work.
+   */
+  eagerMedia?: boolean;
 };
 
 function GMRestaurantCardV2Inner({
@@ -59,6 +67,7 @@ function GMRestaurantCardV2Inner({
   initialSaved = false,
   weatherDelayMinutes = 0,
   bottomSpacing = CARD_GAP,
+  eagerMedia = false,
 }: GMRestaurantCardV2Props) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -141,6 +150,7 @@ function GMRestaurantCardV2Inner({
     navigateToMerchant(router, queryClient, merchant.id, merchant);
   }, [listingBlocked, merchant, queryClient, router]);
 
+  const pressScale = useInstantPressScale(0.97);
   // Shutter is shown inside navigateToMerchant on committed press only.
   const cardPress = useScrollSafePress(openMerchant, {
     onPressIn: () => {
@@ -148,9 +158,11 @@ function GMRestaurantCardV2Inner({
       warmMerchantHeroImage(merchant.id, bannerUri);
       const firstGallery = galleryUris[0];
       if (firstGallery) prefetchMerchantHeroImageUri(firstGallery);
+      // Start menu network before navigation settles — kills menu_loading lag.
+      prefetchMerchantDetail(queryClient, merchant.id);
     },
+    onPressCancel: () => pressScale.pressOut(),
   });
-  const pressScale = useInstantPressScale(0.985);
 
   const onCarouselSwipe = useCallback(() => {
     cardPress.blockPress();
@@ -180,25 +192,44 @@ function GMRestaurantCardV2Inner({
       accessibilityState={{ disabled: listingBlocked }}
     >
       <View style={styles.imageWrap} collapsable={false}>
-        <StoreBannerCarousel
-          bannerUri={bannerUri}
-          galleryUris={galleryUris}
-          width={cardWidth}
-          height={IMAGE_HEIGHT}
-          borderRadius={CARD_RADIUS}
-          holdMs={LIST_CARD_CAROUSEL_HOLD_MS}
-          slideMs={LIST_CARD_CAROUSEL_SLIDE_MS}
-          dimmed={!isOpen || listingBlocked}
-          showDots={hasCarouselGallery && !listingBlocked}
-          hidePlaceholderIcon
-          enableKenBurns={false}
-          enableSwipe={false}
-          enableAutoRotate={false}
-          enableInfiniteLoop={false}
-          deferTapToParent
-          onSwipeGesture={onCarouselSwipe}
-          onGestureComplete={onCarouselGestureComplete}
-        />
+        <ViewportGate
+          eager={eagerMedia}
+          placeholderHeight={IMAGE_HEIGHT}
+          // Mount ~½ screen early so predictive prefetch can decode before paint.
+          rootMargin={520}
+          style={{ width: cardWidth, height: IMAGE_HEIGHT }}
+          placeholder={
+            <GMSkeleton
+              style={{
+                width: cardWidth,
+                height: IMAGE_HEIGHT,
+                borderTopLeftRadius: CARD_RADIUS,
+                borderTopRightRadius: CARD_RADIUS,
+              }}
+            />
+          }
+        >
+          <StoreBannerCarousel
+            bannerUri={bannerUri}
+            galleryUris={galleryUris}
+            width={cardWidth}
+            height={IMAGE_HEIGHT}
+            borderRadius={CARD_RADIUS}
+            holdMs={LIST_CARD_CAROUSEL_HOLD_MS}
+            slideMs={LIST_CARD_CAROUSEL_SLIDE_MS}
+            dimmed={!isOpen || listingBlocked}
+            showDots={hasCarouselGallery && !listingBlocked}
+            hidePlaceholderIcon
+            enableKenBurns={false}
+            enableSwipe={false}
+            enableAutoRotate={false}
+            enableInfiniteLoop={false}
+            deferTapToParent
+            eager={eagerMedia}
+            onSwipeGesture={onCarouselSwipe}
+            onGestureComplete={onCarouselGestureComplete}
+          />
+        </ViewportGate>
           {!isOpen && !listingBlocked ? (
             <View style={styles.closedOverlay} pointerEvents="none" />
           ) : null}
@@ -306,6 +337,7 @@ export const GMRestaurantCardV2 = React.memo(GMRestaurantCardV2Inner, (prev, nex
     prev.initialSaved === next.initialSaved &&
     prev.weatherDelayMinutes === next.weatherDelayMinutes &&
     prev.bottomSpacing === next.bottomSpacing &&
+    prev.eagerMedia === next.eagerMedia &&
     a.id === b.id &&
     a.name === b.name &&
     a.liveStatus === b.liveStatus &&

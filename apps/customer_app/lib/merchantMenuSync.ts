@@ -45,8 +45,9 @@ export async function syncMerchantMenuInBackground(
     if (!cached?.menu?.length) {
       const detail = await merchantService.getMerchantById(merchantId);
       if (!detail) return;
+      // Publish to React Query first — disk write must not delay menu rows.
       queryClient.setQueryData(queryKey, detail);
-      await writeCachedMerchantMenu(merchantId, detail);
+      void writeCachedMerchantMenu(merchantId, detail);
       void prefetchMenuItemImagesForMenu(detail.menu ?? []);
       return;
     }
@@ -80,7 +81,7 @@ export async function syncMerchantMenuInBackground(
       }
       if (!detail) return;
       queryClient.setQueryData(queryKey, detail);
-      await writeCachedMerchantMenu(merchantId, detail);
+      void writeCachedMerchantMenu(merchantId, detail);
       void prefetchMenuItemImagesForMenu(detail.menu ?? []);
       return;
     }

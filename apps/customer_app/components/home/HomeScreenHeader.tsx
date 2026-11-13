@@ -6,6 +6,8 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import type { CustomerWeatherContext } from "@/services/weather.service";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 import { AppText } from "@/components/AppText";
+import { GMSkeleton } from "@/components/ShimmerSkeleton";
+import { HomeLocationHeaderSkeleton } from "@/components/home/HomeTabSkeletons";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
@@ -115,6 +117,7 @@ export function HomeLocationHeader({
   notificationBadgeCount,
   onLocationPress,
   onNotificationPress,
+  skeleton = false,
 }: Pick<
   Props,
   | "locationPrimary"
@@ -122,12 +125,16 @@ export function HomeLocationHeader({
   | "notificationBadgeCount"
   | "onLocationPress"
   | "onNotificationPress"
->) {
+> & { skeleton?: boolean }) {
   const insets = useSafeAreaInsets();
   // Exactly the status-bar inset — no extra chrome band. Row aligns to the top
   // so location text sits flush under the clock (icon buttons no longer center-pad it down).
   const topPad = resolveTopSafeInset(insets.top) + HOME_HEADER_BELOW_STATUS_GAP;
   const showBadge = notificationBadgeCount != null && notificationBadgeCount > 0;
+
+  if (skeleton) {
+    return <HomeLocationHeaderSkeleton reason="location_pending" />;
+  }
 
   return (
     <View style={styles.headerBlock}>
@@ -224,13 +231,13 @@ export function HomeWeatherBanner({
       <View style={styles.weatherWrap}>
         <View style={[styles.weatherBanner, styles.weatherSkeleton]} accessibilityLabel="Loading weather">
           <View style={styles.weatherLeft}>
-            <View style={styles.skeletonIcon} />
-            <View style={styles.skeletonTemp} />
-            <View style={styles.skeletonLabel} />
+            <GMSkeleton style={styles.skeletonIcon} />
+            <GMSkeleton style={styles.skeletonTemp} />
+            <GMSkeleton style={styles.skeletonLabel} />
           </View>
           <View style={styles.weatherDivider} />
           <View style={styles.weatherRight}>
-            <View style={styles.skeletonPromo} />
+            <GMSkeleton style={styles.skeletonPromo} />
           </View>
         </View>
       </View>
@@ -440,33 +447,29 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   weatherSkeleton: {
-    opacity: 0.55,
+    backgroundColor: "#FFFFFF",
   },
   skeletonIcon: {
     width: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: "#E5E7EB",
     marginRight: 5,
   },
   skeletonTemp: {
     width: 28,
     height: 14,
     borderRadius: 4,
-    backgroundColor: "#E5E7EB",
     marginRight: 6,
   },
   skeletonLabel: {
     width: 44,
     height: 11,
     borderRadius: 4,
-    backgroundColor: "#E5E7EB",
   },
   skeletonPromo: {
     width: 120,
     height: 11,
     borderRadius: 4,
-    backgroundColor: "#E5E7EB",
     marginRight: 4,
   },
 });

@@ -2,6 +2,8 @@
 
 import type { ReactNode } from "react";
 
+const outerBorder = "rounded-md border-[0.5px] border-[#121212]/40";
+
 /** Compact list chrome for All Merchants CTA / KPI inner pages. */
 export function MerchantAdminListShell({
   description,
@@ -15,7 +17,7 @@ export function MerchantAdminListShell({
   children: ReactNode;
 }) {
   return (
-    <div className="space-y-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       {(description || toolbar) && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           {description ? (
@@ -26,10 +28,10 @@ export function MerchantAdminListShell({
           {toolbar ? <div className="flex flex-wrap items-center gap-2">{toolbar}</div> : null}
         </div>
       )}
-      <div className="overflow-hidden rounded-xl border border-[#121212]/10 bg-white shadow-[0_1px_2px_rgba(18,18,18,0.04)]">
+      <div className={`min-h-0 flex-1 overflow-auto bg-white ${outerBorder}`}>
         {countLabel ? (
-          <div className="flex items-center justify-between border-b border-[#121212]/08 bg-[#F3F7FA] px-3 py-2">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-[#121212]/50">
+          <div className="sticky top-0 z-10 flex items-center justify-between border-b-[0.5px] border-[#121212]/12 bg-[#F7F7F7] px-3 py-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
               {countLabel}
             </p>
           </div>
@@ -46,7 +48,7 @@ function PulseBar({ className }: { className: string }) {
 
 export function MerchantAdminStoreRowSkeletons({ rows = 8 }: { rows?: number }) {
   return (
-    <div className="divide-y divide-[#121212]/06" aria-busy aria-label="Loading stores">
+    <div className="divide-y divide-[#121212]/08" aria-busy aria-label="Loading stores">
       {Array.from({ length: rows }).map((_, i) => (
         <div key={i} className="flex items-center justify-between gap-3 px-3 py-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -91,7 +93,7 @@ export function MerchantAdminPartnerListSkeleton() {
       <div className="divide-y divide-[#121212]/08" aria-busy aria-label="Loading partners">
         {[0, 1, 2].map((group) => (
           <div key={group}>
-            <div className="flex items-center justify-between gap-2 border-b border-[#121212]/06 bg-[#F3F7FA]/80 px-3 py-2.5">
+            <div className="flex items-center justify-between gap-2 border-b-[0.5px] border-[#121212]/10 bg-[#F7F7F7] px-3 py-2.5">
               <div className="flex items-center gap-2">
                 <PulseBar className="h-8 w-8 rounded-lg" />
                 <div className="space-y-1.5">
@@ -101,7 +103,7 @@ export function MerchantAdminPartnerListSkeleton() {
               </div>
               <PulseBar className="h-5 w-16 rounded-full" />
             </div>
-            <div className="divide-y divide-[#121212]/06">
+            <div className="divide-y divide-[#121212]/08">
               {[0, 1].map((row) => (
                 <div key={row} className="flex items-center justify-between gap-3 px-3 py-2.5">
                   <div className="flex min-w-0 flex-1 items-center gap-3">

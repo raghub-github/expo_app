@@ -1,6 +1,13 @@
 /**
  * Food tab — same screen as /home Food listing.
- * Mounted inside the tab navigator so Home→Food is an instant tab switch
- * (Orders/Profile architecture), not a stack push of a cold /home route.
+ *
+ * Direct import (no React.lazy Suspense). The tab navigator already mounts this
+ * route lazily; an extra code-split around FoodMerchantsScreen left customers on
+ * FoodTabLoadingShell skeletons while Metro parsed home/index — even after the
+ * real header chrome was ready.
  */
-export { default } from "@/app/home/index";
+import FoodMerchantsScreen from "@/app/home/index";
+
+export default function FoodTab() {
+  return <FoodMerchantsScreen />;
+}

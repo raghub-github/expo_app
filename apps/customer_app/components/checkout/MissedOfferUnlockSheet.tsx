@@ -132,6 +132,8 @@ export function MissedOfferUnlockSheet({
                 </View>
               </Pressable>
 
+              <View style={styles.optionGap} />
+
               <Pressable style={styles.optionHit} onPress={onAddMoreItems}>
                 <View style={styles.optionRow}>
                 <View style={[styles.optionIconWrap, styles.optionIconWrapMuted]}>
@@ -242,7 +244,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 4,
     paddingBottom: 4,
-    gap: 10,
+  },
+  optionGap: {
+    width: "100%",
+    height: 12,
+    flexShrink: 0,
   },
   optionHit: {
     borderWidth: 1,

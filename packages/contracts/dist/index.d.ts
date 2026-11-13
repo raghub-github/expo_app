@@ -78,6 +78,14 @@ export declare const OtpVerifySchema: z.ZodObject<{
         rider: "rider";
         merchant: "merchant";
     }>>;
+    deviceName: z.ZodOptional<z.ZodString>;
+    deviceOs: z.ZodOptional<z.ZodString>;
+    deviceType: z.ZodOptional<z.ZodEnum<{
+        web: "web";
+        mobile: "mobile";
+        tablet: "tablet";
+    }>>;
+    appSource: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
 export type OtpVerify = z.infer<typeof OtpVerifySchema>;
 /**

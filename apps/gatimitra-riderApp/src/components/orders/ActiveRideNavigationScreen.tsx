@@ -458,6 +458,8 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   const [waitTick, setWaitTick] = useState(() => Date.now());
   const hadActiveOrderRef = useRef(false);
   const adminCancelHandledRef = useRef(false);
+  /** After "Go to orders", never re-open this cancel episode for the same orderId. */
+  const adminCancelDismissedRef = useRef(false);
   const riderSelfCancelIntentRef = useRef(false);
   const formattedOrderIdRef = useRef<string | null>(null);
 
@@ -485,6 +487,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     prevOrderStatusRef.current = undefined;
     hadActiveOrderRef.current = false;
     adminCancelHandledRef.current = false;
+    adminCancelDismissedRef.current = false;
     riderSelfCancelIntentRef.current = false;
     setAdminCancelSheetOpen(false);
     setAdminCancelPenaltyAmount(null);
@@ -526,11 +529,25 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [orderId, queryClient]);
 
   const handleAdminCancelDismiss = useCallback(() => {
-    const label = riderFacingOrderId(formattedOrderIdRef.current, orderId);
-    acknowledgeRiderEvent(cancellationEventId(label || orderId, adminCancelByType));
+    const keys = [orderId, formattedOrderIdRef.current, order?.formattedOrderId]
+      .map((v) => String(v ?? "").trim())
+      .filter(Boolean);
+    const actors = [adminCancelByType, "unknown", "admin", "customer", "system", "rider", null];
+    for (const key of keys) {
+      for (const actor of actors) {
+        acknowledgeRiderEvent(cancellationEventId(key, actor));
+      }
+    }
+    adminCancelDismissedRef.current = true;
+    adminCancelHandledRef.current = true;
     setAdminCancelSheetOpen(false);
+    // Drop cancelled detail so remounts cannot rebuild the sheet from cache.
+    for (const key of keys) {
+      queryClient.removeQueries({ queryKey: ["rider", "orders", "detail", key] });
+    }
+    void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
     router.replace("/(tabs)/orders");
-  }, [adminCancelByType, orderId]);
+  }, [adminCancelByType, order?.formattedOrderId, orderId, queryClient]);
 
   useEffect(() => {
     if (order) {
@@ -539,7 +556,7 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
   }, [order]);
 
   useEffect(() => {
-    if (adminCancelHandledRef.current || isLoading) return;
+    if (adminCancelHandledRef.current || adminCancelDismissedRef.current || isLoading) return;
     // Rider self-cancel already shows RiderCancelSuccessSheet — don't treat 404 as admin cancel.
     if (cancelSuccess) return;
     if (!hadActiveOrderRef.current && !order) return;
@@ -583,10 +600,23 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
       }
       const actor = selfCancel ? "rider" : actorFromOrder;
       const eventId = cancellationEventId(orderKeys[0] || orderId, actor);
+      if (adminCancelDismissedRef.current) return;
       if (await isRiderEventAcknowledged(eventId)) {
         adminCancelHandledRef.current = true;
+        adminCancelDismissedRef.current = true;
         return;
       }
+      // Also treat any prior ack for this order (any actor) as dismissed.
+      for (const key of orderKeys) {
+        for (const a of [actor, "unknown", "admin", "customer", "system", null]) {
+          if (await isRiderEventAcknowledged(cancellationEventId(key, a))) {
+            adminCancelHandledRef.current = true;
+            adminCancelDismissedRef.current = true;
+            return;
+          }
+        }
+      }
+      if (adminCancelDismissedRef.current) return;
       adminCancelHandledRef.current = true;
       void tracker.stop();
       setCancelSheetOpen(false);
@@ -2900,14 +2930,10 @@ export function ActiveRideNavigationScreen({ orderId, mode = "ride" }: Props) {
     setSosSheetOpen(true);
   }, []);
 
+  // Only the explicit open flag — never re-derive from cancelled cache/404 or the
+  // sheet stays up after "Go to orders" and repeats over the next offer.
   const shouldShowAdminCancelSheet =
-    !cancelSuccess &&
-    (adminCancelSheetOpen ||
-      (hadActiveOrderRef.current && isRiderOrderCancelled(order)) ||
-      (hadActiveOrderRef.current &&
-        isError &&
-        isOrderFetchNotFoundError(error) &&
-        adminCancelHandledRef.current));
+    !cancelSuccess && adminCancelSheetOpen && !adminCancelDismissedRef.current;
 
   if (cancelSuccess) {
     return (

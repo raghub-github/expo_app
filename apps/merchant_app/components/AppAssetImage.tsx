@@ -1,51 +1,73 @@
-import { useRef } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { ImageSourcePropType, ImageStyle, StyleProp } from "react-native";
-import { Image as RNImage, StyleSheet } from "react-native";
-import { getAppAssetUrl, useAppAssetUrl } from "@/store/appAssetsStore";
+import { StyleSheet } from "react-native";
+import { Image as ExpoImage } from "expo-image";
+import {
+  getAppAssetDisplayUrls,
+  getAppAssetUrl,
+  useAppAssetUrl,
+} from "@/store/appAssetsStore";
 
 type Props = {
   assetKey: string;
   style?: StyleProp<ImageStyle>;
   resizeMode?: "cover" | "contain" | "stretch" | "repeat" | "center";
   accessibilityLabel?: string;
+  /** Shown when CMS has no uploaded URL for this slot. */
+  fallback?: ReactNode;
 };
 
-function resizeModeToRn(
+function resizeModeToContentFit(
   mode: Props["resizeMode"]
-): "cover" | "contain" | "stretch" | "repeat" | "center" {
-  return mode === "cover" ||
-    mode === "stretch" ||
-    mode === "repeat" ||
-    mode === "center"
-    ? mode
-    : "contain";
+): "cover" | "contain" | "fill" | "none" | "scale-down" {
+  if (mode === "cover") return "cover";
+  if (mode === "stretch") return "fill";
+  if (mode === "center") return "none";
+  return "contain";
 }
 
 /**
- * CMS image from R2 signed URL.
- * Keeps the last good URL so tab switches / asset reloads do not flash blank.
+ * CMS image — uses the asset map from AppAssetsPrefetch (no nested fetch loops).
  */
 export function AppAssetImage({
   assetKey,
   style,
   resizeMode = "contain",
   accessibilityLabel,
+  fallback = null,
 }: Props) {
-  const url = useAppAssetUrl(assetKey);
-  const stickyRef = useRef<string | null>(url);
-  if (url) stickyRef.current = url;
-  const displayUrl = url ?? stickyRef.current;
+  const storeUrl = useAppAssetUrl(assetKey);
+  const secondary = getAppAssetDisplayUrls(assetKey).secondary;
+  const [urlOverride, setUrlOverride] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setUrlOverride(null);
+    setFailed(false);
+  }, [assetKey]);
+
+  const displayUrl = failed ? null : (urlOverride ?? storeUrl);
 
   if (!displayUrl) {
-    return null;
+    return <>{fallback}</>;
   }
 
   return (
-    <RNImage
+    <ExpoImage
       source={{ uri: displayUrl }}
       style={[style, styles.transparent]}
-      resizeMode={resizeModeToRn(resizeMode)}
+      contentFit={resizeModeToContentFit(resizeMode)}
+      cachePolicy="memory-disk"
+      recyclingKey={assetKey}
       accessibilityLabel={accessibilityLabel}
+      transition={0}
+      onError={() => {
+        if (!urlOverride && secondary && secondary !== displayUrl) {
+          setUrlOverride(secondary);
+          return;
+        }
+        setFailed(true);
+      }}
     />
   );
 }

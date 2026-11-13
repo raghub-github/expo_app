@@ -23,6 +23,7 @@ import { AuthProxyImage } from "@/components/AuthProxyImage";
 import { profileSectionTitle } from "@/constants/profileTypography";
 import { resolveImageUrl } from "@/services/outletApi";
 import { LogoutConfirmModal } from "@/components/LogoutConfirmModal";
+import { RevokeStaffAccessSheet } from "@/components/RevokeStaffAccessSheet";
 import { useRouter, useFocusEffect } from "expo-router";
 import { useMerchantNavigate } from "@/lib/merchantNavigation";
 import { Ionicons } from "@expo/vector-icons";
@@ -44,6 +45,7 @@ import { OffersPercentBadgeIcon } from "@/components/OffersPercentBadgeIcon";
 import { LearningCentreIcon } from "@/components/LearningCentreIcon";
 import { isMerchantAuthError } from "@/services/auth.service";
 import { fetchMerchantReferralConfig } from "@/services/referral.service";
+import { isStaffAccessRole, partnerHasPermission } from "@/lib/staffPermissions";
 
 const CONTENT_TOP = 12;
 const TILE_GAP = 12;
@@ -153,12 +155,19 @@ export default function ProfileScreen() {
   const [rushBadge, setRushBadge] = useState<"OFF" | "ON">("OFF");
   const [refreshing, setRefreshing] = useState(false);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
+  const [revokeSheetVisible, setRevokeSheetVisible] = useState(false);
   const [addingChild, setAddingChild] = useState(false);
   const [showReferralUi, setShowReferralUi] = useState(false);
   const navLockRef = useRef(false);
   const navUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const legalUrls = getPartnerLegalUrls();
-  const showAddAnotherChild = (partner?.childStores?.length ?? 0) === 1;
+  const showAddAnotherChild =
+    !isStaffAccessRole(partner) && (partner?.childStores?.length ?? 0) === 1;
+  const canRevokeStaffAccess =
+    (String(partner?.accessRole ?? "").trim().toUpperCase() === "STAFF" ||
+      String(partner?.accessRole ?? "").trim().toUpperCase() === "MANAGER") &&
+    partner?.staffId != null &&
+    Number(partner.staffId) > 0;
 
   useEffect(() => {
     return () => {
@@ -321,6 +330,16 @@ export default function ProfileScreen() {
         router.replace("/(auth)/welcome");
       }}
     />
+    <RevokeStaffAccessSheet
+      visible={revokeSheetVisible}
+      token={token}
+      onClose={() => setRevokeSheetVisible(false)}
+      onRevoked={async () => {
+        setRevokeSheetVisible(false);
+        await signOut();
+        router.replace("/(auth)/welcome");
+      }}
+    />
     <ScrollView
       style={styles.container}
       contentContainerStyle={[
@@ -398,45 +417,71 @@ export default function ProfileScreen() {
       <SectionDivider />
 
       {/* Manage outlet — quick settings grid */}
+      {(partnerHasPermission(partner, "outlet") || partnerHasPermission(partner, "users")) && (
+        <>
       <View style={styles.section}>
         <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Manage outlet</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
+          {partnerHasPermission(partner, "outlet") ? (
+            <>
           <GridCard icon="information-circle-outline" label="Outlet info" onPress={navigate("edit-store")} tileWidth={settingsTileWidth} />
           <GridCard icon="time-outline" label="Outlet timings" onPress={navigate("hours")} tileWidth={settingsTileWidth} />
           <GridCard icon="call-outline" label="Phone numbers" onPress={navigate("business-details")} tileWidth={settingsTileWidth} />
+            </>
+          ) : null}
+          {partnerHasPermission(partner, "users") ? (
           <GridCard icon="people-outline" label="Manage staff" onPress={navigate("staff")} tileWidth={settingsTileWidth} />
+          ) : null}
         </View>
       </View>
 
       <SectionDivider />
+        </>
+      )}
 
       {/* Settings — quick settings grid */}
+      {partnerHasPermission(partner, "outlet") || partnerHasPermission(partner, "operations") ? (
+        <>
       <View style={styles.section}>
         <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Settings</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
+          {partnerHasPermission(partner, "outlet") ? (
+            <>
           <GridCard icon="settings-outline" label="Preferences" onPress={navigate("preferences")} tileWidth={settingsTileWidth} />
           <GridCard icon="notifications-outline" label="Manage communication" onPress={navigate("communications")} tileWidth={settingsTileWidth} />
           <GridCard icon="storefront-outline" label="Delivery settings" onPress={navigate("address")} tileWidth={settingsTileWidth} />
+            </>
+          ) : null}
+          {partnerHasPermission(partner, "operations") ? (
+            <>
           <GridCard icon="flash-outline" label="Rush hour" onPress={navigate("preparation-time")} badge={rushBadge} tileWidth={settingsTileWidth} />
           <GridCard icon="print-outline" label="Thermal printer" onPress={navigate("printer-settings")} tileWidth={settingsTileWidth} />
           <GridCard icon="calendar-outline" label="Schedule off" onPress={navigate("vacation")} tileWidth={settingsTileWidth} />
+            </>
+          ) : null}
         </View>
       </View>
 
       <SectionDivider />
+        </>
+      ) : null}
 
       {/* Marketing — offers & promotions */}
+      {partnerHasPermission(partner, "promo") || partnerHasPermission(partner, "ads") ? (
+        <>
       <View style={styles.section}>
         <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Marketing</Text>
         <View style={[styles.tileGrid, { gap: TILE_GAP }]}>
+          {partnerHasPermission(partner, "promo") ? (
           <GridCard
             customIcon={<OffersPercentBadgeIcon size={26} color={GatiMitraMerchant.textPrimary} />}
             label="Offers & Promotions"
             onPress={navigate("offers")}
             tileWidth={settingsTileWidth}
           />
+          ) : null}
           <GridCard icon="time-outline" label="Recent Activity" onPress={navigate("activity-feed")} tileWidth={settingsTileWidth} />
-          {showReferralUi ? (
+          {showReferralUi && partnerHasPermission(partner, "home") ? (
             <GridCard
               icon="gift-outline"
               label="Refer & Earn"
@@ -446,6 +491,10 @@ export default function ProfileScreen() {
           ) : null}
         </View>
       </View>
+
+      <SectionDivider />
+        </>
+      ) : null}
 
       <SectionDivider />
 
@@ -478,54 +527,62 @@ export default function ProfileScreen() {
 
       <SectionDivider />
 
-      {/* Subscription & Plan */}
-      <View style={styles.section}>
-        <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Plan</Text>
-        <View style={styles.planCard}>
-          <View style={styles.planRow}>
-            <Text style={styles.planLabel}>Current Plan</Text>
-            <View style={[styles.planBadge, subscriptionInactive && styles.planBadgeInactive]}>
-              <Text style={[styles.planBadgeText, subscriptionInactive && styles.planBadgeTextInactive]}>
-                {subscriptionActive
-                  ? (subscriptionPlan?.plan_name ?? getActivePlanDisplayName(subscriptionPlan?.plan_code ?? "FREE"))
-                  : "Inactive"}
-              </Text>
+      {/* Subscription & Plan — owners/managers with payouts only (hide for staff). */}
+      {partnerHasPermission(partner, "payouts") ? (
+        <>
+          <View style={styles.section}>
+            <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Plan</Text>
+            <View style={styles.planCard}>
+              <View style={styles.planRow}>
+                <Text style={styles.planLabel}>Current Plan</Text>
+                <View style={[styles.planBadge, subscriptionInactive && styles.planBadgeInactive]}>
+                  <Text style={[styles.planBadgeText, subscriptionInactive && styles.planBadgeTextInactive]}>
+                    {subscriptionActive
+                      ? (subscriptionPlan?.plan_name ?? getActivePlanDisplayName(subscriptionPlan?.plan_code ?? "FREE"))
+                      : "Inactive"}
+                  </Text>
+                </View>
+              </View>
+              <Pressable
+                onPress={navigate("plans")}
+                style={({ pressed }) => [
+                  styles.planBtn,
+                  pressed && styles.pressed,
+                  GatiMitraMerchant.cursorPointer,
+                ]}
+              >
+                <Text style={styles.planBtnText}>View plans & upgrade</Text>
+                <Ionicons name="arrow-forward" size={18} color="#fff" />
+              </Pressable>
             </View>
           </View>
-          <Pressable
-            onPress={navigate("plans")}
-            style={({ pressed }) => [
-              styles.planBtn,
-              pressed && styles.pressed,
-              GatiMitraMerchant.cursorPointer,
-            ]}
-          >
-            <Text style={styles.planBtnText}>View plans & upgrade</Text>
-            <Ionicons name="arrow-forward" size={18} color="#fff" />
-          </Pressable>
-        </View>
-      </View>
 
-      <SectionDivider />
+          <SectionDivider />
+        </>
+      ) : null}
 
       {/* Account & more — compact list */}
       <View style={styles.section}>
         <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Account & support</Text>
         <View style={styles.menuCard}>
           {([
-            {
-              key: "bank",
-              icon: "card-outline" as const,
-              label: "Bank Account",
-              onPress: navigate("bank"),
-            },
+            ...(partnerHasPermission(partner, "payouts")
+              ? [
+                  {
+                    key: "bank",
+                    icon: "card-outline" as const,
+                    label: "Bank Account",
+                    onPress: navigate("bank"),
+                  },
+                ]
+              : []),
             {
               key: "status",
               icon: "pulse-outline" as const,
               label: "Store Status",
               onPress: navigate("status"),
             },
-            ...(showReferralUi
+            ...(showReferralUi && partnerHasPermission(partner, "home")
               ? [
                   {
                     key: "referral",
@@ -535,12 +592,16 @@ export default function ProfileScreen() {
                   },
                 ]
               : []),
-            {
-              key: "reward",
-              icon: "wallet-outline" as const,
-              label: "Reward",
-              onPress: () => guardedNavPush("/(tabs)/earnings"),
-            },
+            ...(partnerHasPermission(partner, "payouts")
+              ? [
+                  {
+                    key: "reward",
+                    icon: "wallet-outline" as const,
+                    label: "Reward",
+                    onPress: () => guardedNavPush("/(tabs)/earnings"),
+                  },
+                ]
+              : []),
           ]).map((item, index, list) => (
             <Pressable
               key={item.key}
@@ -584,13 +645,51 @@ export default function ProfileScreen() {
         </Pressable>
       ) : null}
 
-      <Pressable
-        onPress={() => setLogoutModalVisible(true)}
-        style={({ pressed }) => [styles.logoutBtn, pressed && styles.pressed, GatiMitraMerchant.cursorPointer]}
-      >
-        <Ionicons name="log-out-outline" size={22} color={GatiMitraMerchant.error} />
-        <Text style={styles.logoutText}>Log out</Text>
-      </Pressable>
+      <View style={styles.accountActions}>
+        <Pressable
+          onPress={() => setLogoutModalVisible(true)}
+          style={({ pressed }) => [
+            styles.logoutCard,
+            pressed && styles.pressed,
+            GatiMitraMerchant.cursorPointer,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Log out"
+        >
+          <View style={styles.logoutIconWrap}>
+            <Ionicons name="log-out-outline" size={22} color={GatiMitraMerchant.error} />
+          </View>
+          <View style={styles.logoutCopy}>
+            <Text style={styles.logoutTitle}>Log out</Text>
+            <Text style={styles.logoutSub}>Sign out of this device securely</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
+        </Pressable>
+
+        {canRevokeStaffAccess ? (
+          <Pressable
+            onPress={() => setRevokeSheetVisible(true)}
+            style={({ pressed }) => [
+              styles.revokeCard,
+              pressed && styles.pressed,
+              GatiMitraMerchant.cursorPointer,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Revoke Staff Access"
+          >
+            <View style={styles.revokeIconWrap}>
+              <Ionicons name="person-remove-outline" size={22} color="#FFFFFF" />
+            </View>
+            <View style={styles.logoutCopy}>
+              <Text style={styles.revokeTitle}>Revoke Staff Access</Text>
+              <Text style={styles.revokeSub}>
+                OTP verify, then remove you from staff list permanently
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.7)" />
+          </Pressable>
+        ) : null}
+      </View>
 
       <Text style={styles.footer}>GatiMitra Partner • v1.0.0</Text>
 
@@ -819,15 +918,69 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.primary,
   },
 
-  logoutBtn: {
+  accountActions: {
+    marginTop: 20,
+    gap: 12,
+  },
+  logoutCard: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    paddingVertical: 12,
-    marginTop: 16,
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: GatiMitraMerchant.cardBg,
+    borderWidth: 1,
+    borderColor: "rgba(220, 38, 38, 0.28)",
+    ...GatiMitraMerchant.shadowSm,
   },
-  logoutText: { fontSize: 14, fontWeight: "600", color: GatiMitraMerchant.error },
+  logoutIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "rgba(220, 38, 38, 0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  logoutCopy: { flex: 1, minWidth: 0 },
+  logoutTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: GatiMitraMerchant.error,
+  },
+  logoutSub: {
+    marginTop: 2,
+    fontSize: 12,
+    color: GatiMitraMerchant.textSecondary,
+  },
+  revokeCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: CARD_RADIUS,
+    backgroundColor: GatiMitraMerchant.navy,
+    ...GatiMitraMerchant.shadowSm,
+  },
+  revokeIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  revokeTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#FFFFFF",
+  },
+  revokeSub: {
+    marginTop: 2,
+    fontSize: 12,
+    color: "rgba(255,255,255,0.78)",
+  },
   footer: {
     textAlign: "center",
     fontSize: 11,

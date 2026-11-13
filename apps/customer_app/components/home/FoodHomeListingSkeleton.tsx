@@ -1,121 +1,113 @@
-import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, StyleSheet, useWindowDimensions, View } from "react-native";
-import Animated, {
-  Easing,
-  runOnJS,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from "react-native-reanimated";
+/**
+ * Listing-body loading under the real Food header.
+ * Card shimmer only — no full-screen ActivityIndicator.
+ */
+import { StyleSheet, View } from "react-native";
 import { AppText } from "@/components/AppText";
-import { GatiMitraColors } from "@/constants/gatimitra";
+import { RestaurantListSkeleton, GMSkeleton } from "@/components/ShimmerSkeleton";
+import {
+  MERCHANT_RAIL_CARD_W,
+  MERCHANT_RAIL_GAP,
+  merchantRailImageHeight,
+} from "@/components/home/MerchantGridCard";
 
 type Props = {
-  /** Optional fixed line (e.g. veg-only). When unset, rotates Zomato-style quotes. */
+  /** Optional fixed line (e.g. veg-only). */
   slogan?: string;
   dark?: boolean;
+  /** Include Recommended-rail placeholders (ListEmpty under header). */
+  showDealRail?: boolean;
 };
 
-const LOADING_QUOTES = [
-  "Creativity is 98% work and 2% coffee breaks",
-  "Looking for great food near you",
-  "Good food takes a moment — hang tight",
-  "Finding the tastiest spots around you",
-  "Hunger called. We're answering.",
-  "Almost there — plating the best nearby",
-] as const;
-
-const ROTATE_MS = 3000;
-
-/**
- * Header stays real; main area shows rotating slogan + spinner
- * instead of a blank white hole (Zomato-style).
- */
-export function FoodHomeListingSkeleton({ slogan, dark = false }: Props) {
-  const { height: windowHeight } = useWindowDimensions();
-  const lines = useMemo(() => {
-    if (slogan?.trim()) return [slogan.trim()];
-    return [...LOADING_QUOTES];
-  }, [slogan]);
-
-  const [quoteIndex, setQuoteIndex] = useState(0);
-  const opacity = useSharedValue(1);
-
-  useEffect(() => {
-    setQuoteIndex(0);
-    opacity.value = 1;
-  }, [lines, opacity]);
-
-  useEffect(() => {
-    if (lines.length < 2) return;
-
-    const bump = () => {
-      setQuoteIndex((i) => (i + 1) % lines.length);
-      opacity.value = withTiming(1, { duration: 280, easing: Easing.out(Easing.quad) });
-    };
-
-    const timer = setInterval(() => {
-      opacity.value = withTiming(0, { duration: 200, easing: Easing.out(Easing.quad) }, (ok) => {
-        if (ok) runOnJS(bump)();
-      });
-    }, ROTATE_MS);
-
-    return () => clearInterval(timer);
-  }, [lines, opacity]);
-
-  const textStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-  }));
-
-  const text = lines[quoteIndex % lines.length] ?? LOADING_QUOTES[0];
-  // Fill the list body so loading never reads as an empty white hole.
-  const minHeight = Math.max(320, Math.round(windowHeight * 0.42));
+export function FoodHomeListingSkeleton({
+  slogan,
+  dark = false,
+  showDealRail = true,
+}: Props) {
+  const imageH = merchantRailImageHeight(MERCHANT_RAIL_CARD_W);
 
   return (
     <View
-      style={[styles.root, dark && styles.rootDark, { minHeight }]}
+      style={styles.root}
       accessibilityLabel="Loading restaurants"
     >
-      <Animated.View style={[styles.sloganWrap, textStyle]}>
-        <AppText style={[styles.slogan, dark && styles.sloganDark]}>{text}</AppText>
-      </Animated.View>
-      <ActivityIndicator
-        size="large"
-        color={dark ? "#86EFAC" : GatiMitraColors.primaryMint}
-        style={styles.spinner}
-      />
+      {slogan?.trim() ? (
+        <AppText style={[styles.slogan, dark && styles.sloganDark]}>{slogan.trim()}</AppText>
+      ) : null}
+      {showDealRail ? (
+        <View style={styles.dealSection}>
+          <GMSkeleton dark={dark} style={styles.sectionTitle} />
+          <View style={styles.dealRow}>
+            {[0, 1].map((i) => (
+              <View key={i} style={[styles.dealCard, { width: MERCHANT_RAIL_CARD_W }]}>
+                <GMSkeleton
+                  dark={dark}
+                  style={{ width: MERCHANT_RAIL_CARD_W, height: imageH, borderRadius: 14 }}
+                />
+                <GMSkeleton dark={dark} style={styles.dealName} />
+                <GMSkeleton dark={dark} style={styles.dealMeta} />
+              </View>
+            ))}
+          </View>
+        </View>
+      ) : null}
+      <GMSkeleton dark={dark} style={styles.nearTitle} />
+      <RestaurantListSkeleton count={2} dark={dark} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: {
-    paddingTop: 72,
-    paddingBottom: 80,
-    backgroundColor: "transparent",
-    alignItems: "center",
-    justifyContent: "flex-start",
-    paddingHorizontal: 36,
-  },
-  rootDark: {
-    backgroundColor: "transparent",
-  },
-  sloganWrap: {
-    minHeight: 56,
-    justifyContent: "center",
-    alignItems: "center",
+    paddingTop: 8,
+    paddingBottom: 24,
+    minHeight: 420,
   },
   slogan: {
     textAlign: "center",
-    fontSize: 16,
-    lineHeight: 24,
+    fontSize: 14,
+    lineHeight: 20,
     fontWeight: "500",
     color: "#94A3B8",
+    paddingHorizontal: 28,
+    marginBottom: 14,
   },
   sloganDark: {
     color: "#94A3B8",
   },
-  spinner: {
-    marginTop: 18,
+  dealSection: {
+    paddingBottom: 12,
+  },
+  sectionTitle: {
+    marginLeft: 16,
+    marginBottom: 12,
+    height: 14,
+    width: 168,
+    borderRadius: 6,
+  },
+  dealRow: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    gap: MERCHANT_RAIL_GAP,
+  },
+  dealCard: {
+    gap: 8,
+  },
+  dealName: {
+    height: 14,
+    width: "88%",
+    borderRadius: 6,
+  },
+  dealMeta: {
+    height: 12,
+    width: "55%",
+    borderRadius: 6,
+  },
+  nearTitle: {
+    marginLeft: 16,
+    marginBottom: 10,
+    height: 14,
+    width: 160,
+    borderRadius: 6,
   },
 });

@@ -16,6 +16,7 @@ import {
 } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
+import { useRequirePartnerPermission } from "@/hooks/useRequirePartnerPermission";
 import { useStoreStatus } from "@/context/StoreStatusContext";
 import {
   fetchGrowthSummary,
@@ -241,6 +242,7 @@ function GrowthBarChart({ buckets, caption }: { buckets: GrowthBucket[]; caption
 }
 
 export default function GrowthScreen() {
+  const growthAllowed = useRequirePartnerPermission("home", "/(tabs)/orders");
   const scrollBottom = TAB_BAR_SCROLL_CONTENT_PADDING_LOOSE;
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
@@ -405,6 +407,8 @@ export default function GrowthScreen() {
       Alert.alert("Email", "No mail app available.");
     });
   }, []);
+
+  if (!growthAllowed) return null;
 
   if (!storeId || !token) {
     return (

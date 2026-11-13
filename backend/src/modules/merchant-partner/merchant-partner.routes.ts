@@ -265,6 +265,13 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             return reply.code(401).send({ error: "merchant_required" });
           }
           const parentMerchantId = req.auth.sub;
+          const accessRole =
+            req.auth.merchant_access_role === "MANAGER" || req.auth.merchant_access_role === "STAFF"
+              ? req.auth.merchant_access_role
+              : ("OWNER" as const);
+          const staffId = req.auth.merchant_staff_id ?? null;
+          const scopedStoreId = req.auth.merchant_store_id ?? null;
+          const { permissionsForRole } = await import("../auth/merchant-account-resolve.js");
           const sql = getSql();
           const parentRows = await sql`
             SELECT id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone,
@@ -299,7 +306,7 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         for (const row of paymentRows) {
           if (row?.merchant_store_id != null) paymentByStore.set(Number(row.merchant_store_id), String(row?.status ?? "pending"));
         }
-          const childStores = (storeRows as any[]).map((s) => {
+          let childStores = (storeRows as any[]).map((s) => {
             const step = s?.current_step != null ? Number(s.current_step) : 1;
             const total = s?.total_steps != null ? Number(s.total_steps) : 9;
           const rawStatus = s?.id != null ? paymentByStore.get(Number(s.id)) ?? "pending" : "pending";
@@ -320,6 +327,9 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
               registration_status: s?.registration_status ?? "IN_PROGRESS",
             };
           });
+          if (accessRole !== "OWNER" && scopedStoreId != null) {
+            childStores = childStores.filter((s) => Number(s.id) === Number(scopedStoreId));
+          }
         // Count active user sessions for this merchant user (all stores).
         let activeDevices = 0;
         try {
@@ -347,6 +357,9 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           },
           childStores,
           activeDevices,
+          accessRole,
+          staffId,
+          permissions: permissionsForRole(accessRole),
         };
       });
 
@@ -357,29 +370,389 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
         const sql = getSql();
         try {
-          const rows = await sql`
-            SELECT id,
-                   user_id,
-                   parent_store_id,
-                   child_store_id,
-                   device_type,
-                   device_name,
-                   os,
-                   ip_address,
-                   location,
-                   login_method,
-                   login_time,
-                   last_active,
-                   is_active,
-                   device_id
-            FROM user_device_sessions
-            WHERE user_id = ${req.auth.sub} AND is_active = TRUE
-            ORDER BY last_active DESC, login_time DESC
-          `;
-          return rows;
+          try {
+            const rows = await sql`
+              SELECT id,
+                     user_id,
+                     parent_store_id,
+                     child_store_id,
+                     device_type,
+                     device_name,
+                     os,
+                     ip_address,
+                     location,
+                     login_method,
+                     login_time,
+                     last_active,
+                     is_active,
+                     device_id,
+                     app_source,
+                     user_agent
+              FROM user_device_sessions
+              WHERE user_id = ${req.auth.sub} AND is_active = TRUE
+              ORDER BY last_active DESC, login_time DESC
+            `;
+            return rows;
+          } catch {
+            // Pre-0650 schema without app_source/user_agent
+            const rows = await sql`
+              SELECT id,
+                     user_id,
+                     parent_store_id,
+                     child_store_id,
+                     device_type,
+                     device_name,
+                     os,
+                     ip_address,
+                     location,
+                     login_method,
+                     login_time,
+                     last_active,
+                     is_active,
+                     device_id
+              FROM user_device_sessions
+              WHERE user_id = ${req.auth.sub} AND is_active = TRUE
+              ORDER BY last_active DESC, login_time DESC
+            `;
+            return rows;
+          }
         } catch {
           return [];
         }
+      });
+
+      /** Refresh current device capture (name/OS) without a full re-login. */
+      protectedApp.post("/user-sessions/sync-device", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const body = z
+          .object({
+            deviceId: z.string().min(6),
+            deviceName: z.string().max(120).optional(),
+            deviceOs: z.string().max(64).optional(),
+            deviceType: z.enum(["mobile", "tablet", "web"]).optional(),
+            appSource: z.string().max(32).optional(),
+          })
+          .parse(req.body ?? {});
+        const deviceId = body.deviceId.trim();
+        const deviceName = (body.deviceName ?? "").trim().slice(0, 120) || null;
+        const deviceOs = (body.deviceOs ?? "").trim().slice(0, 64) || null;
+        const deviceType = body.deviceType ?? "mobile";
+        const appSource = (body.appSource ?? "merchant_app").trim().slice(0, 32);
+        if (!deviceName && !deviceOs) {
+          return { ok: true, updated: 0 };
+        }
+        const sql = getSql();
+        try {
+          try {
+            const updated = await sql`
+              UPDATE user_device_sessions
+              SET
+                last_active = now(),
+                device_name = COALESCE(${deviceName}, device_name),
+                os = COALESCE(${deviceOs}, os),
+                device_type = ${deviceType},
+                app_source = ${appSource}
+              WHERE user_id = ${req.auth.sub}
+                AND device_id = ${deviceId}
+                AND is_active = TRUE
+              RETURNING id
+            `;
+            return { ok: true, updated: Array.isArray(updated) ? updated.length : 0 };
+          } catch {
+            const updated = await sql`
+              UPDATE user_device_sessions
+              SET
+                last_active = now(),
+                device_name = COALESCE(${deviceName}, device_name),
+                os = COALESCE(${deviceOs}, os),
+                device_type = ${deviceType}
+              WHERE user_id = ${req.auth.sub}
+                AND device_id = ${deviceId}
+                AND is_active = TRUE
+              RETURNING id
+            `;
+            return { ok: true, updated: Array.isArray(updated) ? updated.length : 0 };
+          }
+        } catch {
+          return reply.code(500).send({ error: "sync_failed" });
+        }
+      });
+
+      /** Sensitive-action OTP: owner phone+email, or staff phone for self_revoke. */
+      protectedApp.post("/action-otp/send", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const body = z
+          .object({
+            purpose: z.enum([
+              "invite",
+              "remove_staff",
+              "logout_device",
+              "logout_all",
+              "self_revoke",
+            ]),
+          })
+          .parse(req.body ?? {});
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+
+        let phoneE164 = "";
+        let email: string | null = null;
+
+        if (body.purpose === "self_revoke") {
+          const accessRole = req.auth.merchant_access_role;
+          const staffIdRaw = req.auth.merchant_staff_id as unknown;
+          const staffId =
+            typeof staffIdRaw === "number" && Number.isFinite(staffIdRaw)
+              ? staffIdRaw
+              : typeof staffIdRaw === "string" && /^\d+$/.test(staffIdRaw.trim())
+                ? Number(staffIdRaw.trim())
+                : null;
+          if (
+            (accessRole !== "STAFF" && accessRole !== "MANAGER") ||
+            staffId == null ||
+            staffId < 1
+          ) {
+            return reply.code(403).send({
+              error: "forbidden",
+              message: "Only invited staff can revoke their own access.",
+            });
+          }
+          // Prefer JWT login phone (the number staff signed in with), then store_staff row.
+          const jwtPhone = String(req.auth.phone ?? "").trim();
+          const staffRows = await sql`
+            SELECT ss.phone_number
+            FROM store_staff ss
+            INNER JOIN merchant_stores ms ON ms.id = ss.store_id
+            WHERE ss.id = ${staffId}
+              AND ms.parent_id = ${parentId}
+              AND ms.deleted_at IS NULL
+            LIMIT 1
+          `;
+          const staffPhone = String(
+            (staffRows[0] as { phone_number?: string | null } | undefined)?.phone_number ?? ""
+          ).trim();
+          const pickPhone = jwtPhone || staffPhone;
+          const phoneDigits = pickPhone.replace(/\D/g, "");
+          phoneE164 = pickPhone.startsWith("+")
+            ? pickPhone
+            : phoneDigits.length >= 10
+              ? `+91${phoneDigits.slice(-10)}`
+              : "";
+          if (!phoneE164) {
+            return reply.code(400).send({
+              error: "phone_missing",
+              message: "Your staff phone is missing. Ask the owner to update your contact.",
+            });
+          }
+        } else {
+          // Owner-confirm actions (invite staff/manager, remove, logout device/all).
+          // OTP MUST go to the OWNER phone + email only — never the invitee / staff number.
+          const parents = await sql`
+            SELECT registered_phone, owner_email
+            FROM merchant_parents
+            WHERE id = ${parentId}
+            LIMIT 1
+          `;
+          const parent = parents[0] as
+            | { registered_phone?: string | null; owner_email?: string | null }
+            | undefined;
+          const registeredPhone = String(parent?.registered_phone ?? "").trim();
+          const ownerEmail = parent?.owner_email != null ? String(parent.owner_email).trim() : "";
+          // Prefer registered owner phone; if owner is signed in, JWT phone is a safe fallback
+          // (same person). Never use invitee phone — it is not even accepted on this route.
+          const accessRole = req.auth.merchant_access_role ?? "OWNER";
+          const jwtPhone = String(req.auth.phone ?? "").trim();
+          // Owner session may use JWT phone if registered_phone is empty; managers always
+          // require the stored owner registered_phone (never the manager's own number).
+          const phoneRaw =
+            registeredPhone || (accessRole === "OWNER" ? jwtPhone : "");
+          const phoneDigits = phoneRaw.replace(/\D/g, "");
+          phoneE164 = phoneRaw.startsWith("+")
+            ? phoneRaw
+            : phoneDigits.length >= 10
+              ? `+91${phoneDigits.slice(-10)}`
+              : "";
+          email = ownerEmail || null;
+          if (!phoneE164) {
+            return reply.code(400).send({
+              error: "phone_missing",
+              message:
+                "Owner phone is required to send OTP. Update owner contact details and try again.",
+            });
+          }
+          req.log?.info?.(
+            {
+              purpose: body.purpose,
+              phoneTail: phoneE164.replace(/\D/g, "").slice(-4),
+              hasOwnerEmail: Boolean(email),
+            },
+            "action-otp: sending to OWNER phone/email (not invitee)"
+          );
+        }
+
+        try {
+          const { sendMerchantActionOtp } = await import("../../lib/merchant-action-otp.js");
+          const sent = await sendMerchantActionOtp({
+            userId: req.auth.sub,
+            purpose: body.purpose,
+            phoneE164,
+            email: email || null,
+            log: req.log,
+          });
+          return reply.send(sent);
+        } catch (e: any) {
+          const status = typeof e?.statusCode === "number" ? e.statusCode : 500;
+          return reply.code(status).send({
+            error: "otp_send_failed",
+            message: e instanceof Error ? e.message : "Could not send OTP.",
+          });
+        }
+      });
+
+      protectedApp.post("/action-otp/verify", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const body = z
+          .object({
+            requestId: z.string().min(6),
+            otp: z.string().min(4).max(8),
+            purpose: z
+              .enum([
+                "invite",
+                "remove_staff",
+                "logout_device",
+                "logout_all",
+                "self_revoke",
+              ])
+              .optional(),
+          })
+          .parse(req.body ?? {});
+        const { verifyMerchantActionOtp } = await import("../../lib/merchant-action-otp.js");
+        const result = verifyMerchantActionOtp({
+          userId: req.auth.sub,
+          requestId: body.requestId,
+          otp: body.otp,
+          purpose: body.purpose,
+        });
+        if (!result.ok) {
+          return reply.code(400).send({ error: "invalid_otp", message: result.reason });
+        }
+        return reply.send({ ok: true });
+      });
+
+      /**
+       * POST /merchant-partner/me/self-revoke — invited staff/manager removes themselves
+       * after OTP (deletes store_staff row + revokes their device sessions).
+       */
+      protectedApp.post("/me/self-revoke", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        const accessRole = req.auth.merchant_access_role;
+        const staffIdRaw = req.auth.merchant_staff_id as unknown;
+        const staffId =
+          typeof staffIdRaw === "number" && Number.isFinite(staffIdRaw)
+            ? staffIdRaw
+            : typeof staffIdRaw === "string" && /^\d+$/.test(String(staffIdRaw).trim())
+              ? Number(String(staffIdRaw).trim())
+              : null;
+        if (
+          (accessRole !== "STAFF" && accessRole !== "MANAGER") ||
+          staffId == null ||
+          staffId < 1
+        ) {
+          return reply.code(403).send({
+            error: "forbidden",
+            message: "Only invited staff can revoke their own access.",
+          });
+        }
+        const body = z
+          .object({
+            requestId: z.string().min(6),
+            otp: z.string().min(4).max(8),
+          })
+          .parse(req.body ?? {});
+
+        const { verifyMerchantActionOtp } = await import("../../lib/merchant-action-otp.js");
+        const otpResult = verifyMerchantActionOtp({
+          userId: req.auth.sub,
+          requestId: body.requestId,
+          otp: body.otp,
+          purpose: "self_revoke",
+        });
+        if (!otpResult.ok) {
+          return reply.code(400).send({ error: "invalid_otp", message: otpResult.reason });
+        }
+
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+
+        const existingRows = await sql`
+          SELECT ss.*
+          FROM store_staff ss
+          INNER JOIN merchant_stores ms ON ms.id = ss.store_id
+          WHERE ss.id = ${staffId}
+            AND ms.parent_id = ${parentId}
+            AND ms.deleted_at IS NULL
+          LIMIT 1
+        `;
+        const existing = existingRows[0] as { id?: number; store_id?: number } | undefined;
+        if (!existing) {
+          return reply.code(404).send({ error: "staff_not_found", message: "Staff access already removed." });
+        }
+        const storeId = Number(existing.store_id);
+
+        const {
+          invalidateMerchantStaffActiveCache,
+          writeMerchantStaffActiveCache,
+          revokeMerchantStaffDeviceSessions,
+        } = await import("../../lib/merchant-staff-session.js");
+        invalidateMerchantStaffActiveCache(staffId);
+        writeMerchantStaffActiveCache(staffId, false);
+
+        await sql`
+          DELETE FROM store_staff
+          WHERE id = ${staffId}
+        `;
+
+        try {
+          await revokeMerchantStaffDeviceSessions(sql, {
+            parentMerchantId: req.auth.sub,
+            staffId,
+          });
+        } catch (revokeErr) {
+          req.log?.warn?.(
+            { err: revokeErr, staffId },
+            "self-revoke: session revoke failed (row already removed)"
+          );
+        }
+
+        try {
+          const parentRow = await getParentForAudit(sql, parentId);
+          const auditCtx = getAuditContext(req, parentRow, parentId);
+          await insertAuditLog(
+            sql,
+            "STORE",
+            storeId,
+            "DELETE",
+            auditCtx,
+            "staff",
+            existing,
+            null,
+            { section: "staff", route: "POST /merchant-partner/me/self-revoke" }
+          );
+        } catch {
+          /* audit best-effort */
+        }
+
+        return reply.send({ ok: true });
       });
 
       const logoutSessionsBody = z.object({
@@ -401,29 +774,27 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             return reply.code(400).send({ error: "invalid_session_ids" });
           }
           try {
-            let revoked: { device_id?: string | null }[] = [];
-            try {
-              revoked = (await sql`
-                UPDATE user_device_sessions
-                SET
-                  is_active = FALSE,
-                  last_active = now(),
-                  logged_out_at = now(),
-                  revoked_by = 'merchant_self'
-                WHERE user_id = ${req.auth.sub} AND id IN ${sql(ids)} AND is_active = TRUE
-                RETURNING device_id
-              `) as { device_id?: string | null }[];
-            } catch {
-              revoked = (await sql`
-                UPDATE user_device_sessions
-                SET is_active = FALSE, last_active = now()
-                WHERE user_id = ${req.auth.sub} AND id IN ${sql(ids)} AND is_active = TRUE
-                RETURNING device_id
-              `) as { device_id?: string | null }[];
-            }
+            // Hard-delete so the device disappears from Contact details list permanently.
+            const revoked = (await sql`
+              DELETE FROM user_device_sessions
+              WHERE user_id = ${req.auth.sub} AND id IN ${sql(ids)}
+              RETURNING device_id
+            `) as { device_id?: string | null }[];
             for (const row of revoked) {
               const deviceId = row.device_id != null ? String(row.device_id).trim() : "";
-              if (deviceId) writeDeviceSessionCache(req.auth.sub, deviceId, false);
+              if (deviceId) {
+                writeDeviceSessionCache(req.auth.sub, deviceId, false);
+                // Best-effort: clear matching partnersite browser session by same device_id.
+                try {
+                  await sql`
+                    UPDATE merchant_sessions
+                    SET is_active = FALSE, logged_out_at = now(), updated_at = now()
+                    WHERE device_id = ${deviceId} AND is_active = TRUE
+                  `;
+                } catch {
+                  /* merchant_sessions may not exist in this env */
+                }
+              }
             }
             return { ok: true, removed: revoked.length };
           } catch {
@@ -450,62 +821,47 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const includeCurrent = body?.includeCurrent ?? false;
           const currentDeviceId = req.auth.device_id;
           try {
-            const deactivate = async (exceptDeviceId: string | null) => {
-              try {
-                if (exceptDeviceId) {
-                  return (await sql`
-                    UPDATE user_device_sessions
-                    SET
-                      is_active = FALSE,
-                      last_active = now(),
-                      logged_out_at = now(),
-                      revoked_by = 'merchant_logout_all'
-                    WHERE user_id = ${userId}
-                      AND is_active = TRUE
-                      AND device_id IS DISTINCT FROM ${exceptDeviceId}
-                    RETURNING device_id
-                  `) as { device_id?: string | null }[];
-                }
+            const hardDelete = async (exceptDeviceId: string | null) => {
+              if (exceptDeviceId) {
                 return (await sql`
-                  UPDATE user_device_sessions
-                  SET
-                    is_active = FALSE,
-                    last_active = now(),
-                    logged_out_at = now(),
-                    revoked_by = 'merchant_logout_all'
-                  WHERE user_id = ${userId} AND is_active = TRUE
-                  RETURNING device_id
-                `) as { device_id?: string | null }[];
-              } catch {
-                if (exceptDeviceId) {
-                  return (await sql`
-                    UPDATE user_device_sessions
-                    SET is_active = FALSE, last_active = now()
-                    WHERE user_id = ${userId}
-                      AND is_active = TRUE
-                      AND device_id IS DISTINCT FROM ${exceptDeviceId}
-                    RETURNING device_id
-                  `) as { device_id?: string | null }[];
-                }
-                return (await sql`
-                  UPDATE user_device_sessions
-                  SET is_active = FALSE, last_active = now()
-                  WHERE user_id = ${userId} AND is_active = TRUE
+                  DELETE FROM user_device_sessions
+                  WHERE user_id = ${userId}
+                    AND device_id IS DISTINCT FROM ${exceptDeviceId}
                   RETURNING device_id
                 `) as { device_id?: string | null }[];
               }
+              return (await sql`
+                DELETE FROM user_device_sessions
+                WHERE user_id = ${userId}
+                RETURNING device_id
+              `) as { device_id?: string | null }[];
             };
 
-            const revoked = await deactivate(
+            const revoked = await hardDelete(
               !includeCurrent && currentDeviceId ? currentDeviceId : null
             );
             invalidateDeviceSessionCache(req.auth.sub);
             for (const row of revoked) {
               const deviceId = row.device_id != null ? String(row.device_id).trim() : "";
-              if (deviceId) writeDeviceSessionCache(req.auth.sub, deviceId, false);
+              if (deviceId) {
+                writeDeviceSessionCache(req.auth.sub, deviceId, false);
+              }
             }
             if (includeCurrent && currentDeviceId) {
               writeDeviceSessionCache(req.auth.sub, currentDeviceId, false);
+            }
+            // Deactivate all partnersite browser sessions for this merchant account (not only rows tied to user_device_sessions).
+            try {
+              await sql`
+                UPDATE merchant_sessions
+                SET is_active = FALSE, logged_out_at = now(), updated_at = now()
+                WHERE is_active = TRUE
+                  AND merchant_id IN (
+                    SELECT id FROM merchant_parents WHERE parent_merchant_id = ${userId}
+                  )
+              `;
+            } catch {
+              /* merchant_sessions may not exist in this env */
             }
             return { ok: true, removed: revoked.length };
           } catch {
@@ -1564,7 +1920,12 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         if (req.auth?.role !== "merchant" || !req.auth?.sub) {
           return reply.code(401).send({ error: "merchant_required" });
         }
+        const { denyUnlessMerchantPermission, denyUnlessStoreInScope } = await import(
+          "./merchant-staff-access.js"
+        );
+        if (denyUnlessMerchantPermission(reply, req.auth, "users")) return;
         const storeId = Number(req.params.storeId);
+        if (denyUnlessStoreInScope(reply, req.auth, storeId)) return;
         if (!Number.isInteger(storeId) || storeId < 1) {
           return reply.code(400).send({ error: "invalid_store_id" });
         }
@@ -1591,13 +1952,25 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           if (req.auth?.role !== "merchant" || !req.auth?.sub) {
             return reply.code(401).send({ error: "merchant_required" });
           }
+          const { denyUnlessMerchantPermission, denyUnlessStoreInScope } = await import(
+            "./merchant-staff-access.js"
+          );
+          if (denyUnlessMerchantPermission(reply, req.auth, "users")) return;
           const storeId = Number(req.params.storeId);
+          if (denyUnlessStoreInScope(reply, req.auth, storeId)) return;
           if (!Number.isInteger(storeId) || storeId < 1) {
             return reply.code(400).send({ error: "invalid_store_id" });
           }
           const { name, phone_number, role } = req.body || {};
           if (!name || !phone_number || !role) {
             return reply.code(400).send({ error: "missing_fields" });
+          }
+          const roleNorm = String(role).trim().toUpperCase();
+          if (roleNorm !== "STAFF" && roleNorm !== "MANAGER") {
+            return reply.code(400).send({
+              error: "invalid_role",
+              message: "Invite role must be Staff or Manager. Owner is the registered account only.",
+            });
           }
           const sql = getSql();
           const parentId = await getPartnerParentId(sql, req.auth.sub);
@@ -1606,9 +1979,57 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
           `;
           if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+
+          const phoneDigits = String(phone_number).replace(/\D/g, "");
+          const phoneLast10 = phoneDigits.slice(-10);
+          if (phoneLast10.length !== 10) {
+            return reply.code(400).send({ error: "invalid_phone", message: "Enter a valid phone number." });
+          }
+
+          // Unique phone across owner + all staff/managers for this merchant brand.
+          const ownerRows = await sql`
+            SELECT registered_phone, registered_phone_normalized
+            FROM merchant_parents
+            WHERE id = ${parentId}
+            LIMIT 1
+          `;
+          const ownerPhone = String(
+            (ownerRows[0] as { registered_phone?: string | null; registered_phone_normalized?: string | null } | undefined)
+              ?.registered_phone_normalized ??
+              (ownerRows[0] as { registered_phone?: string | null } | undefined)?.registered_phone ??
+              ""
+          ).replace(/\D/g, "");
+          if (ownerPhone.slice(-10) === phoneLast10) {
+            return reply.code(409).send({
+              error: "phone_already_owner",
+              message: "This number is already registered as the Owner. Use a different number.",
+            });
+          }
+          const dupStaff = await sql`
+            SELECT ss.id, ss.name, ss.role, ss.store_id
+            FROM store_staff ss
+            INNER JOIN merchant_stores ms ON ms.id = ss.store_id
+            WHERE ms.parent_id = ${parentId}
+              AND ms.deleted_at IS NULL
+              AND ss.status = TRUE
+              AND (
+                regexp_replace(COALESCE(ss.phone_number, ''), '\\D', '', 'g') = ${phoneDigits}
+                OR regexp_replace(COALESCE(ss.phone_number, ''), '\\D', '', 'g') LIKE ${"%" + phoneLast10}
+              )
+            LIMIT 1
+          `;
+          if (dupStaff.length > 0) {
+            const row = dupStaff[0] as { name?: string; role?: string };
+            const existingRole = String(row.role ?? "").toUpperCase() === "MANAGER" ? "Manager" : "Staff";
+            return reply.code(409).send({
+              error: "phone_already_invited",
+              message: `This number is already invited as ${existingRole}${row.name ? ` (${row.name})` : ""}. Each number can only have one role.`,
+            });
+          }
+
           const inserted = await sql`
             INSERT INTO store_staff (store_id, name, phone_number, role)
-            VALUES (${storeId}, ${name}, ${phone_number}, ${role})
+            VALUES (${storeId}, ${String(name).trim()}, ${phone_number}, ${roleNorm})
             RETURNING id, store_id, name, phone_number, role, status, created_at, updated_at
           `;
           const staff = inserted[0] as any;
@@ -7929,7 +8350,12 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           if (req.auth?.role !== "merchant" || !req.auth?.sub) {
             return reply.code(401).send({ error: "merchant_required" });
           }
+          const { denyUnlessMerchantPermission, denyUnlessStoreInScope } = await import(
+            "./merchant-staff-access.js"
+          );
+          if (denyUnlessMerchantPermission(reply, req.auth, "users")) return;
           const storeId = Number(req.params.storeId);
+          if (denyUnlessStoreInScope(reply, req.auth, storeId)) return;
           const staffId = Number(req.params.staffId);
           if (!Number.isInteger(storeId) || storeId < 1 || !Number.isInteger(staffId) || staffId < 1) {
             return reply.code(400).send({ error: "invalid_id" });
@@ -7941,6 +8367,14 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
             SELECT id FROM merchant_stores WHERE id = ${storeId} AND parent_id = ${parentId} AND deleted_at IS NULL LIMIT 1
           `;
           if (storeRows.length === 0) return reply.code(404).send({ error: "store_not_found" });
+          if (
+            req.auth.merchant_access_role === "STAFF" ||
+            (req.auth.merchant_access_role === "MANAGER" &&
+              typeof req.body?.role === "string" &&
+              String(req.body.role).toUpperCase() === "OWNER")
+          ) {
+            return reply.code(403).send({ error: "forbidden", message: "Cannot assign owner role." });
+          }
           const existingRows = await sql`
             SELECT * FROM store_staff WHERE id = ${staffId} AND store_id = ${storeId} LIMIT 1
           `;
@@ -7983,14 +8417,19 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
         }
       );
 
-      /** DELETE /merchant-partner/stores/:storeId/staff/:staffId — soft-delete staff. */
+      /** DELETE /merchant-partner/stores/:storeId/staff/:staffId — hard-delete staff row. */
       protectedApp.delete<{ Params: { storeId: string; staffId: string } }>(
         "/stores/:storeId/staff/:staffId",
         async (req, reply) => {
           if (req.auth?.role !== "merchant" || !req.auth?.sub) {
             return reply.code(401).send({ error: "merchant_required" });
           }
+          const { denyUnlessMerchantPermission, denyUnlessStoreInScope } = await import(
+            "./merchant-staff-access.js"
+          );
+          if (denyUnlessMerchantPermission(reply, req.auth, "users")) return;
           const storeId = Number(req.params.storeId);
+          if (denyUnlessStoreInScope(reply, req.auth, storeId)) return;
           const staffId = Number(req.params.staffId);
           if (!Number.isInteger(storeId) || storeId < 1 || !Number.isInteger(staffId) || staffId < 1) {
             return reply.code(400).send({ error: "invalid_id" });
@@ -8007,27 +8446,117 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           `;
           const existing = existingRows[0] as any;
           if (!existing) return reply.code(404).send({ error: "staff_not_found" });
+          const {
+            invalidateMerchantStaffActiveCache,
+            writeMerchantStaffActiveCache,
+            revokeMerchantStaffDeviceSessions,
+          } = await import("../../lib/merchant-staff-session.js");
+          // Mark inactive before DELETE so in-flight JWTs fail the auth staff check immediately.
+          invalidateMerchantStaffActiveCache(staffId);
+          writeMerchantStaffActiveCache(staffId, false);
+          // Hard delete so the phone can be re-invited and the row is gone from DB.
           await sql`
-            UPDATE store_staff
-            SET status = FALSE, updated_at = NOW()
+            DELETE FROM store_staff
             WHERE id = ${staffId} AND store_id = ${storeId}
           `;
+          // Kick any devices still signed in as this invite (JWT shares owner sub).
+          try {
+            await revokeMerchantStaffDeviceSessions(sql, {
+              parentMerchantId: req.auth.sub,
+              staffId,
+            });
+          } catch (revokeErr) {
+            req.log?.warn?.(
+              { err: revokeErr, staffId, storeId },
+              "staff delete: session revoke failed (row already removed)"
+            );
+          }
           const parentRow = await getParentForAudit(sql, parentId);
           const auditCtx = getAuditContext(req, parentRow, parentId);
           await insertAuditLog(
             sql,
             "STORE",
             storeId,
-            "UPDATE",
+            "DELETE",
             auditCtx,
             "staff",
             existing,
-            { ...existing, status: false },
+            null,
             { section: "staff", route: "DELETE /merchant-partner/stores/:storeId/staff/:staffId" }
           );
           return reply.send({ ok: true });
         }
       );
+
+      /** PATCH /merchant-partner/me/owner-contact — update owner name / phone / email. */
+      protectedApp.patch("/me/owner-contact", async (req, reply) => {
+        if (req.auth?.role !== "merchant" || !req.auth?.sub) {
+          return reply.code(401).send({ error: "merchant_required" });
+        }
+        if (req.auth.merchant_access_role === "MANAGER" || req.auth.merchant_access_role === "STAFF") {
+          return reply.code(403).send({ error: "owner_required", message: "Only the owner can edit owner contact." });
+        }
+        const body = z
+          .object({
+            owner_name: z.string().min(1).max(120).optional(),
+            owner_email: z.string().email().max(200).optional().or(z.literal("")),
+            registered_phone: z.string().min(10).max(20).optional(),
+          })
+          .parse(req.body ?? {});
+        const sql = getSql();
+        const parentId = await getPartnerParentId(sql, req.auth.sub);
+        if (parentId == null) return reply.code(404).send({ error: "partner_not_found" });
+
+        const name = body.owner_name != null ? String(body.owner_name).trim() : null;
+        const email =
+          body.owner_email != null ? String(body.owner_email).trim().toLowerCase() || null : null;
+        const phone = body.registered_phone != null ? String(body.registered_phone).trim() : null;
+        const phoneNorm = phone ? phone.replace(/\D/g, "") : null;
+
+        if (name == null && email === null && phone == null) {
+          return reply.code(400).send({ error: "no_fields" });
+        }
+
+        let row: Record<string, unknown> | undefined;
+        try {
+          const updated = await sql`
+            UPDATE merchant_parents
+            SET
+              owner_name = COALESCE(${name}, owner_name),
+              owner_email = COALESCE(${email}, owner_email),
+              registered_phone = COALESCE(${phone}, registered_phone),
+              registered_phone_normalized = COALESCE(${phoneNorm}, registered_phone_normalized),
+              updated_at = NOW()
+            WHERE id = ${parentId}
+            RETURNING id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone, store_logo
+          `;
+          row = updated[0] as Record<string, unknown> | undefined;
+        } catch {
+          const updated = await sql`
+            UPDATE merchant_parents
+            SET
+              owner_name = COALESCE(${name}, owner_name),
+              owner_email = COALESCE(${email}, owner_email),
+              registered_phone = COALESCE(${phone}, registered_phone)
+            WHERE id = ${parentId}
+            RETURNING id, parent_merchant_id, parent_name, owner_name, owner_email, brand_name, registered_phone, store_logo
+          `;
+          row = updated[0] as Record<string, unknown> | undefined;
+        }
+        if (!row) return reply.code(404).send({ error: "partner_not_found" });
+        return reply.send({
+          parent: {
+            id: Number(row.id),
+            parent_merchant_id: String(row.parent_merchant_id),
+            parent_name: row.parent_name,
+            owner_name: row.owner_name,
+            owner_email: row.owner_email ?? "",
+            brand_name: row.brand_name ?? "",
+            registered_phone: row.registered_phone,
+            store_logo: row.store_logo ?? null,
+          },
+        });
+      });
 
       /** GET /merchant-partner/stores/:storeId/sessions — active + recent device sessions. */
       protectedApp.get<{ Params: { storeId: string } }>("/stores/:storeId/sessions", async (req, reply) => {

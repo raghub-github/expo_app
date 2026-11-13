@@ -1,5 +1,5 @@
 /**
- * Parsing for the Accept/Reject the native alert performed while JS was dead.
+ * Parsing for the Accept/Reject/Open the native alert performed while JS was dead.
  *
  * Kept free of react-native so it is unit-testable: the stash is the only
  * evidence the app has that a background accept happened, and misreading it
@@ -7,7 +7,7 @@
  */
 
 export type NativePendingOrderAction = {
-  action: "accept" | "reject";
+  action: "accept" | "reject" | "open";
   sessionId: string;
   orderId: string;
   offerId: string;
@@ -19,8 +19,8 @@ export type NativePendingOrderAction = {
    *
    * "pending" is a real state, not a default: native writes the stash before the
    * HTTP call, so an app that cold-starts mid-flight must not read a success
-   * that has not happened yet. A reject is always "ok" — native posts nothing,
-   * the app still collects a reason.
+   * that has not happened yet. A reject/open is always "ok" — native posts nothing
+   * for those (open only launches Home New).
    */
   result: "ok" | "failed" | "pending";
   httpStatus: number;
@@ -45,7 +45,7 @@ export function parseNativePendingOrderAction(
     return null;
   }
   const action = text(parsed.action).toLowerCase();
-  if (action !== "accept" && action !== "reject") return null;
+  if (action !== "accept" && action !== "reject" && action !== "open") return null;
 
   const result = text(parsed.result).toLowerCase();
   const httpStatus = Number(parsed.httpStatus);
@@ -60,7 +60,12 @@ export function parseNativePendingOrderAction(
     // A stash written by an older build carries no result. Treat it as pending,
     // never ok — the app then reconciles with the server instead of announcing
     // an accept on no evidence.
-    result: result === "ok" || result === "failed" ? result : "pending",
+    result:
+      action === "open"
+        ? "ok"
+        : result === "ok" || result === "failed"
+          ? result
+          : "pending",
     httpStatus: Number.isFinite(httpStatus) && httpStatus > 0 ? Math.trunc(httpStatus) : 0,
     detail: text(parsed.detail),
     at: Number(parsed.at) || 0,

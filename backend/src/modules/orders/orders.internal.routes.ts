@@ -27,6 +27,14 @@ const orderCancelNotifyBody = z.object({
   reason: z.string().max(400).optional(),
 });
 
+/** Partnersite / dashboard — FCM + WS stop without customer push side effects. */
+const merchantAlertStopBody = z.object({
+  store_id: z.number().int().min(1),
+  food_order_id: z.number().int().min(1),
+  orders_core_id: z.number().int().min(1).optional(),
+  status: z.string().max(64).optional(),
+});
+
 export async function ordersInternalRoutes(app: FastifyInstance) {
   app.addHook("preHandler", async (req, reply) => {
     const env = getEnv();
@@ -440,6 +448,43 @@ export async function ordersInternalRoutes(app: FastifyInstance) {
     } catch (err) {
       req.log.warn({ err }, "merchant-accept-notify failed");
       return reply.code(500).send({ ok: false, error: "notify_failed" });
+    }
+  });
+
+  /**
+   * Dedicated Partner-device alert stop (FCM + incoming.resolved).
+   * Partnersite accept/cancel must call this even when customer notify fails,
+   * so other phones cannot keep ringing after the order left CREATED.
+   */
+  app.post("/orders/merchant-alert-stop", async (req, reply) => {
+    const parsed = merchantAlertStopBody.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: "validation_failed" });
+    }
+    const { store_id, food_order_id, orders_core_id, status } = parsed.data;
+    const sql = getSql();
+    try {
+      const { stopMerchantIncomingAlertEverywhere, awaitAlertStopWithin } = await import(
+        "../../lib/merchant-incoming-alert-stop.js"
+      );
+      const outcome = await awaitAlertStopWithin(
+        stopMerchantIncomingAlertEverywhere(sql, {
+          storeId: store_id,
+          foodOrderId: food_order_id,
+          coreId: orders_core_id ?? null,
+          status: String(status ?? "TERMINAL").trim().toUpperCase() || "TERMINAL",
+        })
+      );
+      if (outcome === "timed-out") {
+        req.log.warn(
+          { store_id, food_order_id },
+          "merchant_alert_stop_slow_returning_anyway"
+        );
+      }
+      return reply.send({ ok: true });
+    } catch (err) {
+      req.log.warn({ err }, "merchant-alert-stop failed");
+      return reply.code(500).send({ ok: false, error: "alert_stop_failed" });
     }
   });
 

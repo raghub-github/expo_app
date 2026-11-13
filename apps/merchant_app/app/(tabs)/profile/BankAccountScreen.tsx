@@ -14,6 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
+import { useRequirePartnerPermission } from "@/hooks/useRequirePartnerPermission";
 import { AddBankAccountSheet } from "@/components/bank/AddBankAccountSheet";
 import {
   listBankAccounts,
@@ -24,6 +25,7 @@ import {
 } from "@/services/bankAccountApi";
 
 export default function BankAccountScreen() {
+  const bankAllowed = useRequirePartnerPermission("payouts", "/(tabs)/profile");
   const { selectedStore } = useSelectedStore();
   const { token } = useAuth();
 
@@ -131,6 +133,10 @@ export default function BankAccountScreen() {
       },
     ]);
   };
+
+  if (!bankAllowed) {
+    return <View style={styles.centered} />;
+  }
 
   if (loading && accounts.length === 0) {
     return (

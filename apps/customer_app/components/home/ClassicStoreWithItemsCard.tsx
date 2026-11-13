@@ -5,9 +5,11 @@
  */
 
 import { Pressable, ScrollView, StyleSheet, TouchableOpacity, View, useWindowDimensions } from "react-native";
+import Animated from "react-native-reanimated";
 import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import { Image } from "expo-image";
 import { AppText } from "@/components/AppText";
+import { useInstantPressScale } from "@/components/InstantPressable";
 import { DietIndicator } from "@/components/store/DietIndicator";
 import {
   MENU_CIRCLE_CONTROL_SIZE,
@@ -221,6 +223,7 @@ export function ClassicStoreWithItemsCard({
       nextCloseAt: null,
     }
   );
+  const pressScale = useInstantPressScale(0.97);
 
   // Prefer every under-price dish (photo or patterned placeholder).
   const railItems = [...store.items].sort((a, b) => a.price - b.price).slice(0, RAIL_LIMIT);
@@ -262,18 +265,24 @@ export function ClassicStoreWithItemsCard({
   ].filter(Boolean) as string[];
 
   return (
-    <View
+    <Animated.View
       style={[
         styles.card,
         flatChrome && styles.cardFlat,
         { width: cardW },
+        pressScale.style,
       ]}
+      collapsable={false}
     >
       {rating ? <ClassicCornerRatingPill rating={rating} cardRadius={CARD_RADIUS} /> : null}
       {/* Fade body only — LOWEST PRICE watermark stays full-strength mint. */}
       <View style={faded ? styles.cardFaded : undefined}>
         <Pressable
-          onPressIn={onPressStore}
+          onPressIn={() => {
+            pressScale.pressIn();
+            onPressStore?.();
+          }}
+          onPressOut={() => pressScale.pressOut()}
           delayPressIn={0}
           unstable_pressDelay={0}
           accessibilityRole="button"
@@ -321,7 +330,7 @@ export function ClassicStoreWithItemsCard({
       >
         <ClassicLowestPriceStamp />
       </View>
-    </View>
+    </Animated.View>
   );
 }
 

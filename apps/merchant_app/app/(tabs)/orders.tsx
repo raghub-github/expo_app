@@ -924,6 +924,44 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     [filterKey, liveCounts, handleFilterChange]
   );
 
+  const stageEmptyBody = useMemo(() => {
+    if (listLoading && sourceOrders.length === 0) {
+      return (
+        <View style={styles.loadingWrap}>
+          <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
+          <Text style={styles.loadingText}>Loading orders…</Text>
+        </View>
+      );
+    }
+    const emptyStage =
+      filterKey !== "all" ? liveFilterToEmptyStage(filterKey as LiveFilterKey) : null;
+    if (emptyStage && !search.trim()) {
+      const stageMessage =
+        filterKey === "completed"
+          ? "No completed orders in the last 24 hours"
+          : filterKey === "rto"
+            ? "No RTO orders in the last 24 hours"
+            : filterKey === "scheduled"
+              ? "No scheduled orders right now"
+              : undefined;
+      return <OrdersStageEmptyState stage={emptyStage} message={stageMessage} />;
+    }
+    return (
+      <View style={styles.emptyWrap}>
+        <Ionicons
+          name="receipt-outline"
+          size={40}
+          color={GatiMitraMerchant.textTertiary}
+        />
+        <Text style={styles.emptyText}>
+          {search.trim()
+            ? "No orders match your search"
+            : `No orders in ${String(filterKey).replace("_", " ")}`}
+        </Text>
+      </View>
+    );
+  }, [filterKey, listLoading, search, sourceOrders.length]);
+
   const liveFixedChrome = !isHistory ? (
     <View style={styles.fixedChrome}>
       <SearchBar
@@ -934,46 +972,6 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       />
     </View>
   ) : null;
-
-  const liveEmptyBody =
-    listLoading && sourceOrders.length === 0 ? (
-      <View style={styles.loadingWrap}>
-        <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
-        <Text style={styles.loadingText}>Loading orders…</Text>
-      </View>
-    ) : (
-      (() => {
-        const emptyStage =
-          filterKey !== "all" ? liveFilterToEmptyStage(filterKey as LiveFilterKey) : null;
-        if (emptyStage && !search.trim()) {
-          const stageMessage =
-            filterKey === "completed"
-              ? "No completed orders in the last 24 hours"
-              : filterKey === "rto"
-                ? "No RTO orders in the last 24 hours"
-                : filterKey === "scheduled"
-                  ? "No scheduled orders right now"
-                  : undefined;
-          return (
-            <OrdersStageEmptyState stage={emptyStage} message={stageMessage} />
-          );
-        }
-        return (
-          <View style={styles.emptyWrap}>
-            <Ionicons
-              name="receipt-outline"
-              size={40}
-              color={GatiMitraMerchant.textTertiary}
-            />
-            <Text style={styles.emptyText}>
-              {search.trim()
-                ? "No orders match your search"
-                : `No orders in ${String(filterKey).replace("_", " ")}`}
-            </Text>
-          </View>
-        );
-      })()
-    );
 
   if (listError && !listLoading && sourceOrders.length === 0) {
     return (
@@ -1001,11 +999,9 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     );
   }
 
-  const listShowsStageEmpty =
-    !isHistory &&
-    !search.trim() &&
-    filteredOrders.length === 0 &&
-    !(listLoading && sourceOrders.length === 0);
+  // NEVER mount sticky Animated SectionList with empty data — it infinite-loops
+  // ScrollViewStickyHeader (Maximum update depth) especially after staff login.
+  const listShowsStageEmpty = !isHistory && filteredOrders.length === 0;
 
   return (
     <View style={styles.container}>
@@ -1109,6 +1105,42 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
               viewabilityConfig={viewabilityConfig}
             />
           </Animated.View>
+        ) : listShowsStageEmpty ? (
+          /*
+           * Empty stage: do NOT use sticky Animated SectionList.
+           * Sentinel rows + sticky headers caused Maximum update depth
+           * (ScrollViewStickyHeader) after staff login with 0 preparing orders.
+           */
+          <Animated.View style={[styles.listSwipeArea, swipeAreaStyle]}>
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={[
+                styles.listContent,
+                styles.listContentUnderChrome,
+                styles.listContentStageEmpty,
+                { paddingBottom: scrollBottomPadding },
+              ]}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  colors={[GatiMitraMerchant.primary]}
+                  tintColor={GatiMitraMerchant.primary}
+                />
+              }
+              showsVerticalScrollIndicator={false}
+            >
+              {listHeader}
+              <View style={styles.stickyTabsChrome}>
+                <StatusTabs
+                  activeKey={filterKey as LiveFilterKey}
+                  counts={liveCounts}
+                  onChange={handleFilterChange}
+                />
+              </View>
+              {stageEmptyBody}
+            </ScrollView>
+          </Animated.View>
         ) : (
           <AnimatedSectionList
             style={[styles.listSwipeArea, swipeAreaStyle]}
@@ -1122,7 +1154,6 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
             contentContainerStyle={[
               styles.listContent,
               styles.listContentUnderChrome,
-              listShowsStageEmpty ? styles.listContentStageEmpty : null,
               { paddingBottom: scrollBottomPadding },
             ]}
             ItemSeparatorComponent={() => <View style={styles.separator} />}
@@ -1134,7 +1165,6 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
                 tintColor={GatiMitraMerchant.primary}
               />
             }
-            ListEmptyComponent={liveEmptyBody}
             showsVerticalScrollIndicator={false}
             initialNumToRender={8}
             windowSize={5}

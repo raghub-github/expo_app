@@ -3,12 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Pencil,
   Plus,
   X,
   Loader2,
   ImageIcon,
-  Trash2,
   Store,
   Search,
 } from "lucide-react";
@@ -16,6 +14,8 @@ import { useRouter } from "next/navigation";
 import { usePermissions } from "@/hooks/usePermissions";
 import { queryKeys } from "@/lib/queryKeys";
 import { CxAppHomeSectionToggle } from "@/components/cxapp-home/CxAppHomeSectionToggle";
+import { CategoriesVirtualTable } from "@/components/user-app-categories/CategoriesVirtualTable";
+import { LazyThumb } from "@/components/ui/LazyThumb";
 import {
   USER_APP_CATEGORY_STORE_TYPES,
   parseUserAppCategoryStoreType,
@@ -572,112 +572,76 @@ export default function CustomerAppCategoriesClient() {
   }
 
   return (
-    <div className="w-full min-w-0 max-w-none space-y-4">
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="text-lg font-semibold tracking-tight text-slate-900 sm:text-xl">
+    <div className="flex w-full min-w-0 max-w-none flex-col gap-3">
+      <div className="rounded-md border-[0.5px] border-[#121212]/40 bg-white">
+        <div className="flex flex-wrap items-center gap-2 border-b-[0.5px] border-[#121212]/10 px-3 py-2.5">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-sm font-semibold tracking-tight text-[#121212] sm:text-base">
               Customer app categories
             </h1>
-            <p className="mt-0.5 text-xs text-slate-500 sm:text-sm">
-              Tiles for the mobile app — images, active/inactive, store vertical.
+            <p className="text-[11px] leading-snug text-[#121212]/50">
+              Mobile category tiles — image, order, active status
             </p>
           </div>
           <CxAppHomeSectionToggle />
+          <button
+            type="button"
+            onClick={openCreate}
+            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md bg-[#121212] px-3 text-xs font-semibold text-white hover:bg-black"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add category
+          </button>
         </div>
 
-        <div className="mt-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
-              <Store className="h-3.5 w-3.5 shrink-0 text-teal-600" />
-              <span className="whitespace-nowrap">Store vertical</span>
-              <select
-                value={storeType}
-                onChange={(e) => setStoreType(e.target.value as UserAppCategoryStoreType)}
-                className="min-h-[36px] rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
-              >
-                {USER_APP_CATEGORY_STORE_TYPES.map((st) => (
-                  <option key={st} value={st}>
-                    {st}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
-              <span className="whitespace-nowrap text-slate-500">Status</span>
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-                className="min-h-[36px] rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
-              >
-                <option value="all">All</option>
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-              </select>
-            </label>
-          </div>
-
-          <div className="flex w-full min-w-0 flex-col gap-3 sm:flex-row sm:items-center xl:w-auto xl:shrink-0">
-            <div className="relative w-full max-w-[min(100%,16rem)] shrink-0 sm:w-56 md:w-60">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search by name…"
-                className="min-h-[36px] w-full rounded-lg border border-slate-200 bg-white py-1.5 pl-9 pr-2.5 text-xs focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
-                autoComplete="off"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={openCreate}
-              className="inline-flex min-h-[36px] w-full shrink-0 items-center justify-center gap-1.5 rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 sm:w-auto"
+        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto px-3 py-2 [scrollbar-width:thin]">
+          <label className="inline-flex h-9 shrink-0 items-center gap-1.5 text-xs font-medium text-[#121212]/70">
+            <Store className="h-3.5 w-3.5 shrink-0 text-[#121212]/40" />
+            <select
+              value={storeType}
+              onChange={(e) => setStoreType(e.target.value as UserAppCategoryStoreType)}
+              className="h-9 rounded-md border border-[#121212]/12 bg-white px-2 text-xs text-[#121212] outline-none focus:border-[#121212]/35"
+              aria-label="Store vertical"
             >
-              <Plus className="h-3.5 w-3.5" />
-              Add category
-            </button>
+              {USER_APP_CATEGORY_STORE_TYPES.map((st) => (
+                <option key={st} value={st}>
+                  {st}
+                </option>
+              ))}
+            </select>
+          </label>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+            className="h-9 shrink-0 rounded-md border border-[#121212]/12 bg-white px-2.5 text-xs text-[#121212] outline-none focus:border-[#121212]/35"
+            aria-label="Status"
+          >
+            <option value="all">All status</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+          <div className="relative min-w-[10rem] flex-1 sm:max-w-xs">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#121212]/35" />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by name…"
+              className="h-9 w-full rounded-md border border-[#121212]/12 bg-white py-1.5 pl-8 pr-2 text-xs text-[#121212] placeholder:text-[#121212]/40 outline-none focus:border-[#121212]/35"
+              autoComplete="off"
+            />
           </div>
         </div>
-      </div>
 
-      {displayItems.length > 0 &&
-        (searchQuery.trim() !== "" || statusFilter !== "all") &&
-        filteredItems.length !== displayItems.length && (
-          <p className="text-[11px] text-gray-500">
-            Showing <strong>{filteredItems.length}</strong> of <strong>{displayItems.length}</strong> tiles
-            {searchQuery.trim() ? ` matching “${searchQuery.trim()}”` : ""}
-            {statusFilter !== "all" ? ` · ${statusFilter}` : ""}
-          </p>
-        )}
-
-      {displayItems.length > 0 && missingImageCount > 0 && (
-        <p className="text-xs text-amber-900 bg-amber-50 border border-amber-100 rounded-md px-3 py-2">
-          <strong>{missingImageCount}</strong> tile(s) need an image — click thumbnail or Edit.
-        </p>
-      )}
-
-      {error && !modalOpen && (
-        <div className="text-xs text-red-700 bg-red-50 border border-red-100 rounded-md px-3 py-2">{error}</div>
-      )}
-      {info && !modalOpen && (
-        <div className="text-xs text-cyan-900 bg-cyan-50 border border-cyan-100 rounded-md px-3 py-2">{info}</div>
-      )}
-
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-900">All tab (fixed first tile)</h2>
-            <p className="mt-0.5 text-xs text-slate-500">
-              Shown first in category tabs on grid-first food home. Image appears for every user.
-            </p>
-          </div>
-          <span className="rounded-full bg-slate-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-teal-800 ring-1 ring-slate-200">
+        <div className="flex flex-wrap items-center gap-2 border-t-[0.5px] border-[#121212]/10 bg-[#F7F7F7]/80 px-3 py-2">
+          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#121212]/55 ring-1 ring-[#121212]/10">
             Top tile
           </span>
-        </div>
-        <div className="mt-3 flex flex-wrap items-end gap-4">
-          <div>
+          <span className="text-xs font-semibold text-[#121212]">All tab</span>
+          <span className="hidden text-[11px] text-[#121212]/45 sm:inline">
+            Fixed first category tab
+          </span>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
             <input
               id="uac-all-tab-thumb"
               type="file"
@@ -698,50 +662,74 @@ export default function CustomerAppCategoriesClient() {
             >
               {allTabImageUrl ? (
                 <span className="relative inline-block">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
+                  <LazyThumb
                     key={allTabImageUrl}
                     src={allTabImageUrl}
-                    alt=""
-                    className="h-12 w-12 rounded-full border-2 border-teal-500 object-cover bg-white"
+                    priority
+                    className="h-9 w-9 rounded-full border border-[#121212]/15 object-cover bg-white"
                   />
                   {allTabUploading ? (
                     <span className="absolute inset-0 flex items-center justify-center rounded-full bg-white/60">
-                      <Loader2 className="h-4 w-4 animate-spin text-cyan-600" />
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-[#121212]/50" />
                     </span>
                   ) : null}
                 </span>
               ) : (
-                <div className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-dashed border-slate-300 bg-slate-50 text-teal-600">
+                <div className="flex h-9 w-9 items-center justify-center rounded-full border border-dashed border-[#121212]/25 bg-white text-[#121212]/40">
                   {allTabUploading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
-                    <ImageIcon className="h-5 w-5" />
+                    <ImageIcon className="h-4 w-4" />
                   )}
                 </div>
               )}
             </label>
-          </div>
-          <label className="min-w-[140px] flex-1 max-w-xs">
-            <span className="text-xs font-medium text-gray-700">Label</span>
             <input
               type="text"
               value={allTabLabel}
               onChange={(e) => setAllTabLabel(e.target.value)}
               maxLength={24}
-              className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs min-h-[32px] focus:ring-1 focus:ring-cyan-500"
+              aria-label="All tab label"
+              className="h-9 w-[7.5rem] rounded-md border border-[#121212]/12 bg-white px-2.5 text-xs text-[#121212] outline-none focus:border-[#121212]/35 sm:w-36"
             />
-          </label>
-          <button
-            type="button"
-            disabled={allTabSaving || allTabUploading}
-            onClick={() => void saveAllTabMeta({ label: allTabLabel.trim() || "All" })}
-            className="inline-flex min-h-[36px] items-center justify-center rounded-lg bg-teal-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-teal-700 disabled:opacity-50"
-          >
-            {allTabSaving ? "Saving…" : "Save All tab"}
-          </button>
+            <button
+              type="button"
+              disabled={allTabSaving || allTabUploading}
+              onClick={() => void saveAllTabMeta({ label: allTabLabel.trim() || "All" })}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-[#121212]/12 bg-white px-3 text-xs font-semibold text-[#121212] hover:bg-white disabled:opacity-50"
+            >
+              {allTabSaving ? "Saving…" : "Save All tab"}
+            </button>
+          </div>
         </div>
       </div>
+
+      {displayItems.length > 0 &&
+        (searchQuery.trim() !== "" || statusFilter !== "all") &&
+        filteredItems.length !== displayItems.length && (
+          <p className="text-[11px] text-[#121212]/50">
+            Showing <strong>{filteredItems.length}</strong> of <strong>{displayItems.length}</strong> tiles
+            {searchQuery.trim() ? ` matching “${searchQuery.trim()}”` : ""}
+            {statusFilter !== "all" ? ` · ${statusFilter}` : ""}
+          </p>
+        )}
+
+      {displayItems.length > 0 && missingImageCount > 0 && (
+        <p className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <strong>{missingImageCount}</strong> tile(s) need an image — click thumbnail or Edit.
+        </p>
+      )}
+
+      {error && !modalOpen && (
+        <div className="rounded-md border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">
+          {error}
+        </div>
+      )}
+      {info && !modalOpen && (
+        <div className="rounded-md border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs text-cyan-900">
+          {info}
+        </div>
+      )}
 
       {loading ? (
         <CategoriesTableSkeleton />
@@ -764,203 +752,17 @@ export default function CustomerAppCategoriesClient() {
           </button>
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white w-full shadow-sm relative">
-          {listFetching ? (
-            <div className="absolute top-2 right-2 z-10">
-              <Loader2 className="h-4 w-4 animate-spin text-cyan-600" />
-            </div>
-          ) : null}
-          <table className="w-full min-w-[720px] text-xs border-separate border-spacing-x-4 border-spacing-y-0 table-fixed">
-            <colgroup>
-              <col style={{ width: "8%" }} />
-              <col style={{ width: "26%" }} />
-              <col style={{ width: "13%" }} />
-              <col style={{ width: "14%" }} />
-              <col style={{ width: "12%" }} />
-              <col style={{ width: "27%" }} />
-            </colgroup>
-            <thead>
-              <tr className="bg-gray-50 text-gray-600">
-                <th className="pl-3 pr-3 py-2.5 font-semibold text-[10px] uppercase tracking-wide text-center align-middle border-b border-gray-200">
-                  Image
-                </th>
-                <th className="px-3 py-2.5 font-semibold text-[10px] uppercase tracking-wide text-center align-middle border-b border-gray-200">
-                  Name
-                </th>
-                <th className="px-3 py-2.5 font-semibold text-[10px] uppercase tracking-wide text-center tabular-nums align-middle border-b border-gray-200">
-                  Order
-                </th>
-                <th className="px-3 py-2.5 font-semibold text-[10px] uppercase tracking-wide text-center align-middle border-b border-gray-200">
-                  Store
-                </th>
-                <th className="px-3 py-2.5 font-semibold text-[10px] uppercase tracking-wide text-center align-middle border-b border-gray-200">
-                  Active
-                </th>
-                <th className="pl-3 pr-3 py-2.5 font-semibold text-[10px] uppercase tracking-wide text-right align-middle border-b border-gray-200">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredItems.map((row, rowIndex) => {
-                const busy = rowBusyId === row.id;
-                const imgBusy = quickRowId === row.id;
-                const isInactive = row.status === "inactive";
-                const stripe =
-                  !isInactive && rowIndex % 2 === 1 ? "bg-gray-50/70" : !isInactive ? "bg-white" : "";
-                return (
-                  <tr
-                    key={row.id}
-                    className={`group transition-colors ${stripe} ${
-                      isInactive
-                        ? "bg-gray-50/90 text-gray-600 hover:bg-gray-100/90"
-                        : "hover:bg-cyan-50/60"
-                    }`}
-                  >
-                    <td className="pl-3 pr-3 py-2.5 align-middle text-center border-b border-gray-100">
-                      <input
-                        id={`uac-thumb-${row.id}`}
-                        type="file"
-                        accept="image/jpeg,image/png,image/webp,image/gif"
-                        className="sr-only"
-                        disabled={imgBusy || busy}
-                        onChange={(e) => {
-                          e.stopPropagation();
-                          const f = e.target.files?.[0] ?? null;
-                          void quickImageForRow(row, f);
-                          e.target.value = "";
-                        }}
-                      />
-                      <label
-                        htmlFor={`uac-thumb-${row.id}`}
-                        className={`relative inline-flex mx-auto cursor-pointer rounded-full ${
-                          imgBusy ? "pointer-events-none opacity-60" : ""
-                        }`}
-                      >
-                        {row.image_url ? (
-                          <span className="relative inline-block">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              key={`${row.id}-${row.image_url}`}
-                              src={row.image_url}
-                              alt=""
-                              className={`h-8 w-8 rounded-full object-cover bg-transparent border border-gray-200/60 group-hover:border-cyan-400/70 ${
-                                imgBusy ? "opacity-50" : ""
-                              } ${isInactive ? "grayscale-[0.35] opacity-90" : ""}`}
-                            />
-                            {imgBusy && (
-                              <span className="absolute inset-0 flex items-center justify-center rounded-full bg-transparent">
-                                <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-600 drop-shadow-sm" />
-                              </span>
-                            )}
-                          </span>
-                        ) : (
-                          <div className="h-8 w-8 rounded-full bg-transparent border border-dashed border-gray-300 flex items-center justify-center text-gray-400">
-                            {imgBusy ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <ImageIcon className="h-3.5 w-3.5" />
-                            )}
-                          </div>
-                        )}
-                      </label>
-                    </td>
-                    <td className="px-3 py-2.5 align-middle text-center border-b border-gray-100">
-                      <div className="flex flex-wrap items-center justify-center gap-1.5 min-w-0 text-center">
-                        <span
-                          className={`font-medium break-words [overflow-wrap:anywhere] ${isInactive ? "text-gray-600" : "text-gray-900"}`}
-                        >
-                          {row.name}
-                        </span>
-                        {isInactive && (
-                          <span className="inline-flex shrink-0 px-1.5 py-px rounded-full text-[10px] font-medium bg-gray-200 text-gray-700 border border-gray-300/80">
-                            Inactive
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2.5 align-middle text-center border-b border-gray-100">
-                      <input
-                        key={`${row.id}-${row.display_order}`}
-                        type="number"
-                        step={1}
-                        defaultValue={row.display_order}
-                        disabled={busy}
-                        title="Edit order — another tile with this order swaps places"
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                        }}
-                        onBlur={(e) => {
-                          const raw = e.target.value.trim();
-                          const v = parseInt(raw, 10);
-                          if (raw === "" || !Number.isFinite(v)) {
-                            e.target.value = String(row.display_order);
-                            return;
-                          }
-                          void commitDisplayOrder(row, v, e.target);
-                        }}
-                        className="w-[4.25rem] max-w-full mx-auto block rounded border border-gray-300 bg-white px-1.5 py-1 text-center text-[11px] tabular-nums text-gray-800 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 disabled:opacity-50"
-                      />
-                    </td>
-                    <td className="px-3 py-2.5 align-middle text-center border-b border-gray-100">
-                      <span className="inline-flex items-center justify-center px-2 py-0.5 rounded text-[10px] font-semibold bg-gray-100 text-gray-700 border border-gray-200 max-w-full">
-                        {row.store_type}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2.5 align-middle text-center border-b border-gray-100">
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={row.status === "active"}
-                        disabled={busy}
-                        onClick={() => void toggleRowStatus(row)}
-                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-cyan-500 disabled:opacity-50 ${
-                          row.status === "active" ? "bg-emerald-500" : "bg-gray-300"
-                        }`}
-                      >
-                        <span
-                          className={`pointer-events-none inline-block h-4 w-4 mt-0.5 ml-0.5 transform rounded-full bg-white shadow transition ${
-                            row.status === "active" ? "translate-x-3.5" : "translate-x-0"
-                          }`}
-                        />
-                        {busy && (
-                          <span className="absolute inset-0 flex items-center justify-center rounded-full bg-white/40">
-                            <Loader2 className="h-3 w-3 animate-spin text-gray-600" />
-                          </span>
-                        )}
-                      </button>
-                      <span className="sr-only">
-                        {row.status === "active" ? "Active" : "Inactive"}
-                      </span>
-                    </td>
-                    <td className="pl-3 pr-3 py-2.5 align-middle border-b border-gray-100">
-                      <div className="flex flex-wrap items-center justify-end gap-1">
-                        <button
-                          type="button"
-                          onClick={() => openEdit(row)}
-                          disabled={busy}
-                          className="inline-flex items-center gap-0.5 px-2 py-1 rounded border border-cyan-200 bg-cyan-50 text-[10px] font-medium text-cyan-800 hover:bg-cyan-100 disabled:opacity-50"
-                        >
-                          <Pencil className="h-3 w-3" />
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void removeRow(row)}
-                          disabled={busy}
-                          className="inline-flex items-center gap-0.5 px-2 py-1 rounded border border-red-200 bg-red-50 text-[10px] font-medium text-red-800 hover:bg-red-100 disabled:opacity-50"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                          Remove
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <CategoriesVirtualTable
+          rows={filteredItems}
+          rowBusyId={rowBusyId}
+          quickRowId={quickRowId}
+          listFetching={listFetching}
+          onQuickImage={(row, file) => void quickImageForRow(row, file)}
+          onCommitOrder={(row, next, input) => void commitDisplayOrder(row, next, input)}
+          onToggleStatus={(row) => void toggleRowStatus(row)}
+          onEdit={openEdit}
+          onRemove={(row) => void removeRow(row)}
+        />
       )}
 
       {modalOpen && (
@@ -1059,10 +861,9 @@ export default function CustomerAppCategoriesClient() {
                     onChange={(e) => onPickImage(e.target.files?.[0] ?? null)}
                   />
                   {form.image_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
+                    <LazyThumb
                       src={form.image_url}
-                      alt=""
+                      priority
                       className="h-20 w-20 rounded-lg object-cover bg-transparent border border-gray-200/60 group-hover:border-cyan-400/70"
                     />
                   ) : (

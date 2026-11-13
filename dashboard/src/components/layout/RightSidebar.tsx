@@ -969,24 +969,43 @@ export function RightSidebar({
                 // Special handling for customer dashboard - highlight "All Customers" when on /dashboard/customers
                 const isCustomerDashboardHome = cleanPathname === "/dashboard/customers";
                 const allRoutesForActive = [...currentSubRoutes];
-                // When on Assign AM page, don't highlight the main Merchants tabs; the dedicated
-                // "Assign AM to Stores" link below should be the only active item.
+                // Dedicated merchant tool pages are rendered as separate CTAs below — never
+                // keep "All Merchants" active via `/dashboard/merchants` prefix matching.
                 const isAmOnboardingFailedPath =
                   cleanPathname.startsWith("/dashboard/area-managers/stores/onboarding-failed") ||
                   cleanPathname.startsWith("/dashboard/area-managers/stores/resubmit-onboarding");
-                const activeHref =
-                  cleanPathname === "/dashboard/merchants/assign-am" || isAmOnboardingFailedPath
-                    ? null
-                    : allRoutesForActive
+                const isResubmittedActive =
+                  cleanPathname === "/dashboard/merchants" &&
+                  searchParams.get("category") === "resubmitted";
+                const isAssignAmActive = cleanPathname === "/dashboard/merchants/assign-am";
+                const isWalletRequestsActive =
+                  cleanPathname === "/dashboard/merchants/wallet-requests" ||
+                  cleanPathname.startsWith("/dashboard/merchants/wallet-requests/");
+                const isMenuRequestsActive = cleanPathname === "/dashboard/merchants/menu-requests";
+                const isMerchantToolPage =
+                  isAssignAmActive ||
+                  isWalletRequestsActive ||
+                  isMenuRequestsActive ||
+                  isResubmittedActive ||
+                  isAmOnboardingFailedPath;
+                const activeHref = isMerchantToolPage
+                  ? null
+                  : allRoutesForActive
                         .filter((r) => {
-                          const exactOrPrefix = cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
-                          const walletEarningsAlias = r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
-                          const customerHomeAlias = isCustomerDashboardHome && r.href === "/dashboard/customers/all";
+                          // All Merchants: exact home only (not /verifications, /wallet-requests, …)
+                          if (r.href === "/dashboard/merchants") {
+                            return cleanPathname === "/dashboard/merchants";
+                          }
+                          const exactOrPrefix =
+                            cleanPathname === r.href || cleanPathname.startsWith(r.href + "/");
+                          const walletEarningsAlias =
+                            r.href === "/dashboard/riders/wallet" && isWalletOrEarningsPath;
+                          const customerHomeAlias =
+                            isCustomerDashboardHome && r.href === "/dashboard/customers/all";
                           return exactOrPrefix || walletEarningsAlias || customerHomeAlias;
                         })
                         .sort((a, b) => b.href.length - a.href.length)[0]?.href ?? null;
                 const linkEl = (route: DashboardSubRoute) => {
-                  const isAllMerchantsRoute = route.href === "/dashboard/merchants";
                   const isMenuChangeRequestsRoute = route.href.endsWith("/menu-change-requests");
                   const isPendingOnboardingRoute =
                     route.href === "/dashboard/riders/pending-onboarding";
@@ -997,9 +1016,7 @@ export function RightSidebar({
                     ? pendingOnboardingCount
                     : menuReviewBadgeCount;
                   const showRouteBadge = routeBadgeCount > 0;
-                  const isActive =
-                    activeHref === route.href &&
-                    !(isResubmittedActive && isAllMerchantsRoute);
+                  const isActive = activeHref === route.href;
                   const Icon = route.icon;
                   const badgeTitle = showRouteBadge
                     ? `${route.name} (${routeBadgeCount} pending)`
@@ -1075,7 +1092,6 @@ export function RightSidebar({
                     </Link>
                   );
                 };
-                const isAssignAmActive = cleanPathname === "/dashboard/merchants/assign-am";
                 const effectiveStoreId =
                   storeIdFromPath ??
                   (merchantSearchResultStore?.storeId != null
@@ -1090,10 +1106,6 @@ export function RightSidebar({
                   isMerchantsDashboard &&
                   hasAdminMerchantAccess &&
                   effectiveMerchantPortal === "admin";
-                const isMenuRequestsActive = cleanPathname === "/dashboard/merchants/menu-requests";
-                const isResubmittedActive =
-                  cleanPathname === "/dashboard/merchants" &&
-                  searchParams.get("category") === "resubmitted";
                 return (
                   <>
                     {currentSubRoutes.map((route) => linkEl(route))}
@@ -1138,7 +1150,10 @@ export function RightSidebar({
                     {/* Wallet requests: show only when NO specific store is selected (open and collapsed) */}
                     {showWalletRequests && (
                       <div className={isOpen ? "mt-2 min-w-0" : "mt-1"}>
-                        <WalletRequestsSummarySidebar collapsed={!isOpen} />
+                        <WalletRequestsSummarySidebar
+                          collapsed={!isOpen}
+                          active={isWalletRequestsActive}
+                        />
                       </div>
                     )}
                     {/* Menu change requests CTA in right sidebar (admin portal) - placed below Assign AM + Wallet Requests */}

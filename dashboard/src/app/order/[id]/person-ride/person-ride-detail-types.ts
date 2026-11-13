@@ -22,6 +22,8 @@ export type PersonRideDetailOrder = {
   billingSnapshot: Record<string, unknown> | null;
   /** Latest CS agent email stamped on Routed To. */
   routedToEmail: string | null;
+  /** Agent email from last manual status PATCH (if any). */
+  manualStatusUpdatedByEmail: string | null;
   customerId: number | null;
   customerExternalId: string | null;
   customerName: string | null;
@@ -87,6 +89,12 @@ export function mapCoreRowToPersonRideDetail(
         ? String(row.routedToEmail)
         : row.routed_to_email != null
           ? String(row.routed_to_email)
+          : null,
+    manualStatusUpdatedByEmail:
+      row.manualStatusUpdatedByEmail != null
+        ? String(row.manualStatusUpdatedByEmail)
+        : row.manual_status_updated_by_email != null
+          ? String(row.manual_status_updated_by_email)
           : null,
     customerId: (row.customerId as number | null) ?? null,
     customerExternalId:
