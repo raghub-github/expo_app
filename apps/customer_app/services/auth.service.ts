@@ -2,8 +2,10 @@
  * Auth service — same OTP architecture as merchant / rider apps.
  *
  * Flow (Phone):
- *  1. sendOtp   → Supabase signInWithOtp (Send SMS hook → MSG91)
- *  2. verifyOtp → Supabase verifyOtp → exchange-customer
+ *  1. sendOtp   → POST /v1/auth/otp/request first (store-review number → fixed OTP,
+ *                 no SMS; else `useSupabase`) → Supabase signInWithOtp (Send SMS hook → MSG91)
+ *  2. verifyOtp → backend /otp/verify for a backend request id, else Supabase verifyOtp
+ *                 → exchange-customer
  *
  * Fallback when Supabase is not configured or EXPO_PUBLIC_PHONE_OTP_USE_BACKEND=true:
  *  1. sendOtp   → POST /v1/auth/otp/request + MSG91
@@ -89,7 +91,7 @@ export const authService = {
    */
   async sendOtp(payload: SendOtpPayload): Promise<void> {
     _lastBackendOtpRequestId = null;
-    const viaBackend = shouldSendPhoneOtpViaBackend(payload.phoneE164);
+    const backendOnly = shouldSendPhoneOtpViaBackend(payload.phoneE164);
     const phoneTail = payload.phoneE164.replace(/\D/g, "").slice(-4);
     const cfg = getConfig();
 
@@ -97,44 +99,72 @@ export const authService = {
       // eslint-disable-next-line no-console
       console.log("[CustomerAuth] sendOtp: start", {
         phoneTail: phoneTail ? `…${phoneTail}` : "(short)",
-        channel: viaBackend ? "backend" : "supabase",
+        channel: backendOnly ? "backend" : "backend-first, then supabase",
         apiBaseUrl: cfg.apiBaseUrl,
         phoneOtpUseBackendOnly: cfg.phoneOtpUseBackendOnly,
         supabase: getSupabaseOtpEnvDebugInfo(),
       });
     }
 
-    if (viaBackend) {
-      try {
-        const { data } = await api.post<{ requestId?: string; message?: string; error?: string }>(
-          `${AUTH_PREFIX}/otp/request`,
-          { phoneE164: payload.phoneE164, appType: "customer" },
-          { timeout: 15000 },
-        );
-        const rid = typeof data?.requestId === "string" ? data.requestId : "";
-        if (!rid) {
-          throw new Error("Server did not return an OTP request id. Check backend /v1/auth/otp/request.");
-        }
+    // ALWAYS ask the backend first, like the merchant + rider apps. It is the one place
+    // that knows the store-review numbers (fixed OTP, never a real SMS — Play Console
+    // hands reviewers one number for several apps). For any other number it answers
+    // `useSupabase` and this app delivers via Supabase as before.
+    try {
+      const { data } = await api.post<{
+        requestId?: string;
+        useSupabase?: boolean;
+        message?: string;
+        error?: string;
+      }>(
+        `${AUTH_PREFIX}/otp/request`,
+        {
+          phoneE164: payload.phoneE164,
+          appType: "customer",
+          ...(backendOnly ? {} : { supabaseHandoff: true }),
+        },
+        { timeout: 15000 },
+      );
+      const rid = typeof data?.requestId === "string" ? data.requestId : "";
+      if (rid) {
+        // Review number (fixed OTP) or backend-only SMS — verify goes to the backend.
         _lastBackendOtpRequestId = rid;
         if (__DEV__) {
           // eslint-disable-next-line no-console
           console.log(
-            "[CustomerAuth] sendOtp: backend OK — SMS via MSG91 on API server.",
+            "[CustomerAuth] sendOtp: backend OTP path.",
             (data as { otp?: string }).otp != null ? { devOtp: (data as { otp?: string }).otp } : {},
           );
         }
-      } catch (e: unknown) {
-        const ax = e as {
-          message?: string;
-          response?: { data?: { message?: string; error?: string }; status?: number };
-        };
-        const serverMsg =
-          ax?.response?.data?.message ??
-          (typeof ax?.response?.data?.error === "string" ? ax.response.data.error : null);
+        return;
+      }
+      if (backendOnly || !data?.useSupabase) {
+        throw new Error("Server did not return an OTP request id. Check backend /v1/auth/otp/request.");
+      }
+      // useSupabase → deliver via Supabase below.
+    } catch (e: unknown) {
+      const ax = e as {
+        message?: string;
+        response?: { data?: { message?: string; error?: string }; status?: number };
+      };
+      const status = ax?.response?.status;
+      const serverMsg =
+        ax?.response?.data?.message ??
+        (typeof ax?.response?.data?.error === "string" ? ax.response.data.error : null);
+      // Only an unreachable / failing API falls back to Supabase, so a backend outage
+      // cannot block real customers. Answers about the number itself (4xx) are final.
+      const apiUnavailable = status == null || status >= 500;
+      if (backendOnly || !apiUnavailable) {
         if (serverMsg) throw new Error(serverMsg);
         throw e instanceof Error ? e : new Error("Unable to send OTP. Please try again.");
       }
-      return;
+      if (__DEV__) {
+        // eslint-disable-next-line no-console
+        console.warn("[CustomerAuth] sendOtp: backend unavailable — falling back to Supabase", {
+          status,
+          message: ax?.message,
+        });
+      }
     }
 
     const supabase = getSupabaseAuth();

@@ -8,6 +8,11 @@ import { randomInt } from "crypto";
 import { ulid } from "ulid";
 import { getEnv } from "../config/env.js";
 import { checkAndRecordOtpSend } from "../modules/auth/otpSendGuard.js";
+import {
+  createReviewBypasses,
+  maskReviewPhone,
+  resolveReviewBypass,
+} from "../modules/auth/reviewMode.js";
 import { deliverSupabaseOtpViaMsg91 } from "../services/otp/msg91DeliverSupabaseOtp.js";
 import { createSmtpTransporter, formatSmtpFrom, getSmtpConfig } from "./smtp-config.js";
 import {
@@ -85,6 +90,34 @@ export async function sendMerchantActionOtp(args: {
   const email = args.email?.trim().toLowerCase() || null;
   if (!phone || phone.replace(/\D/g, "").length < 10) {
     throw Object.assign(new Error("Phone is required to send OTP."), { statusCode: 400 });
+  }
+
+  // While a review bypass is ON, its owner number never gets real SMS (store robots
+  // tap every owner action): the action code is that number's fixed review OTP, so a
+  // reviewer can still confirm. With the bypass off it is a normal number (real SMS).
+  const bypass = resolveReviewBypass(createReviewBypasses(getEnv()), phone, null);
+  if (bypass) {
+    const requestId = ulid();
+    store.set(requestId, {
+      userId: args.userId,
+      purpose: args.purpose,
+      otp: bypass.getReviewOtp(),
+      phoneE164: phone,
+      email,
+      expiresAtMs: Date.now() + OTP_EXPIRY_MS,
+      attempts: 0,
+    });
+    args.log?.info?.(
+      { phone: maskReviewPhone(phone), purpose: args.purpose, surface: bypass.app },
+      "merchant action OTP: store-review number — fixed OTP, SMS NOT sent"
+    );
+    return {
+      requestId,
+      sentSms: true,
+      sentEmail: false,
+      maskedPhone: maskPhone(phone),
+      maskedEmail: null,
+    };
   }
 
   // Same per-phone cooldown + 24h cap as the login OTP chokepoints. This path fires every

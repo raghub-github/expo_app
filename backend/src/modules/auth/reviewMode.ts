@@ -15,6 +15,11 @@
  *   Rider app      → RIDER_REVIEW_LOGIN_BYPASS_ENABLED / RIDER_REVIEW_LOGIN_PHONE /
  *                    RIDER_REVIEW_LOGIN_FIXED_OTP
  *
+ * Config stays independent, but while a bypass is ON its number logs in with that
+ * bypass in any app (resolveReviewBypass) and never receives real SMS — Play Console
+ * hands one number to several apps, and Google's test robots retry logins. With a
+ * bypass OFF its number is a normal user: real SMS, exactly as before.
+ *
  * Critical invariant: a fixed review OTP is ONLY seeded into the OTP store when
  * ALL THREE are true: flag enabled, canonical submitted phone === canonical
  * configured phone, submitted OTP === configured OTP. Sharing the same digits
@@ -244,13 +249,32 @@ export function matchReviewBypass(
 }
 
 /**
+ * The ARMED bypass a review number logs in with: the requesting app's own bypass
+ * first, else the armed bypass that owns this number in any app. Null when every
+ * bypass for this number is off — it is then a normal number (real SMS).
+ *
+ * Store reviewers are handed one number for several apps (Play Console "App access"),
+ * so while the rider bypass is on, the rider review number typed into the customer
+ * app logs in with the rider fixed OTP instead of spending real SMS on every robot
+ * retry. The fixed OTP still only ever applies to its own number.
+ */
+export function resolveReviewBypass(
+  services: ReviewModeService[],
+  phone: string,
+  appType?: string | null,
+): ReviewModeService | null {
+  return matchReviewBypass(services, phone, appType) ?? matchReviewBypass(services, phone, null);
+}
+
+/**
  * True when `otp` equals an armed review OTP but this phone is NOT that
  * bypass's review number. Used when generating SMS OTPs so the review code
  * is never stored for a foreign phone.
  *
- * If this phone IS a review phone for the (optional) appType, returns false
- * even when another app's bypass happens to use the same digits — otherwise
- * merchant `123456` would be rejected because customer also uses `123456`.
+ * If this phone IS a review phone (for the appType, or for any app — see
+ * resolveReviewBypass), returns false even when another app's bypass happens to
+ * use the same digits — otherwise merchant `123456` would be rejected because
+ * customer also uses `123456`.
  */
 export function isReviewOtpOnForeignPhone(
   services: ReviewModeService[],
@@ -258,7 +282,7 @@ export function isReviewOtpOnForeignPhone(
   otp: string,
   appType?: string | null,
 ): boolean {
-  if (matchReviewBypass(services, phone, appType)) return false;
+  if (resolveReviewBypass(services, phone, appType)) return false;
   const pool = poolForAppType(services, appType);
   for (const s of pool) {
     if (!s.isArmed()) continue;
