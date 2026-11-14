@@ -48,7 +48,9 @@ public class OrderAlertForegroundService extends Service {
       if (expMs <= 0L) return;
       if (System.currentTimeMillis() < expMs) {
         long delay = Math.max(250L, expMs - System.currentTimeMillis());
-        handler.postDelayed(offerExpiry, delay);
+        // `this.` is required: a field's own initializer may not name it simply
+        // (javac "self-reference in initializer"). In a lambda, `this` is the service.
+        handler.postDelayed(this.offerExpiry, delay);
         return;
       }
       Log.i(TAG, "offer expiry stop sessionId=" + sid);
