@@ -3,7 +3,7 @@
 import { useCallback, useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, Trash2 } from "lucide-react";
+import { AlertTriangle, Trash2 } from "lucide-react";
 import type { AccountDeletionRequestRow } from "@/lib/customers/account-deletion-request-types";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { useToast } from "@/context/ToastContext";
@@ -60,24 +60,7 @@ export default function AccountDeletionRequestsPage() {
   const rows = data ?? [];
 
   return (
-    <div className="space-y-6 w-full max-w-full overflow-x-hidden px-2 sm:px-4 md:px-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <Link
-            href="/dashboard/customers"
-            className="inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-gray-900 mb-2"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to Customers
-          </Link>
-          <h1 className="text-2xl font-semibold text-gray-900">Account deletion requests</h1>
-          <p className="text-sm text-gray-600 mt-1">
-            Active requests from the customer app. Completing a request permanently deletes the
-            customer record, removes it from this queue, and signs them out of the app.
-          </p>
-        </div>
-      </div>
-
+    <div className="space-y-4 w-full max-w-full overflow-x-hidden px-2 sm:px-4 md:px-6">
       {actionError && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
           {actionError}

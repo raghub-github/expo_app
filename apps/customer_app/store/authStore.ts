@@ -23,7 +23,8 @@ import { startupLaunchLog } from "@/lib/startupPerf";
  * AsyncStorage/SecureStore + Metro can stall 15–60s in Expo Go — never hold
  * branding that long. Background restore continues after this budget.
  */
-const AUTH_LOCAL_BUDGET_MS = 1_200;
+/** Soft ceiling — real unblock comes from sync peek / FastKV; this is only a safety net. */
+const AUTH_LOCAL_BUDGET_MS = 350;
 
 async function scopedClear(customerId: string | null): Promise<void> {
   // Lazy — a static import pulled cart/location stores before authStore
@@ -55,6 +56,12 @@ function customerIdOf(session: Session | null): string | null {
 
 /** Prevent concurrent hydrate() callers from double-reading SecureStore/AsyncStorage. */
 let authHydrateInFlight: Promise<void> | null = null;
+/**
+ * True only after a full local disk/sync restore attempt finishes.
+ * Splash force-unblock must NOT skip this — that left users on Login forever
+ * with a valid AsyncStorage session still unread.
+ */
+let authLocalRestoreDone = false;
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   hydrated: false,
@@ -72,58 +79,85 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const incomingCustomerId = customerIdOf(s);
     const previousCustomerId = customerIdOf(get().session) ?? getActiveCustomerScopeId();
     const previousAccessToken = get().session?.accessToken ?? null;
-    // Token refresh for the same customer must not wipe an in-flight cart; any
-    // other transition (fresh login, account switch) crosses accounts and must.
-    const crossesAccountBoundary = previousCustomerId !== incomingCustomerId;
+    // Token refresh for the same customer must not wipe an in-flight cart.
+    // Fresh login (previousCustomerId null after logout) is NOT an account
+    // switch — logout already tore down scoped state. Treating null→id as a
+    // switch forced await scopedClear() on every OTP and hung the verify UI
+    // while Metro lazily pulled cart/location/order modules.
+    const crossesAccountBoundary =
+      previousCustomerId != null &&
+      previousCustomerId.length > 0 &&
+      previousCustomerId !== incomingCustomerId;
 
     if (crossesAccountBoundary && previousAccessToken) {
-      await runCustomerPushUnregister(previousAccessToken);
+      // Never block OTP spinner on push unregister.
+      void runCustomerPushUnregister(previousAccessToken);
     }
 
-    try {
-      await authService.persistSession(s);
-    } catch (e) {
-      console.warn("[AuthStore] persistSession failed", e);
-    }
-    // Publish session first so OTP → home is not blocked (or crashed) by
-    // lazily loading customer teardown stores.
+    // Publish session first so OTP can navigate immediately.
     set({ session: s, sessionRestorePending: false });
+    setActiveCustomerScopeId(incomingCustomerId);
+    // Durability: await AsyncStorage session JSON (cold-start source of truth in
+    // Expo Go). SecureStore token write stays backgrounded — it is slow and the
+    // API interceptor prefers the in-memory token.
     try {
-      if (crossesAccountBoundary) {
-        await scopedClear(incomingCustomerId);
-      } else {
-        setActiveCustomerScopeId(incomingCustomerId);
-      }
+      await authService.persistSessionDurable(s);
     } catch (e) {
-      console.warn("[AuthStore] post-login scoped clear failed", e);
-      setActiveCustomerScopeId(incomingCustomerId);
+      console.warn("[AuthStore] persistSessionDurable failed", e);
+    }
+    void authService.persistSessionToken(s).catch((e) => {
+      console.warn("[AuthStore] persistSessionToken failed", e);
+    });
+    if (crossesAccountBoundary) {
+      // Never await teardown on the OTP critical path — background it.
+      void scopedClear(incomingCustomerId).catch((e) => {
+        console.warn("[AuthStore] post-login scoped clear failed", e);
+        setActiveCustomerScopeId(incomingCustomerId);
+      });
     }
   },
 
   forceSplashUnblock: () => {
-    if (get().hydrated) return;
+    // Fast Refresh can wipe the zustand session while leaving module flags set.
+    // If we have no session, always require a disk restore before Login.
+    if (!get().session?.accessToken) {
+      authLocalRestoreDone = false;
+    }
+    // Hydrate runs sync-peek synchronously until the first await — returning
+    // users get session+pending:false in this same turn (no splash hold).
+    void get().hydrate();
+    const hasSession = Boolean(get().session?.accessToken);
+    const pending = !hasSession && !authLocalRestoreDone;
     set({
       hydrated: true,
-      sessionRestorePending: authHydrateInFlight != null,
+      sessionRestorePending: pending,
     });
     startupLaunchLog("AUTH_RESTORE_FORCE_UNBLOCK", {
       blocksHome: true,
-      pending: authHydrateInFlight != null,
+      pending,
+      inFlight: authHydrateInFlight != null,
+      localRestoreDone: authLocalRestoreDone,
+      hasSession,
     });
   },
 
   hydrate: async () => {
-    if (get().hydrated && !get().sessionRestorePending && !authHydrateInFlight) {
+    if (authHydrateInFlight) return authHydrateInFlight;
+    // Only skip when a full local restore already finished. Splash force-unblock
+    // sets hydrated=true early — that must NOT skip AsyncStorage session read.
+    if (authLocalRestoreDone && !get().sessionRestorePending) {
       return;
     }
-    if (authHydrateInFlight) return authHydrateInFlight;
     authHydrateInFlight = (async () => {
       const t0 = Date.now();
       let budgetTimer: ReturnType<typeof setTimeout> | null = null;
 
       const markBudgetUnblock = () => {
-        if (get().hydrated) return;
-        set({ hydrated: true, sessionRestorePending: true });
+        // Unblock navigator under splash, but keep pending until disk finishes.
+        set({
+          hydrated: true,
+          sessionRestorePending: !get().session?.accessToken && !authLocalRestoreDone,
+        });
         startupLaunchLog("AUTH_RESTORE_BUDGET", {
           durationMs: Date.now() - t0,
           budgetMs: AUTH_LOCAL_BUDGET_MS,
@@ -145,6 +179,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             if (!crossesAccount) {
               setActiveCustomerScopeId(customerId);
             }
+            authLocalRestoreDone = true;
             set({
               session: syncPeek,
               hydrated: true,
@@ -174,18 +209,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
         budgetTimer = setTimeout(markBudgetUnblock, AUTH_LOCAL_BUDGET_MS);
 
-        // Scope must be disk-hydrated before compare — otherwise Expo Go cold start
-        // sees scope=null and incorrectly awaits full scopedClear (multi-second Metro
-        // pull of cart/location/order modules) on every launch.
-        await hydrateCustomerScopeFromStorage();
+        // Session disk read is the splash critical path. Scope hydrate can race —
+        // awaiting it first held branding for multi-second AsyncStorage stalls.
         const sessionT0 = Date.now();
-        const stored = await authService.getStoredSession();
+        const [, stored] = await Promise.all([
+          hydrateCustomerScopeFromStorage().catch(() => undefined),
+          authService.getStoredSession(),
+        ]);
         startupLaunchLog("AUTH_SESSION_READ", {
           durationMs: Date.now() - sessionT0,
           blocksHome: true,
         });
 
         if (!stored) {
+          authLocalRestoreDone = true;
           set({ session: null, hydrated: true, sessionRestorePending: false });
           startupLaunchLog("AUTH_RESTORE_LOCAL_DONE", {
             durationMs: Date.now() - t0,
@@ -199,6 +236,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
         const customerId = customerIdOf(stored);
         if (!customerId) {
+          authLocalRestoreDone = true;
           set({ session: null, hydrated: true, sessionRestorePending: false });
           startupLaunchLog("AUTH_RESTORE_LOCAL_DONE", {
             durationMs: Date.now() - t0,
@@ -210,24 +248,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
 
         const previousScope = getActiveCustomerScopeId();
-        // Only a real account switch needs a blocking clear. scope=null on first
-        // paint after process start is normal (memory empty) — just bind the id.
+        // Only a real account switch needs teardown. scope=null on first paint
+        // after process start is normal — just bind the id.
         const crossesAccount =
           previousScope != null && previousScope.length > 0 && previousScope !== customerId;
 
-        if (crossesAccount) {
-          const clearT0 = Date.now();
-          await scopedClear(customerId);
-          startupLaunchLog("STARTUP_BLOCKER", {
-            stage: "auth_scoped_clear_account_switch",
-            durationMs: Date.now() - clearT0,
-            blocksHome: true,
-          });
-        } else {
-          setActiveCustomerScopeId(customerId);
-        }
-
-        // Optimistic: unblock navigator immediately. Network validate stays background.
+        // Publish session BEFORE account-switch clear — never hold splash on
+        // Metro lazily pulling cart/location/order modules.
+        setActiveCustomerScopeId(customerId);
+        authLocalRestoreDone = true;
         set({ session: stored, hydrated: true, sessionRestorePending: false });
         startupLaunchLog("AUTH_RESTORE_LOCAL_DONE", {
           durationMs: Date.now() - t0,
@@ -235,9 +264,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           crossedAccount: crossesAccount,
           blocksHome: true,
         });
+        if (crossesAccount) {
+          void scopedClear(customerId).catch((e) => {
+            console.warn("[AuthStore] hydrate scoped clear failed", e);
+            setActiveCustomerScopeId(customerId);
+          });
+        }
 
         startupLaunchLog("AUTH_REMOTE_VALIDATE_START", { blocksHome: false });
         const remoteT0 = Date.now();
+        const validatedToken = stored.accessToken;
         void authService.validateStoredSession(stored).then((validated) => {
           startupLaunchLog("AUTH_REMOTE_VALIDATE_DONE", {
             durationMs: Date.now() - remoteT0,
@@ -245,16 +281,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             blocksHome: false,
           });
           if (validated) return;
+          // OTP may have published a newer session while this stale hydrate
+          // validate was in flight — never wipe a token we did not probe.
+          if (get().session?.accessToken !== validatedToken) return;
           void scopedClear(null);
           set({ session: null });
         });
       } catch (e) {
         console.warn("[AuthStore] hydrate failed:", e);
+        authLocalRestoreDone = true;
         set({ session: null, hydrated: true, sessionRestorePending: false });
         void scopedClear(null);
       } finally {
         if (budgetTimer) clearTimeout(budgetTimer);
-        if (get().sessionRestorePending) {
+        if (get().sessionRestorePending && authLocalRestoreDone) {
           set({ sessionRestorePending: false });
         }
       }

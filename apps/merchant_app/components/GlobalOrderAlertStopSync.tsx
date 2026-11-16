@@ -86,11 +86,26 @@ function nativeOwnedOrderKey(active: {
 
 function stageFromPipeline(
   pipeline: string | null | undefined
-): "preparing" | "ready" | "rejected" | "delivered" {
-  const u = String(pipeline ?? "").trim().toUpperCase();
+): "preparing" | "ready" | "picked_up" | "rejected" | "delivered" {
+  const u = String(pipeline ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
   if (u === "ACCEPTED" || u === "PREPARING") return "preparing";
   if (u === "READY_FOR_PICKUP" || u === "READY") return "ready";
-  if (u === "CANCELLED" || u === "REJECTED" || u === "EXPIRED") return "rejected";
+  // Never default OUT_FOR_DELIVERY → preparing (that kept Mark-ready UI while sticky said "1 out").
+  if (
+    u === "OUT_FOR_DELIVERY" ||
+    u === "PICKED_UP" ||
+    u === "IN_TRANSIT" ||
+    u === "DISPATCHED" ||
+    u === "ON_THE_WAY"
+  ) {
+    return "picked_up";
+  }
+  if (u === "CANCELLED" || u === "CANCELED" || u === "REJECTED" || u === "EXPIRED") {
+    return "rejected";
+  }
   if (u === "DELIVERED") return "delivered";
   return "preparing";
 }

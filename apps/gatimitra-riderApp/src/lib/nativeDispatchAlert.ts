@@ -1,3 +1,4 @@
+import { AppState } from "react-native";
 import {
   claimNativeOrderAlert,
   getActiveNativeOrderAlert,
@@ -85,13 +86,19 @@ export async function startRiderDispatchBuzzer(args: {
       return false;
     }
     if (state === "muted") {
-      // App-open muted the FGS tone; re-arm only for still-actionable offers.
       if (isAlertExpired(active.expiresAt ?? args.expiresAt)) {
         await stopNativeOrderAlert(active.sessionId);
         if (active.orderId) await stopNativeOrderAlert(active.orderId);
         lastSessionId = null;
         return false;
       }
+      // App is foreground: keep FGS muted and let IncomingRideOrderHost play JS.
+      // Re-arming here raced AppOpenMute and caused native + in-app dual buzzers.
+      if (AppState.currentState === "active") {
+        await claimNativeOrderAlert(active.sessionId);
+        return false;
+      }
+      // Background remount/rearm only — still-actionable offer, process alive.
       const started = await startNativeOrderAlert({
         sessionId: active.sessionId,
         orderId: args.orderId,
@@ -100,6 +107,12 @@ export async function startRiderDispatchBuzzer(args: {
       });
       if (started?.sessionId) lastSessionId = started.sessionId;
       return Boolean(started?.sessionId);
+    }
+    // Foreground + still-audible native: mute and hand audio to JS host.
+    if (AppState.currentState === "active") {
+      await muteNativeOrderAlert(active.sessionId);
+      await claimNativeOrderAlert(active.sessionId);
+      return false;
     }
     return true;
   }

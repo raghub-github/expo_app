@@ -4,7 +4,7 @@
  * Query: storeId — optional public store_id (GMMC1025) or internal numeric store id.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { authFailureResponse, getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { getSql } from "@/lib/db/client";
 
@@ -25,16 +25,12 @@ async function resolveStoreIdNum(storeParam: string | null): Promise<number | nu
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user?.email) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
-    const superAdmin = await isSuperAdmin(user.id, user.email);
-    const hasMerchant = await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT");
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) return authFailureResponse(auth);
+    const { user } = auth;
+    const userEmail = user.email ?? "";
+    const superAdmin = await isSuperAdmin(user.id, userEmail);
+    const hasMerchant = await hasDashboardAccessByAuth(user.id, userEmail, "MERCHANT");
     if (!superAdmin && !hasMerchant) {
       return NextResponse.json({ success: false, error: "Agent or admin access required" }, { status: 403 });
     }
@@ -48,6 +44,16 @@ export async function GET(request: NextRequest) {
     const sql = getSql();
     const storeCond = storeIdNum != null ? sql`AND r.store_id = ${storeIdNum}` : sql``;
     const itemStoreCond = storeIdNum != null ? sql`AND m.store_id = ${storeIdNum}` : sql``;
+
+    // Move stuck EDIT item_image_url diffs into Image Review (PENDING image rows).
+    try {
+      const { materializePendingEditImages } = await import(
+        "@/lib/merchant/materialize-pending-edit-images"
+      );
+      await materializePendingEditImages({ storeIdNum });
+    } catch (matErr) {
+      console.error("[GET /api/merchant-menu/review-queue-summary] materialize images", matErr);
+    }
 
     const [crRow] = await sql`
       SELECT COUNT(*)::int AS c

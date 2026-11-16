@@ -99,7 +99,13 @@ export function useMerchantRiderLiveTracking({
     () => getRiderTrackingSnapshot(trackingKey)
   );
 
-  const reload = subRef.current?.reload ?? (async () => {});
+  const reload = async (silent = true) => {
+    const handle = subRef.current;
+    if (handle) {
+      await handle.reload(silent);
+      return;
+    }
+  };
 
   if (!canRun) {
     return {

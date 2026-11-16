@@ -108,10 +108,18 @@ export async function GET(request: NextRequest) {
       .eq("id", parentId)
       .single();
 
-    const { data: stores, error: storesError } = await db
+    const accessRole = validation.accessRole ?? "OWNER";
+    const staffStoreId =
+      accessRole !== "OWNER" && validation.storeId != null ? Number(validation.storeId) : null;
+
+    let storesQuery = db
       .from("merchant_stores")
       .select("id, store_id, store_name, full_address, store_phones, approval_status, delisted_at, is_active, current_onboarding_step, onboarding_completed")
       .eq("parent_id", parentId);
+    if (staffStoreId != null && Number.isFinite(staffStoreId) && staffStoreId > 0) {
+      storesQuery = storesQuery.eq("id", staffStoreId);
+    }
+    const { data: stores, error: storesError } = await storesQuery;
 
     if (storesError) {
       return NextResponse.json(
@@ -198,9 +206,14 @@ export async function GET(request: NextRequest) {
       ownerName: parentRow?.owner_name ?? null,
       ownerEmail: parentRow?.owner_email ?? null,
       stores: storeList,
-      onboardingProgress,
+      onboardingProgress: accessRole === "OWNER" ? onboardingProgress : null,
       hasVerifiedStore: verifiedStores.length > 0,
       verifiedStores,
+      accessRole,
+      staffId: validation.staffId ?? null,
+      storeId: validation.storeId ?? null,
+      permissions: validation.permissions ?? undefined,
+      can_register_child: accessRole === "OWNER",
     };
     const response = NextResponse.json(body);
     if (setDeviceCookieOnResponse && deviceId) {

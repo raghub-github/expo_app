@@ -249,8 +249,42 @@ const ORDER_STAGE_RANK: Record<OrderStage, number> = {
 };
 
 /**
- * Keep a local accept/reject/advance when a concurrent list/detail fetch still
- * returns CREATED (replica lag / in-flight GET). Never revive a New-tab card.
+ * Prep countdown must follow Partner Site: prep_ready_by_at (else accepted_at + prep mins).
+ * Never let a partial local/realtime row wipe those stamps — that falls back to created_at
+ * and shows the old acceptance-window leftover on "Mark ready".
+ */
+export function mergePrepCommitmentFields(
+  primary: OrderRecord,
+  secondary: OrderRecord | undefined
+): OrderRecord {
+  if (!secondary) return primary;
+  const pickTs = (a?: string | null, b?: string | null) => a?.trim() || b?.trim() || null;
+  const prepMins =
+    primary.preparationTimeMinutes != null &&
+    Number.isFinite(primary.preparationTimeMinutes) &&
+    primary.preparationTimeMinutes > 0
+      ? primary.preparationTimeMinutes
+      : secondary.preparationTimeMinutes ?? null;
+  return {
+    ...primary,
+    acceptedAt: pickTs(primary.acceptedAt, secondary.acceptedAt),
+    preparingAt: pickTs(primary.preparingAt, secondary.preparingAt),
+    preparationTimeMinutes: prepMins,
+    prepReadyByAt: pickTs(primary.prepReadyByAt, secondary.prepReadyByAt),
+    expectedReadyAt: pickTs(primary.expectedReadyAt, secondary.expectedReadyAt),
+    prepDelayMinutes: primary.prepDelayMinutes ?? secondary.prepDelayMinutes ?? null,
+    prepDelayUseCount: primary.prepDelayUseCount ?? secondary.prepDelayUseCount ?? null,
+    lastPrepDelayMinutesAdded:
+      primary.lastPrepDelayMinutesAdded ?? secondary.lastPrepDelayMinutesAdded ?? null,
+  };
+}
+
+/**
+ * Keep a local accept/reject when a concurrent list/detail fetch still returns
+ * CREATED (replica lag). Never revive a New-tab card.
+ *
+ * Do NOT sticky-lock local "ready" over server ACCEPTED/PREPARING — that hid
+ * failed mark-ready PATCHes (UI ready, DB still Accepted).
  */
 export function preferProgressedOrderRecord(
   incoming: OrderRecord,
@@ -259,14 +293,47 @@ export function preferProgressedOrderRecord(
   if (!existing) return incoming;
   const incomingRank = ORDER_STAGE_RANK[incoming.status] ?? 0;
   const existingRank = ORDER_STAGE_RANK[existing.status] ?? 0;
-  if (existingRank <= incomingRank) return incoming;
-  return {
-    ...incoming,
-    status: existing.status,
-    pipelineStatus: existing.pipelineStatus,
-    rejectedReason: existing.rejectedReason ?? incoming.rejectedReason,
-    cancelledAt: existing.cancelledAt ?? incoming.cancelledAt,
-  };
+  if (existingRank <= incomingRank) {
+    return mergePrepCommitmentFields(incoming, existing);
+  }
+
+  const incomingPipeline = String(incoming.pipelineStatus ?? "").toUpperCase();
+  if (
+    existing.status === "ready" &&
+    (incoming.status === "preparing" ||
+      incoming.status === "created" ||
+      incomingPipeline === "ACCEPTED" ||
+      incomingPipeline === "PREPARING" ||
+      incomingPipeline === "CREATED")
+  ) {
+    return mergePrepCommitmentFields(incoming, existing);
+  }
+
+  // Same for false "picked_up" / out sticky — never lock over kitchen stages.
+  if (
+    existing.status === "picked_up" &&
+    (incoming.status === "preparing" ||
+      incoming.status === "ready" ||
+      incoming.status === "created" ||
+      incomingPipeline === "ACCEPTED" ||
+      incomingPipeline === "PREPARING" ||
+      incomingPipeline === "CREATED" ||
+      incomingPipeline === "READY_FOR_PICKUP" ||
+      incomingPipeline === "READY")
+  ) {
+    return mergePrepCommitmentFields(incoming, existing);
+  }
+
+  return mergePrepCommitmentFields(
+    {
+      ...incoming,
+      status: existing.status,
+      pipelineStatus: existing.pipelineStatus,
+      rejectedReason: existing.rejectedReason ?? incoming.rejectedReason,
+      cancelledAt: existing.cancelledAt ?? incoming.cancelledAt,
+    },
+    existing
+  );
 }
 
 const LIVE_CONTACT_STATUSES = new Set([
@@ -525,10 +592,13 @@ export function mapApiOrder(
     handedOverToRiderAt: coerceTimestamp(o.handed_over_to_rider_at),
     riderPickedUpAt: coerceTimestamp(o.rider_picked_up_at),
     deliveredAt: coerceTimestamp(o.delivered_at),
-  preparationTimeMinutes:
-      o.preparation_time_minutes != null ? Number(o.preparation_time_minutes) : null,
-    prepReadyByAt: o.prep_ready_by_at?.trim() || null,
-    expectedReadyAt: o.expected_ready_at?.trim() || null,
+    preparationTimeMinutes:
+      o.preparation_time_minutes != null && Number.isFinite(Number(o.preparation_time_minutes))
+        ? Number(o.preparation_time_minutes)
+        : null,
+    // coerceTimestamp — never `.trim()` on non-strings (drops prep deadline → wrong created_at countdown).
+    prepReadyByAt: coerceTimestamp(o.prep_ready_by_at),
+    expectedReadyAt: coerceTimestamp(o.expected_ready_at),
     prepDelayMinutes: o.prep_delay_minutes != null ? Number(o.prep_delay_minutes) : null,
     prepDelayUseCount: o.prep_delay_use_count != null ? Number(o.prep_delay_use_count) : null,
     lastPrepDelayMinutesAdded:

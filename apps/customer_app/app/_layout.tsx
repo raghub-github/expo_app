@@ -33,7 +33,12 @@ import { useAuthStore } from "@/store/authStore";
 import { useCartStore } from "@/store/cartStore";
 import { useRecentlyRemovedStore } from "@/store/recentlyRemovedStore";
 import { useLanguageStore } from "@/store/languageStore";
-import { useLocationStore, getDeviceLocationReadiness, coordsMovedSignificantly } from "@/store/locationStore";
+import {
+  useLocationStore,
+  getDeviceLocationReadiness,
+  invalidateDeviceLocationReadiness,
+  coordsMovedSignificantly,
+} from "@/store/locationStore";
 import { useRecentLocationStore } from "@/store/recentLocationStore";
 import { useFavoriteLocationsStore } from "@/store/favoriteLocationsStore";
 import { pullSavedPlacesFromServer } from "@/lib/savedPlacesSync";
@@ -69,6 +74,7 @@ import { AndroidSystemNavigationFill } from "@/components/AndroidSystemNavigatio
 import { StatusBarRouteChromeGuard } from "@/components/StatusBarRouteChromeGuard";
 import { AuthNavigationGate } from "@/components/AuthNavigationGate";
 import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
+import { HomeColdStartSkeleton } from "@/components/home/HomeTabSkeletons";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
 import { PlayInAppUpdateBootstrap } from "@/components/PlayInAppUpdateBootstrap";
@@ -107,10 +113,14 @@ import {
   isSplashExited,
   markSplashArmed,
   markSplashExited,
-  SPLASH_SHELL_SOFT_MS,
   useSplashDeadlineHit,
+  useSplashExitedFlag,
 } from "@/lib/splashLifecycle";
-import { hasCompletedProfileSync, readCachedProfile } from "@/lib/profileCache";
+import {
+  hasCompletedProfileSync,
+  readCachedProfile,
+  readSyncCachedProfile,
+} from "@/lib/profileCache";
 import { hrefForRequestedPrimaryTab } from "@/lib/customerPrimaryTabNav";
 import {
   bootstrapFreshDeviceLocation,
@@ -130,6 +140,7 @@ import { SubscriptionPlansPrefetch } from "@/components/SubscriptionPlansPrefetc
 import { FoodHomeLayoutPrefetch } from "@/components/FoodHomeLayoutPrefetch";
 import { AppAssetsPrefetch } from "@/components/AppAssetsPrefetch";
 import { profileService } from "@/services/profile.service";
+import { authService } from "@/services/auth.service";
 import {
   getContactsPermissionGranted,
   getSmsPermissionGranted,
@@ -152,6 +163,9 @@ import { resolveMapImageDataUri } from "@/lib/map-webview-image-uri";
 import { resolveNearbyRiderMarkerImage } from "@/features/ride/rideOptionAssets";
 import { AppErrorBoundary, AppErrorFallback } from "@/components/AppErrorBoundary";
 import { installGlobalErrorHandlers, reportHandledError } from "@/lib/crashReporting";
+import { ensureIoniconsLoaded } from "@/lib/ioniconsReady";
+// Warm Ionicons before Home cold-start skeleton paints (avoids empty pin/bell/tabs).
+void ensureIoniconsLoaded();
 import { installReleaseConsoleSilencer } from "@/lib/releaseConsole";
 import { subscribeConfirmedAppState } from "@/lib/confirmedAppState";
 
@@ -264,35 +278,51 @@ LogBox.ignoreLogs([
   "Push notifications (remote notifications) functionality provided by expo-notifications was removed from Expo Go",
 ]);
 
-// Keep the native mint splash until the JS brand layer has laid out.
-// Do NOT hide here — early hide caused mint → black/blank → mint flashes.
+// Keep the native mint splash until JS can hand off to Home skeletons (Zomato path)
+// or the branded JS cover (login / cold session).
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 ensureSplashHardDeadlineArmed();
 startupLaunchLog("NATIVE_SPLASH_VISIBLE");
+
+/**
+ * Returning-user fast path (Zomato): any sync session skips the long JS mint
+ * cover and puts the user on Home skeletons immediately. Profile completeness is
+ * enforced by tabs/onboarding — never by holding splash.
+ */
+function peekSyncReturningUser(): boolean {
+  try {
+    return Boolean(authService.peekStoredSessionSync()?.accessToken);
+  } catch {
+    return false;
+  }
+}
 
 // Singleton lives in @/lib/queryClient so logout/customer-scope teardown can
 // clear it from outside the React tree.
 
 export default function RootLayout() {
-  // Brand fonts first — icon font maps are large and must not delay splash exit.
+  // Brand + header icon fonts together so wallet / notification never paint blank.
+  // MaterialCommunityIcons stays deferred (large map; not needed for Home header).
+  // App-wide Lora/Poppins for UI — splash wordmark is a bundled PNG and must NOT
+  // gate on this (async load previously caused thin system-sans flashes).
   const [brandFontsLoaded] = useFonts({
     Lora_400Regular,
     Lora_700Bold,
     Poppins_600SemiBold,
     Poppins_700Bold,
+    ...Ionicons.font,
   });
   const [iconFontsLoaded] = useFonts({
-    ...Ionicons.font,
     ...MaterialCommunityIcons.font,
   });
-  // Keep icon font load warm; brand fonts alone drive splash typography polish.
+  void brandFontsLoaded;
   void iconFontsLoaded;
   const hardDeadlineHit = useSplashDeadlineHit();
   const router = useRouter();
   const segments = useSegments() as string[];
-  // Survive Fast Refresh — remounting with exited=false re-covered Home then
-  // force-dismissed onto blank Index mint.
-  const [splashExited, setSplashExited] = useState(() => isSplashExited());
+  // Global flag is source of truth — shell-ready dismisses splash synchronously
+  // via markSplashExited; local useState alone lagged behind Home's JS work.
+  const splashExited = useSplashExitedFlag();
   const [homeDataPrefetched, setHomeDataPrefetched] = useState(false);
   const rootSegment = segments[0] ?? "";
   const onRootIndexHold = !rootSegment || rootSegment === "index";
@@ -310,6 +340,7 @@ export default function RootLayout() {
 
   const hydrated = useAuthStore((s) => s.hydrated);
   const session = useAuthStore((s) => s.session);
+  const sessionRestorePending = useAuthStore((s) => s.sessionRestorePending);
   const assetsLoaded = useAppAssetsStore((s) => s.loaded);
   const homeImagesPrefetched = useAppAssetsStore((s) => s.homeImagesPrefetched);
   const hydrateAuth = useAuthStore((s) => s.hydrate);
@@ -322,16 +353,27 @@ export default function RootLayout() {
   // Auth session restore alone unblocks the navigator. Cart / GPS / weather /
   // fonts-of-icons / network must never gate Home.
   const criticalReady = hydrated;
-  // Never dismiss onto root Index mint hold — wait until Home/Login/Onboarding.
-  const destinationReady =
-    criticalReady && initialShellReady && !onRootIndexHold;
-  const appReady = destinationReady;
-  /** Keep GatiMitra mint branding up until Home/Login is actually underneath. */
-  const showBrandedCover = !destinationReady || !splashExited;
+  const rootIsTabs = rootSegment === "(tabs)";
+  // Sync peek is instant — do not wait for hydrate() async for returning users.
+  const syncReturningRef = useRef(peekSyncReturningUser());
+  const syncReturning = syncReturningRef.current;
+  /**
+   * Zomato path:
+   * 1) Branded mint splash (wordmark) until we've left Index
+   * 2) Home skeletons immediately after — never blank mint / "Loading…"
+   */
+  const destinationCommitted =
+    (criticalReady || syncReturning) && !onRootIndexHold;
+  const destinationReady = destinationCommitted && initialShellReady;
+  const appReady = destinationCommitted || splashExited;
+  // Keep Zomato brand splash until destination route is under us.
+  const showBrandedCover = !destinationCommitted;
+  // Soft home skeletons fill the gap while Tabs/Home JS + profile warm.
+  const showHomeShellPlaceholder =
+    destinationCommitted && !initialShellReady && rootIsTabs;
 
   const dismissBrandingSplash = useCallback((reason: string) => {
     const first = markSplashExited(reason);
-    setSplashExited(true);
     if (!first) return;
     startupMeasure("branding_splash_exit", "process_start");
     // Branded-layer on-screen duration (excludes native-only time before JS brand).
@@ -356,14 +398,68 @@ export default function RootLayout() {
     void SplashScreen.hideAsync().catch(() => {});
   }, []);
 
-  /** Visual fade only — parent useLayoutEffect owns real dismiss (avoids 7s dual-path lag). */
+  /** Visual fade only — parent/shell-ready owns hard dismiss. */
   const handleSplashExitComplete = useCallback(() => {
-    if (!splashExited) dismissBrandingSplash("bootstrap_exit_complete");
-  }, [dismissBrandingSplash, splashExited]);
+    if (!isSplashExited()) dismissBrandingSplash("bootstrap_exit_complete");
+  }, [dismissBrandingSplash]);
 
   useEffect(() => {
     startupLaunchLog("ROOT_LAYOUT_READY", { blocksHome: true });
   }, []);
+
+  // Sync-returning: seed auth immediately so destination kick can leave Index.
+  // Do NOT dismiss branded splash here — that left blank mint before skeletons.
+  const syncHandoffDoneRef = useRef(false);
+  useLayoutEffect(() => {
+    if (!syncReturning || syncHandoffDoneRef.current) return;
+    syncHandoffDoneRef.current = true;
+    const sync = authService.peekStoredSessionSync();
+    if (sync?.accessToken) {
+      useAuthStore.setState({
+        session: sync,
+        hydrated: true,
+        sessionRestorePending: false,
+      });
+    }
+    startupLaunchLog("SPLASH_SYNC_RETURNING_HANDOFF", {
+      blocksHome: false,
+      note: "seed_auth_keep_brand_until_tabs",
+    });
+  }, [syncReturning]);
+
+  useEffect(() => {
+    if (!syncReturning || !onRootIndexHold) return;
+    // Prefer tabs when profile unknown/complete. Only onboarding when sync
+    // positively says incomplete — missing FastKV must not bounce returning users.
+    const syncProfile = readSyncCachedProfile();
+    const target =
+      syncProfile != null && syncProfile.profile_completed !== true
+        ? "/(onboarding)"
+        : hrefForRequestedPrimaryTab();
+    let cancelled = false;
+    const kick = () => {
+      if (cancelled) return;
+      try {
+        router.replace(target as never);
+      } catch (err) {
+        reportHandledError("sync-returning-tabs-kick", err);
+        setTimeout(() => {
+          if (cancelled) return;
+          try {
+            router.replace(target as never);
+          } catch (retryErr) {
+            reportHandledError("sync-returning-tabs-kick-retry", retryErr);
+          }
+        }, 50);
+      }
+    };
+    // Defer past Root Stack first commit — same-turn replace is unsafe.
+    const t = setTimeout(kick, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [syncReturning, onRootIndexHold, router]);
 
   useEffect(() => {
     // Process-once — Fast Refresh / Strict Mode remounts were re-entering this
@@ -373,12 +469,18 @@ export default function RootLayout() {
     void (async () => {
       startupLaunchLog("AUTH_RESTORE_START", { blocksHome: true });
       const authT0 = Date.now();
-      // Auth alone is the splash critical path. Profile / location / cart must not
-      // inflate AUTH_RESTORE_DONE (Promise.all with profileWarm caused 15–32s).
-      void hydrateFastKvFromAsyncStorage([
+      // Hold Login only when we do not already have a sync session. Never treat
+      // "not restored yet" as logged out — and never block splash on FastKV.
+      const syncSession = authService.peekStoredSessionSync();
+      if (!syncSession?.accessToken) {
+        useAuthStore.setState({ sessionRestorePending: true });
+      }
+      // Warm profile + session into FastKV in parallel with hydrate (do not await
+      // before sync peek). Profile warm unblocks Index layout-redirect to Home.
+      const fastKvWarm = hydrateFastKvFromAsyncStorage([
         STORAGE_KEYS.PROFILE_CACHE,
         STORAGE_KEYS.AUTH_SESSION,
-      ]).catch(() => {});
+      ]).catch(() => undefined);
       // Stage A last-known is sync-peek first — safe alongside auth (no weather await).
       void bootstrapLastKnownLocation().then(() => {
         const { coords, address } = useLocationStore.getState();
@@ -392,12 +494,21 @@ export default function RootLayout() {
       // for splash, weather, cart, profile, banners, or reverse geocode.
       void kickEarlyFreshGpsIfReady();
       // Short retries — Expo Go permission/services probes can miss on the first tick.
-      const gpsRetryTimers = [1200, 3000, 5500].map((ms) =>
+      // Keep off the splash critical path (fire-and-forget only).
+      const gpsRetryTimers = [800, 2000, 4000].map((ms) =>
         setTimeout(() => {
           void kickEarlyFreshGpsIfReady();
         }, ms)
       );
+      // Local auth restore first — sync peek is ~0–2ms; AS read only on cold miss.
       await hydrateAuth();
+      // If hydrate raced ahead of FastKV warm on a cold miss, retry once warm lands.
+      void fastKvWarm.then(() => {
+        const state = useAuthStore.getState();
+        if (!state.session?.accessToken && state.sessionRestorePending) {
+          void state.hydrate();
+        }
+      });
       for (const t of gpsRetryTimers) clearTimeout(t);
       // durationMs = local session work only (hydrated already true). ageMs is process age.
       const authMs = Date.now() - authT0;
@@ -459,67 +570,135 @@ export default function RootLayout() {
     startupMeasure("critical_ready", "process_start");
   }, [criticalReady]);
 
-  // Watchdog only — never strips the branded cover into blank mint.
+  // Watchdog only — never strip the branded cover into blank mint.
   useEffect(() => {
-    if (!criticalReady || initialShellReady || splashExited) return;
+    if (!criticalReady || initialShellReady || destinationReady) return;
     const timeout = setTimeout(() => {
       startupMeasure("startup_shell_timeout", "process_start");
       startupLaunchLog("STARTUP_BLOCKER", {
         stage: "shell_ready_lag",
-        durationMs: SPLASH_SHELL_SOFT_MS,
+        durationMs: 250,
         note: "cover_held_until_shell",
       });
-    }, SPLASH_SHELL_SOFT_MS);
+    }, 250);
     return () => clearTimeout(timeout);
-  }, [criticalReady, initialShellReady, splashExited]);
+  }, [criticalReady, initialShellReady, destinationReady]);
 
-  // Absolute budget: unblock auth + kick real destination under the branded cover.
-  // Never force shell-ready here — that dismissed onto blank Index mint.
+  // Absolute deadline: unblock wedged auth only — do not dismiss branding early.
   useEffect(() => {
-    if (!hardDeadlineHit || splashExited) return;
+    if (!hardDeadlineHit || splashExited || initialShellReady) return;
     if (!criticalReady) {
       useAuthStore.getState().forceSplashUnblock();
     }
-    const auth = useAuthStore.getState();
-    // Kick real destination under cover — never dismiss onto Index mint.
-    if (auth.session?.accessToken && onRootIndexHold) {
-      if (hasCompletedProfileSync()) {
-        router.replace(hrefForRequestedPrimaryTab() as never);
-      } else {
-        void readCachedProfile().then((profile) => {
-          if (isSplashExited()) return;
-          if (useAuthStore.getState().session?.accessToken == null) return;
-          if (profile?.profile_completed === true) {
-            router.replace(hrefForRequestedPrimaryTab() as never);
+  }, [hardDeadlineHit, criticalReady, splashExited, initialShellReady]);
+
+  // Kick real destination as soon as local auth is known.
+  // Never gate this on splashExited — that blocked navigation after early shell marks.
+  useEffect(() => {
+    if (!criticalReady) {
+      if (hardDeadlineHit) {
+        useAuthStore.getState().forceSplashUnblock();
+      }
+      return;
+    }
+    if (!onRootIndexHold) return;
+
+    let cancelled = false;
+    const safeReplace = (href: string) => {
+      if (cancelled) return;
+      try {
+        router.replace(href as never);
+      } catch (err) {
+        // Expo Router not ready yet (HMR / first paint) — retry once shortly.
+        reportHandledError("splash-destination-kick", err);
+        setTimeout(() => {
+          if (cancelled) return;
+          try {
+            router.replace(href as never);
+          } catch (retryErr) {
+            reportHandledError("splash-destination-kick-retry", retryErr);
           }
+        }, 50);
+      }
+    };
+
+    // Kick after RootStack has committed — never same-frame as first hydrate.
+    const kickTimer = setTimeout(() => {
+      if (cancelled) return;
+      const latest = useAuthStore.getState();
+      let kicked = false;
+      if (latest.session?.accessToken) {
+        if (hasCompletedProfileSync()) {
+          safeReplace(hrefForRequestedPrimaryTab());
+          kicked = true;
+        } else {
+          void (async () => {
+            const profile = await Promise.race([
+              readCachedProfile(),
+              new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 100)),
+            ]);
+            if (cancelled) return;
+            if (useAuthStore.getState().session?.accessToken == null) return;
+            if (profile?.profile_completed === true || hasCompletedProfileSync()) {
+              safeReplace(hrefForRequestedPrimaryTab());
+            } else {
+              safeReplace("/(onboarding)");
+            }
+            startupLaunchLog("SPLASH_DESTINATION_KICK", {
+              phase: "kick_destination_async",
+              note: "splash_dismisses_on_off_index",
+              blocksHome: true,
+            });
+          })();
+          return;
+        }
+      } else if (latest.sessionRestorePending) {
+        // Disk restore still running — hold Index under cover; Index/AuthGate
+        // will route once pending clears. Never treat "not yet restored" as logout.
+        startupLaunchLog("SPLASH_DESTINATION_KICK", {
+          phase: "await_session_restore",
+          note: "cover_held_until_auth_restore",
+          blocksHome: true,
+        });
+        return;
+      } else if (hardDeadlineHit) {
+        // Only send to Login after restore finished with no session.
+        safeReplace("/(auth)/login");
+        kicked = true;
+      } else {
+        return;
+      }
+      if (kicked) {
+        startupLaunchLog("SPLASH_DESTINATION_KICK", {
+          phase: "kick_destination",
+          note: "splash_dismisses_on_off_index",
+          blocksHome: true,
         });
       }
-    } else if (!auth.session?.accessToken && !auth.sessionRestorePending && onRootIndexHold) {
-      router.replace("/(auth)/login");
-    }
-    startupLaunchLog("SPLASH_HARD_DEADLINE", {
-      phase: initialShellReady && !onRootIndexHold ? "destination_ready" : "kick_destination",
-      note: "cover_held_until_real_shell",
-      blocksHome: true,
-    });
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(kickTimer);
+    };
   }, [
     hardDeadlineHit,
     criticalReady,
-    initialShellReady,
-    splashExited,
     onRootIndexHold,
+    session?.accessToken,
+    sessionRestorePending,
     router,
   ]);
 
-  // useLayoutEffect: dismiss before paint once shell is under the cover — useEffect
-  // previously ran after Home's heavy commit work and left branding up ~7s.
+  // Dismiss branding the moment we leave Index — skeleton placeholder covers Metro lag.
   useLayoutEffect(() => {
-    if (!appReady) return;
+    if (!destinationCommitted) return;
     markSplashArmed();
     startupMeasure("splash_fade_armed", "process_start");
-    if (splashExited) return;
-    dismissBrandingSplash("shell_ready");
-  }, [appReady, splashExited, dismissBrandingSplash]);
+    if (!isSplashExited()) {
+      dismissBrandingSplash("destination_committed");
+    }
+  }, [destinationCommitted, dismissBrandingSplash]);
 
   useEffect(() => {
     if (!criticalReady || session) return;
@@ -556,38 +735,41 @@ export default function RootLayout() {
       <AppErrorBoundary source="app-root">
       <QueryClientProvider client={queryClient}>
         <SafeAreaProvider initialMetrics={getSafeAreaInitialMetrics()}>
-          <View
+            <View
             style={{
               flex: 1,
-              // Mint until branded cover is gone — softBackground here was the white flash.
+              // Soft home bg once destination is ready; mint only while branded cover owns the frame.
               backgroundColor: showBrandedCover
                 ? SPLASH_CHROME_COLOR
                 : GatiMitraColors.softBackground,
             }}
           >
-            {/* Home illustrations must warm DURING splash — gating this on splashExited
-                left service cards + brand banner blank on first Home paint. */}
+            {/* Home illustrations + category chip images must warm DURING splash —
+                gating categories on splashExited left Food rail circles blank. */}
             <AppAssetsPrefetch />
             <UserAppCategoriesPrefetch />
-            {/* Saved addresses during splash — Select location must never spin for known list. */}
+            {/* Saved addresses: sync-seed only during splash; full network after exit. */}
             <AddressesPrefetch />
-            {/* Warm Home progressive sections during splash — never block dismiss. */}
+            {/* Parallel non-blocking warm — fills Home skeletons after splash exits. */}
             <AppErrorBoundary source="home-shell-prefetch" fallback={() => null}>
               <FeaturedOffersPrefetch />
               <WeatherPrefetch />
             </AppErrorBoundary>
+            {/* Always mount Stack on first paint — gating it behind criticalReady
+                caused "Attempted to navigate before mounting the Root Layout"
+                when splash deadline / forceSplashUnblock kicked router.replace. */}
+            <NavigatorWithRecovery>
+              <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
+            </NavigatorWithRecovery>
+            <AndroidSystemNavigationFill />
             {criticalReady ? (
               <>
-                {/* Essential while splash covers: auth gate + navigator + chrome.
+                {/* Essential while splash covers: auth gate + chrome.
                     Heavy realtime/overlays still wait until splash exits. */}
                 <AuthNavigationGate />
                 <AddressShareLinkCapture />
                 <CustomerSystemChrome />
                 <StatusBarRouteChromeGuard />
-                <NavigatorWithRecovery>
-                  <RootStack onLayoutRootView={onLayoutRootView} splashActive={!splashExited} />
-                </NavigatorWithRecovery>
-                <AndroidSystemNavigationFill />
                 {splashExited ? (
                   <>
                     <AppErrorBoundary source="background-sync" fallback={() => null}>
@@ -657,11 +839,25 @@ export default function RootLayout() {
                 ) : null}
               </>
             ) : null}
+            {showHomeShellPlaceholder ? (
+              <View
+                pointerEvents="none"
+                // No elevation — Android hardware layers with high elevation were
+                // freezing the first painted frame (slogan/motion looked blocked).
+                collapsable={false}
+                style={[
+                  StyleSheet.absoluteFillObject,
+                  { zIndex: 9000, backgroundColor: GatiMitraColors.softBackground },
+                ]}
+                accessibilityLabel="Loading home"
+              >
+                <HomeColdStartSkeleton reason="post_splash_shell_placeholder" />
+              </View>
+            ) : null}
             {showBrandedCover ? (
               <GatiMitraBootstrapScreen
                 variant="root"
                 appReady={appReady}
-                fontsReady={brandFontsLoaded}
                 onSplashReady={handleSplashReady}
                 onExitComplete={handleSplashExitComplete}
               />
@@ -1085,8 +1281,9 @@ function LocationPermissionResumeCheck() {
         async () => {
           const { coords: before } = useLocationStore.getState();
           // Permission only — reconcile owns the pin when signed in.
-          await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
-          const readiness = await getDeviceLocationReadiness();
+          invalidateDeviceLocationReadiness();
+          await promptLocationPermissionIfNeeded({ skipDeviceFetch: true, force: true });
+          const readiness = await getDeviceLocationReadiness({ force: true });
           if (readiness.isReady && useLocationStore.getState().locationSource !== "selected") {
             void requestPermissionAndFetch({ forceDevice: true });
           }
@@ -1163,23 +1360,22 @@ function LocationPermissionResumeCheck() {
     return () => unsubscribe();
   }, [requestPermissionAndFetch, promptLocationPermissionIfNeeded, queryClient]);
 
-  // Re-prompt loop, but only while the modal is actually up. This used to be an
-  // unconditional 2s interval that ran for the entire app lifetime and did
-  // nothing on the overwhelming majority of ticks — now it exists only for the
-  // seconds the user is looking at the permission sheet.
+  // While the sheet is up, re-check OS readiness only (no GPS fetch). Starting
+  // progressive GPS every 1.5s made Enable feel stuck and burned battery.
   useEffect(() => {
     if (!showPermissionModal) return;
     if (useSmsPermissionStore.getState().blocksLocation) return;
 
-    void promptLocationPermissionIfNeeded({ skipDeviceFetch: false });
-
-    const interval = setInterval(() => {
+    const recheck = () => {
       if (AppState.currentState !== "active") return;
       if (useSmsPermissionStore.getState().blocksLocation) return;
       if (!useLocationStore.getState().showPermissionModal) return;
-      void promptLocationPermissionIfNeeded({ skipDeviceFetch: false });
-    }, 1500);
+      invalidateDeviceLocationReadiness();
+      void promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
+    };
 
+    recheck();
+    const interval = setInterval(recheck, 2000);
     return () => clearInterval(interval);
   }, [showPermissionModal, promptLocationPermissionIfNeeded]);
 

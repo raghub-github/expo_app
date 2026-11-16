@@ -50,6 +50,9 @@ function armGpsFetchWatchdog(): void {
     gpsWatchdog = null;
     const s = useLocationStore.getState();
     if (hasUsableAddress()) return;
+    // Coords already on screen and geocode still running — don't flip to "Tap to
+    // retry" while address is catching up (felt like a stuck Detecting state).
+    if (s.coords && (s.refining || isPlaceholder(s.address?.primary))) return;
     // Permission granted but GPS hung — allow retry CTA, not a fake address.
     if (s.permissionStatus === "granted") {
       useLocationStore.setState({ detectingTimedOut: true, loading: false });
@@ -211,7 +214,22 @@ export async function bootstrapFreshDeviceLocation(queryClient: QueryClient): Pr
   await runExclusiveActiveLocationReconcile(async () => {
     await useLocationStore.getState().hydrate();
 
-    const readiness = await getDeviceLocationReadiness();
+    // Hard ceiling — never delay the location sheet / Home on a wedged OS probe.
+    let readiness;
+    try {
+      readiness = await Promise.race([
+        getDeviceLocationReadiness({ force: true }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("readiness_timeout")), 2_500)
+        ),
+      ]);
+    } catch {
+      readiness = {
+        permissionStatus: useLocationStore.getState().permissionStatus,
+        servicesEnabled: false,
+        isReady: false,
+      };
+    }
     startupLaunchLog("LOCATION_PERMISSION_RESULT", {
       status: readiness.permissionStatus,
       servicesEnabled: readiness.servicesEnabled,

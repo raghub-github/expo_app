@@ -67,6 +67,9 @@ import {
   normalizeSpiceLevelForForm,
   getFoodTypeLabel,
   itemHasCustomizationContent,
+  itemPrimaryImageRejected,
+  menuItemEffectiveApprovalFilterStatus,
+  resolveMenuApprovalBadge,
   type MenuItem,
   type MenuCategory,
   type Customization,
@@ -245,6 +248,8 @@ function normalizeItem(
     variants: (item.variants as Variant[]) ?? [],
     allergens: (item.allergens as any) ?? undefined,
     approval_status: (item.approval_status as any) ?? null,
+    primary_image_moderation_status:
+      (item.primary_image_moderation_status as MenuItem["primary_image_moderation_status"]) ?? null,
     rejection_reason: (item.rejection_reason as string | null) ?? null,
     has_pending_change_request: Boolean((item as any).has_pending_change_request),
     pending_change_request_type: ((item as any).pending_change_request_type as any) ?? null,
@@ -1052,8 +1057,7 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
     statusFilter === "ALL"
       ? filteredByCategory
       : filteredByCategory.filter((item) => {
-          const st = item.approval_status ?? "PENDING";
-          return st === statusFilter;
+          return menuItemEffectiveApprovalFilterStatus(item) === statusFilter;
         });
 
   const filteredByStock =
@@ -3043,58 +3047,117 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                   (item.has_addons ?? false) ||
                   linkedOptionsCount > 0 ||
                   inlineAddonsCount > 0;
+                const approvalBadge = resolveMenuApprovalBadge(item, {
+                  pendingLabel: "Pending",
+                  showApproved: true,
+                });
+                const showRejectBanner =
+                  approvalBadge?.kind === "image_rejected" || approvalBadge?.kind === "rejected";
+                const photoRejected = itemPrimaryImageRejected(item) || showRejectBanner;
                 return (
                   <div
                     key={item.id}
-                    className={menuItemCard}
+                    className={`${menuItemCard} flex flex-col ${
+                      showRejectBanner ? "border-red-200" : ""
+                    }`}
                   >
-                    <div className="flex p-2.5 h-full gap-2.5">
+                    {showRejectBanner ? (
+                      <div
+                        className="relative z-[2] flex shrink-0 flex-col gap-0.5 border-b border-red-200 bg-red-50 px-2.5 py-1.5"
+                        title={approvalBadge?.reason || approvalBadge?.label || "Rejected"}
+                      >
+                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-red-800">
+                          <span
+                            className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-red-500"
+                            aria-hidden
+                          />
+                          {approvalBadge?.kind === "image_rejected"
+                            ? "Image rejected"
+                            : "Rejected"}
+                        </div>
+                        {approvalBadge?.reason ? (
+                          <p className="line-clamp-2 pl-3 text-[10px] font-medium leading-snug text-red-700/90">
+                            {approvalBadge.reason}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : item.has_pending_change_request ? (
+                      <div className="relative z-[2] flex shrink-0 items-center justify-center gap-1.5 border-b border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] font-bold text-amber-900">
+                        <span
+                          className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500"
+                          aria-hidden
+                        />
+                        {item.pending_change_request_type === "DELETE"
+                          ? "Delete requested"
+                          : item.pending_change_request_type === "UPDATE"
+                            ? "Edit requested"
+                            : "Under review"}
+                      </div>
+                    ) : null}
+                    <div className="flex min-h-0 flex-1 gap-2.5 p-2.5">
                       <button
                         type="button"
                         onClick={() => setPhotoModalItem(item)}
-                        className="w-14 h-14 flex-shrink-0 rounded-lg border border-gray-200 overflow-hidden bg-gray-100 cursor-pointer hover:ring-2 hover:ring-orange-300"
+                        className="relative h-14 w-14 flex-shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100 cursor-pointer hover:ring-2 hover:ring-orange-300"
                         aria-label={`View photo for ${item.item_name}`}
                       >
                         <R2Image
                           key={`${item.id}-${itemCardImageUrl(item) ?? "none"}`}
                           src={itemCardImageUrl(item)}
                           alt={item.item_name}
-                          className="w-full h-full object-cover"
+                          className="h-full w-full object-cover"
                           fallbackSrc={ITEM_PLACEHOLDER_SVG}
                         />
+                        {photoRejected ? (
+                          <span className="absolute bottom-0 left-0 right-0 bg-red-600/90 px-0.5 py-px text-center text-[8px] font-bold text-white">
+                            Rejected
+                          </span>
+                        ) : String(item.primary_image_moderation_status ?? "").toUpperCase() ===
+                          "PENDING" && itemCardImageUrl(item) ? (
+                          <span className="absolute bottom-0 left-0 right-0 bg-amber-500/90 px-0.5 py-px text-center text-[8px] font-bold text-white">
+                            Review
+                          </span>
+                        ) : null}
                       </button>
-                      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-                        <div className="flex items-start justify-between gap-1 mb-0.5">
-                          <div className="flex-1 min-w-0">
-                            <div className="font-bold text-sm text-gray-900 truncate">{item.item_name}</div>
-                          <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
-                            <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wide truncate" title={categoryDisplayLabel}>
+                      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                        <div className="mb-0.5 flex items-start justify-between gap-1">
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-bold text-gray-900">
+                              {item.item_name}
+                            </div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                            <div
+                              className="truncate text-[10px] font-semibold uppercase tracking-wide text-gray-500"
+                              title={categoryDisplayLabel}
+                            >
                               {categoryDisplayLabel}
                             </div>
                             {(() => {
                               const oosLabel = menuOos.itemOosLabel(item);
                               return oosLabel ? (
-                                <div className="text-[11px] font-semibold text-red-600 mt-0.5">{oosLabel}</div>
+                                <div className="mt-0.5 text-[11px] font-semibold text-red-600">
+                                  {oosLabel}
+                                </div>
                               ) : (
-                                <div className="text-[11px] font-semibold text-green-600 mt-0.5">In stock</div>
+                                <div className="mt-0.5 text-[11px] font-semibold text-green-600">
+                                  In stock
+                                </div>
                               );
                             })()}
-                            <span
-                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                (item.approval_status ?? "PENDING") === "APPROVED"
-                                  ? "bg-green-50 text-green-700 border border-green-200"
-                                  : (item.approval_status ?? "PENDING") === "REJECTED"
-                                    ? "bg-red-50 text-red-700 border border-red-200"
-                                    : "bg-amber-50 text-amber-800 border border-amber-200"
-                              }`}
-                              title="Approval status"
-                            >
-                              {(item.approval_status ?? "PENDING") === "APPROVED"
-                                ? "Approved"
-                                : (item.approval_status ?? "PENDING") === "REJECTED"
-                                  ? "Rejected"
-                                  : "Pending"}
-                            </span>
+                            {approvalBadge &&
+                            approvalBadge.kind !== "image_rejected" &&
+                            approvalBadge.kind !== "rejected" ? (
+                              <span
+                                className={`rounded border px-1.5 py-0.5 text-[10px] font-bold ${
+                                  approvalBadge.kind === "approved"
+                                    ? "border-green-200 bg-green-50 text-green-700"
+                                    : "border-amber-200 bg-amber-50 text-amber-800"
+                                }`}
+                                title={approvalBadge.label}
+                              >
+                                {approvalBadge.label}
+                              </span>
+                            ) : null}
                             {hasAddons && (
                               <button
                                 type="button"
@@ -3118,14 +3181,14 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                                     : ""}
                               </button>
                             )}
-                            {item.has_pending_change_request && (
+                            {item.has_pending_change_request && showRejectBanner ? (
                               <span
-                                className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                                className={`rounded border px-1.5 py-0.5 text-[10px] font-bold ${
                                   item.pending_change_request_type === "DELETE"
-                                    ? "bg-purple-50 text-purple-700 border-purple-200"
+                                    ? "border-purple-200 bg-purple-50 text-purple-700"
                                     : item.pending_change_request_type === "UPDATE"
-                                      ? "bg-blue-50 text-blue-700 border-blue-200"
-                                      : "bg-indigo-50 text-indigo-700 border-indigo-200"
+                                      ? "border-blue-200 bg-blue-50 text-blue-700"
+                                      : "border-indigo-200 bg-indigo-50 text-indigo-700"
                                 }`}
                                 title="Pending change request"
                               >
@@ -3135,7 +3198,7 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                                     ? "Edit requested"
                                     : "Change requested"}
                               </span>
-                            )}
+                            ) : null}
                           </div>
                           </div>
                           {!menuReadOnly ? (
@@ -3146,37 +3209,37 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                           />
                           ) : null}
                         </div>
-                        <div className="flex items-center gap-1 mb-1">
+                        <div className="mb-1 flex items-center gap-1">
                           <MenuItemPriceRow item={item} />
                         </div>
-                        {item.item_description && (
-                          <p className="text-[11px] text-gray-600 line-clamp-2 mb-1.5 flex-grow leading-tight">
+                        {item.item_description ? (
+                          <p className="mb-1.5 line-clamp-2 flex-grow text-[11px] leading-tight text-gray-600">
                             {item.item_description}
                           </p>
-                        )}
-                        <div className="flex flex-wrap gap-1 mb-1.5">
+                        ) : null}
+                        <div className="mb-1.5 flex flex-wrap gap-1">
                           {item.is_popular && (
-                            <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 text-[10px] font-semibold rounded">
+                            <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
                               Popular
                             </span>
                           )}
                           {item.is_recommended && (
-                            <span className="px-1.5 py-0.5 bg-purple-50 text-purple-700 text-[10px] font-semibold rounded">
+                            <span className="rounded bg-purple-50 px-1.5 py-0.5 text-[10px] font-semibold text-purple-700">
                               Recommended
                             </span>
                           )}
                           {item.has_customizations && (
-                            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 text-[10px] font-semibold rounded">
+                            <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
                               Customizable
                             </span>
                           )}
                           {item.has_variants && (
-                            <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 text-[10px] font-semibold rounded">
+                            <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
                               Variants
                             </span>
                           )}
                           {item.food_type && (
-                            <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 text-[10px] font-semibold rounded">
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-600">
                               {getFoodTypeLabel(item.food_type)}
                             </span>
                           )}
@@ -3193,8 +3256,8 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                             </span>
                           )}
                           {item.spice_level && (
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-50 text-red-700 font-semibold">
-                              <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                            <span className="inline-flex items-center gap-1 rounded bg-red-50 px-1.5 py-0.5 font-semibold text-red-700">
+                              <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
                               {normalizeSpiceLevelForForm(item.spice_level)}
                             </span>
                           )}
@@ -3210,10 +3273,10 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                             <span>• Pkg ₹{Number(item.packaging_charges).toFixed(0)}</span>
                           )}
                           {item.cuisine_type && (
-                            <span className="truncate max-w-[120px]">• {item.cuisine_type}</span>
+                            <span className="max-w-[120px] truncate">• {item.cuisine_type}</span>
                           )}
                         </div>
-                        <div className="flex items-center gap-1.5 mt-auto min-w-0">
+                        <div className="mt-auto flex min-w-0 shrink-0 items-center gap-1.5">
                           {(item.customizations?.length ?? 0) > 0 || (item.variants?.length ?? 0) > 0 ? (
                             <button
                               onClick={(e) => {
@@ -3227,7 +3290,11 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                               Options
                             </button>
                           ) : null}
-                          {canReviewApprove && (item.approval_status ?? "PENDING") === "PENDING" && (
+                          {canReviewApprove &&
+                            !itemPrimaryImageRejected(item) &&
+                            ((String(item.primary_image_moderation_status ?? "").toUpperCase() ===
+                              "PENDING") ||
+                              (item.approval_status ?? "PENDING") === "PENDING") && (
                             <button
                               type="button"
                               onClick={async (e) => {
@@ -3331,7 +3398,11 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                                 onToggle={() => menuOos.handleItemStockToggle(item)}
                               />
                               ) : null}
-                              {canReviewApprove && (item.approval_status ?? "PENDING") === "PENDING" && (
+                              {canReviewApprove &&
+                                !itemPrimaryImageRejected(item) &&
+                                ((String(item.primary_image_moderation_status ?? "").toUpperCase() ===
+                                  "PENDING") ||
+                                  (item.approval_status ?? "PENDING") === "PENDING") && (
                                 <button
                                   type="button"
                                   onClick={async (e) => {
@@ -3522,9 +3593,25 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                   </div>
                 ) : null}
                 <div className="flex flex-wrap gap-1.5">
-                  <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 text-[11px] font-semibold">
-                    Status: {(reviewItem.approval_status ?? "PENDING").toLowerCase()}
-                  </span>
+                  {(() => {
+                    const badge = resolveMenuApprovalBadge(reviewItem, {
+                      pendingLabel: "Pending",
+                      showApproved: true,
+                    });
+                    return (
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[11px] font-semibold ${
+                          badge?.kind === "approved"
+                            ? "bg-green-50 text-green-800"
+                            : badge?.kind === "image_rejected" || badge?.kind === "rejected"
+                              ? "bg-red-50 text-red-800"
+                              : "bg-amber-50 text-amber-800"
+                        }`}
+                      >
+                        Status: {(badge?.label ?? "Pending").toLowerCase()}
+                      </span>
+                    );
+                  })()}
                   {reviewItem.spice_level && (
                     <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-700 text-[11px] font-semibold">
                       {normalizeSpiceLevelForForm(reviewItem.spice_level)}
@@ -3659,6 +3746,7 @@ export function StoreMenuClient({ storeId: storeIdProp }: { storeId: string }) {
                       "Image is blurry or low quality",
                       "Dish is not clearly visible",
                       "Image contains watermark or promotional text",
+                      "Image does not match item name/description / QTY",
                     ].map((preset) => (
                       <button
                         key={preset}

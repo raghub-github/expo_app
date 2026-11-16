@@ -59,8 +59,9 @@ export function ClassicFoodCategoryRail({
         <View style={[styles.circle, allActive && styles.circleActive]}>
           <UserAppCategoryImage
             imageUrl={allTabImageUrl}
-            cacheKey="classic-category-all"
+            cacheKey="tab-category-all"
             style={styles.image}
+            widthPt={CIRCLE}
           />
         </View>
         <AppText style={[styles.label, allActive && styles.labelActive]} numberOfLines={1}>
@@ -86,8 +87,9 @@ export function ClassicFoodCategoryRail({
               <View style={[styles.circle, selected && styles.circleActive]}>
                 <UserAppCategoryImage
                   imageUrl={cat.imageUrl}
-                  cacheKey={`classic-category-${cat.id}`}
+                  cacheKey={`tab-category-${cat.id}`}
                   style={styles.image}
+                  widthPt={CIRCLE}
                 />
               </View>
               {fromLabel ? (
@@ -133,7 +135,8 @@ const styles = StyleSheet.create({
     height: CIRCLE,
     borderRadius: CIRCLE / 2,
     overflow: "hidden",
-    backgroundColor: "#FFFFFF",
+    // Soft mint fill while cached bitmap paints — never a blank white hole.
+    backgroundColor: "#EEF2F6",
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,

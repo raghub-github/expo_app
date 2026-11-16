@@ -264,21 +264,38 @@ export async function validateMerchantByPhone(phone: string): Promise<MerchantVa
       return { isValid: false, error: "Unable to verify your account. Please try again." };
     }
     const row = Array.isArray(rows) && rows.length > 0 ? (rows[0] as ParentRow) : null;
-    if (!row) {
+    if (row) {
+      if (Array.isArray(rows) && rows.length > 1) {
+        console.warn(
+          "[validateMerchantByPhone] Multiple merchant_parents for same phone:",
+          tenDigit,
+          "using newest id=",
+          row.id
+        );
+      }
+      return toValidationResult(row);
+    }
+
+    // Invited manager/staff (same gate as merchant app OTP login).
+    const staff = await resolveStoreStaffByPhone(phone.trim());
+    if (staff) {
       return {
-        isValid: false,
-        error: "No merchant account found for this mobile number. Please register first.",
+        isValid: true,
+        merchantParentId: staff.parentId,
+        parentMerchantId: staff.parentMerchantId,
+        phone: phone.trim(),
+        email: staff.ownerEmail,
+        accessRole: staff.accessRole,
+        staffId: staff.staffId,
+        storeId: staff.storeId,
+        permissions: staff.permissions,
       };
     }
-    if (Array.isArray(rows) && rows.length > 1) {
-      console.warn(
-        "[validateMerchantByPhone] Multiple merchant_parents for same phone:",
-        tenDigit,
-        "using newest id=",
-        row.id
-      );
-    }
-    return toValidationResult(row);
+
+    return {
+      isValid: false,
+      error: "No merchant account found for this mobile number. Please register first.",
+    };
   } catch (e) {
     console.error("[validateMerchantByPhone] Error:", e);
     return { isValid: false, error: "An error occurred during validation. Please try again." };
@@ -336,7 +353,7 @@ export async function validateMerchantFromSession(user: {
   if (hasEmail && user.email) {
     const byEmail = await validateMerchantForLogin(user.email);
     if (byEmail.isValid) {
-      if (byEmail.merchantParentId != null) {
+      if (byEmail.merchantParentId != null && (byEmail.accessRole ?? "OWNER") === "OWNER") {
         await maybeLinkSupabaseUserId(byEmail.merchantParentId, user.id);
       }
       return byEmail;
@@ -346,7 +363,8 @@ export async function validateMerchantFromSession(user: {
   if (hasPhone && user.phone) {
     const byPhone = await validateMerchantByPhone(user.phone);
     if (byPhone.isValid) {
-      if (byPhone.merchantParentId != null) {
+      // Never attach invited staff Auth UUIDs onto merchant_parents.supabase_user_id.
+      if (byPhone.merchantParentId != null && (byPhone.accessRole ?? "OWNER") === "OWNER") {
         await maybeLinkSupabaseUserId(byPhone.merchantParentId, user.id);
       }
       return byPhone;

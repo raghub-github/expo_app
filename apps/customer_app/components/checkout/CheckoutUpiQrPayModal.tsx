@@ -1,7 +1,8 @@
 /**
  * In-app Scan QR Code for food checkout.
  * Shows Razorpay's official `image_url` from POST /v1/payments/qr_codes.
- * Payment is confirmed only via server webhook / pending-order poll — never
+ * Payment is confirmed via server webhook / pending-order poll (which also
+ * recovers missed `qr_code.credited` via Razorpay QR payments API) — never
  * by displaying or scanning the QR alone.
  *
  * The gateway PNG is a tall branded poster. We crop a square window onto the
@@ -45,7 +46,10 @@ type Props = {
   expiresAt?: number | null;
   loading?: boolean;
   error?: string | null;
+  /** Soft dismiss (header ✕) — hide scanner; payment may still capture. */
   onClose: () => void;
+  /** Hard cancel — abandon this QR attempt. */
+  onAbandon?: () => void;
   onRetry?: () => void;
   onPollStatus?: () => Promise<{ finalized: boolean; orderId?: string | null; failed?: boolean }>;
   onPaid?: (orderId: string) => void;
@@ -96,12 +100,14 @@ export function CheckoutUpiQrPayModal({
   loading = false,
   error = null,
   onClose,
+  onAbandon,
   onRetry,
   onPollStatus,
   onPaid,
   onFailed,
   onExpired,
 }: Props) {
+  const abandon = onAbandon ?? onClose;
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const qrWidth = useMemo(
@@ -183,9 +189,10 @@ export function CheckoutUpiQrPayModal({
       }
     };
     void tick();
+    // Fast poll — webhook finalize + QR recover land quickly after UPI capture.
     const id = setInterval(() => {
       void tick();
-    }, 2500);
+    }, 1000);
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -198,7 +205,8 @@ export function CheckoutUpiQrPayModal({
     <Modal
       visible={visible}
       animationType="slide"
-      presentationStyle="pageSheet"
+      presentationStyle="fullScreen"
+      // Soft dismiss only via header ✕ / Cancel — never outside tap / swipe.
       onRequestClose={onClose}
     >
       <View
@@ -281,7 +289,12 @@ export function CheckoutUpiQrPayModal({
             ? "QR expired"
             : "Waiting for payment confirmation from Razorpay…"}
         </Text>
-        <Pressable onPress={onClose} style={styles.cancelBtn} accessibilityRole="button">
+        <Pressable
+          onPress={abandon}
+          style={styles.cancelBtn}
+          accessibilityRole="button"
+          accessibilityLabel="Cancel Scan QR payment"
+        >
           <Text style={styles.cancelText}>Cancel</Text>
         </Pressable>
       </View>

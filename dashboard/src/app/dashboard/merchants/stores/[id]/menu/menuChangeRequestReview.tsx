@@ -18,8 +18,41 @@ export function parseChangeRequestJson(val: unknown): unknown {
   return val;
 }
 
+function isEmptyishChangeValue(val: unknown): boolean {
+  if (val === null || val === undefined) return true;
+  if (typeof val === "string" && val.trim() === "") return true;
+  if (Array.isArray(val) && val.length === 0) return true;
+  return false;
+}
+
+/** True when old/new are a real catalog change (null/"" / [] treated equal). */
+export function isMeaningfulMenuFieldChange(oldVal: unknown, newVal: unknown): boolean {
+  if (isEmptyishChangeValue(oldVal) && isEmptyishChangeValue(newVal)) return false;
+  if (typeof oldVal === "number" || typeof newVal === "number") {
+    const a = isEmptyishChangeValue(oldVal) ? null : Number(oldVal);
+    const b = isEmptyishChangeValue(newVal) ? null : Number(newVal);
+    if (a == null && b == null) return false;
+    if (a != null && b != null && Number.isFinite(a) && Number.isFinite(b) && a === b) return false;
+  }
+  try {
+    const a = isEmptyishChangeValue(oldVal)
+      ? "null"
+      : typeof oldVal === "string"
+        ? oldVal.trim()
+        : JSON.stringify(oldVal);
+    const b = isEmptyishChangeValue(newVal)
+      ? "null"
+      : typeof newVal === "string"
+        ? newVal.trim()
+        : JSON.stringify(newVal);
+    return a !== b;
+  } catch {
+    return String(oldVal) !== String(newVal);
+  }
+}
+
 export function formatChangeRequestValue(val: unknown): string {
-  if (val === null || val === undefined) return "—";
+  if (isEmptyishChangeValue(val)) return "—";
   if (typeof val === "object") {
     try {
       return JSON.stringify(val, null, 2);

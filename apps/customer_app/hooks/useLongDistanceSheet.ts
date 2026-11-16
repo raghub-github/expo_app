@@ -57,6 +57,7 @@ export function useLongDistanceSheet(args: {
     }
     // Mark before open — prevents duplicate sheets from remount/focus races.
     seenStore.markSeen(id);
+    // Present in the same turn — no InteractionManager / setTimeout delay.
     setVisible(true);
   }, [args.merchantId, shouldShow]);
 

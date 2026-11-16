@@ -7,8 +7,8 @@ import { prefetchServiceCardOfferPills } from "@/hooks/useServiceCardOfferPills"
 import { normalizeOfferLocationParams } from "@/lib/featuredOfferGeo";
 import { seedFeaturedOffersHomeQueryIfCached } from "@/lib/featuredOffersHomeCache";
 
-/** Wait for lastKnown → reconcile settle so we don't fetch offers for a transient pincode. */
-const LOCATION_SETTLE_MS = 500;
+/** Brief settle so lastKnown → reconcile doesn't refetch a transient pincode. */
+const LOCATION_SETTLE_MS = 120;
 
 /** Warm home + ride promo offers + grocery/parcel pills as soon as location is ready. */
 export function FeaturedOffersPrefetch() {

@@ -3,6 +3,10 @@ import { assertStoreAccess } from '@/lib/auth/assert-store-access';
 import { normalizeMerchantStoreMediaUrl } from '@/lib/r2';
 import { client as sql } from '@/lib/drizzle';
 import { ensureStorePublicSlug } from '@/lib/ensureStorePublicSlug';
+import {
+  backfillStoreBannerUrlIfMissing,
+  resolveStoreProfileMediaForDisplay,
+} from '@/lib/resolve-store-profile-media';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,7 +50,7 @@ export async function GET(req: NextRequest) {
     }
 
     const trimmed = storeId.trim();
-    let gate = await assertStoreAccess(trimmed);
+    const gate = await assertStoreAccess(trimmed);
     if (!gate.ok) {
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
@@ -78,7 +82,37 @@ export async function GET(req: NextRequest) {
         ? { ...row, public_slug: slug }
         : row;
 
-    return NextResponse.json(normalizeStoreRecordRow(withSlug as Record<string, unknown>));
+    const base = normalizeStoreRecordRow(withSlug as Record<string, unknown>);
+    const storePkRaw = base.id;
+    const storePk =
+      typeof storePkRaw === 'number'
+        ? storePkRaw
+        : typeof storePkRaw === 'string'
+          ? parseInt(storePkRaw, 10)
+          : NaN;
+
+    const resolved = await resolveStoreProfileMediaForDisplay({
+      id: Number.isFinite(storePk) ? storePk : String(storePkRaw ?? ''),
+      parent_id: (base.parent_id as number | string | null | undefined) ?? null,
+      banner_url: (base.banner_url as string | null | undefined) ?? null,
+      gallery_images: base.gallery_images,
+      store_banner_url: (base.store_banner_url as string | null | undefined) ?? null,
+    });
+
+    if (Number.isFinite(storePk) && resolved.banner_url) {
+      void backfillStoreBannerUrlIfMissing(
+        storePk,
+        resolved.banner_url,
+        (base.banner_url as string | null | undefined) ?? null
+      );
+    }
+
+    return NextResponse.json({
+      ...base,
+      banner_url: resolved.banner_url ?? base.banner_url ?? null,
+      gallery_images:
+        resolved.gallery_images.length > 0 ? resolved.gallery_images : base.gallery_images,
+    });
   } catch (e) {
     console.error('[store-record]', e);
     return NextResponse.json({ error: 'Store lookup failed' }, { status: 500 });

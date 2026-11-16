@@ -125,3 +125,50 @@ test("the outer signal cancels everything", async () => {
 test("no providers resolves null", async () => {
   assert.equal(await runHedged([]), null);
 });
+
+test("a soft-rejected preferred answer keeps racing and a later hard win takes it", async () => {
+  const log: string[] = [];
+  const result = await runHedged([
+    {
+      name: "a",
+      hedgeAfterMs: 0,
+      timeoutMs: 2_000,
+      accept: () => false,
+      run: async () => {
+        log.push("start:a");
+        return "SOFT";
+      },
+    },
+    {
+      name: "b",
+      hedgeAfterMs: 5_000,
+      timeoutMs: 2_000,
+      run: async () => {
+        log.push("start:b");
+        return "HARD";
+      },
+    },
+  ]);
+  assert.deepEqual(result, { value: "HARD", provider: "b" });
+  assert.ok(log.includes("start:b"));
+});
+
+test("soft answers become the fallback when nothing hard-wins", async () => {
+  const result = await runHedged([
+    {
+      name: "a",
+      hedgeAfterMs: 0,
+      timeoutMs: 2_000,
+      accept: () => false,
+      run: async () => "SOFT-A",
+    },
+    {
+      name: "b",
+      hedgeAfterMs: 5_000,
+      timeoutMs: 2_000,
+      accept: () => false,
+      run: async () => "SOFT-B",
+    },
+  ]);
+  assert.deepEqual(result, { value: "SOFT-A", provider: "a" });
+});

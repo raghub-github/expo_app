@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { AppText } from "@/components/AppText";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { reportHandledError } from "@/lib/crashReporting";
+import { useScreenChromeStore } from "@/store/screenChromeStore";
 
 type Props = {
   children: React.ReactNode;
@@ -59,6 +60,18 @@ export class AppErrorBoundary extends React.Component<Props, State> {
 
 /** Shared recovery screen — also used for Expo Router's own route errors. */
 export function AppErrorFallback({ error, retry }: { error: Error; retry: () => void }) {
+  const handleRetry = () => {
+    // Clear sticky splash/immersive chrome left by a mid-bootstrap crash.
+    try {
+      const chrome = useScreenChromeStore.getState();
+      chrome.setImmersiveStatusBarChrome(false);
+      chrome.resetStatusBarBackground();
+    } catch {
+      /* never block retry */
+    }
+    retry();
+  };
+
   return (
     <View style={styles.root}>
       <Ionicons name="warning-outline" size={44} color={GatiMitraColors.errorRed} />
@@ -66,8 +79,12 @@ export function AppErrorFallback({ error, retry }: { error: Error; retry: () => 
       <AppText style={styles.body}>
         This screen ran into a problem. Your cart and orders are safe — tap below to try again.
       </AppText>
-      {__DEV__ ? <AppText style={styles.debug}>{error.message}</AppText> : null}
-      <TouchableOpacity style={styles.button} onPress={retry} activeOpacity={0.85}>
+      {__DEV__ && error?.message ? (
+        <AppText style={styles.debug} numberOfLines={4}>
+          {error.message}
+        </AppText>
+      ) : null}
+      <TouchableOpacity style={styles.button} onPress={handleRetry} activeOpacity={0.85}>
         <AppText style={styles.buttonText}>Try again</AppText>
       </TouchableOpacity>
     </View>

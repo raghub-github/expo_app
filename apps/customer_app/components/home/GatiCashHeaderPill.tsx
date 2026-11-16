@@ -6,6 +6,7 @@ import { useWalletBalance } from "@/hooks/useWalletBalance";
 import { walletBalanceFallback } from "@/lib/walletBalanceCache";
 import { AppText } from "@/components/AppText";
 import { markWalletEntrySource } from "@/store/walletChromeStore";
+import { useIoniconsReady } from "@/lib/ioniconsReady";
 
 const TITLE_DARK = "#1F2937";
 
@@ -28,9 +29,10 @@ type Props = {
   fromFoodHome?: boolean;
 };
 
-/** Compact wallet chip — always shows cached/zero balance; never blocks header on fetch. */
+/** Compact circular wallet chip — icon + balance stacked in a circle. */
 export function GatiCashHeaderPill({ variant = "default", fromFoodHome = false }: Props) {
   const router = useRouter();
+  const iconFontsLoaded = useIoniconsReady();
   const balanceQ = useWalletBalance();
 
   const balance =
@@ -54,7 +56,11 @@ export function GatiCashHeaderPill({ variant = "default", fromFoodHome = false }
         accessibilityLabel={`GatiCash wallet, balance ${displayAmount} rupees`}
       >
         <View style={styles.gridIconWrap}>
-          <Ionicons name="wallet" size={14} color="#FFFFFF" />
+          {iconFontsLoaded ? (
+            <Ionicons name="wallet" size={14} color="#FFFFFF" />
+          ) : (
+            <View style={styles.walletDotLight} />
+          )}
         </View>
         <AppText style={styles.gridAmount} numberOfLines={1}>
           ₹{displayAmount}
@@ -71,7 +77,11 @@ export function GatiCashHeaderPill({ variant = "default", fromFoodHome = false }
       accessibilityRole="button"
       accessibilityLabel={`GatiCash wallet, balance ${displayAmount} rupees`}
     >
-      <Ionicons name="wallet-outline" size={15} color={TITLE_DARK} />
+      {iconFontsLoaded ? (
+        <Ionicons name="wallet-outline" size={15} color={TITLE_DARK} />
+      ) : (
+        <View style={styles.walletDot} />
+      )}
       <AppText style={styles.amount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
         ₹{displayAmount}
       </AppText>
@@ -136,5 +146,18 @@ const styles = StyleSheet.create({
     lineHeight: 10,
     maxWidth: 34,
     textAlign: "center",
+  },
+  walletDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: TITLE_DARK,
+  },
+  walletDotLight: {
+    width: 10,
+    height: 10,
+    borderRadius: 3,
+    backgroundColor: "#FFFFFF",
   },
 });

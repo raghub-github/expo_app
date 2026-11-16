@@ -4,7 +4,7 @@
  * Shape must match lib/splashLifecycle.ts globalThis store.
  */
 (function bootSplashDeadline() {
-  var HARD_MS = 5000;
+  var HARD_MS = 3500;
   var g = globalThis;
   if (!g.__gatimitraSplashLifecycle) {
     g.__gatimitraSplashLifecycle = {

@@ -77,6 +77,7 @@ export function SlideToConfirm({
   stage = "created",
   compact = false,
   urgent = false,
+  remainingRatio,
 }: {
   label: string;
   onConfirmed: () => void;
@@ -86,16 +87,24 @@ export function SlideToConfirm({
   compact?: boolean;
   /** <2 min left — red track (still slideable unless disabled). */
   urgent?: boolean;
+  /**
+   * Live countdown fill (0–1): shrinks left→right like IncomingOrderModal accept overlay.
+   * UI-only — does not change stage colors / label logic.
+   */
+  remainingRatio?: number;
 }) {
   const trackWidth = useRef(0);
   const translateX = useRef(new Animated.Value(0)).current;
   const confirmedRef = useRef(false);
   const pulseScale = useRef(new Animated.Value(1)).current;
+  const overlayWidth = useRef(new Animated.Value(0)).current;
   const colors = urgent ? SLIDER_URGENT : SLIDER_STAGE_COLORS[stage];
   const trackH = compact ? 58 : SLIDE_TRACK_H;
   const thumbW = compact ? 52 : SLIDE_THUMB_W;
   const thumbH = compact ? 46 : SLIDE_THUMB_H;
   const pad = compact ? 6 : SLIDE_PAD;
+  const showCountdownOverlay =
+    remainingRatio != null && Number.isFinite(remainingRatio) && remainingRatio > 0;
 
   useEffect(() => {
     if (disabled) {
@@ -119,6 +128,16 @@ export function SlideToConfirm({
     loop.start();
     return () => loop.stop();
   }, [disabled, pulseScale]);
+
+  useEffect(() => {
+    if (!showCountdownOverlay || trackWidth.current <= 0) return;
+    const ratio = Math.min(1, Math.max(0, remainingRatio ?? 0));
+    Animated.timing(overlayWidth, {
+      toValue: trackWidth.current * ratio,
+      duration: 420,
+      useNativeDriver: false,
+    }).start();
+  }, [remainingRatio, showCountdownOverlay, overlayWidth]);
 
   const claimedRef = useRef(false);
 
@@ -207,16 +226,34 @@ export function SlideToConfirm({
           disabled && !urgent && styles.sliderTrackDisabled,
         ]}
         onLayout={(e) => {
-          trackWidth.current = e.nativeEvent.layout.width;
+          const w = e.nativeEvent.layout.width;
+          trackWidth.current = w;
+          if (showCountdownOverlay) {
+            const ratio = Math.min(1, Math.max(0, remainingRatio ?? 0));
+            overlayWidth.setValue(w * ratio);
+          }
         }}
         {...panResponder.panHandlers}
       >
+        {showCountdownOverlay ? (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.countdownOverlay,
+              {
+                width: overlayWidth,
+                backgroundColor: urgent ? "rgba(255,255,255,0.18)" : "rgba(11,26,15,0.10)",
+              },
+            ]}
+          />
+        ) : null}
         <NativeText
           style={[
             styles.sliderLabel,
             {
               color: disabled && !urgent ? "#6B7280" : urgent ? (disabled ? "#7F1D1D" : colors.label) : colors.label,
               fontFamily: MerchantFonts.poppinsBold,
+              fontWeight: "700",
               fontSize: compact ? 13 : 16,
               paddingLeft: thumbW + (compact ? 8 : 14),
               paddingRight: compact ? 8 : 14,
@@ -253,8 +290,8 @@ export function SlideToConfirm({
 
 const styles = StyleSheet.create({
   wrap: {
-    width: "92%",
-    alignSelf: "center",
+    width: "100%",
+    alignSelf: "stretch",
   },
   sliderTrack: {
     height: SLIDE_TRACK_H,
@@ -275,6 +312,13 @@ const styles = StyleSheet.create({
       default: {},
     }),
   },
+  countdownOverlay: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    zIndex: 0,
+  },
   sliderTrackDisabled: {
     backgroundColor: SLIDER_DISABLED_BG,
     borderColor: "#D1D5DB",
@@ -287,7 +331,8 @@ const styles = StyleSheet.create({
     width: "100%",
     textAlign: "center",
     fontSize: 16,
-    fontWeight: "900",
+    fontFamily: MerchantFonts.poppinsBold,
+    fontWeight: "700",
     letterSpacing: 0.2,
     paddingLeft: SLIDE_THUMB_W + 14,
     paddingRight: 14,

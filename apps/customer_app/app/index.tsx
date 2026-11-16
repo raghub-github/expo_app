@@ -7,7 +7,7 @@
  * and marks shell ready (do NOT mark shell ready here — that caused white flash).
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { View, StyleSheet } from "react-native";
 import { useFocusEffect, useRouter, useSegments } from "expo-router";
 import { useAuthStore } from "@/store/authStore";
@@ -20,6 +20,9 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { foodFixDbg, foodNavDbg } from "@/lib/tabNavDebug";
 import { hrefForRequestedPrimaryTab } from "@/lib/customerPrimaryTabNav";
 import { startupMeasure } from "@/lib/startupPerf";
+
+/** Cap network profile under splash — onboarding owns incomplete / unknown. */
+const PROFILE_FETCH_BUDGET_MS = 400;
 
 function isRootIndexRoute(segments: readonly string[]): boolean {
   const root = segments[0] ?? "";
@@ -64,20 +67,95 @@ export default function IndexScreen() {
     }, [])
   );
 
+  const goHome = useCallback(
+    (source: string) => {
+      if (
+        redirectedRef.current ||
+        !canRedirectFromIndex(focusedRef.current, segmentsRef.current, source)
+      ) {
+        return;
+      }
+      redirectedRef.current = true;
+      const target = hrefForRequestedPrimaryTab();
+      foodFixDbg("INDEX redirect", {
+        source,
+        method: "router.replace",
+        target,
+        pathname: segmentsRef.current.join("/") || "/",
+        reason: "profile-complete",
+      });
+      foodNavDbg("LEAVE", {
+        source,
+        method: "router.replace",
+        to: target,
+        reason: "profile-complete-redirect-requested-tab",
+      });
+      router.replace(target as never);
+    },
+    [router]
+  );
+
+  const goOnboarding = useCallback(
+    (source: string) => {
+      if (
+        redirectedRef.current ||
+        !canRedirectFromIndex(focusedRef.current, segmentsRef.current, source)
+      ) {
+        return;
+      }
+      redirectedRef.current = true;
+      router.replace("/(onboarding)");
+    },
+    [router]
+  );
+
+  const goLogin = useCallback(
+    (source: string) => {
+      if (
+        redirectedRef.current ||
+        !canRedirectFromIndex(focusedRef.current, segmentsRef.current, source)
+      ) {
+        return;
+      }
+      redirectedRef.current = true;
+      startupMeasure("index_redirect_login", "process_start");
+      router.replace("/(auth)/login");
+    },
+    [router]
+  );
+
+  // Layout-phase: leave Index before paint when sync cache already knows the destination.
+  useLayoutEffect(() => {
+    if (!hydrated || redirectedRef.current) return;
+    if (!session?.accessToken) {
+      if (sessionRestorePending) return;
+      goLogin("IndexScreen.layout-no-session");
+      return;
+    }
+    const sync = readSyncCachedProfile();
+    if (!sync) return;
+    setCheckingProfile(false);
+    if (sync.profile_completed === true) {
+      startupMeasure("index_redirect_home_sync", "process_start");
+      goHome("IndexScreen.layout-syncProfile");
+    } else {
+      startupMeasure("index_redirect_onboarding_sync", "process_start");
+      goOnboarding("IndexScreen.layout-syncProfile-onboarding");
+    }
+  }, [hydrated, session?.accessToken, sessionRestorePending, goHome, goOnboarding, goLogin]);
+
   useEffect(() => {
     if (!hydrated) return;
     if (!session?.accessToken) {
-      // Auth disk read still in flight after splash budget — hold index under cover.
+      // Auth disk read still in flight after splash budget — hold briefly, then login.
       if (sessionRestorePending) return;
       setCheckingProfile(false);
-      if (
-        !redirectedRef.current &&
-        canRedirectFromIndex(focusedRef.current, segmentsRef.current, "IndexScreen.no-session")
-      ) {
-        redirectedRef.current = true;
-        startupMeasure("index_redirect_login", "process_start");
-        router.replace("/(auth)/login");
-      }
+      goLogin("IndexScreen.no-session");
+      return;
+    }
+
+    if (redirectedRef.current) {
+      setCheckingProfile(false);
       return;
     }
 
@@ -85,46 +163,16 @@ export default function IndexScreen() {
     setCheckingProfile(true);
 
     void (async () => {
-      // Instant path: sync MMKV/memory cache — no await before first navigation.
       const sync = readSyncCachedProfile();
       if (sync) {
         if (cancelled) return;
         setCheckingProfile(false);
         if (sync.profile_completed === true) {
-          if (
-            redirectedRef.current ||
-            !canRedirectFromIndex(focusedRef.current, segmentsRef.current, "IndexScreen.syncProfile")
-          ) {
-            return;
-          }
-          redirectedRef.current = true;
-          const target = hrefForRequestedPrimaryTab();
           startupMeasure("index_redirect_home_sync", "process_start");
-          foodFixDbg("INDEX redirect", {
-            source: "IndexScreen.syncProfile",
-            method: "router.replace",
-            target,
-            pathname: segmentsRef.current.join("/") || "/",
-            reason: "profile-complete-sync",
-          });
-          foodNavDbg("LEAVE", {
-            source: "IndexScreen.syncProfile",
-            method: "router.replace",
-            to: target,
-            reason: "profile-complete-redirect-requested-tab",
-          });
-          router.replace(target as never);
-        } else if (
-          !redirectedRef.current &&
-          canRedirectFromIndex(
-            focusedRef.current,
-            segmentsRef.current,
-            "IndexScreen.syncProfile-onboarding"
-          )
-        ) {
-          redirectedRef.current = true;
+          goHome("IndexScreen.syncProfile");
+        } else {
           startupMeasure("index_redirect_onboarding_sync", "process_start");
-          router.replace("/(onboarding)");
+          goOnboarding("IndexScreen.syncProfile-onboarding");
         }
         void fetchProfileWithCache().catch(() => {});
         return;
@@ -135,106 +183,52 @@ export default function IndexScreen() {
       const cached = await Promise.race([
         readCachedProfile(),
         new Promise<undefined>((resolve) => {
-          setTimeout(() => resolve(undefined), 450);
+          setTimeout(() => resolve(undefined), 150);
         }),
       ]);
-      if (cancelled) return;
+      if (cancelled || redirectedRef.current) return;
       if (cached) {
         setCheckingProfile(false);
         if (cached.profile_completed === true) {
-          if (
-            redirectedRef.current ||
-            !canRedirectFromIndex(focusedRef.current, segmentsRef.current, "IndexScreen.cachedProfile")
-          ) {
-            return;
-          }
-          redirectedRef.current = true;
-          const target = hrefForRequestedPrimaryTab();
           startupMeasure("index_redirect_home_cache", "process_start");
-          foodFixDbg("INDEX redirect", {
-            source: "IndexScreen.cachedProfile",
-            method: "router.replace",
-            target,
-            pathname: segmentsRef.current.join("/") || "/",
-            reason: "profile-complete",
-          });
-          foodNavDbg("LEAVE", {
-            source: "IndexScreen.cachedProfile",
-            method: "router.replace",
-            to: target,
-            reason: "profile-complete-redirect-requested-tab",
-          });
-          router.replace(target as never);
-        } else if (
-          !redirectedRef.current &&
-          canRedirectFromIndex(
-            focusedRef.current,
-            segmentsRef.current,
-            "IndexScreen.cachedProfile-onboarding"
-          )
-        ) {
-          redirectedRef.current = true;
+          goHome("IndexScreen.cachedProfile");
+        } else {
           startupMeasure("index_redirect_onboarding_cache", "process_start");
-          router.replace("/(onboarding)");
+          goOnboarding("IndexScreen.cachedProfile-onboarding");
         }
         void fetchProfileWithCache().catch(() => {});
         return;
       }
 
       try {
-        const profile = await fetchProfileWithCache();
-        if (cancelled) return;
+        const profile = await Promise.race([
+          fetchProfileWithCache(),
+          new Promise<null>((resolve) => {
+            setTimeout(() => resolve(null), PROFILE_FETCH_BUDGET_MS);
+          }),
+        ]);
+        if (cancelled || redirectedRef.current) return;
         if (profile?.profile_completed === true) {
-          if (
-            redirectedRef.current ||
-            !canRedirectFromIndex(focusedRef.current, segmentsRef.current, "IndexScreen.fetchProfile")
-          ) {
-            return;
-          }
-          redirectedRef.current = true;
-          const target = hrefForRequestedPrimaryTab();
           startupMeasure("index_redirect_home_fetch", "process_start");
-          foodFixDbg("INDEX redirect", {
-            source: "IndexScreen.fetchProfile",
-            method: "router.replace",
-            target,
-            pathname: segmentsRef.current.join("/") || "/",
-            reason: "profile-complete",
-          });
-          foodNavDbg("LEAVE", {
-            source: "IndexScreen.fetchProfile",
-            method: "router.replace",
-            to: target,
-            reason: "profile-complete-redirect-requested-tab",
-          });
-          router.replace(target as never);
-        } else if (
-          !redirectedRef.current &&
-          canRedirectFromIndex(
-            focusedRef.current,
-            segmentsRef.current,
-            "IndexScreen.fetchProfile-onboarding"
-          )
-        ) {
-          redirectedRef.current = true;
+          goHome("IndexScreen.fetchProfile");
+        } else {
+          // Timed out or incomplete — leave Index so shell can mark ready.
+          // Onboarding bounces completed users to tabs once profile lands.
+          if (profile == null) {
+            void fetchProfileWithCache().catch(() => {});
+          }
           startupMeasure("index_redirect_onboarding_fetch", "process_start");
-          router.replace("/(onboarding)");
+          goOnboarding("IndexScreen.fetchProfile-onboarding");
         }
       } catch (err: unknown) {
-        if (cancelled) return;
+        if (cancelled || redirectedRef.current) return;
         const ax = err as { response?: { status?: number; data?: { error?: string } } };
         const status = ax?.response?.status;
         const errorCode = ax?.response?.data?.error;
         if (status === 401 && (errorCode === "user_deleted" || errorCode === "session_revoked")) {
           return;
         }
-        if (
-          !redirectedRef.current &&
-          canRedirectFromIndex(focusedRef.current, segmentsRef.current, "IndexScreen.fetchProfile-error")
-        ) {
-          redirectedRef.current = true;
-          router.replace("/(onboarding)");
-        }
+        goOnboarding("IndexScreen.fetchProfile-error");
       } finally {
         if (!cancelled) setCheckingProfile(false);
       }
@@ -243,9 +237,10 @@ export default function IndexScreen() {
     return () => {
       cancelled = true;
     };
-  }, [hydrated, sessionRestorePending, session?.accessToken, router]);
+  }, [hydrated, sessionRestorePending, session?.accessToken, goHome, goOnboarding, goLogin]);
 
-  // Mint hold under branded overlay — never near-white softBackground (looks blank).
+  // Soft hold under root overlays — mint-only looked like a broken blank splash
+  // when the branded cover dismissed before Home skeletons painted.
   if (!hydrated || checkingProfile) {
     return <View style={styles.hold} accessibilityLabel="Loading" />;
   }
@@ -255,6 +250,6 @@ export default function IndexScreen() {
 const styles = StyleSheet.create({
   hold: {
     flex: 1,
-    backgroundColor: GatiMitraColors.splashMint,
+    backgroundColor: GatiMitraColors.softBackground,
   },
 });

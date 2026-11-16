@@ -203,6 +203,9 @@ export type CalculateBillPayload = {
   /** FOOD | PARCEL | RIDE — defaults to FOOD on backend */
   serviceType?: "FOOD" | "GROCERY" | "PARCEL" | "RIDE" | "ALL";
   cityName?: string | null;
+  /** Live / saved pincode — fills empty address postal on first calculate. */
+  pincode?: string | null;
+  stateName?: string | null;
   userSegment?: "NEW" | "EXISTING" | "ALL";
   /** Opt-in platform subscription add-on (DB-driven plan from Super Admin). */
   subscriptionOptIn?: boolean;

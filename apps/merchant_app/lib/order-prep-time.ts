@@ -26,6 +26,12 @@ export function resolveStoreDefaultPrepMinutes(storeAvgPrepMinutes: unknown): nu
   return clampPrepMinutes(storeAvgPrepMinutes, PLATFORM_DEFAULT_PREP_MINUTES);
 }
 
+/** Partner Site parity — accept stamp: accepted_at + prep minutes → prep_ready_by_at. */
+export function computePrepReadyByAtIso(acceptedAtIso: string, prepMinutes: number): string {
+  const base = new Date(acceptedAtIso).getTime();
+  return new Date(base + clampPrepMinutes(prepMinutes) * 60_000).toISOString();
+}
+
 export function prepPerformanceDeadlineMs(order: PrepCountdownOrder): number {
   if (order.prep_ready_by_at) {
     const t = new Date(order.prep_ready_by_at).getTime();

@@ -10,7 +10,11 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 import { startupLaunchLog, startupMeasure } from "@/lib/startupPerf";
-import { isSplashDeadlineHit, isSplashExited } from "@/lib/splashLifecycle";
+import {
+  isSplashDeadlineHit,
+  isSplashExited,
+  markSplashExited,
+} from "@/lib/splashLifecycle";
 
 type ShellGlobal = {
   __gatimitraShellReady?: {
@@ -52,6 +56,22 @@ export function markInitialShellReady(reason: string): void {
   if (__DEV__) {
     // eslint-disable-next-line no-console
     console.log("[startup-perf] shell_ready_reason=", reason);
+  }
+  // Shell ready only means Home/Login chrome is mounted. Branded cover dismiss is
+  // owned by RootLayout `destinationCommitted` (left Index after auth) so splash
+  // never waits on Metro/Home JS — that wait hid skeletons under a 30s mint cover.
+  if (!isSplashExited()) {
+    const first = markSplashExited(`shell_ready:${reason}`);
+    if (first) {
+      startupMeasure("branding_splash_exit", "process_start");
+      startupMeasure("splash_visible_duration", "branding_visible");
+      startupMeasure("usable_home_ready", "process_start");
+      startupLaunchLog("BRANDED_SPLASH_DISMISS", {
+        reason: `shell_ready:${reason}`,
+        blocksHome: false,
+        sync: true,
+      });
+    }
   }
   emit();
 }

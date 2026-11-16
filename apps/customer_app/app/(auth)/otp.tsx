@@ -33,11 +33,16 @@ import { useRouter, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { authService } from "@/services/auth.service";
 import { profileService } from "@/services/profile.service";
-import { writeCachedProfile } from "@/lib/profileCache";
+import {
+  hasCompletedProfileSync,
+  readCachedProfile,
+  writeCachedProfile,
+} from "@/lib/profileCache";
 import { syncConsentFromProfile } from "@/lib/legal-consent";
 import { useAuthStore } from "@/store/authStore";
 import { getDeviceIdAsync } from "@/utils/deviceId";
 import { OTP_LENGTH } from "@/constants";
+import { startupMeasure } from "@/lib/startupPerf";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { StoreFonts } from "@/constants/storeTypography";
 import { useKeyboardBottomInset } from "@/hooks/useKeyboardBottomInset";
@@ -133,12 +138,25 @@ export default function OtpScreen() {
 
   const setSession = useAuthStore((s) => s.setSession);
   const verifyInFlightRef = useRef(false);
+  const verifySucceededRef = useRef(false);
   const screenMountedRef = useRef(true);
+  const deviceIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     screenMountedRef.current = true;
     return () => {
       screenMountedRef.current = false;
+    };
+  }, []);
+
+  // Warm device id off the verify critical path (SecureStore / Application).
+  useEffect(() => {
+    let cancelled = false;
+    void getDeviceIdAsync().then((id) => {
+      if (!cancelled) deviceIdRef.current = id;
+    });
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -150,6 +168,7 @@ export default function OtpScreen() {
       await authService.sendOtp({ phoneE164 });
       void armSmsOtpCapture();
       lastAutoSubmittedCodeRef.current = null;
+      verifySucceededRef.current = false;
       setResendSeconds(60);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Could not resend OTP.";
@@ -169,41 +188,91 @@ export default function OtpScreen() {
       setError("Enter 6-digit OTP");
       return;
     }
-    if (verifyInFlightRef.current) return;
+    if (verifyInFlightRef.current || verifySucceededRef.current) return;
     verifyInFlightRef.current = true;
     setError("");
     setLoading(true);
+    startupMeasure("otp_verify_start", "process_start");
+
+    /**
+     * Post-verify destination only — never hold the spinner for a full profile
+     * round-trip. Sync/disk cache wins; short network race; else onboarding
+     * (which bounces completed profiles to tabs).
+     */
+    const PROFILE_BUDGET_MS = 450;
+
     try {
-      const deviceId = await getDeviceIdAsync();
+      const deviceId = deviceIdRef.current ?? (await getDeviceIdAsync());
+      deviceIdRef.current = deviceId;
       const session = await authService.verifyOtp({
         phoneE164,
         otp: otpToVerify,
         deviceId,
       });
+      startupMeasure("otp_verify_network_ok", "process_start");
       Keyboard.dismiss();
+      verifySucceededRef.current = true;
+      // Publishes in-memory session immediately; disk persist is backgrounded.
       await setSession(session);
-      try {
-        const profile = await profileService.getProfile();
-        await writeCachedProfile(profile);
-        await syncConsentFromProfile(profile);
-        if (profile?.profile_completed === true) {
-          router.replace("/(tabs)/");
-          return;
-        }
-      } catch (e: unknown) {
-        const ax = e as { response?: { status?: number; data?: { error?: string } } };
-        if (
-          ax?.response?.status === 401 &&
-          (ax?.response?.data?.error === "user_deleted" ||
-            ax?.response?.data?.error === "session_revoked")
-        ) {
-          return;
+      startupMeasure("otp_session_published", "process_start");
+
+      let goHome = hasCompletedProfileSync();
+      const profilePromise = profileService
+        .getProfile()
+        .then(async (profile) => {
+          await writeCachedProfile(profile);
+          void syncConsentFromProfile(profile).catch(() => undefined);
+          return profile;
+        });
+
+      if (!goHome) {
+        // Disk peek is cheap; only treat a positive completed profile as a win
+        // (a miss must NOT settle the race early and skip the network budget).
+        const diskPeek = await Promise.race([
+          readCachedProfile(),
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 80)),
+        ]);
+        if (diskPeek?.profile_completed === true) {
+          goHome = true;
         }
       }
+
+      if (!goHome) {
+        try {
+          const profile = await Promise.race([
+            profilePromise,
+            new Promise<null>((resolve) =>
+              setTimeout(() => resolve(null), PROFILE_BUDGET_MS)
+            ),
+          ]);
+          if (profile?.profile_completed === true) {
+            goHome = true;
+          }
+        } catch (e: unknown) {
+          const ax = e as { response?: { status?: number; data?: { error?: string } } };
+          if (
+            ax?.response?.status === 401 &&
+            (ax?.response?.data?.error === "user_deleted" ||
+              ax?.response?.data?.error === "session_revoked")
+          ) {
+            verifySucceededRef.current = false;
+            void profilePromise.catch(() => undefined);
+            return;
+          }
+        }
+      }
+      // Keep warming cache / consent even after we navigate away.
+      void profilePromise.catch(() => undefined);
+
       try {
-        router.replace("/(onboarding)");
+        startupMeasure(
+          goHome ? "otp_nav_home" : "otp_nav_onboarding",
+          "process_start"
+        );
+        router.replace(goHome ? "/(tabs)/" : "/(onboarding)");
       } catch (navErr) {
         console.warn("[otp] navigate after verify failed", navErr);
+        verifySucceededRef.current = false;
       }
     } catch (e: unknown) {
       const msg =
@@ -215,8 +284,9 @@ export default function OtpScreen() {
       if (screenMountedRef.current) {
         setError(msg || "Invalid OTP. Try again.");
       }
-      verifyInFlightRef.current = false;
+      verifySucceededRef.current = false;
     } finally {
+      verifyInFlightRef.current = false;
       if (screenMountedRef.current) {
         setLoading(false);
       }
@@ -404,11 +474,11 @@ export default function OtpScreen() {
               activeOpacity={0.88}
               style={[
                 styles.button,
-                otpComplete && !loading ? styles.buttonActive : styles.buttonDisabled,
+                otpComplete || loading ? styles.buttonActive : styles.buttonDisabled,
               ]}
             >
               {loading ? (
-                <ActivityIndicator color={BTN_ACTIVE_TEXT} />
+                <ActivityIndicator color={BTN_ACTIVE_TEXT} size="small" />
               ) : (
                 <AppText
                   style={[

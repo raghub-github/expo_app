@@ -11,14 +11,14 @@ import { useSyncExternalStore } from "react";
 import { startupLaunchLog, startupProcessAgeMs } from "@/lib/startupPerf";
 
 /**
- * Absolute auth-unblock + destination-kick budget. Root layout must NOT dismiss
- * the branded cover onto root Index mint — only Home/Login/Onboarding mark shell.
+ * Absolute auth-unblock + shell-force budget. After this, RootLayout marks shell
+ * ready so branding never waits on Metro lazy-bundles of Home.
  */
-export const SPLASH_HARD_DEADLINE_MS = 5_000;
+export const SPLASH_HARD_DEADLINE_MS = 3_500;
 /**
- * Watchdog after auth for shell-ready lag logging.
+ * @deprecated Soft lag log only — shell force uses an 800ms post-auth budget in RootLayout.
  */
-export const SPLASH_SHELL_SOFT_MS = 400;
+export const SPLASH_SHELL_SOFT_MS = 250;
 
 type SplashLifecycleState = {
   processStartMs: number;

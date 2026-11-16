@@ -9,6 +9,10 @@ import { useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { R2Image } from "@/components/ui/R2Image";
 import { MenuItemPhotoCustomerPreview } from "@/components/merchant/MenuItemPhotoCustomerPreview";
 import {
+  MenuChangeRequestReviewSheet,
+  type MenuChangeRequestReviewRow,
+} from "@/components/merchant/MenuChangeRequestReviewSheet";
+import {
   dispatchMenuReviewQueueRefresh,
   MERCHANT_MENU_REVIEW_QUEUE_REFRESH_EVENT,
   type MenuReviewPhotoItem,
@@ -21,26 +25,16 @@ const PHOTO_REJECT_PRESETS = [
   "Dish is not clearly visible",
   "Image contains watermark or promotional text",
   "Wrong dish photo uploaded",
-  "Image does not match item name/description",
+  "Image does not match item name/description / QTY",
 ] as const;
 
-type ChangeRequestRow = {
-  id: number;
+type ChangeRequestRow = MenuChangeRequestReviewRow & {
   store_id: number;
-  menu_item_id: number | null;
-  request_type: string;
-  status: string;
-  requested_payload: Record<string, unknown>;
-  current_snapshot: Record<string, unknown> | null;
-  reason: string | null;
-  created_by: string;
-  created_by_role: string | null;
-  reviewed_by: string | null;
-  reviewed_reason: string | null;
-  created_at: string;
-  updated_at: string;
-  item_name: string | null;
-  menu_item_public_id: string | null;
+  created_by?: string;
+  created_by_role?: string | null;
+  reviewed_by?: string | null;
+  reviewed_reason?: string | null;
+  updated_at?: string;
 };
 
 export default function MenuRequestsPage() {
@@ -53,8 +47,7 @@ export default function MenuRequestsPage() {
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>("PENDING");
   const [actioningId, setActioningId] = useState<number | null>(null);
-  const [rejectReason, setRejectReason] = useState<Record<number, string>>({});
-  const [showRejectModal, setShowRejectModal] = useState<number | null>(null);
+  const [reviewSheet, setReviewSheet] = useState<ChangeRequestRow | null>(null);
   const [reviewSummary, setReviewSummary] = useState<MenuReviewQueueSummary | null>(null);
   const [photosLoading, setPhotosLoading] = useState(true);
   const [photoReviewItem, setPhotoReviewItem] = useState<MenuReviewPhotoItem | null>(null);
@@ -71,7 +64,10 @@ export default function MenuRequestsPage() {
 
   const fetchReviewSummary = useCallback(() => {
     setPhotosLoading(true);
-    fetch("/api/merchant-menu/review-queue-summary")
+    fetch("/api/merchant-menu/review-queue-summary", {
+      credentials: "include",
+      cache: "no-store",
+    })
       .then((r) => (r.ok ? r.json() : null))
       .then((body) => {
         if (!body?.success) return;
@@ -139,12 +135,17 @@ export default function MenuRequestsPage() {
     setPhotoRejectError(null);
   };
 
+  const openReviewSheet = (row: ChangeRequestRow) => {
+    setReviewSheet(row);
+  };
+
   const handleApprove = async (id: number) => {
     setActioningId(id);
     try {
       const res = await fetch(`/api/merchant-menu/change-requests/${id}/approve`, { method: "POST" });
       const data = await res.json();
       if (data.success) {
+        setReviewSheet(null);
         await fetchRequests();
         fetchReviewSummary();
         dispatchMenuReviewQueueRefresh();
@@ -158,19 +159,17 @@ export default function MenuRequestsPage() {
     }
   };
 
-  const handleReject = async (id: number) => {
-    const reason = rejectReason[id] ?? "";
+  const handleReject = async (id: number, reason: string) => {
     setActioningId(id);
     try {
       const res = await fetch(`/api/merchant-menu/change-requests/${id}/reject`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reviewed_reason: reason || null }),
+        body: JSON.stringify({ reviewed_reason: reason.trim() || null }),
       });
       const data = await res.json();
       if (data.success) {
-        setShowRejectModal(null);
-        setRejectReason((prev) => ({ ...prev, [id]: "" }));
+        setReviewSheet(null);
         await fetchRequests();
         fetchReviewSummary();
         dispatchMenuReviewQueueRefresh();
@@ -201,8 +200,10 @@ export default function MenuRequestsPage() {
       if (!res.ok || data?.success === false) throw new Error(data?.error || "Approve failed");
       removePhotoFromReviewQueue(item.id);
       closePhotoSheet();
-      fetchReviewSummary();
       dispatchMenuReviewQueueRefresh();
+      // Re-fetch after a tick so DB moderation updates are visible (avoids stale PENDING row).
+      await new Promise((r) => setTimeout(r, 150));
+      fetchReviewSummary();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Approve failed");
     } finally {
@@ -233,8 +234,9 @@ export default function MenuRequestsPage() {
       if (!res.ok || data?.success === false) throw new Error(data?.error || "Reject failed");
       removePhotoFromReviewQueue(item.id);
       closePhotoSheet();
-      fetchReviewSummary();
       dispatchMenuReviewQueueRefresh();
+      await new Promise((r) => setTimeout(r, 150));
+      fetchReviewSummary();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Reject failed");
     } finally {
@@ -353,12 +355,20 @@ export default function MenuRequestsPage() {
               No pending photo reviews.
             </div>
           ) : (
-            <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+            <table className="w-full min-w-[920px] border-collapse text-left text-sm">
               <thead className="text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
                 <tr>
                   <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Photo</th>
                   <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Item</th>
-                  <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Store</th>
+                  <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
+                    Store name
+                  </th>
+                  <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
+                    Store ID
+                  </th>
+                  <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
+                    Status
+                  </th>
                   <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 text-right ${rowBorder}`}>
                     Action
                   </th>
@@ -370,57 +380,78 @@ export default function MenuRequestsPage() {
                   const storeHref = item.store_id
                     ? `/dashboard/merchants/stores/${item.store_id}/menu-change-requests?portal=admin`
                     : null;
+                  const photoStatus = String(
+                    item.primary_image_moderation_status || item.approval_status || "PENDING"
+                  ).toUpperCase();
+                  const openPhotoSheet = () => {
+                    setPhotoRejectReason("");
+                    setPhotoRejectError(null);
+                    setPhotoReviewItem(item);
+                  };
                   return (
-                    <tr key={key} className="bg-white hover:bg-[#FAFAFA]">
+                    <tr
+                      key={key}
+                      role="button"
+                      tabIndex={0}
+                      onClick={openPhotoSheet}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openPhotoSheet();
+                        }
+                      }}
+                      className="cursor-pointer bg-white hover:bg-[#FAFAFA]"
+                    >
                       <td className={`px-3 py-2.5 ${rowBorder}`}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPhotoRejectReason("");
-                            setPhotoRejectError(null);
-                            setPhotoReviewItem(item);
-                          }}
-                          className="h-11 w-11 cursor-pointer overflow-hidden rounded-md border-[0.5px] border-[#121212]/15 bg-[#F7F7F7]"
-                        >
+                        <div className="h-11 w-11 overflow-hidden rounded-md border-[0.5px] border-[#121212]/15 bg-[#F7F7F7]">
                           <R2Image
                             src={item.item_image_url}
                             alt={item.item_name}
                             className="h-full w-full object-cover"
                           />
-                        </button>
+                        </div>
                       </td>
                       <td className={`px-3 py-2.5 ${rowBorder}`}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPhotoRejectReason("");
-                            setPhotoRejectError(null);
-                            setPhotoReviewItem(item);
-                          }}
-                          className="cursor-pointer truncate text-left text-[13px] font-medium text-[#121212] hover:underline"
-                        >
-                          {item.item_name}
-                        </button>
+                        <p className="truncate text-[13px] font-medium text-[#121212]">{item.item_name}</p>
                         {item.selling_price != null ? (
                           <p className="text-[11px] text-[#121212]/45">₹{item.selling_price}</p>
                         ) : null}
                       </td>
                       <td className={`px-3 py-2.5 text-[12px] text-[#121212]/65 ${rowBorder}`}>
                         {storeHref ? (
-                          <Link href={storeHref} className="font-medium text-sky-700 hover:underline">
-                            {item.store_name || item.store_public_id || `Store #${item.store_id}`}
+                          <Link
+                            href={storeHref}
+                            onClick={(e) => e.stopPropagation()}
+                            className="cursor-pointer font-medium text-sky-700 hover:underline"
+                          >
+                            {item.store_name || `Store #${item.store_id}`}
                           </Link>
                         ) : (
-                          "—"
+                          item.store_name || "—"
                         )}
+                      </td>
+                      <td className={`px-3 py-2.5 font-mono text-[11px] text-[#121212]/55 ${rowBorder}`}>
+                        {item.store_public_id || (item.store_id != null ? String(item.store_id) : "—")}
+                      </td>
+                      <td className={`px-3 py-2.5 ${rowBorder}`}>
+                        <span
+                          className={`inline-flex rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                            photoStatus === "APPROVED"
+                              ? "bg-emerald-50 text-emerald-800"
+                              : photoStatus === "REJECTED"
+                                ? "bg-red-50 text-red-700"
+                                : "bg-amber-50 text-amber-800"
+                          }`}
+                        >
+                          {photoStatus === "PENDING" ? "Pending" : photoStatus}
+                        </span>
                       </td>
                       <td className={`px-3 py-2.5 text-right ${rowBorder}`}>
                         <button
                           type="button"
-                          onClick={() => {
-                            setPhotoRejectReason("");
-                            setPhotoRejectError(null);
-                            setPhotoReviewItem(item);
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openPhotoSheet();
                           }}
                           className="cursor-pointer rounded-md bg-[#121212] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-black"
                         >
@@ -453,10 +484,16 @@ export default function MenuRequestsPage() {
                 No change requests found.
               </div>
             ) : (
-              <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+              <table className="w-full min-w-[980px] border-collapse text-left text-sm">
                 <thead className="text-[10px] font-semibold uppercase tracking-wide text-[#121212]/45">
                   <tr>
                     <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Item</th>
+                    <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
+                      Store name
+                    </th>
+                    <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
+                      Store ID
+                    </th>
                     <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>Type</th>
                     <th className={`sticky top-0 z-10 bg-[#F7F7F7] px-3 py-2.5 ${rowBorder}`}>
                       Status
@@ -471,7 +508,11 @@ export default function MenuRequestsPage() {
                 </thead>
                 <tbody>
                   {requests.map((r) => (
-                    <tr key={r.id} className="bg-white hover:bg-[#FAFAFA]">
+                    <tr
+                      key={r.id}
+                      className="cursor-pointer bg-white hover:bg-[#FAFAFA]"
+                      onClick={() => openReviewSheet(r)}
+                    >
                       <td className={`px-3 py-2.5 ${rowBorder}`}>
                         <p className="truncate text-[13px] font-medium text-[#121212]">
                           {r.item_name ?? `Item #${r.menu_item_id}`}
@@ -481,6 +522,22 @@ export default function MenuRequestsPage() {
                             {r.menu_item_public_id}
                           </p>
                         ) : null}
+                      </td>
+                      <td className={`px-3 py-2.5 text-[12px] text-[#121212]/70 ${rowBorder}`}>
+                        {r.store_id ? (
+                          <Link
+                            href={`/dashboard/merchants/stores/${r.store_id}/menu-change-requests?portal=admin`}
+                            className="font-medium text-sky-700 hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {r.store_name || `Store #${r.store_id}`}
+                          </Link>
+                        ) : (
+                          r.store_name || "—"
+                        )}
+                      </td>
+                      <td className={`px-3 py-2.5 font-mono text-[11px] text-[#121212]/55 ${rowBorder}`}>
+                        {r.store_public_id || (r.store_id != null ? String(r.store_id) : "—")}
                       </td>
                       <td className={`px-3 py-2.5 ${rowBorder}`}>
                         <span className="rounded-md border border-[#121212]/10 bg-[#F7F7F7] px-1.5 py-0.5 text-[10px] font-semibold uppercase text-[#121212]/65">
@@ -503,12 +560,15 @@ export default function MenuRequestsPage() {
                       <td className={`px-3 py-2.5 text-[11px] text-[#121212]/50 ${rowBorder}`}>
                         {r.created_at ? new Date(r.created_at).toLocaleString("en-IN") : "—"}
                       </td>
-                      <td className={`px-3 py-2.5 text-right ${rowBorder}`}>
+                      <td
+                        className={`px-3 py-2.5 text-right ${rowBorder}`}
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         {r.status === "PENDING" ? (
                           <div className="inline-flex items-center gap-1.5">
                             <button
                               type="button"
-                              onClick={() => setShowRejectModal(r.id)}
+                              onClick={() => openReviewSheet(r)}
                               disabled={actioningId !== null}
                               className="cursor-pointer rounded-md border border-[#121212]/15 px-2 py-1 text-[11px] font-semibold text-[#121212] hover:bg-[#F7F7F7] disabled:opacity-50"
                             >
@@ -516,52 +576,22 @@ export default function MenuRequestsPage() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => void handleApprove(r.id)}
+                              onClick={() => openReviewSheet(r)}
                               disabled={actioningId !== null}
                               className="cursor-pointer rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                             >
-                              {actioningId === r.id ? "…" : "Approve"}
+                              Approve
                             </button>
                           </div>
                         ) : (
-                          <span className="text-[11px] text-[#121212]/35">—</span>
+                          <button
+                            type="button"
+                            onClick={() => openReviewSheet(r)}
+                            className="cursor-pointer rounded-md border border-[#121212]/15 px-2 py-1 text-[11px] font-semibold text-[#121212] hover:bg-[#F7F7F7]"
+                          >
+                            View
+                          </button>
                         )}
-                        {showRejectModal === r.id ? (
-                          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-                            <div className="w-full max-w-md rounded-lg bg-white p-4 shadow">
-                              <h3 className="font-semibold text-[#121212]">Reject request</h3>
-                              <p className="mt-1 text-sm text-[#121212]/50">
-                                Optional reason (shown to merchant):
-                              </p>
-                              <textarea
-                                value={rejectReason[r.id] ?? ""}
-                                onChange={(e) =>
-                                  setRejectReason((prev) => ({ ...prev, [r.id]: e.target.value }))
-                                }
-                                className="mt-2 w-full rounded border border-[#121212]/15 p-2 text-sm"
-                                rows={3}
-                                placeholder="e.g. Price change not allowed"
-                              />
-                              <div className="mt-4 flex justify-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => setShowRejectModal(null)}
-                                  className="cursor-pointer rounded border border-[#121212]/15 px-3 py-1.5 text-sm font-medium text-[#121212]"
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void handleReject(r.id)}
-                                  disabled={actioningId === r.id}
-                                  className="cursor-pointer rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
-                                >
-                                  {actioningId === r.id ? "Rejecting…" : "Reject"}
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ) : null}
                       </td>
                     </tr>
                   ))}
@@ -571,6 +601,16 @@ export default function MenuRequestsPage() {
           </div>
         </div>
       )}
+
+      {reviewSheet ? (
+        <MenuChangeRequestReviewSheet
+          request={reviewSheet}
+          busy={actioningId === Number(reviewSheet.id)}
+          onClose={() => setReviewSheet(null)}
+          onApprove={handleApprove}
+          onReject={handleReject}
+        />
+      ) : null}
 
       {photoReviewItem &&
         typeof document !== "undefined" &&

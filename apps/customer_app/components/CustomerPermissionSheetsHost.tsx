@@ -21,7 +21,10 @@ import {
   isActiveLocationReconcileReady,
   runExclusiveActiveLocationReconcile,
 } from "@/lib/activeLocationReconcileGate";
-import { getDeviceLocationReadiness } from "@gatimitra/expo-location-kit";
+import {
+  getDeviceLocationReadiness,
+  invalidateDeviceLocationReadiness,
+} from "@gatimitra/expo-location-kit";
 import { runNotificationPushAllow } from "@/lib/notificationPushAllow";
 
 export function CustomerPermissionSheetsHost() {
@@ -53,8 +56,9 @@ export function CustomerPermissionSheetsHost() {
     if (useSmsPermissionStore.getState().blocksLocation) return;
     if (useNotificationPushPromptStore.getState().showSheet) return;
     await runExclusiveActiveLocationReconcile(async () => {
+      invalidateDeviceLocationReadiness();
       await promptLocationPermissionIfNeeded({ force: true, skipDeviceFetch: true });
-      const readiness = await getDeviceLocationReadiness();
+      const readiness = await getDeviceLocationReadiness({ force: true });
       if (readiness.isReady) {
         void requestPermissionAndFetch({ forceDevice: true });
       }
@@ -107,10 +111,11 @@ export function CustomerPermissionSheetsHost() {
         // Fresh OS revalidation after Settings / dialog — never use stale cache.
         await recheckAfterAppActive();
         if (useSmsPermissionStore.getState().blocksLocation) return;
-        const readiness = await getDeviceLocationReadiness();
+        invalidateDeviceLocationReadiness();
+        const readiness = await getDeviceLocationReadiness({ force: true });
         const loc = useLocationStore.getState();
         if (readiness.isReady && loc.locationSource !== "selected") {
-          await requestPermissionAndFetch({ forceDevice: true });
+          void requestPermissionAndFetch({ forceDevice: true });
         }
         if (!isActiveLocationReconcileReady()) {
           await finishActiveLocationBootstrap();

@@ -96,12 +96,17 @@ export function MerchantRiderTrackingSheet({
     return mapbikeMarkerUri();
   }, [mapbikeFromStore]);
 
+  // Only after a successful payload — never confuse a timeout with missing store coords.
   const mapHint =
-    !data?.location && data?.store
+    data && !data.location && data.store
       ? "Store is on the map. Rider GPS will appear when they start navigation."
-      : !data?.store && !data?.location
+      : data && !data.store && !data.location
         ? "Set store coordinates in store settings to see the map."
         : null;
+
+  const retry = () => {
+    void enrichment.reload?.(false);
+  };
 
   return (
     <MerchantBottomSheetShell visible={visible} onClose={onClose} maxHeightPercent="92%">
@@ -122,6 +127,14 @@ export function MerchantRiderTrackingSheet({
         ) : error && !data ? (
           <View style={styles.loader}>
             <Text style={styles.errorText}>{error}</Text>
+            <Pressable
+              onPress={retry}
+              style={({ pressed }) => [styles.retryBtn, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Retry loading rider map"
+            >
+              <Text style={styles.retryBtnText}>Try again</Text>
+            </Pressable>
           </View>
         ) : visible && data && mapboxToken ? (
           <MerchantRiderNativeTrackingMap
@@ -222,6 +235,18 @@ const styles = StyleSheet.create({
     color: GatiMitraMerchant.textSecondary,
     textAlign: "center",
     fontSize: 14,
+  },
+  retryBtn: {
+    marginTop: 14,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: GatiMitraMerchant.primary,
+  },
+  retryBtnText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
   },
   mapHint: {
     marginHorizontal: 16,

@@ -8,9 +8,11 @@ import { PartnerShellWarmup } from "@/components/PartnerShellWarmup";
 import { PartnerMerchantQueryFocusSync } from "@/components/PartnerMerchantQueryFocusSync";
 import { GlobalToaster } from "@/components/GlobalToaster";
 import { PartnerStoreAccessGate } from "@/components/PartnerStoreAccessGate";
+import { PartnerNavPermissionGate } from "@/components/PartnerNavPermissionGate";
 import { PartnerShellFrame } from "@/components/PartnerShellFrame";
 import { PartnerIncomingOrderModal } from "@/components/PartnerIncomingOrderModal";
 import { PartnerBrowserPushBootstrap } from "@/components/PartnerBrowserPushBootstrap";
+import { PartnerDeviceCaptureBootstrap } from "@/components/PartnerDeviceCaptureBootstrap";
 import { MerchantWalletFreezeLive } from "@/hooks/useMerchantWalletFreezeLive";
 import { MerchantStoreDelistLive } from "@/hooks/useMerchantStoreDelistLive";
 
@@ -40,7 +42,11 @@ function usesPartnerShell(pathname: string): boolean {
  */
 export default function PartnersLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "";
-  const content = <PartnerStoreAccessGate>{children}</PartnerStoreAccessGate>;
+  const content = (
+    <PartnerStoreAccessGate>
+      <PartnerNavPermissionGate>{children}</PartnerNavPermissionGate>
+    </PartnerStoreAccessGate>
+  );
 
   return (
     <>
@@ -55,6 +61,7 @@ export default function PartnersLayout({ children }: { children: React.ReactNode
       </div>
       <GlobalToaster />
       <PartnerBrowserPushBootstrap />
+      <PartnerDeviceCaptureBootstrap />
       <PartnerShellWarmup />
       <PartnerMerchantQueryFocusSync />
       <MerchantWalletFreezeLive />

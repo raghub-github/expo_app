@@ -33,6 +33,22 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   return NextResponse.json(payload, { status: 200 });
 }
 
+/** Edit scheduled/draft campaign before it is pushed. */
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const gate = await requireSuperAdminApi();
+  if (!gate.ok) return gate.response;
+  const { id } = await params;
+  const payload = await req.json().catch(() => ({}));
+  const { status, body } = await backendFetch(`/v1/notifications/campaigns/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  if (status >= 400) {
+    return NextResponse.json(body ?? { error: "update_failed" }, { status });
+  }
+  return NextResponse.json(body ?? { ok: true }, { status: 200 });
+}
+
 /** Hard-delete campaign + its dispatch log rows from the database. */
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const gate = await requireSuperAdminApi();

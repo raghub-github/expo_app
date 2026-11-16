@@ -17,6 +17,8 @@ import { useActiveTab } from "@/context/ActiveTabContext";
 import {
   fetchFoodOrder,
   fetchFoodOrders,
+  clearFoodOrdersCooldown,
+  getFoodOrdersCooldownRemainingMs,
   isOrderAlreadyDecided,
   patchFoodOrderStatus,
   postCompleteSelfPickup,
@@ -35,12 +37,18 @@ import {
   mapApiOrder,
   attachStoreRatingsFromReviews,
   mergeOrderRecordPreferringMerchantLinePricing,
+  mergePrepCommitmentFields,
   preferProgressedOrderRecord,
   stageTransitionToApi,
   type OrderCounts,
   type OrderRecord,
   type OrderStage,
 } from "@/lib/orderRecord";
+import {
+  clampPrepMinutes,
+  computePrepReadyByAtIso,
+  PLATFORM_DEFAULT_PREP_MINUTES,
+} from "@/lib/order-prep-time";
 import { fetchStoreReviews } from "@/services/ratingsApi";
 import { isActiveMerchantOrderStage } from "@/lib/merchantActiveOrders";
 import { shortLocalityFromAddress } from "@/lib/selectedStoreStorage";
@@ -54,8 +62,8 @@ import { presentLocalLifecycleAlert } from "@/lib/presentLocalNewOrderAlert";
 const POLL_FAST_MS = 30_000;
 const POLL_NORMAL_MS = 50_000;
 const POLL_IDLE_MS = 75_000;
-/** After a timeout, back off hard so aborted sockets can drain. */
-const POLL_BACKOFF_MS = 120_000;
+/** After a timeout, back off so aborted sockets can drain — keep short for empty board. */
+const POLL_BACKOFF_MS = 45_000;
 /** Reviews hydrate for delivered cards — once per store, not on every board poll. */
 const REVIEWS_CACHE_MS = 5 * 60_000;
 /** Avoid stampeding the API when managing many outlets at once. */
@@ -79,7 +87,8 @@ type OrdersContextValue = {
   orders: OrderRecord[];
   loading: boolean;
   error: string | null;
-  refetch: () => Promise<void>;
+  /** Pass `{ force: true }` from pull-to-refresh to bypass post-timeout cooldown. */
+  refetch: (opts?: { force?: boolean }) => Promise<void>;
   /** Upsert a single order into the live board (notification / push deep-link path). */
   upsertOrder: (order: OrderRecord) => void;
   transitionOrder: (
@@ -211,6 +220,9 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
   const [pollFailStreak, setPollFailStreak] = useState(0);
   const lastFetchAtRef = useRef(0);
   const lastResumeFetchAtRef = useRef(0);
+  /** Empty-board recovery after timeout cooldown. */
+  const cooldownRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refetchRef = useRef<(opts?: { force?: boolean }) => Promise<void>>(async () => {});
   /** Orders inserted optimistically from realtime, kept alive across a stale full refetch. */
   const pendingOptimisticRef = useRef<Map<number, { order: OrderRecord; at: number }>>(new Map());
   const ordersRef = useRef<OrderRecord[]>([]);
@@ -263,11 +275,44 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     return extra.length > 0 ? [...extra, ...list] : list;
   }, []);
 
-  const refetch = useCallback(async () => {
+  const refetch = useCallback(async (opts?: { force?: boolean }) => {
     if (!token || orderStoreIds.length === 0) {
       setOrders([]);
       setLoading(false);
       return;
+    }
+    // Free a connection for mark-ready / accept PATCH (Android ~6 sockets/host).
+    if (transitionInFlightRef.current.size > 0) {
+      refetchDirtyRef.current = true;
+      return;
+    }
+    // After a timeout, sit out — realtime/poll/resume were re-stamping every second.
+    if (opts?.force) {
+      for (const sid of orderStoreIds) clearFoodOrdersCooldown(sid);
+    }
+    const cooldownMs = Math.max(
+      0,
+      ...orderStoreIds.map((sid) => getFoodOrdersCooldownRemainingMs(sid))
+    );
+    if (!opts?.force && cooldownMs > 0) {
+      if (__DEV__) {
+        console.warn(
+          `[orders] food-orders cooldown ${Math.ceil(cooldownMs / 1000)}s — skipping refetch`
+        );
+      }
+      setLoading(false);
+      // Empty board must not stay blank for the whole cooldown — one force retry when it ends.
+      if (ordersCountRef.current === 0 && !cooldownRetryTimerRef.current) {
+        cooldownRetryTimerRef.current = setTimeout(() => {
+          cooldownRetryTimerRef.current = null;
+          void refetchRef.current?.({ force: true });
+        }, cooldownMs + 50);
+      }
+      return;
+    }
+    if (cooldownRetryTimerRef.current) {
+      clearTimeout(cooldownRetryTimerRef.current);
+      cooldownRetryTimerRef.current = null;
     }
     // Never start a parallel full-list fetch — the old 16s escape hatch stacked
     // aborted sockets and caused cascading "Request timed out" storms.
@@ -307,7 +352,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
             const batches = await mapInBatches(orderStoreIds, ORDERS_FETCH_CONCURRENCY, async (sid) => {
               const list = await fetchFoodOrders(sid, token, {
                 limit: 40,
-                allowRetry: fetchFailStreakRef.current === 0,
+                force: opts?.force === true,
               });
               cacheFoodOrders(sid, list);
               let mapped = list
@@ -358,13 +403,24 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
               const next = mergePendingOptimistic(withPricing);
               if (transitionInFlightRef.current.size === 0) return next;
               // Keep local optimistic status while a mark-ready / accept PATCH is in flight
-              // so a concurrent poll can't snap the card back to Preparing.
+              // so a concurrent poll can't snap the card back to Preparing — but still
+              // adopt server prep_ready_by_at so Mark ready countdown matches Partner Site.
               return next.map((serverRow) => {
                 if (!transitionInFlightRef.current.has(serverRow.id)) return serverRow;
                 const local = current.find(
                   (o) => o.id === serverRow.id || o.ordersCoreId === serverRow.ordersCoreId
                 );
-                return local ?? serverRow;
+                if (!local) return serverRow;
+                return mergePrepCommitmentFields(
+                  {
+                    ...serverRow,
+                    status: local.status,
+                    pipelineStatus: local.pipelineStatus,
+                    rejectedReason: local.rejectedReason ?? serverRow.rejectedReason,
+                    cancelledAt: local.cancelledAt ?? serverRow.cancelledAt,
+                  },
+                  local
+                );
               });
             });
             const recovering = fetchFailStreakRef.current > 0;
@@ -404,8 +460,12 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
             }
             fetchFailStreakRef.current += 1;
             setPollFailStreak(fetchFailStreakRef.current);
+            // Drop coalesced follow-ups after a timeout — immediately looping
+            // re-starves Android's connection pool and blocks mark-ready PATCH.
+            refetchDirtyRef.current = false;
             // Keep last good board on timeout/network blips; only show error when empty.
             if (ordersRef.current.length === 0) setError(msg);
+            break;
           } finally {
             setLoading(false);
           }
@@ -421,6 +481,17 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     await gate;
   }, [token, orderStoreIds, mergePendingOptimistic, mapWithStore]);
 
+  refetchRef.current = refetch;
+
+  useEffect(() => {
+    return () => {
+      if (cooldownRetryTimerRef.current) {
+        clearTimeout(cooldownRetryTimerRef.current);
+        cooldownRetryTimerRef.current = null;
+      }
+    };
+  }, []);
+
   /** Paint status from realtime payload immediately; hydrate full row in the background. */
   const applyRealtimeStatusHint = useCallback(
     (foodId: number, orderStatus: string) => {
@@ -434,10 +505,31 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         const existing = list[idx];
         if (existing.pipelineStatus === pipeline && existing.status === stage) return list;
         const next = list.slice();
+        // Cross-device accept: provisional prep stamp until GET hydrate lands (Partner Site parity).
+        let prepStamp: Partial<OrderRecord> = {};
+        if (
+          (pipeline === "ACCEPTED" || pipeline === "PREPARING") &&
+          !existing.prepReadyByAt &&
+          !existing.acceptedAt
+        ) {
+          const acceptedAt = new Date().toISOString();
+          const prepMinutes = clampPrepMinutes(
+            existing.preparationTimeMinutes,
+            PLATFORM_DEFAULT_PREP_MINUTES
+          );
+          const prepReadyByAt = computePrepReadyByAtIso(acceptedAt, prepMinutes);
+          prepStamp = {
+            acceptedAt,
+            preparationTimeMinutes: prepMinutes,
+            prepReadyByAt,
+            expectedReadyAt: prepReadyByAt,
+          };
+        }
         next[idx] = {
           ...existing,
           status: stage,
           pipelineStatus: pipeline,
+          ...prepStamp,
         };
         ordersRef.current = next;
         if (stage !== "created") {
@@ -579,10 +671,10 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (ordersCountRef.current === 0) setLoading(true);
-    void refetch();
+    void refetch({ force: true });
     const watchdog = setTimeout(() => {
       if (ordersCountRef.current === 0) setLoading(false);
-    }, 18_000);
+    }, 28_000);
     return () => clearTimeout(watchdog);
   }, [refetch, token, orderStoreIds.length]);
 
@@ -624,6 +716,8 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
     const id = setInterval(() => {
       // Expo Go has no FCM — keep polling while backgrounded so CREATED orders surface.
       if (!isAppForeground() && Constants.appOwnership !== "expo") return;
+      // Free a connection slot for mark-ready / accept PATCH (Android ~6/host).
+      if (transitionInFlightRef.current.size > 0) return;
       void refetch();
     }, pollIntervalMs);
     return () => clearInterval(id);
@@ -828,6 +922,25 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       markIncomingOrderResolved({ orderCoreId: order.ordersCoreId, foodId: orderId });
       const cancelledAt =
         nextStatus === "rejected" ? new Date().toISOString() : undefined;
+      // Partner Site countdown uses prep_ready_by_at from accept — stamp it
+      // optimistically so Mark ready never falls back to created_at (acceptance window).
+      const acceptStamp =
+        apiStatus === "ACCEPTED"
+          ? (() => {
+              const acceptedAt = new Date().toISOString();
+              const prepMinutes = clampPrepMinutes(
+                opts?.preparationTimeMinutes ?? order.preparationTimeMinutes,
+                PLATFORM_DEFAULT_PREP_MINUTES
+              );
+              const prepReadyByAt = computePrepReadyByAtIso(acceptedAt, prepMinutes);
+              return {
+                acceptedAt,
+                preparationTimeMinutes: prepMinutes,
+                prepReadyByAt,
+                expectedReadyAt: prepReadyByAt,
+              };
+            })()
+          : null;
       setOrders((list) => {
         const next = list.map((o) =>
           o.id === orderId
@@ -837,6 +950,7 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
                 pipelineStatus: apiStatus,
                 ...(rejectedReason ? { rejectedReason } : {}),
                 ...(cancelledAt ? { cancelledAt } : {}),
+                ...(acceptStamp ?? {}),
               }
             : o
         );
@@ -846,6 +960,14 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
       patchCachedFoodOrderStatus(storeId, Number(orderId), apiStatus, {
         rejected_reason: rejectedReason,
         cancelled_at: cancelledAt,
+        ...(acceptStamp
+          ? {
+              accepted_at: acceptStamp.acceptedAt,
+              preparation_time_minutes: acceptStamp.preparationTimeMinutes,
+              prep_ready_by_at: acceptStamp.prepReadyByAt,
+              expected_ready_at: acceptStamp.expectedReadyAt,
+            }
+          : {}),
       });
       if (nextStatus === "rejected") {
         notifyRejectedOrder(
@@ -902,40 +1024,70 @@ export function OrdersProvider({ children }: { children: ReactNode }) {
         return true;
       } catch (e) {
         const msg = e instanceof Error ? e.message : "";
-        // Another device in this store already decided the order, or it was
-        // already at the target status. Either way the server is right and this
-        // device's cached row is stale — adopt the server's version rather than
-        // rolling back to a pending card nobody can act on any more.
+        // Another device already decided, server already at target, OR the PATCH
+        // timed out after the server applied it (common on slow mobile).
+        // Reconcile from GET before rolling back — avoids false "Couldn't mark ready".
         const settledElsewhere =
           isOrderAlreadyDecided(e) ||
           (/invalid transition/i.test(msg) &&
             new RegExp(`${apiStatus}:${apiStatus}`, "i").test(msg));
-        if (settledElsewhere) {
+        const timedOutOrNetwork =
+          /timed out/i.test(msg) || /network request failed/i.test(msg);
+        const pipelineMeetsTarget = (pipeline: string): boolean => {
+          const got = pipeline.trim().toUpperCase();
+          if (got === apiStatus) return true;
+          if (apiStatus === "READY_FOR_PICKUP") {
+            return (
+              got === "READY" ||
+              got === "READY_FOR_PICKUP" ||
+              got === "OUT_FOR_DELIVERY" ||
+              got === "PICKED_UP" ||
+              got === "DELIVERED"
+            );
+          }
+          if (apiStatus === "ACCEPTED") {
+            return (
+              got === "ACCEPTED" ||
+              got === "PREPARING" ||
+              got === "READY_FOR_PICKUP" ||
+              got === "READY" ||
+              got === "OUT_FOR_DELIVERY" ||
+              got === "PICKED_UP" ||
+              got === "DELIVERED"
+            );
+          }
+          return false;
+        };
+        if (settledElsewhere || timedOutOrNetwork) {
           try {
             const updated = await fetchFoodOrder(storeId, Number(orderId), token);
             setCachedFoodOrder(storeId, Number(orderId), updated);
             const authoritative = mapWithStore(updated, storeId);
+            // Always adopt server row after a failed PATCH — never keep a local
+            // "ready" that the DB never stored (preferProgressed would sticky-lock it).
             setOrders((list) =>
-              list.map((o) =>
-                o.id === orderId ? preferProgressedOrderRecord(authoritative, o) : o
-              )
+              list.map((o) => (o.id === orderId ? authoritative : o))
+            );
+            ordersRef.current = ordersRef.current.map((o) =>
+              o.id === orderId ? authoritative : o
             );
             requestMerchantDashboardStatsRefresh();
-            // Succeeded only if the store ended up where this device asked.
-            // A device that tapped Accept on an order another device rejected
-            // must not be told its accept went through.
-            if (String(authoritative.pipelineStatus ?? "").toUpperCase() === apiStatus) {
+            if (pipelineMeetsTarget(String(authoritative.pipelineStatus ?? ""))) {
               setError(null);
               return true;
             }
-            setError(msg || "This order was already decided on another device.");
-            throw e;
+            if (settledElsewhere) {
+              setError(msg || "This order was already decided on another device.");
+              throw e;
+            }
+            // Timeout and server still ACCEPTED/PREPARING — PATCH never landed.
           } catch (reconcileErr) {
             if (reconcileErr === e) throw e;
-            // Could not reach the server to confirm — fall through to rollback.
+            // Could not confirm — roll back optimistic UI (do NOT fake ready).
           }
         }
         setOrders(prev);
+        ordersRef.current = prev;
         setError(msg || "Failed to update order");
         throw e;
       } finally {

@@ -40,13 +40,22 @@ export function useMerchantRiderTracking(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestGenRef = useRef(0);
+  const inFlightRef = useRef<Promise<void> | null>(null);
 
   const applyPayload = useCallback(
-    (payload: MerchantRiderTrackingPayload) => {
-      trackingCache.set(orderFoodId, { data: payload, fetchedAt: Date.now() });
-      setData(payload);
+    (payload: MerchantRiderTrackingPayload, opts?: { keepSelfie?: boolean }) => {
+      const prev = trackingCache.get(orderFoodId)?.data;
+      const next: MerchantRiderTrackingPayload =
+        opts?.keepSelfie && !payload.rider.selfie_url && prev?.rider.selfie_url
+          ? {
+              ...payload,
+              rider: { ...payload.rider, selfie_url: prev.rider.selfie_url },
+            }
+          : payload;
+      trackingCache.set(orderFoodId, { data: next, fetchedAt: Date.now() });
+      setData(next);
       setError(null);
-      prefetchTrackingDrivingRoute(payload, merchantStoreLat, merchantStoreLon);
+      prefetchTrackingDrivingRoute(next, merchantStoreLat, merchantStoreLon);
     },
     [orderFoodId, merchantStoreLat, merchantStoreLon]
   );
@@ -54,27 +63,45 @@ export function useMerchantRiderTracking(
   const loadTracking = useCallback(
     async (silent = false) => {
       if (orderFoodId <= 0 || !resolvedUrl) return;
+      if (inFlightRef.current) {
+        await inFlightRef.current;
+        return;
+      }
 
       const gen = ++requestGenRef.current;
       if (!silent && !trackingCache.has(orderFoodId)) setLoading(true);
 
-      try {
-        const res = await fetch(resolvedUrl, { cache: 'no-store' });
-        const json = (await res.json()) as MerchantRiderTrackingPayload & { error?: string };
-        if (gen !== requestGenRef.current) return;
+      const url =
+        silent && !resolvedUrl.includes('?')
+          ? `${resolvedUrl}?lite=1`
+          : silent && resolvedUrl.includes('?')
+            ? `${resolvedUrl}&lite=1`
+            : resolvedUrl;
 
-        if (json.error) {
-          setError(json.error);
-          if (!silent) setData(null);
-        } else {
-          applyPayload(json as MerchantRiderTrackingPayload);
+      const run = (async () => {
+        try {
+          const res = await fetch(url, { cache: 'no-store' });
+          const json = (await res.json()) as MerchantRiderTrackingPayload & { error?: string };
+          if (gen !== requestGenRef.current) return;
+
+          if (json.error) {
+            setError(json.error);
+            if (!silent) setData(null);
+          } else {
+            applyPayload(json as MerchantRiderTrackingPayload, { keepSelfie: silent });
+          }
+        } catch {
+          if (gen !== requestGenRef.current) return;
+          if (!silent) setError('Could not load rider location');
+        } finally {
+          if (gen === requestGenRef.current) setLoading(false);
         }
-      } catch {
-        if (gen !== requestGenRef.current) return;
-        if (!silent) setError('Could not load rider location');
-      } finally {
-        if (gen === requestGenRef.current) setLoading(false);
-      }
+      })();
+
+      inFlightRef.current = run.finally(() => {
+        if (inFlightRef.current === run) inFlightRef.current = null;
+      });
+      await inFlightRef.current;
     },
     [orderFoodId, resolvedUrl, applyPayload]
   );

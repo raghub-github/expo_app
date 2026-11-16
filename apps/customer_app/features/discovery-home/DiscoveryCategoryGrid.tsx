@@ -48,10 +48,11 @@ export function DiscoveryCategoryGrid({ items, onSelect }: Props) {
               <View style={[styles.imageFrame, { width: circle, height: circle, borderRadius: circle / 2 }]}>
                 <UserAppCategoryImage
                   imageUrl={cat.imageUrl}
-                  cacheKey={`discovery-cat-${cat.id}`}
+                  cacheKey={`tab-category-${cat.id}`}
                   contentFit="cover"
                   fallbackColor="transparent"
                   style={{ width: circle, height: circle, borderRadius: circle / 2 }}
+                  widthPt={circle}
                 />
               </View>
               <AppText style={styles.label} numberOfLines={2}>

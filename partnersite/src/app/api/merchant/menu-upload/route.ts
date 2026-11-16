@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
+import { partnerCanEditMenuDetails } from "@/lib/auth/merchant-staff-permissions";
 import {
   getMerchantMenuPath,
   getMerchantMenuCanonicalPdfKey,
@@ -67,6 +68,9 @@ async function authenticateAndGetStore(req: NextRequest, storeIdValue: string) {
   });
   if (!validation.isValid || validation.merchantParentId == null) {
     return { error: validation.error ?? "Merchant not found", status: 403 } as const;
+  }
+  if (!partnerCanEditMenuDetails(validation)) {
+    return { error: "Staff cannot upload menu files.", status: 403 } as const;
   }
 
   const db = getSupabaseAdmin();

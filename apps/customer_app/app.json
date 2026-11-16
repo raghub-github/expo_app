@@ -10,6 +10,8 @@
     "jsEngine": "hermes",
     "newArchEnabled": true,
     "splash": {
+      "image": "./assets/images/splash-android12.png",
+      "resizeMode": "contain",
       "backgroundColor": "#14b8a6"
     },
     "assetBundlePatterns": [

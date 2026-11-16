@@ -259,7 +259,7 @@ export function FoodHomeGridFirstHeader({
               </AppText>
             </TouchableOpacity>
           ) : null}
-          <GatiCashHeaderPill variant="gridFirst" fromFoodHome />
+          <GatiCashHeaderPill fromFoodHome />
           <TouchableOpacity
             style={styles.avatarBtn}
             activeOpacity={0.85}

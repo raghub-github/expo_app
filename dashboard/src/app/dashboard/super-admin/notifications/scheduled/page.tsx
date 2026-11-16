@@ -4,14 +4,33 @@ import useSWR from "swr";
 import Link from "next/link";
 import { useState } from "react";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import { Pencil } from "lucide-react";
 
-type Campaign = { id: number; name: string; template_code: string | null; scheduled_at: string | null; status: string; sent_count: number; created_by: string | null };
+type Campaign = {
+  id: number;
+  name: string;
+  template_code: string | null;
+  scheduled_at: string | null;
+  status: string;
+  sent_count: number;
+  created_by: string | null;
+  override_body?: string | null;
+  variables?: Record<string, unknown> | null;
+};
 
 const fetcher = async (url: string) => {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 };
+
+function bodyPreview(c: Campaign): string {
+  if (typeof c.override_body === "string" && c.override_body.trim()) return c.override_body.trim();
+  const vars = c.variables && typeof c.variables === "object" ? c.variables : {};
+  if (typeof vars.body === "string" && vars.body.trim()) return vars.body.trim();
+  if (typeof vars.message === "string" && vars.message.trim()) return vars.message.trim();
+  return "";
+}
 
 export default function ScheduledPage() {
   const { data, mutate, isLoading } = useSWR<{ items: Campaign[] }>(
@@ -55,7 +74,9 @@ export default function ScheduledPage() {
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50 px-3 pb-3 pt-1 sm:px-5 sm:pt-2 xl:px-6">
       <div className="mx-auto flex h-full min-h-0 w-full min-w-0 max-w-7xl flex-col">
         <div className="shrink-0">
-          <p className="max-w-2xl text-sm text-slate-500">Campaigns waiting to fire. The backend poller sweeps every 30 s.</p>
+          <p className="max-w-2xl text-sm text-slate-500">
+            Campaigns waiting to fire. Edit them anytime before push. The backend poller sweeps every 30 s.
+          </p>
         </div>
 
         {cancelError ? (
@@ -73,36 +94,71 @@ export default function ScheduledPage() {
                 <th className="px-3 py-3">Scheduled for</th>
                 <th className="px-3 py-3">Created by</th>
                 <th className="px-3 py-3"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {isLoading ? (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">Loading…</td></tr>
-            ) : !data?.items?.length ? (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">
-                No scheduled sends. Create one on the <Link href="/dashboard/super-admin/notifications/campaigns" className="text-teal-700 underline">Campaigns</Link> page.
-              </td></tr>
-            ) : (
-              data.items.map((c) => (
-                <tr key={c.id} className="transition hover:bg-teal-50/40">
-                  <td className="px-3 py-3 font-medium text-slate-900 sm:px-4">{c.name}</td>
-                  <td className="px-3 py-3 font-mono text-xs text-slate-700">{c.template_code}</td>
-                  <td className="px-3 py-3 text-slate-600">{c.scheduled_at ? new Date(c.scheduled_at).toLocaleString() : "—"}</td>
-                  <td className="px-3 py-3 text-xs text-slate-500">{c.created_by ?? "—"}</td>
-                  <td className="px-3 py-3 text-right">
-                    <button
-                      onClick={() => {
-                        setCancelError(null);
-                        setCancelTarget(c);
-                      }}
-                      className="rounded-md border border-rose-200 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50"
-                    >Cancel</button>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {isLoading ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
+                    Loading…
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : !data?.items?.length ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
+                    No scheduled sends. Create one on the{" "}
+                    <Link
+                      href="/dashboard/super-admin/notifications/campaigns"
+                      className="text-teal-700 underline"
+                    >
+                      Campaigns
+                    </Link>{" "}
+                    page.
+                  </td>
+                </tr>
+              ) : (
+                data.items.map((c) => {
+                  const preview = bodyPreview(c);
+                  return (
+                    <tr key={c.id} className="transition hover:bg-teal-50/40">
+                      <td className="px-3 py-3 sm:px-4">
+                        <div className="font-medium text-slate-900">{c.name}</div>
+                        {preview ? (
+                          <div className="mt-0.5 line-clamp-2 text-xs text-slate-500">{preview}</div>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-3 font-mono text-xs text-slate-700">
+                        {c.template_code}
+                      </td>
+                      <td className="px-3 py-3 text-slate-600">
+                        {c.scheduled_at ? new Date(c.scheduled_at).toLocaleString() : "—"}
+                      </td>
+                      <td className="px-3 py-3 text-xs text-slate-500">{c.created_by ?? "—"}</td>
+                      <td className="px-3 py-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <Link
+                            href={`/dashboard/super-admin/notifications/campaigns?edit=${c.id}`}
+                            className="inline-flex items-center gap-1 rounded-md border border-indigo-200 px-2 py-1 text-xs text-indigo-700 hover:bg-indigo-50"
+                          >
+                            <Pencil className="h-3 w-3" /> Edit
+                          </Link>
+                          <button
+                            onClick={() => {
+                              setCancelError(null);
+                              setCancelTarget(c);
+                            }}
+                            className="rounded-md border border-rose-200 px-2 py-1 text-xs text-rose-700 hover:bg-rose-50"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 

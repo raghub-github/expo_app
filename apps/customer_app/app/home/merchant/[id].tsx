@@ -52,6 +52,10 @@ import { resolveInstantMerchantHeroUri, warmMerchantHeroImage } from "@/lib/merc
 import { resolveMerchantCarouselBannerUri } from "@/lib/merchantBanner";
 import { useStoreDeliveryQuote } from "@/hooks/useStoreDeliveryQuote";
 import { useLongDistanceSheet } from "@/hooks/useLongDistanceSheet";
+import {
+  LongDistanceBottomSheet,
+  prefetchLongDistanceSheetImage,
+} from "@/components/store/LongDistanceBottomSheet";
 import { useMenuItemBookmarks, useMenuItemBookmarkMutations } from "@/hooks/useMenuItemBookmarks";
 import { addressService, type Address } from "@/services/address.service";
 import { resolveCheckoutDeliveryAddress } from "@/lib/deliveryDropResolution";
@@ -194,11 +198,6 @@ const StoreOffersSheet = lazy(() =>
 );
 const StoreScheduleSheet = lazy(() =>
   import("@/components/store/StoreScheduleSheet").then((m) => ({ default: m.StoreScheduleSheet }))
-);
-const LongDistanceBottomSheet = lazy(() =>
-  import("@/components/store/LongDistanceBottomSheet").then((m) => ({
-    default: m.LongDistanceBottomSheet,
-  }))
 );
 const MerchantRatingExplainerSheet = lazy(() =>
   import("@/components/store/MerchantRatingExplainerSheet").then((m) => ({
@@ -990,11 +989,28 @@ export default function MerchantDetailScreen() {
     enabled: !!merchantId && (!!resolvedDeliveryAddress || !!routingDropCoords),
   });
 
+  // Seed distance from listing cache so the long-distance sheet can open before
+  // the delivery-quote network round-trip finishes.
+  const seedDistanceKm = useMemo(() => {
+    const fromQuote = storeQuote?.distance_km;
+    if (fromQuote != null && Number.isFinite(fromQuote) && fromQuote > 0) return fromQuote;
+    const summary = findMerchantSummaryInCache(queryClient, merchantId);
+    const fromSummary = summary?.distanceKm;
+    if (fromSummary != null && Number.isFinite(fromSummary) && fromSummary > 0) return fromSummary;
+    const fromMerchant = (merchant as { distanceKm?: number | null } | null | undefined)?.distanceKm;
+    if (fromMerchant != null && Number.isFinite(fromMerchant) && fromMerchant > 0) return fromMerchant;
+    return null;
+  }, [storeQuote?.distance_km, queryClient, merchantId, merchant]);
+
+  useEffect(() => {
+    prefetchLongDistanceSheetImage();
+  }, [merchantId]);
+
   const { visible: longDistanceSheetVisible, onClose: closeLongDistanceSheet } =
     useLongDistanceSheet({
       merchantId,
-      distanceKm: storeQuote?.distance_km ?? null,
-      serviceable: storeQuote?.serviceable,
+      distanceKm: seedDistanceKm,
+      serviceable: storeQuote?.serviceable ?? true,
     });
 
   const pincode = locationAddress?.pincode ?? undefined;
@@ -2520,9 +2536,7 @@ export default function MerchantDetailScreen() {
             edgeToEdge
           />
           {longDistanceSheetVisible ? (
-            <Suspense fallback={null}>
-              <LongDistanceBottomSheet visible onClose={closeLongDistanceSheet} />
-            </Suspense>
+            <LongDistanceBottomSheet visible onClose={closeLongDistanceSheet} />
           ) : null}
         </View>
       </MerchantUiThemeProvider>
@@ -2810,9 +2824,7 @@ export default function MerchantDetailScreen() {
       ) : null}
 
       {longDistanceSheetVisible ? (
-        <Suspense fallback={null}>
-          <LongDistanceBottomSheet visible onClose={closeLongDistanceSheet} />
-        </Suspense>
+        <LongDistanceBottomSheet visible onClose={closeLongDistanceSheet} />
       ) : null}
 
       {ratingSheetVisible ? (

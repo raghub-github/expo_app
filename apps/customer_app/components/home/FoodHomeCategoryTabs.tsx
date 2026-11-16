@@ -146,6 +146,7 @@ function CategoryPhoto({
             cacheKey={cacheKey}
             contentFit="cover"
             style={{ width: photoW, height: photoH }}
+            widthPt={photoW}
           />
         ) : (
           <View style={[styles.photoFallback, dark && styles.photoFallbackDark, StyleSheet.absoluteFillObject]}>

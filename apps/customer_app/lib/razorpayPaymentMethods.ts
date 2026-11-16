@@ -113,9 +113,34 @@ export const FALLBACK_PAY_METHODS: CheckoutPayMethodsResponse = {
   ],
 };
 
+/**
+ * Granular mode stored on pending_orders / transactions MODE column.
+ * Coarse gateway enum is derived later via paymentMethodToEnum on the server.
+ */
 export function orderPayloadPaymentMethod(item: CheckoutPayMethodItem): string {
-  if (item.method === "netbanking") return "online";
+  if (item.id === "upi:qr" || item.upiFlow === "qr") return "upi_qr";
+  if (item.upiFlow === "collect" || item.id === "upi:collect") return "upi_collect";
+  if (item.method === "upi" && item.upiApp) return `upi_${item.upiApp}`;
+  if (item.method === "upi") return "upi";
+  if (item.method === "card") return "card";
+  if (item.method === "netbanking") return "netbanking";
+  if (item.method === "wallet" && item.wallet) return `wallet_${item.wallet}`;
+  if (item.method === "wallet") return "wallet";
   return item.method;
+}
+
+/**
+ * Place Order gate — accepts coarse (`upi`) and granular (`upi_phonepe`, `upi_qr`)
+ * modes written by `orderPayloadPaymentMethod`. COD is never payable here.
+ */
+export function isPayableCheckoutPaymentMethod(method: string | null | undefined): boolean {
+  const m = String(method ?? "")
+    .trim()
+    .toLowerCase();
+  if (!m || m === "cod") return false;
+  if (["upi", "card", "wallet", "online", "netbanking"].includes(m)) return true;
+  if (m.startsWith("upi_") || m.startsWith("wallet_")) return true;
+  return false;
 }
 
 /** Canonical GatiMitra method → Razorpay Standard Checkout `method` string. */
@@ -192,9 +217,8 @@ export const UPI_QR_AND_ID_ITEMS: CheckoutPayMethodItem[] = [
 ];
 
 /**
- * Guarantee Scan QR / Pay via UPI ID / Pay Without UPI ID appear near the top of
- * the in-app Payment Options sheet (Razorpay's native sheet hides QR on phones).
- * Also pins "UPI, Cards & more" so the user can restore the open checkout default.
+ * Pin "UPI, Cards & more" + Scan QR / UPI ID when Razorpay (or dummy) already
+ * enabled UPI. Never invent UPI rows for a live catalog that has no UPI.
  */
 export function ensureUpiQrAndCollectVisible(
   catalog: CheckoutPayMethodsResponse
@@ -203,44 +227,36 @@ export function ensureUpiQrAndCollectVisible(
     ...s,
     items: [...s.items],
   }));
-  const hasUpi =
-    sections.some((s) => s.items.some((i) => i.method === "upi")) || sections.length === 0;
+  if (sections.length === 0) {
+    return { ...catalog, sections: [] };
+  }
 
-  const existingIds = new Set(sections.flatMap((s) => s.items.map((i) => i.id)));
-  const missing = UPI_QR_AND_ID_ITEMS.filter((i) => !existingIds.has(i.id));
-
+  const hasUpi = sections.some((s) => s.items.some((i) => i.method === "upi"));
   const openSection: CheckoutPayMethodSection = {
     id: "open_checkout",
     title: "QUICK PAY",
     items: [DEFAULT_PAY_INSTRUMENT],
   };
-
   const pinSection: CheckoutPayMethodSection = {
     id: "upi_qr_id",
     title: "SCAN QR & UPI ID",
     items: UPI_QR_AND_ID_ITEMS,
   };
 
-  // Drop duplicate rows from other sections so these only appear once, on top.
+  // Drop duplicates so open / QR / Collect appear once.
   const pinIds = new Set([...UPI_QR_AND_ID_ITEMS.map((i) => i.id), DEFAULT_PAY_INSTRUMENT.id]);
   const cleaned = sections
     .map((s) => ({
       ...s,
       items: s.items.filter((i) => !pinIds.has(i.id)),
     }))
-    .filter((s) => s.items.length > 0);
+    .filter((s) => s.items.length > 0 && s.id !== "open_checkout" && s.id !== "upi_qr_id");
 
-  if (!hasUpi && missing.length === UPI_QR_AND_ID_ITEMS.length && cleaned.length === 0) {
-    return { ...catalog, sections: [openSection, pinSection] };
+  const out: CheckoutPayMethodSection[] = [openSection];
+  // Only pin Intent/QR/Collect when UPI is already on (Razorpay) or dummy catalog.
+  if (hasUpi || catalog.dummy) {
+    out.push(pinSection);
   }
-
-  // Open checkout first, then Intent/QR/Collect, then recommended apps / cards.
-  const recIdx = cleaned.findIndex((s) => s.id === "recommended");
-  if (recIdx >= 0) {
-    cleaned.splice(recIdx + 1, 0, pinSection);
-  } else {
-    cleaned.unshift(pinSection);
-  }
-  cleaned.unshift(openSection);
-  return { ...catalog, sections: cleaned };
+  out.push(...cleaned);
+  return { ...catalog, sections: out };
 }

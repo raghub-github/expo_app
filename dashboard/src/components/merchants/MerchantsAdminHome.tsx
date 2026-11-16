@@ -119,7 +119,10 @@ export function MerchantsAdminHome({
       if (storeType) params.set("storeType", storeType);
       if (statusFilter) params.set("status", statusFilter);
       params.set("trendDays", "7");
-      const res = await fetch(`/api/merchant/stores/admin-overview?${params.toString()}`);
+      const res = await fetch(`/api/merchant/stores/admin-overview?${params.toString()}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
       const data = await res.json();
       if (!data?.success) throw new Error(data?.error ?? "Failed to load overview");
       return data as {

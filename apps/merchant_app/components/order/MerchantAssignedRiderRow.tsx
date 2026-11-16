@@ -61,7 +61,8 @@ export function MerchantAssignedRiderRow({
 
   const hasRider = orderHasAssignedRider(order);
   const enrichment = useMerchantRiderLiveEnrichment(order, storeId, token, hasRider, {
-    alwaysVisible: alwaysVisibleTracking,
+    // Home dashboard never registers FlatList visibility — open sheet must start tracking now.
+    alwaysVisible: alwaysVisibleTracking || trackingOpen,
   });
   const variant = hasRider ? resolveRiderCardVariant(order) : "on_the_way";
   const freeWaitSeconds =

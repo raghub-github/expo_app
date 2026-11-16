@@ -566,13 +566,25 @@ export default function ProfileScreen() {
         <Text variant="brand" style={[styles.sectionTitle, profileSectionTitle]}>Account & support</Text>
         <View style={styles.menuCard}>
           {([
-            ...(partnerHasPermission(partner, "payouts")
+            ...(partnerHasPermission(partner, "payouts") || isStaffAccessRole(partner)
               ? [
                   {
                     key: "bank",
                     icon: "card-outline" as const,
                     label: "Bank Account",
+                    locked: isStaffAccessRole(partner),
                     onPress: navigate("bank"),
+                  },
+                ]
+              : []),
+            ...(partnerHasPermission(partner, "outlet") || isStaffAccessRole(partner)
+              ? [
+                  {
+                    key: "documents",
+                    icon: "shield-checkmark-outline" as const,
+                    label: "Legal Documents",
+                    locked: isStaffAccessRole(partner),
+                    onPress: navigate("documents"),
                   },
                 ]
               : []),
@@ -580,6 +592,7 @@ export default function ProfileScreen() {
               key: "status",
               icon: "pulse-outline" as const,
               label: "Store Status",
+              locked: false,
               onPress: navigate("status"),
             },
             ...(showReferralUi && partnerHasPermission(partner, "home")
@@ -588,6 +601,7 @@ export default function ProfileScreen() {
                     key: "referral",
                     icon: "gift-outline" as const,
                     label: "Refer & Earn",
+                    locked: false,
                     onPress: navigate("referrals"),
                   },
                 ]
@@ -598,6 +612,7 @@ export default function ProfileScreen() {
                     key: "reward",
                     icon: "wallet-outline" as const,
                     label: "Reward",
+                    locked: false,
                     onPress: () => guardedNavPush("/(tabs)/earnings"),
                   },
                 ]
@@ -610,11 +625,16 @@ export default function ProfileScreen() {
                 styles.menuRow,
                 index === list.length - 1 && styles.menuRowLast,
                 pressed && styles.menuRowPressed,
+                item.locked && styles.menuRowLocked,
                 GatiMitraMerchant.cursorPointer,
               ]}
             >
-              <Ionicons name={item.icon} size={20} color={GatiMitraMerchant.primary} />
-              <Text style={styles.menuLabel}>{item.label}</Text>
+              <Ionicons
+                name={item.locked ? "lock-closed-outline" : item.icon}
+                size={20}
+                color={item.locked ? GatiMitraMerchant.textTertiary : GatiMitraMerchant.primary}
+              />
+              <Text style={[styles.menuLabel, item.locked && styles.menuLabelLocked]}>{item.label}</Text>
               <Ionicons name="chevron-forward" size={18} color={GatiMitraMerchant.textTertiary} />
             </Pressable>
           ))}
@@ -894,7 +914,9 @@ const styles = StyleSheet.create({
   },
   menuRowLast: { borderBottomWidth: 0 },
   menuRowPressed: { backgroundColor: GatiMitraMerchant.surfaceSubtle },
+  menuRowLocked: { opacity: 0.72 },
   menuLabel: { flex: 1, fontSize: 14, fontWeight: "500", color: GatiMitraMerchant.textPrimary },
+  menuLabelLocked: { color: GatiMitraMerchant.textSecondary },
 
   addChildBtn: {
     flexDirection: "row",

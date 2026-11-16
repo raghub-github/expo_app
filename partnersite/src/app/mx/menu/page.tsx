@@ -106,8 +106,11 @@ interface MenuItem {
   locked_reason?: string | null;
   approval_status?: string | null;
   primary_image_moderation_status?: string | null;
+  /** Proposed photo from a pending EDIT review (shown on Partner Menu while waiting). */
+  pending_review_image_url?: string | null;
   image_count?: number | null;
   rejection_reason?: string | null;
+  has_pending_change_request?: boolean | null;
 }
 
 interface Customization {
@@ -219,9 +222,11 @@ import {
   type CatalogPhotoUploadCallbacks,
 } from '@/components/menu/CatalogPhotoUploadOptionsModal'
 import {
+  itemDisplayImageUrl,
   itemHasCatalogPhoto,
   itemPhotoInReview,
   itemPhotoRejected,
+  resolveMenuApprovalBadge,
 } from '@/lib/catalog-photo-helpers'
 import { markPlanEnforceRan, shouldRunPlanEnforce } from '@/lib/plan-usage-cache'
 import { SizeTypeFields } from '@/components/menu/SizeTypeFields'
@@ -232,6 +237,8 @@ import { normalizeMenuItemImageFile, validateMenuItemImageFile } from '@/lib/men
 import { persistPartnerSelectedStoreId, readPartnerSelectedStoreId } from '@/lib/partner-selected-store'
 import { useQueryClient } from '@tanstack/react-query'
 import { merchantKeys } from '@/lib/query-keys'
+import { useMerchantSession } from '@/context/MerchantSessionContext'
+import { partnerCanEditMenuDetails } from '@/lib/auth/merchant-staff-permissions'
 
 // --- Menu Category interface ---
 type MerchantStore = {
@@ -1862,6 +1869,9 @@ function MenuContent() {
   // --- Dynamic Menu Categories State ---
   // Keep SSR + first client paint identical (no window/localStorage in initializers).
   const [storeId, setStoreId] = useState<string | null>(null);
+  const merchantSession = useMerchantSession();
+  /** Staff: catalog + stock toggles only (no edit details / image upload). */
+  const canEditDetails = partnerCanEditMenuDetails(merchantSession?.parent);
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [categoryPillMode, setCategoryPillMode] = useState<'category' | 'sub-category'>('category');
@@ -2227,9 +2237,11 @@ function MenuContent() {
             it.id === itemId
               ? {
                   ...it,
-                  approval_status:
-                    String(it.approval_status ?? '').toUpperCase() === 'APPROVED' ? 'APPROVED' : 'PENDING',
+                  // New partner uploads always enter Image Review (never stay Approved).
+                  approval_status: 'PENDING',
                   primary_image_moderation_status: 'PENDING',
+                  rejection_reason: null,
+                  pending_review_image_url: null,
                   item_image_url: imageUrl || previewUri,
                   image_count: Math.max(it.image_count ?? 0, 1),
                 }
@@ -3390,9 +3402,13 @@ function MenuContent() {
   }
 
   const handleOpenEditModal = async (item: MenuItem) => {
+    if (!canEditDetails) {
+      toast.error('Staff can mark items in or out of stock, but cannot edit item details.');
+      return;
+    }
     setEditingId(item.item_id);
     setEditingMenuItemId(item.id);
-    setEditImagePreview(item.item_image_url || '');
+    setEditImagePreview(itemDisplayImageUrl(item) || '');
     
     const allergensString = Array.isArray(item.allergens) 
       ? item.allergens.join(', ') 
@@ -3495,7 +3511,7 @@ function MenuContent() {
     setEditForm({
       item_name: item.item_name || '',
       item_description: item.item_description || '',
-      item_image_url: item.item_image_url || '',
+      item_image_url: itemDisplayImageUrl(item) || '',
       image: null,
       food_type: normalizeFoodTypeForForm(item.food_type) || '',
       spice_level: normalizeSpiceLevelForForm(item.spice_level) || '',
@@ -3695,7 +3711,25 @@ function MenuContent() {
       const itemsList = listRes.ok && Array.isArray(listJson) ? listJson : [];
       const updatedMenuItem = itemsList.find((item: any) => item.item_id === editingId);
       if (updatedMenuItem) {
-        setMenuItems((prev) => prev.map((item) => (item.item_id === editingId ? { ...item, ...updatedMenuItem } : item)));
+        setMenuItems((prev) =>
+          prev.map((item) =>
+            item.item_id === editingId
+              ? {
+                  ...item,
+                  ...updatedMenuItem,
+                  has_pending_change_request:
+                    Boolean(saveJson?.pending_review) ||
+                    Boolean(updatedMenuItem.has_pending_change_request),
+                }
+              : item
+          )
+        );
+      } else if (saveJson?.pending_review) {
+        setMenuItems((prev) =>
+          prev.map((item) =>
+            item.item_id === editingId ? { ...item, has_pending_change_request: true } : item
+          )
+        );
       }
       setShowEditModal(false);
       await refetchImageCount();
@@ -3802,8 +3836,24 @@ function MenuContent() {
       }
       const result = await res.json();
       if (result?.pending_review) {
+        setMenuItems((prev) =>
+          prev.map((item) =>
+            item.item_id === editingId
+              ? {
+                  ...item,
+                  has_pending_change_request: true,
+                  pending_review_image_url: itemImageUrl || item.pending_review_image_url || null,
+                  item_image_url: itemImageUrl || item.item_image_url,
+                  primary_image_moderation_status: itemImageUrl
+                    ? 'PENDING'
+                    : item.primary_image_moderation_status,
+                }
+              : item
+          )
+        );
         setShowEditModal(false);
         await refetchImageCount();
+        void refetchMenuItems();
         toast.success('Changes submitted for review. Live menu stays unchanged until approved.');
       } else if (result?.item_id) {
         const listRes = await fetch(`/api/merchant/menu-items?storeId=${encodeURIComponent(storeId!)}`);
@@ -4547,6 +4597,8 @@ function MenuContent() {
               </button>
             </div>
             ) : null}
+            {canEditDetails ? (
+              <>
             <button
               type="button"
               disabled={!canAddCategory}
@@ -4592,6 +4644,12 @@ function MenuContent() {
               <Upload size={16} />
               Menu file
             </button>
+              </>
+            ) : (
+              <p className="text-xs text-slate-500 font-medium px-1">
+                Staff: mark items in/out of stock only
+              </p>
+            )}
           </div>
         </div>
         </div>
@@ -4769,7 +4827,7 @@ function MenuContent() {
                   <div className="flex items-center gap-3 border-b border-gray-100 bg-gray-50/80 p-3">
                     <div className="h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-100">
                       <R2Image
-                        src={item.item_image_url}
+                        src={itemDisplayImageUrl(item)}
                         alt={item.item_name}
                         className="h-full w-full object-cover"
                         fallbackSrc={ITEM_PLACEHOLDER_SVG}
@@ -4931,39 +4989,81 @@ function MenuContent() {
               const itemOffer = getMenuItemOffer(itemOfferById, item);
               
               const isLockedByPlan = isMenuItemLockedByPlan(item);
+              const isOos = !effectiveInStock(item);
+              const approvalBadge = resolveMenuApprovalBadge(item, {
+                pendingLabel: 'Pending Approval',
+              });
+              const showRejectBanner =
+                approvalBadge?.kind === 'image_rejected' || approvalBadge?.kind === 'rejected';
+              const showTopBanner = Boolean(item.has_pending_change_request) || showRejectBanner;
               return (
                 <div
                   key={item.item_id}
-                  className={`relative rounded-xl border shadow-sm transition-all overflow-hidden ${
+                  className={`relative flex flex-col rounded-xl border shadow-sm transition-all overflow-hidden ${
                     isLockedByPlan
                       ? 'border-red-200/90 bg-gray-50 ring-1 ring-red-100'
-                      : 'bg-white border-gray-200 hover:shadow-md'
+                      : isOos
+                        ? 'border-red-500 bg-white hover:shadow-md'
+                        : showRejectBanner
+                          ? 'border-red-200 bg-white hover:shadow-md'
+                          : 'bg-white border-gray-200 hover:shadow-md'
                   }`}
                 >
+                  {showRejectBanner ? (
+                    <div
+                      className="relative z-[2] flex shrink-0 flex-col gap-0.5 border-b border-red-200 bg-red-50 px-2.5 py-1.5"
+                      title={approvalBadge?.reason || approvalBadge?.label || 'Rejected'}
+                    >
+                      <div className="flex items-center gap-1.5 text-[11px] font-bold text-red-800">
+                        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" aria-hidden />
+                        {approvalBadge?.kind === 'image_rejected' ? 'Image rejected' : 'Rejected'}
+                      </div>
+                      {approvalBadge?.reason ? (
+                        <p className="pl-3 text-[10px] font-medium leading-snug text-red-700/90 line-clamp-2">
+                          {approvalBadge.reason}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : item.has_pending_change_request ? (
+                    <div className="relative z-[2] flex shrink-0 items-center justify-center gap-1.5 border-b border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] font-bold text-amber-900">
+                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden />
+                      Under review
+                    </div>
+                  ) : null}
                   {isLockedByPlan ? (
                     <>
                       <div
                         className="pointer-events-none absolute inset-0 z-[1] bg-gray-200/40"
                         aria-hidden
                       />
-                      <span className="absolute left-2 top-2 z-[2] inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-md">
+                      <span
+                        className={`absolute left-2 z-[2] inline-flex items-center gap-1 rounded-md border border-red-300 bg-red-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-md ${
+                          showTopBanner ? 'top-10' : 'top-2'
+                        }`}
+                      >
                         <Lock size={11} strokeWidth={2.5} aria-hidden />
                         Locked
                       </span>
                     </>
                   ) : null}
                   <div
-                    className={`relative z-0 flex p-2.5 h-full gap-2.5 ${
+                    className={`relative z-0 flex min-h-0 flex-1 gap-2.5 p-2.5 ${
                       isLockedByPlan ? 'opacity-60 saturate-[0.35] grayscale' : ''
                     }`}
                   >
                     <div className="flex w-14 flex-shrink-0 flex-col items-center gap-1">
                     <button
                       type="button"
-                      onClick={() => handleOpenItemPhoto(item)}
-                      disabled={isLockedByPlan || !!photoUploadByItemId[item.id]}
+                      onClick={() => {
+                        if (!canEditDetails) {
+                          toast.error('Staff cannot upload or change item images.');
+                          return;
+                        }
+                        handleOpenItemPhoto(item);
+                      }}
+                      disabled={isLockedByPlan || !!photoUploadByItemId[item.id] || !canEditDetails}
                       className={`relative w-14 h-14 flex-shrink-0 rounded-lg border overflow-hidden ${
-                        isLockedByPlan
+                        isLockedByPlan || !canEditDetails
                           ? 'border-gray-300 bg-gray-200 cursor-not-allowed'
                           : 'border-gray-200 bg-gray-100 cursor-pointer hover:ring-2 hover:ring-orange-300'
                       }`}
@@ -4985,7 +5085,7 @@ function MenuContent() {
                         </>
                       ) : (
                         <R2Image
-                          src={item.item_image_url}
+                          src={itemDisplayImageUrl(item)}
                           alt={item.item_name}
                           className={`w-full h-full object-cover ${isLockedByPlan ? 'grayscale' : ''}`}
                           fallbackSrc={ITEM_PLACEHOLDER_SVG}
@@ -5020,31 +5120,31 @@ function MenuContent() {
                       stacked
                     />
                     </div>
-                    <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-                      <div className="flex items-start justify-between gap-1 mb-0.5">
-                        <div className="flex-1 min-w-0">
-                          <div className="font-bold text-sm text-gray-900 truncate flex items-center gap-1.5 pr-14">
+                    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                      <div className="mb-0.5 flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-bold text-gray-900">
                             {item.item_name}
                           </div>
                           {isLockedByPlan ? (
-                            <p className="mt-0.5 text-[10px] font-semibold text-red-600 leading-snug">
+                            <p className="mt-0.5 text-[10px] font-semibold leading-snug text-red-600">
                               {menuItemLockHint(item)}
                             </p>
                           ) : null}
-                          <div className="text-[10px] text-gray-500 font-semibold uppercase tracking-wide">
+                          <div className="truncate text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                             {category?.category_name || 'Uncategorized'}
                           </div>
                           {getItemOosLabel(item) ? (
-                            <div className="text-[11px] font-semibold text-red-600 mt-0.5">
+                            <div className="mt-0.5 truncate text-[11px] font-semibold text-red-600">
                               {getItemOosLabel(item)}
                             </div>
                           ) : (
-                            <div className="text-[11px] font-semibold text-green-600 mt-0.5">
+                            <div className="mt-0.5 text-[11px] font-semibold text-green-600">
                               In stock
                             </div>
                           )}
                         </div>
-                        <label className={`inline-flex items-center flex-shrink-0 ${isLockedByPlan ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
+                        <label className={`inline-flex shrink-0 items-center pt-0.5 ${isLockedByPlan ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
                           <input
                             type="checkbox"
                             checked={effectiveInStock(item)}
@@ -5068,71 +5168,65 @@ function MenuContent() {
                             }}
                             className="sr-only peer"
                           />
-                          <div className={`w-7 h-4 bg-gray-200 rounded-full peer peer-checked:bg-green-500 transition-all relative ${isLockedByPlan ? '!bg-gray-300' : ''}`}>
-                            <div className={`absolute left-0.5 top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${effectiveInStock(item) ? 'translate-x-3' : ''}`}></div>
+                          <div className={`relative h-4 w-7 rounded-full bg-gray-200 transition-all peer-checked:bg-green-500 ${isLockedByPlan ? '!bg-gray-300' : ''}`}>
+                            <div className={`absolute left-0.5 top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${effectiveInStock(item) ? 'translate-x-3' : ''}`}></div>
                           </div>
                         </label>
                       </div>
-                      {item.item_description && (
-                        <p className="text-[11px] text-gray-600 line-clamp-2 mb-1.5 flex-grow leading-tight">
+                      {item.item_description ? (
+                        <p className="mb-1.5 line-clamp-2 text-[11px] leading-tight text-gray-600">
                           {item.item_description}
                         </p>
-                      )}
+                      ) : null}
 
-                      {/* Indicators for item properties */}
-                      <div className="flex flex-wrap gap-1 mb-1.5">
+                      {/* Indicators for item properties (Under review lives in the card header only) */}
+                      <div className="mb-1.5 flex flex-wrap gap-1">
                         {itemOffer ? (
                           <span
                             title={itemOffer.label}
-                            className={`px-1.5 py-0.5 text-[10px] font-bold rounded ${
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
                               itemOffer.kind === 'bogo'
-                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                : 'bg-pink-50 text-pink-700 border border-pink-200'
+                                ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                                : 'border border-pink-200 bg-pink-50 text-pink-700'
                             }`}
                           >
                             {itemOffer.kind === 'bogo' ? itemOffer.label : itemOffer.badge}
                           </span>
                         ) : null}
-                        {/* Pending approval badge — item not visible to customers yet */}
-                        {String(item.approval_status ?? '').toUpperCase() === 'PENDING' && (
-                          <span className="px-1.5 py-0.5 bg-yellow-50 text-yellow-700 text-[10px] font-semibold rounded border border-yellow-200 flex items-center gap-0.5">
+                        {approvalBadge?.kind === 'pending' ? (
+                          <span className="flex items-center gap-0.5 rounded border border-yellow-200 bg-yellow-50 px-1.5 py-0.5 text-[10px] font-semibold text-yellow-700">
                             ⏳ Pending Approval
                           </span>
-                        )}
-                        {String(item.approval_status ?? '').toUpperCase() === 'REJECTED' && (
-                          <span className="px-1.5 py-0.5 bg-red-50 text-red-700 text-[10px] font-semibold rounded border border-red-200 flex items-center gap-0.5">
-                            ✗ Rejected
-                          </span>
-                        )}
+                        ) : null}
                         {item.is_popular && (
-                          <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 text-[10px] font-semibold rounded">
+                          <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
                             Popular
                           </span>
                         )}
                         {item.is_recommended && (
-                          <span className="px-1.5 py-0.5 bg-purple-50 text-purple-700 text-[10px] font-semibold rounded">
+                          <span className="rounded bg-purple-50 px-1.5 py-0.5 text-[10px] font-semibold text-purple-700">
                             Recommended
                           </span>
                         )}
                         {item.has_customizations && (
-                          <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 text-[10px] font-semibold rounded">
+                          <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
                             Customizable
                           </span>
                         )}
                         {item.has_variants && (
-                          <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 text-[10px] font-semibold rounded">
+                          <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
                             Variants
                           </span>
                         )}
                         {item.food_type && (
-                          <span className="px-1.5 py-0.5 bg-gray-100 text-gray-600 text-[10px] font-semibold rounded">
+                          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold text-gray-600">
                             {item.food_type}
                           </span>
                         )}
                       </div>
 
                       {/* Action buttons - constrained so they never overflow */}
-                      <div className="flex items-center gap-1.5 mt-auto min-w-0">
+                      <div className="mt-auto flex min-w-0 shrink-0 items-center gap-1.5">
                         {(Array.isArray(item.customizations) && item.customizations.length > 0) || (Array.isArray(item.variants) && item.variants.length > 0) ? (
                           <button
                             onClick={e => { e.stopPropagation(); setViewCustModal({ open: true, item }); setViewCustModalTab('customizations'); }}
@@ -5142,6 +5236,7 @@ function MenuContent() {
                             Options
                           </button>
                         ) : null}
+                        {canEditDetails ? (
                         <button
                           onClick={() => {
                             if (isLockedByPlan) {
@@ -5160,6 +5255,7 @@ function MenuContent() {
                           <Edit2 size={10} />
                           <span className="truncate">Edit item</span>
                         </button>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -5176,7 +5272,12 @@ function MenuContent() {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                   {searchedCombos.map((c) => (
-                    <div key={`combo-${c.id}`} className="rounded-xl border border-gray-200 bg-white shadow-sm hover:shadow-md transition-all overflow-hidden">
+                    <div
+                      key={`combo-${c.id}`}
+                      className={`rounded-xl border bg-white shadow-sm hover:shadow-md transition-all overflow-hidden ${
+                        effectiveComboInStock(c) ? 'border-gray-200' : 'border-red-500'
+                      }`}
+                    >
                       <div className="flex p-2.5 h-full gap-2.5">
                         {(() => {
                           const details = comboDetailsById[c.id];
@@ -5356,12 +5457,17 @@ function MenuContent() {
                     <div className="divide-y divide-gray-100">
                       {group.items.map((item) => {
                         const isLockedByPlan = isMenuItemLockedByPlan(item);
+                        const isOos = !effectiveInStock(item);
                         const itemOffer = getMenuItemOffer(itemOfferById, item);
                         return (
                           <div
                             key={item.item_id}
                             className={`px-3 py-2 flex items-center justify-between gap-3 ${
-                              isLockedByPlan ? 'bg-gray-50/90' : ''
+                              isLockedByPlan
+                                ? 'bg-gray-50/90'
+                                : isOos
+                                  ? 'border-l-4 border-l-red-500 bg-red-50/40'
+                                  : ''
                             }`}
                           >
                             <div className="min-w-0 flex-1">

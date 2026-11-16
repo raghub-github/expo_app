@@ -20,6 +20,11 @@ import {
   Inbox
 } from 'lucide-react'
 import LogoutConfirmModal from './LogoutConfirmModal'
+import { useMerchantSession } from '@/context/MerchantSessionContext'
+import {
+  PARTNER_NAV_PERMISSION,
+  partnerSessionHasPermission,
+} from '@/lib/auth/merchant-staff-permissions'
 
 interface SidebarItem {
   id: string
@@ -51,6 +56,17 @@ export const MXSidebar: React.FC<MXSidebarProps> = ({
   }, [pathname])
   const [showLogoutModal, setShowLogoutModal] = useState(false)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const merchantSession = useMerchantSession()
+  const navAllowed = (href: string) => {
+    if (merchantSession?.isLoading) return true
+    const normalized = href.startsWith('/mx/')
+      ? `/partners/${href.slice(4)}`
+      : href
+    return partnerSessionHasPermission(
+      merchantSession?.parent,
+      PARTNER_NAV_PERMISSION[normalized] ?? PARTNER_NAV_PERMISSION[href] ?? 'operations'
+    )
+  }
 
   const navigationItems: SidebarItem[] = [
     {
@@ -121,7 +137,7 @@ export const MXSidebar: React.FC<MXSidebarProps> = ({
       icon: <User size={20} />,
       href: '/mx/profile',
     },
-  ]
+  ].filter((item) => navAllowed(item.href))
 
   const toggleMenu = (menuId: string) => {
     setExpandedMenus((prev) =>

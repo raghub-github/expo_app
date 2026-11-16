@@ -108,20 +108,37 @@ export function getUserAppCategoriesCachedAt(storeType: string): number | undefi
   return memoryByStoreType.get(storeType)?.cachedAt;
 }
 
+/** Every rail that paints the same CMS artwork must share these cache keys. */
+function categoryImageAliasKeys(itemId: number | string): string[] {
+  const id = String(itemId);
+  return [
+    `tab-category-${id}`,
+    `category-${id}`,
+    `classic-category-${id}`,
+    `grid-category-${id}`,
+    `discovery-cat-${id}`,
+  ];
+}
+
 function rememberCategoryImagesFromResponse(response: UserAppCategoriesResponse): void {
   const fileEntries: Array<{ cacheKey: string; imageUrl: string | null | undefined }> = [];
   if (response.allTab?.imageUrl) {
-    rememberCategoryImageLastGood("tab-category-all", response.allTab.imageUrl);
-    fileEntries.push({ cacheKey: "tab-category-all", imageUrl: response.allTab.imageUrl });
+    const allKeys = [
+      "tab-category-all",
+      "classic-category-all",
+      "browse-category-all",
+    ];
+    for (const cacheKey of allKeys) {
+      rememberCategoryImageLastGood(cacheKey, response.allTab.imageUrl);
+      fileEntries.push({ cacheKey, imageUrl: response.allTab.imageUrl });
+    }
   }
   for (const item of response.items ?? []) {
     if (item.imageUrl) {
-      const cacheKey = `tab-category-${item.id}`;
-      rememberCategoryImageLastGood(cacheKey, item.imageUrl);
-      // Alias keys used by classic / search rails so last-good + files hit everywhere.
-      rememberCategoryImageLastGood(`category-${item.id}`, item.imageUrl);
-      fileEntries.push({ cacheKey, imageUrl: item.imageUrl });
-      fileEntries.push({ cacheKey: `category-${item.id}`, imageUrl: item.imageUrl });
+      for (const cacheKey of categoryImageAliasKeys(item.id)) {
+        rememberCategoryImageLastGood(cacheKey, item.imageUrl);
+        fileEntries.push({ cacheKey, imageUrl: item.imageUrl });
+      }
     }
   }
   warmLocalCategoryImages(fileEntries);

@@ -794,6 +794,68 @@ export async function meRoutes(app: FastifyInstance) {
     }
   );
 
+  const CustomerDeviceSessionSchema = z.object({
+    id: z.number(),
+    deviceId: z.string().nullable(),
+    deviceType: z.string().nullable(),
+    deviceName: z.string().nullable(),
+    deviceModel: z.string().nullable(),
+    os: z.string().nullable(),
+    osVersion: z.string().nullable(),
+    appVersion: z.string().nullable(),
+    ipAddress: z.string().nullable(),
+    location: z.string().nullable(),
+    loginState: z.string().nullable(),
+    loginDistrict: z.string().nullable(),
+    loginTown: z.string().nullable(),
+    loginVillage: z.string().nullable(),
+    loginMethod: z.string().nullable(),
+    loginTime: z.string(),
+    lastActive: z.string(),
+    isActive: z.boolean(),
+    isCurrentDevice: z.boolean(),
+  });
+
+  /** GET /v1/me/device-sessions — list where this customer account is logged in. */
+  app.get(
+    "/device-sessions",
+    {
+      schema: {
+        response: {
+          200: z.object({
+            activeCount: z.number(),
+            sessions: z.array(CustomerDeviceSessionSchema),
+          }),
+          403: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      if (req.auth!.role !== "customer") {
+        return reply.code(403).send({ error: "unsupported_role" });
+      }
+      const userId = req.auth!.sub;
+      const currentDeviceId =
+        typeof req.auth?.device_id === "string" ? req.auth.device_id : null;
+      const { getSql } = await import("../../db/client.js");
+      const { listCustomerDeviceSessions } = await import(
+        "../../lib/customer-device-sessions.js"
+      );
+      const sessions = await listCustomerDeviceSessions(getSql(), {
+        userId,
+        activeOnly: true,
+        limit: 20,
+      });
+      return {
+        activeCount: sessions.length,
+        sessions: sessions.map((s) => ({
+          ...s,
+          isCurrentDevice: Boolean(currentDeviceId && s.deviceId === currentDeviceId),
+        })),
+      };
+    }
+  );
+
   app.post(
     "/logout-all",
     {
@@ -822,6 +884,24 @@ export async function meRoutes(app: FastifyInstance) {
             updatedAt: new Date(),
           })
           .where(eq(userProfiles.userId, sub));
+      }
+
+      // Deactivate every device row so Settings "logged-in devices" clears and
+      // per-device JWT checks reject immediately (not only via sessionsInvalidBefore).
+      if (role === "customer") {
+        try {
+          const { getSql } = await import("../../db/client.js");
+          const { revokeAllCustomerDeviceSessions } = await import(
+            "../../lib/customer-device-sessions.js"
+          );
+          await revokeAllCustomerDeviceSessions(getSql(), {
+            userId: customerId ?? sub,
+            revokedBy: "customer_logout_all",
+            revokeReason: "logout_all_including_current",
+          });
+        } catch (sessErr) {
+          req.log?.warn?.({ err: sessErr, userId: sub.slice(0, 8) }, "logout_all_device_sessions_failed");
+        }
       }
 
       if (role === "customer" || role === "merchant" || role === "rider") {

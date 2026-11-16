@@ -8,6 +8,8 @@ import { PartnerShellWarmup } from "@/components/PartnerShellWarmup";
 import { PartnerMerchantQueryFocusSync } from "@/components/PartnerMerchantQueryFocusSync";
 import { GlobalToaster } from "@/components/GlobalToaster";
 import { PartnerBrowserPushBootstrap } from "@/components/PartnerBrowserPushBootstrap";
+import { PartnerDeviceCaptureBootstrap } from "@/components/PartnerDeviceCaptureBootstrap";
+import { PartnerNavPermissionGate } from "@/components/PartnerNavPermissionGate";
 import { MerchantWalletFreezeLive } from "@/hooks/useMerchantWalletFreezeLive";
 import { MerchantStoreDelistLive } from "@/hooks/useMerchantStoreDelistLive";
 
@@ -19,9 +21,10 @@ export default function MXLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
       <div className="h-dvh overflow-hidden">
-        {children}
+        <PartnerNavPermissionGate>{children}</PartnerNavPermissionGate>
       </div>
       <PartnerBrowserPushBootstrap />
+      <PartnerDeviceCaptureBootstrap />
       <GlobalToaster />
       <PartnerShellWarmup />
       <PartnerMerchantQueryFocusSync />

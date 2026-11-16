@@ -20,12 +20,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 const LORA_BOLD = "Lora_700Bold";
 const LORA_REGULAR = "Lora_400Regular";
 
-/** Brighter brand teal — black branding for contrast. */
+/** Brighter brand teal — white branding for contrast. */
 const CANVAS = "#0D9B8A";
-const TITLE_COLOR = "#000000";
-const SUBTITLE_COLOR = "#000000";
-const RULE_COLOR = "rgba(0,0,0,0.35)";
-const SPINNER_COLOR = "rgba(0,0,0,0.55)";
+const TITLE_COLOR = "#FFFFFF";
+const SUBTITLE_COLOR = "#FFFFFF";
+const RULE_COLOR = "rgba(255,255,255,0.55)";
+const SPINNER_COLOR = "rgba(255,255,255,0.85)";
 /** Status/nav bar colour while the splash owns the screen. */
 export const MERCHANT_SPLASH_BG = CANVAS;
 const SPINNER_BOTTOM_GAP = 28;
@@ -122,7 +122,7 @@ export function MerchantBootstrapScreen({
       accessibilityLabel="GatiMitra Partner loading"
       onLayout={handleSplashLayout}
     >
-      <StatusBar style="dark" backgroundColor={CANVAS} translucent={false} />
+      <StatusBar style="light" backgroundColor={CANVAS} translucent={false} />
       <View
         pointerEvents="none"
         style={[styles.canvas, { top: bleedTop, height: bleedHeight, backgroundColor: CANVAS }]}
@@ -243,9 +243,9 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: "rgba(0,0,0,0.08)",
+    backgroundColor: "rgba(255,255,255,0.12)",
     borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.12)",
+    borderColor: "rgba(255,255,255,0.22)",
   },
   statusText: {
     fontFamily: LORA_BOLD,

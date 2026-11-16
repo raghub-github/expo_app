@@ -14,6 +14,7 @@ import {
   isPrepCountdownExpired,
   isPrepPerformanceOverdue,
   PLATFORM_DEFAULT_PREP_MINUTES,
+  computePrepReadyByAtIso,
   prepReadyCountdownLabel,
   canUseNeedMoreTime,
   formatExtraPrepTimeAddedLabel,
@@ -36,14 +37,23 @@ function parseOrdersFoodId(orderId: string): number | null {
 }
 
 export function orderToPrepCountdown(order: OrderRecord): PrepCountdownOrder {
+  // Same deadline chain as partnersite MarkAsReadyCountdownButton / prepReadyDeadlineMs:
+  // expected_ready_at → prep_ready_by_at → accepted_at (+ prep mins) — never acceptance window.
+  const prepMinutes =
+    order.preparationTimeMinutes != null && order.preparationTimeMinutes > 0
+      ? order.preparationTimeMinutes
+      : PLATFORM_DEFAULT_PREP_MINUTES;
+  let prepReadyByAt = order.prepReadyByAt ?? null;
+  if (!prepReadyByAt && order.acceptedAt) {
+    prepReadyByAt = computePrepReadyByAtIso(order.acceptedAt, prepMinutes);
+  }
   return {
     created_at: order.createdAt,
     accepted_at: order.acceptedAt ?? null,
     preparing_at: order.preparingAt ?? null,
-    preparation_time_minutes:
-      order.preparationTimeMinutes ?? PLATFORM_DEFAULT_PREP_MINUTES,
-    prep_ready_by_at: order.prepReadyByAt ?? null,
-    expected_ready_at: order.expectedReadyAt ?? null,
+    preparation_time_minutes: prepMinutes,
+    prep_ready_by_at: prepReadyByAt,
+    expected_ready_at: order.expectedReadyAt ?? prepReadyByAt,
     prep_delay_minutes: order.prepDelayMinutes ?? null,
     last_prep_delay_minutes_added: order.lastPrepDelayMinutesAdded ?? null,
   };
@@ -90,10 +100,11 @@ export function MerchantPreparingOrderCard({
   ]);
   const { summary: nearbyRiderSummary } = useNearbyDispatchRiders(ordersFoodId, showPendingRider);
 
+  const readyLabelPrefix = "Slide to mark ready";
   const performanceOverdue = isPrepPerformanceOverdue(prepOrder, nowMs);
   const countdownExpired =
-    isPrepCountdownExpired(prepOrder, nowMs, { prefix: "Order Ready" }) ||
-    !prepReadyCountdownLabel(prepOrder, nowMs, { prefix: "Order Ready" }).label.includes("(");
+    isPrepCountdownExpired(prepOrder, nowMs, { prefix: readyLabelPrefix }) ||
+    !prepReadyCountdownLabel(prepOrder, nowMs, { prefix: readyLabelPrefix }).label.includes("(");
 
   const canNeedMore =
     performanceOverdue &&
@@ -125,8 +136,7 @@ export function MerchantPreparingOrderCard({
             nowMs={nowMs}
             onPress={onReady}
             disabled={loading}
-            labelPrefix="Order Ready"
-            theme="dark"
+            labelPrefix={readyLabelPrefix}
             fullWidth
           />
         </View>
@@ -137,8 +147,7 @@ export function MerchantPreparingOrderCard({
         nowMs={nowMs}
         onPress={onReady}
         disabled={loading}
-        labelPrefix="Order Ready"
-        theme="dark"
+        labelPrefix={readyLabelPrefix}
       />
     )
   ) : (
@@ -147,8 +156,7 @@ export function MerchantPreparingOrderCard({
       nowMs={nowMs}
       onPress={onReady}
       disabled={loading}
-      labelPrefix="Order Ready"
-      theme="dark"
+      labelPrefix={readyLabelPrefix}
     />
   );
 

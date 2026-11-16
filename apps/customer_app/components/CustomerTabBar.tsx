@@ -104,6 +104,7 @@ type TabConfig = {
   iconFocused: string;
 };
 
+/** All Ionicons — MaterialCommunityIcons load deferred and blank cold-start tabs. */
 const TABS: TabConfig[] = [
   {
     routeName: "index",
@@ -115,23 +116,23 @@ const TABS: TabConfig[] = [
   {
     routeName: "food",
     label: "Food",
-    family: "material",
-    icon: "room-service-outline",
-    iconFocused: "room-service",
+    family: "ionicons",
+    icon: "restaurant-outline",
+    iconFocused: "restaurant",
   },
   {
     routeName: "orders",
     label: "Orders",
-    family: "material",
-    icon: "clipboard-text-outline",
-    iconFocused: "clipboard-text",
+    family: "ionicons",
+    icon: "receipt-outline",
+    iconFocused: "receipt",
   },
   {
     routeName: "profile",
     label: "Profile",
-    family: "material",
-    icon: "account-outline",
-    iconFocused: "account",
+    family: "ionicons",
+    icon: "person-outline",
+    iconFocused: "person",
   },
 ];
 

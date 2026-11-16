@@ -8,6 +8,7 @@ import {
   Package,
   Users,
   Smartphone,
+  Shield,
 } from "lucide-react";
 
 export const SETTINGS_TABS = [
@@ -17,6 +18,7 @@ export const SETTINGS_TABS = [
   { id: "menu-capacity", label: "Menu & Capacity", icon: ChefHat },
   { id: "delivery", label: "Delivery Settings", icon: Package },
   { id: "riders", label: "Self-Delivery Riders", icon: Users },
+  { id: "staff", label: "Staff & Access", icon: Shield },
   { id: "pos", label: "POS Integration", icon: Smartphone },
 ] as const;
 

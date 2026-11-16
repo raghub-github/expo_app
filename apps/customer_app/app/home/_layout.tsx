@@ -4,7 +4,6 @@ import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
 import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { hasCompletedProfileSync } from "@/lib/profileCache";
 import { useAuthStore } from "@/store/authStore";
 
 export default function HomeLayout() {
@@ -12,21 +11,22 @@ export default function HomeLayout() {
   const router = useRouter();
   const hydrated = useAuthStore((s) => s.hydrated);
   const accessToken = useAuthStore((s) => s.session?.accessToken ?? null);
+  const sessionRestorePending = useAuthStore((s) => s.sessionRestorePending);
   const barStyle = discovery ? "light" : "dark";
   const barBg = discovery ? DiscoveryColors.bg : GatiMitraColors.softBackground;
 
   useEffect(() => {
     if (!hydrated) return;
     if (!accessToken) {
+      if (sessionRestorePending) return;
       router.replace("/(auth)/login");
       return;
     }
-    if (!hasCompletedProfileSync()) {
-      router.replace("/(onboarding)");
-    }
-  }, [hydrated, accessToken, router]);
+    // Tabs/AuthGate own profile warm. Do not bounce here on FastKV miss —
+    // that flashed create-profile for returning users.
+  }, [hydrated, accessToken, sessionRestorePending, router]);
 
-  if (!hydrated || !accessToken || !hasCompletedProfileSync()) {
+  if (!hydrated || sessionRestorePending || !accessToken) {
     return null;
   }
 

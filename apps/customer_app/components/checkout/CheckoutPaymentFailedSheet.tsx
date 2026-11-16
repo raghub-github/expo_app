@@ -1,4 +1,4 @@
-import { View, Pressable, StyleSheet, Modal, ActivityIndicator, Text } from "react-native";
+import { View, Pressable, StyleSheet, Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { usePathname, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -247,43 +247,8 @@ const styles = StyleSheet.create({
   },
 });
 
-export function CheckoutPaymentReturnOverlay({ visible }: { visible: boolean }) {
-  return (
-    <Modal visible={visible} transparent animationType="fade">
-      <View style={overlayStyles.root}>
-        <View style={overlayStyles.card}>
-          <ActivityIndicator color={GatiMitraColors.emerald} />
-          <AppText style={overlayStyles.text}>Confirming payment</AppText>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-const overlayStyles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 28,
-  },
-  card: {
-    backgroundColor: "#1E1E1E",
-    borderRadius: 16,
-    paddingHorizontal: 28,
-    paddingVertical: 22,
-    alignItems: "center",
-    minWidth: 220,
-  },
-  text: {
-    marginTop: 12,
-    fontSize: 15,
-    fontFamily: StoreFonts.poppinsSemiBold,
-    color: "#FFFFFF",
-    textAlign: "center",
-  },
-});
+/** @deprecated Prefer CheckoutPaymentStatusSheet — kept as re-export for call sites. */
+export { CheckoutPaymentReturnOverlay } from "@/components/checkout/CheckoutPaymentStatusSheet";
 
 /** Root overlay — keep outside CheckoutBottomSheetHost to avoid nested Modals on Android. */
 export function CheckoutPaymentFailureHost() {

@@ -6,6 +6,8 @@ import { ChevronLeft, ChevronRight, Download, Loader2 } from "lucide-react";
 import { ExportTransactionsSheet } from "@/components/transactions/ExportTransactionsSheet";
 import { usePermissions } from "@/hooks/usePermissions";
 import { fetchJsonWithTimeout } from "@/lib/fetch-json-with-timeout";
+import { useAppSearchParams } from "@/hooks/useAppSearchParams";
+import { useRouter } from "next/navigation";
 
 const rowBorder = "border-b-[0.5px] border-[#121212]/10";
 const outerBorder = "rounded-md border-[0.5px] border-[#121212]/40";
@@ -160,6 +162,9 @@ function useDebounced<T>(value: T, ms = 400): T {
 /* ----------------------------- component ----------------------------- */
 export function TransactionsClient() {
   const { isSuperAdmin } = usePermissions();
+  const router = useRouter();
+  const searchParams = useAppSearchParams();
+  const urlQ = (searchParams.get("q") ?? "").trim();
   const [app, setApp] = useState<TxnApp | "all">("all");
   const [service, setService] = useState("");
   const [status, setStatus] = useState("");
@@ -168,15 +173,19 @@ export function TransactionsClient() {
   const [dateTo, setDateTo] = useState("");
   const [amountMin, setAmountMin] = useState("");
   const [amountMax, setAmountMax] = useState("");
-  const [searchInput, setSearchInput] = useState("");
-  const q = useDebounced(searchInput);
+  // Header search writes `?q=` — debounce for typing in the URL-driven bar.
+  const q = useDebounced(urlQ, 300);
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<PageSize>(20);
+  /** Only true for explicit Refresh/Retry clicks — never for background polls. */
+  const [manualRefreshing, setManualRefreshing] = useState(false);
 
   useEffect(() => { setService(""); }, [app]);
   useEffect(() => { setPage(1); }, [app, service, status, mode, dateFrom, dateTo, amountMin, amountMax, q, pageSize]);
+
+  const serviceOptions = SERVICE_OPTIONS[app] ?? [];
 
   const filters = useMemo(() => ({
     app: app === "all" ? "" : app,
@@ -195,17 +204,23 @@ export function TransactionsClient() {
       sp.set("limit", String(pageSize));
       return fetchJsonWithTimeout<ListResp>(`/api/transactions?${sp.toString()}`, { signal });
     },
-    // Keep the board live: poll while the tab is visible; Refresh still forces an immediate refetch.
+    // Silent background refresh — UI never binds to isFetching for polls.
     staleTime: 10_000,
-    // Stop polling once a fetch fails. Re-polling a server we cannot reach every 15s
-    // only piles up doomed requests and fills the console; window focus, the Retry
-    // button and Refresh all bring the board back once the connection is good again.
-    refetchInterval: (query) => (query.state.status === "error" ? false : 15_000),
+    refetchInterval: (q) => (q.state.status === "error" ? false : 15_000),
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
-    refetchOnMount: "always",
+    refetchOnMount: true,
     placeholderData: (prev) => prev,
   });
+
+  const runManualRefresh = async () => {
+    setManualRefreshing(true);
+    try {
+      await query.refetch();
+    } finally {
+      setManualRefreshing(false);
+    }
+  };
 
   const rows = query.data?.rows ?? [];
   const total = query.data?.total ?? rows.length;
@@ -230,9 +245,23 @@ export function TransactionsClient() {
   }, [page, totalPages]);
 
   const resetFilters = () => {
-    setService(""); setStatus(""); setMode(""); setDateFrom(""); setDateTo("");
-    setAmountMin(""); setAmountMax(""); setSearchInput("");
+    setApp("all");
+    setService("");
+    setStatus("");
+    setMode("");
+    setDateFrom("");
+    setDateTo("");
+    setAmountMin("");
+    setAmountMax("");
     setPage(1);
+    if (urlQ) {
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("q");
+      const qs = params.toString();
+      router.replace(qs ? `/dashboard/transactions?${qs}` : "/dashboard/transactions", {
+        scroll: false,
+      });
+    }
   };
 
   const exportSeed = useMemo(() => ({
@@ -242,11 +271,12 @@ export function TransactionsClient() {
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <div className="sticky top-0 z-30 shrink-0 border-b-[0.5px] border-[#121212]/10 bg-white py-2">
-        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto rounded-md border-[0.5px] border-[#121212]/15 bg-white px-2.5 py-2 [scrollbar-width:thin]">
+        {/* Single non-wrapping row — horizontal scroll on narrow viewports; no height shift. */}
+        <div className="flex h-11 flex-nowrap items-center gap-2 overflow-x-auto rounded-md border-[0.5px] border-[#121212]/15 bg-white px-2.5 [scrollbar-width:thin]">
           <select
             value={app}
             onChange={(e) => setApp(e.target.value as TxnApp | "all")}
-            className={`${controlClass} w-[5.75rem] shrink-0`}
+            className={`${controlClass} w-[6.5rem] shrink-0`}
             aria-label="App"
           >
             {APP_TABS.map((t) => (
@@ -255,29 +285,21 @@ export function TransactionsClient() {
               </option>
             ))}
           </select>
-
-          <input
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="GMF… / payment id"
-            title="Search formatted order id, Razorpay id, ref, entity id"
-            className={`${controlClass} w-[11rem] shrink-0 sm:w-52`}
-          />
-          {(SERVICE_OPTIONS[app] ?? []).length > 0 ? (
-            <select
-              value={service}
-              onChange={(e) => setService(e.target.value)}
-              className={`${controlClass} w-[8rem] shrink-0 capitalize`}
-              aria-label="Service"
-            >
-              <option value="">All services</option>
-              {SERVICE_OPTIONS[app].map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-          ) : null}
+          {/* Always mounted so switching App never inserts/removes a control (layout shift). */}
+          <select
+            value={service}
+            onChange={(e) => setService(e.target.value)}
+            disabled={serviceOptions.length === 0}
+            className={`${controlClass} w-[8.5rem] shrink-0 capitalize disabled:cursor-not-allowed disabled:opacity-50`}
+            aria-label="Service"
+          >
+            <option value="">All services</option>
+            {serviceOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
           <select
             value={status}
             onChange={(e) => setStatus(e.target.value)}
@@ -308,14 +330,14 @@ export function TransactionsClient() {
             type="date"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
-            className={`${controlClass} w-[7.25rem] shrink-0 px-1.5`}
+            className={`${controlClass} w-[8rem] shrink-0 px-1.5`}
             aria-label="From date"
           />
           <input
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
-            className={`${controlClass} w-[7.25rem] shrink-0 px-1.5`}
+            className={`${controlClass} w-[8rem] shrink-0 px-1.5`}
             aria-label="To date"
           />
           <input
@@ -323,7 +345,7 @@ export function TransactionsClient() {
             value={amountMin}
             onChange={(e) => setAmountMin(e.target.value)}
             placeholder="Min ₹"
-            className={`${controlClass} w-[5rem] shrink-0`}
+            className={`${controlClass} w-[5.5rem] shrink-0`}
             aria-label="Min amount"
           />
           <input
@@ -331,15 +353,15 @@ export function TransactionsClient() {
             value={amountMax}
             onChange={(e) => setAmountMax(e.target.value)}
             placeholder="Max ₹"
-            className={`${controlClass} w-[5rem] shrink-0`}
+            className={`${controlClass} w-[5.5rem] shrink-0`}
             aria-label="Max amount"
           />
 
-          <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2 pr-0.5">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-1">
             <button
               type="button"
               onClick={resetFilters}
-              className="inline-flex h-9 items-center rounded-md border border-[#121212]/12 bg-white px-2.5 text-xs font-semibold text-[#121212]/65 hover:bg-[#F7F7F7]"
+              className="inline-flex h-9 cursor-pointer items-center rounded-md border border-[#121212]/12 bg-white px-3 text-xs font-semibold text-[#121212]/65 hover:bg-[#F7F7F7]"
             >
               Reset
             </button>
@@ -347,7 +369,7 @@ export function TransactionsClient() {
               <button
                 type="button"
                 onClick={() => setExportOpen(true)}
-                className="inline-flex h-9 items-center gap-1.5 rounded-md border border-[#121212]/12 bg-white px-2.5 text-xs font-semibold text-[#121212] hover:bg-[#F7F7F7]"
+                className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md border border-[#121212]/12 bg-white px-3 text-xs font-semibold text-[#121212] hover:bg-[#F7F7F7]"
               >
                 <Download className="h-3.5 w-3.5" aria-hidden />
                 Export
@@ -355,12 +377,16 @@ export function TransactionsClient() {
             ) : null}
             <button
               type="button"
-              onClick={() => void query.refetch()}
-              disabled={query.isFetching}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[#121212] px-2.5 text-xs font-semibold text-white hover:bg-black disabled:opacity-80"
+              onClick={() => void runManualRefresh()}
+              disabled={manualRefreshing}
+              className="inline-flex h-9 w-[5.75rem] cursor-pointer items-center justify-center rounded-md bg-[#121212] text-xs font-semibold text-white hover:bg-black disabled:cursor-wait disabled:opacity-80"
+              aria-label={manualRefreshing ? "Refreshing" : "Refresh"}
             >
-              {query.isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
-              Refresh
+              {manualRefreshing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+              ) : (
+                "Refresh"
+              )}
             </button>
           </div>
         </div>
@@ -403,14 +429,16 @@ export function TransactionsClient() {
                   </p>
                   <button
                     type="button"
-                    onClick={() => void query.refetch()}
-                    disabled={query.isFetching}
-                    className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-md bg-[#121212] px-4 text-xs font-semibold text-white hover:bg-black disabled:opacity-80"
+                    onClick={() => void runManualRefresh()}
+                    disabled={manualRefreshing}
+                    className="mt-3 inline-flex h-9 w-[5.5rem] cursor-pointer items-center justify-center rounded-md bg-[#121212] text-xs font-semibold text-white hover:bg-black disabled:cursor-wait disabled:opacity-80"
+                    aria-label={manualRefreshing ? "Retrying" : "Retry"}
                   >
-                    {query.isFetching ? (
+                    {manualRefreshing ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-                    ) : null}
-                    Retry
+                    ) : (
+                      "Retry"
+                    )}
                   </button>
                 </td>
               </tr>
@@ -482,9 +510,8 @@ export function TransactionsClient() {
               <span className="whitespace-nowrap">Rows per page</span>
               <select
                 value={pageSize}
-                disabled={query.isFetching}
                 onChange={(e) => setPageSize(Number(e.target.value) as PageSize)}
-                className="h-7 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-1.5 text-[11px] font-medium text-[#121212] focus:border-[#121212]/40 focus:outline-none disabled:opacity-50"
+                className="h-7 cursor-pointer rounded-md border-[0.5px] border-[#121212]/20 bg-white px-1.5 text-[11px] font-medium text-[#121212] focus:border-[#121212]/40 focus:outline-none"
                 aria-label="Rows per page"
               >
                 {PAGE_SIZE_OPTIONS.map((n) => (
@@ -498,9 +525,9 @@ export function TransactionsClient() {
           <div className="flex flex-wrap items-center justify-center gap-1">
             <button
               type="button"
-              disabled={query.isFetching || page <= 1}
+              disabled={page <= 1}
               onClick={() => setPage((p) => Math.max(1, p - 1))}
-              className="flex h-7 items-center gap-1 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-2 text-[11px] font-medium text-[#121212] hover:bg-[#F7F7F7] disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-7 cursor-pointer items-center gap-1 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-2 text-[11px] font-medium text-[#121212] hover:bg-[#F7F7F7] disabled:cursor-not-allowed disabled:opacity-40"
             >
               <ChevronLeft className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Previous</span>
@@ -514,9 +541,8 @@ export function TransactionsClient() {
                 <button
                   key={p}
                   type="button"
-                  disabled={query.isFetching}
                   onClick={() => setPage(p)}
-                  className={`flex h-7 min-w-[28px] items-center justify-center rounded-md px-1.5 text-[11px] font-semibold ${
+                  className={`flex h-7 min-w-[28px] cursor-pointer items-center justify-center rounded-md px-1.5 text-[11px] font-semibold ${
                     p === page
                       ? "bg-[#121212] text-white"
                       : "border-[0.5px] border-[#121212]/20 bg-white text-[#121212] hover:bg-[#F7F7F7]"
@@ -528,9 +554,9 @@ export function TransactionsClient() {
             )}
             <button
               type="button"
-              disabled={query.isFetching || page >= totalPages}
+              disabled={page >= totalPages}
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              className="flex h-7 items-center gap-1 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-2 text-[11px] font-medium text-[#121212] hover:bg-[#F7F7F7] disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-7 cursor-pointer items-center gap-1 rounded-md border-[0.5px] border-[#121212]/20 bg-white px-2 text-[11px] font-medium text-[#121212] hover:bg-[#F7F7F7] disabled:cursor-not-allowed disabled:opacity-40"
             >
               <span className="hidden sm:inline">Next</span>
               <ChevronRight className="h-3.5 w-3.5" />

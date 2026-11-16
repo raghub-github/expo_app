@@ -6,6 +6,7 @@ import { Camera, ChevronLeft, ChevronRight, Info, Trash2, X } from "lucide-react
 import { toast } from "sonner";
 import { R2Image } from "@/components/R2Image";
 import {
+  itemDisplayImageUrl,
   itemHasCatalogPhoto,
   normalizeImageModerationStatus,
   type CatalogPhotoMenuItem,
@@ -80,27 +81,62 @@ export function CatalogItemPhotoModal({
     void loadDetail();
   }, [open, item?.id, loadDetail]);
 
-  const previewImages: MenuItemImageRow[] = useMemo(
-    () =>
-      item?.item_image_url
-        ? [
-            {
-              id: -1,
-              image_url: item.item_image_url,
-              is_primary: true,
-              display_order: 0,
-              moderation_status:
-                item.primary_image_moderation_status ?? item.approval_status ?? "PENDING",
-              rejection_reason: null,
-            },
-          ]
-        : [],
-    [item?.item_image_url, item?.primary_image_moderation_status, item?.approval_status],
-  );
+  const previewImages: MenuItemImageRow[] = useMemo(() => {
+    const url = item ? itemDisplayImageUrl(item) : null;
+    if (!url) return [];
+    return [
+      {
+        id: -1,
+        image_url: url,
+        is_primary: true,
+        display_order: 0,
+        moderation_status:
+          item?.pending_review_image_url
+            ? "PENDING"
+            : item?.primary_image_moderation_status ?? item?.approval_status ?? "PENDING",
+        rejection_reason: null,
+      },
+    ];
+  }, [
+    item,
+    item?.item_image_url,
+    item?.pending_review_image_url,
+    item?.primary_image_moderation_status,
+    item?.approval_status,
+  ]);
 
   const images = useMemo(() => {
-    if (detail?.images && detail.images.length > 0) return detail.images;
-    return previewImages;
+    const raw =
+      detail?.images && detail.images.length > 0 ? detail.images : previewImages;
+    // Same photo can be inserted multiple times (EDIT materialize / re-upload).
+    // Keep one row per URL so carousel keys stay unique and slides aren't duplicated.
+    const byUrl = new Map<string, MenuItemImageRow>();
+    for (const img of raw) {
+      const url = String(img.image_url ?? "").trim();
+      if (!url) continue;
+      const prev = byUrl.get(url);
+      if (!prev) {
+        byUrl.set(url, img);
+        continue;
+      }
+      const preferIncoming =
+        (img.is_primary && !prev.is_primary) ||
+        (normalizeImageModerationStatus(img.moderation_status) === "REJECTED" &&
+          normalizeImageModerationStatus(prev.moderation_status) !== "REJECTED") ||
+        Number(img.id) > Number(prev.id);
+      if (preferIncoming) {
+        byUrl.set(url, {
+          ...img,
+          rejection_reason: img.rejection_reason || prev.rejection_reason,
+        });
+      } else if (!prev.rejection_reason && img.rejection_reason) {
+        byUrl.set(url, { ...prev, rejection_reason: img.rejection_reason });
+      }
+    }
+    return [...byUrl.values()].sort((a, b) => {
+      if (a.is_primary !== b.is_primary) return a.is_primary ? -1 : 1;
+      return Number(a.display_order ?? 0) - Number(b.display_order ?? 0);
+    });
   }, [detail?.images, previewImages]);
 
   const approvalStatus = detail?.approval_status ?? item?.approval_status ?? null;
@@ -113,10 +149,17 @@ export function CatalogItemPhotoModal({
   const primaryModeration = primaryImage
     ? normalizeImageModerationStatus(primaryImage.moderation_status)
     : normalizeImageModerationStatus(approvalStatus);
+  // Prefer the slide being viewed; fall back to primary moderation for the status banner.
+  const statusModerationForBanner = currentImage
+    ? currentModeration
+    : primaryModeration;
   const status =
-    primaryModeration === "REJECTED"
+    statusModerationForBanner === "REJECTED"
       ? null
-      : approvalMessage(primaryModeration === "APPROVED" ? "APPROVED" : "PENDING", hasPhotos);
+      : approvalMessage(
+          statusModerationForBanner === "APPROVED" ? "APPROVED" : "PENDING",
+          hasPhotos,
+        );
   const isPrimaryRejected = hasPhotos && primaryModeration === "REJECTED";
   const showAddPhotoSlide = isPrimaryRejected || approvalStatus === "REJECTED";
   const totalSlides = images.length + (showAddPhotoSlide ? 1 : 0);
@@ -128,6 +171,12 @@ export function CatalogItemPhotoModal({
     (isPrimaryRejected ? primaryImage?.rejection_reason?.trim() : null) ||
     detail?.rejection_reason?.trim() ||
     null;
+
+  useEffect(() => {
+    if (activeIndex > 0 && activeIndex >= totalSlides) {
+      setActiveIndex(Math.max(0, totalSlides - 1));
+    }
+  }, [activeIndex, totalSlides]);
 
   const scrollToSlide = (index: number) => {
     if (index < 0 || index >= totalSlides) return;
@@ -201,7 +250,7 @@ export function CatalogItemPhotoModal({
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
-            {loading && images.length === 0 && !item.item_image_url ? (
+            {loading && images.length === 0 && !itemDisplayImageUrl(item) ? (
               <div className="flex h-36 items-center justify-center">
                 <span className="h-8 w-8 animate-spin rounded-full border-2 border-orange-500 border-t-transparent" />
               </div>
@@ -222,11 +271,11 @@ export function CatalogItemPhotoModal({
                     if (idx !== activeIndex && idx >= 0 && idx < totalSlides) setActiveIndex(idx);
                   }}
                 >
-                  {images.map((img) => {
+                  {images.map((img, slideIdx) => {
                     const slideModeration = normalizeImageModerationStatus(img.moderation_status);
                     return (
                       <div
-                        key={img.image_url || String(img.id)}
+                        key={`photo-${img.id > 0 ? img.id : "preview"}-${slideIdx}`}
                         className="relative h-44 min-w-full shrink-0 snap-center overflow-hidden rounded-xl border border-gray-200 bg-gray-100 sm:h-48"
                       >
                         <R2Image

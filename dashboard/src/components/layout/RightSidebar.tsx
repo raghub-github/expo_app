@@ -207,6 +207,7 @@ export function RightSidebar({
   const [pendingMenuRequestsCount, setPendingMenuRequestsCount] = useState<number>(0);
   const [storeMenuReviewPendingCount, setStoreMenuReviewPendingCount] = useState<number>(0);
   const [resubmittedDocsCount, setResubmittedDocsCount] = useState<number>(0);
+  const [pendingVerificationsCount, setPendingVerificationsCount] = useState<number>(0);
   const [pendingOnboardingCount, setPendingOnboardingCount] = useState<number>(0);
 
   const refreshResubmittedDocsCount = useCallback(() => {
@@ -214,10 +215,15 @@ export function RightSidebar({
       .then((res) => res.json())
       .then((body) => {
         if (!body?.success) return;
-        const count = Number(body.resubmitted ?? 0);
-        setResubmittedDocsCount(Number.isFinite(count) ? count : 0);
+        const resubmitted = Number(body.resubmitted ?? 0);
+        const pending = Number(body.pending ?? 0);
+        setResubmittedDocsCount(Number.isFinite(resubmitted) ? resubmitted : 0);
+        setPendingVerificationsCount(Number.isFinite(pending) ? pending : 0);
       })
-      .catch(() => setResubmittedDocsCount(0));
+      .catch(() => {
+        setResubmittedDocsCount(0);
+        setPendingVerificationsCount(0);
+      });
   }, []);
 
   const refreshPendingOnboardingCount = useCallback(() => {
@@ -272,7 +278,10 @@ export function RightSidebar({
       effectiveMerchantPortal === "admin";
 
     if (isAdminMerchantsArea) {
-      fetch("/api/merchant-menu/review-queue-summary")
+      fetch("/api/merchant-menu/review-queue-summary", {
+        credentials: "include",
+        cache: "no-store",
+      })
         .then((res) => res.json())
         .then((body) => {
           if (!body?.success) return;
@@ -284,10 +293,14 @@ export function RightSidebar({
     } else {
       setPendingMenuRequestsCount(0);
       setResubmittedDocsCount(0);
+      setPendingVerificationsCount(0);
     }
 
     if (storeId) {
-      fetch(`/api/merchant-menu/review-queue-summary?storeId=${encodeURIComponent(storeId)}`)
+      fetch(`/api/merchant-menu/review-queue-summary?storeId=${encodeURIComponent(storeId)}`, {
+        credentials: "include",
+        cache: "no-store",
+      })
         .then((res) => res.json())
         .then((body) => {
           if (!body?.success) return;
@@ -1009,18 +1022,25 @@ export function RightSidebar({
                   const isMenuChangeRequestsRoute = route.href.endsWith("/menu-change-requests");
                   const isPendingOnboardingRoute =
                     route.href === "/dashboard/riders/pending-onboarding";
+                  const isVerificationsRoute =
+                    route.href === "/dashboard/merchants/verifications";
                   const menuReviewBadgeCount = isMenuChangeRequestsRoute
                     ? storeMenuReviewPendingCount
                     : 0;
-                  const routeBadgeCount = isPendingOnboardingRoute
-                    ? pendingOnboardingCount
-                    : menuReviewBadgeCount;
-                  const showRouteBadge = routeBadgeCount > 0;
+                  const routeBadgeCount = isVerificationsRoute
+                    ? pendingVerificationsCount
+                    : isPendingOnboardingRoute
+                      ? pendingOnboardingCount
+                      : menuReviewBadgeCount;
+                  // Verifications mirrors Wallet requests: always show "N Pending".
+                  const showRouteBadge = isVerificationsRoute || routeBadgeCount > 0;
                   const isActive = activeHref === route.href;
                   const Icon = route.icon;
-                  const badgeTitle = showRouteBadge
+                  const badgeTitle = isVerificationsRoute
                     ? `${route.name} (${routeBadgeCount} pending)`
-                    : route.name;
+                    : showRouteBadge
+                      ? `${route.name} (${routeBadgeCount} pending)`
+                      : route.name;
                   return (
                     <Link
                       key={route.href}
@@ -1065,11 +1085,13 @@ export function RightSidebar({
                           </span>
                           {showRouteBadge ? (
                             <span
-                              className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                              className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
                                 isActive ? "bg-[#121212]/10 text-[#121212]" : "bg-amber-100 text-amber-800"
                               }`}
                             >
-                              {routeBadgeCount}
+                              {isVerificationsRoute
+                                ? `${routeBadgeCount} Pending`
+                                : routeBadgeCount}
                             </span>
                           ) : null}
                         </>

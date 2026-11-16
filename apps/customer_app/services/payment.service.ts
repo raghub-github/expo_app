@@ -152,12 +152,18 @@ export const paymentService = {
   async getAvailableMethods(): Promise<CheckoutPayMethodsResponse> {
     try {
       const { data } = await api.get<CheckoutPayMethodsResponse>(`${PAYMENT_PREFIX}/methods`);
-      if (data?.sections?.some((s) => s.items?.length > 0)) {
+      // Live Razorpay catalog wins — even if empty (nothing enabled on the account).
+      // Only invent the curated India list for explicit dummy mode.
+      if (data && Array.isArray(data.sections)) {
+        if (data.dummy === true && data.sections.length === 0) {
+          return ensureUpiQrAndCollectVisible({ ...FALLBACK_PAY_METHODS, dummy: true });
+        }
         return ensureUpiQrAndCollectVisible(data);
       }
-      return ensureUpiQrAndCollectVisible(FALLBACK_PAY_METHODS);
+      return ensureUpiQrAndCollectVisible({ ...FALLBACK_PAY_METHODS, dummy: true });
     } catch {
-      return ensureUpiQrAndCollectVisible(FALLBACK_PAY_METHODS);
+      // Network blip — soft fallback so checkout stays usable; marked dummy.
+      return ensureUpiQrAndCollectVisible({ ...FALLBACK_PAY_METHODS, dummy: true });
     }
   },
 

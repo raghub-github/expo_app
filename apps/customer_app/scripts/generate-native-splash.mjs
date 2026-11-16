@@ -1,22 +1,31 @@
 /**
- * Native launch splash that matches GatiMitraBootstrapScreen (wordmark + tagline),
- * not the circular logo. Android 12+ crops the splash image to a circle — fill
- * that icon with the same teal as the window so the circle edge disappears.
+ * Native launch splash matching Zomato's centered brand stack, with GatiMitra branding.
+ *
+ * Layout (Zomato reference):
+ *   flat brand colour → bold wordmark → thin hairline → spaced tagline
+ *
+ * Renders bold Lora from the bundled @expo-google-fonts/lora TTF so native → JS
+ * handoff never shows a thin/system fallback face.
+ *
+ * Android 12+ crops the splash image to a circle — fill that icon with the same
+ * teal as the window so the circle edge disappears.
  *
  * Usage: node scripts/generate-native-splash.mjs
  */
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 
+const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
 const outDir = path.join(projectRoot, "assets/images");
+const repoRoot = path.resolve(projectRoot, "../..");
 
-const GRADIENT_TOP = "#5eead4";
+/** Solid mint — Zomato uses flat brand red; we use flat GatiMitra mint. */
 const SPLASH_MINT = "#14b8a6";
-const GRADIENT_BOTTOM = "#0d9488";
 
 const BRAND_OUT = path.join(outDir, "splash-brand.png");
 const ANDROID12_OUT = path.join(outDir, "splash-android12.png");
@@ -25,41 +34,104 @@ const BRAND_W = 1284;
 const BRAND_H = 2778;
 const ICON = 1024;
 
-function brandSvg(width, height) {
+/** Resolve Lora Bold TTF — monorepo hoist or app-local install. */
+function resolveLoraBoldTtf() {
+  const candidates = [
+    path.join(repoRoot, "node_modules/@expo-google-fonts/lora/700Bold/Lora_700Bold.ttf"),
+    path.join(projectRoot, "node_modules/@expo-google-fonts/lora/700Bold/Lora_700Bold.ttf"),
+  ];
+  try {
+    const pkgDir = path.dirname(
+      require.resolve("@expo-google-fonts/lora/package.json")
+    );
+    candidates.unshift(path.join(pkgDir, "700Bold/Lora_700Bold.ttf"));
+  } catch {
+    /* ignore */
+  }
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function escapeXml(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function fontFaceCss(ttfPath) {
+  if (!ttfPath) return "";
+  const abs = path.resolve(ttfPath).replace(/\\/g, "/");
+  const href = abs.startsWith("/") ? `file://${abs}` : `file:///${abs}`;
+  return `
+  <defs>
+    <style type="text/css"><![CDATA[
+      @font-face {
+        font-family: "LoraBold";
+        src: url("${href}");
+        font-weight: 700;
+        font-style: normal;
+      }
+    ]]></style>
+  </defs>`;
+}
+
+/**
+ * Zomato stack proportions (relative to canvas width):
+ * - Wordmark ~11–12% of width, optically centered
+ * - Hairline ~78% of wordmark width, tight under title
+ * - Tagline ~2.8–3.2% of width, wide tracking via textLength ≈ wordmark
+ */
+function brandStack(width, height, ttfPath, opts = {}) {
+  const {
+    titleSize = Math.round(width * 0.112),
+    tagSize = Math.round(width * 0.028),
+    titleY = height * 0.485,
+    maxTagWidthRatio = 0.92,
+  } = opts;
   const cx = width / 2;
-  // Keep wordmark + tagline inside horizontal safe margins (narrow phones ~360dp).
-  const titleSize = Math.round(width * 0.098);
-  const tagSize = Math.round(width * 0.022);
-  const titleY = height * 0.48;
-  const tagY = titleY + titleSize * 0.78;
+  const family = ttfPath ? "LoraBold" : "Georgia, 'Times New Roman', Times, serif";
+  // Approximate wordmark width for line + tagline stretch (GatiMitra ~9 glyphs).
+  // Zomato: hairline ≈ logo width; tagline tracking spans nearly the same.
+  const wordmarkW = Math.round(titleSize * 5.2);
+  const lineW = Math.round(wordmarkW * 0.94);
+  const lineY = titleY + Math.round(titleSize * 0.38);
+  const tagY = lineY + Math.round(tagSize * 1.7);
+  const tagWidth = Math.round(wordmarkW * maxTagWidthRatio);
+
+  return `
+  <text x="${cx}" y="${titleY}" text-anchor="middle" fill="#ffffff" font-size="${titleSize}" font-family="${escapeXml(family)}" font-weight="700">GatiMitra</text>
+  <rect x="${cx - lineW / 2}" y="${lineY}" width="${lineW}" height="2.5" rx="1.25" fill="#ffffff" fill-opacity="0.92"/>
+  <text x="${cx}" y="${tagY}" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="0.9" paint-order="stroke fill" font-size="${tagSize}" font-family="${escapeXml(family)}" font-weight="700" letter-spacing="3" textLength="${tagWidth}" lengthAdjust="spacingAndGlyphs">CRAFTED FOR CONVENIENCE</text>`;
+}
+
+function brandSvg(width, height, ttfPath) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-  <defs>
-    <linearGradient id="bg" x1="20%" y1="0%" x2="80%" y2="100%">
-      <stop offset="0%" stop-color="${GRADIENT_TOP}"/>
-      <stop offset="45%" stop-color="${SPLASH_MINT}"/>
-      <stop offset="100%" stop-color="${GRADIENT_BOTTOM}"/>
-    </linearGradient>
-  </defs>
-  <rect width="${width}" height="${height}" fill="url(#bg)"/>
-  <text x="${cx}" y="${titleY}" text-anchor="middle" fill="#ffffff" font-size="${titleSize}" font-family="Georgia, 'Times New Roman', Times, serif" font-weight="700">GatiMitra</text>
-  <text x="${cx}" y="${tagY}" text-anchor="middle" fill="#ffffff" font-size="${tagSize}" font-family="Georgia, 'Times New Roman', Times, serif" font-weight="700" letter-spacing="${Math.round(tagSize * 0.06)}">CRAFTED FOR CONVENIENCE</text>
+  ${fontFaceCss(ttfPath)}
+  <rect width="${width}" height="${height}" fill="${SPLASH_MINT}"/>
+  ${brandStack(width, height, ttfPath)}
 </svg>`;
 }
 
-function android12Svg() {
+function android12Svg(ttfPath) {
   // Window + icon share SPLASH_MINT so the Android 12 circle is invisible.
-  // Text stays inside the circle safe zone (~66% diameter) so sides never clip.
-  const cx = ICON / 2;
-  const titleSize = 136;
-  const tagSize = 22;
-  const titleY = 510;
-  const tagY = 575;
+  // Keep wordmark inside ~60% safe diameter so left/right never crop on A12+.
+  const family = ttfPath ? "LoraBold" : "Georgia, 'Times New Roman', Times, serif";
+  void family;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${ICON}" height="${ICON}" viewBox="0 0 ${ICON} ${ICON}">
+  ${fontFaceCss(ttfPath)}
   <rect width="${ICON}" height="${ICON}" fill="${SPLASH_MINT}"/>
-  <text x="${cx}" y="${titleY}" text-anchor="middle" fill="#ffffff" font-size="${titleSize}" font-family="Georgia, 'Times New Roman', Times, serif" font-weight="700">GatiMitra</text>
-  <text x="${cx}" y="${tagY}" text-anchor="middle" fill="#ffffff" font-size="${tagSize}" font-family="Georgia, 'Times New Roman', Times, serif" font-weight="700" letter-spacing="1.2">CRAFTED FOR CONVENIENCE</text>
+  ${brandStack(ICON, ICON, ttfPath, {
+    titleSize: 108,
+    tagSize: 26,
+    titleY: 500,
+    maxTagWidthRatio: 0.9,
+  })}
 </svg>`;
 }
 
@@ -72,12 +144,22 @@ async function renderSvg(svg, outPath, width, height) {
 
 async function main() {
   fs.mkdirSync(outDir, { recursive: true });
-  await renderSvg(brandSvg(BRAND_W, BRAND_H), BRAND_OUT, BRAND_W, BRAND_H);
-  await renderSvg(android12Svg(), ANDROID12_OUT, ICON, ICON);
+  const loraBold = resolveLoraBoldTtf();
+  if (!loraBold) {
+    console.warn(
+      "[generate-native-splash] Lora_700Bold.ttf not found — using Georgia fallback. Install @expo-google-fonts/lora."
+    );
+  } else {
+    console.log(`[generate-native-splash] Using bold Lora: ${loraBold}`);
+  }
+  await renderSvg(brandSvg(BRAND_W, BRAND_H, loraBold), BRAND_OUT, BRAND_W, BRAND_H);
+  await renderSvg(android12Svg(loraBold), ANDROID12_OUT, ICON, ICON);
   console.log(
     JSON.stringify(
       {
         splashMint: SPLASH_MINT,
+        layout: "zomato-flat-mint-hairline-tagline",
+        font: loraBold ? "Lora_700Bold" : "Georgia-fallback",
         outputs: [
           path.relative(projectRoot, BRAND_OUT),
           path.relative(projectRoot, ANDROID12_OUT),

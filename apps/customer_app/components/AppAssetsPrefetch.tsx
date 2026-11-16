@@ -3,6 +3,7 @@ import { AppState, type AppStateStatus } from "react-native";
 import { STORAGE_KEYS } from "@/constants";
 import { fetchCustomerAppAssets, type AppAssetItem } from "@/services/appAssets.service";
 import {
+  prefetchBrandBannerImageSync,
   prefetchCriticalHomeAssetImages,
   prefetchCriticalHomeAssetImagesSync,
 } from "@/lib/homeCriticalAssets";
@@ -12,6 +13,7 @@ import { hydrateFastKvFromAsyncStorage } from "@/lib/fastKv";
 import { enqueueImagePrefetch } from "@/lib/prefetchQueue";
 import { useAppAssetsStore } from "@/store/appAssetsStore";
 import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { useSplashExitedFlag } from "@/lib/splashLifecycle";
 
 const RETRY_MS = [0, 2_000, 5_000, 10_000];
 const FOREGROUND_RELOAD_MIN_MS = 8_000;
@@ -34,8 +36,10 @@ function prefetchRemainingAssetUrls(assets: Record<string, AppAssetItem>) {
 function warmFromStoreAssets() {
   const seeded = useAppAssetsStore.getState().assets;
   if (Object.keys(seeded).length === 0) return;
-  // Mark ready immediately so home isn't gated; queue critical decode sync first.
+  // Mark ready immediately so home isn't gated; decode critical art sync first.
   useAppAssetsStore.getState().setHomeImagesPrefetched(true);
+  // Footer brand scooter first — must not sit behind service-grid prefetch.
+  prefetchBrandBannerImageSync(seeded);
   prefetchCriticalHomeAssetImagesSync(seeded);
   void (async () => {
     await prefetchCriticalHomeAssetImages(seeded);
@@ -50,7 +54,8 @@ async function loadAppAssets(): Promise<boolean> {
   if (Object.keys(assets).length === 0) return false;
   useAppAssetsStore.getState().setAssets(assets);
   useAppAssetsStore.getState().setHomeImagesPrefetched(true);
-  await prefetchCriticalHomeAssetImages(assets);
+  // Don't await full prefetch before returning — tiles already have URLs to paint.
+  void prefetchCriticalHomeAssetImages(assets);
   void prefetchCriticalRideAssetImages(assets);
   prefetchRemainingAssetUrls(assets);
   return true;
@@ -64,6 +69,9 @@ async function loadAppAssets(): Promise<boolean> {
     if (cached) {
       useAppAssetsStore.getState().setAssets(cached);
       useAppAssetsStore.getState().setHomeImagesPrefetched(true);
+      // Start footer scooter decode before React mounts.
+      prefetchBrandBannerImageSync(cached);
+      prefetchCriticalHomeAssetImagesSync(cached);
     }
   } catch {
     /* ignore */
@@ -74,79 +82,83 @@ async function loadAppAssets(): Promise<boolean> {
 export function AppAssetsPrefetch() {
   const setLoading = useAppAssetsStore((s) => s.setLoading);
   const markLoadFailed = useAppAssetsStore((s) => s.markLoadFailed);
+  const splashExited = useSplashExitedFlag();
   const attemptRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const networkDoneRef = useRef(false);
   const lastForegroundReloadAt = useRef(0);
 
+  // Disk seed only during splash — network waits so auth/navigation own the JS thread.
   useEffect(() => {
     let cancelled = false;
-    let removeAppState: (() => void) | undefined;
-
-    const bootstrap = async () => {
-      // Paint from sync MMKV/memory first, then upgrade AsyncStorage → memory on Expo Go.
-      if (Object.keys(useAppAssetsStore.getState().assets).length === 0) {
-        const cached = readSyncAppAssets();
-        if (cached) useAppAssetsStore.getState().setAssets(cached);
-      }
-      if (!cancelled) warmFromStoreAssets();
-
-      await hydrateFastKvFromAsyncStorage([STORAGE_KEYS.APP_ASSETS_CACHE]);
+    if (Object.keys(useAppAssetsStore.getState().assets).length === 0) {
+      const cached = readSyncAppAssets();
+      if (cached) useAppAssetsStore.getState().setAssets(cached);
+    }
+    warmFromStoreAssets();
+    void hydrateFastKvFromAsyncStorage([STORAGE_KEYS.APP_ASSETS_CACHE]).then(() => {
       if (cancelled) return;
       if (Object.keys(useAppAssetsStore.getState().assets).length === 0) {
         const cached = readSyncAppAssets();
         if (cached) useAppAssetsStore.getState().setAssets(cached);
       }
-      if (!cancelled) warmFromStoreAssets();
+      warmFromStoreAssets();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-      const run = async () => {
-        if (networkDoneRef.current) return;
-        setLoading(true);
-        try {
-          const ok = await loadAppAssets();
-          if (cancelled) return;
-          if (ok) {
-            networkDoneRef.current = true;
-            attemptRef.current = 0;
-            return;
-          }
-          throw new Error("empty app assets");
-        } catch {
-          if (cancelled) return;
-          markLoadFailed();
-          const delay = RETRY_MS[Math.min(attemptRef.current, RETRY_MS.length - 1)] ?? 10_000;
-          attemptRef.current += 1;
-          timerRef.current = setTimeout(() => {
-            if (!cancelled && !networkDoneRef.current) void run();
-          }, delay);
-        }
-      };
+  useEffect(() => {
+    if (!splashExited) return;
+    let cancelled = false;
+    let removeAppState: (() => void) | undefined;
 
-      void run();
-
-      const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
-        if (state !== "active") return;
-        if (!networkDoneRef.current) {
+    const runNetwork = async () => {
+      if (networkDoneRef.current) return;
+      setLoading(true);
+      try {
+        const ok = await loadAppAssets();
+        if (cancelled) return;
+        if (ok) {
+          networkDoneRef.current = true;
           attemptRef.current = 0;
-          void run();
           return;
         }
-        const now = Date.now();
-        if (now - lastForegroundReloadAt.current < FOREGROUND_RELOAD_MIN_MS) return;
-        lastForegroundReloadAt.current = now;
-        void loadAppAssets();
-      });
-      removeAppState = () => sub.remove();
+        throw new Error("empty app assets");
+      } catch {
+        if (cancelled) return;
+        markLoadFailed();
+        const delay = RETRY_MS[Math.min(attemptRef.current, RETRY_MS.length - 1)] ?? 10_000;
+        attemptRef.current += 1;
+        timerRef.current = setTimeout(() => {
+          if (!cancelled && !networkDoneRef.current) void runNetwork();
+        }, delay);
+      }
     };
 
-    void bootstrap();
+    void runNetwork();
+
+    const sub = AppState.addEventListener("change", (state: AppStateStatus) => {
+      if (state !== "active") return;
+      if (!networkDoneRef.current) {
+        attemptRef.current = 0;
+        void runNetwork();
+        return;
+      }
+      const now = Date.now();
+      if (now - lastForegroundReloadAt.current < FOREGROUND_RELOAD_MIN_MS) return;
+      lastForegroundReloadAt.current = now;
+      void loadAppAssets();
+    });
+    removeAppState = () => sub.remove();
 
     return () => {
       cancelled = true;
       removeAppState?.();
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [setLoading, markLoadFailed]);
+  }, [splashExited, setLoading, markLoadFailed]);
 
   return null;
 }

@@ -190,19 +190,42 @@ export function CatalogItemPhotoSheet({
     const fromDetail = detail?.images ?? [];
     // After a successful detail load with zero images, don't fall back to a
     // stale list-row primary URL (shows blank/black after delete).
-    if (detail && detail.id === item?.id) {
-      return [...fromDetail].sort((a, b) => {
-        if (Boolean(a.is_primary) !== Boolean(b.is_primary)) return a.is_primary ? -1 : 1;
-        return (a.display_order ?? 0) - (b.display_order ?? 0);
-      });
+    const raw =
+      detail && detail.id === item?.id
+        ? fromDetail
+        : fromDetail.length > 0
+          ? fromDetail
+          : previewImages;
+    // Same photo can be inserted multiple times (EDIT materialize / re-upload).
+    // Keep one row per URL so carousel keys stay unique and slides aren't duplicated.
+    type ImgRow = (typeof raw)[number];
+    const byUrl = new Map<string, ImgRow>();
+    for (const img of raw) {
+      const url = String(img.image_url ?? "").trim();
+      if (!url) continue;
+      const prev = byUrl.get(url);
+      if (!prev) {
+        byUrl.set(url, img);
+        continue;
+      }
+      const preferIncoming =
+        (Boolean(img.is_primary) && !Boolean(prev.is_primary)) ||
+        (normalizeImageModerationStatus(img.moderation_status) === "REJECTED" &&
+          normalizeImageModerationStatus(prev.moderation_status) !== "REJECTED") ||
+        Number(img.id) > Number(prev.id);
+      if (preferIncoming) {
+        byUrl.set(url, {
+          ...img,
+          rejection_reason: img.rejection_reason || prev.rejection_reason,
+        });
+      } else if (!prev.rejection_reason && img.rejection_reason) {
+        byUrl.set(url, { ...prev, rejection_reason: img.rejection_reason });
+      }
     }
-    if (fromDetail.length > 0) {
-      return [...fromDetail].sort((a, b) => {
-        if (Boolean(a.is_primary) !== Boolean(b.is_primary)) return a.is_primary ? -1 : 1;
-        return (a.display_order ?? 0) - (b.display_order ?? 0);
-      });
-    }
-    return previewImages;
+    return [...byUrl.values()].sort((a, b) => {
+      if (Boolean(a.is_primary) !== Boolean(b.is_primary)) return a.is_primary ? -1 : 1;
+      return Number(a.display_order ?? 0) - Number(b.display_order ?? 0);
+    });
   }, [detail, detail?.images, item?.id, previewImages]);
   const approvalStatus = detail?.approval_status ?? item?.approval_status ?? null;
 

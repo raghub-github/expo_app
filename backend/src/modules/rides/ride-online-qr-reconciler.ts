@@ -1,9 +1,11 @@
 /**
  * Online-QR payment RECONCILER (safety net for missed webhooks).
  *
- * Happy path: `qr_code.credited` webhook → finalize*OnlineQrPayment.
+ * Happy path: `qr_code.credited` webhook → finalize*OnlineQrPayment /
+ * finalizePendingOrderFromWebhook (food checkout QR).
  * This poller closes the gap when the webhook is missed/delayed: fetch Razorpay
- * QR payments and finalize via the same idempotent finalizers (ride or parcel).
+ * QR payments and finalize via the same idempotent finalizers
+ * (food checkout / ride / parcel).
  */
 import { withLock } from "@gatimitra/redis";
 import { getSql } from "../../db/client.js";
@@ -11,6 +13,7 @@ import { getEnv } from "../../config/env.js";
 import { fetchRazorpayQrPayments } from "../../services/payment/razorpayService.js";
 import { finalizeRideOnlineQrPayment } from "./ride-online-qr.service.js";
 import { finalizeParcelOnlineQrPayment } from "../parcel/parcel-online-qr.service.js";
+import { tryRecoverFoodCheckoutQrPayment } from "../payment/food-checkout-qr-recover.js";
 
 const LOCK_KEY = "tick:ride-online-qr-reconciler";
 const LOCK_TTL_MS = 55_000;
@@ -50,12 +53,34 @@ export async function reconcileOpenRideQrPaymentsOnce(): Promise<{
     const qrId = String(r.transaction_id ?? "").trim();
     if (!qrId) continue;
     try {
-      const payments = await fetchRazorpayQrPayments(qrId);
-      const captured = payments.find((p) => p.status === "captured");
-      if (!captured) continue;
       const source = String(
         ((r.gateway_response ?? {}) as { source?: string }).source ?? ""
       );
+
+      // Food checkout Scan QR — finalize pending_orders (not ride/parcel).
+      if (source === "food_checkout_qr") {
+        const foodRes = await tryRecoverFoodCheckoutQrPayment({
+          qrId,
+          gw: (r.gateway_response ?? {}) as {
+            source?: string;
+            pendingId?: string;
+            razorpayOrderId?: string;
+            amountPaise?: number;
+          },
+          via: "online_qr_reconciler",
+        });
+        if (foodRes.status === "finalized") {
+          finalized += 1;
+          console.info(
+            `[online-qr-reconciler] finalized missed food checkout QR ${qrId} (pending ${foodRes.pendingId})`
+          );
+        }
+        continue;
+      }
+
+      const payments = await fetchRazorpayQrPayments(qrId);
+      const captured = payments.find((p) => p.status === "captured");
+      if (!captured) continue;
       const isParcel = source === "parcel_online_qr";
       const res = isParcel
         ? await finalizeParcelOnlineQrPayment({

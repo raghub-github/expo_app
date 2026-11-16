@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { beforeEach, describe, it, mock } from "node:test";
+import { after, beforeEach, describe, it, mock } from "node:test";
+
+// Node test runner does not define RN/Expo globals; expo-modules-core needs these.
+(globalThis as unknown as { __DEV__: boolean }).__DEV__ = false;
+(globalThis as unknown as { expo?: { EventEmitter: new (...args: unknown[]) => object } }).expo ??= {
+  EventEmitter: class EventEmitter {},
+};
 
 const memory = new Map<string, string>();
 
@@ -26,6 +32,28 @@ mock.module("expo-secure-store", {
     getItemAsync: async () => null,
     setItemAsync: async () => undefined,
     deleteItemAsync: async () => undefined,
+  },
+});
+
+mock.module("expo-image", {
+  namedExports: {
+    Image: {
+      prefetch: async () => true,
+    },
+  },
+});
+
+mock.module("expo-constants", {
+  defaultExport: {
+    appOwnership: null,
+    expoConfig: { extra: {} },
+    executionEnvironment: "storeClient",
+  },
+});
+
+mock.module("@/utils/mediaUrl", {
+  namedExports: {
+    toAbsoluteImageUrl: (url: string) => url,
   },
 });
 
@@ -61,6 +89,10 @@ function item(partial: Partial<CartItem> & Pick<CartItem, "menuItemId" | "name">
 }
 
 describe("recentlyRemovedStore", () => {
+  after(() => {
+    mock.restoreAll();
+  });
+
   beforeEach(() => {
     memory.clear();
   });

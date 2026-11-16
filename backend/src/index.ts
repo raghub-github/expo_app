@@ -513,6 +513,8 @@ app.post("/v1/internal/merchant-subscription/lifecycle-tick", async (req, reply)
 // Internal: trigger schedule tick for a store (e.g. after operating hours updated from dashboard).
 // Requires X-Internal-Secret header to match BACKEND_SCHEDULE_TICK_SECRET. Used so store open/close
 // is re-evaluated immediately when hours are changed outside the backend (e.g. dashboard PATCH).
+const scheduleTickInflight = new Map<number, Promise<void>>();
+
 app.post<{ Params: { storeId: string } }>("/v1/internal/stores/:storeId/schedule-tick", async (req, reply) => {
   const secret = process.env.BACKEND_SCHEDULE_TICK_SECRET;
   if (!secret || (req.headers["x-internal-secret"] as string) !== secret) {
@@ -523,7 +525,24 @@ app.post<{ Params: { storeId: string } }>("/v1/internal/stores/:storeId/schedule
     return reply.code(400).send({ error: "invalid_store_id" });
   }
   try {
-    await runStoreScheduleTickForStore(storeId, req.log);
+    const existing = scheduleTickInflight.get(storeId);
+    if (existing) {
+      await existing;
+      return reply.send({ ok: true, coalesced: true });
+    }
+    const run = (async () => {
+      await runStoreScheduleTickForStore(storeId, req.log);
+      const { markStoreScheduleTickDone } = await import(
+        "./modules/merchant-partner/partner-store-status-snapshot.js"
+      );
+      markStoreScheduleTickDone(storeId);
+    })();
+    scheduleTickInflight.set(storeId, run);
+    try {
+      await run;
+    } finally {
+      if (scheduleTickInflight.get(storeId) === run) scheduleTickInflight.delete(storeId);
+    }
     return reply.send({ ok: true });
   } catch (e) {
     req.log.error({ err: e, storeId }, "schedule_tick_failed");
@@ -567,12 +586,13 @@ app.get<{ Params: { storeId: string } }>("/v1/internal/stores/:storeId/partner-s
     return reply.code(400).send({ error: "invalid_store_id" });
   }
   try {
-    const { withDbSlot } = await import("./db/client.js");
     const { buildPartnerStoreStatusSnapshot } = await import(
       "./modules/merchant-partner/partner-store-status-snapshot.js"
     );
-    // Request-level slot is skipped for this poll path — acquire only around DB work.
-    const snapshot = await withDbSlot(() => buildPartnerStoreStatusSnapshot(storeId, req.log));
+    // No withDbSlot — wrapping schedule-tick here held all slots for 10s+ and
+    // caused cascading database_slot_timeout (Partner dual 30s polls + global tick).
+    // Snapshot is single-flight + debounced tick inside buildPartnerStoreStatusSnapshot.
+    const snapshot = await buildPartnerStoreStatusSnapshot(storeId, req.log);
     if (!snapshot) return reply.code(404).send({ error: "store_not_found" });
     return reply.send(snapshot);
   } catch (e) {

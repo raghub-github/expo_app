@@ -187,18 +187,22 @@ export async function POST(
           ? !!(existingGalleryKey && existingGalleryKey.startsWith(`${root}/onboarding/assets/gallery/`))
           : false;
 
-    // Child-store onboarding + partnersite Step 5 share onboarding/assets/{banner|gallery}.
+    // Default banner/gallery to partnersite onboarding path so verification uploads
+    // match register-store Step 5: …/onboarding/assets/{banner|gallery}/…
+    // Only use post-onboarding assets/banners|gallery when explicitly requested.
+    const forcePostOnboardingAssets =
+      onboardingFlag === "0" || onboardingFlag === "false" || onboardingFlag === "no";
     const key =
       type === "banner_video"
         ? buildStoreProfileMediaR2Key(parentIdForPath, storeCode, type, fileName)
-        : forceOnboarding || preferLegacy
-          ? buildStoreOnboardingMediaR2Key(
+        : forcePostOnboardingAssets && !preferLegacy && !forceOnboarding
+          ? buildStoreProfileMediaR2Key(parentIdForPath, storeCode, type, fileName)
+          : buildStoreOnboardingMediaR2Key(
               parentIdForPath,
               storeCode,
               type === "banner" ? "banner" : "gallery",
               fileName
-            )
-          : buildStoreProfileMediaR2Key(parentIdForPath, storeCode, type, fileName);
+            );
     await uploadWithKey(file, key);
     console.log("[profile-media] R2 uploaded", { storeId, type, key });
     const signedUrl = await getSignedUrlFromKey(key, 604800);

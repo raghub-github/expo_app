@@ -2,7 +2,7 @@
  * Flow hub — Growth: My Activity (KPIs + bar charts) and Business (insights + sparklines).
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppText as Text } from "@/components/AppText";
 import { View, StyleSheet, ScrollView, Pressable, RefreshControl, Modal, Platform, Linking, Alert } from "react-native";
 import { useFocusEffect } from "expo-router";
@@ -262,89 +262,118 @@ export default function GrowthScreen() {
   const [livePreviewData, setLivePreviewData] = useState<LivePreviewInsights | null>(null);
   const [bizUpdatedAt, setBizUpdatedAt] = useState<number | null>(null);
 
-  const load = useCallback(
-    async (isRefresh = false) => {
-      if (!storeId || !token) {
-        setActivityData(null);
-        setBusinessData(null);
-        setQuickData(null);
-        setKitchenData(null);
-        setLivePreviewData(null);
-        setError(null);
-        setLoading(false);
-        setRefreshing(false);
-        return;
-      }
+  const activityDataRef = useRef(activityData);
+  const businessDataRef = useRef(businessData);
+  const quickDataRef = useRef(quickData);
+  const kitchenDataRef = useRef(kitchenData);
+  const livePreviewDataRef = useRef(livePreviewData);
+  activityDataRef.current = activityData;
+  businessDataRef.current = businessData;
+  quickDataRef.current = quickData;
+  kitchenDataRef.current = kitchenData;
+  livePreviewDataRef.current = livePreviewData;
 
-      const hasCachedData = (() => {
-        if (activeChip === BUSINESS_CHIP) return businessData?.period === period;
-        if (activeChip === QUICK_CHIP) return quickData?.period === period;
-        if (activeChip === FUNNEL_CHIP) return String(livePreviewData?.period ?? "") === period;
-        if (activeChip === KITCHEN_CHIP) return kitchenData?.period === period;
-        return activityData?.period === period;
-      })();
+  const loadGenRef = useRef(0);
+  const focusedRef = useRef(false);
 
-      if (isRefresh) {
-        setRefreshing(true);
-      } else if (!hasCachedData) {
-        setLoading(true);
-      } else {
-        setRefreshing(true);
-      }
+  const load = useCallback(async (isRefresh = false) => {
+    const chip = activeChip;
+    const p = period;
+    const sid = storeId;
+    const tok = token;
+
+    if (!sid || !tok) {
+      setActivityData(null);
+      setBusinessData(null);
+      setQuickData(null);
+      setKitchenData(null);
+      setLivePreviewData(null);
       setError(null);
-      try {
-        if (activeChip === BUSINESS_CHIP) {
-          const res = await fetchGrowthBusinessInsights(storeId, token, period);
-          setBusinessData(res);
-          setBizUpdatedAt(Date.now());
-        } else if (activeChip === QUICK_CHIP) {
-          const res = await fetchGrowthQuickInsights(storeId, token, period);
-          setQuickData(res);
-        } else if (activeChip === FUNNEL_CHIP) {
-          const res = await fetchLivePreviewInsights(storeId, token, period);
-          setLivePreviewData(res);
-        } else if (activeChip === KITCHEN_CHIP) {
-          const res = await fetchGrowthKitchenInsights(storeId, token, period);
-          setKitchenData(res);
-        } else {
-          const res = await fetchGrowthSummary(storeId, token, period);
-          setActivityData(res);
-        }
-        setError(null);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Could not load");
-        if (!hasCachedData) {
-          if (activeChip === BUSINESS_CHIP) setBusinessData(null);
-          else if (activeChip === QUICK_CHIP) setQuickData(null);
-          else if (activeChip === FUNNEL_CHIP) setLivePreviewData(null);
-          else if (activeChip === KITCHEN_CHIP) setKitchenData(null);
-          else setActivityData(null);
-        }
-      } finally {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
+    const hasCachedData = (() => {
+      if (chip === BUSINESS_CHIP) return businessDataRef.current?.period === p;
+      if (chip === QUICK_CHIP) return quickDataRef.current?.period === p;
+      if (chip === FUNNEL_CHIP) return String(livePreviewDataRef.current?.period ?? "") === p;
+      if (chip === KITCHEN_CHIP) return kitchenDataRef.current?.period === p;
+      return activityDataRef.current?.period === p;
+    })();
+
+    const gen = ++loadGenRef.current;
+    if (isRefresh || hasCachedData) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    setError(null);
+
+    try {
+      if (chip === BUSINESS_CHIP) {
+        const res = await fetchGrowthBusinessInsights(sid, tok, p);
+        if (gen !== loadGenRef.current) return;
+        setBusinessData(res);
+        setBizUpdatedAt(Date.now());
+      } else if (chip === QUICK_CHIP) {
+        const res = await fetchGrowthQuickInsights(sid, tok, p);
+        if (gen !== loadGenRef.current) return;
+        setQuickData(res);
+      } else if (chip === FUNNEL_CHIP) {
+        const res = await fetchLivePreviewInsights(sid, tok, p);
+        if (gen !== loadGenRef.current) return;
+        setLivePreviewData(res);
+      } else if (chip === KITCHEN_CHIP) {
+        const res = await fetchGrowthKitchenInsights(sid, tok, p);
+        if (gen !== loadGenRef.current) return;
+        setKitchenData(res);
+      } else {
+        const res = await fetchGrowthSummary(sid, tok, p);
+        if (gen !== loadGenRef.current) return;
+        setActivityData(res);
+      }
+      if (gen !== loadGenRef.current) return;
+      setError(null);
+    } catch (e) {
+      if (gen !== loadGenRef.current) return;
+      setError(e instanceof Error ? e.message : "Could not load");
+      if (!hasCachedData) {
+        if (chip === BUSINESS_CHIP) setBusinessData(null);
+        else if (chip === QUICK_CHIP) setQuickData(null);
+        else if (chip === FUNNEL_CHIP) setLivePreviewData(null);
+        else if (chip === KITCHEN_CHIP) setKitchenData(null);
+        else setActivityData(null);
+      }
+    } finally {
+      if (gen === loadGenRef.current) {
         setLoading(false);
         setRefreshing(false);
       }
-    },
-    [
-      storeId,
-      token,
-      period,
-      activeChip,
-      activityData?.period,
-      businessData?.period,
-      quickData?.period,
-      kitchenData?.period,
-      livePreviewData?.period,
-    ]
-  );
+    }
+  }, [storeId, token, period, activeChip]);
 
-  // One request for the visible tab. Prefetching every tab at once starved
-  // food-orders and made this screen time out.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
+  // Stable focus callback — NEVER depend on `load`. Old `[load]` re-subscribed
+  // whenever cached period flipped and left My Activity on GrowthPanelLoader forever.
   useFocusEffect(
     useCallback(() => {
-      void load(false);
-    }, [load])
+      focusedRef.current = true;
+      void loadRef.current(false);
+      return () => {
+        focusedRef.current = false;
+        loadGenRef.current += 1;
+      };
+    }, [])
   );
+
+  // Chip / period / store changes while focused.
+  useEffect(() => {
+    if (!focusedRef.current) return;
+    void load(false);
+  }, [load]);
 
   const timelyBuckets = activityData?.buckets?.length ? activityData.buckets : [];
   const weeklyBuckets = activityData?.weekly_buckets?.length ? activityData.weekly_buckets : [];

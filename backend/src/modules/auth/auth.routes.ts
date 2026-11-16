@@ -1509,6 +1509,25 @@ export async function authRoutes(app: FastifyInstance) {
             deviceId,
             exp: expiresAt,
           });
+          // Background — do not hold the OTP verify response on device upsert.
+          void import("../../lib/customer-device-sessions.js")
+            .then(({ persistCustomerDeviceSession }) =>
+              persistCustomerDeviceSession(sql, {
+                userId: customerUserId,
+                deviceId,
+                loginMethod: "otp",
+                ip: riderLoginIp(req),
+                geo: { location: riderLoginLocation(req) },
+                device: {
+                  deviceType: "mobile",
+                  deviceName: "Mobile device",
+                  os: "Android",
+                },
+              })
+            )
+            .catch((sessErr) => {
+              req.log?.warn?.({ err: sessErr }, "Customer OTP: device session persist failed");
+            });
           req.log?.info?.(
             { userId: customerUserId, phoneE164 },
             "Customer signed in successfully; profile saved in customers"
@@ -2282,6 +2301,27 @@ export async function authRoutes(app: FastifyInstance) {
         deviceId,
         exp: expiresAt,
       });
+
+      // Do not await device-session upsert on the OTP critical path — client
+      // spinner ends when the JWT returns; session list can catch up shortly after.
+      void import("../../lib/customer-device-sessions.js")
+        .then(({ persistCustomerDeviceSession }) =>
+          persistCustomerDeviceSession(sql, {
+            userId: customerUserId,
+            deviceId,
+            loginMethod: "supabase_otp",
+            ip: riderLoginIp(req),
+            geo: { location: riderLoginLocation(req) },
+            device: {
+              deviceType: "mobile",
+              deviceName: "Mobile device",
+              os: "Android",
+            },
+          })
+        )
+        .catch((sessErr) => {
+          req.log?.warn?.({ err: sessErr }, "exchange-customer: device session persist failed");
+        });
 
       req.log?.info?.({ userId: customerUserId, phoneE164 }, "Customer signed in via Supabase OTP exchange");
       return {

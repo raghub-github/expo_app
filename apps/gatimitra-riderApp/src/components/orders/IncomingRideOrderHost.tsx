@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, InteractionManager } from "react-native";
+import { Alert, AppState, InteractionManager, type AppStateStatus } from "react-native";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
@@ -270,6 +270,8 @@ export function IncomingRideOrderHost() {
   const [acceptSwipeResetKey, setAcceptSwipeResetKey] = useState(0);
   const [acceptBusyLabel, setAcceptBusyLabel] = useState<string | null>(null);
   const [poolEpoch, setPoolEpoch] = useState(0);
+  /** Bumped on foreground so muted→JS handoff can chime once after app open. */
+  const [soundHandoffEpoch, setSoundHandoffEpoch] = useState(0);
 
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
   // Busy only for the order actually being accepted, never globally.
@@ -565,12 +567,28 @@ export function IncomingRideOrderHost() {
   ]);
 
   useEffect(() => {
+    const prev = { current: AppState.currentState as AppStateStatus };
+    const sub = AppState.addEventListener("change", (next) => {
+      const wasBg = prev.current === "background" || prev.current === "inactive";
+      prev.current = next;
+      if (next !== "active" || !wasBg) return;
+      // Allow one JS handoff after AppOpenMute silenced native FGS.
+      const head = activeOrderIdRef.current;
+      if (head) {
+        soundPlayedRef.current.delete(head);
+        soundPlayedRef.current.delete(`js:${head}`);
+      }
+      setSoundHandoffEpoch((n) => n + 1);
+    });
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
     if (!isOnDuty || !poolHeadId) return;
-    if (soundPlayedRef.current.has(poolHeadId)) return;
-    soundPlayedRef.current.add(poolHeadId);
     const device = readRiderDeviceOrderAlerts();
     const riderId = session?.riderId?.trim() || session?.userId?.trim() || "";
     const head = ordersRef.current.find((o) => o.id === poolHeadId);
+    let cancelled = false;
     void (async () => {
       const native = await startRiderDispatchBuzzer({
         orderId: poolHeadId,
@@ -580,7 +598,10 @@ export function IncomingRideOrderHost() {
         // background audio even if JS timers are suspended.
         expiresAt: head?.acceptDeadlineAt ?? null,
       });
+      if (cancelled) return;
       if (native) {
+        // Native owns audio — mark so we don't also start JS for this offer.
+        soundPlayedRef.current.add(poolHeadId);
         riderDispatchLog("sound_started_at", {
           offerId: poolHeadId,
           sound_started_at: Date.now(),
@@ -588,10 +609,17 @@ export function IncomingRideOrderHost() {
         });
         return;
       }
+      // App-open mute returns false so JS can own. Allow one JS handoff even if
+      // this offer was previously marked when native was ringing in background.
+      const jsKey = `js:${poolHeadId}`;
+      if (soundPlayedRef.current.has(jsKey)) return;
+      soundPlayedRef.current.add(jsKey);
+      soundPlayedRef.current.add(poolHeadId);
       if (acceptanceSettings) {
         riderDispatchLog("sound_started_at", {
           offerId: poolHeadId,
           sound_started_at: Date.now(),
+          owner: "js",
         });
         void playIncomingOrderAlert(acceptanceSettings, device);
         return;
@@ -600,10 +628,14 @@ export function IncomingRideOrderHost() {
       riderDispatchLog("sound_started_at", {
         offerId: poolHeadId,
         sound_started_at: Date.now(),
+        owner: "js",
       });
       void playOrderAlertSound(null, 8, volumeStepTo01(device.volumeStep), device.ringInSilent);
     })();
-  }, [isOnDuty, poolHeadId, acceptanceSettings, session?.riderId, session?.userId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isOnDuty, poolHeadId, acceptanceSettings, session?.riderId, session?.userId, soundHandoffEpoch]);
 
   useEffect(() => {
     void attachRiderDispatchBuzzer();

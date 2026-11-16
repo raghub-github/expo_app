@@ -3656,8 +3656,8 @@ function OrderCard({
   );
 
   return (
-    <div className="min-w-0 touch-manipulation">
-      <div className="overflow-hidden rounded-lg">
+    <div className="flex h-full min-w-0 touch-manipulation flex-col">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg">
         {showTopDelayBanner ? (
           prepExpired && nowMs != null ? (
             <>
@@ -3673,7 +3673,7 @@ function OrderCard({
           role="button"
           tabIndex={0}
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
-          className={`rounded-lg border-2 p-3 sm:p-3.5 cursor-pointer transition-all overflow-hidden min-w-0 active:scale-[0.99] ${
+          className={`flex min-h-0 flex-1 flex-col rounded-lg border-2 p-3 sm:p-3.5 cursor-pointer transition-all overflow-hidden min-w-0 active:scale-[0.99] ${
             showTopDelayBanner ? 'rounded-t-none border-t-0' : ''
           } ${
             selected
@@ -3782,9 +3782,9 @@ function OrderCard({
           {otpVerified && <span className="text-green-600 text-[10px]">✓ Verified</span>}
         </div>
       )}
-      <div className="mt-2 pt-2 border-t border-gray-100 flex flex-col gap-2">
-        {/* Actions always in one row (no overlap) */}
-        <div className="w-full" onClick={(e) => e.stopPropagation()}>
+      {/* mt-auto keeps footer pinned so grid siblings share equal card height */}
+      <div className="mt-auto flex flex-col gap-2 border-t border-gray-100 pt-2">
+        <div className="w-full min-h-[44px]" onClick={(e) => e.stopPropagation()}>
           <ActionBtns
             order={order}
             onAccept={onAccept}
@@ -3806,7 +3806,6 @@ function OrderCard({
             nowMs={nowMs}
           />
         </div>
-
       </div>
         </div>
       </div>

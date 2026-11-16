@@ -30,7 +30,10 @@ import {
   Inbox
 } from 'lucide-react'
 import LogoutConfirmModal from './LogoutConfirmModal'
-import { partnerHasPermission, PARTNER_NAV_PERMISSION } from '@/lib/auth/merchant-staff-permissions'
+import {
+  PARTNER_NAV_PERMISSION,
+  partnerSessionHasPermission,
+} from '@/lib/auth/merchant-staff-permissions'
 import { DarkSidebarMeshBackground } from '@/components/layout/DarkSidebarMeshBackground'
 
 const MOBILE_BREAKPOINT = 767
@@ -138,10 +141,14 @@ export const MXSidebarWhite: React.FC<MXSidebarWhiteProps> = ({
   const merchantSession = useMerchantSession();
   const userEmail = merchantSession?.user?.email ?? merchantSession?.user?.phone ?? 'Merchant';
   const userName = userEmail && userEmail.includes('@') ? userEmail.split('@')[0] : 'Merchant';
-  const accessRole = merchantSession?.parent?.accessRole ?? "OWNER";
-  const permissions = merchantSession?.parent?.permissions;
-  const navAllowed = (href: string) =>
-    partnerHasPermission(accessRole, permissions, PARTNER_NAV_PERMISSION[href] ?? "operations");
+  const navAllowed = (href: string) => {
+    // Avoid empty sidebar flash while session hydrates.
+    if (merchantSession?.isLoading) return true;
+    return partnerSessionHasPermission(
+      merchantSession?.parent,
+      PARTNER_NAV_PERMISSION[href] ?? "operations"
+    );
+  };
 
   const navigationItems: SidebarItem[] = [
     {

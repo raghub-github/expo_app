@@ -15,6 +15,26 @@ export function merchantHasPermission(auth: AuthContext | undefined, permissionI
   return permissionsForRole(role).includes(permissionId);
 }
 
+/** STAFF may open Menu and toggle stock — not edit details / upload photos. */
+export function merchantCanEditMenuDetails(auth: AuthContext | undefined): boolean {
+  if (!merchantHasPermission(auth, "menu")) return false;
+  return effectiveMerchantAccessRole(auth) !== "STAFF";
+}
+
+/** Returns true when the reply was already sent (caller should return). */
+export function denyUnlessMerchantCanEditMenuDetails(
+  reply: FastifyReply,
+  auth: AuthContext | undefined,
+  message?: string
+): boolean {
+  if (merchantCanEditMenuDetails(auth)) return false;
+  reply.code(403).send({
+    error: "forbidden",
+    message: message ?? "Staff can mark items in or out of stock, but cannot edit menu details.",
+  });
+  return true;
+}
+
 /** Returns true when the reply was already sent (caller should return). */
 export function denyUnlessMerchantPermission(
   reply: FastifyReply,

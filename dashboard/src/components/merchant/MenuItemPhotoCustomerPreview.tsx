@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import { X } from "lucide-react";
 import { R2Image } from "@/components/ui/R2Image";
 import { ITEM_PLACEHOLDER_SVG, getFoodTypeLabel } from "@/app/dashboard/merchants/stores/[id]/menu/menu-types";
 import { markupCustomerPrice } from "@/lib/customer-pricing";
@@ -45,14 +47,52 @@ function formatPrice(amount: number): string {
   return `₹${Number.isInteger(n) ? n : n.toFixed(2)}`;
 }
 
+function ClickableItemImage({
+  src,
+  alt,
+  frameClassName,
+  onOpen,
+}: {
+  src?: string | null;
+  alt: string;
+  frameClassName: string;
+  onOpen: () => void;
+}) {
+  const canOpen = Boolean(src && String(src).trim());
+  if (!canOpen) {
+    return (
+      <div className={frameClassName}>
+        <R2Image src={src} alt={alt} className="h-full w-full object-cover" fallbackSrc={ITEM_PLACEHOLDER_SVG} />
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`${frameClassName} group relative cursor-zoom-in text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500`}
+      title="Click to view full image"
+      aria-label={`View full photo for ${alt}`}
+    >
+      <R2Image src={src} alt={alt} className="h-full w-full object-cover" fallbackSrc={ITEM_PLACEHOLDER_SVG} />
+      <span className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/55 to-transparent px-2 py-1.5 text-[10px] font-semibold text-white opacity-0 transition-opacity group-hover:opacity-100">
+        Click to enlarge
+      </span>
+    </button>
+  );
+}
+
 function WebsiteMenuItemPreview({
   item,
   categoryLabel,
   prices,
+  onOpenImage,
 }: {
   item: PreviewItem;
   categoryLabel?: string;
   prices: CustomerPrices;
+  onOpenImage: () => void;
 }) {
   const foodLabel = getFoodTypeLabel(item.food_type);
   const isVeg = String(item.food_type ?? "").toUpperCase() === "VEG";
@@ -60,14 +100,12 @@ function WebsiteMenuItemPreview({
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
       <div className="flex gap-4 sm:gap-5">
-        <div className="h-[88px] w-[88px] shrink-0 overflow-hidden rounded-2xl ring-1 ring-gray-200 shadow-[0_12px_40px_-20px_rgba(75,42,212,0.25)] sm:h-[104px] sm:w-[104px]">
-          <R2Image
-            src={item.item_image_url}
-            alt={item.item_name}
-            className="h-full w-full object-cover"
-            fallbackSrc={ITEM_PLACEHOLDER_SVG}
-          />
-        </div>
+        <ClickableItemImage
+          src={item.item_image_url}
+          alt={item.item_name}
+          onOpen={onOpenImage}
+          frameClassName="h-[88px] w-[88px] shrink-0 overflow-hidden rounded-2xl ring-1 ring-gray-200 shadow-[0_12px_40px_-20px_rgba(75,42,212,0.25)] sm:h-[104px] sm:w-[104px]"
+        />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-base font-semibold tracking-tight text-gray-900 sm:text-lg">{item.item_name}</h3>
@@ -108,9 +146,11 @@ function WebsiteMenuItemPreview({
 function CustomerAppMenuItemPreview({
   item,
   prices,
+  onOpenImage,
 }: {
   item: PreviewItem;
   prices: CustomerPrices;
+  onOpenImage: () => void;
 }) {
   return (
     <div className="rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-sm">
@@ -137,20 +177,82 @@ function CustomerAppMenuItemPreview({
           ) : null}
         </div>
         <div className="flex w-[118px] shrink-0 flex-col items-center gap-2">
-          <div className="h-[118px] w-[118px] overflow-hidden rounded-xl bg-gray-100">
-            <R2Image
-              src={item.item_image_url}
-              alt={item.item_name}
-              className="h-full w-full object-cover"
-              fallbackSrc={ITEM_PLACEHOLDER_SVG}
-            />
-          </div>
+          <ClickableItemImage
+            src={item.item_image_url}
+            alt={item.item_name}
+            onOpen={onOpenImage}
+            frameClassName="h-[118px] w-[118px] overflow-hidden rounded-xl bg-gray-100"
+          />
           <div className="flex h-8 w-[88px] items-center justify-center rounded-lg border border-teal-500 text-sm font-bold text-teal-600">
             ADD
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function ItemPhotoLightbox({
+  src,
+  title,
+  onClose,
+}: {
+  src: string;
+  title: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [onClose]);
+
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Full photo — ${title}`}
+    >
+      <div
+        className="relative flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-bold text-gray-900">{title}</p>
+            <p className="text-[11px] text-gray-500">Click outside or press Esc to close</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
+            aria-label="Close full photo"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 items-center justify-center bg-slate-950 p-3 sm:p-5">
+          <R2Image
+            src={src}
+            alt={title}
+            className="max-h-[min(78vh,820px)] max-w-full object-contain"
+            fallbackSrc={ITEM_PLACEHOLDER_SVG}
+          />
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -165,6 +267,7 @@ export function MenuItemPhotoCustomerPreview({
   storeId?: string | number | null;
 }) {
   const [commissionPercent, setCommissionPercent] = useState<number | null>(null);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
 
   useEffect(() => {
     if (storeId == null || String(storeId).trim() === "") {
@@ -212,20 +315,37 @@ export function MenuItemPhotoCustomerPreview({
     };
   }, [item.selling_price, item.base_price, commissionPercent]);
 
+  const imageUrl = item.item_image_url?.trim() || "";
+  const openLightbox = () => {
+    if (imageUrl) setLightboxOpen(true);
+  };
+
   return (
     <div className="space-y-4">
       <p className="text-xs text-gray-500">
         Preview how this photo appears to customers after approval. Prices match the customer app
-        and website (commission included).
+        and website (commission included). Click the photo to enlarge for review.
       </p>
       <div>
         <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-gray-500">Customer website</p>
-        <WebsiteMenuItemPreview item={item} categoryLabel={categoryLabel} prices={prices} />
+        <WebsiteMenuItemPreview
+          item={item}
+          categoryLabel={categoryLabel}
+          prices={prices}
+          onOpenImage={openLightbox}
+        />
       </div>
       <div>
         <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-gray-500">Customer app</p>
-        <CustomerAppMenuItemPreview item={item} prices={prices} />
+        <CustomerAppMenuItemPreview item={item} prices={prices} onOpenImage={openLightbox} />
       </div>
+      {lightboxOpen && imageUrl ? (
+        <ItemPhotoLightbox
+          src={imageUrl}
+          title={item.item_name}
+          onClose={() => setLightboxOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

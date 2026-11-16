@@ -56,6 +56,10 @@ import {
 } from "@/components/OnboardingBenefitsCard";
 import { useMenuItems, MENU_CATALOG_LIST_FILTERS } from "@/hooks/useMenuQueries";
 import { HomeAdsStrip } from "@/components/HomeAdsStrip";
+import {
+  clearVisibleRiderTrackingOrderIds,
+  setVisibleRiderTrackingOrderIds,
+} from "@/lib/riderTrackingVisibility";
 
 const { width } = Dimensions.get("window");
 const KPI_VIEWPORT = width - H_PADDING * 2;
@@ -322,6 +326,23 @@ export default function DashboardScreen() {
     return list.slice(0, MAX_RECENT_ORDERS);
   }, [orderTab, orders]);
 
+  // Home isn't a FlatList — register visible cards so rider tracking can prefetch.
+  useEffect(() => {
+    if (!homeAllowed) return;
+    const ids: number[] = [];
+    for (const o of recentOrders) {
+      const n = parseInt(String(o.id), 10);
+      if (Number.isFinite(n) && n > 0) ids.push(n);
+    }
+    setVisibleRiderTrackingOrderIds(ids);
+  }, [homeAllowed, recentOrders]);
+
+  useFocusEffect(
+    useCallback(() => {
+      return () => clearVisibleRiderTrackingOrderIds();
+    }, [])
+  );
+
   const shiftOrderTabBySwipe = useCallback(
     (direction: "next" | "previous") => {
       const idx = DASHBOARD_ORDER_TABS.indexOf(orderTab);
@@ -420,7 +441,7 @@ export default function DashboardScreen() {
       setRefreshing(false);
     }, REFRESH_TIMEOUT_MS);
     try {
-      await Promise.all([refresh(), refetchOrders(), loadDashboardStats()]);
+      await Promise.all([refresh(), refetchOrders({ force: true }), loadDashboardStats()]);
     } catch {
       // Keep spinner stop on error; finally will clear it
     } finally {
@@ -554,13 +575,19 @@ export default function DashboardScreen() {
                           if (!ok) {
                             Alert.alert(
                               "Couldn't mark ready",
-                              "Please tap Order Ready again."
+                              "Please slide to mark ready again."
                             );
                           }
                         } catch (e) {
+                          const msg = e instanceof Error ? e.message : "";
+                          // Timeout after a successful server mark-ready is handled inside
+                          // transitionOrder (reconcile / keep optimistic). Ignore leftover throws.
+                          if (/timed out/i.test(msg) || /network request failed/i.test(msg)) {
+                            return;
+                          }
                           Alert.alert(
                             "Couldn't mark ready",
-                            e instanceof Error ? e.message : "Please try again."
+                            msg || "Please try again."
                           );
                         }
                       })();

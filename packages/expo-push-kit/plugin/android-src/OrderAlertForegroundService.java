@@ -38,27 +38,36 @@ public class OrderAlertForegroundService extends Service {
     OrderAlertController.stopAll(this);
     stopSelf();
   };
-  /** Offer-window expiry — independent of JS timers and overlay visibility. */
-  private final Runnable offerExpiry = () -> {
-    try {
-      JSONObject active = OrderAlertController.getActive(this);
-      if (active == null) return;
-      String sid = active.optString("sessionId", expirySessionId);
-      long expMs = parseExpiresAtMs(active.optString("expiresAt", ""));
-      if (expMs <= 0L) return;
-      if (System.currentTimeMillis() < expMs) {
-        long delay = Math.max(250L, expMs - System.currentTimeMillis());
-        handler.postDelayed(offerExpiry, delay);
-        return;
+  /**
+   * Offer-window expiry — independent of JS timers and overlay visibility.
+   * Must be an anonymous Runnable (not a lambda) so reschedule can use {@code this}
+   * without a self-reference in a field initializer (javac error).
+   */
+  private final Runnable offerExpiry = new Runnable() {
+    @Override
+    public void run() {
+      try {
+        JSONObject active = OrderAlertController.getActive(OrderAlertForegroundService.this);
+        if (active == null) return;
+        String sid = active.optString("sessionId", expirySessionId);
+        long expMs = parseExpiresAtMs(active.optString("expiresAt", ""));
+        if (expMs <= 0L) return;
+        if (System.currentTimeMillis() < expMs) {
+          long delay = Math.max(250L, expMs - System.currentTimeMillis());
+          handler.postDelayed(this, delay);
+          return;
+        }
+        Log.i(TAG, "offer expiry stop sessionId=" + sid);
+        if (sid != null && sid.length() > 0) {
+          OrderAlertController.stop(OrderAlertForegroundService.this, sid);
+          String oid = active.optString("orderId", "");
+          if (oid.length() > 0) {
+            OrderAlertController.stop(OrderAlertForegroundService.this, oid);
+          }
+        }
+      } catch (Throwable t) {
+        Log.w(TAG, "offerExpiry failed: " + t.getMessage());
       }
-      Log.i(TAG, "offer expiry stop sessionId=" + sid);
-      if (sid != null && sid.length() > 0) {
-        OrderAlertController.stop(this, sid);
-        String oid = active.optString("orderId", "");
-        if (oid.length() > 0) OrderAlertController.stop(this, oid);
-      }
-    } catch (Throwable t) {
-      Log.w(TAG, "offerExpiry failed: " + t.getMessage());
     }
   };
 

@@ -907,15 +907,17 @@ export async function listItems(
                SELECT img.image_url
                FROM merchant_menu_item_images img
                WHERE img.menu_item_id = merchant_menu_items.id
-                 AND img.is_primary = true
-               ORDER BY img.id ASC
+                 AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'APPROVED'
+               ORDER BY img.is_primary DESC, img.id DESC
                LIMIT 1
              ),
              (
                SELECT img.image_url
                FROM merchant_menu_item_images img
                WHERE img.menu_item_id = merchant_menu_items.id
-               ORDER BY img.display_order ASC NULLS LAST, img.id ASC
+                 AND img.is_primary = true
+                 AND UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING'))) <> 'REJECTED'
+               ORDER BY img.id ASC
                LIMIT 1
              )
            ) AS item_image_url,
@@ -953,7 +955,18 @@ export async function listItems(
            merchant_menu_items.low_stock_threshold,
            merchant_menu_items.expiry_date,
            merchant_menu_items.approval_status,
-           merchant_menu_items.rejection_reason,
+           -- Partner Menu parity: surface image rejection reason even when item.rejection_reason is empty.
+           COALESCE(
+             NULLIF(TRIM(merchant_menu_items.rejection_reason), ''),
+             (
+               SELECT NULLIF(TRIM(img.rejection_reason), '')
+               FROM merchant_menu_item_images img
+               WHERE img.menu_item_id = merchant_menu_items.id
+                 AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'REJECTED'
+               ORDER BY img.is_primary DESC, img.id DESC
+               LIMIT 1
+             )
+           ) AS rejection_reason,
            COALESCE(merchant_menu_items.is_locked_by_plan, FALSE) AS is_locked_by_plan,
            merchant_menu_items.locked_reason,
            (SELECT EXISTS(
@@ -978,11 +991,39 @@ export async function listItems(
                WHERE r.menu_item_id = merchant_menu_items.id AND r.status = 'PENDING' LIMIT 1)
             )) AS pending_change_request_type,
            (SELECT COUNT(*)::int FROM merchant_menu_item_images img WHERE img.menu_item_id = merchant_menu_items.id) AS image_count,
-           (
-             SELECT UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING')))
-             FROM merchant_menu_item_images img
-             WHERE img.menu_item_id = merchant_menu_items.id AND img.is_primary = true
-             LIMIT 1
+           -- Prefer primary REJECTED; else a newer rejected upload over an older APPROVED primary
+           -- (same display rule as Partner Menu).
+           COALESCE(
+             (
+               SELECT UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING')))
+               FROM merchant_menu_item_images img
+               WHERE img.menu_item_id = merchant_menu_items.id AND img.is_primary = true
+                 AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'REJECTED'
+               LIMIT 1
+             ),
+             (
+               SELECT UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING')))
+               FROM merchant_menu_item_images img
+               WHERE img.menu_item_id = merchant_menu_items.id
+                 AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'REJECTED'
+                 AND img.id >= COALESCE(
+                   (
+                     SELECT p.id
+                     FROM merchant_menu_item_images p
+                     WHERE p.menu_item_id = merchant_menu_items.id AND p.is_primary = true
+                     LIMIT 1
+                   ),
+                   0
+                 )
+               ORDER BY img.id DESC
+               LIMIT 1
+             ),
+             (
+               SELECT UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING')))
+               FROM merchant_menu_item_images img
+               WHERE img.menu_item_id = merchant_menu_items.id AND img.is_primary = true
+               LIMIT 1
+             )
            ) AS primary_image_moderation_status
     FROM merchant_menu_items
     LEFT JOIN merchant_menu_categories c
@@ -1256,8 +1297,24 @@ export async function getItem(
     })),
   ];
 
+  const itemRejection =
+    typeof itemRow.rejection_reason === "string" ? String(itemRow.rejection_reason).trim() || null : null;
+  const primaryRejected = (imagesRows as any[]).find(
+    (i: any) =>
+      Boolean(i.is_primary) &&
+      String(i.moderation_status ?? "").trim().toUpperCase() === "REJECTED",
+  );
+  const anyRejected = (imagesRows as any[])
+    .filter((i: any) => String(i.moderation_status ?? "").trim().toUpperCase() === "REJECTED")
+    .sort((a: any, b: any) => Number(b.id) - Number(a.id))[0];
+  const imageRejectionRaw =
+    (primaryRejected ?? anyRejected)?.rejection_reason ?? null;
+  const imageRejection =
+    typeof imageRejectionRaw === "string" ? imageRejectionRaw.trim() || null : null;
+
   return {
     ...itemRow,
+    rejection_reason: itemRejection || imageRejection,
     variants: (variants as any[]).map((v: any, idx: number) => ({
       id: v.id,
       variant_id: v.variant_id,

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { resolveAnalyticsAccessByAuth, resolveTargetAgentIds } from "@/lib/analytics/analytics-scope";
 import {
   getAnalyticsHubSummary,
@@ -16,14 +16,17 @@ export const runtime = "nodejs";
  */
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user?.email) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
+    // Cookie-first auth — getUser()-only was returning 401 while the UI session was live.
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) {
+      return NextResponse.json(auth.body, { status: auth.status });
+    }
+    const { user } = auth;
+    if (!user.email) {
+      return NextResponse.json(
+        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
+        { status: 401 }
+      );
     }
 
     const access = await resolveAnalyticsAccessByAuth(user.id, user.email);

@@ -3,8 +3,14 @@ import { useRouter } from "expo-router";
 import { useAuth } from "@/context/AuthContext";
 import { partnerHasPermission } from "@/lib/staffPermissions";
 
-/** Redirect once when the signed-in role lacks a capability (no replace loops). */
-export function useRequirePartnerPermission(permissionId: string, fallbackHref = "/(tabs)/profile") {
+/**
+ * Redirect once when the signed-in role lacks a capability (no replace loops).
+ * Pass `fallbackHref: false` to skip redirect (e.g. staff sees a locked/blurred screen).
+ */
+export function useRequirePartnerPermission(
+  permissionId: string,
+  fallbackHref: string | false = "/(tabs)/profile"
+) {
   const router = useRouter();
   const routerRef = useRef(router);
   routerRef.current = router;
@@ -13,7 +19,7 @@ export function useRequirePartnerPermission(permissionId: string, fallbackHref =
   const redirectedForRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (allowed) {
+    if (allowed || fallbackHref === false) {
       redirectedForRef.current = null;
       return;
     }

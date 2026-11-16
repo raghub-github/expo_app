@@ -62,7 +62,6 @@ import { BrandingFooter } from "@/components/BrandingFooter";
 import { AppText } from "@/components/AppText";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import {
-  HEADER_TOP_PADDING_NONE,
   HOME_HEADER_BELOW_STATUS_GAP,
   resolveTopSafeInset,
   FLOATING_CART_BAR_HEIGHT,
@@ -769,7 +768,7 @@ export default function GroceryGridFirstHomeScreen() {
         <GMEmptyState
           header={
             <GMHeader
-              topInset={HEADER_TOP_PADDING_NONE}
+              topInset={statusBarTopInset + HOME_HEADER_BELOW_STATUS_GAP}
               onBack={handleBack}
               showBack
               minimal

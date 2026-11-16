@@ -182,7 +182,7 @@ class RiderTrackingSession {
   reload = async (silent = true) => {
     if (!this.shouldRun()) return;
     const { storeId, ordersFoodId, token } = this.config;
-    if (!silent) this.patchSnapshot({ loading: true });
+    if (!silent) this.patchSnapshot({ loading: true, error: null });
     try {
       perfAuditMark("rider_tracking.http_poll");
       const payload = await fetchMerchantRiderTracking(storeId, ordersFoodId, token);

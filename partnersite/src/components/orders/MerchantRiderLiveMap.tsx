@@ -267,7 +267,7 @@ export function MerchantRiderLiveMap({
 
   const fetchDrivingRoute = useCallback(
     async (from: [number, number], to: [number, number]): Promise<[number, number][] | null> => {
-      if (!token || samePoint(from, to)) return null;
+      if (samePoint(from, to)) return null;
 
       const cached = getCachedDrivingRoute(from, to);
       if (cached?.length) {
@@ -283,23 +283,37 @@ export function MerchantRiderLiveMap({
         return lastRouteGeometryRef.current;
       }
 
-      const coords = await fetchAndCacheDrivingRoute(from, to);
-      if (coords?.length) {
-        lastRouteFromRef.current = from;
-        lastRouteGeometryRef.current = coords;
-        return coords;
+      if (token) {
+        const coords = await fetchAndCacheDrivingRoute(from, to);
+        if (coords?.length) {
+          lastRouteFromRef.current = from;
+          lastRouteGeometryRef.current = coords;
+          return coords;
+        }
       }
-      return null;
+
+      // Fallback so the modal never stays store-only when GPS + store exist.
+      const straight: [number, number][] = [from, to];
+      lastRouteFromRef.current = from;
+      lastRouteGeometryRef.current = straight;
+      return straight;
     },
     [token]
   );
 
   const resolveRiderAnchor = useCallback((): [number, number] | null => {
     if (!location || !isValidLatLon(location.latitude, location.longitude)) return null;
+    // Treat 0 as "unknown" — many GPS stacks report 0 when stationary; prefer bearing to store.
+    const heading =
+      location.heading_degrees != null &&
+      Number.isFinite(location.heading_degrees) &&
+      Math.abs(location.heading_degrees) > 0.01
+        ? location.heading_degrees
+        : null;
     return resolveRiderFrontWheelLngLat({
       latitude: location.latitude,
       longitude: location.longitude,
-      heading_degrees: location.heading_degrees,
+      heading_degrees: heading,
       prevGps: prevGpsRef.current,
       destination: storeRef.current,
       routeBearingDeg: lastRouteBearingRef.current,

@@ -1,9 +1,16 @@
 /**
- * Branded footer banner — always paints typography shell immediately.
- * CMS scooter art hydrates in place (no full-banner skeleton block).
+ * Branded footer banner — typography + scooter art paint immediately.
+ * Never hide CMS art behind opacity:0 (that caused blank footer then a late pop-in).
+ * Prefetch puts brand_banner at the front of the image queue during splash.
+ *
+ * Underline is measured from the live "GatiMitra" layout width so it is never
+ * wider or narrower than the wordmark. Wordmark stays visually wider than the tagline.
+ *
+ * Bottom margin clears the floating tab bar — keep in sync with
+ * useHomeScreenLayout BRAND_BOTTOM_GAP.
  */
 import { useCallback, useState } from "react";
-import { View, StyleSheet, Dimensions } from "react-native";
+import { View, StyleSheet, Dimensions, type LayoutChangeEvent } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { CX } from "@/lib/appAssetKeys";
@@ -14,11 +21,14 @@ import { homeSkeletonLog } from "@/lib/homeSkeletonTelemetry";
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
 const BANNER_W = SCREEN_W - PAD * 2;
-const GATI_GREEN = "#22C55E";
-const SWOOSH_GREEN = "#16A34A";
-const TAGLINE_GREEN = "#166534";
+const GATI_GREEN = "#16A34A";
+const SWOOSH_GREEN = "#22C55E";
+const TAGLINE_GREEN = "#15803D";
 const MITRA_DARK = "#0F172A";
-const BG_GRADIENT = ["#E8F5F1", "#F3FBF8", "#E8F5F1"] as const;
+const BG_GRADIENT = ["#E7F7F0", "#F4FCF8", "#EAF8F2"] as const;
+
+/** Clearance under the card so the floating tab sheet never covers it. */
+export const HOME_BRAND_BANNER_BOTTOM_GAP = 28;
 
 function BokehBubble({
   size,
@@ -45,54 +55,36 @@ function BokehBubble({
     />
   );
 }
-function DecoDiamond({
-  size,
-  color,
-  style,
-}: {
-  size: number;
-  color: string;
-  style: object;
-}) {
-  return (
-    <View
-      pointerEvents="none"
-      style={[
-        {
-          position: "absolute",
-          width: size,
-          height: size,
-          backgroundColor: color,
-          transform: [{ rotate: "45deg" }],
-          borderRadius: 1,
-        },
-        style,
-      ]}
-    />
-  );
-}
 
 type Props = {
   bannerHeight?: number;
   /** Ignored — brand shell is always instant (kept for call-site compat). */
   skeleton?: boolean;
 };
-const DEFAULT_BANNER_H = 108;
+/** Tall enough for Lora “GatiMitra” + underline — shorter heights clipped the brand name. */
+const DEFAULT_BANNER_H = 136;
 
 export function HomeBrandBanner({ bannerHeight = DEFAULT_BANNER_H }: Props) {
   const brandUri = useAppAssetsStore(
     (s) => s.assets[CX.home.brandBanner]?.proxyUrl ?? s.assets[CX.home.brandBanner]?.url ?? null
   );
   const hasBrandUri = Boolean(brandUri?.trim());
-  const [artReady, setArtReady] = useState(false);
-  const artH = Math.round(bannerHeight * 0.92);
-  const artW = Math.round(bannerHeight * 1.18);
-  const swooshW = Math.min(128, Math.round(BANNER_W * 0.36));
+  const resolvedH = Math.max(bannerHeight, DEFAULT_BANNER_H);
+  const artH = Math.round(resolvedH * 0.9);
+  const artW = Math.round(resolvedH * 1.14);
+  const [brandWidth, setBrandWidth] = useState(0);
+
+  const onBrandLayout = useCallback((e: LayoutChangeEvent) => {
+    const w = Math.round(e.nativeEvent.layout.width);
+    if (w > 0) setBrandWidth((prev) => (prev === w ? prev : w));
+  }, []);
 
   const onArtLoad = useCallback(() => {
-    setArtReady(true);
     homeSkeletonLog("CONTENT_RENDERED", "brand", "onLoad");
   }, []);
+
+  // Tagline must stay narrower than the measured "GatiMitra" wordmark.
+  const taglineMaxW = brandWidth > 0 ? Math.max(72, Math.round(brandWidth * 0.92)) : undefined;
 
   return (
     <View style={styles.wrap}>
@@ -100,29 +92,22 @@ export function HomeBrandBanner({ bannerHeight = DEFAULT_BANNER_H }: Props) {
         colors={[...BG_GRADIENT]}
         start={{ x: 0, y: 0.5 }}
         end={{ x: 1, y: 0.5 }}
-        style={[styles.banner, { height: bannerHeight }]}
+        style={[styles.banner, { minHeight: resolvedH }]}
       >
-        <BokehBubble size={72} color="rgba(255,255,255,0.52)" style={styles.bubbleA} />
-        <BokehBubble size={56} color="rgba(167,243,208,0.38)" style={styles.bubbleB} />
-        <BokehBubble size={44} color="rgba(255,255,255,0.4)" style={styles.bubbleC} />
-        <BokehBubble size={38} color="rgba(204,251,241,0.45)" style={styles.bubbleD} />
-        <DecoDiamond size={7} color="rgba(125,211,252,0.55)" style={styles.diamondA} />
-        <DecoDiamond size={6} color="rgba(253,224,71,0.6)" style={styles.diamondB} />
-        <DecoDiamond size={5} color="rgba(125,211,252,0.45)" style={styles.diamondC} />
-        <DecoDiamond size={6} color="rgba(253,224,71,0.5)" style={styles.diamondD} />
-        <DecoDiamond size={5} color="rgba(167,243,208,0.7)" style={styles.diamondE} />
-        <AppText style={styles.sparkFloatA} pointerEvents="none">
-          ✦
-        </AppText>
-        <AppText style={styles.sparkFloatB} pointerEvents="none">
-          ✨
-        </AppText>
+        <BokehBubble size={78} color="rgba(255,255,255,0.55)" style={styles.bubbleA} />
+        <BokehBubble size={52} color="rgba(167,243,208,0.32)" style={styles.bubbleB} />
+        <BokehBubble size={40} color="rgba(255,255,255,0.36)" style={styles.bubbleC} />
+
         <View style={styles.textCol}>
-          <AppText style={styles.tagline} numberOfLines={1} bold>
-            ✨ Made for your moments ✨
+          <AppText
+            style={[styles.tagline, taglineMaxW != null ? { maxWidth: taglineMaxW } : null]}
+            numberOfLines={1}
+            bold
+          >
+            Made for your moments
           </AppText>
           <View style={styles.brandBlock}>
-            <View style={styles.brandRow}>
+            <View style={styles.brandRow} onLayout={onBrandLayout}>
               <AppText style={styles.gati} bold>
                 Gati
               </AppText>
@@ -130,16 +115,20 @@ export function HomeBrandBanner({ bannerHeight = DEFAULT_BANNER_H }: Props) {
                 Mitra
               </AppText>
             </View>
-            <View style={[styles.swooshClip, { width: swooshW }]}>
-              <View style={[styles.swooshArc, { width: swooshW }]} />
-            </View>
+            {brandWidth > 0 ? (
+              <View
+                style={[styles.underline, { width: brandWidth }]}
+                pointerEvents="none"
+                accessibilityElementsHidden
+              />
+            ) : null}
           </View>
         </View>
-        <View style={[styles.artWrap, { height: bannerHeight, width: artW }]}>
+        <View style={[styles.artWrap, { height: artH, width: artW }]}>
           {hasBrandUri ? (
             <AppAssetImage
               assetKey={CX.home.brandBanner}
-              style={{ width: artW, height: artH, opacity: artReady ? 1 : 0 }}
+              style={{ width: artW, height: artH }}
               contentFit="contain"
               transition={0}
               onLoad={onArtLoad}
@@ -154,89 +143,82 @@ export function HomeBrandBanner({ bannerHeight = DEFAULT_BANNER_H }: Props) {
 const styles = StyleSheet.create({
   wrap: {
     paddingHorizontal: PAD,
-    marginTop: 16,
-    marginBottom: 4,
+    marginTop: 8,
+    // Keep floating tab sheet from covering the card bottom edge.
+    marginBottom: HOME_BRAND_BANNER_BOTTOM_GAP,
   },
   banner: {
     width: BANNER_W,
-    borderRadius: 16,
+    borderRadius: 20,
     flexDirection: "row",
     alignItems: "center",
     overflow: "hidden",
-    paddingLeft: 18,
-    paddingRight: 6,
+    paddingLeft: 20,
+    paddingRight: 4,
+    paddingVertical: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(22, 163, 74, 0.12)",
+    // Flat card — no drop shadow (reads as overlap under the tab sheet).
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
   },
-  bubbleA: { top: -18, left: "22%" },
-  bubbleB: { top: 8, left: "38%" },
-  bubbleC: { bottom: -10, left: "30%" },
-  bubbleD: { top: 12, right: "28%" },
-  diamondA: { top: 18, left: "48%" },
-  diamondB: { top: 28, left: "58%" },
-  diamondC: { bottom: 20, left: "42%" },
-  diamondD: { top: 14, left: "36%" },
-  diamondE: { bottom: 24, right: "34%" },
-  sparkFloatA: {
-    position: "absolute",
-    top: 10,
-    left: "52%",
-    fontSize: 9,
-    color: "rgba(253,224,71,0.55)",
-  },
-  sparkFloatB: {
-    position: "absolute",
-    bottom: 14,
-    left: "46%",
-    fontSize: 8,
-    color: "rgba(125,211,252,0.5)",
-  },
+  bubbleA: { top: -22, left: "18%" },
+  bubbleB: { top: 10, left: "42%" },
+  bubbleC: { bottom: -14, left: "28%" },
   textCol: {
     flex: 1,
     zIndex: 2,
     justifyContent: "center",
-    paddingRight: 4,
+    paddingRight: 6,
+    minWidth: 0,
   },
   tagline: {
-    fontSize: 12,
+    // Narrower than GatiMitra — hierarchy: brand first, tagline second.
+    fontSize: 11,
+    lineHeight: 14,
     fontWeight: "600",
     color: TAGLINE_GREEN,
-    letterSpacing: 0.05,
+    letterSpacing: 0.15,
   },
   brandBlock: {
-    marginTop: 4,
+    marginTop: 8,
     alignItems: "flex-start",
+    alignSelf: "flex-start",
   },
   brandRow: {
     flexDirection: "row",
     alignItems: "baseline",
+    flexWrap: "nowrap",
   },
   gati: {
-    fontSize: 24,
+    fontSize: 34,
     fontWeight: "900",
     color: GATI_GREEN,
-    letterSpacing: -0.6,
-    lineHeight: 28,
+    letterSpacing: -0.5,
+    lineHeight: 40,
+    includeFontPadding: false,
   },
   mitra: {
-    fontSize: 24,
+    fontSize: 34,
     fontWeight: "900",
     color: MITRA_DARK,
-    letterSpacing: -0.6,
-    lineHeight: 28,
+    letterSpacing: -0.5,
+    lineHeight: 40,
+    includeFontPadding: false,
   },
-  swooshClip: {
-    height: 5,
-    overflow: "hidden",
-    marginTop: 1,
-  },
-  swooshArc: {
-    height: 10,
+  /** Exact wordmark width — set from onLayout, never a fixed estimate. */
+  underline: {
+    height: 3,
     borderRadius: 999,
     backgroundColor: SWOOSH_GREEN,
-    marginTop: 2,
+    marginTop: 4,
   },
   artWrap: {
     alignItems: "flex-end",
     justifyContent: "center",
     zIndex: 2,
+    alignSelf: "center",
   },
 });

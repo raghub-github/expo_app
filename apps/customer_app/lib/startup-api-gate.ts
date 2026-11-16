@@ -22,6 +22,11 @@ const GATE_BYPASS_URL_PARTS = [
   // Select-location saved list must never queue behind home/layout prefetch.
   "/v1/me/addresses",
   "/v1/me/active-location",
+  // OTP → home must not queue behind cold-start prefetch (spinner feels stuck).
+  "/v1/me/profile",
+  "/v1/me/legal-consent",
+  "/v1/auth/otp/",
+  "/v1/auth/supabase/exchange-customer",
 ];
 
 export function shouldBypassStartupGate(url: string | undefined): boolean {

@@ -31,6 +31,8 @@ export interface CustomerFilters {
   orderType?: "food" | "parcel" | "person_ride";
   dateFrom?: string;
   dateTo?: string;
+  /** State / UT display name, or `__unset__` for customers with no resolved state. */
+  state?: string;
   sortBy?: string;
   sortOrder?: "asc" | "desc";
 }
@@ -383,6 +385,46 @@ export async function listCustomers(filters: CustomerFilters = {}) {
     const dateTo = new Date(filters.dateTo);
     dateTo.setHours(23, 59, 59, 999); // Include entire day
     conditions.push(lte(customers.createdAt, dateTo));
+  }
+
+  // State / UT filter (same effective-state resolution as users-by-state)
+  const stateFilter = filters.state?.trim();
+  if (stateFilter) {
+    const effectiveStateSql = sql`COALESCE(
+      NULLIF(btrim(${customers.state}), ''),
+      (
+        SELECT NULLIF(btrim(ca.state), '')
+        FROM public.customer_addresses ca
+        WHERE ca.customer_id = ${customers.id}
+          AND ca.deleted_at IS NULL
+          AND COALESCE(ca.is_active, TRUE) = TRUE
+          AND NULLIF(btrim(ca.state), '') IS NOT NULL
+          AND lower(btrim(ca.state)) NOT IN ('—', '-', 'n/a', 'na', 'null', 'none', 'unknown')
+        ORDER BY ca.is_default DESC NULLS LAST, ca.id ASC
+        LIMIT 1
+      )
+    )`;
+    if (stateFilter === "__unset__") {
+      conditions.push(sql`${effectiveStateSql} IS NULL`);
+    } else {
+      const normalized = stateFilter
+        .replace(/\s+UT$/i, "")
+        .replace(/\s+Union Territory$/i, "")
+        .trim()
+        .toLowerCase();
+      conditions.push(sql`
+        lower(
+          regexp_replace(
+            regexp_replace(COALESCE(${effectiveStateSql}, ''), '\\s+UT$', '', 'i'),
+            '\\s+Union Territory$',
+            '',
+            'i'
+          )
+        ) = ${normalized}
+        OR lower(replace(COALESCE(${effectiveStateSql}, ''), '&', 'and'))
+          = ${normalized.replace(/&/g, "and")}
+      `);
+    }
   }
   
   // Order type filter - if specified, only show customers with orders of that type

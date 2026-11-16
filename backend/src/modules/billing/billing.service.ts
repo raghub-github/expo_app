@@ -130,6 +130,9 @@ export type ComputeBillInput = {
   serviceType?: string;
   /** Delivery city for rate cards / offers (simulator or parcel flows). With addressId, loaded from address. */
   cityName?: string | null;
+  /** Client live geo — used when saved address postal/state are empty placeholders. */
+  livePincode?: string | null;
+  liveState?: string | null;
   userSegment?: "NEW" | "EXISTING" | "ALL";
   /** Platform subscription add-on at checkout (applies SUBSCRIPTION pricing rules). */
   subscriptionOptIn?: boolean;
@@ -273,18 +276,42 @@ export async function computeBillForOrder(
   const donationAmount = input.donationAmount ?? 0;
   const couponCode = input.couponCode?.trim() || null;
 
+  const t0 = Date.now();
   const resolved = await resolveMerchantStore(input.merchantId);
   if (!resolved.ok) return resolved;
 
-  // Server-authoritative price re-validation: ignore whatever basePrice the
-  // client carried in the cart (it might be stale from before a price/commission
-  // change, or tampered with), and re-fetch the merchant's stored net price
-  // for each line, then apply the current commission. This guarantees the
-  // bill amount equals what the customer saw on the menu listing.
-  const authoritativeItems = await rewriteCartPricesAuthoritatively(
-    resolved.merchantStoreId,
-    input.items,
-  );
+  const isSelfPickupOrder = input.deliveryType === "self_pickup";
+  let cityName: string | null = normalizeCity(input.cityName) || null;
+
+  // Price rewrite + address fetch are independent — run together so calculate
+  // does not pay two sequential DB round-trips under a saturated pool.
+  const [authoritativeItems, addrRow] = await Promise.all([
+    rewriteCartPricesAuthoritatively(resolved.merchantStoreId, input.items),
+    input.addressId != null && !isSelfPickupOrder
+      ? (async () => {
+          if (!input.customerId || input.customerId < 1) return null;
+          const [row] = await db
+            .select({
+              latitude: customerAddresses.latitude,
+              longitude: customerAddresses.longitude,
+              city: customerAddresses.city,
+              state: customerAddresses.state,
+              postalCode: customerAddresses.postalCode,
+            })
+            .from(customerAddresses)
+            .where(
+              and(
+                eq(customerAddresses.id, input.addressId!),
+                eq(customerAddresses.customerId, input.customerId),
+                eq(customerAddresses.isActive, true),
+                isNull(customerAddresses.deletedAt)
+              )
+            )
+            .limit(1);
+          return row ?? null;
+        })()
+      : Promise.resolve(null),
+  ]);
   input = { ...input, items: authoritativeItems };
 
   const itemSubtotal = input.items.reduce((s, i) => s + i.basePrice * i.quantity, 0);
@@ -301,45 +328,28 @@ export async function computeBillForOrder(
   let dropLon: number;
   let dropPostalCode: string | null = null;
   let dropStateName: string | null = null;
-  let cityName: string | null = normalizeCity(input.cityName) || null;
-
-  const isSelfPickupOrder = input.deliveryType === "self_pickup";
 
   if (input.addressId != null && !isSelfPickupOrder) {
     if (!input.customerId || input.customerId < 1) {
       return { ok: false, code: "INVALID_ADDRESS_DATA", message: "Customer required for addressId." };
     }
-    const [addrRow] = await db
-      .select({
-        latitude: customerAddresses.latitude,
-        longitude: customerAddresses.longitude,
-        city: customerAddresses.city,
-        state: customerAddresses.state,
-        postalCode: customerAddresses.postalCode,
-      })
-      .from(customerAddresses)
-      .where(
-        and(
-          eq(customerAddresses.id, input.addressId),
-          eq(customerAddresses.customerId, input.customerId),
-          eq(customerAddresses.isActive, true),
-          isNull(customerAddresses.deletedAt)
-        )
-      )
-      .limit(1);
-
     if (!addrRow) {
       return { ok: false, code: "INVALID_ADDRESS_DATA", message: "Address not found." };
     }
 
     dropLat = addrRow.latitude != null ? Number(addrRow.latitude) : 0;
     dropLon = addrRow.longitude != null ? Number(addrRow.longitude) : 0;
-    dropPostalCode = normalizePincode(sanitizePlaceholder(addrRow.postalCode));
-    dropStateName = sanitizePlaceholder(addrRow.state);
+    dropPostalCode =
+      normalizePincode(sanitizePlaceholder(addrRow.postalCode)) ??
+      normalizePincode(sanitizePlaceholder(input.livePincode));
+    dropStateName =
+      sanitizePlaceholder(addrRow.state) ?? sanitizePlaceholder(input.liveState);
     if (!cityName && addrRow.city) cityName = normalizeCity(sanitizePlaceholder(addrRow.city) ?? "");
   } else if (!isSelfPickupOrder && input.dropLat != null && input.dropLon != null) {
     dropLat = input.dropLat;
     dropLon = input.dropLon;
+    dropPostalCode = normalizePincode(sanitizePlaceholder(input.livePincode));
+    dropStateName = sanitizePlaceholder(input.liveState);
   } else if (isSelfPickupOrder) {
     const storeLat = resolved.pickupLat;
     const storeLon = resolved.pickupLon;
@@ -413,14 +423,19 @@ export async function computeBillForOrder(
       storeId: input.merchantId,
       customerId: input.customerId > 0 ? input.customerId : null,
       addressId: isSelfPickupOrder ? null : (input.addressId ?? null),
-      drop:
-        isSelfPickupOrder || input.addressId == null
-          ? { lat: dropLat, lng: dropLon, pincode: dropPostalCode, city: cityName }
-          : null,
+      // Always pass drop geo so resolveDrop can fill empty address postal/state
+      // (avoids no_geo_match → env defaults on first calculate).
+      drop: {
+        lat: dropLat,
+        lng: dropLon,
+        pincode: dropPostalCode,
+        city: cityName,
+        state: dropStateName,
+      },
       actor: "customer",
       serviceType: serviceType as any,
       skipCache: false,
-      routingBudgetMs: 4000,
+      routingBudgetMs: 3500,
     }),
     getStoreBillingRates(resolved.merchantStoreId),
     loadPackagingChargesFromMenuItems({
@@ -1077,6 +1092,13 @@ export async function computeBillForOrder(
       : {}),
   } as Record<string, unknown>;
 
+  const elapsedMs = Date.now() - t0;
+  if (elapsedMs >= 3000) {
+    console.warn(
+      `[billing/calculate] slow ${elapsedMs}ms store=${input.merchantId} pin=${dropPostalCode ?? "null"} dist=${distanceKm}`
+    );
+  }
+
   return { ok: true, billing: adjustedBilling, snapshot };
 }
 
@@ -1434,6 +1456,8 @@ export async function listCheckoutBillOffers(
       {
         mapboxToken: env.MAPBOX_ACCESS_TOKEN ?? undefined,
         osrmBaseUrl: env.OSRM_BASE_URL ?? undefined,
+        // Offers listing must not wait on a slow Mapbox+OSRM chain.
+        routingBudgetMs: 3500,
       }
     )
   );

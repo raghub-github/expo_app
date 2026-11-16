@@ -16,7 +16,7 @@ function getSupabase() {
  * Rider live location, trail, pickup/drop pins for merchant map.
  */
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -25,6 +25,8 @@ export async function GET(
     if (Number.isNaN(foodOrderId)) {
       return NextResponse.json({ error: 'Invalid order id' }, { status: 400 });
     }
+
+    const lite = new URL(req.url).searchParams.get('lite') === '1';
 
     const db = getSupabase();
     const { data: foodOrder, error: foodErr } = await db
@@ -37,7 +39,9 @@ export async function GET(
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
 
-    const payload = await getMerchantOrderRiderTracking(db, foodOrder.order_id as number);
+    const payload = await getMerchantOrderRiderTracking(db, foodOrder.order_id as number, {
+      skipSelfie: lite,
+    });
     return NextResponse.json(payload);
   } catch (err) {
     console.error('[rider-tracking] Error:', err);

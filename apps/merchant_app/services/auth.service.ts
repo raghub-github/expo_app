@@ -63,6 +63,44 @@ const { apiBaseUrl } = getConfig();
 /** Set for the review-number path (backend fixed OTP); null when Supabase delivers. */
 let _lastBackendOtpRequestId: string | null = null;
 
+/** Coalesce double-taps / Strict-Mode double calls for the same phone. */
+const _sendOtpInFlight = new Map<string, Promise<void>>();
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Supabase sometimes returns a stringified Response as `error.message` on 500s. */
+function formatPhoneOtpError(error: { message?: string; status?: number; code?: string } | null): Error {
+  const status = error?.status;
+  const code = String(error?.code ?? "");
+  const raw = String(error?.message ?? "");
+  const looksLikeResponseDump =
+    raw.includes('"status":500') ||
+    raw.includes("x-sb-error-code") ||
+    raw.includes("/auth/v1/otp") ||
+    raw.includes("_bodyBlob") ||
+    raw.includes("unexpected_failure");
+  const isUnexpected =
+    status === 500 ||
+    code === "unexpected_failure" ||
+    /unexpected_failure/i.test(raw) ||
+    looksLikeResponseDump;
+
+  if (status === 429 || /rate.?limit|too many/i.test(raw)) {
+    return new Error("Too many OTP attempts on this number. Wait an hour or use a different number.");
+  }
+  if (isUnexpected) {
+    return new Error("Could not send OTP right now. Please wait a few seconds and try again.");
+  }
+  if (/provider|sms|phone|hook/i.test(raw)) {
+    return new Error(
+      `${raw || "Could not send OTP via SMS."} Check Supabase Dashboard → Auth → Providers → Phone + Auth → Hooks → Send SMS.`
+    );
+  }
+  return new Error(raw || "Could not send OTP via Supabase.");
+}
+
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit & { timeoutMs?: number } = {}) {
   const { timeoutMs = 15000, ...rest } = init;
   const controller = new AbortController();
@@ -115,103 +153,132 @@ export const merchantAuthService = {
    * Set `EXPO_PUBLIC_PHONE_OTP_USE_BACKEND=true` to force the backend path even when Supabase keys are present.
    */
   async sendOtp(payload: SendOtpPayload): Promise<void> {
-    _lastBackendOtpRequestId = null;
-    const tail = payload.phoneE164.replace(/\D/g, "").slice(-4);
+    const phoneKey = payload.phoneE164.startsWith("+")
+      ? payload.phoneE164
+      : `+91${payload.phoneE164.replace(/\D/g, "").slice(-10)}`;
+    const existing = _sendOtpInFlight.get(phoneKey);
+    if (existing) return existing;
 
-    // ALWAYS ask the backend first. The backend is the single place that (a)
-    // applies the Google-Play review-number bypass (fixed OTP, no SMS) and (b)
-    // checks the number is a registered partner. Its answer decides delivery:
-    //   - review number → backend seeded a fixed OTP; verify goes to the backend
-    //   - registered number → { useSupabase: true }; we deliver via Supabase
-    //     (the customer app's proven path — the backend MSG91 OTP channels ack
-    //     but don't actually deliver on this account)
-    //   - unregistered → 404 not_registered → surface the "register first" message
-    const res = await fetchWithTimeout(`${apiBaseUrl}${AUTH_PREFIX}/otp/request`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phoneE164: payload.phoneE164, appType: "merchant" }),
-    });
-    const raw = await res.text();
-    let dataJson: any;
-    try {
-      dataJson = raw ? JSON.parse(raw) : {};
-    } catch {
-      throw new Error("Invalid response from server while requesting OTP.");
-    }
-    if (!res.ok) {
-      const code =
-        typeof dataJson?.error === "string" && dataJson.error.trim()
-          ? String(dataJson.error).trim()
-          : "";
-      const msg =
-        (typeof dataJson?.message === "string" && dataJson.message) ||
-        code ||
-        `Could not send OTP (HTTP ${res.status}).`;
-      if (
-        code === "not_registered" ||
-        /isn't registered|not registered as a gatimitra partner/i.test(msg)
-      ) {
-        throw new MerchantAuthError("not_registered", msg);
-      }
-      throw new Error(msg);
-    }
+    const run = (async () => {
+      _lastBackendOtpRequestId = null;
+      const tail = phoneKey.replace(/\D/g, "").slice(-4);
 
-    // Review number: backend already stored a fixed OTP — verify via the backend.
-    const rid = typeof dataJson.requestId === "string" ? dataJson.requestId : "";
-    if (!dataJson.useSupabase && rid) {
-      _lastBackendOtpRequestId = rid;
-      if (__DEV__) {
-        // eslint-disable-next-line no-console
-        console.log("[MerchantAuth] sendOtp: backend fixed-OTP path (review number).");
-      }
-      return;
-    }
-
-    // Registered real number: deliver via Supabase, exactly like the customer app.
-    if (dataJson.useSupabase) {
-      const supabase = getSupabaseAuth();
-      if (!supabase) {
-        throw new Error(
-          "Supabase is not configured for merchant OTP. Check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.",
-        );
-      }
-      const normalizedPhone = payload.phoneE164.startsWith("+")
-        ? payload.phoneE164
-        : `+91${payload.phoneE164.replace(/\D/g, "").slice(-10)}`;
-
-      // Do NOT pass shouldCreateUser: with the Send SMS hook configured, the
-      // explicit flag races the hook and Supabase 500s for known numbers.
-      const { error } = await supabase.auth.signInWithOtp({
-        phone: normalizedPhone,
-        options: { channel: "sms" },
+      // ALWAYS ask the backend first. The backend is the single place that (a)
+      // applies the Google-Play review-number bypass (fixed OTP, no SMS) and (b)
+      // checks the number is a registered partner. Its answer decides delivery:
+      //   - review number → backend seeded a fixed OTP; verify goes to the backend
+      //   - registered number → { useSupabase: true }; we deliver via Supabase
+      //     (the customer app's proven path — the backend MSG91 OTP channels ack
+      //     but don't actually deliver on this account)
+      //   - unregistered → 404 not_registered → surface the "register first" message
+      const res = await fetchWithTimeout(`${apiBaseUrl}${AUTH_PREFIX}/otp/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phoneE164: payload.phoneE164, appType: "merchant" }),
       });
-      if (__DEV__) {
-        if (error) {
-          // eslint-disable-next-line no-console
-          console.warn("[MerchantAuth] sendOtp: Supabase error", {
-            message: error.message,
-            status: (error as { status?: number }).status,
-            phoneTail: tail,
-          });
-        } else {
-          // eslint-disable-next-line no-console
-          console.log("[MerchantAuth] sendOtp: Supabase OK — SMS delivered (registered partner).");
-        }
+      const raw = await res.text();
+      let dataJson: any;
+      try {
+        dataJson = raw ? JSON.parse(raw) : {};
+      } catch {
+        throw new Error("Invalid response from server while requesting OTP.");
       }
-      if (error) {
-        const msg = error.message || "Could not send OTP via Supabase.";
-        if ((error as { status?: number }).status === 429 || /rate.?limit|too many/i.test(msg)) {
-          throw new Error("Too many OTP attempts on this number. Wait an hour or use a different number.");
+      if (!res.ok) {
+        const code =
+          typeof dataJson?.error === "string" && dataJson.error.trim()
+            ? String(dataJson.error).trim()
+            : "";
+        const msg =
+          (typeof dataJson?.message === "string" && dataJson.message) ||
+          code ||
+          `Could not send OTP (HTTP ${res.status}).`;
+        if (
+          code === "not_registered" ||
+          /isn't registered|not registered as a gatimitra partner/i.test(msg)
+        ) {
+          throw new MerchantAuthError("not_registered", msg);
         }
-        const hint = /provider|sms|phone|hook/i.test(msg)
-          ? " Check Supabase Dashboard → Auth → Providers → Phone + Auth → Hooks → Send SMS."
-          : "";
-        throw new Error(msg + hint);
+        throw new Error(msg);
       }
-      return;
-    }
 
-    throw new Error("Unexpected OTP response from server.");
+      // Review number: backend already stored a fixed OTP — verify via the backend.
+      const rid = typeof dataJson.requestId === "string" ? dataJson.requestId : "";
+      if (!dataJson.useSupabase && rid) {
+        _lastBackendOtpRequestId = rid;
+        if (__DEV__) {
+          // eslint-disable-next-line no-console
+          console.log("[MerchantAuth] sendOtp: backend fixed-OTP path (review number).");
+        }
+        return;
+      }
+
+      // Registered real number: deliver via Supabase, exactly like the customer app.
+      if (dataJson.useSupabase) {
+        const supabase = getSupabaseAuth();
+        if (!supabase) {
+          throw new Error(
+            "Supabase is not configured for merchant OTP. Check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.",
+          );
+        }
+
+        // Do NOT pass shouldCreateUser: with the Send SMS hook configured, the
+        // explicit flag races the hook and Supabase 500s for known numbers.
+        const attemptSignIn = async () =>
+          supabase.auth.signInWithOtp({
+            phone: phoneKey,
+            options: { channel: "sms" },
+          });
+
+        let { error } = await attemptSignIn();
+        const status = (error as { status?: number } | null)?.status;
+        const rawMsg = String(error?.message ?? "");
+        const shouldRetry =
+          !!error &&
+          (status === 500 ||
+            /unexpected_failure/i.test(rawMsg) ||
+            rawMsg.includes("x-sb-error-code") ||
+            rawMsg.includes("/auth/v1/otp"));
+        if (shouldRetry) {
+          if (__DEV__) {
+            // eslint-disable-next-line no-console
+            console.warn("[MerchantAuth] sendOtp: Supabase 500 — retrying once", {
+              phoneTail: tail,
+              status,
+            });
+          }
+          await sleep(700);
+          ({ error } = await attemptSignIn());
+        }
+
+        if (__DEV__) {
+          if (error) {
+            // eslint-disable-next-line no-console
+            console.warn("[MerchantAuth] sendOtp: Supabase error", {
+              message: String(error.message ?? "").slice(0, 180),
+              status: (error as { status?: number }).status,
+              code: (error as { code?: string }).code,
+              phoneTail: tail,
+            });
+          } else {
+            // eslint-disable-next-line no-console
+            console.log("[MerchantAuth] sendOtp: Supabase OK — SMS delivered (registered partner).");
+          }
+        }
+        if (error) {
+          throw formatPhoneOtpError(error as { message?: string; status?: number; code?: string });
+        }
+        return;
+      }
+
+      throw new Error("Unexpected OTP response from server.");
+    })();
+
+    _sendOtpInFlight.set(phoneKey, run);
+    try {
+      await run;
+    } finally {
+      _sendOtpInFlight.delete(phoneKey);
+    }
   },
 
   /**

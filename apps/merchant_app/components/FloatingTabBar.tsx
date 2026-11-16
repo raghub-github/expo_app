@@ -36,8 +36,8 @@ import { useMerchantChromeDimmed } from "@/lib/merchantChromeDim";
 import { isStaffAccessRole, partnerHasPermission } from "@/lib/staffPermissions";
 
 const MAIN_TAB_ORDER = ["index", "orders", "menu", "profile"] as const;
-/** Staff main dock: Home, Orders, Feedback, Profile — no Catalog / Flow / Zone. */
-const STAFF_MAIN_TAB_ORDER = ["index", "orders", "reviews", "profile"] as const;
+/** Staff main dock: Home, Orders, Catalog (stock-only), Profile — no Flow / Zone. */
+const STAFF_MAIN_TAB_ORDER = ["index", "orders", "menu", "profile"] as const;
 
 const DOCK_CLIP_PADDING = 6;
 const CAPSULE_RADIUS = 26;
@@ -235,8 +235,11 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const bottomInset = insets.bottom;
   const keyboardShown = useIsKeyboardShown();
   const chromeDimmed = useMerchantChromeDimmed();
-  const focusedOptions = descriptors[state.routes[state.index].key].options;
-  const hideTabBarOnKeyboard = focusedOptions.tabBarHideOnKeyboard === true;
+  const focusedRouteKey = state.routes[state.index]?.key;
+  const focusedOptions = focusedRouteKey
+    ? descriptors[focusedRouteKey]?.options
+    : undefined;
+  const hideTabBarOnKeyboard = focusedOptions?.tabBarHideOnKeyboard === true;
 
   const currentName = state.routes[state.index]?.name ?? "index";
   /** Profile opened from Flow hub (3-line menu) — keep hub dock visible. */
@@ -390,11 +393,18 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
   const lastMainTabPressAt = useRef(0);
   const lastMainTabPressed = useRef<MainTabName | null>(null);
 
+  /** Always land on Profile home — never restore Offers / nested profile routes via jumpTo. */
   const resetProfileToRoot = useCallback(() => {
     setLastProfileSlug(null);
     setOpenProfileRootOnNextFocus(true);
-    router.replace("/(tabs)/profile");
-  }, [router, setLastProfileSlug, setOpenProfileRootOnNextFocus]);
+    clearReturnRoute();
+    navigation.dispatch(
+      CommonActions.navigate({
+        name: "profile",
+        params: { screen: "index" },
+      } as never)
+    );
+  }, [navigation, setLastProfileSlug, setOpenProfileRootOnNextFocus, clearReturnRoute]);
 
   /** Pop Catalog nested screens without expo-router replace (replace stacks duplicate layers). */
   const resetMenuToRoot = useCallback(() => {
@@ -420,13 +430,14 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
       lastMainTabPressed.current = routeName;
 
       const alreadyOnTab = isActive || focusedRouteName === routeName;
-      const profileHasInnerPage = !isProfileStackAtRoot(state);
+      const profileHasInnerPage = !isProfileStackAtRoot(state) || offersHubPage;
       const menuHasInnerPage = !isMenuStackAtRoot(state);
 
-      if (routeName === "profile" && profileHasInnerPage) {
-        resetProfileToRoot();
-        if (!alreadyOnTab) {
-          navigateToMainTab(routeName);
+      // Profile tab must open Profile home — Offers lives under this stack and must not stick.
+      if (routeName === "profile") {
+        if (profileHasInnerPage || offersHubPage || !alreadyOnTab) {
+          resetProfileToRoot();
+          return;
         }
         return;
       }
@@ -451,6 +462,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
     [
       focusedRouteName,
       navigateToMainTab,
+      offersHubPage,
       resetMenuToRoot,
       resetProfileToRoot,
       state,
@@ -494,6 +506,10 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
       // Leave Offers / hub tabs with replace so the Zone page actually mounts
       // (avoid openProfileRootOnNextFocus → POP_TO_TOP crash).
       if (offersHubPage || profileHubOverlay || isHubTab(currentName)) {
+        if (target === "profile") {
+          resetProfileToRoot();
+          return;
+        }
         const href =
           target === "index"
             ? "/(tabs)"
@@ -501,6 +517,10 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
               ? "/(tabs)/reviews"
               : `/(tabs)/${target}`;
         router.replace(href as never);
+        return;
+      }
+      if (target === "profile") {
+        resetProfileToRoot();
         return;
       }
       navigateToMainTab(target);
@@ -521,6 +541,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
     setActiveTab,
     currentName,
     router,
+    resetProfileToRoot,
   ]);
 
   const mainTabOrder = isStaffRole ? STAFF_MAIN_TAB_ORDER : MAIN_TAB_ORDER;

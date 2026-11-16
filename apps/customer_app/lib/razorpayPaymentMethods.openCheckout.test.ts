@@ -4,6 +4,8 @@ import {
   DEFAULT_PAY_INSTRUMENT,
   ensureUpiQrAndCollectVisible,
   isOpenCheckoutPayInstrument,
+  isPayableCheckoutPaymentMethod,
+  orderPayloadPaymentMethod,
   pickDefaultCheckoutPayInstrument,
   toRazorpayCheckoutMethod,
   FALLBACK_PAY_METHODS,
@@ -41,6 +43,25 @@ describe("open checkout default", () => {
     assert.deepEqual(qr, { method: "upi", upiFlow: "qr" });
   });
 
+  it("treats granular PhonePe / QR modes as payable", () => {
+    assert.equal(isPayableCheckoutPaymentMethod("upi"), true);
+    assert.equal(
+      isPayableCheckoutPaymentMethod(
+        orderPayloadPaymentMethod({
+          id: "upi:phonepe",
+          label: "PhonePe UPI",
+          method: "upi",
+          action: "pay",
+          logoKey: "phonepe",
+          upiApp: "phonepe",
+        })
+      ),
+      true
+    );
+    assert.equal(isPayableCheckoutPaymentMethod("upi_qr"), true);
+    assert.equal(isPayableCheckoutPaymentMethod("cod"), false);
+  });
+
   it("pins open checkout + UPI flows in the payment sheet", () => {
     const catalog = ensureUpiQrAndCollectVisible(FALLBACK_PAY_METHODS);
     assert.equal(catalog.sections[0]?.id, "open_checkout");
@@ -49,5 +70,31 @@ describe("open checkout default", () => {
     assert.ok(ids.includes("upi:qr"));
     assert.ok(ids.includes("upi:intent"));
     assert.ok(ids.includes("upi:phonepe"));
+  });
+
+  it("does not invent UPI rows for a live cards-only Razorpay catalog", () => {
+    const catalog = ensureUpiQrAndCollectVisible({
+      dummy: false,
+      sections: [
+        {
+          id: "cards",
+          title: "CARDS",
+          items: [
+            {
+              id: "card:add",
+              label: "Add credit or debit cards",
+              method: "card",
+              action: "add",
+              logoKey: "card",
+            },
+          ],
+        },
+      ],
+    });
+    const ids = catalog.sections.flatMap((s) => s.items.map((i) => i.id));
+    assert.ok(ids.includes("open:all"));
+    assert.ok(ids.includes("card:add"));
+    assert.equal(ids.includes("upi:qr"), false);
+    assert.equal(ids.includes("upi:phonepe"), false);
   });
 });

@@ -1436,6 +1436,7 @@ export async function orderRoutes(app: FastifyInstance) {
           refundStatus: pendingOrders.refundStatus,
           paymentConfirmBy: pendingOrders.paymentConfirmBy,
           paymentFailureMessage: pendingOrders.paymentFailureMessage,
+          razorpayOrderId: pendingOrders.razorpayOrderId,
         })
         .from(pendingOrders)
         .where(and(eq(pendingOrders.pendingId, pendingId), eq(pendingOrders.customerId, customerPk)))
@@ -1445,11 +1446,62 @@ export async function orderRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "NOT_FOUND", message: "Pending order not found." });
       }
 
+      // Opportunistic Scan-QR recovery while the customer app is polling —
+      // closes the confirmation gap when `qr_code.credited` is delayed/missed.
+      // Also runs when paymentState was incorrectly marked failed (client fail /
+      // timeout) while Razorpay already captured on the QR entity.
+      let paymentState = row.paymentState ?? "unknown";
+      let finalizedOrderId = row.finalizedOrderId ?? null;
+      if (!finalizedOrderId && paymentState !== "refunded" && paymentState !== "refund_pending") {
+        try {
+          const { tryRecoverFoodCheckoutQrForPending } = await import(
+            "../payment/food-checkout-qr-recover.js"
+          );
+          const recovered = await tryRecoverFoodCheckoutQrForPending({
+            pendingId: row.pendingId,
+            razorpayOrderId: row.razorpayOrderId,
+            via: "pending_status_poll",
+          });
+          if (recovered.status === "finalized" || recovered.status === "already_finalized") {
+            const [fresh] = await db
+              .select({
+                paymentState: pendingOrders.paymentState,
+                finalizedOrderId: pendingOrders.finalizedOrderId,
+                paymentFailureMessage: pendingOrders.paymentFailureMessage,
+                paymentConfirmBy: pendingOrders.paymentConfirmBy,
+                refundStatus: pendingOrders.refundStatus,
+              })
+              .from(pendingOrders)
+              .where(eq(pendingOrders.pendingId, pendingId))
+              .limit(1);
+            if (fresh) {
+              paymentState = fresh.paymentState ?? paymentState;
+              finalizedOrderId = fresh.finalizedOrderId ?? finalizedOrderId;
+              return reply.send({
+                pendingId: row.pendingId,
+                paymentState,
+                finalized: !!finalizedOrderId,
+                orderId: finalizedOrderId,
+                refundStatus: fresh.refundStatus ?? null,
+                paymentConfirmBy: fresh.paymentConfirmBy
+                  ? fresh.paymentConfirmBy.toISOString()
+                  : null,
+                ...(fresh.paymentFailureMessage
+                  ? { message: fresh.paymentFailureMessage }
+                  : {}),
+              });
+            }
+          }
+        } catch {
+          /* poll stays non-blocking */
+        }
+      }
+
       return reply.send({
         pendingId: row.pendingId,
-        paymentState: row.paymentState ?? "unknown",
-        finalized: !!row.finalizedOrderId,
-        orderId: row.finalizedOrderId ?? null,
+        paymentState,
+        finalized: !!finalizedOrderId,
+        orderId: finalizedOrderId,
         refundStatus: row.refundStatus ?? null,
         paymentConfirmBy: row.paymentConfirmBy ? row.paymentConfirmBy.toISOString() : null,
         ...(row.paymentFailureMessage ? { message: row.paymentFailureMessage } : {}),

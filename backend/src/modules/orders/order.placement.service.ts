@@ -659,9 +659,29 @@ async function persistOfferSnapshots(
 }
 
 const PAYMENT_METHOD_MAP = ["upi", "card", "wallet", "online", "cod", "netbanking"] as const;
+/**
+ * Map granular checkout modes (upi_qr, upi_phonepe, wallet_paytm, …) onto the
+ * coarse orders_core payment_method enum while preserving detail on pending_orders.
+ */
 export function paymentMethodToEnum(method: string): "upi" | "card" | "wallet" | "online" | "cod" | "other" {
-  const m = (method || "").toLowerCase();
-  if (PAYMENT_METHOD_MAP.includes(m as (typeof PAYMENT_METHOD_MAP)[number])) return m as "upi" | "card" | "wallet" | "online" | "cod";
+  const m = (method || "").toLowerCase().trim();
+  if (!m) return "online";
+  if (m === "cod" || m === "cash") return "cod";
+  if (m === "card" || m.startsWith("card_")) return "card";
+  if (m === "wallet" || m.startsWith("wallet_") || m === "gaticash" || m === "gati_cash") return "wallet";
+  if (
+    m === "upi" ||
+    m.startsWith("upi_") ||
+    m === "upi_qr" ||
+    m === "upi_collect" ||
+    m === "qr"
+  ) {
+    return "upi";
+  }
+  if (m === "netbanking" || m === "nb") return "online";
+  if (PAYMENT_METHOD_MAP.includes(m as (typeof PAYMENT_METHOD_MAP)[number])) {
+    return m as "upi" | "card" | "wallet" | "online" | "cod";
+  }
   return "online";
 }
 
@@ -2225,20 +2245,62 @@ export async function finalizePendingOrderFromWebhook(
     razorpayPaymentId: string;
     paymentMethod: string;
     gatewayPayload?: Record<string, unknown>;
+    /** Scan-QR webhooks sometimes omit order_id — resolve pending via notes.pending_id. */
+    pendingIdHint?: string | null;
   }
 ): Promise<{ ok: boolean; code?: string }> {
-  const { razorpayOrderId, razorpayPaymentId, paymentMethod, gatewayPayload } = args;
+  const razorpayOrderId = String(args.razorpayOrderId ?? "").trim();
+  const { razorpayPaymentId, paymentMethod, gatewayPayload } = args;
+  const pendingIdHint = String(args.pendingIdHint ?? gatewayPayload?.pendingId ?? "").trim();
 
   // Pre-flight read (no lock) — fast path for the very common already-finalized case
   // and for missing-row errors. This avoids opening a tx in the easy paths.
-  const [preflight] = await db
-    .select({ pendingId: pendingOrders.pendingId, finalizedOrderId: pendingOrders.finalizedOrderId, paymentState: pendingOrders.paymentState })
-    .from(pendingOrders)
-    .where(eq(pendingOrders.razorpayOrderId, razorpayOrderId))
-    .limit(1);
+  type PendingPreflight = {
+    pendingId: string;
+    finalizedOrderId: string | null;
+    paymentState: string | null;
+  };
+  let preflight: PendingPreflight | undefined;
+  if (razorpayOrderId) {
+    const rows = await db
+      .select({
+        pendingId: pendingOrders.pendingId,
+        finalizedOrderId: pendingOrders.finalizedOrderId,
+        paymentState: pendingOrders.paymentState,
+      })
+      .from(pendingOrders)
+      .where(eq(pendingOrders.razorpayOrderId, razorpayOrderId))
+      .limit(1);
+    preflight = rows[0];
+  }
+
+  // Food checkout QR payments often omit Razorpay order_id on the payment entity;
+  // fall back to the pending_id stamped on the QR notes / gatewayResponse.
+  if (!preflight && pendingIdHint) {
+    const rows = await db
+      .select({
+        pendingId: pendingOrders.pendingId,
+        finalizedOrderId: pendingOrders.finalizedOrderId,
+        paymentState: pendingOrders.paymentState,
+      })
+      .from(pendingOrders)
+      .where(eq(pendingOrders.pendingId, pendingIdHint))
+      .limit(1);
+    preflight = rows[0];
+    if (preflight && razorpayOrderId) {
+      // Bind the gateway order id so later webhooks / poll recover by order id.
+      await db
+        .update(pendingOrders)
+        .set({ razorpayOrderId })
+        .where(eq(pendingOrders.pendingId, pendingIdHint));
+    }
+  }
 
   if (!preflight) {
     return { ok: false, code: "PENDING_ORDER_NOT_FOUND" };
+  }
+  if (!razorpayPaymentId) {
+    return { ok: false, code: "MISSING_PAYMENT_ID" };
   }
 
   if (preflight.finalizedOrderId) {
@@ -2264,6 +2326,7 @@ export async function finalizePendingOrderFromWebhook(
     // for the same payment) race here, only one wins. The loser sees the row
     // already finalized after the winner commits and returns idempotent ok.
     const result = await db.transaction(async (tx) => {
+      const lockPendingId = preflight.pendingId;
       const lockedRows = await tx.execute<{
         id: number;
         pending_id: string;
@@ -2304,7 +2367,7 @@ export async function finalizePendingOrderFromWebhook(
                pickup_lat, pickup_lon, drop_lat, drop_lon, distance_km,
                finalized_order_id, payment_state, delivery_type
         FROM pending_orders
-        WHERE razorpay_order_id = ${razorpayOrderId}
+        WHERE pending_id = ${lockPendingId}
         FOR UPDATE
       `);
       const rows: Array<Record<string, unknown>> = Array.isArray(lockedRows)
@@ -3141,7 +3204,10 @@ export async function reconcilePendingPayments(
       if (row.finalizedOrderId) continue; // already finalized
 
       const orderId = row.razorpayOrderId ?? "";
-      const expectedPaise = Math.round(Number(row.grandTotal ?? 0) * 100);
+      // Payable at gateway = grand − GatiCash (matches checkout-qr / create-order).
+      const expectedPaise = Math.round(
+        Math.max(0, Number(row.grandTotal ?? 0) - Number(row.gatiCashApplied ?? 0)) * 100
+      );
 
       // Dummy-mode orders never reach a real gateway — preserve the timeout-fail
       // behavior so local/dev sweeps don't hang forever.
@@ -3261,9 +3327,35 @@ export async function reconcilePendingPayments(
         continue;
       }
 
+      // truth.state === "NONE" on the Orders API does NOT prove food Scan-QR was
+      // unpaid — UPI QR captures often live only on the QR entity. Recover first.
+      try {
+        const { tryRecoverFoodCheckoutQrForPending } = await import(
+          "../payment/food-checkout-qr-recover.js"
+        );
+        const qrRecover = await tryRecoverFoodCheckoutQrForPending({
+          pendingId: row.pendingId,
+          razorpayOrderId: orderId,
+          via: "pending_reconciler_before_timeout",
+        });
+        if (qrRecover.status === "finalized" || qrRecover.status === "already_finalized") {
+          continue;
+        }
+        if (qrRecover.status === "pending_capture") {
+          // QR still open / unpaid — defer instead of failing while the sheet may be live.
+          await deferForRetry(row, "FOOD_QR_STILL_OPEN", { qrRecover: qrRecover.status });
+          continue;
+        }
+        if (qrRecover.status === "skipped" && qrRecover.reason === "gateway_unreachable") {
+          await deferForRetry(row, "FOOD_QR_RECOVER_UNREACHABLE", {});
+          continue;
+        }
+      } catch {
+        // Fall through to NONE → FAILED only when QR recovery itself throws.
+      }
+
       // truth.state === "NONE": gateway is reachable and confirms NO captured or
-      // live payment. This is the only safe path to FAILED — the customer was
-      // never charged.
+      // live payment (and no food QR capture). Safe to FAILED — never charged.
       await db
         .update(pendingOrders)
         .set({

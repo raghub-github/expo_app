@@ -28,6 +28,7 @@ import AutoAcceptScreen from "./AutoAcceptScreen";
 import PrinterSettingsScreen from "./PrinterSettingsScreen";
 import LearningCentreScreen from "./LearningCentreScreen";
 import ReferralsScreen from "./ReferralsScreen";
+import LegalDocumentsScreen from "./LegalDocumentsScreen";
 
 const SLUG_TITLES: Record<string, string> = {
   "edit-store": "Edit Store",
@@ -37,7 +38,7 @@ const SLUG_TITLES: Record<string, string> = {
   hours: "Business Hours",
   bank: "Bank Account",
   gst: "GST Information",
-  documents: "Documents & Verification",
+  documents: "Legal Documents",
   staff: "Staff Management",
   status: "Store Status",
   "pause-store": "Pause Store",
@@ -123,6 +124,10 @@ export default function ProfileSlugScreen() {
 
   if (slug === "bank") {
     return <BankAccountScreen />;
+  }
+
+  if (slug === "documents") {
+    return <LegalDocumentsScreen />;
   }
 
   if (slug === "contact") {

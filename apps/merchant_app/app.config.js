@@ -25,9 +25,10 @@ module.exports = ({ config }) => ({
     // Partner launcher: assets/mxappicon.png is the single canonical icon.
     icon: "./assets/mxappicon.png",
     // Solid brand-color drawable only — branding lives in MerchantBootstrapScreen (Lora).
-    // Avoids a second splash logo / "Partner Control" flash before JS paints.
+    // Never use mxappicon here: Android 12+ shows the splash image as the center icon,
+    // and the launcher icon contains "GatiMitra / Partner Control" wordmark text.
     splash: {
-      image: "./assets/images/splash-blank.png",
+      image: "./assets/images/splash-solid.png",
       resizeMode: "contain",
       backgroundColor: MERCHANT_SPLASH_BG,
     },
@@ -69,6 +70,12 @@ module.exports = ({ config }) => ({
         foregroundImage: "./assets/mxappicon.png",
         backgroundColor: "#0B241C",
       },
+      // Explicit Android splash so the system never falls back to the text-filled adaptive icon.
+      splash: {
+        image: "./assets/images/splash-solid.png",
+        resizeMode: "contain",
+        backgroundColor: MERCHANT_SPLASH_BG,
+      },
       ...(hasGoogleServices ? { googleServicesFile: "./google-services.json" } : {}),
       softwareKeyboardLayoutMode: "resize",
       intentFilters: [
@@ -88,6 +95,15 @@ module.exports = ({ config }) => ({
     plugins: [
       ...(appJson.expo.plugins || []),
       "expo-dev-client",
+      [
+        "expo-splash-screen",
+        {
+          backgroundColor: MERCHANT_SPLASH_BG,
+          image: "./assets/images/splash-solid.png",
+          imageWidth: 200,
+          resizeMode: "contain",
+        },
+      ],
       [
         "expo-build-properties",
         {

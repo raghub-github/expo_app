@@ -201,6 +201,9 @@ export async function sendRiderDispatchDirectPush(args: {
     for (const token of nativeTokens) {
       try {
         const collapseKey = `gm_rider_order_${String(args.orderId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48)}`;
+        // Data-only + high priority: MessagingService runs while bg/killed and
+        // starts OrderAlert FGS (buzzer + overlay). A notification block would
+        // only paint the tray and skip onMessageReceived in that state.
         const res = await sendFcmV1({
           notificationId: randomUUID(),
           token,
@@ -208,11 +211,16 @@ export async function sendRiderDispatchDirectPush(args: {
           body: args.body,
           channelId,
           sound,
-          playSound: true,
-          silent: false,
+          playSound: false,
+          silent: true,
           appRole: "rider",
           priority: "critical",
-          data,
+          data: {
+            ...data,
+            title: args.title,
+            body: args.body,
+            message: args.body,
+          },
           deepLink,
           // Same logical offer → replace tray card (not stack duplicates).
           collapseKey,

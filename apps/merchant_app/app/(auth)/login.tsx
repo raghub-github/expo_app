@@ -39,6 +39,9 @@ import { GoogleMark } from "@/components/GoogleMark";
 
 WebBrowser.maybeCompleteAuthSession();
 
+/** Keep Google button visible but non-interactive — phone/email OTP only for now. */
+const GOOGLE_SIGN_IN_ENABLED = false;
+
 const PHONE_OTP_LEN = 6;
 /** Supabase Partner email OTP is configured as 8 digits (same as partnersite). */
 const EMAIL_OTP_LEN = 8;
@@ -88,6 +91,7 @@ export default function LoginScreen() {
   const [error, setError] = useState("");
   const [notRegisteredSheetOpen, setNotRegisteredSheetOpen] = useState(false);
   const [notRegisteredKind, setNotRegisteredKind] = useState<"phone" | "email">("phone");
+  const [googleUnavailableSheetOpen, setGoogleUnavailableSheetOpen] = useState(false);
   const [deviceSessionMode, setDeviceSessionMode] = useState(false);
   const [lastExchange, setLastExchange] = useState<LastExchange>(null);
   const [resendSeconds, setResendSeconds] = useState(0);
@@ -107,6 +111,8 @@ export default function LoginScreen() {
    */
   const verifyInFlightRef = useRef(false);
   const verifySucceededRef = useRef(false);
+  /** Blocks double Proceed taps before `loading` re-renders. */
+  const requestOtpInFlightRef = useRef(false);
 
   const scrollPhoneFormIntoView = useCallback(() => {
     const end = () => sheetScrollRef.current?.scrollToEnd({ animated: true });
@@ -170,6 +176,8 @@ export default function LoginScreen() {
   };
 
   const handleRequestOtp = async () => {
+    if (loading || googleLoading || requestOtpInFlightRef.current) return;
+
     if (loginChannel === "email") {
       if (!emailValid) {
         setError("Enter a valid email address");
@@ -177,6 +185,7 @@ export default function LoginScreen() {
       }
       clearErrors();
       setLastExchange(null);
+      requestOtpInFlightRef.current = true;
       setLoading(true);
       try {
         await merchantAuthService.sendEmailOtp({ email: emailNormalized });
@@ -195,6 +204,7 @@ export default function LoginScreen() {
           setError(msg);
         }
       } finally {
+        requestOtpInFlightRef.current = false;
         setLoading(false);
       }
       return;
@@ -206,6 +216,7 @@ export default function LoginScreen() {
     }
     clearErrors();
     setLastExchange(null);
+    requestOtpInFlightRef.current = true;
     setLoading(true);
     try {
       await merchantAuthService.sendOtp({ phoneE164 });
@@ -224,15 +235,17 @@ export default function LoginScreen() {
         setError(msg);
       }
     } finally {
+      requestOtpInFlightRef.current = false;
       setLoading(false);
     }
   };
 
   const handleResendOtp = async () => {
-    if (resendSeconds > 0 || resending) return;
+    if (resendSeconds > 0 || resending || requestOtpInFlightRef.current) return;
     if (loginChannel === "email") {
       if (!emailValid) return;
       clearErrors();
+      requestOtpInFlightRef.current = true;
       setResending(true);
       try {
         await merchantAuthService.sendEmailOtp({ email: emailNormalized });
@@ -244,12 +257,14 @@ export default function LoginScreen() {
         const msg = e instanceof Error ? e.message : "Could not resend OTP. Try again.";
         setError(msg);
       } finally {
+        requestOtpInFlightRef.current = false;
         setResending(false);
       }
       return;
     }
     if (!phoneE164) return;
     clearErrors();
+    requestOtpInFlightRef.current = true;
     setResending(true);
     try {
       await merchantAuthService.sendOtp({ phoneE164 });
@@ -261,6 +276,7 @@ export default function LoginScreen() {
       const msg = e instanceof Error ? e.message : "Could not resend OTP. Try again.";
       setError(msg);
     } finally {
+      requestOtpInFlightRef.current = false;
       setResending(false);
     }
   };
@@ -343,6 +359,11 @@ export default function LoginScreen() {
   }, []);
 
   const handleGoogleSignIn = async () => {
+    if (!GOOGLE_SIGN_IN_ENABLED) {
+      clearErrors();
+      setGoogleUnavailableSheetOpen(true);
+      return;
+    }
     const supabase = getSupabaseAuth();
     if (!supabase) {
       setError(GOOGLE_TEMP_UNAVAILABLE_MESSAGE);
@@ -709,7 +730,7 @@ export default function LoginScreen() {
                 </Pressable>
               </View>
             </View>
-          ) : step === "phone" && error ? (
+          ) : step === "phone" && error && error !== GOOGLE_TEMP_UNAVAILABLE_MESSAGE ? (
             <View style={styles.errorBanner}>
               <Ionicons name="alert-circle-outline" size={20} color={GatiMitraMerchant.error} />
               <Text style={styles.errorText}>{error}</Text>
@@ -743,11 +764,12 @@ export default function LoginScreen() {
           <Pressable
             style={({ pressed }) => [
               styles.googleBtn,
-              (loading || googleLoading) && styles.btnDisabled,
+              (!GOOGLE_SIGN_IN_ENABLED || loading || googleLoading) && styles.btnDisabled,
               pressed && styles.pressed,
             ]}
             onPress={() => void handleGoogleSignIn()}
             disabled={loading || googleLoading || step !== "phone"}
+            accessibilityState={{ disabled: !GOOGLE_SIGN_IN_ENABLED }}
           >
             {googleLoading ? (
               <ActivityIndicator color={GatiMitraMerchant.textPrimary} size="small" />
@@ -885,6 +907,25 @@ export default function LoginScreen() {
             onPress={openRegisterStore}
           >
             <Text style={styles.registerStoreBtnText}>Register Store</Text>
+          </Pressable>
+        </View>
+      </MerchantBottomSheetShell>
+
+      <MerchantBottomSheetShell
+        visible={googleUnavailableSheetOpen}
+        onClose={() => setGoogleUnavailableSheetOpen(false)}
+        maxHeightPercent="40%"
+      >
+        <View style={styles.notRegSheetBody}>
+          <View style={styles.notRegIconWrap}>
+            <Ionicons name="information-circle" size={28} color={GatiMitraMerchant.textSecondary} />
+          </View>
+          <Text style={styles.notRegTitle}>{GOOGLE_TEMP_UNAVAILABLE_MESSAGE}</Text>
+          <Pressable
+            style={({ pressed }) => [styles.registerStoreBtn, pressed && styles.pressed]}
+            onPress={() => setGoogleUnavailableSheetOpen(false)}
+          >
+            <Text style={styles.registerStoreBtnText}>OK</Text>
           </Pressable>
         </View>
       </MerchantBottomSheetShell>

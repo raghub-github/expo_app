@@ -43,6 +43,19 @@ describe("checkoutBillStatus", () => {
     assert.equal(isTimeoutError({ code: "ECONNABORTED", message: "timeout of 20000ms exceeded" }), true);
     assert.equal(isCanceledRequestError({ code: "ERR_CANCELED", message: "canceled" }), true);
     assert.equal(isCanceledRequestError({ code: "ECONNABORTED" }), false);
+    assert.equal(
+      isCanceledRequestError({ code: "ECONNABORTED", message: "Request aborted" }),
+      true
+    );
+    assert.equal(
+      isCanceledRequestError({
+        code: "ERR_NETWORK",
+        message: "Network Error",
+        config: { signal: { aborted: true } },
+      }),
+      true
+    );
+    assert.equal(isTimeoutError({ code: "ECONNABORTED", message: "Request aborted" }), false);
   });
 
   it("uses server message for 5xx", () => {
