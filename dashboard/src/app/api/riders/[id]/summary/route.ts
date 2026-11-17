@@ -15,6 +15,11 @@ import {
 } from "@/lib/riders/resolve-penalty-order-display-ids";
 import { walletBlockHistoryReason } from "@/lib/rider-restriction-display";
 import {
+  evaluateMinWalletBalance,
+  normalizeMinBalanceMode,
+  type RiderMinBalanceStatus,
+} from "@gatimitra/financial-rules";
+import {
   riders,
   withdrawalRequests,
   blacklistHistory,
@@ -740,6 +745,31 @@ export async function GET(
       }
     }
 
+    // Wallet minimum-balance policy (Ride + Parcel). Same evaluator AND same policy row
+    // as the backend (getRiderAccountRestrictions → loadRideWalletPolicy: newest active
+    // ride_wallet_config; no row / unreadable → off), so the Blacklist Status card shows
+    // exactly what dispatch and the duty toggle enforce. Before this the card said
+    // "Allowed" while enforce mode was blocking Parcel + Person Ride.
+    let walletMinBalance: RiderMinBalanceStatus | null = null;
+    try {
+      const cfgRows = (await getSql()`
+        SELECT min_wallet_balance, min_balance_mode
+        FROM ride_wallet_config
+        WHERE is_active = TRUE
+        ORDER BY id DESC
+        LIMIT 1
+      `) as unknown as { min_wallet_balance: string | number | null; min_balance_mode: string | null }[];
+      const cfg = cfgRows[0];
+      const threshold = Number(cfg?.min_wallet_balance);
+      walletMinBalance = evaluateMinWalletBalance({
+        balance: walletRow ? Number(walletRow.totalBalance ?? 0) : 0,
+        threshold: Number.isFinite(threshold) ? threshold : 200,
+        mode: cfg ? normalizeMinBalanceMode(cfg.min_balance_mode) : "off",
+      });
+    } catch {
+      walletMinBalance = null;
+    }
+
     // Cancellation-rate AUTO-BLOCKS (rider_cancellation_service_blocks) — surfaced so the
     // Blacklist Status card and Activity Log can explain WHY a service was auto-blocked.
     const cancellationServiceBlocks: Record<
@@ -1044,6 +1074,7 @@ export async function GET(
         })() : null,
         orderMetrics,
         cancellationServiceBlocks,
+        walletMinBalance,
         onboardingFees,
         paymentCompleted,
         approvalQueueEligible,

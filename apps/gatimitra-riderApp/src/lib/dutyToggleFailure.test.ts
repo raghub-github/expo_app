@@ -161,3 +161,28 @@ describe("dutyServerRejectionMessage", () => {
     assert.equal(dutyServerRejectionMessage(err), "Wallet dues pending");
   });
 });
+
+describe("dutyServerRejectionMessage — SDK ApiError payload (PUT /v1/rider/duty)", () => {
+  it("reads the server's message from ApiError.payload instead of showing 'API 403'", () => {
+    const err = new ApiError("API 403 ", 403, {
+      error: "WORK_LOCATION_MISMATCH",
+      message: "Your current location is different from your working location.",
+    });
+    assert.equal(
+      dutyServerRejectionMessage(err),
+      "Your current location is different from your working location."
+    );
+  });
+
+  it("falls back to the error code when the payload has no message", () => {
+    assert.equal(
+      dutyServerRejectionMessage(new ApiError("API 403 ", 403, { error: "ALL_SERVICES_BLOCKED" })),
+      "ALL_SERVICES_BLOCKED"
+    );
+  });
+
+  it("never surfaces a bare 'API 403' status line as the reason", () => {
+    assert.equal(dutyServerRejectionMessage(new ApiError("API 403 ", 403, null)), null);
+    assert.equal(dutyServerRejectionMessage(new Error("API 403 Forbidden")), null);
+  });
+});

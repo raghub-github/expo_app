@@ -171,6 +171,20 @@ export interface RiderSummary {
       reason: string;
     }
   >;
+  /**
+   * Wallet minimum-balance policy (Ride + Parcel), evaluated with the backend's own
+   * evaluator. `restricted` true only in enforce mode while below the minimum.
+   */
+  walletMinBalance?: {
+    mode: "off" | "warn" | "enforce";
+    threshold: number;
+    balance: number;
+    shortfall: number;
+    belowMinimum: boolean;
+    restricted: boolean;
+    restrictedServices: Array<"parcel" | "person_ride">;
+    message: string | null;
+  } | null;
   wallet: {
     totalBalance: string;
     globalWalletBlock?: boolean;

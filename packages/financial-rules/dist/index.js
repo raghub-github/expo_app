@@ -326,3 +326,48 @@ export const DEFAULT_CANCELLATION_SLABS = [
     { slabNumber: 3, minAccepted: 16, maxAccepted: 25, blockingEnabled: true, thresholdPct: 35 },
     { slabNumber: 4, minAccepted: 26, maxAccepted: null, blockingEnabled: true, thresholdPct: 20 },
 ];
+export const MIN_BALANCE_RESTRICTED_SERVICES = ["parcel", "person_ride"];
+export function normalizeMinBalanceMode(value) {
+    const v = String(value ?? "").trim().toLowerCase();
+    return v === "warn" || v === "enforce" ? v : "off";
+}
+function minBalRound2(n) {
+    return Math.round(n * 100) / 100;
+}
+function minBalRupees(n) {
+    return Number.isInteger(n) ? `₹${n}` : `₹${n.toFixed(2)}`;
+}
+export function evaluateMinWalletBalance(input) {
+    const balance = minBalRound2(Number.isFinite(input.balance) ? input.balance : 0);
+    const threshold = minBalRound2(Math.max(0, Number.isFinite(input.threshold) ? input.threshold : 0));
+    const mode = input.mode;
+    const belowMinimum = mode !== "off" && threshold > 0 && balance < threshold;
+    const shortfall = belowMinimum ? minBalRound2(threshold - balance) : 0;
+    const restricted = belowMinimum && mode === "enforce";
+    let message = null;
+    if (restricted) {
+        message = `Your available wallet balance is below ${minBalRupees(threshold)}. Recharge your wallet to continue receiving new assignments.`;
+    }
+    else if (belowMinimum) {
+        message = `Your available wallet balance is below ${minBalRupees(threshold)}. Recharge ${minBalRupees(shortfall)} to keep receiving Ride and Parcel assignments without interruption.`;
+    }
+    return {
+        mode,
+        threshold,
+        balance,
+        shortfall,
+        belowMinimum,
+        restricted,
+        restrictedServices: restricted ? [...MIN_BALANCE_RESTRICTED_SERVICES] : [],
+        message,
+    };
+}
+/**
+ * What a rider must pay to clear their wallet: the negative balance, or — while
+ * the minimum-balance policy is active — the shortfall up to the minimum.
+ */
+export function riderWalletRechargeDue(input) {
+    const negative = input.balance < 0 ? minBalRound2(-input.balance) : 0;
+    const status = evaluateMinWalletBalance(input);
+    return minBalRound2(Math.max(negative, status.shortfall));
+}

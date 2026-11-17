@@ -2,8 +2,51 @@
  * Compare rider's saved WORKING location with current GPS (duty ON gate).
  * Registered address is separate and must NOT be used for this check.
  */
+import { getSql } from "../db/client.js";
 import { resolveOnboardingWorkLocation } from "./rider-onboarding-geo.js";
 import { resolveRiderHiring } from "./rider-geo-hiring.js";
+import {
+  decideWorkLocationMatch,
+  resolveDistrictIdByName,
+} from "./rider-work-location-match.js";
+
+/** A state's districts (id + name) — tiny, changes rarely; cached per state. */
+const STATE_DISTRICTS_TTL_MS = 10 * 60_000;
+const stateDistrictsCache = new Map<
+  string,
+  { at: number; rows: Array<{ id: string; name: string }> }
+>();
+
+async function loadStateDistricts(stateId: string): Promise<Array<{ id: string; name: string }>> {
+  const hit = stateDistrictsCache.get(stateId);
+  if (hit && Date.now() - hit.at < STATE_DISTRICTS_TTL_MS) return hit.rows;
+  const rows = (await getSql()`
+    SELECT d.id::text AS id, d.name
+    FROM districts d
+    JOIN regions r ON r.id = d.region_id
+    WHERE r.state_id = ${stateId}::uuid
+  `) as unknown as Array<{ id: string; name: string }>;
+  stateDistrictsCache.set(stateId, { at: Date.now(), rows });
+  return rows;
+}
+
+/**
+ * The working district as a KNOWN districts.id: the stored id, else the saved
+ * name resolved exactly within the state. null = unknown (free text / alias),
+ * which cannot prove a mismatch. Lookup failure → unknown, never a lock-out.
+ */
+async function resolveWorkingDistrictId(
+  working: { districtId: string | null; district: string | null },
+  stateId: string | null
+): Promise<string | null> {
+  if (working.districtId) return working.districtId;
+  if (!working.district || !stateId) return null;
+  try {
+    return resolveDistrictIdByName(working.district, await loadStateDistricts(stateId));
+  } catch {
+    return null;
+  }
+}
 
 export type DutyWorkLocationSnapshot = {
   state: string | null;
@@ -15,26 +58,6 @@ export type DutyWorkLocationSnapshot = {
   lat?: number | null;
   lon?: number | null;
 };
-
-function norm(value: string | null | undefined): string {
-  return String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
-}
-
-function idsEqual(a: string | null | undefined, b: string | null | undefined): boolean {
-  const x = String(a || "").trim().toLowerCase();
-  const y = String(b || "").trim().toLowerCase();
-  return Boolean(x && y && x === y);
-}
-
-function namesEqual(a: string | null | undefined, b: string | null | undefined): boolean {
-  const x = norm(a);
-  const y = norm(b);
-  if (!x || !y) return false;
-  return x === y || x.includes(y) || y.includes(x);
-}
 
 export type DutyWorkLocationCheckResult = {
   mismatch: boolean;
@@ -124,23 +147,26 @@ export async function checkDutyWorkingLocation(args: {
     };
   }
 
-  const stateMatches =
-    idsEqual(working.stateId, detected.stateId) || namesEqual(working.state, detected.state);
-
-  let mismatch = !stateMatches;
-  if (!mismatch) {
-    const bothHaveDistrict =
-      Boolean(working.districtId || working.district) &&
-      Boolean(detected.districtId || detected.district);
-    if (bothHaveDistrict) {
-      const districtMatches =
-        idsEqual(working.districtId, detected.districtId) ||
-        namesEqual(working.district, detected.district);
-      if (!districtMatches) mismatch = true;
+  const knownWorkingDistrictId = await resolveWorkingDistrictId(
+    working,
+    working.stateId ?? detected.stateId
+  );
+  const decision = decideWorkLocationMatch(
+    {
+      stateId: working.stateId,
+      state: working.state,
+      districtId: knownWorkingDistrictId,
+      district: working.district,
+    },
+    {
+      stateId: detected.stateId,
+      state: detected.state,
+      districtId: detected.districtId,
+      district: detected.district,
     }
-  }
+  );
 
-  if (!mismatch) {
+  if (!decision.mismatch) {
     return {
       mismatch: false,
       hiringAllowed: hiring.hiringAllowed,

@@ -2282,6 +2282,12 @@ export default function RidersPage() {
               createdAtRaw != null ? new Date(createdAtRaw as string | number | Date) : null;
             const negativeWalletBlocks = (displaySummary as { negativeWalletBlocks?: { serviceType: string }[] })?.negativeWalletBlocks ?? [];
             const globalWalletBlock = (displaySummary as { wallet?: { globalWalletBlock?: boolean } })?.wallet?.globalWalletBlock === true;
+            // Wallet minimum-balance policy — evaluated by the backend's own evaluator, so these
+            // cards match what dispatch / the duty toggle enforce (4th source next to manual
+            // blacklist, negative-wallet blocks and cancellation auto-blocks).
+            const minBal = summary?.walletMinBalance ?? null;
+            const minBalRestricted = new Set<string>(minBal?.restricted ? minBal.restrictedServices : []);
+            const rupee = (n: number) => `₹${Number.isInteger(n) ? n : n.toFixed(2)}`;
             const blacklistSection = (
               <div className="rounded-2xl border border-gray-200/90 bg-gradient-to-b from-white to-gray-50/50 p-4 sm:p-5 lg:p-6 shadow-sm hover:shadow-md transition-shadow h-full min-h-0 flex flex-col ring-1 ring-gray-900/5">
                 <div className="shrink-0 mb-4">
@@ -2297,6 +2303,15 @@ export default function RidersPage() {
                       </p>
                     </div>
                   )}
+                  {minBal?.belowMinimum && (
+                    <div className={`mt-3 rounded-lg border px-3 py-2 ${minBal.restricted ? 'border-amber-200 bg-amber-50' : 'border-sky-200 bg-sky-50'}`}>
+                      <p className={`text-xs font-medium ${minBal.restricted ? 'text-amber-900' : 'text-sky-900'}`}>
+                        {minBal.restricted
+                          ? `Parcel and Person ride restricted: wallet ${rupee(minBal.balance)} is below the ${rupee(minBal.threshold)} minimum. Recharge ${rupee(minBal.shortfall)} to unlock. Food stays available. Whitelisting does not lift this.`
+                          : `Wallet ${rupee(minBal.balance)} is below the ${rupee(minBal.threshold)} minimum (warn mode: not blocking). Recharge ${rupee(minBal.shortfall)} before enforcement.`}
+                      </p>
+                    </div>
+                  )}
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5 flex-1 min-h-0 overflow-y-auto pr-1 content-start">
                   {(['food', 'parcel', 'person_ride', 'all'] as const).map((service) => {
@@ -2305,9 +2320,12 @@ export default function RidersPage() {
                     const hasNegativeWalletBlock = globalWalletBlock || (service !== 'all' && negativeWalletBlocks.some((b: { serviceType: string }) => b.serviceType === service));
                     const cancelBlock = service !== 'all' ? summary?.cancellationServiceBlocks?.[service] : undefined;
                     const hasCancellationBlock = Boolean(cancelBlock);
-                    const isBlocked = isBannedByBlacklist || hasNegativeWalletBlock || hasCancellationBlock;
+                    const hasMinBalanceRestriction = service !== 'all' && minBalRestricted.has(service);
+                    const isBlocked = isBannedByBlacklist || hasNegativeWalletBlock || hasCancellationBlock || hasMinBalanceRestriction;
                     const isBlockedByNegativeWalletOnly = hasNegativeWalletBlock && !isBannedByBlacklist && !hasCancellationBlock;
                     const isBlockedByCancellationOnly = hasCancellationBlock && !isBannedByBlacklist && !hasNegativeWalletBlock;
+                    const isRestrictedByMinBalanceOnly =
+                      hasMinBalanceRestriction && !isBannedByBlacklist && !hasNegativeWalletBlock && !hasCancellationBlock;
                     const serviceLabel = service === 'all' ? 'All Services' : service.replace('_', ' ');
                     const isLoading = blacklistLoadingService === service;
                     const remaining = blacklist?.remainingMs != null ? formatRemaining(blacklist.remainingMs) : null;
@@ -2345,11 +2363,16 @@ export default function RidersPage() {
                                 <>Partially allowed ({((blacklist as { partiallyAllowedServices: string[] }).partiallyAllowedServices).map(s => s.replace('_', ' ')).join(', ')})</>
                               ) : (
                                 <>
-                                  {isBlocked ? (isBlockedByNegativeWalletOnly ? 'Blocked' : isBlockedByCancellationOnly ? 'Blocked (Cancellation rule)' : 'Banned') : 'Allowed'}
-                                  {isBlocked && !isBlockedByNegativeWalletOnly && !isBlockedByCancellationOnly && (blacklist?.isPermanent ? ' (Permanent)' : blacklist?.expiresAt ? ` (Until ${new Date(blacklist.expiresAt).toLocaleDateString()})` : ' (Temporary)')}
+                                  {isBlocked ? (isBlockedByNegativeWalletOnly ? 'Blocked' : isBlockedByCancellationOnly ? 'Blocked (Cancellation rule)' : isRestrictedByMinBalanceOnly ? `Restricted (wallet below ${rupee(minBal?.threshold ?? 0)})` : 'Banned') : 'Allowed'}
+                                  {isBlocked && !isBlockedByNegativeWalletOnly && !isBlockedByCancellationOnly && !isRestrictedByMinBalanceOnly && (blacklist?.isPermanent ? ' (Permanent)' : blacklist?.expiresAt ? ` (Until ${new Date(blacklist.expiresAt).toLocaleDateString()})` : ' (Temporary)')}
                                 </>
                               )}
                             </p>
+                            {hasMinBalanceRestriction && minBal && (
+                              <p className="text-xs text-amber-800 mt-1">
+                                Balance {rupee(minBal.balance)} · recharge {rupee(minBal.shortfall)} to unlock
+                              </p>
+                            )}
                             {blacklist?.reason && !isBlockedByNegativeWalletOnly && (
                               <p className="text-xs text-gray-600 mt-1 line-clamp-2">
                                 <span className="font-medium text-gray-700">Latest: </span>
