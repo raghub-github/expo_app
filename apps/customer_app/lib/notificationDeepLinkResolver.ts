@@ -66,7 +66,16 @@ export function resolveNotificationDeepLink(
     return SERVICE_ROUTES[serviceId] ?? "/(tabs)/";
   }
 
+  // Category-row chip taps may omit target_type but still carry deepLink + category id.
+  const deepLinkEarly =
+    asString(data.deepLink) || asString(data.deep_link) || asString(data.screen);
+  if (deepLinkEarly.startsWith("/home/category/")) return deepLinkEarly;
+
   if (targetType === "CATEGORY" && categoryId) {
+    const st = storeTypeForService(serviceId) || "FOOD";
+    return `/home/category/${encodeURIComponent(categoryId)}?storeType=${encodeURIComponent(st)}`;
+  }
+  if (!targetType && categoryId) {
     const st = storeTypeForService(serviceId) || "FOOD";
     return `/home/category/${encodeURIComponent(categoryId)}?storeType=${encodeURIComponent(st)}`;
   }

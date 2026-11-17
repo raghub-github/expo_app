@@ -316,24 +316,27 @@ function formatOfferRemaining(endsAtIso: string): string | null {
   return `Offer valid for ${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
-/** Android shade only shows title + body. CTA and countdown live in data unless copied here. */
+/**
+ * Android shade title+body fallback (Expo / non-RemoteViews).
+ * Never paste a frozen "Offer valid for HH:MM:SS" — that freezes at send time.
+ * Live ticking belongs to native Chronometer RemoteViews (layout_style=countdown).
+ */
 function announcementShadeBody(row: CreateLogRow): string {
   if (!isAnnouncementTemplateCode(row.templateCode)) return row.body;
   const data = pushDataForRow(row);
+  const layout = String(data.layout_style ?? data.layoutStyle ?? "")
+    .trim()
+    .toLowerCase();
+  // Rich layouts: keep body clean; MarketingNotificationRenderer owns tray UI.
+  if (layout === "countdown" || layout === "banner_image" || layout === "category_row") {
+    return row.body;
+  }
   const cta =
     (typeof data.cta_label === "string" && data.cta_label.trim()) ||
     (typeof data.ctaLabel === "string" && data.ctaLabel.trim()) ||
     "";
-  const countdownOn = data.countdown_enabled === "true" || data.countdown_enabled === true;
-  const endsAt = typeof data.ends_at === "string" ? data.ends_at : "";
-  const extra: string[] = [];
-  if (cta) extra.push(cta);
-  if (countdownOn && endsAt) {
-    const line = formatOfferRemaining(endsAt);
-    if (line) extra.push(line);
-  }
-  if (extra.length === 0) return row.body;
-  return `${row.body}\n${extra.join("\n")}`;
+  if (!cta) return row.body;
+  return `${row.body}\n${cta}`;
 }
 
 function buildFcmV1InputForRow(
@@ -446,6 +449,15 @@ function channelIdForRecipient(
       code === "CUSTOMER_PICKUP_OTP_ARRIVED"
     ) {
       return "customer_order_cx";
+    }
+    const layout = String(row?.metadata?.layout_style ?? row?.metadata?.layoutStyle ?? "")
+      .trim()
+      .toLowerCase();
+    if (
+      String(row?.templateCode ?? "").toUpperCase() === "CUSTOMER_ANNOUNCEMENT" &&
+      (layout === "banner_image" || layout === "category_row" || layout === "countdown")
+    ) {
+      return "customer_marketing";
     }
   }
   return "customer_default";
@@ -635,7 +647,24 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
     (typeof metadata.target_store_id === "string" && metadata.target_store_id.trim()) ||
     (typeof metadata.target_category_id === "string" && metadata.target_category_id.trim()) ||
     "";
+  const layoutStyle = String(metadata.layout_style ?? metadata.layoutStyle ?? "")
+    .trim()
+    .toLowerCase();
+  const chipsRaw = metadata.category_chips ?? metadata.categoryChips;
+  const categoryChipsJson =
+    typeof chipsRaw === "string"
+      ? chipsRaw
+      : Array.isArray(chipsRaw)
+        ? JSON.stringify(chipsRaw)
+        : "";
   const serverNow = new Date().toISOString();
+  let remainingMs = "";
+  if (countdownEnabled && endsAt) {
+    const endMs = Date.parse(endsAt);
+    if (Number.isFinite(endMs)) {
+      remainingMs = String(Math.max(0, endMs - Date.now()));
+    }
+  }
   return {
     notification_id: row.notificationId,
     campaign_id: row.campaignId ?? undefined,
@@ -664,8 +693,16 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
           ...(startsAt ? { starts_at: startsAt } : {}),
           ...(endsAt ? { ends_at: endsAt } : {}),
           server_now: serverNow,
+          ...(remainingMs ? { remaining_ms: remainingMs } : {}),
         }
       : {}),
+    ...(layoutStyle
+      ? {
+          layout_style: layoutStyle,
+          gm_marketing_layout: "1",
+        }
+      : {}),
+    ...(categoryChipsJson ? { category_chips: categoryChipsJson } : {}),
     ...(typeof metadata.target_type === "string" && metadata.target_type
       ? {
           target_type: String(metadata.target_type),
@@ -702,8 +739,16 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
           countdown_enabled: "true",
           server_now: serverNow,
           ...(endsAt ? { ends_at: endsAt } : {}),
+          ...(remainingMs ? { remaining_ms: remainingMs } : {}),
         }
       : {}),
+    ...(layoutStyle
+      ? {
+          layout_style: layoutStyle,
+          gm_marketing_layout: "1",
+        }
+      : {}),
+    ...(categoryChipsJson ? { category_chips: categoryChipsJson } : {}),
     appRole: row.recipient.role,
     target_app: row.recipient.role,
   };
@@ -729,6 +774,22 @@ function fcmDataForRow(row: CreateLogRow): Record<string, string> {
   return out;
 }
 
+/** Android RemoteViews marketing layouts need data-only FCM so MessagingService owns the tray. */
+function isRichMarketingLayoutRow(row: CreateLogRow): boolean {
+  if (row.recipient.role !== "customer") return false;
+  if (!isAnnouncementTemplateCode(row.templateCode)) return false;
+  const meta = row.metadata ?? {};
+  const style = String(meta.layout_style ?? meta.layoutStyle ?? "")
+    .trim()
+    .toLowerCase();
+  if (style === "banner_image" || style === "category_row" || style === "countdown") {
+    return true;
+  }
+  // Live countdown without explicit layout still needs Chronometer RemoteViews (not frozen body).
+  const cd = meta.countdown_enabled ?? meta.countdownEnabled;
+  return cd === true || cd === "true" || cd === 1 || cd === "1";
+}
+
 async function dispatchViaNativeFcm(
   row: CreateLogRow,
   nativeToken: string,
@@ -739,7 +800,8 @@ async function dispatchViaNativeFcm(
   );
   const nativeCriticalDataOnly =
     isCriticalIncomingOrderTemplate(row.templateCode) ||
-    isRiderDispatchOfferTemplate(row);
+    isRiderDispatchOfferTemplate(row) ||
+    isRichMarketingLayoutRow(row);
   const res = await sendFcmV1(
     buildFcmV1InputForRow(row, opts?.templateSilent === true, {
       token: nativeToken,
@@ -1575,7 +1637,8 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
             deepLink: resolvedDeepLinkForRow(row),
             nativeCriticalDataOnly:
               isCriticalIncomingOrderTemplate(row.templateCode) ||
-              isRiderDispatchOfferTemplate(row),
+              isRiderDispatchOfferTemplate(row) ||
+              isRichMarketingLayoutRow(row),
           }),
         );
         if (await finalizeFcmDelivery(row.notificationId, row.recipient.deviceToken, res, { maxRetries })) {
@@ -1630,7 +1693,8 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
             nativeCriticalDataOnly:
               !isWeb &&
               (isCriticalIncomingOrderTemplate(row.templateCode) ||
-                isRiderDispatchOfferTemplate(row)),
+                isRiderDispatchOfferTemplate(row) ||
+                isRichMarketingLayoutRow(row)),
           }),
           channelId: isWeb
             ? undefined

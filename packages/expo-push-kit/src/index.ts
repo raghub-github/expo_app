@@ -37,6 +37,11 @@ export {
 export { navigateFromPushData } from "./navigate";
 
 export {
+  isNativeMarketingNotificationAvailable,
+  showNativeMarketingNotification,
+} from "./marketingNotification";
+
+export {
   readNotificationPermission,
   requestNotificationPermission,
   openNotificationSettings,

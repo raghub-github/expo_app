@@ -1575,6 +1575,20 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
       if (announcementExtras.customDeepLink.trim()) {
         out.customDeepLink = announcementExtras.customDeepLink.trim();
       }
+      if (announcementExtras.layoutStyle && announcementExtras.layoutStyle !== "default") {
+        out.layout_style = announcementExtras.layoutStyle;
+      }
+      if (announcementExtras.categoryChips.length > 0) {
+        out.category_chips = JSON.stringify(
+          announcementExtras.categoryChips.map((c) => ({
+            categoryId: c.categoryId,
+            label: c.label,
+            imageUrl: c.imageUrl,
+            deepLink: c.deepLink,
+            serviceId: c.serviceId || null,
+          })),
+        );
+      }
     }
     return out;
   }, [templateVars, varValues, isCustomerAnnouncement, announcementExtras]);
@@ -1598,6 +1612,14 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
       const start = new Date(announcementExtras.startsAt).getTime();
       const end = new Date(announcementExtras.endsAt).getTime();
       if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return false;
+    }
+    const layout = announcementExtras.layoutStyle;
+    if (layout === "banner_image" && !announcementExtras.imageUrl) return false;
+    if (layout === "countdown" && !announcementExtras.countdownEnabled) return false;
+    if (layout === "category_row") {
+      const chips = announcementExtras.categoryChips;
+      if (chips.length < 2 || chips.length > 3) return false;
+      if (chips.some((c) => !c.imageUrl || !c.deepLink || !c.categoryId)) return false;
     }
     const title = String(varValues.title ?? "").trim();
     const body = String(varValues.body ?? "").trim();
@@ -1970,6 +1992,17 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
       if (announcementExtras.targetType === "ORDER") return "Enter the order id for the tap destination.";
       if (announcementExtras.targetType === "CUSTOM_DEEP_LINK") {
         return "Enter an approved GatiMitra route (must start with /home, /offers, /orders, …).";
+      }
+      if (announcementExtras.layoutStyle === "banner_image" && !announcementExtras.imageUrl) {
+        return "Big picture layout needs a notification image.";
+      }
+      if (announcementExtras.layoutStyle === "countdown" && !announcementExtras.countdownEnabled) {
+        return "Countdown layout needs countdown enabled with start/end.";
+      }
+      if (announcementExtras.layoutStyle === "category_row") {
+        const chips = announcementExtras.categoryChips;
+        if (chips.length < 2) return "Category cover layout needs at least 2 chips with covers.";
+        if (chips.some((c) => !c.imageUrl)) return "Upload a cover image for each category chip.";
       }
       if (announcementExtras.countdownEnabled) {
         if (!announcementExtras.startsAt || !announcementExtras.endsAt) {

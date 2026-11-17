@@ -71,6 +71,7 @@ import {
   parseCustomerAnnouncementFields,
   validityUserMessage,
   FALLBACK_DEEP_LINK,
+  type AnnouncementCategoryChip,
 } from "./customerAnnouncementCampaign.js";
 
 async function enrichCustomerAnnouncementCampaign(b: {
@@ -146,6 +147,32 @@ async function enrichCustomerAnnouncementCampaign(b: {
   vars.countdown_enabled = parsed.fields.countdownEnabled;
   vars.starts_at = parsed.fields.startsAt?.toISOString() ?? null;
   vars.ends_at = parsed.fields.endsAt?.toISOString() ?? null;
+  vars.layout_style = parsed.fields.layoutStyle;
+  // Rebuild chip deep links from category + service so tray PendingIntents stay canonical.
+  const enrichedChips: AnnouncementCategoryChip[] = [];
+  for (const chip of parsed.fields.categoryChips) {
+    try {
+      const chipTarget = await validateAnnouncementTarget({
+        targetType: "CATEGORY",
+        serviceId: chip.serviceId || "food",
+        categoryId: chip.categoryId,
+      });
+      if (!chipTarget.ok) continue;
+      enrichedChips.push({
+        ...chip,
+        deepLink: chipTarget.resolved.deepLink,
+        serviceId: chipTarget.resolved.target_service_id ?? chip.serviceId,
+      });
+    } catch {
+      if (chip.deepLink) enrichedChips.push(chip);
+    }
+  }
+  if (parsed.fields.layoutStyle === "category_row" && enrichedChips.length < 2) {
+    return { ok: false, error: "Category row needs at least 2 valid category covers" };
+  }
+  if (enrichedChips.length > 0) {
+    vars.category_chips = enrichedChips;
+  }
   if (parsed.fields.imageUrl) vars.image_url = parsed.fields.imageUrl;
   const overrideDeepLink =
     (b.overrideDeepLink && String(b.overrideDeepLink).trim()) || r.deepLink;
@@ -156,6 +183,7 @@ async function enrichCustomerAnnouncementCampaign(b: {
     metadataExtra: {
       notification_type: "CUSTOMER_ANNOUNCEMENT",
       target_type: r.target_type,
+      layout_style: parsed.fields.layoutStyle,
       ...(r.target_id ? { target_id: r.target_id } : {}),
       ...(r.target_service_id ? { target_service_id: r.target_service_id } : {}),
       ...(r.target_category_id ? { target_category_id: r.target_category_id } : {}),
@@ -166,6 +194,9 @@ async function enrichCustomerAnnouncementCampaign(b: {
       ...(parsed.fields.endsAt ? { ends_at: parsed.fields.endsAt.toISOString() } : {}),
       ...(parsed.fields.imageUrl
         ? { imageUrl: parsed.fields.imageUrl, image_url: parsed.fields.imageUrl }
+        : {}),
+      ...(enrichedChips.length > 0
+        ? { category_chips: JSON.stringify(enrichedChips) }
         : {}),
     },
     campaignFields: {
