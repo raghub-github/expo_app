@@ -549,7 +549,7 @@ export function FloatingTabBar({ state, descriptors, navigation }: BottomTabBarP
     if (name === "index") return canHome;
     if (name === "orders") return canOrders;
     if (name === "menu") return canMenu;
-    if (name === "reviews") return canReviews;
+    // Feedback ("reviews") is a hub tab only — neither main dock lists it any more.
     return true;
   });
   const visibleHubTabs = HUB_TAB_ORDER.filter((routeName) => {

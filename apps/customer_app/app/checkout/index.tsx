@@ -6055,6 +6055,19 @@ function CheckoutScreen() {
     void handlePlaceOrderPressRef.current();
   }, [paymentFailureRetryNonce]);
 
+  /**
+   * Hide place-order / confirming status sheet — once payment UI is up it must stay gone.
+   * Declared before the effect below: its deps array reads this during render, so a later
+   * `const` is a temporal-dead-zone ReferenceError ("used before its declaration").
+   */
+  const dismissPaymentStatusSheet = useCallback(() => {
+    openGatewayAfterProgressRef.current = false;
+    setAwaitingGatewayUi(false);
+    setPaymentStatusPhase(null);
+    setPaymentSheetReady(false);
+    setPaymentReturnBusy(false);
+  }, []);
+
   useEffect(() => {
     if (paymentFailureChooseMethodNonce < 1) return;
     if (paymentFailureChooseMethodNonce === lastPaymentFailureChooseMethodNonceRef.current) return;
@@ -6094,15 +6107,6 @@ function CheckoutScreen() {
       toPayAmount,
     ]
   );
-
-  /** Hide place-order / confirming status sheet — once payment UI is up it must stay gone. */
-  const dismissPaymentStatusSheet = useCallback(() => {
-    openGatewayAfterProgressRef.current = false;
-    setAwaitingGatewayUi(false);
-    setPaymentStatusPhase(null);
-    setPaymentSheetReady(false);
-    setPaymentReturnBusy(false);
-  }, []);
 
   const handleRazorpayCancel = useCallback(() => {
     // Invalidate any in-flight mint / progress-complete so payment UI cannot auto-reopen.

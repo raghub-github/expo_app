@@ -269,7 +269,10 @@ export async function fetchFoodOrders(
     return Array.isArray(data.orders) ? data.orders : [];
   };
 
-  const run = (async (): Promise<ApiFoodOrder[]> => {
+  // Declared before assignment: the `finally` below compares against `run`, and must not
+  // read it in its temporal dead zone (TS2454) even if runOnce ever threw synchronously.
+  let run: Promise<ApiFoodOrder[]> | undefined;
+  run = (async (): Promise<ApiFoodOrder[]> => {
     try {
       const orders = await runOnce();
       foodOrdersGate().cooldownUntil.delete(storeId);

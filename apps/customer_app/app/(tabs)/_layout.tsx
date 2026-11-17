@@ -56,7 +56,8 @@ export default function TabsLayout() {
         setProfileGate((n) => n + 1);
         return;
       }
-      if (cached != null && cached.profile_completed !== true) {
+      // Completed profiles returned above, so any cached profile here is incomplete.
+      if (cached != null) {
         router.replace("/(onboarding)");
         return;
       }

@@ -5,6 +5,7 @@
 
 import { createHash, randomInt, randomUUID } from "crypto";
 import { client as sql } from "@/lib/drizzle";
+import { checkAndRecordSmsSend, isBlockedPhone } from "@/lib/auth/sms-send-guard";
 
 export type MerchantActionOtpPurpose =
   | "invite"
@@ -187,6 +188,20 @@ export async function sendMerchantActionOtp(args: {
     throw Object.assign(new Error("Owner phone is required to send OTP."), { statusCode: 400 });
   }
 
+  // Same per-phone cooldown + daily cap as every other OTP SMS path (shared in this
+  // process with the Supabase send-sms hook; the backend action OTP has the same
+  // guard), so a resend loop cannot multiply real SMS spend. SMS_BLOCKED_PHONES skip SMS.
+  const smsBlocked = isBlockedPhone(phone);
+  if (!smsBlocked) {
+    const guard = checkAndRecordSmsSend(phone);
+    if (!guard.allowed) {
+      throw Object.assign(
+        new Error("Too many OTP requests for this number. Please wait a bit and try again."),
+        { statusCode: 429 },
+      );
+    }
+  }
+
   const otp = generateOtp();
   const requestId = randomUUID().replace(/-/g, "").slice(0, 26);
   const expiresAtMs = Date.now() + OTP_EXPIRY_MS;
@@ -230,7 +245,7 @@ export async function sendMerchantActionOtp(args: {
     console.error("[merchant-action-otp] persist failed", e);
   }
 
-  const sentSms = await sendSmsViaMsg91(phone, otp);
+  const sentSms = smsBlocked ? false : await sendSmsViaMsg91(phone, otp);
   const sentEmail = email ? await sendOtpEmail(email, otp, args.purpose) : false;
   const isDev = process.env.NODE_ENV !== "production";
 

@@ -245,7 +245,7 @@ export function resolveDeviceAddress(point: {
   if (
     cur.locationSource !== "selected" &&
     !isPlaceholderAddress(cur.address) &&
-    !cur.address.approximate &&
+    !cur.address?.approximate &&
     addressAnchor &&
     sameReverseGeocodeCell(addressAnchor, point)
   ) {
@@ -285,13 +285,13 @@ export function resolveDeviceAddress(point: {
     if (
       address.approximate &&
       !isPlaceholderAddress(visible) &&
-      !visible.approximate &&
+      !visible?.approximate &&
       distanceFromAddressAnchorM(point) < LABEL_STILL_NEARBY_M
     ) {
       logLocation("reverse-geocode-kept-better-nearby", {
         latitude: point.latitude,
         longitude: point.longitude,
-        keptPrimary: visible.primary,
+        keptPrimary: visible?.primary,
         rejectedPrimary: address.primary,
         rejectedDistanceM: address.distanceM,
       });
@@ -554,7 +554,7 @@ function startDeviceAcquisition(force: boolean): DeviceAcquisition {
         if (
           acquisition.commitSeq === locationFetchSeq &&
           s.locationSource === "current" &&
-          (isPlaceholderAddress(s.address) || s.address.approximate)
+          (isPlaceholderAddress(s.address) || s.address?.approximate)
         ) {
           addressAnchor = null;
           resolveDeviceAddress(deviceFix);
