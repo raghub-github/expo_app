@@ -59,6 +59,7 @@ export declare const OtpRequestSchema: z.ZodObject<{
         rider: "rider";
         merchant: "merchant";
     }>>;
+    supabaseHandoff: z.ZodOptional<z.ZodBoolean>;
 }, z.core.$strip>;
 export type OtpRequest = z.infer<typeof OtpRequestSchema>;
 export declare const OtpRequestResponseSchema: z.ZodObject<{

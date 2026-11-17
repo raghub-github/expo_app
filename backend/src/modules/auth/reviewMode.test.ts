@@ -7,6 +7,7 @@ import {
   createReviewBypasses,
   matchReviewBypass,
   isReviewOtpOnForeignPhone,
+  resolveReviewBypass,
   __test,
 } from "./reviewMode.js";
 import type { Env } from "../../config/env.js";
@@ -427,5 +428,65 @@ describe("Three bypasses are fully isolated (merchant / rider / customer)", () =
     assert.equal(createPartnerReviewLoginService(env).getReviewOtp(), MERCHANT_OTP);
     assert.equal(createRiderReviewLoginService(env).getReviewOtp(), RIDER_OTP);
     assert.equal(createReviewModeService(env).getReviewOtp(), CUSTOMER_OTP);
+  });
+});
+
+describe("While a bypass is ON its number logs in with the fixed OTP in any app", () => {
+  const allOn = () =>
+    riderOn({
+      REVIEW_LOGIN_BYPASS_ENABLED: true,
+      REVIEW_LOGIN_PHONE: MERCHANT_PHONE,
+      REVIEW_LOGIN_FIXED_OTP: MERCHANT_OTP,
+      GOOGLE_REVIEW_MODE: true,
+      GOOGLE_REVIEW_PHONE: CUSTOMER_PHONE,
+      GOOGLE_REVIEW_OTP: CUSTOMER_OTP,
+    } as Partial<Env>);
+
+  it("resolveReviewBypass: own app first, else the app that owns the number", () => {
+    const all = createReviewBypasses(allOn());
+    // The rider review number typed into the customer / merchant app → rider bypass.
+    assert.equal(resolveReviewBypass(all, `+91${RIDER_PHONE}`, "customer")?.app, "rider");
+    assert.equal(resolveReviewBypass(all, RIDER_PHONE, "merchant")?.app, "rider");
+    assert.equal(resolveReviewBypass(all, MERCHANT_PHONE, "merchant")?.app, "partner");
+    assert.equal(resolveReviewBypass(all, CUSTOMER_PHONE, "rider")?.app, "customer");
+    assert.equal(resolveReviewBypass(all, "+919876543210", "customer"), null, "normal user → SMS");
+    // matchReviewBypass itself keeps its strict per-app scope.
+    assert.equal(matchReviewBypass(all, RIDER_PHONE, "customer"), null);
+  });
+
+  it("resolveReviewBypass returns null when the owning bypass is off", () => {
+    const all = createReviewBypasses(
+      riderOn({ RIDER_REVIEW_LOGIN_BYPASS_ENABLED: false } as Partial<Env>),
+    );
+    assert.equal(resolveReviewBypass(all, RIDER_PHONE, "customer"), null);
+  });
+
+  it("with every flag off (prod today: 'flase' parses false) the numbers are normal users", () => {
+    const all = createReviewBypasses(
+      makeEnv({
+        RIDER_REVIEW_LOGIN_BYPASS_ENABLED: false,
+        RIDER_REVIEW_LOGIN_PHONE: RIDER_PHONE,
+        RIDER_REVIEW_LOGIN_FIXED_OTP: RIDER_OTP,
+        REVIEW_LOGIN_BYPASS_ENABLED: false,
+        REVIEW_LOGIN_PHONE: MERCHANT_PHONE,
+        REVIEW_LOGIN_FIXED_OTP: MERCHANT_OTP,
+      } as Partial<Env>),
+    );
+    for (const app of ["customer", "merchant", "rider", null]) {
+      assert.equal(resolveReviewBypass(all, `+91${RIDER_PHONE}`, app), null, `rider no. in ${app}`);
+      assert.equal(resolveReviewBypass(all, MERCHANT_PHONE, app), null, `merchant no. in ${app}`);
+    }
+    // Their real SMS codes are not "foreign review OTPs" either.
+    assert.equal(isReviewOtpOnForeignPhone(all, `+91${RIDER_PHONE}`, RIDER_OTP, "customer"), false);
+  });
+
+  it("the review OTP is still foreign on any non-review number, in every app", () => {
+    const all = createReviewBypasses(allOn());
+    assert.equal(isReviewOtpOnForeignPhone(all, "+919876543210", RIDER_OTP, "customer"), false,
+      "customer pool's own OTP is 654321, so 123456 is not a customer review code");
+    assert.equal(isReviewOtpOnForeignPhone(all, "+919876543210", CUSTOMER_OTP, "customer"), true);
+    assert.equal(isReviewOtpOnForeignPhone(all, "+919876543210", RIDER_OTP, "rider"), true);
+    // The rider number with its own code in the customer app is NOT foreign.
+    assert.equal(isReviewOtpOnForeignPhone(all, `+91${RIDER_PHONE}`, RIDER_OTP, "customer"), false);
   });
 });

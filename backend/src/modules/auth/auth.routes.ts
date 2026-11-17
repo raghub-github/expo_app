@@ -25,7 +25,7 @@ import {
 } from "./merchant-account-resolve.js";
 import {
   createReviewBypasses,
-  matchReviewBypass,
+  resolveReviewBypass,
   otpsEqual,
   isReviewOtpOnForeignPhone,
   maskReviewPhone,
@@ -635,6 +635,17 @@ export async function authRoutes(app: FastifyInstance) {
           return reply.code(400).send({ error: "Missing phone or otp" });
         }
 
+        // While a review bypass is ON its number never gets real SMS (store robots retry
+        // logins with it); it logs in with the fixed OTP via /otp/request. With the
+        // bypass off it is a normal number and falls through to the real SMS below.
+        if (resolveReviewBypass(getReviewBypasses(), phoneTrimmed, null)) {
+          request.log.warn(
+            { phone: maskReviewPhone(phoneTrimmed) },
+            "[supabase-send-sms] store-review number — SMS NOT sent",
+          );
+          return reply.send({ success: true });
+        }
+
         // Per-phone SEND guard (cooldown + daily cap) — the universal stop for SMS-bombing /
         // billing runaway. This is the path EVERY app hits via supabase.signInWithOtp, so a
         // client retry loop or auto-resend can never spend repeated real SMS on a number.
@@ -918,7 +929,7 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { phoneE164, appType } = OtpRequestSchema.parse(req.body);
+      const { phoneE164, appType, supabaseHandoff } = OtpRequestSchema.parse(req.body);
       const requestId = ulid();
       const expiresInSec = env.MSG91_OTP_EXPIRY_SEC;
       const phoneTail = phoneE164.replace(/\D/g, "").slice(-4);
@@ -931,7 +942,9 @@ export async function authRoutes(app: FastifyInstance) {
       // SMS path. The OTP is stored in the SAME otpStore with the SAME shape
       // so /otp/verify sees no difference. Checked BEFORE the merchant-existence
       // gate below so the review number never needs a registered account.
-      const requestBypass = matchReviewBypass(reviewBypasses, phoneE164, appType);
+      // A review number logs in with its own bypass in whichever app the store robot
+      // opened (Play Console hands one number to several apps).
+      const requestBypass = resolveReviewBypass(reviewBypasses, phoneE164, appType);
       if (requestBypass) {
         const otp = requestBypass.getReviewOtp();
         otpStore.set(requestId, {
@@ -954,6 +967,17 @@ export async function authRoutes(app: FastifyInstance) {
           requestId,
           expiresInSec,
           smsSent: true,
+        };
+      }
+
+      // Customer app (builds that ask the backend first): non-review numbers are
+      // delivered via Supabase by the app, exactly like merchant + rider below.
+      if (appType === "customer" && supabaseHandoff === true) {
+        return {
+          requestId: "",
+          expiresInSec,
+          smsSent: false,
+          useSupabase: true,
         };
       }
 
@@ -1222,7 +1246,7 @@ export async function authRoutes(app: FastifyInstance) {
       }
 
       // Review-seeded entries must still bind to an armed review phone.
-      const verifyBypass = matchReviewBypass(reviewBypasses, phoneE164, appType);
+      const verifyBypass = resolveReviewBypass(reviewBypasses, phoneE164, appType);
       if (entry.isReview) {
         if (!verifyBypass) {
           otpStore.delete(requestId);

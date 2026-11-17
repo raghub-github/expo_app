@@ -125,6 +125,70 @@ function checkSessionRowFields(sources) {
   return [...new Set(problems)];
 }
 
+/** Blank out comments and string/char literals, keeping offsets and newlines. */
+function stripCommentsAndLiterals(text) {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const next = text[i + 1];
+    if (c === "/" && next === "/") {
+      while (i < text.length && text[i] !== "\n") (out += " "), i++;
+      out += text[i] ?? "";
+    } else if (c === "/" && next === "*") {
+      const end = text.indexOf("*/", i + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      for (; i < stop; i++) out += text[i] === "\n" ? "\n" : " ";
+      i -= 1;
+    } else if (c === '"' || c === "'") {
+      out += " ";
+      for (i++; i < text.length && text[i] !== c; i++) {
+        if (text[i] === "\\") (out += " "), i++;
+        out += text[i] === "\n" ? "\n" : " ";
+      }
+      out += " ";
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+/**
+ * A field whose own initializer names it — e.g. a Runnable lambda that re-posts
+ * itself with `handler.postDelayed(offerExpiry, delay)` — is a javac error
+ * ("self-reference in initializer", JLS 8.3.3). The parse gate below cannot see
+ * it: once android.* is unresolved javac never attributes that code, so only
+ * Gradle/EAS reported it, and every rider + merchant build failed. Qualify it as
+ * `this.name` instead (inside a lambda, `this` is the enclosing instance).
+ */
+function checkFieldInitializerSelfReference(sources) {
+  const decl =
+    /^[ \t]*(?:(?:private|protected|public|static|final|volatile|transient)\s+)+[\w.<>[\], ?]+?\s+(\w+)\s*=(?!=)/gm;
+  const problems = [];
+  for (const [file, raw] of sources) {
+    const text = stripCommentsAndLiterals(raw);
+    for (const m of text.matchAll(decl)) {
+      const name = m[1];
+      const start = m.index + m[0].length;
+      let depth = 0;
+      let end = start;
+      for (; end < text.length; end++) {
+        const c = text[end];
+        if (c === "{" || c === "(") depth += 1;
+        else if (c === "}" || c === ")") depth -= 1;
+        else if (c === ";" && depth <= 0) break;
+      }
+      if (new RegExp(`(^|[^.\\w])${name}\\b`).test(text.slice(start, end))) {
+        const line = text.slice(0, m.index).split("\n").length;
+        problems.push(
+          `${file}:${line}: initializer of "${name}" refers to "${name}" — use this.${name}`
+        );
+      }
+    }
+  }
+  return problems;
+}
+
 /**
  * Split an argument list into top-level arguments.
  *
@@ -342,6 +406,12 @@ try {
       failures += rowProblems.length;
       console.log(`  ${target.role}: ${rowProblems.length} unwritten session-row field(s)`);
       for (const line of rowProblems) console.log(`    ${line}`);
+    }
+    const selfRefs = checkFieldInitializerSelfReference(rendered);
+    if (selfRefs.length > 0) {
+      failures += selfRefs.length;
+      console.log(`  ${target.role}: ${selfRefs.length} self-reference(s) in a field initializer`);
+      for (const line of selfRefs) console.log(`    ${line}`);
     }
     for (const file of readdirSync(TEST_DIR).filter((f) => f.endsWith(".java"))) {
       writeFileSync(

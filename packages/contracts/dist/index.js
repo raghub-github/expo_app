@@ -25,6 +25,12 @@ export const OtpRequestSchema = z.object({
     phoneE164: z.string().min(10),
     /** Which app is requesting — lets the backend gate merchant existence checks. */
     appType: z.enum(["customer", "rider", "merchant"]).optional(),
+    /**
+     * Customer builds that ask the backend first: for a non-review number the backend
+     * answers `useSupabase: true` (the app delivers via Supabase) instead of sending SMS
+     * itself. Older builds omit it and keep the backend-SMS behaviour.
+     */
+    supabaseHandoff: z.boolean().optional(),
 });
 export const OtpRequestResponseSchema = z.object({
     requestId: z.string(),

@@ -11,6 +11,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { Webhook, WebhookVerificationError } from "standardwebhooks";
+import { checkAndRecordSmsSend, isBlockedPhone } from "@/lib/auth/sms-send-guard";
 
 const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
 const SEND_SMS_HOOK_SECRET = process.env.SUPABASE_SEND_SMS_HOOK_SECRET;
@@ -162,6 +163,26 @@ export async function POST(req: NextRequest) {
     const mobile = normalizePhone(phoneTrimmed);
     if (mobile.length < 10) {
       return NextResponse.json({ error: "Invalid phone" }, { status: 400 });
+    }
+
+    // SMS_BLOCKED_PHONES (opt-in, empty by default) — e.g. a store-review number while
+    // its backend fixed-OTP bypass is on.
+    if (isBlockedPhone(mobile)) {
+      console.warn(`[send-sms] blocked number …${mobile.slice(-4)} — SMS NOT sent`);
+      return NextResponse.json({ success: true }, { status: 200 });
+    }
+
+    // Per-phone cooldown + daily cap — stops retry loops / SMS bombing on any number.
+    const guard = checkAndRecordSmsSend(mobile);
+    if (!guard.allowed) {
+      console.warn(
+        `[send-sms] per-phone limit (${guard.reason}) for …${mobile.slice(-4)} — SMS NOT sent`,
+      );
+      const message = "Too many OTP requests for this number. Please wait a bit and try again.";
+      return NextResponse.json(
+        { error: { http_code: 429, message }, reason: guard.reason, retryAfterSec: guard.retryAfterSec },
+        { status: 429 },
+      );
     }
 
     // Respond immediately so Supabase does not hit the 5-second hook timeout.
