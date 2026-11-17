@@ -80,21 +80,36 @@ export function isDutyServerRejection(err: unknown): boolean {
   return status >= 400 && status < 500;
 }
 
+const REASON_KEYS = ["message", "error_description", "detail", "error"] as const;
+
+function reasonFromObject(parsed: unknown): string | null {
+  if (!parsed || typeof parsed !== "object") return null;
+  for (const key of REASON_KEYS) {
+    const v = (parsed as Record<string, unknown>)[key];
+    if (typeof v === "string" && v.trim().length > 0 && v.trim().length < 300) {
+      return v.trim();
+    }
+  }
+  return null;
+}
+
 /** Pull a human-readable reason out of an API error body, if there is one. */
 export function dutyServerRejectionMessage(err: unknown): string | null {
+  // @gatimitra/sdk ApiError carries the already-parsed JSON body as `payload`
+  // (PUT /v1/rider/duty goes through it). Reading only `body` made every server
+  // refusal surface as the bare "API 403".
+  if (err && typeof err === "object" && "payload" in err) {
+    const fromPayload = reasonFromObject((err as { payload?: unknown }).payload);
+    if (fromPayload) return fromPayload;
+  }
   const raw =
     err && typeof err === "object" && "body" in err
       ? String((err as { body?: unknown }).body ?? "")
       : "";
   if (raw) {
     try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      for (const key of ["message", "error_description", "detail", "error"]) {
-        const v = parsed[key];
-        if (typeof v === "string" && v.trim().length > 0 && v.trim().length < 300) {
-          return v.trim();
-        }
-      }
+      const fromBody = reasonFromObject(JSON.parse(raw));
+      if (fromBody) return fromBody;
     } catch {
       // Not JSON — a short plain-text body is still better than a wrong guess.
       const text = raw.trim();
@@ -102,8 +117,8 @@ export function dutyServerRejectionMessage(err: unknown): string | null {
     }
   }
   const msg = err instanceof Error ? err.message.trim() : "";
-  // Bare status lines ("Request failed with status code 403") tell the rider nothing.
-  if (!msg || /^(request failed|http error|\d{3})\b/i.test(msg)) return null;
+  // Bare status lines ("Request failed with status code 403", "API 403") tell the rider nothing.
+  if (!msg || /^(request failed|http error|api \d{3}|\d{3})\b/i.test(msg)) return null;
   return msg.length < 300 ? msg : null;
 }
 

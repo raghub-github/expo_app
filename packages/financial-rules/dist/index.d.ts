@@ -188,4 +188,53 @@ export declare function evaluateCancellationSlabPolicy(input: {
 export declare function validateCancellationSlabs(slabs: CancellationSlab[]): string[];
 /** Reference defaults (seeded by migration): grace 1–5, then 60% / 35% / 20% (top open-ended). */
 export declare const DEFAULT_CANCELLATION_SLABS: CancellationSlab[];
+/**
+ * Minimum available wallet balance for post-paid (cash-capable) services.
+ *
+ * A rider who collects cash owes the platform its share out of their wallet, so
+ * the wallet needs headroom before they take another cash-capable job. Below the
+ * configured minimum (₹200 by default, ride_wallet_config.min_wallet_balance):
+ *
+ *   off     — nothing happens
+ *   warn    — the rider sees the shortfall and can recharge; dispatch unaffected
+ *   enforce — no new Person Ride or Parcel assignments until the balance is back
+ *
+ * Food is prepaid (no cash collection) so it is never restricted by this rule; a
+ * restricted rider can still earn back above the minimum on food.
+ *
+ * Computed from the committed wallet balance every time restrictions are read,
+ * so it can never go stale or be lifted by the app — there is no stored block row
+ * to forget to clear after a recharge. The negative-wallet blocks are separate
+ * and unchanged.
+ */
+export type MinBalanceMode = "off" | "warn" | "enforce";
+export declare const MIN_BALANCE_RESTRICTED_SERVICES: readonly ["parcel", "person_ride"];
+export type MinBalanceRestrictedService = (typeof MIN_BALANCE_RESTRICTED_SERVICES)[number];
+export type RiderMinBalanceStatus = {
+    mode: MinBalanceMode;
+    threshold: number;
+    balance: number;
+    /** Exact recharge that brings the balance back to the minimum. */
+    shortfall: number;
+    belowMinimum: boolean;
+    /** True only in enforce mode while below the minimum. */
+    restricted: boolean;
+    restrictedServices: MinBalanceRestrictedService[];
+    message: string | null;
+};
+export declare function normalizeMinBalanceMode(value: unknown): MinBalanceMode;
+export declare function evaluateMinWalletBalance(input: {
+    balance: number;
+    threshold: number;
+    mode: MinBalanceMode;
+}): RiderMinBalanceStatus;
+/**
+ * What a rider must pay to clear their wallet: the negative balance, or — while
+ * the minimum-balance policy is active — the shortfall up to the minimum.
+ */
+export declare function riderWalletRechargeDue(input: {
+    balance: number;
+    threshold: number;
+    mode: MinBalanceMode;
+}): number;
 //# sourceMappingURL=index.d.ts.map
