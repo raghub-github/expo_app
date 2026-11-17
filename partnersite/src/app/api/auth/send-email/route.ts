@@ -79,12 +79,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing email or token' }, { status: 400 });
     }
 
-    // Respond quickly; send in background (Supabase hook timeout ~5s).
-    void sendPartnerRegisterOtpEmail({ toEmail: email, token, emailActionType }).then((result) => {
-      if (!result.sent) {
-        console.error('[send-email] delivery failed:', result.reason);
-      }
-    });
+    // Await delivery so Supabase does not treat a failed/missing SMTP as success.
+    // Keep well under the ~5s hook timeout.
+    const result = await Promise.race([
+      sendPartnerRegisterOtpEmail({ toEmail: email, token, emailActionType }),
+      new Promise<{ sent: false; reason: string }>((resolve) =>
+        setTimeout(() => resolve({ sent: false, reason: 'send_timeout' }), 4200)
+      ),
+    ]);
+
+    if (!result.sent) {
+      console.error('[send-email] delivery failed:', result.reason);
+      return NextResponse.json(
+        { error: 'Email delivery failed', reason: result.reason },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({}, { status: 200 });
   } catch (e) {

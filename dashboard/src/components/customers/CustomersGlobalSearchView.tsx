@@ -1,16 +1,18 @@
 "use client";
 
-import { useState, useEffect, useRef, useLayoutEffect, useMemo } from "react";
+import { useState, useEffect, useRef, useLayoutEffect, useMemo, useCallback } from "react";
 import { useAppPathname, useAppSearchParams } from "@/hooks/useAppSearchParams";
 import { useRouter } from "next/navigation";
 import { CustomerTable } from "@/components/customers/CustomerTable";
-import { useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
+import { fetchCustomers, useCustomersQuery } from "@/hooks/queries/useCustomersQuery";
 import { usePermissions } from "@/hooks/queries/usePermissionsQuery";
 import { isStructuredCustomerSearch } from "@/lib/customers/search-kind";
 import { CustomerNotFoundState } from "@/components/customers/CustomerNotFoundState";
+import type { CustomerWithStats } from "@/lib/db/operations/customers";
 
 /**
  * Global customer search: matches customer_id, mobile, name, email (API).
+ * Also supports `?state=` from Users by State / UT (filtered list, no auto-open).
  * - One match, or structured GM…/phone search with several rows → open customer detail (first row if multiple).
  * - Name-style search with 2+ matches → table list only; Customer ID links to detail.
  */
@@ -22,7 +24,12 @@ export function CustomersGlobalSearchView() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const prevSearchParamRef = useRef<string | null>(null);
+  const prevStateParamRef = useRef<string | null>(null);
   const searchParamsKey = searchParams.toString();
+
+  const stateParam = (searchParams.get("state") || "").trim();
+  const isStateFilter = stateParam.length > 0;
+  const stateLabel = stateParam === "__unset__" ? "State not set" : stateParam;
 
   useEffect(() => {
     const p = pathname.replace(/\/$/, "") || "";
@@ -42,15 +49,20 @@ export function CustomersGlobalSearchView() {
       setSearch(searchParam || "");
       setPage(1);
     }
-  }, [searchParamsKey, searchParams]);
+    if (stateParam !== prevStateParamRef.current) {
+      prevStateParamRef.current = stateParam;
+      setPage(1);
+    }
+  }, [searchParamsKey, searchParams, stateParam]);
 
   const trimmed = search.trim();
-  const shouldFetch = trimmed.length > 0;
+  const shouldFetch = trimmed.length > 0 || isStateFilter;
 
   const { data, isLoading, isFetching, isPlaceholderData, isError, authGateReady } = useCustomersQuery({
     page,
     limit: 20,
     search: trimmed || undefined,
+    state: isStateFilter ? stateParam : undefined,
     enabled: shouldFetch && !permissionsLoading,
   });
 
@@ -77,12 +89,14 @@ export function CustomersGlobalSearchView() {
     });
   }, [customers, trimmed]);
 
-  /** Show table only for name-like search when several users match. */
-  const showMultiNameList = searchResultsFresh && customersSorted.length > 1 && !structured;
+  /** Show table for state filter, or name-like search when several users match. */
+  const showMultiNameList =
+    isStateFilter ||
+    (searchResultsFresh && customersSorted.length > 1 && !structured);
 
-  /** Auto-open detail for a single user, or structured multi-match (open first). */
+  /** Auto-open detail for a single user, or structured multi-match (open first). Never for state browse. */
   useLayoutEffect(() => {
-    // Wait for fresh results for *this* search — placeholder/stale rows open the wrong customer.
+    if (isStateFilter) return;
     if (!searchResultsFresh) return;
     if (customersSorted.length === 0) return;
     const q = encodeURIComponent(trimmed);
@@ -95,28 +109,42 @@ export function CustomersGlobalSearchView() {
 
     const match = customersSorted[0];
     const compactGm = trimmed.replace(/\s/g, "");
-    // For GM… searches, only open when the public customer_id matches exactly.
     if (/^GM\d+$/i.test(compactGm) && match.customerId.toLowerCase() !== compactGm.toLowerCase()) {
       return;
     }
 
-    // Navigate by public customer_id (GM…) so detail loads from customers.customer_id, not stale numeric pk.
     const targetKey = encodeURIComponent(match.customerId);
     const targetPath = `/dashboard/customers/${targetKey}`;
 
-    // Already on the correct customer detail page — no redirect needed.
-    // Prefer App Router pathname over window.location to stay consistent with RSC.
     const cleanPath = pathname.split("?")[0].split("#")[0];
     if (cleanPath === targetPath || cleanPath === `/dashboard/customers/${match.customerId}`) {
       return;
     }
 
     router.replace(`${targetPath}?search=${q}`);
-  }, [searchResultsFresh, customersSorted, router, structured, trimmed, pathname]);
+  }, [isStateFilter, searchResultsFresh, customersSorted, router, structured, trimmed, pathname]);
 
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
   };
+
+  const exportStateCustomers = useCallback(async (): Promise<CustomerWithStats[]> => {
+    const all: CustomerWithStats[] = [];
+    let pageNum = 1;
+    let totalPages = 1;
+    do {
+      const result = await fetchCustomers({
+        page: pageNum,
+        limit: 200,
+        search: trimmed || undefined,
+        state: isStateFilter ? stateParam : undefined,
+      });
+      all.push(...result.customers);
+      totalPages = Math.max(1, result.pagination.totalPages);
+      pageNum += 1;
+    } while (pageNum <= totalPages && pageNum <= 500);
+    return all;
+  }, [trimmed, isStateFilter, stateParam]);
 
   const showInitialLoading =
     shouldFetch &&
@@ -124,8 +152,8 @@ export function CustomersGlobalSearchView() {
     (!authGateReady || isLoading || isFetching || isPlaceholderData) &&
     customersSorted.length === 0;
 
-  // Structured search (GM/phone) that will auto-open detail — one continuous "Loading customer…" instead of list then detail.
   const willAutoOpenDetail =
+    !isStateFilter &&
     shouldFetch &&
     !isError &&
     structured &&
@@ -137,27 +165,23 @@ export function CustomersGlobalSearchView() {
 
   if (permissionsLoading) {
     return (
-      <div className="space-y-6 w-full max-w-full min-w-0 overflow-x-hidden px-2 sm:px-4 md:px-6">
-        <div className="rounded-lg border border-gray-200 bg-white p-6">
-          <div className="flex items-center justify-center py-8">
-            <div className="text-gray-500">Loading...</div>
-          </div>
-        </div>
+      <div className="flex h-full min-h-0 flex-1 items-center justify-center">
+        <p className="text-sm text-[#121212]/50">Loading...</p>
       </div>
     );
   }
 
   if (!shouldFetch) {
     return (
-      <div className="space-y-6 w-full max-w-full min-w-0 overflow-x-hidden px-2 sm:px-4 md:px-6">
-        <div className="rounded-lg border border-gray-200 bg-white p-12 text-center">
-          <p className="text-lg text-gray-700 font-medium">
+      <div className="flex h-full min-h-0 w-full flex-1 items-center justify-center">
+        <div className="rounded-md border-[0.5px] border-[#121212]/40 bg-white p-12 text-center">
+          <p className="text-lg font-medium text-[#121212]">
             One search. Complete customer context —{" "}
             <span className="font-bold bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 bg-clip-text text-transparent">
               powered by GatiMitra
             </span>
           </p>
-          <p className="mt-2 text-sm text-gray-500">
+          <p className="mt-2 text-sm text-[#121212]/50">
             Enter a Customer ID (e.g. GM100001), mobile number, or name to search
           </p>
         </div>
@@ -167,15 +191,24 @@ export function CustomersGlobalSearchView() {
 
   if (showInitialLoading || (willAutoOpenDetail && !showMultiNameList && !isError)) {
     return (
-      <div className="space-y-6 w-full max-w-full min-w-0 overflow-x-hidden px-2 sm:px-4 md:px-6">
-        <div className="rounded-2xl border border-teal-200/50 bg-gradient-to-br from-[#E6F6F5]/90 to-white p-12 text-center ring-1 ring-[#0f2d42]/5">
-          <p className="text-[#0f2d42]/70">Loading customer…</p>
-        </div>
+      <div className="flex h-full min-h-0 flex-1 items-center justify-center">
+        <p className="text-sm text-[#121212]/50">
+          {isStateFilter ? "Loading customers…" : "Loading customer…"}
+        </p>
       </div>
     );
   }
 
-  if (isError || (trimmed && searchResultsFresh && customersSorted.length === 0)) {
+  if (isError || (shouldFetch && searchResultsFresh && customersSorted.length === 0)) {
+    if (isStateFilter) {
+      return (
+        <div className="flex h-full min-h-0 flex-1 items-center justify-center px-4">
+          <p className="text-sm text-[#121212]/55">
+            No customers found for {stateLabel}.
+          </p>
+        </div>
+      );
+    }
     return (
       <div className="w-full max-w-full min-w-0 overflow-x-hidden">
         <CustomerNotFoundState />
@@ -183,23 +216,42 @@ export function CustomersGlobalSearchView() {
     );
   }
 
-  return (
-    <div className="space-y-6 w-full max-w-full min-w-0 overflow-x-hidden px-2 sm:px-4 md:px-6">
-      <div className="rounded-2xl border border-teal-200/40 bg-gradient-to-br from-[#E6F6F5]/50 via-white to-[#f0fdf9] p-4 sm:p-6 ring-1 ring-[#0f2d42]/5">
-        <div className="space-y-4">
-          {showMultiNameList && (
-            <CustomerTable
-              customers={customersSorted}
-              loading={isLoading}
-              pageType="all"
-              searchQuery={trimmed}
-              onPageChange={handlePageChange}
-              currentPage={data?.pagination?.page ?? 1}
-              totalPages={data?.pagination?.totalPages ?? 1}
-            />
-          )}
-        </div>
+  if (isStateFilter && showMultiNameList) {
+    const total = data?.pagination?.total ?? customersSorted.length;
+    return (
+      <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+        <CustomerTable
+          customers={customersSorted}
+          loading={isLoading || isFetching}
+          pageType="all"
+          searchQuery={trimmed || stateLabel}
+          onPageChange={handlePageChange}
+          currentPage={data?.pagination?.page ?? page}
+          totalPages={data?.pagination?.totalPages ?? 1}
+          totalCount={total}
+          showExport={false}
+        />
       </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+      {showMultiNameList ? (
+        <CustomerTable
+          customers={customersSorted}
+          loading={isLoading}
+          pageType="all"
+          searchQuery={trimmed || stateLabel}
+          onPageChange={handlePageChange}
+          currentPage={data?.pagination?.page ?? 1}
+          totalPages={data?.pagination?.totalPages ?? 1}
+          totalCount={data?.pagination?.total}
+          showExport
+          onExportAll={exportStateCustomers}
+          exportFileName="customers-search"
+        />
+      ) : null}
     </div>
   );
 }

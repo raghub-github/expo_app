@@ -2,8 +2,10 @@
  * Background ↔ in-app audio handoff (DEVICE-LOCAL only).
  *
  * Foreground:
- *   1. Stop THIS device's native FGS buzzer (mute — not global stop).
- *   2. Hand audio to the JS Incoming chime for still-actionable orders.
+ *   Mute THIS device's native FGS buzzer only. Do NOT start the JS chime here —
+ *   IncomingOrderModal.takeoverNewOrderAlertByModal owns in-app audio when the
+ *   accept sheet opens. Starting playback here raced the modal and caused
+ *   native + JS buzzers to overlap on app open.
  *
  * Background:
  *   Stop the JS chime so native remount/rearm can own audio again.
@@ -13,20 +15,32 @@
  */
 import { useEffect, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
-import { handoffBackgroundAlertToInApp } from "@/lib/newOrderAlertManager";
+import { muteNewOrderAlertOnAppOpen } from "@/lib/newOrderAlertManager";
 import { stopOrderAlertSound } from "@/lib/playOrderAlertSound";
+
+function silenceNativeOnForeground() {
+  stopOrderAlertSound();
+  void muteNewOrderAlertOnAppOpen();
+}
 
 export default function OrderAlertAppOpenMute() {
   const prev = useRef<AppStateStatus>(AppState.currentState);
+  const mutedOnceRef = useRef(false);
 
   useEffect(() => {
+    // Cold/warm launch already active while FGS is ringing (notification tap).
+    if (AppState.currentState === "active" && !mutedOnceRef.current) {
+      mutedOnceRef.current = true;
+      silenceNativeOnForeground();
+    }
+
     const sub = AppState.addEventListener("change", (next) => {
       const wasBg = prev.current === "background" || prev.current === "inactive";
       const wasActive = prev.current === "active";
       prev.current = next;
       if (next === "active" && wasBg) {
-        stopOrderAlertSound();
-        void handoffBackgroundAlertToInApp();
+        mutedOnceRef.current = true;
+        silenceNativeOnForeground();
         return;
       }
       if (wasActive && (next === "background" || next === "inactive")) {

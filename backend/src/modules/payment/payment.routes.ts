@@ -227,10 +227,20 @@ export async function paymentRoutes(app: FastifyInstance) {
                 });
                 return reply.send({ ok: false, error: "amount_mismatch" });
               }
+              // Stamp granular mode for Transactions MODE column.
+              try {
+                await db
+                  .update(pendingOrders)
+                  .set({ paymentMethod: "upi_qr", updatedAt: new Date() })
+                  .where(eq(pendingOrders.pendingId, foodPendingId));
+              } catch {
+                /* non-fatal */
+              }
               const result = await finalizePendingOrderFromWebhook(db, {
                 razorpayOrderId: foodRazorpayOrderId,
                 razorpayPaymentId,
-                paymentMethod: "upi",
+                paymentMethod: "upi_qr",
+                pendingIdHint: foodPendingId,
                 gatewayPayload: {
                   verifiedBy: "razorpay_qr_webhook",
                   event,
@@ -377,13 +387,123 @@ export async function paymentRoutes(app: FastifyInstance) {
 
         if (event === "payment.captured" || event === "order.paid") {
           const paymentEntity = extractEntity("payment");
-          const razorpayOrderId = String(paymentEntity?.order_id ?? "");
-          const razorpayPaymentId = String(paymentEntity?.id ?? "");
-          if (!razorpayOrderId || !razorpayPaymentId) {
+          let razorpayOrderId = String(paymentEntity?.order_id ?? "").trim();
+          const razorpayPaymentId = String(paymentEntity?.id ?? "").trim();
+          const notes = (paymentEntity?.notes ?? {}) as Record<string, unknown>;
+          // Scan-QR UPI payments frequently omit order_id; notes carry the checkout link.
+          const notesPendingId = String(
+            notes.pending_id ?? notes.pendingId ?? ""
+          ).trim();
+          const notesOrderId = String(
+            notes.razorpay_order_id ?? notes.order_id ?? notes.razorpayOrderId ?? ""
+          ).trim();
+          const notesSource = String(notes.source ?? "").trim();
+          if (!razorpayOrderId && notesOrderId) razorpayOrderId = notesOrderId;
+
+          if (!razorpayPaymentId) {
             await logPaymentEvent(db, {
               eventType: "WEBHOOK_REJECTED_INVALID_PAYLOAD",
               source: "webhook",
-              payload: { event, eventId, reason: "missing order_id or payment id", durationMs: Date.now() - startedAtMs },
+              payload: { event, eventId, reason: "missing payment id", durationMs: Date.now() - startedAtMs },
+            });
+            return reply.status(400).send({ error: "invalid_payload" });
+          }
+
+          // Food checkout QR: payment.captured without order_id → finalize via notes / QR recover.
+          if (
+            !razorpayOrderId &&
+            (notesSource === "food_checkout_qr" || notesPendingId)
+          ) {
+            try {
+              const { tryRecoverFoodCheckoutQrForPending } = await import(
+                "./food-checkout-qr-recover.js"
+              );
+              let recovered = await tryRecoverFoodCheckoutQrForPending({
+                pendingId: notesPendingId || null,
+                razorpayOrderId: notesOrderId || null,
+                via: "payment_captured_webhook_no_order_id",
+              });
+              if (
+                recovered.status !== "finalized" &&
+                recovered.status !== "already_finalized" &&
+                notesPendingId
+              ) {
+                // Payment is already captured per webhook — finalize even if QR
+                // payments API lag; never invent a fake Razorpay order id.
+                const direct = await finalizePendingOrderFromWebhook(db, {
+                  razorpayOrderId: notesOrderId,
+                  razorpayPaymentId,
+                  paymentMethod: String(paymentEntity?.method ?? "upi"),
+                  pendingIdHint: notesPendingId,
+                  gatewayPayload: {
+                    verifiedBy: "payment_captured_qr_notes",
+                    event,
+                    pendingId: notesPendingId,
+                  },
+                });
+                if (direct.ok) {
+                  recovered = {
+                    status: "finalized",
+                    pendingId: notesPendingId,
+                    paymentId: razorpayPaymentId,
+                  };
+                }
+              }
+              await markWebhookProcessed(db, eventId);
+              await logPaymentEvent(db, {
+                eventType:
+                  recovered.status === "finalized" || recovered.status === "already_finalized"
+                    ? "WEBHOOK_HANDLED_OK"
+                    : "WEBHOOK_HANDLER_FAILED",
+                source: "webhook",
+                razorpayPaymentId,
+                razorpayOrderId: notesOrderId || undefined,
+                payload: {
+                  event,
+                  eventId,
+                  handler: "food_checkout_qr_payment_captured",
+                  recovered: recovered.status,
+                  notesPendingId: notesPendingId || null,
+                  durationMs: Date.now() - startedAtMs,
+                },
+              });
+              if (recovered.status === "finalized" || recovered.status === "already_finalized") {
+                if (notesOrderId) {
+                  notifyCustomerPaymentSettled({
+                    razorpayOrderId: notesOrderId,
+                    status: "SUCCESS",
+                  });
+                }
+              }
+              return reply.send({
+                ok:
+                  recovered.status === "finalized" ||
+                  recovered.status === "already_finalized",
+                handler: "food_checkout_qr_payment_captured",
+              });
+            } catch (err) {
+              await logPaymentEvent(db, {
+                eventType: "WEBHOOK_HANDLER_FAILED",
+                source: "webhook",
+                razorpayPaymentId,
+                failureMessage: (err as Error)?.message ?? "unknown",
+                payload: { event, eventId, handler: "food_checkout_qr_payment_captured" },
+              });
+              return reply.send({ ok: false, handler: "food_checkout_qr_payment_captured" });
+            }
+          }
+
+          if (!razorpayOrderId) {
+            await logPaymentEvent(db, {
+              eventType: "WEBHOOK_REJECTED_INVALID_PAYLOAD",
+              source: "webhook",
+              payload: {
+                event,
+                eventId,
+                reason: "missing order_id",
+                notesSource: notesSource || null,
+                durationMs: Date.now() - startedAtMs,
+              },
             });
             return reply.status(400).send({ error: "invalid_payload" });
           }
@@ -394,7 +514,6 @@ export async function paymentRoutes(app: FastifyInstance) {
           // "app crashed / phone died between capture and verify-payment" case
           // where the client never confirms the payment. Idempotent — a no-op
           // if the client already called verify-payment.
-          const notes = (paymentEntity?.notes ?? {}) as Record<string, unknown>;
           if (notes && (notes.merchant_store_pk ?? notes.merchantStorePk)) {
             const { activateMerchantSubscriptionFromWebhook } = await import(
               "../merchant-partner/merchant-subscription.service.js"
@@ -633,12 +752,40 @@ export async function paymentRoutes(app: FastifyInstance) {
             return reply.send({ ok: pf.ok, handler: "parcel_fare" });
           }
 
-          const result = await finalizePendingOrderFromWebhook(db, {
+          let result = await finalizePendingOrderFromWebhook(db, {
             razorpayOrderId,
             razorpayPaymentId,
             paymentMethod: String(paymentEntity?.method ?? "online"),
-            gatewayPayload: { verifiedBy: "razorpay_webhook", event, payload: payloadObject },
+            pendingIdHint: notesPendingId || null,
+            gatewayPayload: {
+              verifiedBy: "razorpay_webhook",
+              event,
+              payload: payloadObject,
+              pendingId: notesPendingId || undefined,
+            },
           });
+          // Safety net: Scan-QR capture may land on the QR entity while Orders
+          // API truth is empty — recover via QR payments list.
+          if (!result.ok && (notesSource === "food_checkout_qr" || notesPendingId)) {
+            try {
+              const { tryRecoverFoodCheckoutQrForPending } = await import(
+                "./food-checkout-qr-recover.js"
+              );
+              const recovered = await tryRecoverFoodCheckoutQrForPending({
+                pendingId: notesPendingId || null,
+                razorpayOrderId,
+                via: "payment_captured_fallback_qr_recover",
+              });
+              if (
+                recovered.status === "finalized" ||
+                recovered.status === "already_finalized"
+              ) {
+                result = { ok: true };
+              }
+            } catch {
+              /* keep original result */
+            }
+          }
           await markWebhookProcessed(db, eventId);
           await logPaymentEvent(db, {
             eventType: "WEBHOOK_HANDLED_OK",
@@ -674,6 +821,31 @@ export async function paymentRoutes(app: FastifyInstance) {
             });
             return reply.status(400).send({ error: "invalid_payload" });
           }
+
+          // A failed attempt must not wipe a Scan-QR capture on the same order.
+          try {
+            const { tryRecoverFoodCheckoutQrForPending } = await import(
+              "./food-checkout-qr-recover.js"
+            );
+            const qrRecover = await tryRecoverFoodCheckoutQrForPending({
+              razorpayOrderId,
+              via: "payment_failed_webhook",
+            });
+            if (qrRecover.status === "finalized" || qrRecover.status === "already_finalized") {
+              await markWebhookProcessed(db, eventId);
+              await logPaymentEvent(db, {
+                eventType: "WEBHOOK_FAILED_IGNORED_QR_CAPTURED",
+                source: "webhook",
+                razorpayOrderId,
+                razorpayPaymentId,
+                payload: { event, eventId, qrRecover: qrRecover.status },
+              });
+              return reply.send({ ok: true, ignored: "qr_captured" });
+            }
+          } catch {
+            /* continue to fail path */
+          }
+
           await markPendingOrderFailedFromWebhook(db, {
             razorpayOrderId,
             razorpayPaymentId,
@@ -1301,6 +1473,16 @@ export async function paymentRoutes(app: FastifyInstance) {
         },
       });
 
+      // Transactions MODE column reads pending_orders.payment_method.
+      try {
+        await db
+          .update(pendingOrders)
+          .set({ paymentMethod: "upi_qr", updatedAt: new Date() })
+          .where(eq(pendingOrders.pendingId, pendingId));
+      } catch {
+        /* non-fatal */
+      }
+
       return {
         qrId: qr.id,
         imageUrl,
@@ -1541,9 +1723,115 @@ export async function paymentRoutes(app: FastifyInstance) {
         });
       }
 
+      const orderId = pending.razorpayOrderId || razorpayOrderId;
+
+      // Never trust the client alone — Scan QR / UPI may have already captured
+      // at Razorpay while the app timed out or lost the callback.
+      try {
+        const { tryRecoverFoodCheckoutQrForPending } = await import(
+          "./food-checkout-qr-recover.js"
+        );
+        const qrRecover = await tryRecoverFoodCheckoutQrForPending({
+          pendingId,
+          razorpayOrderId: orderId,
+          via: "client_checkout_fail",
+        });
+        if (qrRecover.status === "finalized" || qrRecover.status === "already_finalized") {
+          await logPaymentEvent(db, {
+            eventType: "CLIENT_FAIL_IGNORED_QR_CAPTURED",
+            source: "client",
+            pendingId,
+            razorpayOrderId: orderId,
+            payload: { qrRecover: qrRecover.status, ts: Date.now() },
+          });
+          return reply.send({
+            ok: true,
+            code: "ALREADY_PAID",
+            message: "Payment was captured at Razorpay.",
+          });
+        }
+      } catch {
+        /* fall through to order-level gateway check */
+      }
+
+      try {
+        const { resolveGatewayTruth } = await import("../../lib/payment/gateway-truth.js");
+        const [pendingAmt] = await db
+          .select({
+            grandTotal: pendingOrders.grandTotal,
+            gatiCashApplied: pendingOrders.gatiCashApplied,
+            finalizedOrderId: pendingOrders.finalizedOrderId,
+            paymentState: pendingOrders.paymentState,
+          })
+          .from(pendingOrders)
+          .where(eq(pendingOrders.pendingId, pendingId))
+          .limit(1);
+        if (pendingAmt?.finalizedOrderId) {
+          return reply.send({
+            ok: true,
+            code: "ALREADY_PAID",
+            message: "Payment already confirmed.",
+          });
+        }
+        const expectedPaise = Math.round(
+          Math.max(
+            0,
+            Number(pendingAmt?.grandTotal ?? 0) - Number(pendingAmt?.gatiCashApplied ?? 0)
+          ) * 100
+        );
+        const truth = await resolveGatewayTruth({ orderId, expectedPaise });
+        if (truth.state === "CAPTURED") {
+          const result = await finalizePendingOrderFromWebhook(db, {
+            razorpayOrderId: orderId,
+            razorpayPaymentId: truth.paymentId,
+            paymentMethod: "online",
+            gatewayPayload: {
+              verifiedBy: "client_checkout_fail_gateway_truth",
+              pendingId,
+            },
+          });
+          if (result.ok) {
+            notifyCustomerPaymentSettled({
+              razorpayOrderId: orderId,
+              status: "SUCCESS",
+            });
+          }
+          await logPaymentEvent(db, {
+            eventType: "CLIENT_FAIL_IGNORED_GATEWAY_CAPTURED",
+            source: "client",
+            pendingId,
+            razorpayOrderId: orderId,
+            razorpayPaymentId: truth.paymentId,
+            payload: { ts: Date.now() },
+          });
+          return reply.send({
+            ok: true,
+            code: "ALREADY_PAID",
+            message: "Payment was captured at Razorpay.",
+          });
+        }
+        if (truth.state === "PENDING" || truth.state === "UNREACHABLE") {
+          await logPaymentEvent(db, {
+            eventType: "CLIENT_FAIL_DEFERRED_GATEWAY_UNCERTAIN",
+            source: "client",
+            pendingId,
+            razorpayOrderId: orderId,
+            payload: { truth: truth.state, ts: Date.now() },
+          });
+          // Do not mark failed while money may still settle / gateway is down.
+          return reply.send({
+            ok: true,
+            code: "PAYMENT_PENDING",
+            message: "Payment status is still being confirmed.",
+          });
+        }
+      } catch {
+        /* if verification throws, fall through to legacy fail path */
+      }
+
       const failureMessage = reason || "Payment was not completed.";
       await markPendingOrderFailedFromWebhook(db, {
-        razorpayOrderId: pending.razorpayOrderId || razorpayOrderId,
+        razorpayOrderId: orderId,
         razorpayPaymentId: null,
         failureCode: "CLIENT_PAYMENT_INCOMPLETE",
         failureMessage,
@@ -1559,14 +1847,14 @@ export async function paymentRoutes(app: FastifyInstance) {
         eventType: "CLIENT_PAYMENT_FAILED",
         source: "client",
         pendingId,
-        razorpayOrderId: pending.razorpayOrderId || razorpayOrderId,
+        razorpayOrderId: orderId,
         failureCode: "CLIENT_PAYMENT_INCOMPLETE",
         failureMessage,
         payload: { ts: Date.now() },
       });
 
       notifyCustomerPaymentSettled({
-        razorpayOrderId: pending.razorpayOrderId || razorpayOrderId,
+        razorpayOrderId: orderId,
         status: "FAILED",
         reason: failureMessage,
       });

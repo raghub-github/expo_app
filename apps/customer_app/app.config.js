@@ -14,20 +14,18 @@ const appJson = require("./app.json");
 const APP_ICON = "./assets/icon.png";
 const APP_ADAPTIVE_FOREGROUND = "./assets/adaptive-icon.png";
 const APP_ICON_BG = "#000000";
-/** Match GatiMitraBootstrapScreen so the native-to-React handoff has no second wordmark. */
+/** Match GatiMitraBootstrapScreen mint so native → JS handoff is one continuous splash. */
 const LAUNCHER_SPLASH_BG = "#14b8a6";
 /**
- * Fully transparent 256x256 PNG — the splash stays a plain mint screen, as above.
+ * Branded native splash (bold Lora wordmark + tagline on mint).
+ * Same PNG is rendered by GatiMitraBootstrapScreen — one visual, no Text font race.
+ * Regenerate with: npm run generate:splash (embeds Lora_700Bold.ttf).
  *
- * It cannot simply be omitted. expo-splash-screen's Android prebuild ALWAYS writes
- * `windowSplashScreenAnimatedIcon -> @drawable/splashscreen_logo` into styles.xml
- * (withAndroidSplashStyles.addSplashScreenStyle), but only emits that drawable when an
- * `image` is configured, and it deletes any stale copy first. A background-colour-only
- * splash therefore leaves a dangling resource reference, and aapt2 fails the release
- * build with "resource drawable/splashscreen_logo not found". A transparent image keeps
- * the splash blank while giving the linker a real drawable to resolve.
+ * Image cannot be omitted: expo-splash-screen's Android prebuild always writes
+ * `windowSplashScreenAnimatedIcon -> @drawable/splashscreen_logo` and aapt2 fails
+ * if the drawable is missing.
  */
-const LAUNCHER_SPLASH_IMAGE = "./assets/images/splash-blank.png";
+const LAUNCHER_SPLASH_IMAGE = "./assets/images/splash-android12.png";
 
 const googleServicesFile = path.resolve(__dirname, "google-services.json");
 const hasGoogleServices = fs.existsSync(googleServicesFile);
@@ -54,6 +52,7 @@ module.exports = {
     icon: APP_ICON,
     splash: {
       image: LAUNCHER_SPLASH_IMAGE,
+      resizeMode: "contain",
       backgroundColor: LAUNCHER_SPLASH_BG,
     },
     ios: {
@@ -68,6 +67,8 @@ module.exports = {
       ],
       infoPlist: {
         ...(appJson.expo.ios?.infoPlist || {}),
+        // Standard HTTPS-only apps: declare no non-exempt encryption for TestFlight/ASC.
+        ITSAppUsesNonExemptEncryption: false,
         UIFileSharingEnabled: true,
         LSSupportsOpeningDocumentsInPlace: true,
         LSApplicationQueriesSchemes: [
@@ -136,6 +137,8 @@ module.exports = {
         "expo-splash-screen",
         {
           image: LAUNCHER_SPLASH_IMAGE,
+          imageWidth: 280,
+          resizeMode: "contain",
           backgroundColor: LAUNCHER_SPLASH_BG,
         },
       ],

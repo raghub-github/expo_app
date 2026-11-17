@@ -10,6 +10,7 @@ import {
 } from "@/lib/auth/session-manager";
 import { isTimeoutOrAbortError } from "@/lib/auth/session-errors";
 import {
+  hasSupabaseAuthCookies,
   isCookieAccessTokenUsable,
   readCookieAccessSession,
 } from "@/lib/auth/read-cookie-access-session";
@@ -62,7 +63,15 @@ function unauthenticatedLoginRedirect(request: NextRequest, pathname: string): N
   return NextResponse.redirect(redirectUrl);
 }
 
-function recoverUnifiedSessionIfJwtUsable(
+/**
+ * When partner session cookies expire, keep Auth cookies alive when possible.
+ * - Usable access JWT → re-init partner session immediately.
+ * - Expired access JWT but refresh/auth cookies still present → re-init partner
+ *   session and let route handlers refresh via getAuthenticatedApiUser.
+ * Never wipe sb-* cookies here just because the access token skew window elapsed;
+ * that caused cascading 401s + SESSION_INVALID logouts on production.
+ */
+function recoverUnifiedSessionIfAuthPresent(
   request: NextRequest,
   cookieManager: {
     get: (name: string) => { value: string } | undefined;
@@ -79,13 +88,20 @@ function recoverUnifiedSessionIfJwtUsable(
     ) => void;
   }
 ): boolean {
-  const cookieSession = readCookieAccessSession({
-    get: (name) => request.cookies.get(name),
+  const reader = {
+    get: (name: string) => request.cookies.get(name),
     getAll: () => request.cookies.getAll(),
-  });
-  if (!isCookieAccessTokenUsable(cookieSession)) return false;
-  initializeSession(cookieManager);
-  return true;
+  };
+  const cookieSession = readCookieAccessSession(reader);
+  if (isCookieAccessTokenUsable(cookieSession)) {
+    initializeSession(cookieManager);
+    return true;
+  }
+  if (cookieSession?.refreshToken || hasSupabaseAuthCookies(reader)) {
+    initializeSession(cookieManager);
+    return true;
+  }
+  return false;
 }
 
 function deadSessionRedirect(
@@ -190,7 +206,7 @@ export async function middleware(request: NextRequest) {
         if (debugProxy) {
           console.log("[proxy] Unified session expired:", validity.reason);
         }
-        if (!recoverUnifiedSessionIfJwtUsable(request, cookieManager)) {
+        if (!recoverUnifiedSessionIfAuthPresent(request, cookieManager)) {
           expireSession(cookieManager);
           return deadSessionRedirect(request, normalizedRedirectPath, pathname);
         }

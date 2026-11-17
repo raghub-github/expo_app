@@ -29,6 +29,8 @@ export interface CustomersQueryParams {
   orderType?: "food" | "parcel" | "person_ride";
   dateFrom?: string;
   dateTo?: string;
+  /** State / UT name, or `__unset__` for missing state. */
+  state?: string;
   sortBy?: string;
   sortOrder?: "asc" | "desc";
   enabled?: boolean;
@@ -51,10 +53,15 @@ export async function fetchCustomers(
   if (params.orderType) searchParams.set("orderType", params.orderType);
   if (params.dateFrom) searchParams.set("dateFrom", params.dateFrom);
   if (params.dateTo) searchParams.set("dateTo", params.dateTo);
+  if (params.state) searchParams.set("state", params.state);
   if (params.sortBy) searchParams.set("sortBy", params.sortBy);
   if (params.sortOrder) searchParams.set("sortOrder", params.sortOrder);
 
-  const response = await fetch(`/api/customers?${searchParams.toString()}`, { signal });
+  const response = await fetch(`/api/customers?${searchParams.toString()}`, {
+    signal,
+    credentials: "include",
+    cache: "no-store",
+  });
   if (response.status === 499) {
     throw new DOMException("Request aborted", "AbortError");
   }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { createFetchWithTimeout } from "@/lib/auth/fetch-with-timeout";
+import { resolveStoreStaffByPhone } from "@/lib/auth/resolve-merchant-staff";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
@@ -101,7 +102,20 @@ export async function GET(request: NextRequest) {
           { status: 503 }
         );
       }
-      return NextResponse.json({ exists: !!data });
+      if (data) {
+        return NextResponse.json({ exists: true, kind: "owner" });
+      }
+      // Same as merchant app: invited store_staff can sign in with their phone.
+      const staff = await resolveStoreStaffByPhone(e164);
+      if (staff) {
+        return NextResponse.json({
+          exists: true,
+          kind: "staff",
+          accessRole: staff.accessRole,
+          storeId: staff.storeId,
+        });
+      }
+      return NextResponse.json({ exists: false });
     }
 
     return NextResponse.json(

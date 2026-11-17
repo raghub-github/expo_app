@@ -247,6 +247,13 @@ export default function SettingsScreen() {
             label={t("profile.verifyEmail")}
             onPress={() => router.push("/profile/verify-email")}
           />
+          <View style={styles.separator} />
+          <SettingsRow
+            icon="phone-portrait-outline"
+            label="Logged-in devices"
+            value="See where your account is signed in"
+            onPress={() => router.push("/profile/devices" as never)}
+          />
         </View>
 
         <SectionTitle title={t("settings.preferences")} />

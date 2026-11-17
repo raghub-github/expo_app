@@ -75,8 +75,15 @@ function toJsonb(value: unknown): string {
   return JSON.stringify(value === undefined ? null : value);
 }
 
+function isEmptyish(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value === "string" && value.trim() === "") return true;
+  if (Array.isArray(value) && value.length === 0) return true;
+  return false;
+}
+
 function normalizeComparable(value: unknown): string {
-  if (value === undefined || value === null) return "null";
+  if (isEmptyish(value)) return "null";
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "boolean") return value ? "true" : "false";
   if (Array.isArray(value) || (typeof value === "object" && value !== null)) {
@@ -86,6 +93,7 @@ function normalizeComparable(value: unknown): string {
       return String(value);
     }
   }
+  if (typeof value === "string") return value.trim();
   return String(value);
 }
 

@@ -19,6 +19,7 @@ import {
   acquireProgressivePosition,
   coordsMovedSignificantly,
   getDeviceLocationReadiness,
+  invalidateDeviceLocationReadiness,
   withTimeout,
   type LocationPermissionStatus,
   type DeviceLocationReadiness,
@@ -57,11 +58,13 @@ export {
   LOCATION_SIGNIFICANT_MOVE_METERS,
   coordsMovedSignificantly,
   getDeviceLocationReadiness,
+  invalidateDeviceLocationReadiness,
+  withTimeout,
 };
 export type { LocationPermissionStatus, DeviceLocationReadiness };
 
 /** Mapbox reverse-geocode budget — keep under the 5–7s fresh-address SLA. */
-const GEOCODE_MS = 4_500;
+const GEOCODE_MS = 3_500;
 const STORAGE_KEY = "@gatimitra/last_selected_location_v1";
 /** Toggle verbose location logging for field debugging (raw coords, accuracy, PIN). */
 const LOCATION_DEBUG = __DEV__;
@@ -202,7 +205,7 @@ const DETECTING_ADDRESS = "Detecting address…";
 /** Below this the visible label still describes the point: no new geocode needed. */
 const ADDRESS_VALID_M = 25;
 /** Second chance for a failed geocode: mobile networks often recover within seconds. */
-const GEOCODE_RETRY_MS = 700;
+const GEOCODE_RETRY_MS = 400;
 
 function namedPlaceholder(primary: string): ReverseGeocodeResult {
   return { primary, secondary: "", fullAddress: primary, city: null, state: null, pincode: null };
@@ -238,9 +241,11 @@ export function resolveDeviceAddress(point: {
 }): void {
   const cur = useLocationStore.getState();
   // Progressive GPS noise within ~11 m must not re-fire reverse geocode / logs.
+  // Approximate labels are not "done" — allow another pass once GPS settles.
   if (
     cur.locationSource !== "selected" &&
     !isPlaceholderAddress(cur.address) &&
+    !cur.address?.approximate &&
     addressAnchor &&
     sameReverseGeocodeCell(addressAnchor, point)
   ) {
@@ -275,11 +280,37 @@ export function resolveDeviceAddress(point: {
       return;
     }
 
+    const visible = useLocationStore.getState().address;
+    // Never let a weak approximate street overwrite a better nearby label (header thrash).
+    if (
+      address.approximate &&
+      !isPlaceholderAddress(visible) &&
+      !visible?.approximate &&
+      distanceFromAddressAnchorM(point) < LABEL_STILL_NEARBY_M
+    ) {
+      logLocation("reverse-geocode-kept-better-nearby", {
+        latitude: point.latitude,
+        longitude: point.longitude,
+        keptPrimary: visible?.primary,
+        rejectedPrimary: address.primary,
+        rejectedDistanceM: address.distanceM,
+      });
+      addressAnchor = { latitude: point.latitude, longitude: point.longitude };
+      useLocationStore.setState({ refining: false, detectingTimedOut: false });
+      startupLaunchLog("HOME_LOCATION_VISIBLE", {
+        reason: "kept_better_nearby",
+        durationMs: Date.now() - startedAt,
+        blocksHome: false,
+      });
+      return;
+    }
+
     addressAnchor = { latitude: point.latitude, longitude: point.longitude };
     useLocationStore.setState({ address, refining: false, detectingTimedOut: false });
     startupLaunchLog("REVERSE_GEOCODE_DONE", {
       durationMs: Date.now() - startedAt,
       hasPrimary: Boolean(address.primary),
+      approximate: Boolean(address.approximate),
       blocksHome: false,
     });
     startupLaunchLog("HOME_LOCATION_VISIBLE", {
@@ -293,7 +324,8 @@ export function resolveDeviceAddress(point: {
       accuracy: point.accuracy ?? useLocationStore.getState().coordsAccuracy,
       updatedAt: point.timestampMs ?? Date.now(),
       source: point.source ?? "accurate",
-      address,
+      // Do not persist approximate as last-known — next cold start would show the wrong street.
+      address: address.approximate ? null : address,
     });
   })();
 }
@@ -355,7 +387,7 @@ function commitDeviceFix(fix: DeviceFix): void {
 const ACCEPTABLE_ACCURACY_M = 100;
 
 /** How long a caller with nothing on screen waits for the first fix. */
-const FIRST_FIX_WAIT_MS = 5_000;
+const FIRST_FIX_WAIT_MS = 3_500;
 
 /** A fix this sharp may drive decisions like un-binding a saved address (metres). */
 const TRUSTED_FIX_ACCURACY_M = 200;
@@ -432,6 +464,9 @@ function startDeviceAcquisition(force: boolean): DeviceAcquisition {
   let loggedTrusted = false;
   const session = acquireProgressivePosition({
     log: logLocation,
+    // Slightly tighter session so first usable fix lands sooner on Home.
+    settleMs: 800,
+    budgetMs: 5_500,
     onFix: (raw) => {
       const fix = toDeviceFix(raw);
       const elapsed = Date.now() - t0;
@@ -505,16 +540,27 @@ function startDeviceAcquisition(force: boolean): DeviceAcquisition {
       if (activeAcquisition === acquisition) activeAcquisition = null;
       resolveTrusted(null);
       logMetric("accurate_location_fix_ms", Date.now() - t0);
-      if (fix) {
+      const deviceFix = fix ? toDeviceFix(fix) : null;
+      if (deviceFix) {
         startupLaunchLog("GPS_SESSION_DONE", {
           durationMs: Date.now() - t0,
-          accuracyM: fix.accuracy,
-          source: fix.source,
-          isLiveGps: fix.source !== "last-known",
+          accuracyM: deviceFix.accuracy,
+          source: deviceFix.source,
+          isLiveGps: deviceFix.source !== "last-known",
           blocksHome: false,
         });
+        // Final sharp fix: if the header still shows a weak approximate, re-resolve once.
+        const s = useLocationStore.getState();
+        if (
+          acquisition.commitSeq === locationFetchSeq &&
+          s.locationSource === "current" &&
+          (isPlaceholderAddress(s.address) || s.address?.approximate)
+        ) {
+          addressAnchor = null;
+          resolveDeviceAddress(deviceFix);
+        }
       }
-      return fix ? toDeviceFix(fix) : null;
+      return deviceFix;
     }),
     commitSeq: ++locationFetchSeq,
     force,
@@ -815,7 +861,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       return;
     }
     try {
-      const readiness = await getDeviceLocationReadiness();
+      const readiness = await getDeviceLocationReadiness(
+        options?.force ? { force: true } : undefined
+      );
       if (readiness.isReady) {
         set({
           permissionStatus: "granted",

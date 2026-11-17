@@ -34,6 +34,7 @@ import {
 } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
+import { partnerCanEditMenuDetails } from "@/lib/staffPermissions";
 import { useMenuCategories, useMenuItems, usePatchItemStock, menuKeys, MENU_CATALOG_LIST_FILTERS } from "@/hooks/useMenuQueries";
 import { useMerchantMenuRealtime } from "@/hooks/useMerchantMenuRealtime";
 import type { MenuItemRow, MenuCategory, MenuItemDetail, ListItemsResponse } from "@/services/menuApi";
@@ -74,6 +75,12 @@ import type { CatalogPhotoUploadCallbacks } from "@/lib/catalogPhotoUploadFlow";
 import { CatalogStockToggle } from "@/components/menu/CatalogStockToggle";
 import { CatalogCategoryMenuSheet } from "@/components/menu/CatalogCategoryMenuSheet";
 import { formatMenuSize } from "@/lib/menu-size-preset";
+import {
+  itemHasCatalogPhoto,
+  itemPhotoInReview,
+  itemPhotoRejected,
+  resolveMenuApprovalBadge,
+} from "@/lib/catalogPhotoHelpers";
 import { AuthProxyImage, prefetchAuthImage, prefetchAuthImages } from "@/components/AuthProxyImage";
 import { prefetchMenuItemDetail, invalidateMenuItemCache } from "@/lib/menuItemCache";
 
@@ -317,30 +324,15 @@ function buildCatalogItemDetailLines(item: MenuItemRow): string[] {
           : "Change requested",
     );
   }
+  const approvalBadge = resolveMenuApprovalBadge(item, { pendingLabel: "Approval pending" });
   if (itemPhotoInReview(item)) tags.push("Image in review");
-  else if (item.approval_status === "PENDING") tags.push("Approval pending");
-  if (itemPhotoRejected(item)) tags.push("Photo rejected");
+  else if (approvalBadge?.kind === "pending") tags.push(approvalBadge.label);
+  if (approvalBadge?.kind === "image_rejected" || approvalBadge?.kind === "rejected") {
+    tags.push(approvalBadge.label);
+  }
   if (tags.length > 0) lines.push(tags.join(" · "));
 
   return lines;
-}
-
-function itemHasCatalogPhoto(item: MenuItemRow): boolean {
-  return Boolean(item.item_image_url) || (item.image_count ?? 0) > 0;
-}
-
-function itemPhotoInReview(item: MenuItemRow): boolean {
-  if (!item.item_image_url) return false;
-  const primaryMod = String(item.primary_image_moderation_status ?? "").toUpperCase();
-  if (primaryMod === "PENDING") return true;
-  return item.approval_status === "PENDING";
-}
-
-function itemPhotoRejected(item: MenuItemRow): boolean {
-  if (!item.item_image_url) return false;
-  const primaryMod = String(item.primary_image_moderation_status ?? "").toUpperCase();
-  if (primaryMod === "REJECTED") return true;
-  return item.approval_status === "REJECTED";
 }
 
 const CatalogCategoryHeader = memo(function CatalogCategoryHeader({
@@ -430,6 +422,7 @@ const MenuItemCard = memo(function MenuItemCard({
   onOpenPreview,
   onOpenPhoto,
   photoUpload,
+  canEditDetails = true,
 }: {
   item: MenuItemRow;
   onToggleEffectiveStock: (item: MenuItemRow, nextInStock: boolean) => void;
@@ -440,6 +433,8 @@ const MenuItemCard = memo(function MenuItemCard({
   onOpenPreview: (item: MenuItemRow) => void;
   onOpenPhoto: (item: MenuItemRow) => void;
   photoUpload?: { previewUri: string; progress: number } | null;
+  /** Staff: stock-only — hide edit / photo upload entry points. */
+  canEditDetails?: boolean;
 }) {
   const [toggling, setToggling] = useState(false);
   const { token } = useAuth();
@@ -454,6 +449,9 @@ const MenuItemCard = memo(function MenuItemCard({
         : "₹0";
   const detailLines = buildCatalogItemDetailLines(item);
   const oosLabel = getItemOosLabel(item);
+  const approvalBadge = resolveMenuApprovalBadge(item, { pendingLabel: "Approval pending" });
+  const showRejectBanner =
+    approvalBadge?.kind === "image_rejected" || approvalBadge?.kind === "rejected";
   const isLocked = isMenuItemPlanLocked(item);
   const inStock = effectiveInStock(item);
   const isRecommended = Boolean(item.is_recommended);
@@ -482,7 +480,7 @@ const MenuItemCard = memo(function MenuItemCard({
   };
 
   const openPhoto = () => {
-    if (isLocked) return;
+    if (isLocked || !canEditDetails) return;
     onOpenPhoto(item);
   };
 
@@ -492,12 +490,32 @@ const MenuItemCard = memo(function MenuItemCard({
 
   return (
     <Pressable
-      style={[styles.catalogItemRow, isLocked && styles.catalogItemRowLocked]}
+      style={[
+        styles.catalogItemRow,
+        isLocked && styles.catalogItemRowLocked,
+        showRejectBanner && styles.catalogItemRowRejected,
+        !inStock && !isLocked && styles.catalogItemRowOos,
+      ]}
       onLongPress={() => {
-        if (!isLocked) onMoreOptions(item);
+        if (!isLocked && canEditDetails) onMoreOptions(item);
       }}
       delayLongPress={450}
     >
+      {showRejectBanner ? (
+        <View style={styles.catalogRejectBanner}>
+          <View style={styles.catalogRejectBannerTitleRow}>
+            <View style={styles.catalogRejectDot} />
+            <Text style={styles.catalogRejectBannerTitle} numberOfLines={1}>
+              {approvalBadge?.kind === "image_rejected" ? "Image rejected" : "Rejected"}
+            </Text>
+          </View>
+          {approvalBadge?.reason ? (
+            <Text style={styles.catalogRejectBannerReason} numberOfLines={2}>
+              {approvalBadge.reason}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
       <View style={styles.catalogItemMain}>
         <View style={styles.catalogItemLeft}>
           <View style={styles.catalogItemTitleRow}>
@@ -615,15 +633,26 @@ const MenuItemCard = memo(function MenuItemCard({
           </Text>
         </View>
 
-        <TouchableOpacity
-          onPress={openPreview}
-          style={styles.catalogEditBtn}
-          activeOpacity={0.75}
-          accessibilityLabel="Edit item"
-        >
-          <Ionicons name="pencil" size={12} color={GatiMitraMerchant.textPrimary} />
-          <Text style={styles.catalogEditText}>Edit</Text>
-        </TouchableOpacity>
+        {canEditDetails ? (
+          <TouchableOpacity
+            onPress={openPreview}
+            style={styles.catalogEditBtn}
+            activeOpacity={0.75}
+            accessibilityLabel="Edit item"
+          >
+            <Ionicons name="pencil" size={12} color={GatiMitraMerchant.textPrimary} />
+            <Text style={styles.catalogEditText}>Edit</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            onPress={openPreview}
+            style={styles.catalogEditBtn}
+            activeOpacity={0.75}
+            accessibilityLabel="View item stock"
+          >
+            <Text style={styles.catalogEditText}>Stock</Text>
+          </TouchableOpacity>
+        )}
       </View>
       {oosLabel ? (
         <Text style={styles.catalogOosHintBelow} numberOfLines={1}>
@@ -699,7 +728,13 @@ function ComboCard({
       : null;
 
   return (
-    <View style={[styles.itemCard, (!comboInStock || isDisabled) && styles.comboCardDisabled]}>
+    <View
+      style={[
+        styles.itemCard,
+        (!comboInStock || isDisabled) && styles.comboCardDisabled,
+        !comboInStock && styles.itemCardOos,
+      ]}
+    >
       <TouchableOpacity
         style={styles.itemTouchable}
         onPress={onPress}
@@ -825,7 +860,8 @@ export default function MenuScreen() {
   const scrollRef = useRef<SectionList<MenuItemRow, CatalogSection>>(null);
   const treeGroupsRef = useRef<Array<{ key: string }>>([]);
 
-  const { token } = useAuth();
+  const { token, partner } = useAuth();
+  const canEditDetails = partnerCanEditMenuDetails(partner);
   const { selectedStore } = useSelectedStore();
   const storeId = selectedStore?.store_id ?? null;
 
@@ -1456,6 +1492,10 @@ export default function MenuScreen() {
   const refreshing = categoriesRefetching || catalogRefetching;
 
   const handleAddItem = useCallback(() => {
+    if (!canEditDetails) {
+      Alert.alert("View only", "Staff can mark items in or out of stock, but cannot add or edit items.");
+      return;
+    }
     setAddMenuVisible(false);
     if ((categories?.length ?? 0) === 0) {
       // Open Add Category form first — items require at least one category.
@@ -1463,7 +1503,7 @@ export default function MenuScreen() {
       return;
     }
     router.push("/menu/add-edit-item" as any);
-  }, [categories, router]);
+  }, [categories, router, canEditDetails]);
 
   const onRefresh = useCallback(() => {
     if (!storeId || !token) return;
@@ -1771,6 +1811,10 @@ export default function MenuScreen() {
 
   const handleMoreOptions = useCallback(
     (item: MenuItemRow) => {
+      if (!canEditDetails) {
+        Alert.alert("View only", "Staff can mark items in or out of stock, but cannot edit item details.");
+        return;
+      }
       const isApproved = item.approval_status === "APPROVED";
       const deleteAction = isApproved
         ? {
@@ -1860,7 +1904,7 @@ export default function MenuScreen() {
         { cancelable: true }
       );
     },
-    [storeId, token, refetchCatalog, router]
+    [storeId, token, refetchCatalog, router, canEditDetails]
   );
 
   const handleCategoryGroupStockToggle = useCallback(
@@ -1951,6 +1995,10 @@ export default function MenuScreen() {
   }, []);
 
   const handleOpenItemPhoto = useCallback((item: MenuItemRow) => {
+    if (!canEditDetails) {
+      Alert.alert("View only", "Staff cannot upload or change item images.");
+      return;
+    }
     if (isMenuItemPlanLocked(item)) {
       Alert.alert("Item locked", lockedItemTapMessage());
       return;
@@ -1978,7 +2026,7 @@ export default function MenuScreen() {
       return;
     }
     setItemUploadSheet(item);
-  }, [photoUploadByItemId, storeId, token, imagePlan]);
+  }, [photoUploadByItemId, storeId, token, imagePlan, canEditDetails]);
 
   const catalogPhotoUploadCallbacks = useMemo<CatalogPhotoUploadCallbacks>(
     () => ({
@@ -2128,6 +2176,10 @@ export default function MenuScreen() {
   ]);
 
   const handlePreviewEditItem = useCallback(() => {
+    if (!canEditDetails) {
+      Alert.alert("View only", "Staff can update stock only — item details are locked.");
+      return;
+    }
     const item = itemPreviewSheet;
     if (!item) return;
     setItemPreviewSheet(null);
@@ -2135,7 +2187,7 @@ export default function MenuScreen() {
       pathname: "/menu/add-edit-item",
       params: { itemId: String(item.id) },
     } as any);
-  }, [itemPreviewSheet, router]);
+  }, [itemPreviewSheet, router, canEditDetails]);
 
   const handleComboOptions = useCallback(
     (combo: ComboRow) => {
@@ -2575,6 +2627,7 @@ export default function MenuScreen() {
                 onOpenPreview={handleOpenItemPreview}
                 onOpenPhoto={handleOpenItemPhoto}
                 photoUpload={photoUploadByItemId[item.id] ?? null}
+                canEditDetails={canEditDetails}
               />
             </View>
           );
@@ -2659,14 +2712,16 @@ export default function MenuScreen() {
 
       {/* Top bar: add + search + filter icon — compact row */}
       <View style={styles.topBar}>
-        <TouchableOpacity
-          style={[styles.addBtn, GatiMitraMerchant.cursorPointer]}
-          onPress={() => setAddMenuVisible(true)}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="add" size={20} color="#fff" />
-          <Text style={styles.addBtnText}>Add</Text>
-        </TouchableOpacity>
+        {canEditDetails ? (
+          <TouchableOpacity
+            style={[styles.addBtn, GatiMitraMerchant.cursorPointer]}
+            onPress={() => setAddMenuVisible(true)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="add" size={20} color="#fff" />
+            <Text style={styles.addBtnText}>Add</Text>
+          </TouchableOpacity>
+        ) : null}
         <CatalogSearchInput onDebouncedChange={setSearchDebounced} />
 
           {kindFilter !== "ADDONS" ? (
@@ -3181,7 +3236,7 @@ export default function MenuScreen() {
         oosLabel={itemPreviewSheet ? getItemOosLabel(itemPreviewSheet) : null}
         onClose={() => setItemPreviewSheet(null)}
         onUpdateStock={handlePreviewUpdateStock}
-        onEditItem={handlePreviewEditItem}
+        onEditItem={canEditDetails ? handlePreviewEditItem : undefined}
       />
 
       <CatalogItemPhotoSheet
@@ -3967,6 +4022,50 @@ const styles = StyleSheet.create({
   catalogItemRowLocked: {
     backgroundColor: "#FAFAFA",
   },
+  catalogItemRowRejected: {
+    borderLeftWidth: 3,
+    borderLeftColor: "#DC2626",
+    backgroundColor: "#FFFBFB",
+  },
+  catalogItemRowOos: {
+    borderLeftWidth: 3,
+    borderLeftColor: "#EF4444",
+    backgroundColor: "#FFF8F8",
+  },
+  catalogRejectBanner: {
+    marginBottom: 10,
+    marginHorizontal: -14,
+    marginTop: -12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: "#FEF2F2",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#FECACA",
+    gap: 2,
+  },
+  catalogRejectBannerTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  catalogRejectDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#EF4444",
+  },
+  catalogRejectBannerTitle: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#991B1B",
+  },
+  catalogRejectBannerReason: {
+    marginLeft: 12,
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#B91C1C",
+    lineHeight: 14,
+  },
   catalogItemMain: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -4201,6 +4300,9 @@ const styles = StyleSheet.create({
   itemCardLocked: {
     borderColor: "#fecaca",
     backgroundColor: "#fafafa",
+  },
+  itemCardOos: {
+    borderColor: "#EF4444",
   },
   itemImageWrapLocked: { opacity: 0.55 },
   itemImageLocked: { opacity: 0.7 },

@@ -100,7 +100,18 @@ function UserAppCategoryImageInner({
     }
   }, [uri, cacheKey, persisted, localFile]);
 
-  const displayUri = uri || localUri || lastGoodRef.current || persisted || null;
+  // Prefer on-disk / last-good first so Food chips paint from cache on frame 1,
+  // then swap to remote only when we have nothing local yet.
+  const displayUri =
+    localUri ||
+    (lastGoodRef.current &&
+    (lastGoodRef.current.startsWith("file:") || lastGoodRef.current === uri)
+      ? lastGoodRef.current
+      : null) ||
+    persisted ||
+    uri ||
+    lastGoodRef.current ||
+    null;
 
   // Never stack a second image URI as placeholder — on Android that paints a
   // ghost/offset "duplicated layer" under category circles.

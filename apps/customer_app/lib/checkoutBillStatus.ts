@@ -6,19 +6,36 @@
 import { isNetworkError } from "../utils/networkError";
 
 export function isCanceledRequestError(err: unknown): boolean {
-  const e = err as { code?: string; name?: string; message?: string };
+  const e = err as {
+    code?: string;
+    name?: string;
+    message?: string;
+    config?: { signal?: AbortSignal | null };
+  };
   if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError" || e?.name === "AbortError") {
     return true;
   }
+  // React Query aborts in-flight calculate when the key churns. Axios XHR then
+  // often rejects with ECONNABORTED/"Request aborted" (or even Network Error
+  // after abort) — treat those as cancel, not a hard bill failure.
+  if (e?.config?.signal?.aborted) return true;
   const msg = (e?.message ?? "").toLowerCase();
-  return msg === "canceled" || msg === "cancelled" || msg.includes("aborted");
+  if (msg === "canceled" || msg === "cancelled") return true;
+  if (msg === "request aborted" || msg.includes("request aborted")) return true;
+  if (e?.code === "ECONNABORTED" && msg.includes("abort")) return true;
+  return false;
 }
 
 export function isTimeoutError(err: unknown): boolean {
   const e = err as { code?: string; message?: string };
-  if (e?.code === "ECONNABORTED" || e?.code === "ETIMEDOUT") return true;
+  // Abort uses ECONNABORTED too — don't call a cancelled bill a timeout.
+  if (isCanceledRequestError(err)) return false;
+  if (e?.code === "ETIMEDOUT") return true;
   const msg = (e?.message ?? "").toLowerCase();
-  return msg.includes("timeout") || msg.includes("timed out");
+  if (msg.includes("timeout") || msg.includes("timed out")) return true;
+  // Real axios timeout (not abort): ECONNABORTED + timeout copy.
+  if (e?.code === "ECONNABORTED" && msg.includes("timeout")) return true;
+  return false;
 }
 
 export type CheckoutBillStatusInput = {

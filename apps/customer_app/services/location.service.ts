@@ -285,6 +285,11 @@ async function deviceReverse(
  * delays are set well past that: each extra provider runs only if the one before it has
  * stalled or come back empty. To add Google later, insert it here; nothing else changes.
  */
+/** Approximate / coarse labels must not abort the hedge before a better provider answers. */
+function acceptHardReverse(result: ReverseGeocodeResult): boolean {
+  return result.approximate !== true;
+}
+
 const reverseProviders = (
   longitude: number,
   latitude: number
@@ -294,6 +299,8 @@ const reverseProviders = (
     hedgeAfterMs: 0,
     timeoutMs: 4_000,
     run: (signal) => mapboxV6Reverse(longitude, latitude, signal),
+    // Street snapped >45 m away is a soft miss — keep racing Searchbox/v5/device.
+    accept: acceptHardReverse,
   },
   {
     name: "mapbox-searchbox",
@@ -309,9 +316,12 @@ const reverseProviders = (
   },
   {
     name: "device",
-    hedgeAfterMs: 2_800,
+    // Start OS geocoder earlier when Mapbox stalls — often faster indoors.
+    hedgeAfterMs: 1_400,
     timeoutMs: 3_000,
     run: (signal) => deviceReverse(longitude, latitude, signal),
+    // Device geocoder is always coarse; only use it when nothing better won.
+    accept: acceptHardReverse,
   },
 ];
 
@@ -336,6 +346,8 @@ export function seedReverseGeocodeCache(
   if ((result.primary ?? "").toLowerCase() === "current location" && !result.city && !result.state) {
     return;
   }
+  // Never seed a weak approximate — it would lock the header on a wrong street for 30 min.
+  if (result.approximate) return;
   const cacheKey = reverseGeocodeKey(longitude, latitude);
   reverseGeocodeCache.set(cacheKey, { result, at: Date.now() });
 }
@@ -372,11 +384,15 @@ export async function reverseGeocode(
     const hit = await runHedged(reverseProviders(longitude, latitude));
     if (hit) {
       const tagged = { ...hit.value, provider: hit.provider };
-      if (reverseGeocodeCache.size >= REVERSE_GEOCODE_CACHE_MAX) {
-        const oldest = reverseGeocodeCache.keys().next().value;
-        if (oldest !== undefined) reverseGeocodeCache.delete(oldest);
+      // Approximate labels are best-effort only: do not memoize them or progressive GPS
+      // will keep painting a wrong street after a better Searchbox answer was available.
+      if (!tagged.approximate) {
+        if (reverseGeocodeCache.size >= REVERSE_GEOCODE_CACHE_MAX) {
+          const oldest = reverseGeocodeCache.keys().next().value;
+          if (oldest !== undefined) reverseGeocodeCache.delete(oldest);
+        }
+        reverseGeocodeCache.set(cacheKey, { result: tagged, at: Date.now() });
       }
-      reverseGeocodeCache.set(cacheKey, { result: tagged, at: Date.now() });
       return tagged;
     }
     const { mapboxAccessToken } = getConfig();

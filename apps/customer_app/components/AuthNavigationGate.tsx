@@ -126,21 +126,53 @@ export function AuthNavigationGate() {
       return;
     }
 
-    // OTP finishes verify → writes cache → onboarding/home itself.
-    if (root === "(auth)" && leaf === "otp") {
+    // Auth stack owns its own navigation (OTP verify → tabs/onboarding).
+    // Do not race replace() against a mid-verify session publish — that fight
+    // remounts the tree and surfaces as AppErrorBoundary "Something went wrong".
+    if (root === "(auth)") {
+      if (leaf === "login" || !leaf) {
+        if (!canRedirect || inFlightRef.current) return;
+        lastRedirectAtRef.current = now;
+        inFlightRef.current = true;
+        let cancelled = false;
+        void (async () => {
+          try {
+            if (cancelled) return;
+            await replaceAuthedDestination(router, shareToken);
+          } finally {
+            inFlightRef.current = false;
+          }
+        })();
+        return () => {
+          cancelled = true;
+        };
+      }
       return;
     }
 
-    // Authenticated on login → resolve destination once.
-    if (root === "(auth)" && (leaf === "login" || !leaf)) {
+    // Guard app surfaces: only yank to create-profile when we KNOW the profile
+    // is incomplete. Missing FastKV / slow hydrate must not bounce returning users.
+    if (!isIncompleteProfileAllowedRoute(segments)) {
+      if (hasCompletedProfileSync()) {
+        return;
+      }
       if (!canRedirect || inFlightRef.current) return;
       lastRedirectAtRef.current = now;
       inFlightRef.current = true;
       let cancelled = false;
       void (async () => {
         try {
+          const complete = await resolveProfileCompleted();
           if (cancelled) return;
-          await replaceAuthedDestination(router, shareToken);
+          if (complete || hasCompletedProfileSync()) return;
+          // Still unknown after network → stay put (tabs skeleton holds).
+          // Only redirect when cache/network positively says incomplete.
+          const sync = readSyncCachedProfile();
+          const cached = sync ?? (await readCachedProfile());
+          if (cancelled) return;
+          if (cached != null && cached.profile_completed !== true) {
+            router.replace("/(onboarding)");
+          }
         } finally {
           inFlightRef.current = false;
         }
@@ -148,18 +180,6 @@ export function AuthNavigationGate() {
       return () => {
         cancelled = true;
       };
-    }
-
-    // Hard block: no home / tabs / app surfaces until profile (ID) is created.
-    // Fail closed immediately — do not leave the user on home while network resolves.
-    if (!isIncompleteProfileAllowedRoute(segments)) {
-      if (hasCompletedProfileSync()) {
-        return;
-      }
-      if (!canRedirect) return;
-      lastRedirectAtRef.current = now;
-      router.replace("/(onboarding)");
-      return;
     }
   }, [hydrated, sessionRestorePending, accessToken, segments, router, params.id]);
 

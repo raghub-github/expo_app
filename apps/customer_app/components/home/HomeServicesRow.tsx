@@ -6,7 +6,7 @@
  */
 
 import { useLayoutEffect, useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { View, StyleSheet, Dimensions, Platform } from "react-native";
+import { View, StyleSheet, Dimensions } from "react-native";
 import { useRouter } from "expo-router";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
@@ -491,17 +491,10 @@ const styles = StyleSheet.create({
     width: CARD_W,
     borderRadius: CARD_RADIUS,
     backgroundColor: CARD_BG,
-    ...Platform.select({
-      ios: {
-        shadowOpacity: 0,
-        shadowRadius: 0,
-        shadowOffset: { width: 0, height: 0 },
-      },
-      android: {
-        elevation: 0,
-      },
-      default: {},
-    }),
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
   },
   card: {
     width: "100%",
@@ -520,8 +513,12 @@ const styles = StyleSheet.create({
     borderRadius: CARD_RADIUS,
     zIndex: 6,
   },
+  /**
+   * Offer ribbon is absolute (top-right) — keep the same paddingTop as plain cards
+   * so titles (Order Food vs Book a Ride) stay vertically aligned.
+   */
   cardWithOffer: {
-    paddingTop: 22,
+    paddingTop: 9,
   },
   /**
    * Reference corner badge (mirrored to top-right):
@@ -583,17 +580,17 @@ const styles = StyleSheet.create({
     color: "#9CA3AF",
   },
   title: {
-    fontSize: 14,
+    fontSize: 15.5,
     fontWeight: "800",
     color: "#111827",
-    lineHeight: 17,
+    lineHeight: 19,
     marginRight: 58,
   },
   titleWithOffer: {
     marginRight: 78,
   },
   description: {
-    marginTop: 8,
+    marginTop: 6,
     marginRight: 58,
     paddingBottom: 4,
     fontSize: 10,

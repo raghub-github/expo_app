@@ -73,6 +73,7 @@ export async function PATCH(
 
     const previousStatus = (prev as { approval_status?: string }).approval_status ?? null;
     let newStatus = st;
+    let restoredPreviousPhoto = false;
 
     if (st === "APPROVED") {
       const result = await sql`
@@ -87,6 +88,7 @@ export async function PATCH(
       if ((result.count ?? 0) === 0) {
         return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
       }
+      // Clear every pending image for this item so Image Review queue empties.
       await sql`
         UPDATE merchant_menu_item_images
         SET moderation_status = 'APPROVED',
@@ -94,7 +96,19 @@ export async function PATCH(
             moderated_at = NOW(),
             moderated_by = ${user.email},
             updated_at = NOW()
-        WHERE menu_item_id = ${menuItemId} AND is_primary = true
+        WHERE menu_item_id = ${menuItemId}
+          AND is_primary = true
+      `;
+      await sql`
+        UPDATE merchant_menu_item_images
+        SET moderation_status = 'REJECTED',
+            rejection_reason = COALESCE(NULLIF(TRIM(rejection_reason), ''), 'Superseded by approved primary'),
+            moderated_at = NOW(),
+            moderated_by = ${user.email},
+            updated_at = NOW()
+        WHERE menu_item_id = ${menuItemId}
+          AND is_primary = false
+          AND UPPER(TRIM(COALESCE(moderation_status, 'PENDING'))) = 'PENDING'
       `;
     } else if (st === "REJECTED") {
       const [primaryImg] = await sql`
@@ -124,78 +138,84 @@ export async function PATCH(
             LIMIT 1
           `;
 
-      if (prevApproved && primaryId) {
+      // Keep the rejected upload as primary so Partner / Merchant portals show
+      // the new rejected photo (not the older approved one). Customers still get
+      // the previous approved URL via item_image_url when one exists.
+      if (primaryId) {
         await sql`
           UPDATE merchant_menu_item_images
           SET moderation_status = 'REJECTED',
               rejection_reason = ${rejectionReason},
-              is_primary = false,
               moderated_at = NOW(),
               moderated_by = ${user.email},
               updated_at = NOW()
           WHERE id = ${primaryId}
         `;
+      } else {
         await sql`
           UPDATE merchant_menu_item_images
-          SET is_primary = false, updated_at = NOW()
-          WHERE menu_item_id = ${menuItemId}
+          SET moderation_status = 'REJECTED',
+              rejection_reason = ${rejectionReason},
+              moderated_at = NOW(),
+              moderated_by = ${user.email},
+              updated_at = NOW()
+          WHERE menu_item_id = ${menuItemId} AND is_primary = true
         `;
-        await sql`
-          UPDATE merchant_menu_item_images
-          SET is_primary = true, updated_at = NOW()
-          WHERE id = ${(prevApproved as { id: number }).id}
-        `;
-        const prevApprovedAt = (prev as { approved_at?: string | null }).approved_at ?? null;
-        const prevApprovedBy = (prev as { approved_by?: string | null }).approved_by ?? null;
-        const result = await sql`
+      }
+      // Also clear any other PENDING images so they cannot keep the item in Image Review.
+      await sql`
+        UPDATE merchant_menu_item_images
+        SET moderation_status = 'REJECTED',
+            rejection_reason = COALESCE(NULLIF(TRIM(rejection_reason), ''), ${rejectionReason}),
+            moderated_at = NOW(),
+            moderated_by = ${user.email},
+            updated_at = NOW()
+        WHERE menu_item_id = ${menuItemId}
+          AND UPPER(TRIM(COALESCE(moderation_status, 'PENDING'))) = 'PENDING'
+      `;
+
+      const customerImageUrl = prevApproved
+        ? String((prevApproved as { image_url: string }).image_url)
+        : null;
+      const keepApproved = previousStatus === "APPROVED";
+      const prevApprovedAt = (prev as { approved_at?: string | null }).approved_at ?? null;
+      const prevApprovedBy = (prev as { approved_by?: string | null }).approved_by ?? null;
+
+      let result;
+      if (customerImageUrl && keepApproved) {
+        result = await sql`
           UPDATE merchant_menu_items
           SET approval_status = 'APPROVED'::merchant_menu_item_approval_status,
-              item_image_url = ${(prevApproved as { image_url: string }).image_url},
-              rejection_reason = NULL,
-              approved_at = COALESCE(${prevApprovedAt}, NOW()),
-              approved_by = COALESCE(${prevApprovedBy}, ${user.email}),
+              item_image_url = ${customerImageUrl},
+              rejection_reason = ${rejectionReason},
+              approved_at = COALESCE(${prevApprovedAt}, approved_at, NOW()),
+              approved_by = COALESCE(${prevApprovedBy}, approved_by, ${user.email}),
               updated_at = NOW()
           WHERE id = ${menuItemId} AND store_id = ${storeId}
         `;
-        if ((result.count ?? 0) === 0) {
-          return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
-        }
         newStatus = "APPROVED";
+        restoredPreviousPhoto = true;
+      } else if (customerImageUrl) {
+        result = await sql`
+          UPDATE merchant_menu_items
+          SET item_image_url = ${customerImageUrl},
+              rejection_reason = ${rejectionReason},
+              updated_at = NOW()
+          WHERE id = ${menuItemId} AND store_id = ${storeId}
+        `;
+        newStatus = previousStatus ?? "PENDING";
+        restoredPreviousPhoto = true;
       } else {
-        if (primaryId) {
-          await sql`
-            UPDATE merchant_menu_item_images
-            SET moderation_status = 'REJECTED',
-                rejection_reason = ${rejectionReason},
-                moderated_at = NOW(),
-                moderated_by = ${user.email},
-                updated_at = NOW()
-            WHERE id = ${primaryId}
-          `;
-        } else {
-          await sql`
-            UPDATE merchant_menu_item_images
-            SET moderation_status = 'REJECTED',
-                rejection_reason = ${rejectionReason},
-                moderated_at = NOW(),
-                moderated_by = ${user.email},
-                updated_at = NOW()
-            WHERE menu_item_id = ${menuItemId} AND is_primary = true
-          `;
-        }
-        // Photo rejection must not hide the item from customers. Keep the
-        // existing item approval (APPROVED / PENDING); the customer menu
-        // omits the rejected URL and shows a placeholder instead.
-        const result = await sql`
+        result = await sql`
           UPDATE merchant_menu_items
           SET rejection_reason = ${rejectionReason},
               updated_at = NOW()
           WHERE id = ${menuItemId} AND store_id = ${storeId}
         `;
-        if ((result.count ?? 0) === 0) {
-          return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
-        }
         newStatus = previousStatus ?? "PENDING";
+      }
+      if ((result.count ?? 0) === 0) {
+        return NextResponse.json({ success: false, error: "Item not found" }, { status: 404 });
       }
     } else {
       const result = await sql`
@@ -256,7 +276,8 @@ export async function PATCH(
       ok: true,
       approval_status: newStatus,
       photo_rejected: st === "REJECTED",
-      restored_previous_photo: st === "REJECTED" && newStatus === "APPROVED",
+      // Customers may still see previous approved URL; partner portals show rejected primary.
+      restored_previous_photo: restoredPreviousPhoto,
     });
   } catch (e) {
     console.error("[PATCH /api/merchant/stores/[id]/menu/items/[itemId]/approval]", e);

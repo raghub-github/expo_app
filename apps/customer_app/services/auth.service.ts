@@ -17,13 +17,29 @@ import api from "./api";
 import { getConfig } from "@/config/env";
 import { getSupabaseAuth, getSupabaseOtpEnvDebugInfo } from "@/lib/supabaseClient";
 import { getItem, setItem, removeItem } from "@/utils/storage";
-import { STORAGE_KEYS } from "@/constants";
+import { OTP_REQUEST_TIMEOUT_MS, STORAGE_KEYS } from "@/constants";
 import {
   fastGetString,
   fastRemove,
   fastSetString,
   hydrateFastKvFromAsyncStorage,
 } from "@/lib/fastKv";
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 /** Warm session into MMKV/memory ASAP so hydrate can sync-peek on cold start. */
 void hydrateFastKvFromAsyncStorage([STORAGE_KEYS.AUTH_SESSION]);
@@ -243,7 +259,7 @@ export const authService = {
           deviceId: payload.deviceId,
           appType: "customer",
         },
-        { timeout: 15000 },
+        { timeout: OTP_REQUEST_TIMEOUT_MS },
       );
       _lastBackendOtpRequestId = null;
       if (!data?.accessToken || data.role !== "customer") {
@@ -266,11 +282,15 @@ export const authService = {
       ? payload.phoneE164
       : `+91${payload.phoneE164.replace(/\D/g, "").slice(-10)}`;
 
-    const { data, error } = await supabase.auth.verifyOtp({
-      phone: normalizedPhone,
-      token: payload.otp,
-      type: "sms",
-    });
+    const { data, error } = await withTimeout(
+      supabase.auth.verifyOtp({
+        phone: normalizedPhone,
+        token: payload.otp,
+        type: "sms",
+      }),
+      OTP_REQUEST_TIMEOUT_MS,
+      "OTP verification timed out. Check your connection and try again.",
+    );
 
     if (error) {
       if (__DEV__) {
@@ -288,7 +308,7 @@ export const authService = {
     const { data: session } = await api.post<Session>(
       `${AUTH_PREFIX}/supabase/exchange-customer`,
       { accessToken: sbToken, phoneE164: normalizedPhone, deviceId: payload.deviceId },
-      { timeout: 15000 },
+      { timeout: OTP_REQUEST_TIMEOUT_MS },
     );
 
     if (__DEV__) {
@@ -329,12 +349,25 @@ export const authService = {
     return session;
   },
 
-  async persistSession(session: Session): Promise<void> {
-    await setItem(STORAGE_KEYS.AUTH_TOKEN, session.accessToken);
+  /**
+   * Cold-start durable write: FastKV + AsyncStorage session JSON.
+   * Callers awaiting this keep Expo Go / kill-app relaunches signed in without
+   * waiting on SecureStore (which can stall several seconds).
+   */
+  async persistSessionDurable(session: Session): Promise<void> {
     const raw = JSON.stringify(session);
-    // Sync mirror for next cold start — splash must not wait on AsyncStorage.
     fastSetString(STORAGE_KEYS.AUTH_SESSION, raw);
     await setItem(STORAGE_KEYS.AUTH_SESSION, raw);
+  },
+
+  /** SecureStore bearer token — slow; safe to background after durable session. */
+  async persistSessionToken(session: Session): Promise<void> {
+    await setItem(STORAGE_KEYS.AUTH_TOKEN, session.accessToken);
+  },
+
+  async persistSession(session: Session): Promise<void> {
+    await this.persistSessionDurable(session);
+    await this.persistSessionToken(session);
   },
 
   async clearSession(): Promise<void> {

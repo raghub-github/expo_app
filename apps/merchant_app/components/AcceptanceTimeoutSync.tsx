@@ -47,7 +47,11 @@ export default function AcceptanceTimeoutSync() {
   );
 
   useEffect(() => {
-    void runSync({ force: true });
+    // Defer so the first food-orders GET wins the DB/socket race on boot.
+    const t = setTimeout(() => {
+      void runSync({ force: true });
+    }, 8_000);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount / store switch only
   }, [token, storeId]);
 

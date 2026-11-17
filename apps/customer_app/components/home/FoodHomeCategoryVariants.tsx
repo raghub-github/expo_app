@@ -35,8 +35,9 @@ export function FoodHomeCategoryGrid({ items, columns = 4, maxItems = 8, onSelec
           <View style={styles.circle}>
             <UserAppCategoryImage
               imageUrl={cat.imageUrl}
-              cacheKey={`grid-category-${cat.id}`}
+              cacheKey={`tab-category-${cat.id}`}
               style={styles.image}
+              widthPt={56}
             />
           </View>
           <AppText style={styles.label} numberOfLines={2}>

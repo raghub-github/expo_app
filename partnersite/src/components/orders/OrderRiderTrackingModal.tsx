@@ -214,12 +214,17 @@ export function OrderRiderTrackingModal({
                   timeStyle: 'medium',
                 })}
                 {loc.source === 'live_location' ? ' · live GPS' : ' · route ping'}
+                {data?.approach
+                  ? ` · ~${data.approach.eta_minutes} min · ${(data.approach.remaining_distance_m / 1000).toFixed(1)} km`
+                  : ''}
               </p>
+            ) : loading ? (
+              <p className="text-center text-sm text-gray-500">Loading rider location…</p>
             ) : mapReady ? (
               <p className="text-center text-sm text-gray-500">
                 Store is on the map. Rider GPS will appear when they start navigation.
               </p>
-            ) : !showBlockingLoader && !error ? (
+            ) : !error ? (
               <p className="text-center text-sm text-gray-500">
                 Live location is not available yet. Set store coordinates in store settings.
               </p>

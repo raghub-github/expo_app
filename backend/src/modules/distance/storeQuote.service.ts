@@ -250,17 +250,21 @@ async function resolveDrop(
     if (!row) return { ok: false, code: "INVALID_ADDRESS_DATA", message: "Address not found." };
     const lat = row.latitude != null ? Number(row.latitude) : 0;
     const lng = row.longitude != null ? Number(row.longitude) : 0;
+    // Saved address rows often lack postalCode/state until reverse-geocode
+    // self-heal runs. Prefer DB, then overlay from `drop` (client live geo /
+    // already-resolved billing context) so slab matching does not fall through
+    // to no_geo_match + env defaults on the first calculate.
     return {
       ok: true,
       lat,
       lng,
-      pincode: normalizePincode(row.postalCode),
-      city: normalizeCity(row.city),
+      pincode: normalizePincode(row.postalCode) ?? normalizePincode(input.drop?.pincode),
+      city: normalizeCity(row.city) ?? normalizeCity(input.drop?.city),
       // State name (e.g. "West Bengal") used by resolveDropGeoRefsFromPincode
       // as a fallback when pincode→state chain is broken in the geo tables.
       // Without it, valid state-level slabs go un-applied and we drop to env
       // defaults silently.
-      state: normalizeCity(row.state),
+      state: normalizeCity(row.state) ?? normalizeCity(input.drop?.state ?? null),
     };
   }
   if (input.drop?.lat != null && input.drop.lng != null) {

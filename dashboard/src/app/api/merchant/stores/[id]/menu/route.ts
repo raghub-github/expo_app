@@ -116,13 +116,65 @@ export async function GET(
              protein, protein_unit, carbohydrates, carbohydrates_unit,
              fat, fat_unit, fibre, fibre_unit, item_tags, allergens,
              approval_status::text,
-             rejection_reason,
-             (
-               SELECT UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING')))
-               FROM merchant_menu_item_images img
-               WHERE img.menu_item_id = merchant_menu_items.id AND img.is_primary = true
-               LIMIT 1
+             COALESCE(
+               NULLIF(TRIM(merchant_menu_items.rejection_reason), ''),
+               (
+                 SELECT NULLIF(TRIM(img.rejection_reason), '')
+                 FROM merchant_menu_item_images img
+                 WHERE img.menu_item_id = merchant_menu_items.id
+                   AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'REJECTED'
+                 ORDER BY img.id DESC
+                 LIMIT 1
+               ),
+               (
+                 SELECT NULLIF(TRIM(img.rejection_reason), '')
+                 FROM merchant_menu_item_images img
+                 WHERE img.menu_item_id = merchant_menu_items.id AND img.is_primary = true
+                 LIMIT 1
+               )
+             ) AS rejection_reason,
+             COALESCE(
+               (
+                 SELECT 'REJECTED'
+                 FROM merchant_menu_item_images img
+                 WHERE img.menu_item_id = merchant_menu_items.id
+                   AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'REJECTED'
+                   AND img.id >= COALESCE(
+                     (
+                       SELECT p.id
+                       FROM merchant_menu_item_images p
+                       WHERE p.menu_item_id = merchant_menu_items.id AND p.is_primary = true
+                       LIMIT 1
+                     ),
+                     0
+                   )
+                 ORDER BY img.id DESC
+                 LIMIT 1
+               ),
+               (
+                 SELECT UPPER(TRIM(COALESCE(img.moderation_status, 'PENDING')))
+                 FROM merchant_menu_item_images img
+                 WHERE img.menu_item_id = merchant_menu_items.id AND img.is_primary = true
+                 LIMIT 1
+               )
              ) AS primary_image_moderation_status,
+             (
+               SELECT img.image_url
+               FROM merchant_menu_item_images img
+               WHERE img.menu_item_id = merchant_menu_items.id
+                 AND UPPER(TRIM(COALESCE(img.moderation_status, ''))) = 'REJECTED'
+                 AND img.id >= COALESCE(
+                   (
+                     SELECT p.id
+                     FROM merchant_menu_item_images p
+                     WHERE p.menu_item_id = merchant_menu_items.id AND p.is_primary = true
+                     LIMIT 1
+                   ),
+                   0
+                 )
+               ORDER BY img.id DESC
+               LIMIT 1
+             ) AS rejected_image_url,
              (SELECT EXISTS(
                SELECT 1 FROM merchant_menu_item_review_requests r
                WHERE r.menu_item_id = merchant_menu_items.id
@@ -197,10 +249,16 @@ export async function GET(
 
     const itemsWithOptions = itemRows.map((row) => {
       const id = Number(row.id);
+      const rejectedUrl =
+        typeof row.rejected_image_url === "string" ? row.rejected_image_url.trim() : "";
+      const liveUrl =
+        typeof row.item_image_url === "string" ? row.item_image_url.trim() : "";
+      // Partner/admin menu: show rejected upload, not the older approved customer URL.
+      const displayUrl = rejectedUrl || liveUrl || null;
+      const { rejected_image_url: _rejectedImageUrl, ...rest } = row;
       return {
-        ...row,
-        item_image_url:
-          resolveAttachmentProxyUrl(row.item_image_url) || row.item_image_url || null,
+        ...rest,
+        item_image_url: resolveAttachmentProxyUrl(displayUrl) || displayUrl,
         variants: variantsByItemId.get(id) ?? [],
         customizations: customizationsByItemId.get(id) ?? [],
       };

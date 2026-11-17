@@ -1,32 +1,52 @@
 /**
- * Progressive Home skeleton gates — skeletons are the exception.
+ * Progressive Home skeleton gates — Zomato-style: first paint is always skeletons,
+ * then each section reveals when its data is ready.
  *
- * Instant (never skeleton): header, tabs, service cards, brand shell, default promo art.
- * Skeleton only via explicit EXPO_PUBLIC_FORCE_HOME_SKELETON_MS (QA).
+ * Critical: content reveal is deferred to useEffect so the first commit after splash
+ * always paints shimmer even when disk cache already has offers/location/assets.
+ * Without that, Home mounted with cache and skipped skeletons entirely.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { isSplashExited, useSplashExitedFlag } from "@/lib/splashLifecycle";
+import { useSplashExitedFlag } from "@/lib/splashLifecycle";
 import {
   getForcedHomeSkeletonHoldMs,
   homeSkeletonLog,
   shouldForceHomeSkeletons,
 } from "@/lib/homeSkeletonTelemetry";
 
+export type HomeSkeletonInput = {
+  /** True once featured-offers query has resolved (cache or network). */
+  offersResolved?: boolean;
+  /** True when CMS/home assets are available (disk seed counts). */
+  assetsReady?: boolean;
+  /** True when location store has hydrated (cached or fresh). */
+  locationReady?: boolean;
+  /** True when weather payload is paint-ready (or not applicable). */
+  weatherReady?: boolean;
+};
+
 export type HomeSkeletonFlags = {
   forceSkeletons: boolean;
-  showLocationSkeleton: false;
-  showWeatherSkeleton: false;
+  showLocationSkeleton: boolean;
+  showWeatherSkeleton: boolean;
   showPromoSkeleton: boolean;
-  showServicesSkeleton: false;
+  showServicesSkeleton: boolean;
   showBrandSkeleton: false;
   splashExited: boolean;
 };
 
-export function useHomeSkeletonFlags(): HomeSkeletonFlags {
+export function useHomeSkeletonFlags(
+  input: HomeSkeletonInput = {}
+): HomeSkeletonFlags {
+  const {
+    offersResolved = true,
+    assetsReady = true,
+    locationReady = true,
+    weatherReady = true,
+  } = input;
+
   const splashExited = useSplashExitedFlag();
-  const [splashExitedAtMs, setSplashExitedAtMs] = useState<number | null>(() =>
-    isSplashExited() ? Date.now() : null
-  );
+  const [splashExitedAtMs, setSplashExitedAtMs] = useState<number | null>(null);
   const [, bump] = useState(0);
 
   useEffect(() => {
@@ -45,27 +65,47 @@ export function useHomeSkeletonFlags(): HomeSkeletonFlags {
   }, [splashExitedAtMs]);
 
   const forceSkeletons = shouldForceHomeSkeletons(splashExitedAtMs);
-  const lastForceRef = useRef<boolean | null>(null);
+  const lastLoggedRef = useRef<string>("");
 
-  const showLocationSkeleton = false as const;
-  const showWeatherSkeleton = false as const;
-  const showServicesSkeleton = false as const;
+  // Zomato shell: header stays real (location updates from store). Never grey-box the header.
+  const showLocationSkeleton = false;
+  const showWeatherSkeleton = forceSkeletons || !weatherReady;
+  const showPromoSkeleton = forceSkeletons || !offersResolved;
+  const showServicesSkeleton = forceSkeletons || !assetsReady;
   const showBrandSkeleton = false as const;
-  const showPromoSkeleton = forceSkeletons;
 
   useEffect(() => {
-    if (lastForceRef.current === forceSkeletons) return;
-    lastForceRef.current = forceSkeletons;
-    homeSkeletonLog("SKELETON_SKIPPED_CACHE_HIT", "location", "header_instant");
-    homeSkeletonLog("SKELETON_SKIPPED_CACHE_HIT", "weather", "header_instant");
-    homeSkeletonLog("SKELETON_SKIPPED_CACHE_HIT", "services", "static_cards_instant");
+    const key = [
+      showWeatherSkeleton,
+      showPromoSkeleton,
+      showServicesSkeleton,
+      forceSkeletons,
+    ].join("|");
+    if (lastLoggedRef.current === key) return;
+    lastLoggedRef.current = key;
+    homeSkeletonLog("SKELETON_SKIPPED_CACHE_HIT", "location", "header_live");
+    homeSkeletonLog(
+      showWeatherSkeleton ? "CONTENT_FETCH_STARTED" : "SKELETON_SKIPPED_CACHE_HIT",
+      "weather",
+      showWeatherSkeleton ? "awaiting_weather" : "weather_ready"
+    );
+    homeSkeletonLog(
+      showServicesSkeleton ? "CONTENT_FETCH_STARTED" : "SKELETON_SKIPPED_CACHE_HIT",
+      "services",
+      showServicesSkeleton ? "awaiting_assets" : "cards_ready"
+    );
     homeSkeletonLog("SKELETON_SKIPPED_CACHE_HIT", "brand", "shell_instant");
     homeSkeletonLog(
       showPromoSkeleton ? "CONTENT_FETCH_STARTED" : "SKELETON_SKIPPED_CACHE_HIT",
       "promo",
-      showPromoSkeleton ? "force_hold" : "default_or_cached_art"
+      showPromoSkeleton ? "awaiting_offers" : "offers_ready"
     );
-  }, [forceSkeletons, showPromoSkeleton]);
+  }, [
+    forceSkeletons,
+    showWeatherSkeleton,
+    showPromoSkeleton,
+    showServicesSkeleton,
+  ]);
 
   return useMemo(
     () => ({
@@ -77,6 +117,13 @@ export function useHomeSkeletonFlags(): HomeSkeletonFlags {
       showBrandSkeleton,
       splashExited,
     }),
-    [forceSkeletons, showPromoSkeleton, splashExited]
+    [
+      forceSkeletons,
+      showLocationSkeleton,
+      showWeatherSkeleton,
+      showPromoSkeleton,
+      showServicesSkeleton,
+      splashExited,
+    ]
   );
 }

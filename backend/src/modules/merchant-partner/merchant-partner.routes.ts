@@ -9977,23 +9977,27 @@ export async function merchantPartnerRoutes(app: FastifyInstance) {
           const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 50, 1), limitCap);
           try {
             const { loadMerchantFoodOrders } = await import("./merchant-food-orders.service.js");
-            const FOOD_ORDERS_DEADLINE_MS = hasHistoryRange ? 20_000 : 12_000;
+            // Live board must answer before the merchant app's 22s client abort.
+            const FOOD_ORDERS_DEADLINE_MS = hasHistoryRange ? 20_000 : 8_000;
             const started = Date.now();
+            let timeoutId: ReturnType<typeof setTimeout> | null = null;
             const orders = await Promise.race([
               loadMerchantFoodOrders(sql, storeId, {
                 limit,
                 createdFrom,
                 createdTo,
+              }).finally(() => {
+                if (timeoutId != null) clearTimeout(timeoutId);
               }),
               new Promise<never>((_, reject) => {
-                setTimeout(
+                timeoutId = setTimeout(
                   () => reject(new Error("food_orders_timeout")),
                   FOOD_ORDERS_DEADLINE_MS
                 );
               }),
             ]);
             const ms = Date.now() - started;
-            if (ms > 3_000) {
+            if (ms > 2_500) {
               req.log.warn({ storeId, ms, count: orders.length }, "[food-orders GET] slow");
             }
             return reply.send({ orders });

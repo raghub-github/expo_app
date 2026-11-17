@@ -26,6 +26,7 @@ import {
   formatOrderDeliveryTypeLabel,
   formatOrderInitiatedByLabel,
   formatScheduledOrderLabel,
+  isSelfPickupDelivery,
   shouldShowMerchantUpdatedKpt,
 } from "@/lib/orders/order-detail-display";
 import { useLiveElapsedSeconds } from "@/hooks/useLiveElapsedSeconds";
@@ -782,6 +783,7 @@ export default function OrderRightSidebar({
     order.formattedOrderId?.trim() ||
     null;
   const deliveryTypeLabel = formatOrderDeliveryTypeLabel(order.deliveryType);
+  const selfPickup = isSelfPickupDelivery(order.deliveryType);
   const initiatedByLabel = formatOrderInitiatedByLabel(
     order.orderSource,
     order.deliveryInitiator
@@ -2099,7 +2101,9 @@ export default function OrderRightSidebar({
           </div>
           <div className="flex items-center justify-between gap-2">
             <p className="min-w-0 shrink-0 whitespace-nowrap text-[11px] leading-snug">
-              <span className="font-medium text-slate-600">Pickup OTP - </span>
+              <span className="font-medium text-slate-600">
+                {selfPickup ? "Delivery OTP - " : "Pickup OTP - "}
+              </span>
               <span className="font-mono font-semibold tracking-wide text-emerald-700">
                 {pickupOtpDisplay}
               </span>

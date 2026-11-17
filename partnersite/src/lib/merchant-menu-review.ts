@@ -97,14 +97,31 @@ function canonicalizeVariants(val: unknown): unknown {
   }))
 }
 
+/** Treat null / undefined / "" / whitespace / [] as the same empty value. */
+function isEmptyish(v: unknown): boolean {
+  if (v === undefined || v === null) return true
+  if (typeof v === 'string' && v.trim() === '') return true
+  if (Array.isArray(v) && v.length === 0) return true
+  return false
+}
+
 function normField(field: string, v: unknown): string {
-  if (v === undefined || v === null) return 'null'
+  if (isEmptyish(v)) return 'null'
   if (NUMERIC_FIELDS.has(field)) {
+    if (typeof v === 'string' && v.trim() === '') return 'null'
     const n = Number(v)
     return Number.isFinite(n) ? String(n) : 'null'
   }
-  if (field === 'customizations') return JSON.stringify(canonicalizeCustomizations(v))
-  if (field === 'variants') return JSON.stringify(canonicalizeVariants(v))
+  if (field === 'customizations') {
+    const c = canonicalizeCustomizations(v)
+    if (isEmptyish(c)) return 'null'
+    return JSON.stringify(c)
+  }
+  if (field === 'variants') {
+    const c = canonicalizeVariants(v)
+    if (isEmptyish(c)) return 'null'
+    return JSON.stringify(c)
+  }
   if (field === 'has_customizations' || field === 'has_addons' || field === 'has_variants' || field === 'is_active' || field === 'available_for_delivery') {
     return v ? 'true' : 'false'
   }
@@ -116,7 +133,19 @@ function normField(field: string, v: unknown): string {
       return String(v)
     }
   }
+  if (typeof v === 'string') return v.trim()
   return String(v)
+}
+
+/** Store empty-equivalent scalars as null so review rows stay clean. */
+function storeScalarValue(field: string, v: unknown): unknown {
+  if (isEmptyish(v)) return null
+  if (NUMERIC_FIELDS.has(field)) {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  if (typeof v === 'string') return v.trim()
+  return v
 }
 
 export function buildPartnerFieldDiffs(
@@ -134,17 +163,15 @@ export function buildPartnerFieldDiffs(
         ? canonicalizeCustomizations(newVal)
         : field === 'variants'
           ? canonicalizeVariants(newVal)
-          : NUMERIC_FIELDS.has(field) && newVal != null && newVal !== ''
-            ? Number(newVal)
-            : newVal
+          : storeScalarValue(field, newVal)
     const storedOld =
       field === 'customizations'
         ? canonicalizeCustomizations(oldVal)
         : field === 'variants'
           ? canonicalizeVariants(oldVal)
-          : NUMERIC_FIELDS.has(field) && oldVal != null && oldVal !== ''
-            ? Number(oldVal)
-            : oldVal
+          : storeScalarValue(field, oldVal)
+    // Defense: never persist a no-op after canonicalization.
+    if (normField(field, storedOld) === normField(field, storedNew)) continue
     diffs.push({ field_name: field, old_value: storedOld, new_value: storedNew })
   }
   return diffs

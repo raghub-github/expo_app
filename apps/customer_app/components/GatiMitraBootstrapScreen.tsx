@@ -1,8 +1,16 @@
+/**
+ * Branded launch cover — flat mint + bundled splash wordmark (Zomato stack).
+ *
+ * Typography is baked into splash PNGs (bold Lora) so cold start never races
+ * expo-font. Painting "GatiMitra" as Text before Lora loads made Android fall
+ * back to system sans — the thin/normal flash seen in production.
+ *
+ * Full-bleed `splash-brand.png` matches phone aspect; Android 12 native icon
+ * uses the square sibling. No spinner — brand-only, then home + skeletons.
+ */
 import { useEffect, useLayoutEffect, useRef, useCallback } from "react";
-import { AppText } from "@/components/AppText";
-
 import {
-  ActivityIndicator,
+  Image,
   Platform,
   StatusBar as NativeStatusBar,
   StyleSheet,
@@ -21,6 +29,9 @@ import { GatiMitraColors } from "@/constants/gatimitra";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { startupMeasure } from "@/lib/startupPerf";
 
+/** Phone-aspect brand stack (flat mint + Lora Bold + hairline + tagline). */
+const SPLASH_BRAND_IMAGE = require("../assets/images/splash-brand.png");
+
 /** Solid brand fill — matches native splash / system chrome. */
 export const SPLASH_STATUS_BAR = GatiMitraColors.splashMint;
 /** Visual-only fade; parent force-dismisses — never block Home on Reanimated. */
@@ -29,7 +40,8 @@ const EXIT_MS = 90;
 function applySplashStatusBarChrome() {
   NativeStatusBar.setHidden(false, "none");
   if (Platform.OS === "android") {
-    NativeStatusBar.setBarStyle("dark-content", true);
+    // Light status icons on mint brand; dark nav buttons on the white system bar.
+    NativeStatusBar.setBarStyle("light-content", true);
     void applyAndroidNavigationChrome({ buttonStyle: "dark" }).catch(() => {});
   }
 }
@@ -45,7 +57,10 @@ export type GatiMitraBootstrapScreenProps = {
   onExitComplete?: () => void;
   /** @deprecated Unused. */
   statusMessage?: string | null;
-  /** Preferred brand fonts loaded — apply Lora when true; still paint brand immediately. */
+  /**
+   * @deprecated Splash brand is a bundled PNG — never waits on expo-font.
+   * Kept optional so older call sites do not break.
+   */
   fontsReady?: boolean;
   /** Fired once the splash has laid out — used to hide the native splash early. */
   onSplashReady?: () => void;
@@ -55,7 +70,6 @@ export function GatiMitraBootstrapScreen({
   variant = "index",
   appReady = false,
   onExitComplete,
-  fontsReady = true,
   onSplashReady,
 }: GatiMitraBootstrapScreenProps) {
   const insets = useSafeAreaInsets();
@@ -94,12 +108,15 @@ export function GatiMitraBootstrapScreen({
   useEffect(() => {
     const chrome = useScreenChromeStore.getState();
     chrome.setBootstrapActive(true);
-    chrome.setStatusBarBackground(SPLASH_STATUS_BAR, "dark");
+    // Immersive first (sets transparent), then mint + light icons for splash.
+    // Reverse order used to leave dark icons on mint / sticky immersive chrome.
     chrome.setImmersiveStatusBarChrome(true);
+    chrome.setStatusBarBackground(SPLASH_STATUS_BAR, "light");
     applySplashStatusBarChrome();
     return () => {
       const reset = useScreenChromeStore.getState();
-      reset.setBootstrapActive(false);
+      // Full chrome restore — immersive off + solid soft strip (never leave mint stuck).
+      reset.setImmersiveStatusBarChrome(false);
       reset.resetStatusBarBackground();
       if (exitStartedRef.current && !completedRef.current) {
         completedRef.current = true;
@@ -126,20 +143,12 @@ export function GatiMitraBootstrapScreen({
   const statusFallback =
     Platform.OS === "android" ? NativeStatusBar.currentHeight ?? 24 : 44;
   const topBleed = Math.max(insets.top, statusFallback);
-  const spinnerBottom = Math.max(insets.bottom, 12) + 28;
-
-  const titleStyle = fontsReady
-    ? styles.title
-    : [styles.title, styles.titleFallback];
-  const subtitleStyle = fontsReady
-    ? styles.subtitle
-    : [styles.subtitle, styles.subtitleFallback];
 
   const brandBlock = (
     <>
       <StatusBar
         hidden={false}
-        style="dark"
+        style="light"
         backgroundColor="transparent"
         translucent
       />
@@ -147,24 +156,15 @@ export function GatiMitraBootstrapScreen({
         pointerEvents="none"
         style={[styles.statusFill, { height: topBleed, backgroundColor: SPLASH_STATUS_BAR }]}
       />
-      <View style={styles.logoLayer} pointerEvents="none">
-        <AppText style={titleStyle} bold numberOfLines={1}>
-          GatiMitra
-        </AppText>
-        <AppText style={subtitleStyle} bold numberOfLines={1}>
-          CRAFTED FOR CONVENIENCE
-        </AppText>
-      </View>
-      <View
-        pointerEvents="none"
-        style={[styles.spinnerDock, { bottom: spinnerBottom }]}
-      >
-        <ActivityIndicator
-          size="small"
-          color="#000000"
-          accessibilityLabel="Loading"
-        />
-      </View>
+      <Image
+        source={SPLASH_BRAND_IMAGE}
+        style={styles.fullBleedBrand}
+        resizeMode="cover"
+        fadeDuration={0}
+        accessibilityIgnoresInvertColors
+        accessibilityLabel="GatiMitra"
+        onLoad={handleSplashLayout}
+      />
     </>
   );
 
@@ -232,47 +232,10 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 1,
   },
-  logoLayer: {
+  fullBleedBrand: {
     ...StyleSheet.absoluteFillObject,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    zIndex: 2,
-  },
-  spinnerDock: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    alignItems: "center",
-    zIndex: 5,
-  },
-  title: {
-    fontSize: 54,
-    lineHeight: 62,
-    fontFamily: "Lora_700Bold",
-    fontWeight: "700",
-    color: "#000000",
-    letterSpacing: -0.8,
-    textAlign: "center",
     width: "100%",
-    maxWidth: 380,
-  },
-  titleFallback: {
-    fontFamily: Platform.select({ ios: "Georgia", android: "serif", default: "serif" }),
-  },
-  subtitle: {
-    marginTop: 12,
-    fontSize: 13,
-    lineHeight: 18,
-    fontFamily: "Lora_700Bold",
-    fontWeight: "700",
-    color: "#000000",
-    letterSpacing: 0.8,
-    textAlign: "center",
-    alignSelf: "center",
-    maxWidth: 280,
-  },
-  subtitleFallback: {
-    fontFamily: Platform.select({ ios: "Georgia", android: "serif", default: "serif" }),
+    height: "100%",
+    zIndex: 2,
   },
 });

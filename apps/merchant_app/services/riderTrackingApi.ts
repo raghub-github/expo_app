@@ -53,19 +53,32 @@ export type MerchantRiderTrackingPayload = {
 
 /** HTTP fallback only while WS is down — keep ≥10s to avoid radio heat. */
 export const MERCHANT_RIDER_TRACKING_POLL_MS = 10_000;
+/** Longer than food-orders — Android ~6 conn/host; tracking often waits behind board polls. */
+const RIDER_TRACKING_TIMEOUT_MS = 35_000;
 
 export async function fetchMerchantRiderTracking(
   storeId: number,
   ordersFoodId: number,
   token: string
 ): Promise<MerchantRiderTrackingPayload> {
-  const res = await authFetch(
-    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}/rider-tracking`,
-    token
-  );
-  if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(err.error || "Could not load rider location");
+  const url = `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}/rider-tracking`;
+
+  const once = async () => {
+    const res = await authFetch(url, token, { timeoutMs: RIDER_TRACKING_TIMEOUT_MS });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(err.error || "Could not load rider location");
+    }
+    return (await res.json()) as MerchantRiderTrackingPayload;
+  };
+
+  try {
+    return await once();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e ?? "");
+    if (!/timed out|timeout|network request failed/i.test(msg)) throw e;
+    // One retry — first attempt often loses the socket race to food-orders.
+    await new Promise((r) => setTimeout(r, 600));
+    return once();
   }
-  return (await res.json()) as MerchantRiderTrackingPayload;
 }

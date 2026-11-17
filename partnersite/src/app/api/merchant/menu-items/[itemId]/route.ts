@@ -47,8 +47,23 @@ export async function GET(
     .order("created_at", { ascending: false })
     .order("id", { ascending: false });
 
+  // Collapse duplicate URL rows (re-upload / materialize can insert the same key twice).
+  const deduped: typeof images = [];
+  const seenUrls = new Set<string>();
+  for (const img of images ?? []) {
+    const url = typeof img.image_url === "string" ? img.image_url.trim() : "";
+    if (!url) continue;
+    if (seenUrls.has(url)) continue;
+    seenUrls.add(url);
+    deduped.push(img);
+  }
+  deduped.sort((a, b) => {
+    if (Boolean(a.is_primary) !== Boolean(b.is_primary)) return a.is_primary ? -1 : 1;
+    return Number(a.display_order ?? 0) - Number(b.display_order ?? 0);
+  });
+
   return NextResponse.json({
     ...item,
-    images: images ?? [],
+    images: deduped,
   });
 }

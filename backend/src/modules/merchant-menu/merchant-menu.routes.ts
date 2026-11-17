@@ -105,6 +105,11 @@ import {
   linkExistingCuisineToStore,
   unlinkCuisineFromStore,
 } from "./categoryRules.js";
+import {
+  denyUnlessMerchantCanEditMenuDetails,
+  denyUnlessMerchantPermission,
+  effectiveMerchantAccessRole,
+} from "../merchant-partner/merchant-staff-access.js";
 
 // Allow parent_category_id as number or string (client may send string); preserve null/undefined
 const parentCategoryIdSchema = z.preprocess(
@@ -324,6 +329,26 @@ export async function merchantMenuRoutes(app: FastifyInstance) {
         }
         return access;
       }
+
+      /**
+       * STAFF may GET catalog + PATCH stock/OOS only.
+       * routerPath is the route pattern (e.g. /items/:id/stock), not the concrete URL.
+       */
+      protectedApp.addHook("preHandler", async (req, reply) => {
+        const method = String(req.method ?? "").toUpperCase();
+        if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
+        if (effectiveMerchantAccessRole(req.auth) !== "STAFF") return;
+        if (denyUnlessMerchantPermission(reply, req.auth, "menu")) return;
+        const routePath = String((req as { routeOptions?: { url?: string } }).routeOptions?.url ?? req.url ?? "")
+          .split("?")[0]
+          .replace(/\/+$/, "");
+        const stockAllowed =
+          /\/items\/:id\/stock$/.test(routePath) ||
+          /\/items\/[^/]+\/stock$/.test(routePath) ||
+          /\/out-of-stock$/.test(routePath);
+        if (stockAllowed) return;
+        if (denyUnlessMerchantCanEditMenuDetails(reply, req.auth)) return;
+      });
 
       function getDefaultStoreTypeConfig() {
         return {

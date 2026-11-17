@@ -2,7 +2,7 @@
  * Home promo carousel — reference-matched offer banner + live platform offers.
  */
 
-import { useRef, useState, useCallback, useEffect, useMemo } from "react";
+import { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
 import {
   View,
   ScrollView,
@@ -28,6 +28,7 @@ import { navigateToMerchant } from "@/lib/navigateToMerchant";
 import { navigatePrimaryTab } from "@/lib/navigatePrimaryTab";
 import { requestFoodHomeFlashDealFilter } from "@/lib/foodHomePendingFilters";
 import { NATURAL_HORIZONTAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
+import { enqueueImagePrefetchFront } from "@/lib/prefetchQueue";
 import { useQueryClient } from "@tanstack/react-query";
 import { useIsFocused } from "@react-navigation/native";
 import { HomePromoBannerSkeleton } from "@/components/home/HomeTabSkeletons";
@@ -60,9 +61,9 @@ const LIMITED_TIME_MAX_DAYS = 5;
 const MAX_SLIDES = 8;
 /**
  * Decode active + neighbors so the first swipe paints from disk cache.
- * Cap stays tight — we still never mount decode for the whole MAX_SLIDES set.
+ * Prefetch warms the full slide set; decode stays windowed for texture memory.
  */
-const IMAGE_WINDOW = 2;
+const IMAGE_WINDOW = 3;
 
 function daysUntilOfferExpiry(validTill: string | null | undefined): number | null {
   if (!validTill?.trim()) return null;
@@ -323,10 +324,15 @@ function PromoSlideCard({ slide, index, cardHeight, mode, decodeImage, onPress }
             contentFit="cover"
             cachePolicy="memory-disk"
             transition={0}
-            // Hero / active slide: high priority. Neighbors: normal (windowed decode).
-            priority={index === 0 ? "high" : "normal"}
+            // First slides: high priority so disk-cache hits paint with the card.
+            priority={index <= 1 ? "high" : "normal"}
             recyclingKey={slide.id}
-            placeholder={typeof bgSource === "object" && "uri" in bgSource && bgSource.uri ? { uri: bgSource.uri } : undefined}
+            // Same URI as placeholder → expo-image can paint from memory/disk immediately.
+            placeholder={
+              typeof bgSource === "object" && "uri" in bgSource && bgSource.uri
+                ? { uri: bgSource.uri }
+                : undefined
+            }
             placeholderContentFit="cover"
             onError={() => setImageFailed(true)}
           />
@@ -381,20 +387,19 @@ export function HomePromoCarousel({
     scrollRef.current?.scrollTo({ x: 0, animated: false });
   }, [slides.length]);
 
-  // Warm CMS fallback art + visible merchant banners into expo-image disk cache ASAP.
-  useEffect(() => {
+  // Front-of-queue warm: CMS fallback art + every slide banner before first paint.
+  useLayoutEffect(() => {
     const uris: string[] = [];
     const artKeys = mode === "ride" ? RIDE_OFFER_ASSET_KEYS : FOOD_OFFER_ASSET_KEYS;
     for (const key of artKeys) {
       const uri = getAppAssetUrl(key);
       if (uri) uris.push(uri);
     }
-    for (const slide of slides.slice(0, IMAGE_WINDOW + 1)) {
+    for (const slide of slides) {
       if (slide.imageUrl) uris.push(slide.imageUrl);
     }
-    for (const uri of uris) {
-      void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => {});
-    }
+    if (uris.length === 0) return;
+    enqueueImagePrefetchFront(uris, uris.length);
   }, [slides, mode]);
 
   useEffect(() => {
@@ -463,6 +468,8 @@ export function HomePromoCarousel({
       <ScrollView
         ref={scrollRef}
         {...NATURAL_HORIZONTAL_SCROLL_PROPS}
+        // Vertical parent owns up/down; this rail only claims clear horizontal drags.
+        directionalLockEnabled
         scrollEnabled={slides.length > 1}
         onScrollBeginDrag={() => {
           userScrollingRef.current = true;
@@ -514,11 +521,10 @@ const styles = StyleSheet.create({
   },
   promoCardOuter: {
     borderRadius: 20,
-    shadowColor: "#0f172a",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
   },
   promoCard: {
     borderRadius: 20,

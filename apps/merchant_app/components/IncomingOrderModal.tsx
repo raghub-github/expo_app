@@ -12,6 +12,7 @@ import {
   PanResponder,
   Vibration,
   AppState,
+  Animated as RNAnimated,
   type AppStateStatus,
 } from "react-native";
 import Animated, {
@@ -73,6 +74,7 @@ import {
 } from "@/lib/orderAcceptanceWindow";
 import {
   clampPrepMinutes,
+  computePrepReadyByAtIso,
   PLATFORM_DEFAULT_PREP_MINUTES,
   PREP_TIME_MIN,
   PREP_TIME_MAX,
@@ -80,7 +82,6 @@ import {
 } from "@/lib/order-prep-time";
 import { TypographyVariantProvider } from "@/lib/typographyVariant";
 import { MerchantFonts } from "@/constants/typography";
-import { getTextHost } from "@/lib/textHost";
 import { fetchStoreProfile } from "@/services/menuApi";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import * as SecureStore from "@/lib/secureStore";
@@ -90,8 +91,6 @@ import {
   markIncomingOrderDismissedLocal,
   markIncomingOrderResolved,
 } from "@/lib/incomingOrderDismissed";
-
-const NativeText = getTextHost();
 
 function rejectFlowLog(step: string, orderId: string, alertSessionId: string): void {
   if (typeof __DEV__ === "undefined" || !__DEV__) return;
@@ -331,11 +330,11 @@ function AcceptOrderSwipeButton({
   onPress: () => void;
 }) {
   const trackWidth = useRef(0);
-  const trackWidthSv = useSharedValue(0);
   const dragX = useSharedValue(0);
   const confirmedRef = useRef(false);
   const btnPulse = useSharedValue(1);
-  const progressWidth = useSharedValue(timeProgress * 100);
+  // Same RN Animated overlay path as Mark Ready — Reanimated width was painting 0 on first layout.
+  const overlayWidth = useRef(new RNAnimated.Value(0)).current;
   const liveRef = useRef<{
     loading: boolean;
     disabled: boolean;
@@ -367,18 +366,18 @@ function AcceptOrderSwipeButton({
     return () => cancelAnimation(btnPulse);
   }, [btnPulse]);
 
+  const showCountdownOverlay =
+    Number.isFinite(timeProgress) && timeProgress > 0 && remainingMs > 0;
+
   useEffect(() => {
-    const start = Math.max(0, Math.min(100, timeProgress * 100));
-    progressWidth.value = start;
-    if (start > 0 && remainingMs > 0) {
-      progressWidth.value = withTiming(0, {
-        duration: remainingMs,
-        easing: Easing.linear,
-      });
-    }
-    // Restart only when the merchant pages to another order — not on the 1s label tick.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orderKey, progressWidth]);
+    if (!showCountdownOverlay || trackWidth.current <= 0) return;
+    const ratio = Math.min(1, Math.max(0, timeProgress));
+    RNAnimated.timing(overlayWidth, {
+      toValue: trackWidth.current * ratio,
+      duration: 420,
+      useNativeDriver: false,
+    }).start();
+  }, [timeProgress, showCountdownOverlay, overlayWidth, orderKey]);
 
   useEffect(() => {
     confirmedRef.current = false;
@@ -446,10 +445,6 @@ function AcceptOrderSwipeButton({
     transform: [{ scale: btnPulse.value }],
   }));
 
-  const progressStyle = useAnimatedStyle(() => ({
-    width: Math.max(0, (progressWidth.value / 100) * trackWidthSv.value),
-  }));
-
   const handleStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: dragX.value }],
   }));
@@ -471,32 +466,36 @@ function AcceptOrderSwipeButton({
         onLayout={(e) => {
           const w = e.nativeEvent.layout.width;
           trackWidth.current = w;
-          trackWidthSv.value = w;
+          if (showCountdownOverlay) {
+            const ratio = Math.min(1, Math.max(0, timeProgress));
+            overlayWidth.setValue(w * ratio);
+          }
         }}
         {...panResponder.panHandlers}
       >
-        <Animated.View
-          style={[
-            styles.acceptProgressFill,
-            { backgroundColor: urgent ? "rgba(255,255,255,0.16)" : "rgba(11,26,15,0.10)" },
-            progressStyle,
-          ]}
-        />
-        <NativeText
-          style={[
-            styles.acceptText,
-            {
-              color: labelColor,
-              fontFamily: MerchantFonts.poppinsBold,
-              fontWeight: "900",
-            },
-          ]}
+        {showCountdownOverlay ? (
+          <RNAnimated.View
+            pointerEvents="none"
+            style={[
+              styles.acceptProgressFill,
+              {
+                width: overlayWidth,
+                backgroundColor: urgent ? "rgba(255,255,255,0.28)" : "rgba(0,0,0,0.26)",
+              },
+            ]}
+          />
+        ) : null}
+        {/* AppText sans+bold: Android drops Poppins when fontWeight is set on the face file. */}
+        <Text
+          variant="sans"
+          bold
+          style={[styles.acceptText, { color: labelColor }]}
           pointerEvents="none"
           numberOfLines={1}
           allowFontScaling={false}
         >
           {loading ? "Accepting..." : `Accept order (${countdown})`}
-        </NativeText>
+        </Text>
         <Animated.View
           style={[styles.acceptHandle, handleStyle]}
           pointerEvents="none"
@@ -1253,10 +1252,29 @@ export default function IncomingOrderModal() {
           }
         } catch (err) {
           if (isInvalidTransitionError(err)) {
+            const acceptedAt = new Date().toISOString();
+            const prepReadyByAt =
+              status === "ACCEPTED"
+                ? computePrepReadyByAtIso(
+                    acceptedAt,
+                    clampPrepMinutes(prepMinutes, PLATFORM_DEFAULT_PREP_MINUTES)
+                  )
+                : null;
             upsertOrder({
               ...current,
               status: status === "ACCEPTED" ? "preparing" : "rejected",
               pipelineStatus: status,
+              ...(status === "ACCEPTED" && prepReadyByAt
+                ? {
+                    acceptedAt,
+                    preparationTimeMinutes: clampPrepMinutes(
+                      prepMinutes,
+                      PLATFORM_DEFAULT_PREP_MINUTES
+                    ),
+                    prepReadyByAt,
+                    expectedReadyAt: prepReadyByAt,
+                  }
+                : {}),
             });
             if (status === "CANCELLED" && mode === "auto") showToast("Order cancelled");
             requestMerchantDashboardStatsRefresh();
@@ -2428,6 +2446,7 @@ const styles = StyleSheet.create({
     left: 0,
     top: 0,
     bottom: 0,
+    zIndex: 0,
     borderTopLeftRadius: SLIDE_TRACK_H / 2,
     borderBottomLeftRadius: SLIDE_TRACK_H / 2,
   },
@@ -2448,11 +2467,15 @@ const styles = StyleSheet.create({
     width: "100%",
     textAlign: "center",
     fontSize: 17,
-    fontWeight: "900",
-    letterSpacing: 0.15,
+    letterSpacing: 0.2,
     paddingLeft: SLIDE_THUMB_W + 14,
     paddingRight: 14,
     zIndex: 1,
+    // Face comes from AppText variant=sans bold (Poppins_700Bold); no fontWeight here.
+    ...Platform.select({
+      android: { includeFontPadding: false },
+      default: {},
+    }),
   },
   btnDisabled: { opacity: 0.55 },
   pressed: { opacity: 0.88 },

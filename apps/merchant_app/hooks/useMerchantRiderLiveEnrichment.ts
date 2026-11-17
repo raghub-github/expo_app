@@ -21,6 +21,7 @@ export type MerchantRiderLiveEnrichment = {
   wsConnected: boolean;
   trackingData: MerchantRiderTrackingPayload | null;
   trackingError: string | null;
+  reload: (silent?: boolean) => Promise<void>;
 };
 
 export function useMerchantRiderLiveEnrichment(
@@ -51,7 +52,7 @@ export function useMerchantRiderLiveEnrichment(
     return ids;
   }, [order.formattedOrderId, order.orderNumber]);
 
-  const { data: tracking, loading, error, wsConnected } = useMerchantRiderLiveTracking({
+  const { data: tracking, loading, error, wsConnected, reload } = useMerchantRiderLiveTracking({
     enabled: shouldTrack,
     storeId,
     ordersFoodId,
@@ -90,5 +91,6 @@ export function useMerchantRiderLiveEnrichment(
     wsConnected,
     trackingData: tracking,
     trackingError: error,
+    reload,
   };
 }

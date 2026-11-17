@@ -20,7 +20,8 @@ export type PartnerSmtpConfig = {
 export function getPartnerSmtpConfig(): PartnerSmtpConfig | null {
   const smtpUser = process.env.EMAIL_ID || process.env.SMTP_USER || process.env.SMTP_FROM_EMAIL;
   const smtpPass = process.env.EMAIL_APP_PASSWORD || process.env.SMTP_PASS;
-  const smtpHost = process.env.SMTP_HOST || "smtp.zoho.in";
+  // Prefer smtppro for custom-domain Zoho mailboxes (@gatimitra.com); override via SMTP_HOST.
+  const smtpHost = process.env.SMTP_HOST || "smtppro.zoho.in";
   const smtpPort = Number(process.env.SMTP_PORT || 465);
   const smtpSecureEnv = process.env.SMTP_SECURE;
   const smtpSecure =
@@ -160,6 +161,45 @@ export async function sendParentAccountCreatedEmail(args: {
   }
 }
 
+async function sendPartnerOtpViaResend(args: {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}): Promise<{ sent: boolean; reason?: string }> {
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  if (!apiKey) return { sent: false, reason: 'resend_not_configured' };
+  const from =
+    process.env.RESEND_FROM_EMAIL?.trim() ||
+    process.env.SMTP_FROM_EMAIL?.trim() ||
+    'GatiMitra <noreply@gatimitra.com>';
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: args.to,
+        subject: args.subject,
+        text: args.text,
+        html: args.html,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.error('[send-email] Resend OTP failed:', res.status, body.slice(0, 300));
+      return { sent: false, reason: 'resend_failed' };
+    }
+    return { sent: true };
+  } catch (err) {
+    console.error('[send-email] Resend OTP error:', err);
+    return { sent: false, reason: 'resend_failed' };
+  }
+}
+
 /** OTP email for partner signup / login (Supabase Send Email hook or direct send). */
 export async function sendPartnerRegisterOtpEmail(args: {
   toEmail: string;
@@ -175,12 +215,6 @@ export async function sendPartnerRegisterOtpEmail(args: {
     return { sent: false, reason: 'missing_token' };
   }
 
-  const cfg = getPartnerSmtpConfig();
-  if (!cfg) {
-    console.warn('[send-email] SMTP not configured; skipping custom OTP email');
-    return { sent: false, reason: 'smtp_not_configured' };
-  }
-
   const subject = partnerOtpEmailSubject(args.emailActionType);
   const htmlBody = buildPartnerRegisterOtpEmailHtml(token, args.emailActionType);
   const textBody = [
@@ -194,21 +228,38 @@ export async function sendPartnerRegisterOtpEmail(args: {
     'Need help? support@gatimitra.com',
   ].join('\n');
 
-  try {
-    const transporter = await createPartnerMailTransport(cfg);
-    await transporter.sendMail({
-      from: cfg.fromName ? `${cfg.fromName} <${cfg.fromEmail}>` : cfg.fromEmail,
-      to,
-      replyTo: cfg.fromEmail,
-      subject,
-      text: textBody,
-      html: htmlBody,
-    });
-    return { sent: true };
-  } catch (err) {
-    console.error('[send-email] Partner OTP email failed:', err);
-    return { sent: false, reason: 'send_failed' };
+  const cfg = getPartnerSmtpConfig();
+  if (cfg) {
+    try {
+      const transporter = await createPartnerMailTransport(cfg);
+      await transporter.sendMail({
+        from: cfg.fromName ? `${cfg.fromName} <${cfg.fromEmail}>` : cfg.fromEmail,
+        to,
+        replyTo: cfg.fromEmail,
+        subject,
+        text: textBody,
+        html: htmlBody,
+      });
+      return { sent: true };
+    } catch (err) {
+      console.error('[send-email] Partner OTP SMTP failed, trying Resend fallback:', err);
+    }
+  } else {
+    console.warn('[send-email] SMTP not configured; trying Resend fallback');
   }
+
+  const resend = await sendPartnerOtpViaResend({
+    to,
+    subject,
+    text: textBody,
+    html: htmlBody,
+  });
+  if (resend.sent) return resend;
+
+  return {
+    sent: false,
+    reason: cfg ? resend.reason || 'send_failed' : 'smtp_not_configured',
+  };
 }
 
 function escapeHtml(s: string): string {

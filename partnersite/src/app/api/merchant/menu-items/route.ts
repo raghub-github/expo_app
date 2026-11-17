@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { createServerSupabaseClient } from '@/lib/supabase/server'
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant'
+import { partnerCanEditMenuDetails } from '@/lib/auth/merchant-staff-permissions'
 import { assertStoreAccess } from '@/lib/auth/assert-store-access'
 import { deleteFromR2, extractR2KeyFromUrl } from '@/lib/r2'
 import { logStoreActivity } from '@/lib/store-activity-feed'
@@ -62,26 +63,107 @@ export async function GET(req: NextRequest) {
         image_count: number
         primary_image_moderation_status: string | null
         primary_image_url: string | null
+        primary_image_rejection_reason: string | null
       }
     > = {}
+    const pendingChangeItemIds = new Set<number>()
+    /** Proposed item_image_url from pending EDIT reviews (live column stays unchanged until approve). */
+    const pendingReviewImageByItemId: Record<number, string> = {}
     if (itemIds.length > 0) {
-      const { data: imageRows } = await supabase
-        .from('merchant_menu_item_images')
-        .select('menu_item_id, moderation_status, is_primary, image_url')
-        .in('menu_item_id', itemIds)
+      const [{ data: imageRows }, { data: pendingReviews }] = await Promise.all([
+        supabase
+          .from('merchant_menu_item_images')
+          .select('id, menu_item_id, moderation_status, is_primary, image_url, rejection_reason')
+          .in('menu_item_id', itemIds),
+        supabase
+          .from('merchant_menu_item_review_requests')
+          .select('id, menu_item_id')
+          .eq('store_id', access.storeIdNum)
+          .eq('status', 'PENDING')
+          .in('menu_item_id', itemIds),
+      ])
       for (const id of itemIds) {
         const rows = (imageRows ?? []).filter((r: { menu_item_id: number }) => r.menu_item_id === id)
         const primary = rows.find((r: { is_primary?: boolean }) => r.is_primary) ?? rows[0]
+        const primaryId = primary ? Number((primary as { id?: number }).id) : 0
+        // Prefer a newer rejected upload over an older restored approved primary
+        // so Partner Menu shows the rejected photo the merchant must fix.
+        const newerRejected = rows
+          .filter((r) => {
+            const mod = String((r as { moderation_status?: string }).moderation_status ?? '')
+              .trim()
+              .toUpperCase()
+            if (mod !== 'REJECTED') return false
+            const rid = Number((r as { id?: number }).id)
+            return Number.isFinite(rid) && rid > 0 && (primaryId <= 0 || rid >= primaryId)
+          })
+          .sort((a, b) => Number((b as { id?: number }).id) - Number((a as { id?: number }).id))[0]
+        const primaryMod = primary
+          ? String((primary as { moderation_status?: string }).moderation_status ?? 'PENDING').toUpperCase()
+          : null
+        const displayRow =
+          primaryMod === 'REJECTED'
+            ? primary
+            : newerRejected && primaryMod === 'APPROVED'
+              ? newerRejected
+              : primary
         const primaryUrl =
-          primary && typeof (primary as { image_url?: string | null }).image_url === 'string'
-            ? String((primary as { image_url: string }).image_url).trim() || null
+          displayRow && typeof (displayRow as { image_url?: string | null }).image_url === 'string'
+            ? String((displayRow as { image_url: string }).image_url).trim() || null
             : null
+        const primaryRejection =
+          displayRow &&
+          typeof (displayRow as { rejection_reason?: string | null }).rejection_reason === 'string'
+            ? String((displayRow as { rejection_reason: string }).rejection_reason).trim() || null
+            : null
+        const displayMod = displayRow
+          ? String((displayRow as { moderation_status?: string }).moderation_status ?? 'PENDING').toUpperCase()
+          : null
         imageMetaByItemId[id] = {
           image_count: rows.length,
-          primary_image_moderation_status: primary
-            ? String((primary as { moderation_status?: string }).moderation_status ?? 'PENDING').toUpperCase()
-            : null,
+          primary_image_moderation_status: displayMod,
           primary_image_url: primaryUrl,
+          primary_image_rejection_reason: primaryRejection,
+        }
+      }
+      const reviewIdToItemId = new Map<number, number>()
+      for (const row of pendingReviews ?? []) {
+        const mid = Number((row as { menu_item_id?: number | null }).menu_item_id)
+        const rid = Number((row as { id?: number }).id)
+        if (Number.isFinite(mid) && mid > 0) pendingChangeItemIds.add(mid)
+        if (Number.isFinite(rid) && rid > 0 && Number.isFinite(mid) && mid > 0) {
+          reviewIdToItemId.set(rid, mid)
+        }
+      }
+      const reviewIds = [...reviewIdToItemId.keys()]
+      if (reviewIds.length > 0) {
+        const { data: imageChanges } = await supabase
+          .from('merchant_menu_item_review_changes')
+          .select('review_request_id, new_value')
+          .eq('field_name', 'item_image_url')
+          .in('review_request_id', reviewIds)
+        for (const ch of imageChanges ?? []) {
+          const rid = Number((ch as { review_request_id?: number }).review_request_id)
+          const mid = reviewIdToItemId.get(rid)
+          if (!mid) continue
+          const raw = (ch as { new_value?: unknown }).new_value
+          let url: string | null = null
+          if (typeof raw === 'string') {
+            const t = raw.trim()
+            // jsonb string values may be JSON-quoted
+            if (t.startsWith('"') && t.endsWith('"')) {
+              try {
+                url = String(JSON.parse(t)).trim() || null
+              } catch {
+                url = t.replace(/^"|"$/g, '').trim() || null
+              }
+            } else {
+              url = t || null
+            }
+          } else if (raw != null) {
+            url = String(raw).trim() || null
+          }
+          if (url) pendingReviewImageByItemId[mid] = url
         }
       }
     }
@@ -91,14 +173,28 @@ export async function GET(req: NextRequest) {
       const meta = imageMetaByItemId[id]
       const existingUrl =
         typeof item.item_image_url === 'string' ? item.item_image_url.trim() : ''
+      const pendingReviewImageUrl = pendingReviewImageByItemId[id] ?? null
+      const primaryModRaw = meta?.primary_image_moderation_status ?? null
       // Keep rejected/pending photos visible on Partner Menu (same as Merchant App).
-      // Some rows only have the URL on merchant_menu_item_images after review flows.
-      const itemImageUrl = existingUrl || meta?.primary_image_url || null
+      // Prefer proposed EDIT image, then rejected primary URL over customer live URL.
+      const itemImageUrl =
+        pendingReviewImageUrl ||
+        (primaryModRaw === 'REJECTED' ? meta?.primary_image_url : null) ||
+        existingUrl ||
+        meta?.primary_image_url ||
+        null
+      const itemRejection =
+        typeof item.rejection_reason === 'string' ? item.rejection_reason.trim() || null : null
+      const rejectionReason = itemRejection || meta?.primary_image_rejection_reason || null
+      const primaryMod = pendingReviewImageUrl ? 'PENDING' : primaryModRaw
       return {
         ...item,
         item_image_url: itemImageUrl,
-        image_count: meta?.image_count ?? 0,
-        primary_image_moderation_status: meta?.primary_image_moderation_status ?? null,
+        pending_review_image_url: pendingReviewImageUrl,
+        image_count: Math.max(meta?.image_count ?? 0, itemImageUrl ? 1 : 0),
+        primary_image_moderation_status: primaryMod,
+        rejection_reason: rejectionReason,
+        has_pending_change_request: pendingChangeItemIds.has(id),
       }
     }
 
@@ -250,6 +346,12 @@ export async function POST(req: NextRequest) {
     if (!validation.isValid) {
       return NextResponse.json(
         { error: validation.error ?? 'Merchant not found' },
+        { status: 403 }
+      )
+    }
+    if (!partnerCanEditMenuDetails(validation)) {
+      return NextResponse.json(
+        { error: 'Staff can mark items in or out of stock, but cannot add or edit menu items.' },
         { status: 403 }
       )
     }
@@ -552,6 +654,13 @@ export async function PATCH(req: NextRequest) {
       body.customizations === undefined &&
       body.variants === undefined
 
+    if (!partnerCanEditMenuDetails(validation) && !stockOnlyPatch) {
+      return NextResponse.json(
+        { error: 'Staff can mark items in or out of stock, but cannot edit menu item details.' },
+        { status: 403 }
+      )
+    }
+
     // APPROVED items: catalog edits go through EDIT review (stock toggles stay live).
     if (
       existingItemRow &&
@@ -624,6 +733,9 @@ export async function PATCH(req: NextRequest) {
       if (body.has_variants !== undefined) proposed.has_variants = Boolean(body.has_variants)
 
       const { submitPartnerEditReview } = await import('@/lib/merchant-menu-review')
+      const { addItemImageRow, setItemPendingForReReview } = await import(
+        '@/lib/merchant-menu-item-images'
+      )
       try {
         const current: Record<string, unknown> = { ...(existingItemRow as Record<string, unknown>) }
         const menuItemPk = Number((existingItemRow as any).id)
@@ -658,6 +770,37 @@ export async function PATCH(req: NextRequest) {
           current.has_variants = (variants ?? []).length > 0
         }
 
+        // Photos go to Image Review (merchant_menu_item_images PENDING), not Changes Review.
+        let photoSubmitted = false
+        if (Object.prototype.hasOwnProperty.call(proposed, 'item_image_url')) {
+          const newUrlRaw = proposed.item_image_url
+          const newUrl =
+            newUrlRaw == null ? null : String(newUrlRaw).trim() || null
+          const oldUrlRaw = current.item_image_url
+          const oldUrl =
+            oldUrlRaw == null ? null : String(oldUrlRaw).trim() || null
+          if (newUrl && newUrl !== oldUrl) {
+            const r2Key = extractR2KeyFromUrl(newUrl)
+            const format =
+              /\.(webp|jpe?g|png|gif)$/i.exec(r2Key || newUrl)?.[1]?.toLowerCase() ?? null
+            await addItemImageRow(menuItemPk, store.id, {
+              image_url: newUrl,
+              r2_key: r2Key,
+              is_primary: true,
+              format,
+              autoApprove: false,
+            })
+            await setItemPendingForReReview(menuItemPk, store.id, {
+              changed_by: user.id,
+              changed_by_role: 'merchant',
+            })
+            photoSubmitted = true
+            // Keep partner list in sync immediately (live column updated by addItemImageRow).
+            current.item_image_url = newUrl
+          }
+          delete proposed.item_image_url
+        }
+
         const result = await submitPartnerEditReview(supabase, {
           storeIdNum: store.id,
           merchantId: store.parent_id,
@@ -669,6 +812,25 @@ export async function PATCH(req: NextRequest) {
         if ('error' in result) {
           // Soft-fail no_changes so the options wizard can finish without a red error.
           if (result.error === 'no_changes') {
+            if (photoSubmitted) {
+              try {
+                await logStoreActivity({
+                  storeId: store.id,
+                  section: 'menu_item',
+                  action: 'update',
+                  entityId: menuItemPk,
+                  entityName: String((existingItemRow as any).item_name ?? ''),
+                  summary: `Merchant submitted photo for Image Review on item #${menuItemPk}`,
+                  actorType: 'merchant',
+                })
+              } catch (_) {}
+              return NextResponse.json({
+                ok: true,
+                pending_review: true,
+                pending_photo: true,
+                message: 'Photo submitted for Image Review.',
+              })
+            }
             return NextResponse.json({
               ok: true,
               no_changes: true,
@@ -693,20 +855,29 @@ export async function PATCH(req: NextRequest) {
             action: 'update',
             entityId: Number((existingItemRow as any).id),
             entityName: String((existingItemRow as any).item_name ?? ''),
-            summary: result.unchanged
-              ? `Merchant re-confirmed pending EDIT review for item #${(existingItemRow as any).id}`
-              : `Merchant submitted EDIT review for item #${(existingItemRow as any).id}`,
+            summary: photoSubmitted
+              ? result.unchanged
+                ? `Merchant submitted photo for Image Review + re-confirmed EDIT for item #${(existingItemRow as any).id}`
+                : `Merchant submitted photo for Image Review + EDIT review for item #${(existingItemRow as any).id}`
+              : result.unchanged
+                ? `Merchant re-confirmed pending EDIT review for item #${(existingItemRow as any).id}`
+                : `Merchant submitted EDIT review for item #${(existingItemRow as any).id}`,
             actorType: 'merchant',
           })
         } catch (_) {}
         return NextResponse.json({
           pending_review: true,
+          pending_photo: photoSubmitted,
           review_request_id: result.review_request_id,
           unchanged: Boolean(result.unchanged),
           merged: Boolean(result.merged),
-          message: result.unchanged
-            ? 'Already under review. Live menu is unchanged until approved.'
-            : 'Changes submitted for review. Live menu is unchanged until approved.',
+          message: photoSubmitted
+            ? result.unchanged
+              ? 'Photo submitted for Image Review. Other fields already under review.'
+              : 'Photo sent to Image Review. Other catalog changes sent to Changes Review.'
+            : result.unchanged
+              ? 'Already under review. Live menu is unchanged until approved.'
+              : 'Changes submitted for review. Live menu is unchanged until approved.',
         })
       } catch (e: any) {
         console.error('[menu-items PATCH] edit review', e)

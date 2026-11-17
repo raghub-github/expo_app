@@ -7,6 +7,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
 import { prefetchStoreMenu } from "@/hooks/queries/useMerchantStoreQueries";
 import { fetchCustomers } from "@/hooks/queries/useCustomersQuery";
+import { fetchDashboardStats } from "@/hooks/queries/useCustomerDashboardStats";
 import { fetchUsersByState } from "@/components/customers/CustomerUsersByStateClient";
 import { fetchTickets, DEFAULT_TICKETS_LIST_FILTERS, compactTicketFilters } from "@/hooks/tickets/useTickets";
 import { prefetchTicketDetail } from "@/hooks/tickets/useTicketDetail";
@@ -57,6 +58,14 @@ export function prefetchDashboardSection(queryClient: QueryClient, href: string)
       queryKey: queryKeys.customers.list({}),
       queryFn: () => fetchCustomers({}),
     });
+    if (path === "/dashboard/customers" || path === "/dashboard/customers/") {
+      void queryClient.prefetchQuery({
+        queryKey: queryKeys.customers.stats({}),
+        queryFn: () => fetchDashboardStats({}),
+        staleTime: 5 * 60 * 1000,
+        gcTime: 60 * 60 * 1000,
+      });
+    }
     if (path === "/dashboard/customers" || path.startsWith("/dashboard/customers/users-by-state")) {
       void queryClient.prefetchQuery({
         queryKey: queryKeys.customers.usersByState(),

@@ -23,6 +23,7 @@ export {
 
 export {
   getDeviceLocationReadiness,
+  invalidateDeviceLocationReadiness,
   requestForegroundLocationPermission,
 } from "./readiness";
 

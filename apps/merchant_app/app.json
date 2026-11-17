@@ -8,7 +8,7 @@
     "userInterfaceStyle": "automatic",
     "icon": "./assets/mxappicon.png",
     "splash": {
-      "image": "./assets/images/splash-blank.png",
+      "image": "./assets/images/splash-solid.png",
       "resizeMode": "contain",
       "backgroundColor": "#0D9B8A"
     },

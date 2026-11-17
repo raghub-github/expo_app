@@ -345,21 +345,45 @@ function buildFcmV1InputForRow(
     deepLink?: string | null;
     webLink?: string | null;
     data?: Record<string, string>;
+    /**
+     * Native Android Partner/Rider builds: data-only high-priority so
+     * CriticalAlertMessagingService.onMessageReceived runs while bg/killed
+     * (swipe-away). A notification+data payload is tray-only in that state and
+     * never starts the FGS buzzer/overlay. Native FGS posts its own heads-up.
+     */
+    nativeCriticalDataOnly?: boolean;
   } = {},
 ) {
   const live = customerLiveOrderDeliveryOpts(row, templateSilent);
-  // Force-killed apps only show a tray item when the carrier includes a
-  // notification block. Never strip it for critical / announcement templates.
-  const silent = mustShowWhenKilled(row) ? false : live.silent;
+  const criticalIncoming = isCriticalIncomingOrderTemplate(row.templateCode);
+  // Expo / non-native: keep a visible notification block for killed delivery.
+  // Native critical: data-only so MessagingService can start OrderAlert FGS.
+  const silent = args.nativeCriticalDataOnly
+    ? true
+    : mustShowWhenKilled(row)
+      ? false
+      : live.silent;
   const sound = silent ? null : soundForRecipient(row.recipient, row);
   // Customer: CX chime for order/ride/parcel (never merchant/rider Incoming Order wav).
   const playSound = !silent && sound != null && String(sound).trim() !== "";
+  const body = announcementShadeBody(row);
+  const baseData = args.data ?? fcmDataForRow(row);
+  // Native silent path still needs title/body in data for FGS / overlay copy.
+  const data =
+    args.nativeCriticalDataOnly || (silent && criticalIncoming)
+      ? {
+          ...baseData,
+          title: String(baseData.title ?? row.title ?? "").trim() || row.title,
+          body: String(baseData.body ?? body ?? "").trim() || body,
+          message: String(baseData.message ?? body ?? "").trim() || body,
+        }
+      : baseData;
   return {
     notificationId: row.notificationId,
     ...(args.token ? { token: args.token } : {}),
     ...(args.topic ? { topic: args.topic } : {}),
     title: row.title,
-    body: announcementShadeBody(row),
+    body,
     imageUrl: row.imageUrl ?? null,
     deepLink: args.deepLink ?? resolvedDeepLinkForRow(row),
     webLink: args.webLink,
@@ -367,7 +391,7 @@ function buildFcmV1InputForRow(
     sound: playSound ? sound : null,
     playSound,
     appRole: row.recipient.role,
-    data: args.data ?? fcmDataForRow(row),
+    data,
     priority: row.priority as never,
     silent,
     collapseKey:
@@ -713,9 +737,13 @@ async function dispatchViaNativeFcm(
   console.warn(
     `[notifications] fcm_prefer nid=${row.notificationId} reason=${opts?.reason ?? "native"} token_fp=${nativeToken.slice(0, 12)}…`,
   );
+  const nativeCriticalDataOnly =
+    isCriticalIncomingOrderTemplate(row.templateCode) ||
+    isRiderDispatchOfferTemplate(row);
   const res = await sendFcmV1(
     buildFcmV1InputForRow(row, opts?.templateSilent === true, {
       token: nativeToken,
+      nativeCriticalDataOnly,
     }),
   );
   return finalizeFcmDelivery(row.notificationId, nativeToken, res, {
@@ -1545,6 +1573,9 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
           buildFcmV1InputForRow(row, template.silent, {
             token: row.recipient.deviceToken,
             deepLink: resolvedDeepLinkForRow(row),
+            nativeCriticalDataOnly:
+              isCriticalIncomingOrderTemplate(row.templateCode) ||
+              isRiderDispatchOfferTemplate(row),
           }),
         );
         if (await finalizeFcmDelivery(row.notificationId, row.recipient.deviceToken, res, { maxRetries })) {
@@ -1596,6 +1627,10 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
             token,
             deepLink,
             webLink: isWeb ? deepLink : undefined,
+            nativeCriticalDataOnly:
+              !isWeb &&
+              (isCriticalIncomingOrderTemplate(row.templateCode) ||
+                isRiderDispatchOfferTemplate(row)),
           }),
           channelId: isWeb
             ? undefined

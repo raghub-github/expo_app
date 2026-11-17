@@ -36,6 +36,7 @@ import { StoreFonts } from "@/constants/storeTypography";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { PROFILE_QUERY_KEY, writeCachedProfile } from "@/lib/profileCache";
 import { markInitialShellReady } from "@/lib/startupShellReady";
+import { HomeColdStartSkeleton } from "@/components/home/HomeTabSkeletons";
 
 const PROFILE_GENDERS = GENDERS.filter((g) => g.value !== "others");
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -496,19 +497,8 @@ export default function OnboardingProfileScreen() {
   };
 
   if (isLoading && !profile) {
-    return (
-      <View style={[styles.screen, styles.center]}>
-        <StatusBar style="dark" translucent backgroundColor="transparent" />
-        <View
-          pointerEvents="none"
-          style={[styles.statusBarVeil, { height: Math.max(insets.top, 24) }]}
-        />
-        <ActivityIndicator size="large" color={TITLE_DARK} />
-        <AppText style={styles.loadingText} bold>
-          Loading…
-        </AppText>
-      </View>
-    );
+    // Never paint blank mint + spinner — that looked like a broken splash.
+    return <HomeColdStartSkeleton reason="onboarding_profile_loading" />;
   }
 
   const statusVeilH = Math.max(

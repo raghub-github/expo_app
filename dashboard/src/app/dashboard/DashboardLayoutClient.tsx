@@ -24,10 +24,7 @@ import { LeftSidebarMobileProvider, useLeftSidebarMobile } from "@/context/LeftS
 import { TicketFilterSidebarProvider, useTicketFilterSidebar } from "@/context/TicketFilterSidebarContext";
 import { getCurrentDashboard } from "@/lib/navigation/dashboard-routes";
 import { isOrdersSectionPath } from "@/lib/navigation/orders-nav-href";
-import {
-  isStoreVerificationDetailPath,
-  parseStoreVerificationStepParam,
-} from "@/lib/merchants/store-verification-path";
+import { isStoreVerificationDetailPath } from "@/lib/merchants/store-verification-path";
 import { queryKeys } from "@/lib/queryKeys";
 import { prefetchDashboardSection } from "@/lib/dashboard-prefetch";
 import {
@@ -198,6 +195,15 @@ function DashboardLayoutClientInner({
     if (cleanPrev.startsWith("/dashboard/riders") && cleanNext.startsWith("/dashboard/riders")) {
       return;
     }
+    // Customers hub ↔ users-by-state / detail / all: do NOT cancel stats (or list)
+    // fetches. Aborting them left Summary/User Category cards on permanent skeletons
+    // when returning to /dashboard/customers.
+    if (
+      cleanPrev.startsWith("/dashboard/customers") &&
+      cleanNext.startsWith("/dashboard/customers")
+    ) {
+      return;
+    }
     // Merchant store tabs share one shell — keep menu/ops cache so Menu paints in one go.
     const prevStoreId = cleanPrev.match(/^\/dashboard\/merchants\/stores\/(\d+)(?:\/|$)/)?.[1];
     const nextStoreId = cleanNext.match(/^\/dashboard\/merchants\/stores\/(\d+)(?:\/|$)/)?.[1];
@@ -244,6 +250,12 @@ function DashboardLayoutClientInner({
           root === "merchant-store" &&
           String(key[1] ?? "") === String(nextStoreId)
         ) {
+          return false;
+        }
+
+        // Keep customer stats / users-by-state even when leaving the section so a
+        // quick return paints cached cards instead of re-entering skeleton state.
+        if (root === "customers" && (key[1] === "stats" || key[1] === "users-by-state")) {
           return false;
         }
 
@@ -698,6 +710,9 @@ function DashboardLayoutContent({
         const root = key?.[0];
         if (key.includes("auth") || key.includes("bootstrap")) return false;
         if (root === "permissions" || root === "dashboard-access") return false;
+        // Never abort customer dashboard stats — expensive + cards flash skeletons.
+        if (root === "customers" && key[1] === "stats") return false;
+        if (root === "customers" && key[1] === "users-by-state") return false;
         return typeof root === "string" && roots.includes(root);
       },
     });
@@ -743,9 +758,6 @@ function DashboardLayoutContent({
     cleanPathname,
     searchParams
   );
-  const isStoreVerificationStepView =
-    isStoreVerificationDetail &&
-    parseStoreVerificationStepParam(searchParams.get("step")) != null;
 
   /** Store overview / menu / settings / etc. — flush shell (no main white padding). */
   const isMerchantStorePath = useMemo(
@@ -780,11 +792,20 @@ function DashboardLayoutContent({
     return p === "/dashboard/transactions";
   }, [cleanPathname]);
 
+  /** Customers state list + users-by-state — same contain-scroll chrome as transactions. */
+  const isCustomersContainedListPage = useMemo(() => {
+    const p = cleanPathname.replace(/\/$/, "") || "/";
+    if (p === "/dashboard/customers/users-by-state") return true;
+    if (p === "/dashboard/customers/all" && (searchParams.get("state") || "").trim()) return true;
+    return false;
+  }, [cleanPathname, searchParams]);
+
   const isContainedScrollListPage =
     isMerchantsAdminListPage ||
     isUsersManagementListPage ||
     isPaymentsManagementPage ||
-    isTransactionsPage;
+    isTransactionsPage ||
+    isCustomersContainedListPage;
 
   /** Ticket detail mounts the properties rail via RightSidebar; list/hub pages use filters/sub-nav instead.
    * Keep the rail mounted when merely collapsed so the expand chevron stays available. */
@@ -896,8 +917,8 @@ function DashboardLayoutContent({
                             ? "overflow-hidden bg-slate-50 p-0"
                           : isCustomerDetailProfilePage
                             ? "overflow-y-auto bg-[#f4f6f8] px-3 pb-4 pt-0 sm:px-5 sm:pb-5 sm:pt-0"
-                          : isStoreVerificationStepView
-                            ? "overflow-y-auto bg-[#f4f5f7] px-3 pb-3 pt-0 sm:px-4 sm:pb-4 sm:pt-0"
+                          : isStoreVerificationDetail
+                            ? "overflow-y-auto bg-[#f4f5f7] px-3 pb-3 pt-3 sm:px-4 sm:pb-4 sm:pt-3"
                           : "overflow-y-auto bg-white p-3 sm:p-4"
                     }`}
                   >

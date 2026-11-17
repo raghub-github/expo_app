@@ -2,27 +2,26 @@
  * POST /api/merchant-menu/change-requests/[id]/approve
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { authFailureResponse, getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { isSuperAdmin, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { approveMenuReviewRequest } from "@/lib/merchant-menu-review";
 
 export const runtime = "nodejs";
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user?.email) {
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) return authFailureResponse(auth);
+    const { user } = auth;
+    const userEmail = user.email ?? "";
+    if (!userEmail) {
       return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
     }
-    const superAdmin = await isSuperAdmin(user.id, user.email);
-    const hasMerchant = await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT");
+    const superAdmin = await isSuperAdmin(user.id, userEmail);
+    const hasMerchant = await hasDashboardAccessByAuth(user.id, userEmail, "MERCHANT");
     if (!superAdmin && !hasMerchant) {
       return NextResponse.json({ success: false, error: "Agent or admin access required" }, { status: 403 });
     }
@@ -33,7 +32,7 @@ export async function POST(
       return NextResponse.json({ success: false, error: "Invalid id" }, { status: 400 });
     }
 
-    const result = await approveMenuReviewRequest(reqId, user.email);
+    const result = await approveMenuReviewRequest(reqId, userEmail);
     if (!result.ok) {
       const status = result.error === "request_not_found" ? 404 : 400;
       return NextResponse.json({ success: false, error: result.error ?? "approve_failed" }, { status });

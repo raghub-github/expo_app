@@ -20,7 +20,9 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { resolveCustomerBottomNavHeight } from "@/constants/layout";
+import { NATURAL_VERTICAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import { HomeLocationHeader, HomeWeatherBanner } from "@/components/home/HomeScreenHeader";
+import { HomeLocationHeaderSkeleton } from "@/components/home/HomeTabSkeletons";
 import { HomeServicesRow } from "@/components/home/HomeServicesRow";
 import { HomePromoCarousel } from "@/components/home/HomePromoCarousel";
 import { HomeBrandBanner } from "@/components/home/HomeBrandBanner";
@@ -53,7 +55,10 @@ import { warmFoodHomeEntry } from "@/lib/navigateToFoodHome";
 import { useTabScreenDebug } from "@/lib/tabNavDebug";
 import { markInitialShellReady } from "@/lib/startupShellReady";
 import { startupLaunchLog, startupProcessAgeMs } from "@/lib/startupPerf";
-import { collectCriticalHomeAssetUris } from "@/lib/homeCriticalAssets";
+import {
+  collectCriticalHomeAssetUris,
+  prefetchBrandBannerImageSync,
+} from "@/lib/homeCriticalAssets";
 import { enqueueImagePrefetchFront } from "@/lib/prefetchQueue";
 import { useHomeSkeletonFlags } from "@/hooks/useHomeSkeletonFlags";
 import { homeSkeletonLog } from "@/lib/homeSkeletonTelemetry";
@@ -86,6 +91,7 @@ export default function HomeScreen() {
   /** Remount service grid after idle/resume — Android ScrollView+RefreshControl can eat taps. */
   const [servicesTouchEpoch, setServicesTouchEpoch] = useState(0);
   const assets = useAppAssetsStore((s) => s.assets);
+  const assetsLoaded = useAppAssetsStore((s) => s.loaded);
   const openBlockSheet = useCustomerServiceBlockSheetStore((s) => s.open);
   // Throttle the on-focus service-blocks refetch: returning to Home (e.g. rapid tab
   // toggling) previously fired a network invalidation + re-render every single time.
@@ -105,31 +111,25 @@ export default function HomeScreen() {
     const renderT0 = Date.now();
     startupLaunchLog("HOME_MOUNT", { blocksHome: false });
     startupLaunchLog("HOME_FIRST_RENDER", { blocksHome: false });
-    // Double-rAF ≈ first interactive frame; a single rAF was delayed 15s+ when
-    // GPS/warm effects blocked the JS thread before the callback ran.
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(() => {
-        const sinceFirstRenderMs = Date.now() - renderT0;
-        startupLaunchLog("HOME_FIRST_USABLE_FRAME", {
-          sinceFirstRenderMs,
-          ageMs: startupProcessAgeMs(),
+    // Prefer InteractionManager — double-rAF was starved 30s+ when Metro/GPS
+    // flooded the JS queue, falsely reporting a late usable frame.
+    const task = InteractionManager.runAfterInteractions(() => {
+      const sinceFirstRenderMs = Date.now() - renderT0;
+      startupLaunchLog("HOME_FIRST_USABLE_FRAME", {
+        sinceFirstRenderMs,
+        ageMs: startupProcessAgeMs(),
+        blocksHome: false,
+      });
+      if (sinceFirstRenderMs > 3000) {
+        startupLaunchLog("STARTUP_BLOCKER", {
+          stage: "home_first_usable_late",
+          durationMs: sinceFirstRenderMs,
+          budgetMs: 3000,
           blocksHome: false,
         });
-        if (sinceFirstRenderMs > 3000) {
-          startupLaunchLog("STARTUP_BLOCKER", {
-            stage: "home_first_usable_late",
-            durationMs: sinceFirstRenderMs,
-            budgetMs: 3000,
-            blocksHome: false,
-          });
-        }
-      });
+      }
     });
-    return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
-    };
+    return () => task.cancel();
   }, []);
 
   const onRefresh = useCallback(async () => {
@@ -256,7 +256,7 @@ export default function HomeScreen() {
     locationPrimary,
     coords != null
   );
-  const { data: weather } = useLocationWeather(weatherParams);
+  const { data: weather, isPending: weatherPending } = useLocationWeather(weatherParams);
   // Layout always reserves weather height — header never uses skeleton chrome.
   const { promoCardH, serviceCardH, brandH } = useHomeScreenLayout(true);
 
@@ -279,20 +279,55 @@ export default function HomeScreen() {
   );
 
   // FeaturedOffersPrefetch already warms home offers; this hook only observes.
-  const { data: featuredOffersData } = useFeaturedOffersHome(
-    offerLocationParams,
-    locationHydrated
-  );
+  const {
+    data: featuredOffersData,
+    isFetched: offersFetched,
+    isPending: offersPending,
+  } = useFeaturedOffersHome(offerLocationParams, locationHydrated);
 
-  const { forceSkeletons, showPromoSkeleton, splashExited } = useHomeSkeletonFlags();
+  const hasWeatherCoords =
+    weatherParams.lat != null &&
+    weatherParams.lng != null &&
+    Number.isFinite(weatherParams.lat) &&
+    Number.isFinite(weatherParams.lng);
+  // Skeleton until location is known, then until weather paints (or no coords to fetch).
+  const weatherReady =
+    locationHydrated &&
+    (!hasWeatherCoords || weather != null || (!weatherPending && weather === undefined));
+  // Skeleton until location enables the query, then until cache/network delivers offers.
+  // Do NOT treat "not hydrated yet" as resolved — that skipped promo skeletons.
+  const offersResolved =
+    locationHydrated && (featuredOffersData != null || offersFetched || !offersPending);
+
+  const {
+    forceSkeletons,
+    showLocationSkeleton,
+    showWeatherSkeleton,
+    showPromoSkeleton,
+    showServicesSkeleton,
+    splashExited,
+  } = useHomeSkeletonFlags({
+    offersResolved,
+    assetsReady: assetsLoaded,
+    locationReady: locationHydrated,
+    weatherReady,
+  });
 
   useEffect(() => {
     if (!splashExited) return;
-    homeSkeletonLog("CONTENT_RENDERED", "location", "header_instant_after_splash", {
+    homeSkeletonLog("CONTENT_RENDERED", "location", "home_shell_after_splash", {
       forceSkeletons,
       showPromoSkeleton,
+      showServicesSkeleton,
+      showWeatherSkeleton,
     });
-  }, [splashExited, forceSkeletons, showPromoSkeleton]);
+  }, [
+    splashExited,
+    forceSkeletons,
+    showPromoSkeleton,
+    showServicesSkeleton,
+    showWeatherSkeleton,
+  ]);
 
   // Home header always owns safe-top padding — keep root spacer off so first
   // paint never races splash/bootstrap (spacer 0 + header GAP-only = overlap).
@@ -336,8 +371,9 @@ export default function HomeScreen() {
     return () => sub.remove();
   }, []);
 
-  // Decode critical Home art ASAP (services + promo + brand) — do not wait for interactions.
+  // Decode footer brand scooter first, then the rest of critical Home art.
   useLayoutEffect(() => {
+    prefetchBrandBannerImageSync(assets);
     const critical = collectCriticalHomeAssetUris(assets);
     if (critical.length > 0) enqueueImagePrefetchFront(critical, critical.length);
   }, [assets]);
@@ -346,41 +382,45 @@ export default function HomeScreen() {
     <View style={styles.container} onLayout={onHomeShellLayout}>
       {/* Location header only — plain sticky, no shadow. Weather scrolls with body. */}
       <View style={styles.stickyHeader} pointerEvents="box-none">
-        <HomeLocationHeader
-          locationPrimary={locationPrimary}
-          locationSecondary={locationSecondary}
-          onLocationPress={() => {
-            const loc = useLocationStore.getState();
-            // Permission / GPS off → show enable popup; otherwise open location picker.
-            if (
-              loc.permissionStatus !== "granted" ||
-              loc.showPermissionModal ||
-              (!loc.coords && loc.detectingTimedOut)
-            ) {
-              loc.setShowPermissionModal(true);
-              return;
-            }
-            router.push("/location");
-          }}
-          onNotificationPress={() => router.push("/notifications")}
-        />
+        {showLocationSkeleton ? (
+          <HomeLocationHeaderSkeleton reason="awaiting_location_hydrate" />
+        ) : (
+          <HomeLocationHeader
+            locationPrimary={locationPrimary}
+            locationSecondary={locationSecondary}
+            onLocationPress={() => {
+              const loc = useLocationStore.getState();
+              // Permission / GPS off → show enable popup; otherwise open location picker.
+              if (
+                loc.permissionStatus !== "granted" ||
+                loc.showPermissionModal ||
+                (!loc.coords && loc.detectingTimedOut)
+              ) {
+                loc.setShowPermissionModal(true);
+                return;
+              }
+              router.push("/location");
+            }}
+            onNotificationPress={() => router.push("/notifications")}
+          />
+        )}
       </View>
 
       <ScrollView
         style={styles.body}
         contentContainerStyle={[
           styles.bodyContent,
-          // Clearance so last content can scroll above the floating capsule.
-          { paddingBottom: resolveCustomerBottomNavHeight(insets.bottom) + 20 },
+          // Tab sheet overlays the scene — pad past it so brand never sits underneath.
+          { paddingBottom: resolveCustomerBottomNavHeight(insets.bottom) + 48 },
         ]}
+        {...NATURAL_VERTICAL_SCROLL_PROPS}
         scrollEnabled
         bounces
         alwaysBounceVertical
+        // Always allow overscroll so a short page still accepts vertical finger drags.
         overScrollMode="always"
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="always"
-        nestedScrollEnabled
-        removeClippedSubviews
+        // Do not use removeClippedSubviews — it breaks vertical scroll + RefreshControl
+        // on Android when nested horizontal carousels are present.
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -390,10 +430,10 @@ export default function HomeScreen() {
           />
         }
       >
-        {/* Header weather: cached/live instantly — compact reserve only, never header skeleton. */}
+        {/* Weather / promo / services paint progressively over skeletons. */}
         <HomeWeatherBanner
           weather={weather}
-          loading={false}
+          loading={showWeatherSkeleton}
           onWeatherPress={() => setWeatherSheetVisible(true)}
         />
 
@@ -412,6 +452,7 @@ export default function HomeScreen() {
           cardHeight={serviceCardH}
           enabledServices={homeEnabledServices}
           accountBlocks={accountBlocks}
+          skeleton={showServicesSkeleton}
           onAccountBlockedPress={(_id, reason, label, assetKey) =>
             openBlockSheet({ serviceLabel: label, reason, serviceAssetKey: assetKey })
           }
@@ -444,9 +485,11 @@ const styles = StyleSheet.create({
   },
   bodyContent: {
     paddingTop: 0,
-    flexGrow: 1,
+    // Avoid flexGrow:1 — on Android it can collapse scroll range when content
+    // is fitted to one screen, so vertical finger gestures feel dead.
+    flexGrow: 0,
   },
   brandSpacer: {
-    height: 16,
+    height: 12,
   },
 });

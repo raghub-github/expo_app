@@ -2,9 +2,9 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, MapPinned, Search, Users } from "lucide-react";
-import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { MapPin, Search, X } from "lucide-react";
 import { queryKeys } from "@/lib/queryKeys";
 import { useAuthOptional } from "@/providers/AuthProvider";
 
@@ -38,34 +38,53 @@ export async function fetchUsersByState(): Promise<NonNullable<UsersByStateRespo
   return json.data;
 }
 
-function StatCard({
+const outerBorder = "rounded-md border-[0.5px] border-[#121212]/40";
+const rowBorder = "border-b-[0.5px] border-[#121212]/12";
+
+function StatChip({
   label,
   value,
   loading,
-  className,
-  labelClassName,
+  tone,
+  href,
 }: {
   label: string;
   value: number | undefined;
   loading: boolean;
-  className: string;
-  labelClassName: string;
+  tone: "neutral" | "green" | "amber";
+  href?: string;
 }) {
-  return (
-    <div className={className}>
-      <p className={`text-xs font-medium ${labelClassName}`}>{label}</p>
-      <p className="mt-1 text-2xl font-bold text-gray-900">
-        {loading ? (
-          <span className="inline-block h-8 w-16 animate-pulse rounded bg-white/70" />
-        ) : (
-          (value ?? 0).toLocaleString()
-        )}
-      </p>
-    </div>
+  const tones = {
+    neutral: "bg-[#F4F4F4] text-[#121212] ring-[#121212]/08",
+    green: "bg-emerald-50 text-emerald-900 ring-emerald-100",
+    amber: "bg-amber-50 text-amber-900 ring-amber-100 hover:ring-amber-300",
+  } as const;
+
+  const inner = (
+    <span
+      className={`inline-flex h-9 items-center gap-2 rounded-full px-3 text-xs ring-1 ${tones[tone]} ${
+        href ? "cursor-pointer transition" : ""
+      }`}
+    >
+      <span className="font-medium opacity-70">{label}</span>
+      <span className="font-bold tabular-nums">
+        {loading ? "…" : (value ?? 0).toLocaleString()}
+      </span>
+    </span>
   );
+
+  if (href) {
+    return (
+      <Link href={href} className="shrink-0" aria-label={`${label}: ${value ?? 0}`}>
+        {inner}
+      </Link>
+    );
+  }
+  return <span className="shrink-0">{inner}</span>;
 }
 
 export function CustomerUsersByStateClient() {
+  const router = useRouter();
   const [query, setQuery] = useState("");
   const auth = useAuthOptional();
   const authReady = auth == null ? true : Boolean(auth.authReady || auth.user);
@@ -77,6 +96,7 @@ export function CustomerUsersByStateClient() {
     gcTime: 60 * 60 * 1000,
     refetchOnMount: "always",
     refetchOnWindowFocus: false,
+    placeholderData: (prev) => prev,
   });
 
   const waitingForData = !isError && (isPending || data == null);
@@ -94,141 +114,181 @@ export function CustomerUsersByStateClient() {
   );
 
   return (
-    <div className="w-full min-w-0 max-w-none space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-start gap-3 min-w-0">
-          <Link
-            href="/dashboard/customers"
-            className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
-            aria-label="Back to Customers"
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <div className="rounded-lg bg-blue-50 p-1.5 text-blue-600">
-                <MapPinned className="h-5 w-5" />
-              </div>
-              <h1 className="text-xl font-semibold text-gray-900 leading-tight">
-                Users by State / UT
-              </h1>
-            </div>
-            <p className="mt-1 text-xs text-gray-500">
-              How many customers joined from each state / UT. Missing state is filled from
-              lat/lon when available.
-            </p>
-            {(data?.resolvedFromCoords ?? 0) > 0 ? (
-              <p className="mt-1 text-xs text-emerald-700">
-                Resolved {(data?.resolvedFromCoords ?? 0).toLocaleString()} user
-                {(data?.resolvedFromCoords ?? 0) === 1 ? "" : "s"} from coordinates this load.
-              </p>
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col gap-2 overflow-hidden">
+      {/* Search + chips — below header, no overlap */}
+      <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <label className="relative block w-full max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#121212]/35" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search state / UT…"
+              className="h-10 w-full rounded-full border-0 bg-[#F0F0F0] pl-10 pr-9 text-sm text-[#121212] outline-none ring-0 placeholder:text-[#121212]/40 focus:bg-[#EBEBEB]"
+              aria-label="Search states"
+            />
+            {query ? (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-[#121212]/40 hover:bg-[#121212]/08 hover:text-[#121212]"
+                aria-label="Clear search"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             ) : null}
-          </div>
-        </div>
-        <label className="relative block w-full max-w-xs">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search state / UT..."
-            className="h-10 w-full rounded-lg border border-gray-200 bg-white pl-9 pr-3 text-sm text-gray-800 outline-none placeholder:text-gray-400 focus:border-blue-500"
-          />
-        </label>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <StatCard
-          label="All users"
-          value={data?.totalUsers}
-          loading={waitingForData}
-          className="rounded-xl border border-blue-100 bg-blue-50/80 p-4"
-          labelClassName="text-blue-700"
-        />
-        <StatCard
-          label="With state / UT"
-          value={data?.usersWithState}
-          loading={waitingForData}
-          className="rounded-xl border border-emerald-100 bg-emerald-50/80 p-4"
-          labelClassName="text-emerald-700"
-        />
-        <StatCard
-          label="State not set"
-          value={data?.usersWithoutState}
-          loading={waitingForData}
-          className="rounded-xl border border-amber-100 bg-amber-50/80 p-4"
-          labelClassName="text-amber-700"
-        />
-      </div>
-
-      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-          <div className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-            <Users className="h-4 w-4 text-blue-600" />
-            States &amp; Union Territories
-            {isFetching && !waitingForData ? (
-              <span className="text-[10px] font-medium text-gray-400">Updating…</span>
-            ) : null}
-          </div>
-          <p className="text-xs text-gray-500">
+          </label>
+          <span className="hidden items-center gap-1.5 text-xs text-[#121212]/45 sm:inline-flex">
+            <MapPin className="h-3.5 w-3.5" />
             {waitingForData ? "…" : `${filtered.length} regions`}
-          </p>
+            {isFetching && !waitingForData ? (
+              <span className="text-[#121212]/30">· updating</span>
+            ) : null}
+          </span>
         </div>
 
-        {waitingForData ? (
-          <div className="flex justify-center py-16">
-            <LoadingSpinner size="md" text="Loading states..." />
-          </div>
-        ) : isError ? (
-          <div className="px-4 py-10 text-center">
-            <p className="text-sm text-red-600">
-              {error instanceof Error ? error.message : "Failed to load"}
-            </p>
-            <button
-              type="button"
-              onClick={() => void refetch()}
-              className="mt-3 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Retry
-            </button>
-          </div>
-        ) : filtered.length === 0 ? (
-          <p className="px-4 py-10 text-center text-sm text-gray-500">No states match your search.</p>
-        ) : (
-          <div className="max-h-[min(70vh,40rem)] overflow-y-auto">
-            <table className="min-w-full text-sm">
-              <thead className="sticky top-0 z-10 bg-gray-50 text-left text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <StatChip
+            label="All"
+            value={data?.totalUsers}
+            loading={waitingForData}
+            tone="neutral"
+          />
+          <StatChip
+            label="With state"
+            value={data?.usersWithState}
+            loading={waitingForData}
+            tone="green"
+          />
+          <StatChip
+            label="Not set"
+            value={data?.usersWithoutState}
+            loading={waitingForData}
+            tone="amber"
+            href="/dashboard/customers/all?state=__unset__"
+          />
+        </div>
+      </div>
+
+      {/* Full-height scrollable table — no pagination footer */}
+      <div className={`flex min-h-0 flex-1 flex-col overflow-hidden bg-white ${outerBorder}`}>
+        <div className="min-h-0 flex-1 overflow-auto">
+          <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+            <thead className="text-xs font-medium text-[#121212]/55">
+              <tr>
+                <th className={`sticky top-0 z-20 w-12 bg-[#F7F7F7] px-3 py-2.5 font-medium ${rowBorder}`}>
+                  #
+                </th>
+                <th className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 font-medium ${rowBorder}`}>
+                  State / UT
+                </th>
+                <th
+                  className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 text-right font-medium ${rowBorder}`}
+                >
+                  Users joined
+                </th>
+                <th
+                  className={`sticky top-0 z-20 hidden bg-[#F7F7F7] px-3 py-2.5 font-medium sm:table-cell sm:w-48 ${rowBorder}`}
+                >
+                  Share
+                </th>
+                <th
+                  className={`sticky top-0 z-20 bg-[#F7F7F7] px-3 py-2.5 text-right font-medium ${rowBorder}`}
+                >
+                  Action
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {waitingForData ? (
+                Array.from({ length: 12 }).map((_, i) => (
+                  <tr key={i}>
+                    <td colSpan={5} className={`px-3 py-3 ${rowBorder}`}>
+                      <div className="h-4 w-2/3 animate-pulse bg-[#121212]/08" />
+                    </td>
+                  </tr>
+                ))
+              ) : isError ? (
                 <tr>
-                  <th className="px-4 py-2.5">#</th>
-                  <th className="px-4 py-2.5">State / UT</th>
-                  <th className="px-4 py-2.5 text-right">Users joined</th>
-                  <th className="hidden px-4 py-2.5 sm:table-cell sm:w-48">Share</th>
+                  <td colSpan={5} className={`px-3 py-10 text-center ${rowBorder}`}>
+                    <p className="text-sm text-rose-600">
+                      {error instanceof Error ? error.message : "Failed to load"}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void refetch()}
+                      className="mt-3 inline-flex h-8 cursor-pointer items-center rounded-md border border-[#121212]/20 bg-white px-3 text-xs font-semibold text-[#121212] hover:bg-[#FAFAFA]"
+                    >
+                      Retry
+                    </button>
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {filtered.map((row, index) => {
+              ) : filtered.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className={`px-3 py-10 text-center text-sm text-[#121212]/50 ${rowBorder}`}
+                  >
+                    No states match your search.
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((row, index) => {
                   const pct = Math.round((row.userCount / maxCount) * 100);
+                  const href = `/dashboard/customers/all?state=${encodeURIComponent(row.name)}`;
                   return (
-                    <tr key={row.id} className="hover:bg-slate-50/80">
-                      <td className="px-4 py-2.5 tabular-nums text-gray-400">{index + 1}</td>
-                      <td className="px-4 py-2.5 font-medium text-gray-900">{row.name}</td>
-                      <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-gray-900">
+                    <tr
+                      key={row.id}
+                      className="cursor-pointer bg-white hover:bg-[#FAFAFA]"
+                      onClick={() => router.push(href)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          router.push(href);
+                        }
+                      }}
+                      tabIndex={0}
+                      role="link"
+                      aria-label={`View ${row.userCount} customers from ${row.name}`}
+                    >
+                      <td className={`px-3 py-2.5 tabular-nums text-[#121212]/40 ${rowBorder}`}>
+                        {index + 1}
+                      </td>
+                      <td className={`px-3 py-2.5 font-bold text-[#121212] ${rowBorder}`}>
+                        {row.name}
+                      </td>
+                      <td
+                        className={`px-3 py-2.5 text-right font-semibold tabular-nums text-[#121212] ${rowBorder}`}
+                      >
                         {row.userCount.toLocaleString()}
                       </td>
-                      <td className="hidden px-4 py-2.5 sm:table-cell">
-                        <div className="h-2 overflow-hidden rounded-full bg-gray-100">
+                      <td className={`hidden px-3 py-2.5 sm:table-cell ${rowBorder}`}>
+                        <div className="h-1.5 overflow-hidden rounded-full bg-[#121212]/08">
                           <div
-                            className="h-full rounded-full bg-blue-500 transition-all"
+                            className="h-full rounded-full bg-[#121212]/55"
                             style={{ width: `${pct}%` }}
                           />
                         </div>
                       </td>
+                      <td className={`px-3 py-2.5 text-right ${rowBorder}`}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            router.push(href);
+                          }}
+                          className="inline-flex h-8 cursor-pointer items-center rounded-md bg-emerald-600 px-3 text-xs font-semibold text-white hover:bg-emerald-700"
+                        >
+                          View
+                        </button>
+                      </td>
                     </tr>
                   );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

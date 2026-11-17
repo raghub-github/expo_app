@@ -260,6 +260,74 @@ export async function getCampaignById(campaignId: number): Promise<CampaignRow |
   return rows[0] ?? null;
 }
 
+/**
+ * Edit a campaign that has not been pushed yet (scheduled or draft only).
+ * Returns null when the campaign is missing or already sending/sent.
+ */
+export async function updateEditableCampaign(
+  campaignId: number,
+  patch: {
+    name?: string;
+    description?: string | null;
+    overrideTitle?: string | null;
+    overrideBody?: string | null;
+    overrideImage?: string | null;
+    overrideDeepLink?: string | null;
+    variables?: Record<string, unknown>;
+    scheduledAt?: string | null;
+  },
+): Promise<CampaignRow | null> {
+  const existing = await getCampaignById(campaignId);
+  if (!existing) return null;
+  if (existing.status !== "scheduled" && existing.status !== "draft") {
+    return null;
+  }
+
+  const sql = getSql();
+  const nextName = patch.name !== undefined ? patch.name : existing.name;
+  const nextDescription =
+    patch.description !== undefined ? patch.description : existing.description;
+  const nextOverrideTitle =
+    patch.overrideTitle !== undefined ? patch.overrideTitle : existing.override_title;
+  const nextOverrideBody =
+    patch.overrideBody !== undefined ? patch.overrideBody : existing.override_body;
+  const nextOverrideImage =
+    patch.overrideImage !== undefined ? patch.overrideImage : existing.override_image;
+  const nextOverrideDeepLink =
+    patch.overrideDeepLink !== undefined
+      ? patch.overrideDeepLink
+      : existing.override_deep_link;
+  const nextVariables =
+    patch.variables !== undefined ? patch.variables : existing.variables ?? {};
+  const nextScheduledAt =
+    patch.scheduledAt !== undefined ? patch.scheduledAt : existing.scheduled_at;
+  const nextStatus =
+    existing.status === "draft" && nextScheduledAt ? "scheduled" : existing.status;
+  const variablesStr = JSON.stringify(nextVariables ?? {});
+
+  const rows = (await sql`
+    UPDATE public.notification_campaigns
+    SET
+      name = ${nextName},
+      description = ${nextDescription},
+      override_title = ${nextOverrideTitle},
+      override_body = ${nextOverrideBody},
+      override_image = ${nextOverrideImage},
+      override_deep_link = ${nextOverrideDeepLink},
+      variables = ${variablesStr}::text::jsonb,
+      scheduled_at = ${nextScheduledAt},
+      status = ${nextStatus}
+    WHERE id = ${campaignId}
+      AND status IN ('scheduled', 'draft')
+    RETURNING id, name, description, template_code,
+              override_title, override_body, override_image, override_deep_link,
+              target_filter, variables, status, scheduled_at, cancelled_at,
+              cta_label, countdown_enabled, starts_at, ends_at,
+              announcement_target_type, announcement_target_id
+  `) as unknown as CampaignRow[];
+  return rows[0] ?? null;
+}
+
 /** Reset a finished campaign so send() can run again on the same row. */
 export async function prepareCampaignResend(campaignId: number): Promise<void> {
   const sql = getSql();

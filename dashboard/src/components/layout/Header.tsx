@@ -67,6 +67,11 @@ import { HEADER_IDENTITY_CACHE_KEY } from "@/lib/dashboard-auth-client-state";
 import { TicketsHubGearButton } from "@/components/tickets/TicketsHubGearButton";
 import { HeaderBackButton } from "@/components/layout/HeaderBackButton";
 import {
+  CustomerStateHeaderExport,
+  customerStateListLabel,
+  isCustomerStateListPath,
+} from "@/components/customers/CustomerStateHeaderExport";
+import {
   isTicketsAppDetailPath,
   isTicketsQueueLayoutExperience,
   resolveTicketsQueueHeaderTitle,
@@ -520,9 +525,65 @@ function OrderSearchBar() {
   );
 }
 
+/** Transactions header search — syncs `?q=` with TransactionsClient. */
+function TransactionsSearchBar() {
+  const router = useRouter();
+  const searchParams = useAppSearchParams();
+  const urlQ = searchParams.get("q") ?? "";
+  const [value, setValue] = useState(urlQ);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setValue(urlQ);
+  }, [urlQ]);
+
+  const commitSearch = useCallback(() => {
+    const next = value.trim();
+    const params = new URLSearchParams(searchParams.toString());
+    if (next) params.set("q", next);
+    else params.delete("q");
+    const qs = params.toString();
+    router.replace(qs ? `/dashboard/transactions?${qs}` : "/dashboard/transactions", {
+      scroll: false,
+    });
+  }, [value, searchParams, router]);
+
+  return (
+    <form
+      className="flex h-10 w-full min-w-0 items-stretch overflow-hidden rounded-lg border border-gray-300 bg-white shadow-sm"
+      onSubmit={(e) => {
+        e.preventDefault();
+        commitSearch();
+      }}
+      role="search"
+      aria-label="Search transactions"
+    >
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="GMF… / payment id / entity"
+        title="Search formatted order id, Razorpay id, ref, entity id"
+        className="min-w-0 flex-1 bg-white px-3 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none"
+        enterKeyHint="search"
+      />
+      <button
+        type="submit"
+        className="flex h-full shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-r-lg bg-[#121212] px-3 text-white hover:bg-black"
+        aria-label="Search transactions"
+      >
+        <Search className="h-4 w-4" aria-hidden />
+        <span className="text-xs font-semibold tracking-wide">Search</span>
+      </button>
+    </form>
+  );
+}
+
 const ROUTE_TITLES: Record<string, string> = {
   "/dashboard": "Home",
   "/dashboard/customers": "Customers",
+  "/dashboard/customers/all": "Customers",
   "/dashboard/customers/deletion-requests": "Account deletion requests",
   "/dashboard/customers/users-by-state": "Users by State / UT",
   "/dashboard/riders": "Riders",
@@ -850,10 +911,20 @@ function HeaderComponent() {
   const { canTogglePortal = false, isSuperAdmin = false, loading: permissionsLoading } = usePermissions();
   const { hasAdminMerchantAccess, loading: merchantAccessLoading } = useMerchantDashboardAccess();
   const { canMutate: canCreateTickets } = useTicketDashboardAccess();
-  const merchantPortalAccessReady = !permissionsLoading && !merchantAccessLoading;
+  const { data: dashboardAccessData, isError: dashboardAccessError } = useDashboardAccessQuery();
+  /**
+   * Do not treat "query idle before auth/fetch" as ready — that race was rewriting
+   * ?portal=admin → ?portal=merchant on full reload before permissions settled.
+   */
   const canUseMerchantPortalToggle =
     isSuperAdmin || canTogglePortal || hasAdminMerchantAccess;
-  const { data: dashboardAccessData } = useDashboardAccessQuery();
+  const merchantPortalAccessReady =
+    authReady &&
+    !permissionsLoading &&
+    !merchantAccessLoading &&
+    (canUseMerchantPortalToggle ||
+      dashboardAccessData != null ||
+      dashboardAccessError);
   /** Avoid SSR/client mismatch when React Query restores cached permissions before hydration. */
   const [queueLinkMounted, setQueueLinkMounted] = useState(false);
   const [portalToggleMounted, setPortalToggleMounted] = useState(false);
@@ -894,8 +965,11 @@ function HeaderComponent() {
 
   // Keep ?portal= in sync on Merchants sub-routes when the list omits it (e.g. old verification links).
   // Depend on portalParam (stable string), not searchParams object identity — avoids replace storms.
+  // Only run after auth/access settle so reload never clears an explicit ?portal=admin.
   useEffect(() => {
-    if (!isMerchantsArea || !merchantPortalAccessReady || !canUseMerchantPortalToggle) return;
+    if (!isMerchantsArea || !authReady || !merchantPortalAccessReady || !canUseMerchantPortalToggle) {
+      return;
+    }
     if (portalFromUrl) {
       writeStoredMerchantsPortal(portalFromUrl);
       return;
@@ -910,6 +984,7 @@ function HeaderComponent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- searchParams.toString() via portalParam
   }, [
     isMerchantsArea,
+    authReady,
     merchantPortalAccessReady,
     canUseMerchantPortalToggle,
     portalFromUrl,
@@ -957,14 +1032,15 @@ function HeaderComponent() {
   };
 
   // Force merchant portal unless explicit portal toggle access is granted.
-  // Wait until permissions settle — otherwise reload briefly treats super-admin as a
-  // normal user and rewrites ?portal=admin → ?portal=merchant.
+  // Wait until auth + permissions/access settle — otherwise reload briefly treats
+  // admins as normal users and rewrites ?portal=admin → ?portal=merchant.
   // Never navigate away from the current merchants page (preserve storeId/step on reload).
   useEffect(() => {
     if (!isMerchantsArea) return;
+    if (!authReady) return;
     if (!merchantPortalAccessReady) return;
     if (canUseMerchantPortalToggle) return;
-    if (portal === "merchant") return;
+    if (portal === "merchant" || portalFromUrl === "merchant") return;
     writeStoredMerchantsPortal("merchant");
     if (portalParam === "merchant") {
       setPendingPortal(null);
@@ -978,9 +1054,11 @@ function HeaderComponent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- searchParams via portalParam
   }, [
     isMerchantsArea,
+    authReady,
     merchantPortalAccessReady,
     canUseMerchantPortalToggle,
     portal,
+    portalFromUrl,
     portalParam,
     pathname,
     router,
@@ -1200,24 +1278,34 @@ function HeaderComponent() {
   // Pages that show the generic DashboardSearch (rider ID / phone, merchant, etc.). Desktop shows
   // it centered in the top bar; on mobile the top bar has no room, so we render a second search
   // row just below the header (lg:hidden) — see the mobile search row after </header>.
+  const isTransactionsPage = cleanPathname === "/dashboard/transactions";
+  const isUsersByStatePage = cleanPathname === "/dashboard/customers/users-by-state";
+  const isDeletionRequestsPage = cleanPathname === "/dashboard/customers/deletion-requests";
+  const customerStateParam = (searchParams.get("state") || "").trim();
+  const isCustomerStateListPage = isCustomerStateListPath(cleanPathname, customerStateParam);
+  const customerStateListTitle = isCustomerStateListPage
+    ? customerStateListLabel(customerStateParam)
+    : null;
+
   const showDashboardSearch =
     !effectivePathname.startsWith("/dashboard/orders") &&
     effectivePathname !== "/order" &&
     !effectivePathname.startsWith("/order/") &&
     !effectivePathname.startsWith("/dashboard/tickets") &&
     effectivePathname !== "/dashboard/area-managers" &&
+    !isTransactionsPage &&
+    !isUsersByStatePage &&
     !isGeoRiderAvailabilityPage &&
     !isAmOnboardingFailedPage &&
     !isParentOnboardingPage &&
-    !isMerchantStorePage;
+    !isMerchantStorePage &&
+    !isStoreVerificationDetail;
 
   return (
     <>
     <header
       className={`flex shrink-0 items-center justify-between bg-white px-4 sm:px-6 z-50 relative gap-2 sm:gap-4 ${
-        cleanPathname === GEO_LIST_PATH || cleanPathname === "/dashboard/transactions"
-          ? "min-h-14 py-1.5"
-          : "h-14"
+        cleanPathname === GEO_LIST_PATH ? "min-h-14 py-1.5" : "h-14"
       }`}
     >
       {/* Mobile: Hamburger (left) + Logo + Page name. Desktop: no hamburger. */}
@@ -1499,12 +1587,31 @@ function HeaderComponent() {
               {pageName}
             </h2>
           </div>
-        ) : cleanPathname === "/dashboard/transactions" ? (
+        ) : isCustomerStateListPage ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <HeaderBackButton
+              href="/dashboard/customers/users-by-state"
+              ariaLabel="Back to Users by State"
+              title="Back to Users by State"
+            />
+            <h2 className="min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg">
+              {customerStateListTitle}
+            </h2>
+          </div>
+        ) : isUsersByStatePage || isDeletionRequestsPage ? (
+          <div className="flex min-w-0 items-center gap-2 sm:gap-2.5">
+            <HeaderBackButton
+              href="/dashboard/customers"
+              ariaLabel="Back to Customers"
+              title="Back to Customers"
+            />
+            <h2 className="min-w-0 truncate text-base font-semibold text-[#121212] sm:text-lg">
+              {pageName}
+            </h2>
+          </div>
+        ) : isTransactionsPage ? (
           <div className="min-w-0 leading-tight">
-            <h2 className="truncate text-base font-semibold text-gray-900 sm:text-lg">{pageName}</h2>
-            <p className="mt-0.5 hidden max-w-3xl truncate text-[11px] text-gray-500 sm:block">
-              Every payment across Customer, Merchant and Rider apps — search, filter and trace any transaction end-to-end.
-            </p>
+            <h2 className="truncate text-base font-semibold text-[#121212] sm:text-lg">{pageName}</h2>
           </div>
         ) : isGeoRiderAvailabilityPage ? (
           <div className="min-w-0 flex flex-col justify-center">
@@ -1555,12 +1662,18 @@ function HeaderComponent() {
           )}
       </div>
 
-      {/* Center: Order Search / Tickets search+New / Dashboard Search */}
+      {/* Center: Order Search / Transactions search / Tickets search+New / Dashboard Search */}
       {effectivePathname.startsWith("/dashboard/orders") ? (
         <div className="hidden lg:flex min-w-0 flex-1 items-center justify-center gap-3 px-4">
           <OrderTypeDropdown />
           <div className="min-w-0 w-full max-w-[34rem]">
             <OrderSearchBar />
+          </div>
+        </div>
+      ) : isTransactionsPage ? (
+        <div className="flex min-w-0 flex-1 items-center justify-center px-2 sm:px-4">
+          <div className="w-full min-w-0 max-w-[28rem]">
+            <TransactionsSearchBar />
           </div>
         </div>
       ) : effectivePathname === "/order" ||
@@ -1629,8 +1742,11 @@ function HeaderComponent() {
           ) : null}
         </div>
       ) : showDashboardSearch ? (
-        <div className="hidden lg:flex items-center justify-center flex-1 max-w-xl mx-4 min-w-0">
-          <DashboardSearch compact={true} />
+        <div className="hidden lg:flex min-w-0 max-w-2xl flex-1 items-center justify-center gap-2 mx-4">
+          <div className="min-w-0 flex-1">
+            <DashboardSearch compact={true} />
+          </div>
+          {isCustomerStateListPage ? <CustomerStateHeaderExport /> : null}
         </div>
       ) : null}
 
@@ -1795,8 +1911,11 @@ function HeaderComponent() {
     {/* Mobile search row — the top bar has no room for the search on phones/tablets, so it lives
         here just below the header. Desktop is unchanged (lg:hidden). */}
     {showDashboardSearch ? (
-      <div className="lg:hidden flex items-center border-b border-gray-100 bg-white px-4 py-2 sm:px-6">
-        <DashboardSearch compact={true} />
+      <div className="lg:hidden flex items-center gap-2 border-b border-gray-100 bg-white px-4 py-2 sm:px-6">
+        <div className="min-w-0 flex-1">
+          <DashboardSearch compact={true} />
+        </div>
+        {isCustomerStateListPage ? <CustomerStateHeaderExport /> : null}
       </div>
     ) : null}
     </>

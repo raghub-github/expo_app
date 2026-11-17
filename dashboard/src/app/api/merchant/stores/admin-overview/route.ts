@@ -3,7 +3,7 @@
  * Admin merchants home: growth + verification trends + recent stores table.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { authFailureResponse, getAuthenticatedApiUser } from "@/lib/auth/api-session";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { resolveMerchantListAreaManagerId } from "@/lib/merchants/resolve-merchant-list-scope";
 import {
@@ -17,22 +17,14 @@ export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-
-    if (error || !user?.email) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated", code: "SESSION_REQUIRED" },
-        { status: 401 }
-      );
-    }
+    const auth = await getAuthenticatedApiUser(request);
+    if (!auth.ok) return authFailureResponse(auth);
+    const { user } = auth;
+    const userEmail = user.email ?? "";
 
     const allowed =
-      (await isSuperAdmin(user.id, user.email)) ||
-      (await hasDashboardAccessByAuth(user.id, user.email, "MERCHANT"));
+      (await isSuperAdmin(user.id, userEmail)) ||
+      (await hasDashboardAccessByAuth(user.id, userEmail, "MERCHANT"));
     if (!allowed) {
       return NextResponse.json(
         { success: false, error: "Merchant dashboard access required", code: "MERCHANT_ACCESS_REQUIRED" },
@@ -42,7 +34,7 @@ export async function GET(request: NextRequest) {
 
     const areaManagerId = await resolveMerchantListAreaManagerId({
       supabaseAuthId: user.id,
-      email: user.email,
+      email: userEmail,
     });
 
     const fromDate = request.nextUrl.searchParams.get("fromDate")?.trim() || undefined;

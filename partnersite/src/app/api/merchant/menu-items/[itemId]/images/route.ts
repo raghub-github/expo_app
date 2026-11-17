@@ -2,14 +2,16 @@
  * POST /api/merchant/menu-items/[itemId]/images?storeId=XXX
  * Item-scoped image upload (matches merchant app /v1/merchant-menu/items/:id/images).
  *
- * Platform staff (Admin / SuperAdmin / Support / Manager) uploads apply live.
- * Merchant uploads stay PENDING and trigger item re-review.
+ * Partnersite / merchant self-serve: every upload stays PENDING for Image Review.
+ * Staff live auto-approve belongs on the Control Dashboard upload API only —
+ * never here (admins testing on partnersite must still hit review).
  */
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
+import { partnerCanEditMenuDetails } from "@/lib/auth/merchant-staff-permissions";
 import { assertStoreAccess, isPlatformStaffEmail } from "@/lib/auth/assert-store-access";
 import { buildMenuItemImageKey } from "@/lib/merchant-menu-r2-paths";
 import { addItemImageRow, setItemPendingForReReview } from "@/lib/merchant-menu-item-images";
@@ -37,8 +39,8 @@ export async function POST(
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    const isStaff = await isPlatformStaffEmail(user.email ?? null);
-    if (!isStaff) {
+    const isPlatformStaff = await isPlatformStaffEmail(user.email ?? null);
+    if (!isPlatformStaff) {
       const validation = await validateMerchantFromSession({
         id: user.id,
         email: user.email ?? null,
@@ -46,6 +48,12 @@ export async function POST(
       });
       if (!validation.isValid) {
         return NextResponse.json({ error: validation.error ?? "Merchant not found" }, { status: 403 });
+      }
+      if (!partnerCanEditMenuDetails(validation)) {
+        return NextResponse.json(
+          { error: "Staff cannot upload or change menu item images." },
+          { status: 403 }
+        );
       }
     }
 
@@ -93,23 +101,19 @@ export async function POST(
     try {
       await uploadToR2(file, r2Key);
       const imageUrl = `/api/attachments/proxy?key=${encodeURIComponent(r2Key)}`;
-      const staffActor = isStaff || access.isPlatformStaff === true;
       const created = await addItemImageRow(menuItemId, access.storeIdNum, {
         image_url: imageUrl,
         r2_key: r2Key,
         is_primary: true,
         format: ext,
-        autoApprove: staffActor,
-        moderated_by: staffActor ? (user.email ?? user.id) : null,
+        autoApprove: false,
+        moderated_by: null,
       });
 
-      // Merchants only: force item back into review. Staff changes apply live.
-      if (!staffActor) {
-        await setItemPendingForReReview(menuItemId, access.storeIdNum, {
-          changed_by: user.id,
-          changed_by_role: "merchant",
-        });
-      }
+      await setItemPendingForReReview(menuItemId, access.storeIdNum, {
+        changed_by: user.id,
+        changed_by_role: isPlatformStaff || access.isPlatformStaff ? "agent" : "merchant",
+      });
 
       try {
         await logStoreActivity({
@@ -117,10 +121,8 @@ export async function POST(
           section: "menu_item",
           action: "create",
           entityId: menuItemId,
-          summary: staffActor
-            ? `Staff uploaded image for item #${menuItemId} (auto-approved)`
-            : `Partner uploaded image for item #${menuItemId}`,
-          actorType: staffActor ? "system" : "merchant",
+          summary: `Partner portal uploaded image for item #${menuItemId} (pending Image Review)`,
+          actorType: isPlatformStaff || access.isPlatformStaff ? "system" : "merchant",
         });
       } catch {
         /* non-fatal */

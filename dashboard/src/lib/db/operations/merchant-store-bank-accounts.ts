@@ -50,6 +50,7 @@ export interface BankAccountDisplay {
   upi_id: string | null;
   payout_method: string | null;
   verification_status: string | null;
+  verification_method?: string | null;
   bank_proof_file_url?: string | null;
   upi_qr_screenshot_url?: string | null;
 }
@@ -73,6 +74,7 @@ function mapRow(r: any): BankAccountDisplay {
     upi_id: r.upi_id ?? null,
     payout_method: r.payout_method ?? null,
     verification_status: r.verification_status ?? null,
+    verification_method: r.verification_method != null ? String(r.verification_method) : null,
     bank_proof_file_url: r.bank_proof_file_url ?? null,
     upi_qr_screenshot_url: r.upi_qr_screenshot_url ?? null,
   };
@@ -86,7 +88,7 @@ export async function getStoreBankAccounts(storeId: number): Promise<BankAccount
   const rows = await sql`
     SELECT id, store_id, account_holder_name, beneficiary_name, account_number, ifsc_code, bank_name,
            branch_name, account_type, is_verified, upi_id, upi_verified, is_primary,
-           is_active, payout_method, verification_status, is_disabled,
+           is_active, payout_method, verification_status, verification_method, is_disabled,
            bank_proof_file_url, upi_qr_screenshot_url,
            created_at, updated_at
     FROM merchant_store_bank_accounts

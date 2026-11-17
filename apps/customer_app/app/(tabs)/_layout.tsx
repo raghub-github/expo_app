@@ -1,11 +1,15 @@
 import { Tabs, useRouter } from "expo-router";
-import { useEffect, useLayoutEffect, useRef } from "react";
-import { View, StyleSheet } from "react-native";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { CustomerTabBar, customerTabBarOffset } from "@/components/CustomerTabBar";
+import { HomeColdStartSkeleton } from "@/components/home/HomeTabSkeletons";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
-import { hasCompletedProfileSync } from "@/lib/profileCache";
+import {
+  fetchProfileWithCache,
+  hasCompletedProfileSync,
+  readCachedProfile,
+} from "@/lib/profileCache";
 import { useAuthStore } from "@/store/authStore";
 import { tabDbg } from "@/lib/tabNavDebug";
 import { markInitialShellReady } from "@/lib/startupShellReady";
@@ -17,6 +21,7 @@ import { markInitialShellReady } from "@/lib/startupShellReady";
  */
 export default function TabsLayout() {
   const tabsUnlockedRef = useRef(false);
+  const [profileGate, setProfileGate] = useState(0);
   useEffect(() => {
     tabDbg("INTERPOLATOR_ACTIVE", {
       file: "(tabs)/_layout.tsx",
@@ -28,43 +33,75 @@ export default function TabsLayout() {
   const router = useRouter();
   const hydrated = useAuthStore((s) => s.hydrated);
   const accessToken = useAuthStore((s) => s.session?.accessToken ?? null);
+  const sessionRestorePending = useAuthStore((s) => s.sessionRestorePending);
   // Stable reserved height for RN tab bar chrome (transparent). Must match dock math.
   const tabBarHeight = customerTabBarOffset(insets.bottom);
 
-  // Hard block: never paint Home/tabs until profile (ID) is created.
+  // Warm profile before yanking to onboarding — FastKV miss was sending returning
+  // users to mint "Loading…" onboarding instead of Home skeletons.
   useEffect(() => {
     if (!hydrated) return;
     if (!accessToken) {
+      if (sessionRestorePending) return;
       router.replace("/(auth)/login");
       return;
     }
-    // After tabs have painted, a cache miss must not yank the user to onboarding
-    // (that remounts tabs at Home and bounces Food).
-    if (!hasCompletedProfileSync() && !tabsUnlockedRef.current) {
-      router.replace("/(onboarding)");
-    }
-  }, [hydrated, accessToken, router]);
+    if (hasCompletedProfileSync() || tabsUnlockedRef.current) return;
+
+    let cancelled = false;
+    void (async () => {
+      const cached = await readCachedProfile();
+      if (cancelled) return;
+      if (cached?.profile_completed === true) {
+        setProfileGate((n) => n + 1);
+        return;
+      }
+      // Completed profiles returned above, so any cached profile here is incomplete.
+      if (cached != null) {
+        router.replace("/(onboarding)");
+        return;
+      }
+      try {
+        const profile = await Promise.race([
+          fetchProfileWithCache(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 400)),
+        ]);
+        if (cancelled) return;
+        if (profile?.profile_completed === true) {
+          setProfileGate((n) => n + 1);
+          return;
+        }
+        router.replace("/(onboarding)");
+      } catch {
+        if (!cancelled) router.replace("/(onboarding)");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated, accessToken, sessionRestorePending, router, profileGate]);
 
   const tabsReady = hydrated && Boolean(accessToken) && hasCompletedProfileSync();
   if (tabsReady) tabsUnlockedRef.current = true;
 
   useLayoutEffect(() => {
-    if (!tabsUnlockedRef.current) return;
-    // Tabs chrome is committed under the splash — signal before paint so the
-    // mint cover can dismiss as soon as the initial destination is ready.
-    markInitialShellReady("tabs-unlocked");
-  }, [tabsReady]);
+    if (tabsUnlockedRef.current) {
+      markInitialShellReady("tabs-unlocked");
+      return;
+    }
+    // Keep shell-ready so splash/placeholder can hand off to this skeleton.
+    markInitialShellReady("tabs-skeleton-hold");
+  }, [tabsReady, profileGate]);
 
-  // Never unmount the tab navigator after it has painted — a brief profile-cache
-  // miss remounted tabs at Home and bounced Food → previous page → Food.
-  // Soft home bg (not null / not mint) so a brief unlock race never flashes blank teal.
+  // Profile still warming — stay on Home skeletons (never blank mint / onboarding spinner).
   if (!tabsUnlockedRef.current) {
     tabDbg("TABS_LAYOUT_NULL", {
       hydrated,
       hasToken: Boolean(accessToken),
       profileSync: hasCompletedProfileSync(),
     });
-    return <View style={styles.hold} />;
+    return <HomeColdStartSkeleton reason="tabs_unlock_hold" />;
   }
 
   return (
@@ -73,9 +110,6 @@ export default function TabsLayout() {
       <Tabs
         tabBar={(props) => <CustomerTabBar {...props} />}
         safeAreaInsets={{ bottom: 0 }}
-        // Keep Home/Food native scenes attached. Detaching Food while inactive
-        // forces a native reattach on tap, which stalls BottomTabView's slide
-        // useEffect and leaves the previous page painted for seconds.
         detachInactiveScreens={false}
         screenOptions={{
           headerShown: true,
@@ -95,13 +129,7 @@ export default function TabsLayout() {
           },
           tabBarBackground: () => null,
           freezeOnBlur: true,
-          // Instant cut. Passing transitionSpec (even duration 0) keeps BottomTabView
-          // in the animated pipeline — incoming Food stays opacity 0 at zIndex 0 while
-          // Home stays opaque, so the previous page paints for seconds.
           animation: "none",
-          // Cold start: only mount the focused tab (Home). Eager-mounting Food/Orders/
-          // Profile pulled multi-second Metro/JS work before Home was usable.
-          // Home↔Food still uses animation:"none" + freezeOnBlur:false (no slide race).
           lazy: true,
         }}
       >
@@ -110,7 +138,6 @@ export default function TabsLayout() {
           options={{
             title: "Home",
             headerShown: false,
-            // Home is the landing tab — mount immediately; never freeze.
             lazy: false,
             freezeOnBlur: false,
           }}
@@ -150,11 +177,3 @@ export default function TabsLayout() {
     </>
   );
 }
-
-const styles = StyleSheet.create({
-  hold: {
-    flex: 1,
-    // Match splash mint while tabs unlock — softBackground read as a white blank.
-    backgroundColor: GatiMitraColors.splashMint,
-  },
-});

@@ -15,11 +15,14 @@ import {
 import { normalizeMerchantStoreMediaUrl, normalizeR2ObjectKey, toStoredDocumentUrl } from "@/lib/r2";
 import { LegalDocumentCard } from "@/components/LegalDocumentCard";
 import { LicenseExpiredModal } from "@/components/LicenseExpiredModal";
+import { StaffSensitiveBlur } from "@/components/StaffSensitiveBlur";
+import { useMerchantSession } from "@/context/MerchantSessionContext";
 import {
   evaluateMerchantLicenseCompliance,
   PROFILE_LEGAL_DOC_CONFIG,
   type MerchantDocumentPrefix,
 } from "@/lib/merchantLicenseExpiry";
+import { normalizeStaffRole } from "@/lib/auth/merchant-staff-permissions";
 import { fetchStoreDocumentsViaApi } from "@/lib/merchant-profile-cache";
 import { partnerDocumentPreviewHref } from "@/lib/partnerDocumentPreview";
 
@@ -239,6 +242,9 @@ function OperatingDaysCard({ hours, className = "" }: { hours: any[]; className?
 }
 
 export default function ProfilePage() {
+  const merchantSession = useMerchantSession();
+  const blurStaffSensitive =
+    normalizeStaffRole(merchantSession?.parent?.accessRole) === "STAFF";
   const [hydrated, setHydrated] = useState(false);
   const [store, setStore] = useState<MerchantStore | null>(null);
   const [editData, setEditData] = useState<MerchantStore | null>(null);
@@ -1643,62 +1649,68 @@ export default function ProfilePage() {
 
                       {/* COLUMN 2: DOCUMENTS & IMAGES */}
                       <div className="space-y-3 min-w-0">
-                        <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                          <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                            <Shield size={16} className="text-blue-600" />
-                            Legal Documents
-                          </h3>
-                          <div className="space-y-2">
-                            {storeDocuments ? (
-                              <>
-                                {PROFILE_LEGAL_DOC_CONFIG.map((cfg) => {
-                                  if (!storeId) return null;
-                                  const doc = storeDocuments as Record<string, unknown>;
-                                  const num = doc[cfg.numberKey];
-                                  if (!num || String(num).trim() === "") return null;
-                                  const label =
-                                    cfg.typeKey && doc[cfg.typeKey]
-                                      ? String(doc[cfg.typeKey])
-                                      : cfg.label;
-                                  const meta = doc[cfg.metaKey];
-                                  const renewalPending: boolean =
-                                    meta != null &&
-                                    typeof meta === "object" &&
-                                    (meta as { renewal_pending?: boolean }).renewal_pending === true;
-                                  const verifiedRaw = doc[cfg.verifiedKey];
-                                  const expiredRaw = doc[cfg.expiredKey];
-                                  const isVerified =
-                                    typeof verifiedRaw === "boolean" ? verifiedRaw : null;
-                                  const isExpiredFlag =
-                                    typeof expiredRaw === "boolean" ? expiredRaw : null;
-                                  return (
-                                    <LegalDocumentCard
-                                      key={cfg.prefix}
-                                      storeId={storeId}
-                                      label={label}
-                                      prefix={cfg.prefix}
-                                      documentNumber={String(num)}
-                                      holderName={
-                                        cfg.holderKey ? (doc[cfg.holderKey] as string | null) : null
-                                      }
-                                      expiryDate={(doc[cfg.expiryKey] as string | null) ?? null}
-                                      documentUrl={(doc[cfg.urlKey] as string | null) ?? null}
-                                      isVerified={isVerified}
-                                      isExpiredFlag={isExpiredFlag}
-                                      renewalPending={renewalPending}
-                                      onRenew={(p) => {
-                                        setLicenseUploadPrefix(p);
-                                        setLicenseModalOpen(true);
-                                      }}
-                                    />
-                                  );
-                                })}
-                              </>
-                            ) : (
-                              <p className="text-xs text-gray-500 text-center py-2">No documents found</p>
-                            )}
+                        <StaffSensitiveBlur
+                          locked={blurStaffSensitive}
+                          title="Legal documents locked"
+                          message="FSSAI, GST and other legal documents are hidden for staff."
+                        >
+                          <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+                            <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-2">
+                              <Shield size={16} className="text-blue-600" />
+                              Legal Documents
+                            </h3>
+                            <div className="space-y-2">
+                              {storeDocuments ? (
+                                <>
+                                  {PROFILE_LEGAL_DOC_CONFIG.map((cfg) => {
+                                    if (!storeId) return null;
+                                    const doc = storeDocuments as Record<string, unknown>;
+                                    const num = doc[cfg.numberKey];
+                                    if (!num || String(num).trim() === "") return null;
+                                    const label =
+                                      cfg.typeKey && doc[cfg.typeKey]
+                                        ? String(doc[cfg.typeKey])
+                                        : cfg.label;
+                                    const meta = doc[cfg.metaKey];
+                                    const renewalPending: boolean =
+                                      meta != null &&
+                                      typeof meta === "object" &&
+                                      (meta as { renewal_pending?: boolean }).renewal_pending === true;
+                                    const verifiedRaw = doc[cfg.verifiedKey];
+                                    const expiredRaw = doc[cfg.expiredKey];
+                                    const isVerified =
+                                      typeof verifiedRaw === "boolean" ? verifiedRaw : null;
+                                    const isExpiredFlag =
+                                      typeof expiredRaw === "boolean" ? expiredRaw : null;
+                                    return (
+                                      <LegalDocumentCard
+                                        key={cfg.prefix}
+                                        storeId={storeId}
+                                        label={label}
+                                        prefix={cfg.prefix}
+                                        documentNumber={String(num)}
+                                        holderName={
+                                          cfg.holderKey ? (doc[cfg.holderKey] as string | null) : null
+                                        }
+                                        expiryDate={(doc[cfg.expiryKey] as string | null) ?? null}
+                                        documentUrl={(doc[cfg.urlKey] as string | null) ?? null}
+                                        isVerified={isVerified}
+                                        isExpiredFlag={isExpiredFlag}
+                                        renewalPending={renewalPending}
+                                        onRenew={(p) => {
+                                          setLicenseUploadPrefix(p);
+                                          setLicenseModalOpen(true);
+                                        }}
+                                      />
+                                    );
+                                  })}
+                                </>
+                              ) : (
+                                <p className="text-xs text-gray-500 text-center py-2">No documents found</p>
+                              )}
+                            </div>
                           </div>
-                        </div>
+                        </StaffSensitiveBlur>
 
                         {/* Agreement contract (signed during onboarding) */}
                         <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
@@ -1756,6 +1768,11 @@ export default function ProfilePage() {
                         </div>
 
                         {/* Bank Details Card - Dynamically show UI data or bank_accounts table data */}
+                        <StaffSensitiveBlur
+                          locked={blurStaffSensitive}
+                          title="Bank details locked"
+                          message="Bank account details are hidden for staff."
+                        >
                         <div className="bg-gray-50 rounded-lg p-2 border border-gray-200">
                           <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
                             <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
@@ -2059,6 +2076,7 @@ export default function ProfilePage() {
                             )
                           )}
                         </div>
+                        </StaffSensitiveBlur>
                       </div>
                     </div>
 

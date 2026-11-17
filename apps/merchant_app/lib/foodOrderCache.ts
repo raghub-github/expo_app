@@ -31,7 +31,14 @@ export function patchCachedFoodOrderStatus(
   storeId: number,
   foodId: number,
   orderStatus: string,
-  extra?: { rejected_reason?: string; cancelled_at?: string }
+  extra?: {
+    rejected_reason?: string;
+    cancelled_at?: string;
+    accepted_at?: string;
+    preparation_time_minutes?: number;
+    prep_ready_by_at?: string;
+    expected_ready_at?: string;
+  }
 ): void {
   const hit = getCachedFoodOrder(foodId, storeId);
   if (!hit) return;
@@ -40,6 +47,12 @@ export function patchCachedFoodOrderStatus(
     order_status: orderStatus,
     ...(extra?.rejected_reason ? { rejected_reason: extra.rejected_reason } : {}),
     ...(extra?.cancelled_at ? { cancelled_at: extra.cancelled_at } : {}),
+    ...(extra?.accepted_at ? { accepted_at: extra.accepted_at } : {}),
+    ...(extra?.preparation_time_minutes != null
+      ? { preparation_time_minutes: extra.preparation_time_minutes }
+      : {}),
+    ...(extra?.prep_ready_by_at ? { prep_ready_by_at: extra.prep_ready_by_at } : {}),
+    ...(extra?.expected_ready_at ? { expected_ready_at: extra.expected_ready_at } : {}),
   });
 }
 

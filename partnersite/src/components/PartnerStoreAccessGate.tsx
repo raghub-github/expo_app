@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import {
   clearPartnerStoreSelection,
   readPartnerLastParentId,
@@ -35,7 +35,6 @@ const FATAL_AUTH_CODES = new Set([
  */
 export function PartnerStoreAccessGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? '';
-  const router = useRouter();
 
   const isAllStores = pathname === '/partners/all-stores' || pathname.startsWith('/partners/all-stores/');
 
@@ -88,9 +87,9 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
         if (selected && !owned.has(selected)) {
           clearPartnerStoreSelection();
           if (!cancelled) {
-            router.replace(allStoresPickerHref(readPartnerLastParentId() || undefined));
-            setAllowed(true);
-            setPendingGate(false);
+            // Prefer hard navigation — App Router can throw
+            // "Router action dispatched before initialization" on reload/HMR.
+            window.location.href = allStoresPickerHref(readPartnerLastParentId() || undefined);
           }
           return;
         }
@@ -147,9 +146,7 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
         if (selected && !owned.has(selected)) {
           clearPartnerStoreSelection();
           if (!cancelled) {
-            router.replace(allStoresPickerHref(readPartnerLastParentId() || undefined));
-            setAllowed(true);
-            setPendingGate(false);
+            window.location.href = allStoresPickerHref(readPartnerLastParentId() || undefined);
           }
           return;
         }
@@ -171,7 +168,7 @@ export function PartnerStoreAccessGate({ children }: { children: React.ReactNode
     return () => {
       cancelled = true;
     };
-  }, [isAllStores, pathname, router, cachedSession]);
+  }, [isAllStores, pathname, cachedSession]);
 
   // First paint on /partners/* (no selected-store known yet): content skeleton only.
   // Once allowed (selected store / cache / resolve), never blank the shell again.

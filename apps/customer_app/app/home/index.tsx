@@ -149,7 +149,7 @@ import {
   userAppCategoriesQueryKey,
 } from "@/lib/userAppCategoryCache";
 import { GMHeader } from "@/components/GMHeader";
-import { HEADER_TOP_PADDING_NONE, HOME_HEADER_BELOW_STATUS_GAP, resolveTopSafeInset, resolveCustomerBottomNavHeight } from "@/constants/layout";
+import { HOME_HEADER_BELOW_STATUS_GAP, resolveTopSafeInset, resolveCustomerBottomNavHeight } from "@/constants/layout";
 import { GMRestaurantCardV2, RESTAURANT_CARD_ESTIMATED_SIZE } from "@/components/GMRestaurantCardV2";
 import { GMEmptyState } from "@/components/GMEmptyState";
 import { NON_SERVICEABLE_STATUS_BAR_BG } from "@/store/screenChromeStore";
@@ -1981,6 +1981,12 @@ export default function FoodMerchantsScreen() {
       if (!isGridFirstLayout) return;
       NativeStatusBar.setHidden(false, "none");
       if (isNonServiceableScreen) {
+        // Show root status strip + local header pad — never overlap system icons.
+        useScreenChromeStore.setState({
+          statusBarBackground: NON_SERVICEABLE_STATUS_BAR_BG,
+          statusBarStyle: "dark",
+          hideStatusBarSpacer: false,
+        });
         setImmersiveStatusBarChrome(false);
         setStatusBarBackground(NON_SERVICEABLE_STATUS_BAR_BG, "dark");
         return;
@@ -2058,6 +2064,7 @@ export default function FoodMerchantsScreen() {
     const store = useScreenChromeStore.getState();
     store.setImmersiveStatusBarChrome(false);
     store.setStatusBarBackground(NON_SERVICEABLE_STATUS_BAR_BG, "dark");
+    useScreenChromeStore.setState({ hideStatusBarSpacer: false });
   }, [isNonServiceableScreen]);
 
   const gridFirstSkyHeightDefault = useMemo(
@@ -2656,7 +2663,9 @@ export default function FoodMerchantsScreen() {
         <GMEmptyState
           header={
             <GMHeader
-              topInset={HEADER_TOP_PADDING_NONE}
+              // Root spacer is hidden on food immersive layouts — pad ourselves
+              // or the address line paints under the Android status icons.
+              topInset={statusBarTopInset + HOME_HEADER_BELOW_STATUS_GAP}
               onBack={handleBack}
               showBack={false}
               minimal

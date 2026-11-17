@@ -12,6 +12,7 @@
  *      DELETE /v1/notifications/templates/:id            — disable (soft)
  *      POST   /v1/notifications/campaigns                — create draft / schedule / immediate
  *      GET    /v1/notifications/campaigns/:id            — detail + last 100 dispatch logs
+ *      PATCH  /v1/notifications/campaigns/:id            — edit scheduled/draft before push
  *      POST   /v1/notifications/campaigns/:id/cancel     — cancel scheduled/running
  *      POST   /v1/notifications/campaigns/:id/resend     — resend stored campaign
  *      POST   /v1/notifications/campaigns/:id/revoke     — hide a sent campaign from every inbox
@@ -50,7 +51,13 @@ import {
   sendToUser,
 } from "./notificationService.js";
 import { subscribeToTopic, unsubscribeFromTopic } from "./fcmProvider.js";
-import { createCampaign, finalizeCampaignSend, markCampaignStarted, getCampaignById } from "./db.js";
+import {
+  createCampaign,
+  finalizeCampaignSend,
+  markCampaignStarted,
+  getCampaignById,
+  updateEditableCampaign,
+} from "./db.js";
 import { resolveTarget } from "./targetResolver.js";
 import {
   expectedRoleFromTarget,
@@ -686,6 +693,9 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
             COALESCE(c.delivered_count, 0)::int AS delivered_count,
             COALESCE(c.clicked_count, 0)::int   AS clicked_count,
             COALESCE(c.failed_count, 0)::int    AS failed_count,
+            c.override_title,
+            c.override_body,
+            c.variables,
             c.scheduled_at,
             c.started_at,
             c.finished_at,
@@ -694,7 +704,8 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
           FROM public.notification_campaigns c
           WHERE 1=1
             ${q.status ? sql`AND c.status = ${q.status}` : sql``}
-          ORDER BY COALESCE(c.scheduled_at, c.created_at) DESC
+          -- Resend bumps started_at → campaign returns to the top of the list.
+          ORDER BY COALESCE(c.started_at, c.scheduled_at, c.created_at) DESC
           LIMIT ${limit} OFFSET ${offset}
         `;
         return { items: rows };
@@ -746,6 +757,50 @@ export const notificationRoutes: FastifyPluginAsync = async (app) => {
         },
         dispatch_logs: dispatchLogs,
       });
+    });
+
+    // --- campaigns: edit scheduled/draft (before push) ---
+    admin.patch<{
+      Params: { id: string };
+      Body: {
+        name?: string;
+        description?: string | null;
+        overrideTitle?: string | null;
+        overrideBody?: string | null;
+        overrideImage?: string | null;
+        overrideDeepLink?: string | null;
+        variables?: TemplateVariables;
+        scheduledAt?: string | null;
+      };
+    }>("/campaigns/:id", async (req, reply) => {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id < 1) return reply.code(400).send({ error: "invalid_id" });
+      const existing = await getCampaignById(id);
+      if (!existing) return reply.code(404).send({ error: "not_found" });
+      if (existing.status !== "scheduled" && existing.status !== "draft") {
+        return reply.code(409).send({
+          error: "not_editable",
+          message: "Only scheduled or draft campaigns can be edited before they are pushed.",
+        });
+      }
+      const b = req.body ?? {};
+      const updated = await updateEditableCampaign(id, {
+        name: typeof b.name === "string" ? b.name.trim() : undefined,
+        description: b.description !== undefined ? b.description : undefined,
+        overrideTitle: b.overrideTitle !== undefined ? b.overrideTitle : undefined,
+        overrideBody: b.overrideBody !== undefined ? b.overrideBody : undefined,
+        overrideImage: b.overrideImage !== undefined ? b.overrideImage : undefined,
+        overrideDeepLink: b.overrideDeepLink !== undefined ? b.overrideDeepLink : undefined,
+        variables: b.variables as Record<string, unknown> | undefined,
+        scheduledAt: b.scheduledAt !== undefined ? b.scheduledAt : undefined,
+      });
+      if (!updated) {
+        return reply.code(409).send({
+          error: "not_editable",
+          message: "Campaign is no longer editable (it may have started sending).",
+        });
+      }
+      return reply.send({ ok: true, campaign: updated });
     });
 
     // --- campaigns: cancel ---

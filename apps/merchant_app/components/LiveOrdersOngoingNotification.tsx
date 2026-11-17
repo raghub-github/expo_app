@@ -66,6 +66,8 @@ function breakdownFromBoard(orders: OrderRecord[]): ActiveOrdersBreakdown {
   let out_for_delivery = 0;
   for (const o of orders) {
     const s = String(o.status ?? "").toLowerCase();
+    // Only count true pickup — pipeline OUT_FOR_DELIVERY with local "preparing"
+    // (mark-ready still showing) must not inflate the sticky "🛵 out" line.
     if (s === "created") pending_accept += 1;
     else if (s === "preparing") preparing += 1;
     else if (s === "ready") ready += 1;
@@ -78,6 +80,32 @@ function breakdownFromBoard(orders: OrderRecord[]): ActiveOrdersBreakdown {
     ready,
     out_for_delivery,
   };
+}
+
+/**
+ * API active-orders-count can mark an order OUT_FOR_DELIVERY while the board still
+ * shows Preparing / Mark ready. Prefer board "out" in that conflict so the tray
+ * never flashes "🛵 1 out" before pickup.
+ */
+function reconcileApiWithBoard(
+  board: ActiveOrdersBreakdown,
+  api: ActiveOrdersBreakdown
+): ActiveOrdersBreakdown {
+  const boardKitchen = board.pending_accept + board.preparing + board.ready;
+  if (board.out_for_delivery === 0 && api.out_for_delivery > 0 && boardKitchen > 0) {
+    const preparing = Math.max(board.preparing, api.preparing);
+    const ready = Math.max(board.ready, api.ready);
+    const pending_accept = Math.max(board.pending_accept, api.pending_accept);
+    const out_for_delivery = 0;
+    return {
+      pending_accept,
+      preparing,
+      ready,
+      out_for_delivery,
+      active_orders: pending_accept + preparing + ready + out_for_delivery,
+    };
+  }
+  return api;
 }
 
 async function loadSession(storeId: number): Promise<StoreStatusSessionState> {
@@ -319,12 +347,13 @@ export default function LiveOrdersOngoingNotification() {
 
         // Online: instant board-derived snapshot first, then confirm with the authoritative API.
         // Works in foreground AND background — AppState never gates the post.
-        await runReduce(breakdownFromBoard(ordersRef.current), `${source}_BOARD`);
+        const board = breakdownFromBoard(ordersRef.current);
+        await runReduce(board, `${source}_BOARD`);
         if (opts?.fetchApi && c.token && c.storeId != null) {
           invalidateActiveOrdersCountCache(c.storeId);
           try {
             const api = await getActiveOrdersBreakdown(c.storeId, c.token);
-            await runReduce(api, `${source}_API`);
+            await runReduce(reconcileApiWithBoard(board, api), `${source}_API`);
           } catch {
             /* board snapshot already applied */
           }

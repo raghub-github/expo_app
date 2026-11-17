@@ -7,8 +7,7 @@ import type { CustomerWeatherContext } from "@/services/weather.service";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 import { AppText } from "@/components/AppText";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
-import { HomeLocationHeaderSkeleton } from "@/components/home/HomeTabSkeletons";
-
+import { useIoniconsReady } from "@/lib/ioniconsReady";
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
 /** Same content width as header row (pin → action icons). */
@@ -127,34 +126,46 @@ export function HomeLocationHeader({
   | "onNotificationPress"
 > & { skeleton?: boolean }) {
   const insets = useSafeAreaInsets();
+  const iconFontsLoaded = useIoniconsReady();
   // Exactly the status-bar inset — no extra chrome band. Row aligns to the top
   // so location text sits flush under the clock (icon buttons no longer center-pad it down).
   const topPad = resolveTopSafeInset(insets.top) + HOME_HEADER_BELOW_STATUS_GAP;
   const showBadge = notificationBadgeCount != null && notificationBadgeCount > 0;
 
-  if (skeleton) {
-    return <HomeLocationHeaderSkeleton reason="location_pending" />;
-  }
+  // Never replace wallet / notification with skeleton — icons stay preloaded and visible.
+  // Location text may still show a soft placeholder while address resolves.
+  const primaryLabel = locationPrimary?.trim() || "Detecting location…";
+  const secondaryLabel = locationSecondary?.trim() || (skeleton ? " " : "");
 
   return (
     <View style={styles.headerBlock}>
       <View style={[styles.topRow, { paddingTop: topPad }]}>
         <TouchableOpacity style={styles.locationBlock} activeOpacity={0.82} onPress={onLocationPress}>
-          <Ionicons name="location" size={20} color={GREEN} style={styles.locationPin} />
+          {iconFontsLoaded ? (
+            <Ionicons name="location" size={20} color={GREEN} style={styles.locationPin} />
+          ) : (
+            <View style={[styles.locationPinFallback, { backgroundColor: GREEN }]} />
+          )}
 
           <View style={styles.locationTextBlock}>
             <View style={styles.locationTitleRow}>
               <AppText style={styles.locationPrimary} numberOfLines={1} ellipsizeMode="tail">
-                {locationPrimary}
+                {primaryLabel}
               </AppText>
-              <Ionicons name="chevron-down" size={15} color={TITLE_DARK} style={styles.locationChevron} />
+              {iconFontsLoaded ? (
+                <Ionicons name="chevron-down" size={15} color={TITLE_DARK} style={styles.locationChevron} />
+              ) : (
+                <View style={styles.chevronFallback} />
+              )}
             </View>
-            <View style={styles.locationSecondaryRow}>
-              <View style={styles.stateDot} />
-              <AppText style={styles.locationSecondary} numberOfLines={1} ellipsizeMode="tail">
-                {locationSecondary}
-              </AppText>
-            </View>
+            {secondaryLabel ? (
+              <View style={styles.locationSecondaryRow}>
+                <View style={styles.stateDot} />
+                <AppText style={styles.locationSecondary} numberOfLines={1} ellipsizeMode="tail">
+                  {secondaryLabel}
+                </AppText>
+              </View>
+            ) : null}
           </View>
         </TouchableOpacity>
 
@@ -166,7 +177,11 @@ export function HomeLocationHeader({
             onPress={onNotificationPress}
             accessibilityLabel="Notifications"
           >
-            <Ionicons name="notifications-outline" size={18} color={TITLE_DARK} />
+            {iconFontsLoaded ? (
+              <Ionicons name="notifications-outline" size={18} color={TITLE_DARK} />
+            ) : (
+              <View style={styles.bellFallback} />
+            )}
             {showBadge ? (
               <View style={styles.badge}>
                 <AppText style={styles.badgeText}>
@@ -307,6 +322,29 @@ const styles = StyleSheet.create({
   },
   locationPin: {
     flexShrink: 0,
+  },
+  locationPinFallback: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    flexShrink: 0,
+  },
+  chevronFallback: {
+    width: 10,
+    height: 10,
+    marginLeft: 3,
+    borderRightWidth: 2,
+    borderBottomWidth: 2,
+    borderColor: TITLE_DARK,
+    transform: [{ rotate: "45deg" }],
+    marginTop: -2,
+  },
+  bellFallback: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: TITLE_DARK,
   },
   locationTextBlock: {
     marginLeft: 8,

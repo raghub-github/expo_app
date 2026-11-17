@@ -6,12 +6,14 @@ import {
   hydrateAddressesQuery,
   subscribeAddressesCachePersistence,
 } from "@/lib/addressesCache";
+import { useSplashExitedFlag } from "@/lib/splashLifecycle";
 
 /** Warm address caches after login so location picker opens instantly. */
 export function AddressesPrefetch() {
   const queryClient = useQueryClient();
   const hydrated = useAuthStore((s) => s.hydrated);
   const session = useAuthStore((s) => s.session);
+  const splashExited = useSplashExitedFlag();
 
   useEffect(() => {
     subscribeAddressesCachePersistence(queryClient);
@@ -20,11 +22,12 @@ export function AddressesPrefetch() {
     void hydrateAddressesQuery(queryClient);
   }, [queryClient]);
 
+  // Network prefetch after splash — do not compete with auth on the critical path.
   useEffect(() => {
-    if (!hydrated || !session?.accessToken) return;
+    if (!splashExited || !hydrated || !session?.accessToken) return;
     void prefetchAddresses(queryClient);
     void prefetchActiveLocation(queryClient);
-  }, [hydrated, session?.accessToken, queryClient]);
+  }, [splashExited, hydrated, session?.accessToken, queryClient]);
 
   return null;
 }

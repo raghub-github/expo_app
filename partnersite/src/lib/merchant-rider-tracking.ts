@@ -1,7 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { computeMerchantRiderApproach, type MerchantRiderApproach } from '@/lib/merchant-rider-approach';
+import type { MerchantRiderApproach } from '@/lib/merchant-rider-approach';
 import { getRiderSelfieViewUrl } from '@/lib/rider-selfie-url';
 import { resolveStoreMapLngLat, toLatLngPin, toMapLngLat } from '@/lib/parse-order-map-coords';
+import { etaMinutesFromMeters } from '@/lib/route-remaining-distance';
 
 export type MerchantRiderTrackingLocation = {
   latitude: number;
@@ -39,9 +40,23 @@ export type MerchantRiderTrackingPayload = {
   store_name: string | null;
   pickup: MerchantMapPin | null;
   drop: MerchantMapPin | null;
-  /** Driving distance remaining to store/pickup (same logic as rider navigation sheet). */
+  /**
+   * Remaining distance to store/pickup. Poll path uses straight-line so GPS
+   * returns in ms — Mapbox driving ETA is computed on the client for the map line.
+   */
   approach: MerchantRiderApproach | null;
 };
+
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
 
 function parseCoord(value: unknown): number | null {
   if (value == null) return null;
@@ -69,7 +84,8 @@ function buildTrackingOrderIds(
 
 export async function getMerchantOrderRiderTracking(
   db: SupabaseClient,
-  coreOrderId: number
+  coreOrderId: number,
+  opts?: { skipSelfie?: boolean }
 ): Promise<MerchantRiderTrackingPayload> {
   const empty: MerchantRiderTrackingPayload = {
     rider: { name: null, mobile: null, selfie_url: null, assignment_status: null },
@@ -109,32 +125,27 @@ export async function getMerchantOrderRiderTracking(
       ? Number(core.rider_id)
       : null;
 
-  const { data: foodOrder } = await db
-    .from('orders_food')
-    .select('rider_id, rider_name, rider_phone, merchant_store_id')
-    .eq('order_id', coreOrderId)
-    .maybeSingle();
-
-  if (!riderId) {
-    const { data: assign } = await db
+  const [{ data: foodOrder }, { data: assignment }, { data: trailRows }] = await Promise.all([
+    db
+      .from('orders_food')
+      .select('rider_id, rider_name, rider_phone, merchant_store_id')
+      .eq('order_id', coreOrderId)
+      .maybeSingle(),
+    db
       .from('order_rider_assignments')
-      .select('rider_id')
+      .select('rider_name, rider_mobile, assignment_status, rider_id')
       .or(`order_core_id.eq.${coreOrderId},order_id.eq.${coreOrderId}`)
       .order('is_active', { ascending: false })
       .order('assignment_sequence', { ascending: false })
       .limit(1)
-      .maybeSingle();
-    if (assign?.rider_id != null) riderId = Number(assign.rider_id);
-  }
-
-  const { data: assignment } = await db
-    .from('order_rider_assignments')
-    .select('rider_name, rider_mobile, assignment_status, rider_id')
-    .or(`order_core_id.eq.${coreOrderId},order_id.eq.${coreOrderId}`)
-    .order('is_active', { ascending: false })
-    .order('assignment_sequence', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+      .maybeSingle(),
+    db
+      .from('order_rider_tracking')
+      .select('latitude, longitude, heading_degrees, created_at')
+      .in('order_id', trackingIds)
+      .order('created_at', { ascending: false })
+      .limit(40),
+  ]);
 
   if (!riderId && assignment?.rider_id != null) {
     riderId = Number(assignment.rider_id);
@@ -152,24 +163,35 @@ export async function getMerchantOrderRiderTracking(
     (foodOrder?.rider_phone as string | null)?.trim() ||
     null;
 
-  const selfieUrl = riderId ? await getRiderSelfieViewUrl(db, riderId) : null;
-
-  let merchantLat: unknown = null;
-  let merchantLon: unknown = null;
-  let storeName: string | null = null;
   const merchantStoreId =
     (foodOrder?.merchant_store_id as number | null | undefined) ??
     (core.merchant_store_id as number | null | undefined);
-  if (merchantStoreId != null && Number.isFinite(Number(merchantStoreId))) {
-    const { data: storeRow } = await db
-      .from('merchant_stores')
-      .select('latitude, longitude, store_name')
-      .eq('id', merchantStoreId)
-      .maybeSingle();
-    merchantLat = storeRow?.latitude;
-    merchantLon = storeRow?.longitude;
-    storeName = (storeRow?.store_name as string | null)?.trim() || null;
-  }
+
+  const [selfieUrl, storeRow, live] = await Promise.all([
+    riderId && !opts?.skipSelfie
+      ? getRiderSelfieViewUrl(db, riderId)
+      : Promise.resolve(null),
+    merchantStoreId != null && Number.isFinite(Number(merchantStoreId))
+      ? db
+          .from('merchant_stores')
+          .select('latitude, longitude, store_name')
+          .eq('id', merchantStoreId)
+          .maybeSingle()
+          .then((r) => r.data)
+      : Promise.resolve(null),
+    riderId
+      ? db
+          .from('rider_live_locations')
+          .select('latitude, longitude, heading, updated_at')
+          .eq('rider_id', riderId)
+          .maybeSingle()
+          .then((r) => r.data)
+      : Promise.resolve(null),
+  ]);
+
+  const merchantLat = storeRow?.latitude ?? null;
+  const merchantLon = storeRow?.longitude ?? null;
+  const storeName = (storeRow?.store_name as string | null)?.trim() || null;
 
   const storeLngLat = resolveStoreMapLngLat({
     merchantLat,
@@ -179,13 +201,6 @@ export async function getMerchantOrderRiderTracking(
     pickupGeocoded: core.pickup_address_geocoded as string | null,
   });
   const store = storeLngLat ? toLatLngPin(storeLngLat) : null;
-
-  const { data: trailRows } = await db
-    .from('order_rider_tracking')
-    .select('latitude, longitude, created_at')
-    .in('order_id', trackingIds)
-    .order('created_at', { ascending: false })
-    .limit(40);
 
   const trail = (trailRows ?? [])
     .map((row) => {
@@ -199,42 +214,31 @@ export async function getMerchantOrderRiderTracking(
     .reverse();
 
   const latestTrail = trail.length > 0 ? trail[trail.length - 1] : null;
+  const latestTrailRow = trailRows?.[0] ?? null;
 
   let location: MerchantRiderTrackingLocation | null = null;
   if (latestTrail) {
-    const { data: headingRow } = await db
-      .from('order_rider_tracking')
-      .select('heading_degrees, created_at')
-      .in('order_id', trackingIds)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
     location = {
       latitude: latestTrail.latitude,
       longitude: latestTrail.longitude,
       heading_degrees:
-        headingRow?.heading_degrees != null ? Number(headingRow.heading_degrees) : null,
-      updated_at: toIso(headingRow?.created_at) ?? latestTrail.created_at,
+        latestTrailRow?.heading_degrees != null
+          ? Number(latestTrailRow.heading_degrees)
+          : null,
+      updated_at: latestTrail.created_at,
       source: 'order_tracking',
     };
   }
 
-  if (riderId) {
-    const { data: live } = await db
-      .from('rider_live_locations')
-      .select('latitude, longitude, heading, updated_at')
-      .eq('rider_id', riderId)
-      .maybeSingle();
-
-    const lat = parseCoord(live?.latitude);
-    const lng = parseCoord(live?.longitude);
-    const updatedAt = toIso(live?.updated_at);
+  if (live) {
+    const lat = parseCoord(live.latitude);
+    const lng = parseCoord(live.longitude);
+    const updatedAt = toIso(live.updated_at);
     if (lat != null && lng != null && updatedAt) {
       const liveLoc: MerchantRiderTrackingLocation = {
         latitude: lat,
         longitude: lng,
-        heading_degrees: live?.heading != null ? Number(live.heading) : null,
+        heading_degrees: live.heading != null ? Number(live.heading) : null,
         updated_at: updatedAt,
         source: 'live_location',
       };
@@ -256,20 +260,23 @@ export async function getMerchantOrderRiderTracking(
   const pickupLngLat = toMapLngLat(pickupLat, pickupLng);
   const navDestinationLngLat = pickupLngLat ?? storeLngLat;
 
+  // Never await Mapbox here — that was blocking GPS for ~5s/poll and the modal
+  // looked like "route not loading" with only the store pin.
   let approach: MerchantRiderApproach | null = null;
   if (location && navDestinationLngLat) {
-    const prevTrail =
-      trail.length >= 2
-        ? ([trail[trail.length - 2]!.longitude, trail[trail.length - 2]!.latitude] as [
-            number,
-            number,
-          ])
-        : null;
-    approach = await computeMerchantRiderApproach({
-      location,
-      destinationLngLat: navDestinationLngLat,
-      prevTrailLngLat: prevTrail,
-    });
+    const remainingM = haversineMeters(
+      location.latitude,
+      location.longitude,
+      navDestinationLngLat[1],
+      navDestinationLngLat[0]
+    );
+    if (Number.isFinite(remainingM) && remainingM > 0) {
+      approach = {
+        remaining_distance_m: Math.round(remainingM),
+        eta_minutes: etaMinutesFromMeters(remainingM),
+        source: 'straight_line',
+      };
+    }
   }
 
   return {

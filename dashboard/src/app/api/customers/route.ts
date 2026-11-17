@@ -61,6 +61,7 @@ export async function GET(request: NextRequest) {
       orderType: searchParams.get("orderType") as "food" | "parcel" | "person_ride" | undefined,
       dateFrom: searchParams.get("dateFrom") || undefined,
       dateTo: searchParams.get("dateTo") || undefined,
+      state: searchParams.get("state")?.trim() || undefined,
       sortBy: searchParams.get("sortBy") || undefined,
       sortOrder: (searchParams.get("sortOrder") || "desc") as "asc" | "desc",
     };

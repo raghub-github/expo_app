@@ -114,12 +114,14 @@ function CustomersPageContent() {
   const {
     data: stats,
     isPending: statsPending,
+    isFetching: statsFetching,
     isError: statsError,
   } = useCustomerDashboardStats(shouldFetchStats ? dashboardFilters : {}, {
-    enabled: shouldFetchStats,
+    enabled: shouldFetchStats && hasMounted && !permissionsLoading,
   });
-  // Disabled/pending queries have isLoading=false with no data — don't flash zeros.
-  const statsLoading = shouldFetchStats && !statsError && (statsPending || stats == null);
+  // Skeletons only when we have nothing to show — never on background refetch / revisit.
+  const statsLoading =
+    shouldFetchStats && !statsError && stats == null && (statsPending || statsFetching);
   const handlePageChange = (newPage: number) => {
     setPage(newPage);
   };
@@ -202,29 +204,27 @@ function CustomersPageContent() {
         error || (!searchLoading && (!data?.customers || data.customers.length === 0)) ? (
           <CustomerNotFoundState />
         ) : (
-        <div className="rounded-lg border border-gray-200 bg-white p-6">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h1 className="text-2xl font-semibold text-gray-900">Search Results</h1>
-                <p className="text-sm text-gray-600 mt-1">
-                  {data?.pagination?.total
-                    ? `Found ${data.pagination.total.toLocaleString()} customer(s)`
-                    : "Searching..."}
-                </p>
-              </div>
-            </div>
-
-            <CustomerTable
-              customers={data?.customers || []}
-              loading={searchLoading}
-              pageType="all"
-              searchQuery={search}
-              onPageChange={handlePageChange}
-              currentPage={data?.pagination?.page || 1}
-              totalPages={data?.pagination?.totalPages || 1}
-            />
+        <div className="flex h-[calc(100dvh-8rem)] min-h-[24rem] flex-col gap-3">
+          <div>
+            <h1 className="text-base font-semibold text-[#121212]">Search Results</h1>
+            <p className="text-xs text-[#121212]/50">
+              {data?.pagination?.total
+                ? `Found ${data.pagination.total.toLocaleString()} customer(s)`
+                : "Searching..."}
+            </p>
           </div>
+          <CustomerTable
+            customers={data?.customers || []}
+            loading={searchLoading}
+            pageType="all"
+            searchQuery={search}
+            onPageChange={handlePageChange}
+            currentPage={data?.pagination?.page || 1}
+            totalPages={data?.pagination?.totalPages || 1}
+            totalCount={data?.pagination?.total}
+            showExport
+            exportFileName="customers-search"
+          />
         </div>
         )
       )}

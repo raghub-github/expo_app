@@ -906,7 +906,21 @@ async function loadCoreRows(
   };
 
   try {
-    // Plain SELECT — live board stays on 7 days; Past Orders uses from/to.
+    // Live board: 48h first (merchant app polls every few seconds). 7d was starving
+    // the pool under partner-status/schedule-tick and hanging past the route race.
+    if (!useHistoryWindow) {
+      try {
+        return await Promise.race([
+          selectList(false, "48 hours", Math.min(limit, 60)),
+          new Promise<CoreRow[]>((_, reject) => {
+            setTimeout(() => reject(new Error("core_rows_timeout")), 4_000);
+          }),
+        ]);
+      } catch {
+        return [];
+      }
+    }
+    // Past Orders uses from/to history window.
     return await selectList(useHistoryWindow, "7 days", limit);
   } catch (err) {
     const code = (err as { code?: string })?.code;
@@ -2329,15 +2343,10 @@ export async function loadMerchantFoodOrders(
       coreIds.length > 0
         ? withTimeout(loadActiveRidersByCoreIds(sql, coreIds), 1_000, new Map())
         : Promise.resolve(new Map() as Map<number, ActiveRiderSnapshot>),
-      withTimeout(loadStoreRatingsForOrders(sql, storeId, cores, foods), 1_200, new Map()),
-      // Nth-order enrichment in parallel with board (not after) so it is not starved.
-      coreIds.length > 0
-        ? withTimeout(
-            loadCustomerOrderOrdinalsForCores(sql, storeId, cores, { includePlatform: false }),
-            1_500,
-            emptyOrdinals
-          )
-        : Promise.resolve(emptyOrdinals),
+      withTimeout(loadStoreRatingsForOrders(sql, storeId, cores, foods), 800, new Map()),
+      // Skip Nth-order COUNTs on the live poll — they contended the pool and hung
+      // food-orders past the route deadline (Partner Site uses skip_heavy_enrich).
+      Promise.resolve(emptyOrdinals),
     ]);
 
     selfDeliveryEnabled = settingsRows[0]?.self_delivery === true;

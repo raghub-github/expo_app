@@ -3,9 +3,7 @@
  * Provides aggregated statistics for the customer dashboard
  */
 
-import { getDb } from "../client";
-import { customers, ordersCore } from "../schema";
-import { eq, and, or, isNull, sql, gte, lte, inArray } from "drizzle-orm";
+import { getSql } from "../client";
 import { countPendingAccountDeletionRequests } from "./account-deletion-requests";
 
 export interface DashboardStatsFilters {
@@ -30,40 +28,28 @@ export interface UserCategoryStats {
 }
 
 export interface DashboardStats {
-  // Top summary cards
   allUsers: number;
   foodUsers: number;
   parcelUsers: number;
   personUsers: number;
-  
-  // User category cards
-  newUsers: number; // Users created in last 30 days
-  oldUsers: number; // Users created more than 30 days ago
-  repeatedUsers: number; // Users with 2+ orders
-  activeUsers: number; // Account status = ACTIVE
-  inactiveUsers: number; // Account status = INACTIVE or DEACTIVATED
-  suspendedUsers: number; // Account status = SUSPENDED
-  fraudUsers: number; // Risk flag = HIGH or CRITICAL
-  /** Pending rows in account_deletion_requests (ops queue). */
+  newUsers: number;
+  oldUsers: number;
+  repeatedUsers: number;
+  activeUsers: number;
+  inactiveUsers: number;
+  suspendedUsers: number;
+  fraudUsers: number;
   deletionRequestsPending: number;
-  
-  // Service-wise stats
   serviceStats: ServiceStats[];
-  
-  // Growth trends (last 12 months)
   growthTrend: Array<{
     month: string;
     newUsers: number;
     totalUsers: number;
   }>;
-  
-  // User-order relationship
   userOrderRelationship: Array<{
     orderCountRange: string;
     userCount: number;
   }>;
-  
-  // Revenue trends (last 12 months)
   revenueTrend: Array<{
     month: string;
     foodRevenue: number;
@@ -73,432 +59,300 @@ export interface DashboardStats {
   }>;
 }
 
+function n(v: unknown): number {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
+}
+
 /**
- * Get dashboard statistics
+ * Fast dashboard stats — a few parallel SQL queries (no nested empty fragments).
  */
 export async function getCustomerDashboardStats(
   filters: DashboardStatsFilters = {}
 ): Promise<DashboardStats> {
-  const db = getDb();
-  
-  // Base conditions
-  const baseConditions = [isNull(customers.deletedAt)];
-  
-  // Date filter on customer creation
-  if (filters.dateFrom) {
-    baseConditions.push(gte(customers.createdAt, new Date(filters.dateFrom)));
-  }
-  if (filters.dateTo) {
-    const dateTo = new Date(filters.dateTo);
-    dateTo.setHours(23, 59, 59, 999);
-    baseConditions.push(lte(customers.createdAt, dateTo));
-  }
-  
-  // Account status filter
-  if (filters.accountStatus) {
-    baseConditions.push(eq(customers.accountStatus, filters.accountStatus as any));
-  }
-  
-  // Risk flag filter
-  if (filters.riskFlag) {
-    baseConditions.push(eq(customers.riskFlag, filters.riskFlag as any));
-  }
-  
-  const whereClause = baseConditions.length > 0 ? and(...baseConditions) : undefined;
-  
-  // Get all users count
-  const [allUsersResult] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(customers)
-    .where(whereClause);
-  const allUsers = Number(allUsersResult?.count || 0);
-  
-  // Get users by service type (customers who have orders of that type)
-  const getUsersByOrderType = async (orderType: "food" | "parcel" | "person_ride") => {
-    const customersWithOrders = await db
-      .selectDistinct({ customerId: ordersCore.customerId })
-      .from(ordersCore)
-      .where(
-        and(
-          sql`${ordersCore.customerId} IS NOT NULL`,
-          eq(ordersCore.orderType, orderType)
-        )
-      );
-    
-    const customerIds = customersWithOrders
-      .map((c) => Number(c.customerId))
-      .filter((id) => !isNaN(id));
-    
-    if (customerIds.length === 0) return 0;
-    
-    const conditions = [
-      ...baseConditions,
-      inArray(customers.id, customerIds)
-    ];
-    
-    const [result] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(customers)
-      .where(and(...conditions));
-    
-    return Number(result?.count || 0);
-  };
-  
-  const foodUsers = await getUsersByOrderType("food");
-  const parcelUsers = await getUsersByOrderType("parcel");
-  const personUsers = await getUsersByOrderType("person_ride");
-  
-  // User category stats
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  
-  // New users (last 30 days)
-  const [newUsersResult] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(customers)
-    .where(
-      and(
-        ...baseConditions,
-        gte(customers.createdAt, thirtyDaysAgo)
-      )
-    );
-  const newUsers = Number(newUsersResult?.count || 0);
-  
-  // Old users (more than 30 days ago)
-  const oldUsers = allUsers - newUsers;
-  
-  // Repeated users (2+ orders)
-  const repeatedUsersQuery = await db
-    .select({
-      customerId: ordersCore.customerId,
-      orderCount: sql<number>`count(*)::int`,
-    })
-    .from(ordersCore)
-    .where(sql`${ordersCore.customerId} IS NOT NULL`)
-    .groupBy(ordersCore.customerId)
-    .having(sql`count(*) >= 2`);
-  
-  const repeatedCustomerIds = repeatedUsersQuery
-    .map((r) => Number(r.customerId))
-    .filter((id) => !isNaN(id));
-  
-  let repeatedUsers = 0;
-  if (repeatedCustomerIds.length > 0) {
-    const conditions = [
-      ...baseConditions,
-      inArray(customers.id, repeatedCustomerIds)
-    ];
-    const [result] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(customers)
-      .where(and(...conditions));
-    repeatedUsers = Number(result?.count || 0);
-  }
-  
-  // Active users
-  const [activeUsersResult] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(customers)
-    .where(
-      and(
-        ...baseConditions,
-        eq(customers.accountStatus, "ACTIVE" as any)
-      )
-    );
-  const activeUsers = Number(activeUsersResult?.count || 0);
-  
-  // Inactive users (BLOCKED only, as INACTIVE may not exist in enum)
-  const [inactiveUsersResult] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(customers)
-    .where(
-      and(
-        ...baseConditions,
-        eq(customers.accountStatus, "BLOCKED" as any)
-      )
-    );
-  const inactiveUsers = Number(inactiveUsersResult?.count || 0);
-  
-  // Suspended users
-  const [suspendedUsersResult] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(customers)
-    .where(
-      and(
-        ...baseConditions,
-        eq(customers.accountStatus, "SUSPENDED" as any)
-      )
-    );
-  const suspendedUsers = Number(suspendedUsersResult?.count || 0);
-  
-  // Fraud users (HIGH or CRITICAL risk)
-  const [fraudUsersResult] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(customers)
-    .where(
-      and(
-        ...baseConditions,
-        or(
-          eq(customers.riskFlag, "HIGH" as any),
-          eq(customers.riskFlag, "CRITICAL" as any)
-        )!
-      )
-    );
-  const fraudUsers = Number(fraudUsersResult?.count || 0);
+  const sql = getSql();
 
-  const deletionRequestsPending = await countPendingAccountDeletionRequests();
-  
-  // Service-wise stats
-  const serviceStats: ServiceStats[] = [];
-  
-  // All service stats
-  const allServiceStats = await db
-    .select({
-      orderType: ordersCore.orderType,
-      totalOrders: sql<number>`count(*)::int`,
-      totalRevenue: sql<number>`coalesce(sum(${ordersCore.fareAmount}), 0)`,
-    })
-    .from(ordersCore)
-    .where(sql`${ordersCore.customerId} IS NOT NULL`)
-    .groupBy(ordersCore.orderType);
-  
-  const serviceStatsMap = new Map<string, ServiceStats>();
-  
-  // Get unique customers per service
-  for (const orderType of ["food", "parcel", "person_ride"] as const) {
-    const customersWithOrders = await db
-      .selectDistinct({ customerId: ordersCore.customerId })
-      .from(ordersCore)
-      .where(
-        and(
-          sql`${ordersCore.customerId} IS NOT NULL`,
-          eq(ordersCore.orderType, orderType)
-        )
-      );
-    
-    const customerIds = customersWithOrders
-      .map((c) => Number(c.customerId))
-      .filter((id) => !isNaN(id));
-    
-    let totalUsers = 0;
-    if (customerIds.length > 0) {
-      const conditions = [
-        ...baseConditions,
-        inArray(customers.id, customerIds)
-      ];
-      const [result] = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(customers)
-        .where(and(...conditions));
-      totalUsers = Number(result?.count || 0);
-    }
-    
-    const stats = allServiceStats.find((s) => s.orderType === orderType);
-    serviceStatsMap.set(orderType, {
-      orderType,
-      totalUsers,
-      totalOrders: Number(stats?.totalOrders || 0),
-      totalRevenue: Number(stats?.totalRevenue || 0),
-    });
-  }
-  
-  // Add "all" service stats
-  serviceStats.push({
-    orderType: "all",
-    totalUsers: allUsers,
-    totalOrders: allServiceStats.reduce((sum, s) => sum + Number(s.totalOrders || 0), 0),
-    totalRevenue: allServiceStats.reduce((sum, s) => sum + Number(s.totalRevenue || 0), 0),
-  });
-  
-  // Add individual service stats
-  serviceStats.push(...Array.from(serviceStatsMap.values()));
-  
-  // Growth trends (last 12 months)
-  const growthTrend: Array<{ month: string; newUsers: number; totalUsers: number }> = [];
-  const now = new Date();
-  
-  for (let i = 11; i >= 0; i--) {
-    const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
-    const monthKey = `${monthStart.getFullYear()}-${String(monthStart.getMonth() + 1).padStart(2, "0")}`;
-    
-    // New users in this month
-    const [newUsersMonthResult] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(customers)
-      .where(
-        and(
-          ...baseConditions.filter((c) => !c.toString().includes("createdAt")),
-          gte(customers.createdAt, monthStart),
-          lte(customers.createdAt, monthEnd)
-        )
-      );
-    const newUsersMonth = Number(newUsersMonthResult?.count || 0);
-    
-    // Total users up to this month
-    const [totalUsersMonthResult] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(customers)
-      .where(
-        and(
-          ...baseConditions.filter((c) => !c.toString().includes("createdAt")),
-          lte(customers.createdAt, monthEnd)
-        )
-      );
-    const totalUsersMonth = Number(totalUsersMonthResult?.count || 0);
-    
-    growthTrend.push({
-      month: monthKey,
-      newUsers: newUsersMonth,
-      totalUsers: totalUsersMonth,
-    });
-  }
-  
-  // User-order relationship
-  const userOrderRelationship: Array<{ orderCountRange: string; userCount: number }> = [];
-  
-  const orderCounts = await db
-    .select({
-      customerId: ordersCore.customerId,
-      orderCount: sql<number>`count(*)::int`,
-    })
-    .from(ordersCore)
-    .where(sql`${ordersCore.customerId} IS NOT NULL`)
-    .groupBy(ordersCore.customerId);
-  
-  const ranges = [
-    { label: "0 orders", min: 0, max: 0 },
-    { label: "1 order", min: 1, max: 1 },
-    { label: "2-5 orders", min: 2, max: 5 },
-    { label: "6-10 orders", min: 6, max: 10 },
-    { label: "11-20 orders", min: 11, max: 20 },
-    { label: "21+ orders", min: 21, max: Infinity },
-  ];
-  
-  // Get all customer IDs that have orders
-  const allCustomerIdsWithOrders = orderCounts
-    .map((oc) => Number(oc.customerId))
-    .filter((id) => !isNaN(id));
-  
-  // Calculate users with 0 orders first
-  let zeroOrderUsers = 0;
-  if (allCustomerIdsWithOrders.length > 0) {
-    // Get total users and subtract users with orders
-    const [totalUsersResult] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(customers)
-      .where(whereClause);
-    const totalUsersCount = Number(totalUsersResult?.count || 0);
-    
-    const [usersWithOrdersResult] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(customers)
-      .where(
-        and(
-          ...baseConditions,
-          inArray(customers.id, allCustomerIdsWithOrders)
-        )
-      );
-    const usersWithOrdersCount = Number(usersWithOrdersResult?.count || 0);
-    
-    zeroOrderUsers = totalUsersCount - usersWithOrdersCount;
-  } else {
-    // If no orders exist, all users have 0 orders
-    zeroOrderUsers = allUsers;
-  }
-  
-  // Process each range
-  for (const range of ranges) {
-    let userCount = 0;
-    
-    if (range.min === 0 && range.max === 0) {
-      // Users with 0 orders
-      userCount = zeroOrderUsers;
-    } else {
-      // Users with orders in this range
-      const customerIdsInRange = orderCounts
-        .filter((oc) => {
-          const count = Number(oc.orderCount);
-          return count >= range.min && count <= range.max;
-        })
-        .map((oc) => Number(oc.customerId))
-        .filter((id) => !isNaN(id));
-      
-      if (customerIdsInRange.length > 0) {
-        const conditions = [
-          ...baseConditions,
-          inArray(customers.id, customerIdsInRange)
-        ];
-        const [result] = await db
-          .select({ count: sql<number>`count(*)::int` })
-          .from(customers)
-          .where(and(...conditions));
-        userCount = Number(result?.count || 0);
-      }
-    }
-    
-    userOrderRelationship.push({
-      orderCountRange: range.label,
-      userCount,
-    });
-  }
-  
-  // Revenue trends (last 12 months)
-  const revenueTrend: Array<{
-    month: string;
-    foodRevenue: number;
-    parcelRevenue: number;
-    personRevenue: number;
-    totalRevenue: number;
-  }> = [];
-  
-  for (let i = 11; i >= 0; i--) {
-    const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
-    const monthKey = `${monthStart.getFullYear()}-${String(monthStart.getMonth() + 1).padStart(2, "0")}`;
-    
-    const monthlyRevenue = await db
-      .select({
-        orderType: ordersCore.orderType,
-        revenue: sql<number>`coalesce(sum(${ordersCore.fareAmount}), 0)`,
-      })
-      .from(ordersCore)
-      .where(
-        and(
-          sql`${ordersCore.customerId} IS NOT NULL`,
-          gte(ordersCore.createdAt, monthStart),
-          lte(ordersCore.createdAt, monthEnd)
-        )
+  const dateFrom = filters.dateFrom ? new Date(filters.dateFrom) : null;
+  const dateTo = filters.dateTo
+    ? (() => {
+        const d = new Date(filters.dateTo!);
+        d.setHours(23, 59, 59, 999);
+        return d;
+      })()
+    : null;
+  const accountStatus = filters.accountStatus?.trim() || null;
+  const riskFlag = filters.riskFlag?.trim() || null;
+
+  // Bind every optional filter as a real parameter (NULL = ignore).
+  // Avoids nesting empty sql`` helpers which produced "syntax error at or near $1".
+  const [
+    cardRow,
+    serviceRows,
+    growthRows,
+    orderBucketRows,
+    revenueRows,
+    deletionRequestsPending,
+  ] = await Promise.all([
+    sql`
+      SELECT
+        COUNT(*)::int AS all_users,
+        COUNT(*) FILTER (
+          WHERE c.created_at >= (NOW() - INTERVAL '30 days')
+        )::int AS new_users,
+        COUNT(*) FILTER (
+          WHERE c.account_status = 'ACTIVE'
+        )::int AS active_users,
+        COUNT(*) FILTER (
+          WHERE c.account_status = 'BLOCKED'
+        )::int AS inactive_users,
+        COUNT(*) FILTER (
+          WHERE c.account_status = 'SUSPENDED'
+        )::int AS suspended_users,
+        COUNT(*) FILTER (
+          WHERE c.risk_flag IN ('HIGH', 'CRITICAL')
+        )::int AS fraud_users,
+        COUNT(*) FILTER (
+          WHERE EXISTS (
+            SELECT 1 FROM public.orders_core o
+            WHERE o.customer_id = c.id AND o.order_type = 'food'
+          )
+        )::int AS food_users,
+        COUNT(*) FILTER (
+          WHERE EXISTS (
+            SELECT 1 FROM public.orders_core o
+            WHERE o.customer_id = c.id AND o.order_type = 'parcel'
+          )
+        )::int AS parcel_users,
+        COUNT(*) FILTER (
+          WHERE EXISTS (
+            SELECT 1 FROM public.orders_core o
+            WHERE o.customer_id = c.id AND o.order_type = 'person_ride'
+          )
+        )::int AS person_users,
+        COUNT(*) FILTER (
+          WHERE (
+            SELECT COUNT(*) FROM public.orders_core o WHERE o.customer_id = c.id
+          ) >= 2
+        )::int AS repeated_users
+      FROM public.customers c
+      WHERE c.deleted_at IS NULL
+        AND (${dateFrom}::timestamptz IS NULL OR c.created_at >= ${dateFrom})
+        AND (${dateTo}::timestamptz IS NULL OR c.created_at <= ${dateTo})
+        AND (${accountStatus}::text IS NULL OR c.account_status::text = ${accountStatus})
+        AND (${riskFlag}::text IS NULL OR c.risk_flag::text = ${riskFlag})
+    `,
+    sql`
+      SELECT
+        o.order_type::text AS order_type,
+        COUNT(DISTINCT o.customer_id)::int AS total_users,
+        COUNT(*)::int AS total_orders,
+        COALESCE(SUM(o.fare_amount), 0)::float8 AS total_revenue
+      FROM public.orders_core o
+      INNER JOIN public.customers c ON c.id = o.customer_id
+      WHERE c.deleted_at IS NULL
+        AND o.customer_id IS NOT NULL
+        AND (${dateFrom}::timestamptz IS NULL OR c.created_at >= ${dateFrom})
+        AND (${dateTo}::timestamptz IS NULL OR c.created_at <= ${dateTo})
+        AND (${accountStatus}::text IS NULL OR c.account_status::text = ${accountStatus})
+        AND (${riskFlag}::text IS NULL OR c.risk_flag::text = ${riskFlag})
+      GROUP BY o.order_type
+    `,
+    sql`
+      WITH months AS (
+        SELECT date_trunc('month', d)::date AS month_start
+        FROM generate_series(
+          date_trunc('month', NOW()) - INTERVAL '11 months',
+          date_trunc('month', NOW()),
+          INTERVAL '1 month'
+        ) AS d
+      ),
+      monthly_new AS (
+        SELECT
+          date_trunc('month', c.created_at)::date AS month_start,
+          COUNT(*)::int AS new_users
+        FROM public.customers c
+        WHERE c.deleted_at IS NULL
+          AND (${accountStatus}::text IS NULL OR c.account_status::text = ${accountStatus})
+          AND (${riskFlag}::text IS NULL OR c.risk_flag::text = ${riskFlag})
+          AND c.created_at >= date_trunc('month', NOW()) - INTERVAL '11 months'
+        GROUP BY 1
+      ),
+      cumulative AS (
+        SELECT
+          m.month_start,
+          (
+            SELECT COUNT(*)::int
+            FROM public.customers c
+            WHERE c.deleted_at IS NULL
+              AND (${accountStatus}::text IS NULL OR c.account_status::text = ${accountStatus})
+              AND (${riskFlag}::text IS NULL OR c.risk_flag::text = ${riskFlag})
+              AND c.created_at < (m.month_start + INTERVAL '1 month')
+          ) AS total_users
+        FROM months m
       )
-      .groupBy(ordersCore.orderType);
-    
-    const foodRevenue = Number(
-      monthlyRevenue.find((r) => r.orderType === "food")?.revenue || 0
-    );
-    const parcelRevenue = Number(
-      monthlyRevenue.find((r) => r.orderType === "parcel")?.revenue || 0
-    );
-    const personRevenue = Number(
-      monthlyRevenue.find((r) => r.orderType === "person_ride")?.revenue || 0
-    );
-    const totalRevenue = foodRevenue + parcelRevenue + personRevenue;
-    
-    revenueTrend.push({
-      month: monthKey,
-      foodRevenue,
-      parcelRevenue,
-      personRevenue,
-      totalRevenue,
+      SELECT
+        to_char(m.month_start, 'YYYY-MM') AS month,
+        COALESCE(n.new_users, 0)::int AS new_users,
+        COALESCE(cu.total_users, 0)::int AS total_users
+      FROM months m
+      LEFT JOIN monthly_new n ON n.month_start = m.month_start
+      LEFT JOIN cumulative cu ON cu.month_start = m.month_start
+      ORDER BY m.month_start
+    `,
+    sql`
+      WITH order_counts AS (
+        SELECT o.customer_id, COUNT(*)::int AS order_count
+        FROM public.orders_core o
+        INNER JOIN public.customers c ON c.id = o.customer_id
+        WHERE c.deleted_at IS NULL
+          AND o.customer_id IS NOT NULL
+          AND (${dateFrom}::timestamptz IS NULL OR c.created_at >= ${dateFrom})
+          AND (${dateTo}::timestamptz IS NULL OR c.created_at <= ${dateTo})
+          AND (${accountStatus}::text IS NULL OR c.account_status::text = ${accountStatus})
+          AND (${riskFlag}::text IS NULL OR c.risk_flag::text = ${riskFlag})
+        GROUP BY o.customer_id
+      ),
+      totals AS (
+        SELECT COUNT(*)::int AS all_users
+        FROM public.customers c
+        WHERE c.deleted_at IS NULL
+          AND (${dateFrom}::timestamptz IS NULL OR c.created_at >= ${dateFrom})
+          AND (${dateTo}::timestamptz IS NULL OR c.created_at <= ${dateTo})
+          AND (${accountStatus}::text IS NULL OR c.account_status::text = ${accountStatus})
+          AND (${riskFlag}::text IS NULL OR c.risk_flag::text = ${riskFlag})
+      )
+      SELECT
+        GREATEST(
+          0,
+          (SELECT all_users FROM totals) - (SELECT COUNT(*)::int FROM order_counts)
+        ) AS zero_orders,
+        COUNT(*) FILTER (WHERE order_count = 1)::int AS one_order,
+        COUNT(*) FILTER (WHERE order_count BETWEEN 2 AND 5)::int AS two_to_five,
+        COUNT(*) FILTER (WHERE order_count BETWEEN 6 AND 10)::int AS six_to_ten,
+        COUNT(*) FILTER (WHERE order_count BETWEEN 11 AND 20)::int AS eleven_to_twenty,
+        COUNT(*) FILTER (WHERE order_count >= 21)::int AS twenty_one_plus
+      FROM order_counts
+    `,
+    sql`
+      SELECT
+        to_char(date_trunc('month', o.created_at), 'YYYY-MM') AS month,
+        COALESCE(SUM(o.fare_amount) FILTER (WHERE o.order_type = 'food'), 0)::float8 AS food_revenue,
+        COALESCE(SUM(o.fare_amount) FILTER (WHERE o.order_type = 'parcel'), 0)::float8 AS parcel_revenue,
+        COALESCE(SUM(o.fare_amount) FILTER (WHERE o.order_type = 'person_ride'), 0)::float8 AS person_revenue
+      FROM public.orders_core o
+      INNER JOIN public.customers c ON c.id = o.customer_id
+      WHERE c.deleted_at IS NULL
+        AND o.customer_id IS NOT NULL
+        AND o.created_at >= date_trunc('month', NOW()) - INTERVAL '11 months'
+        AND (${dateFrom}::timestamptz IS NULL OR c.created_at >= ${dateFrom})
+        AND (${dateTo}::timestamptz IS NULL OR c.created_at <= ${dateTo})
+        AND (${accountStatus}::text IS NULL OR c.account_status::text = ${accountStatus})
+        AND (${riskFlag}::text IS NULL OR c.risk_flag::text = ${riskFlag})
+      GROUP BY 1
+      ORDER BY 1
+    `,
+    countPendingAccountDeletionRequests(),
+  ]);
+
+  const cards = (Array.isArray(cardRow) ? cardRow[0] : null) as Record<string, unknown> | null;
+  const allUsers = n(cards?.all_users);
+  const newUsers = n(cards?.new_users);
+  const foodUsers = n(cards?.food_users);
+  const parcelUsers = n(cards?.parcel_users);
+  const personUsers = n(cards?.person_users);
+  const repeatedUsers = n(cards?.repeated_users);
+  const activeUsers = n(cards?.active_users);
+  const inactiveUsers = n(cards?.inactive_users);
+  const suspendedUsers = n(cards?.suspended_users);
+  const fraudUsers = n(cards?.fraud_users);
+
+  const serviceMap = new Map<string, ServiceStats>();
+  for (const row of Array.isArray(serviceRows) ? serviceRows : []) {
+    const r = row as Record<string, unknown>;
+    const orderType = String(r.order_type ?? "");
+    if (orderType !== "food" && orderType !== "parcel" && orderType !== "person_ride") continue;
+    serviceMap.set(orderType, {
+      orderType,
+      totalUsers: n(r.total_users),
+      totalOrders: n(r.total_orders),
+      totalRevenue: n(r.total_revenue),
     });
   }
-  
+  for (const orderType of ["food", "parcel", "person_ride"] as const) {
+    if (!serviceMap.has(orderType)) {
+      serviceMap.set(orderType, {
+        orderType,
+        totalUsers:
+          orderType === "food" ? foodUsers : orderType === "parcel" ? parcelUsers : personUsers,
+        totalOrders: 0,
+        totalRevenue: 0,
+      });
+    }
+  }
+
+  const serviceStats: ServiceStats[] = [
+    {
+      orderType: "all",
+      totalUsers: allUsers,
+      totalOrders: [...serviceMap.values()].reduce((s, x) => s + x.totalOrders, 0),
+      totalRevenue: [...serviceMap.values()].reduce((s, x) => s + x.totalRevenue, 0),
+    },
+    ...(["food", "parcel", "person_ride"] as const).map((t) => serviceMap.get(t)!),
+  ];
+
+  const growthTrend = (Array.isArray(growthRows) ? growthRows : []).map((row) => {
+    const r = row as Record<string, unknown>;
+    return {
+      month: String(r.month ?? ""),
+      newUsers: n(r.new_users),
+      totalUsers: n(r.total_users),
+    };
+  });
+
+  const buckets = (Array.isArray(orderBucketRows) ? orderBucketRows[0] : null) as
+    | Record<string, unknown>
+    | null;
+  const userOrderRelationship = [
+    { orderCountRange: "0 orders", userCount: n(buckets?.zero_orders) },
+    { orderCountRange: "1 order", userCount: n(buckets?.one_order) },
+    { orderCountRange: "2-5 orders", userCount: n(buckets?.two_to_five) },
+    { orderCountRange: "6-10 orders", userCount: n(buckets?.six_to_ten) },
+    { orderCountRange: "11-20 orders", userCount: n(buckets?.eleven_to_twenty) },
+    { orderCountRange: "21+ orders", userCount: n(buckets?.twenty_one_plus) },
+  ];
+
+  const revenueByMonth = new Map<
+    string,
+    { foodRevenue: number; parcelRevenue: number; personRevenue: number }
+  >();
+  for (const row of Array.isArray(revenueRows) ? revenueRows : []) {
+    const r = row as Record<string, unknown>;
+    revenueByMonth.set(String(r.month ?? ""), {
+      foodRevenue: n(r.food_revenue),
+      parcelRevenue: n(r.parcel_revenue),
+      personRevenue: n(r.person_revenue),
+    });
+  }
+  const revenueTrend = growthTrend.map(({ month }) => {
+    const rev = revenueByMonth.get(month) ?? {
+      foodRevenue: 0,
+      parcelRevenue: 0,
+      personRevenue: 0,
+    };
+    return {
+      month,
+      ...rev,
+      totalRevenue: rev.foodRevenue + rev.parcelRevenue + rev.personRevenue,
+    };
+  });
+
   return {
     allUsers,
     foodUsers,
     parcelUsers,
     personUsers,
     newUsers,
-    oldUsers,
+    oldUsers: Math.max(0, allUsers - newUsers),
     repeatedUsers,
     activeUsers,
     inactiveUsers,

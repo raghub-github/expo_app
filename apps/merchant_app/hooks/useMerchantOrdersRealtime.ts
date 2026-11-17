@@ -4,7 +4,7 @@ import { getSupabaseAuth } from "@/lib/supabaseClient";
 import { fetchRealtimeAuthToken } from "@/services/ordersApi";
 
 /** Full-list refetch only when we cannot map a row — keep this slow to avoid HTTP stampedes. */
-const DEBOUNCE_MS = 900;
+const DEBOUNCE_MS = 2_500;
 
 function channelNameOf(topic: string): string {
   return topic.startsWith("realtime:") ? topic.slice("realtime:".length) : topic;

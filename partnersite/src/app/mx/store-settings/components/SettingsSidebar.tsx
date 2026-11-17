@@ -1,8 +1,10 @@
 'use client'
 
-import React from 'react'
-import { Crown, Clock, Power, ChefHat, Package, Smartphone, Bell, Activity, Store } from 'lucide-react'
+import React, { useMemo } from 'react'
+import { Crown, Clock, Power, ChefHat, Package, Smartphone, Bell, Activity, Store, Users } from 'lucide-react'
 import { MerchantAppAssetImage, MX_ASSET } from '@/components/MerchantAppAssetImage'
+import { useMerchantSession } from '@/context/MerchantSessionContext'
+import { partnerSessionHasPermission } from '@/lib/auth/merchant-staff-permissions'
 
 interface SettingsSidebarProps {
   activeTab: string
@@ -16,17 +18,24 @@ const SETTINGS_NAV_ITEM =
 
 /** Matches {@link MXSidebarWhite} partnerShell nav spacing. */
 export function SettingsSidebar({ activeTab, onTabChange, collapsed = false }: SettingsSidebarProps) {
-  const tabs = [
-    { id: 'plans', label: 'Plans & Subscription', icon: Crown },
-    { id: 'timings', label: 'Outlet Timings', icon: Clock },
-    { id: 'operations', label: 'Store Operations', icon: Power },
-    { id: 'menu-capacity', label: 'Menu & Capacity', icon: ChefHat },
-    { id: 'delivery', label: 'Delivery & Riders', icon: Package },
-    { id: 'pos', label: 'POS Integration', icon: Smartphone },
-    { id: 'notifications', label: 'Notifications', icon: Bell },
-    { id: 'audit', label: 'Audit & Activity', icon: Activity },
-    { id: 'gatimitra', label: 'Store on Gatimitra', icon: Store },
-  ]
+  const merchantSession = useMerchantSession()
+  const canManageUsers = partnerSessionHasPermission(merchantSession?.parent, 'users')
+
+  const tabs = useMemo(() => {
+    const all = [
+      { id: 'plans', label: 'Plans & Subscription', icon: Crown },
+      { id: 'timings', label: 'Outlet Timings', icon: Clock },
+      { id: 'operations', label: 'Store Operations', icon: Power },
+      { id: 'menu-capacity', label: 'Menu & Capacity', icon: ChefHat },
+      { id: 'delivery', label: 'Delivery & Riders', icon: Package },
+      { id: 'pos', label: 'POS Integration', icon: Smartphone },
+      { id: 'notifications', label: 'Notifications', icon: Bell },
+      { id: 'staff', label: 'Staff & Access', icon: Users, requireUsers: true as const },
+      { id: 'audit', label: 'Audit & Activity', icon: Activity },
+      { id: 'gatimitra', label: 'Store on Gatimitra', icon: Store },
+    ]
+    return all.filter((t) => !('requireUsers' in t && t.requireUsers) || canManageUsers)
+  }, [canManageUsers])
 
   return (
     <nav

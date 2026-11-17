@@ -59,6 +59,8 @@ export type BillingCalculateParamsInput = BillingCalculateKeyParams & {
   /** Subscription upsell is only offered on some carts — gates all subscription fields. */
   showSubscriptionPromo: boolean;
   cityName?: string | null;
+  pincode?: string | null;
+  stateName?: string | null;
   pickupLat?: number;
   pickupLon?: number;
 };
@@ -91,6 +93,12 @@ export function buildBillingCalculateParams(p: BillingCalculateParamsInput): Cal
       p.showSubscriptionPromo && p.subscriptionOptIn ? p.subscriptionBillingCycle : undefined,
     deliveryType: p.deliveryType,
     ...(p.cityName != null && String(p.cityName).trim() !== "" ? { cityName: String(p.cityName).trim() } : {}),
+    ...(p.pincode != null && String(p.pincode).trim() !== ""
+      ? { pincode: String(p.pincode).trim() }
+      : {}),
+    ...(p.stateName != null && String(p.stateName).trim() !== ""
+      ? { stateName: String(p.stateName).trim() }
+      : {}),
     ...(p.pickupLat != null && p.pickupLon != null
       ? { pickupLat: p.pickupLat, pickupLon: p.pickupLon }
       : {}),

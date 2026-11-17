@@ -6,18 +6,38 @@ import { enqueueImagePrefetchFront, prefetchImagesNow } from "@/lib/prefetchQueu
 /**
  * CMS images required for a complete first Home paint (services + hero + brand).
  * Do not defer these — missing art after splash looks like a broken Home.
+ * Order: brand footer → promo hero banners (above-the-fold) → service tiles.
  */
 export const HOME_CRITICAL_ASSET_KEYS = [
+  CX.home.brandBanner,
+  CX.home.promoOffer,
+  CX.home.promoOffer2,
   CX.home.serviceFood,
   CX.home.serviceRide,
   CX.home.serviceParcel,
   CX.home.serviceEcommerce,
   CX.home.serviceVoucher,
   CX.home.serviceLocation,
-  CX.home.brandBanner,
-  CX.home.promoOffer,
-  CX.home.promoOffer2,
+  // Far-away store sheet hero — must be warm before merchant open.
+  CX.store.longDistanceSheet,
 ] as const;
+
+/** Footer brand scooter only — call before the rest of the critical set. */
+export function collectBrandBannerAssetUris(
+  assets: Record<string, AppAssetItem>
+): string[] {
+  const uris: string[] = [];
+  collectUrisForAsset(assets[CX.home.brandBanner], uris);
+  return uris;
+}
+
+export function prefetchBrandBannerImageSync(
+  assets: Record<string, AppAssetItem>
+): void {
+  const uris = collectBrandBannerAssetUris(assets);
+  if (uris.length === 0) return;
+  enqueueImagePrefetchFront(uris, uris.length);
+}
 
 /** Reserved for truly secondary art (none currently — keep API stable). */
 export const HOME_DEFERRED_ASSET_KEYS = [] as const;

@@ -24,6 +24,7 @@ import {
   AlertCircle,
   CheckCircle2,
   MapPin,
+  Pencil,
 } from "lucide-react";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { toast } from "sonner";
@@ -44,12 +45,56 @@ type Campaign = {
   delivered_count: number;
   clicked_count: number;
   failed_count: number;
+  override_title?: string | null;
+  override_body?: string | null;
+  variables?: Record<string, unknown> | null;
   scheduled_at: string | null;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
   created_by: string | null;
 };
+
+/** Resolve the push title/body from overrides, template variables, or a dispatch log. */
+function resolveCampaignMessage(c: {
+  name?: string | null;
+  override_title?: string | null;
+  override_body?: string | null;
+  variables?: Record<string, unknown> | null;
+  dispatch_logs?: Array<{ title?: string | null; body?: string | null }>;
+}): { title: string; body: string } {
+  const vars =
+    c.variables && typeof c.variables === "object" && !Array.isArray(c.variables)
+      ? c.variables
+      : {};
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : "");
+  const log = Array.isArray(c.dispatch_logs)
+    ? c.dispatch_logs.find((r) => str(r.title) || str(r.body))
+    : undefined;
+  const title =
+    str(c.override_title) ||
+    str(vars.title) ||
+    str(vars.Title) ||
+    str(log?.title) ||
+    str(c.name) ||
+    "—";
+  const body =
+    str(c.override_body) ||
+    str(vars.body) ||
+    str(vars.message) ||
+    str(vars.Message) ||
+    str(log?.body) ||
+    "";
+  return { title, body };
+}
+
+function campaignWhenTs(c: Campaign): string {
+  return c.started_at || c.scheduled_at || c.created_at;
+}
+
+function canEditCampaign(status: string): boolean {
+  return status === "scheduled" || status === "draft";
+}
 
 type Template = {
   code: string;
@@ -120,6 +165,7 @@ export default function CampaignsPage() {
   );
   const [creating, setCreating] = useState(false);
   const [detail, setDetail] = useState<Campaign | null>(null);
+  const [editTarget, setEditTarget] = useState<Campaign | null>(null);
   const [cancelTarget, setCancelTarget] = useState<Campaign | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [resendBusyId, setResendBusyId] = useState<number | null>(null);
@@ -266,6 +312,17 @@ export default function CampaignsPage() {
 
   const items = data?.items ?? [];
 
+  // Deep-link from Scheduled page: /campaigns?edit=<id>
+  useEffect(() => {
+    if (typeof window === "undefined" || !items.length) return;
+    const editId = Number(new URLSearchParams(window.location.search).get("edit") ?? "");
+    if (!Number.isInteger(editId) || editId < 1) return;
+    const match = items.find((c) => c.id === editId);
+    if (!match || !canEditCampaign(match.status)) return;
+    setEditTarget(match);
+    window.history.replaceState({}, "", "/dashboard/super-admin/notifications/campaigns");
+  }, [items]);
+
   const totals = useMemo(() => {
     return items.reduce(
       (acc, c) => {
@@ -335,6 +392,7 @@ export default function CampaignsPage() {
               ) : (
                 items.map((c) => {
                   const s = STATUS_STYLES[c.status] ?? { label: c.status, classes: "bg-slate-100 text-slate-700 border-slate-200" };
+                  const msg = resolveCampaignMessage(c);
                   return (
                     <tr
                       key={c.id}
@@ -343,7 +401,9 @@ export default function CampaignsPage() {
                     >
                       <td className="px-3 py-3 sm:px-4">
                         <div className="font-medium text-slate-900">{c.name}</div>
-                        {c.description ? (
+                        {msg.body ? (
+                          <div className="mt-0.5 text-xs text-slate-500 line-clamp-2">{msg.body}</div>
+                        ) : c.description ? (
                           <div className="text-xs text-slate-500 line-clamp-1">{c.description}</div>
                         ) : null}
                       </td>
@@ -358,9 +418,7 @@ export default function CampaignsPage() {
                       <td className="hidden px-2 py-3 text-right tabular-nums text-amber-700 2xl:table-cell">{campaignCount(c.clicked_count).toLocaleString()}</td>
                       <td className="hidden px-2 py-3 text-right tabular-nums text-rose-600 2xl:table-cell">{campaignCount(c.failed_count).toLocaleString()}</td>
                       <td className="px-3 py-3 text-[11px] leading-4 text-slate-500">
-                        {c.scheduled_at
-                          ? new Date(c.scheduled_at).toLocaleString()
-                          : new Date(c.created_at).toLocaleString()}
+                        {new Date(campaignWhenTs(c)).toLocaleString()}
                       </td>
                       <td className="px-3 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
@@ -373,6 +431,17 @@ export default function CampaignsPage() {
                           >
                             <Eye className="h-3.5 w-3.5" aria-hidden />
                           </button>
+                          {canEditCampaign(c.status) ? (
+                            <button
+                              type="button"
+                              onClick={() => setEditTarget(c)}
+                              title="Edit scheduled campaign"
+                              aria-label="Edit scheduled campaign"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50"
+                            >
+                              <Pencil className="h-3.5 w-3.5" aria-hidden />
+                            </button>
+                          ) : null}
                           {c.status !== "scheduled" && c.status !== "running" ? (
                             <button
                               type="button"
@@ -389,7 +458,7 @@ export default function CampaignsPage() {
                                 aria-hidden
                               />
                             </button>
-                          ) : (
+                          ) : c.status === "scheduled" || c.status === "running" ? (
                             <button
                               type="button"
                               onClick={() => setCancelTarget(c)}
@@ -399,7 +468,7 @@ export default function CampaignsPage() {
                             >
                               <CircleX className="h-3.5 w-3.5" aria-hidden />
                             </button>
-                          )}
+                          ) : null}
                           <button
                             type="button"
                             onClick={() => setRevokeTarget(c)}
@@ -442,6 +511,17 @@ export default function CampaignsPage() {
           onSaved={() => { mutate(); }}
         />
       ) : null}
+      {editTarget ? (
+        <EditScheduledCampaign
+          campaign={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSaved={() => {
+            setEditTarget(null);
+            if (detail?.id === editTarget.id) setDetail(null);
+            mutate();
+          }}
+        />
+      ) : null}
       {detail ? (
         <CampaignDetail
           campaign={detail}
@@ -449,6 +529,10 @@ export default function CampaignsPage() {
           onRequestCancel={() => setCancelTarget(detail)}
           onRequestDelete={() => setDeleteTarget(detail)}
           onRequestRevoke={() => setRevokeTarget(detail)}
+          onRequestEdit={() => {
+            setDetail(null);
+            setEditTarget(detail);
+          }}
           onResend={() => {
             void runResend(detail);
           }}
@@ -534,6 +618,7 @@ function CampaignDetail({
   onRequestCancel,
   onRequestDelete,
   onRequestRevoke,
+  onRequestEdit,
   onResend,
   resendBusy,
 }: {
@@ -542,6 +627,7 @@ function CampaignDetail({
   onRequestCancel: () => void;
   onRequestDelete: () => void;
   onRequestRevoke: () => void;
+  onRequestEdit: () => void;
   onResend: () => void;
   resendBusy: boolean;
 }) {
@@ -556,16 +642,42 @@ function CampaignDetail({
     queued_at: string;
     delivered_at: string | null;
     clicked_at: string | null;
+    title?: string | null;
+    body?: string | null;
   };
+  type LogFilter = "all" | "sent" | "delivered" | "clicked" | "failed";
+  const [logFilter, setLogFilter] = useState<LogFilter>("all");
+
   const { data: meta, isLoading: metaLoading, error: metaError } = useSWR<{
     target_filter?: Record<string, unknown>;
     recipient_estimate?: number;
     token_stats?: { expo_tokens?: number; merchant_store_tokens?: number };
     dispatch_logs?: DispatchLogRow[];
+    override_title?: string | null;
+    override_body?: string | null;
+    variables?: Record<string, unknown> | null;
   }>(`/api/super-admin/notifications/campaigns/${campaign.id}`, fetcher, {
     refreshInterval: campaign.status === "running" ? 4_000 : 0,
   });
   const items = Array.isArray(meta?.dispatch_logs) ? meta.dispatch_logs : [];
+  const filteredItems = useMemo(() => {
+    if (logFilter === "all") return items;
+    return items.filter((r) => {
+      const st = String(r.status ?? "").toLowerCase();
+      if (logFilter === "sent") return st === "sent" || st === "delivered" || st === "clicked";
+      if (logFilter === "delivered") return st === "delivered" || st === "clicked";
+      if (logFilter === "clicked") return st === "clicked";
+      if (logFilter === "failed") return st === "failed";
+      return true;
+    });
+  }, [items, logFilter]);
+  const message = resolveCampaignMessage({
+    name: campaign.name,
+    override_title: meta?.override_title ?? campaign.override_title,
+    override_body: meta?.override_body ?? campaign.override_body,
+    variables: meta?.variables ?? campaign.variables,
+    dispatch_logs: items,
+  });
   const s = STATUS_STYLES[campaign.status] ?? { label: campaign.status, classes: "bg-slate-100 text-slate-700 border-slate-200" };
   const sent = campaignCount(campaign.sent_count);
   const delivered = campaignCount(campaign.delivered_count);
@@ -579,6 +691,10 @@ function CampaignDetail({
     campaignCount(meta?.token_stats?.expo_tokens) +
       campaignCount(meta?.token_stats?.merchant_store_tokens) ===
     0;
+
+  const toggleLogFilter = (next: LogFilter) => {
+    setLogFilter((prev) => (prev === next ? "all" : next));
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex bg-slate-900/40 backdrop-blur-sm">
@@ -602,13 +718,66 @@ function CampaignDetail({
         </div>
 
         <div className="flex-1 space-y-5 overflow-y-auto p-6">
-          {/* KPIs */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <MiniKpi label="Sent" value={sent} accent="text-slate-900" />
-            <MiniKpi label="Delivered" value={delivered} accent="text-teal-700" sub={sent > 0 ? `${deliveredRate}% of sent` : undefined} />
-            <MiniKpi label="Clicked" value={clicked} accent="text-amber-700" sub={delivered > 0 ? `${clickRate}% CTR` : undefined} />
-            <MiniKpi label="Failed" value={failed} accent="text-rose-600" />
+          {/* Message copy */}
+          <div className="rounded-lg border border-teal-100 bg-teal-50/60 px-4 py-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-teal-800">Message</div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">{message.title}</div>
+            {message.body ? (
+              <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{message.body}</p>
+            ) : (
+              <p className="mt-1 text-xs text-slate-500">No body text stored for this campaign.</p>
+            )}
           </div>
+
+          {/* KPIs — click to filter the per-recipient log */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <MiniKpi
+              label="Sent"
+              value={sent}
+              accent="text-slate-900"
+              active={logFilter === "sent"}
+              onClick={() => toggleLogFilter("sent")}
+            />
+            <MiniKpi
+              label="Delivered"
+              value={delivered}
+              accent="text-teal-700"
+              sub={sent > 0 ? `${deliveredRate}% of sent` : undefined}
+              active={logFilter === "delivered"}
+              onClick={() => toggleLogFilter("delivered")}
+            />
+            <MiniKpi
+              label="Clicked"
+              value={clicked}
+              accent="text-amber-700"
+              sub={delivered > 0 ? `${clickRate}% CTR` : undefined}
+              active={logFilter === "clicked"}
+              onClick={() => toggleLogFilter("clicked")}
+            />
+            <MiniKpi
+              label="Failed"
+              value={failed}
+              accent="text-rose-600"
+              active={logFilter === "failed"}
+              onClick={() => toggleLogFilter("failed")}
+            />
+          </div>
+          {logFilter !== "all" ? (
+            <div className="flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              <span>
+                Showing <span className="font-semibold capitalize">{logFilter}</span> rows only
+                {" · "}
+                {filteredItems.length} of {items.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => setLogFilter("all")}
+                className="font-semibold text-teal-700 hover:underline"
+              >
+                Clear filter
+              </button>
+            </div>
+          ) : null}
 
           <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Target</div>
@@ -669,7 +838,11 @@ function CampaignDetail({
           <div className="rounded-lg border border-slate-200 bg-white">
             <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2">
               <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Per-recipient log</div>
-              <div className="text-[11px] text-slate-500">{items.length} row{items.length === 1 ? "" : "s"}</div>
+              <div className="text-[11px] text-slate-500">
+                {logFilter === "all"
+                  ? `${items.length} row${items.length === 1 ? "" : "s"}`
+                  : `${filteredItems.length} / ${items.length} · ${logFilter}`}
+              </div>
             </div>
             {metaLoading && items.length === 0 ? (
               <div className="px-4 py-6 text-center text-xs text-slate-500">Loading recipient log…</div>
@@ -682,6 +855,18 @@ function CampaignDetail({
                 {sent > 0
                   ? "KPI counts are set, but no dispatch rows were returned for this campaign."
                   : "No deliveries yet. This campaign hasn't fanned out to any recipients — usually because the target had no active push tokens."}
+              </div>
+            ) : filteredItems.length === 0 ? (
+              <div className="px-4 py-6 text-center text-xs text-slate-500">
+                No <span className="font-semibold capitalize">{logFilter}</span> rows in this log.
+                {" "}
+                <button
+                  type="button"
+                  onClick={() => setLogFilter("all")}
+                  className="font-semibold text-teal-700 hover:underline"
+                >
+                  Show all
+                </button>
               </div>
             ) : (
               <div className="max-h-[360px] overflow-y-auto">
@@ -696,7 +881,7 @@ function CampaignDetail({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {items.map((r) => (
+                    {filteredItems.map((r) => (
                       <tr key={r.id}>
                         <td className="whitespace-nowrap px-3 py-2 text-slate-600">{new Date(r.queued_at).toLocaleString()}</td>
                         <td className="px-3 py-2">
@@ -734,6 +919,14 @@ function CampaignDetail({
             >
               <EyeOff className="h-3.5 w-3.5" aria-hidden /> Block
             </button>
+            {canEditCampaign(campaign.status) ? (
+              <button
+                onClick={onRequestEdit}
+                className="inline-flex items-center gap-1 rounded-md border border-indigo-200 px-3 py-2 text-sm text-indigo-700 hover:bg-indigo-50"
+              >
+                <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
+              </button>
+            ) : null}
             {campaign.status !== "scheduled" && campaign.status !== "running" ? (
               <button
                 onClick={onResend}
@@ -767,9 +960,47 @@ function CampaignDetail({
   );
 }
 
-function MiniKpi({ label, value, accent, sub }: { label: string; value: number; accent: string; sub?: string }) {
+function MiniKpi({
+  label,
+  value,
+  accent,
+  sub,
+  active,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  accent: string;
+  sub?: string;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const interactive = typeof onClick === "function";
+  const className =
+    "rounded-lg border p-3 text-left transition " +
+    (active
+      ? "border-teal-400 bg-teal-50 ring-2 ring-teal-200"
+      : "border-slate-200 bg-white") +
+    (interactive ? " cursor-pointer hover:border-teal-300 hover:bg-teal-50/50" : "");
+
+  if (interactive) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        aria-pressed={active === true}
+        title={`Filter log by ${label.toLowerCase()}`}
+        className={className}
+      >
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
+        <div className={"mt-0.5 text-xl font-semibold tabular-nums " + accent}>{value.toLocaleString()}</div>
+        {sub ? <div className="text-[10px] text-slate-500">{sub}</div> : null}
+      </button>
+    );
+  }
+
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-3">
+    <div className={className}>
       <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
       <div className={"mt-0.5 text-xl font-semibold tabular-nums " + accent}>{value.toLocaleString()}</div>
       {sub ? <div className="text-[10px] text-slate-500">{sub}</div> : null}
@@ -791,6 +1022,222 @@ function Kpi({ label, value, accent }: { label: string; value: number; accent: s
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
       <div className={"mt-1 text-2xl font-semibold tabular-nums " + accent}>{value.toLocaleString()}</div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ *  Edit scheduled / draft campaign (before push)
+ * ==========================================================================*/
+
+function toDatetimeLocalValue(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function EditScheduledCampaign({
+  campaign,
+  onClose,
+  onSaved,
+}: {
+  campaign: Campaign;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { data: meta, isLoading } = useSWR<{
+    name?: string;
+    description?: string | null;
+    override_title?: string | null;
+    override_body?: string | null;
+    variables?: Record<string, unknown> | null;
+    scheduled_at?: string | null;
+    status?: string;
+  }>(`/api/super-admin/notifications/campaigns/${campaign.id}`, fetcher);
+
+  const [name, setName] = useState(campaign.name);
+  const [description, setDescription] = useState(campaign.description ?? "");
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [scheduledAt, setScheduledAt] = useState(
+    toDatetimeLocalValue(campaign.scheduled_at),
+  );
+  const [busy, setBusy] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    if (!meta || hydrated) return;
+    const msg = resolveCampaignMessage({
+      name: meta.name ?? campaign.name,
+      override_title: meta.override_title,
+      override_body: meta.override_body,
+      variables: meta.variables,
+    });
+    setName(meta.name ?? campaign.name);
+    setDescription(meta.description ?? "");
+    setTitle(msg.title === "—" ? "" : msg.title);
+    setBody(msg.body);
+    setScheduledAt(toDatetimeLocalValue(meta.scheduled_at ?? campaign.scheduled_at));
+    setHydrated(true);
+  }, [meta, hydrated, campaign.name, campaign.scheduled_at]);
+
+  const save = async () => {
+    if (!name.trim()) {
+      toast.error("Campaign name is required");
+      return;
+    }
+    if (!scheduledAt) {
+      toast.error("Pick a schedule date and time");
+      return;
+    }
+    setBusy(true);
+    try {
+      const prevVars =
+        meta?.variables && typeof meta.variables === "object" && !Array.isArray(meta.variables)
+          ? { ...meta.variables }
+          : {};
+      const variables = {
+        ...prevVars,
+        title: title.trim(),
+        body: body.trim(),
+      };
+      const res = await fetch(`/api/super-admin/notifications/campaigns/${campaign.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          description: description.trim() || null,
+          overrideTitle: title.trim() || null,
+          overrideBody: body.trim() || null,
+          variables,
+          scheduledAt: new Date(scheduledAt).toISOString(),
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(apiErrorMessage(j, `Update failed (HTTP ${res.status})`));
+      }
+      toast.success("Campaign updated");
+      onSaved();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex bg-slate-900/40 backdrop-blur-sm">
+      <div className="ml-auto flex h-full w-full max-w-lg flex-col bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700">
+              Edit before send
+            </div>
+            <h3 className="mt-0.5 text-base font-semibold text-slate-900">
+              Scheduled campaign
+            </h3>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Editable until the push starts. Template and audience stay the same.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+          {isLoading && !hydrated ? (
+            <div className="py-10 text-center text-sm text-slate-500">Loading…</div>
+          ) : (
+            <>
+              <label className="block">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Campaign name
+                </span>
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Description (internal)
+                </span>
+                <input
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Push title
+                </span>
+                <input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Message body
+                </span>
+                <textarea
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  rows={5}
+                  className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm leading-relaxed"
+                />
+              </label>
+              <label className="block">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Scheduled for
+                </span>
+                <input
+                  type="datetime-local"
+                  value={scheduledAt}
+                  onChange={(e) => setScheduledAt(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                />
+              </label>
+              <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                Template{" "}
+                <span className="font-mono">{campaign.template_code ?? "—"}</span>
+                {" · "}
+                Audience cannot be changed here — cancel and create a new campaign if needed.
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={busy || (isLoading && !hydrated)}
+            onClick={() => void save()}
+            className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            {busy ? "Saving…" : "Save changes"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1425,6 +1872,14 @@ function CreateCampaign({ onClose, onSaved }: { onClose: () => void; onSaved: ()
         status: status === "scheduled" ? undefined : status,
         scheduledAt: status === "scheduled" ? new Date(scheduledAt).toISOString() : undefined,
       };
+      // Persist rendered copy on the campaign row so list/detail can show body
+      // without re-reading template variables.
+      if (typeof varsPayload.title === "string" && varsPayload.title.trim()) {
+        payload.overrideTitle = varsPayload.title.trim();
+      }
+      if (typeof varsPayload.body === "string" && varsPayload.body.trim()) {
+        payload.overrideBody = varsPayload.body.trim();
+      }
       if (isCustomerAnnouncement) {
         payload.overrideImage = announcementExtras.imageUrl || null;
         payload.overrideDeepLink =

@@ -3,6 +3,7 @@ import { withTimeout } from "./coords";
 import type { DeviceLocationReadiness, LocationPermissionStatus } from "./types";
 
 const READINESS_TTL_MS = 5_000;
+const PERM_CHECK_MS = 300;
 const SERVICES_CHECK_MS = 400;
 let readinessCache: { at: number; value: DeviceLocationReadiness } | null = null;
 
@@ -10,13 +11,29 @@ function mapPermissionStatus(status: string): LocationPermissionStatus {
   return status === "granted" ? "granted" : status === "denied" ? "denied" : "undetermined";
 }
 
-/** App foreground permission + device GPS/location toggle. */
-export async function getDeviceLocationReadiness(): Promise<DeviceLocationReadiness> {
-  if (readinessCache && Date.now() - readinessCache.at < READINESS_TTL_MS) {
+/** Drop cached permission/services state after OS dialogs or Settings returns. */
+export function invalidateDeviceLocationReadiness(): void {
+  readinessCache = null;
+}
+
+/**
+ * App foreground permission + device GPS/location toggle.
+ * `force: true` skips the short TTL cache (use after Enable / Settings).
+ */
+export async function getDeviceLocationReadiness(options?: {
+  force?: boolean;
+}): Promise<DeviceLocationReadiness> {
+  if (!options?.force && readinessCache && Date.now() - readinessCache.at < READINESS_TTL_MS) {
     return readinessCache.value;
   }
-  const perm = await withTimeout(Location.getForegroundPermissionsAsync(), 300);
-  const permissionStatus = mapPermissionStatus(perm.status);
+  let permissionStatus: LocationPermissionStatus =
+    readinessCache?.value.permissionStatus ?? "undetermined";
+  try {
+    const perm = await withTimeout(Location.getForegroundPermissionsAsync(), PERM_CHECK_MS);
+    permissionStatus = mapPermissionStatus(perm.status);
+  } catch {
+    // Expo Go / bridge can stall — keep last known status rather than hanging callers.
+  }
   let servicesEnabled = readinessCache?.value.servicesEnabled ?? permissionStatus === "granted";
   try {
     servicesEnabled = await withTimeout(Location.hasServicesEnabledAsync(), SERVICES_CHECK_MS);

@@ -2,7 +2,7 @@
  * Home card — Onboarding benefits (light theme, compact like reference).
  */
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { View, StyleSheet, Pressable } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -153,15 +153,21 @@ export function useOnboardingBenefitsWindow(
     setCompleted(false);
   }, [storeDbId]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
 
+  // Stable focus callback — do NOT depend on `refresh`. When catalogReady/eligible
+  // flip after login, a changing `refresh` re-subscribed focus → setState loop →
+  // Maximum update depth / crash right after successful login.
   useFocusEffect(
     useCallback(() => {
-      void refresh();
-    }, [refresh])
+      void refreshRef.current();
+    }, [])
   );
+
+  useEffect(() => {
+    void refreshRef.current();
+  }, [storeDbId, token, eligible, catalogReady]);
 
   const expired = useMemo(
     () => (startedAt ? isOnboardingExpired(startedAt) : false),

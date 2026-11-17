@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { validateMerchantFromSession } from '@/lib/auth/validate-merchant';
+import { partnerCanEditMenuDetails } from '@/lib/auth/merchant-staff-permissions';
 import { getMerchantMenuPath } from '@/lib/r2-paths';
 import { uploadToR2 } from '@/lib/r2';
 import { validateMenuItemSquareImage } from '@/lib/menuItemImageValidation';
@@ -36,6 +37,12 @@ export async function POST(req: NextRequest) {
     });
     if (!validation.isValid) {
       return NextResponse.json({ error: validation.error ?? 'Merchant not found' }, { status: 403 });
+    }
+    if (!partnerCanEditMenuDetails(validation)) {
+      return NextResponse.json(
+        { error: 'Staff cannot upload or change menu item images.' },
+        { status: 403 }
+      );
     }
 
     const formData = await req.formData();

@@ -222,8 +222,8 @@ export const MERCHANT_ROLE_PERMISSION_IDS: Record<"OWNER" | "MANAGER" | "STAFF",
     "outlet",
     "payouts",
   ],
-  /** Home + order ops / feedback — no catalog, payouts, or marketing. */
-  STAFF: ["home", "operations"],
+  /** Home + order ops / feedback + catalog stock toggles — no item edit/upload, payouts, marketing. */
+  STAFF: ["home", "operations", "menu"],
 };
 
 export function permissionsForRole(role: "OWNER" | "MANAGER" | "STAFF"): string[] {

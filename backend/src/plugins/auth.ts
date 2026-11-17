@@ -273,7 +273,10 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
         }
       }
 
-      if (role === "merchant" || role === "rider") {
+      // Merchant / rider always require an active device row. Customer: only
+      // enforce when a row exists for this device (legacy JWTs without a row
+      // stay valid via sessionsInvalidBefore until next OTP login).
+      if (role === "merchant" || role === "rider" || role === "customer") {
         const deviceId = typeof (payload as any).device_id === "string" ? (payload as any).device_id : undefined;
         if (deviceId) {
           const cachedValid = readDeviceSessionCache(sub, deviceId);
@@ -287,12 +290,20 @@ const authPlugin: FastifyPluginAsync<AuthPluginOpts> = async (app, opts) => {
               await withSqlRetry(async () => {
                 const sql = getSql();
                 const rows = await sql`
-              SELECT id
+              SELECT id, is_active
               FROM user_device_sessions
-              WHERE user_id = ${sub} AND device_id = ${deviceId} AND is_active = TRUE
+              WHERE user_id = ${sub} AND device_id = ${deviceId}
+              ORDER BY last_active DESC NULLS LAST, id DESC
               LIMIT 1
             `;
-                if (!rows[0]) {
+                const row = rows[0] as { id?: number; is_active?: boolean } | undefined;
+                if (!row) {
+                  // No row yet (pre-device-session customer JWT) — skip enforce.
+                  if (role === "customer") return;
+                  writeDeviceSessionCache(sub, deviceId, false);
+                  throwAuthError(401, "session_revoked", "Signed out from this device.");
+                }
+                if (row && row.is_active !== true) {
                   writeDeviceSessionCache(sub, deviceId, false);
                   throwAuthError(401, "session_revoked", "Signed out from this device.");
                 }

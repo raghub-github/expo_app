@@ -51,6 +51,9 @@ import {
   coerceDeliveryRadiusKm,
   patchCachedMerchantProfileStore,
 } from '@/lib/merchant-profile-cache'
+import { StaffAndAccessPanel } from '@/components/staff/StaffAndAccessPanel'
+import { useMerchantSession } from '@/context/MerchantSessionContext'
+import { partnerSessionHasPermission } from '@/lib/auth/merchant-staff-permissions'
 
 const StoreLocationMapboxGL = dynamicImport(() => import('@/components/StoreLocationMapboxGL'), { ssr: false })
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || ''
@@ -210,6 +213,8 @@ function isLowerPlanTier(candidate: PlanTierLike, current: PlanTierLike): boolea
 function StoreSettingsContent() {
   const searchParams = useSearchParams()
   const queryClient = useQueryClient()
+  const merchantSession = useMerchantSession()
+  const canManageUsers = partnerSessionHasPermission(merchantSession?.parent, 'users')
   const [store, setStore] = useState<MerchantStore | null>(null)
   const [timingsLoading, setTimingsLoading] = useState(false)
   const [timingsLoaded, setTimingsLoaded] = useState(false)
@@ -218,15 +223,21 @@ function StoreSettingsContent() {
   const [isSaving, setIsSaving] = useState(false)
   const [isSavingDelivery, setIsSavingDelivery] = useState(false)
   const [isSavingPackaging, setIsSavingPackaging] = useState(false)
-  const [activeTab, setActiveTab] = useState<'plans' | 'premium' | 'timings' | 'operations' | 'menu-capacity' | 'delivery' | 'address' | 'pos' | 'notifications' | 'audit' | 'gatimitra'>(() => {
+  const [activeTab, setActiveTab] = useState<'plans' | 'premium' | 'timings' | 'operations' | 'menu-capacity' | 'delivery' | 'address' | 'pos' | 'notifications' | 'staff' | 'audit' | 'gatimitra'>(() => {
     if (typeof window !== 'undefined') {
       const urlTab = new URLSearchParams(window.location.search).get('tab')
-      const validTabs = ['plans', 'premium', 'timings', 'operations', 'menu-capacity', 'delivery', 'address', 'pos', 'notifications', 'audit', 'gatimitra']
+      const validTabs = ['plans', 'premium', 'timings', 'operations', 'menu-capacity', 'delivery', 'address', 'pos', 'notifications', 'staff', 'audit', 'gatimitra']
       if (urlTab === 'packaging' || urlTab === 'riders') return 'delivery'
       if (urlTab && validTabs.includes(urlTab)) return urlTab as any
     }
     return 'plans'
   })
+
+  useEffect(() => {
+    if (activeTab === 'staff' && !merchantSession?.isLoading && !canManageUsers) {
+      setActiveTab('plans')
+    }
+  }, [activeTab, canManageUsers, merchantSession?.isLoading])
 
   /** Desktop right settings rail: icon-only vs full labels (matches partner left sidebar behaviour). */
   const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false)
@@ -292,7 +303,7 @@ function StoreSettingsContent() {
     }
   }, [])
 
-  const validTabsList = ['plans', 'premium', 'timings', 'operations', 'menu-capacity', 'delivery', 'address', 'pos', 'notifications', 'audit', 'gatimitra']
+  const validTabsList = ['plans', 'premium', 'timings', 'operations', 'menu-capacity', 'delivery', 'address', 'pos', 'notifications', 'staff', 'audit', 'gatimitra']
   useEffect(() => {
     const urlTab = searchParams?.get('tab') || 'plans'
     if (urlTab === 'packaging' || urlTab === 'riders') {
@@ -474,7 +485,6 @@ function StoreSettingsContent() {
   
   // Audit & Activity state
   const [actionTrackingEnabled, setActionTrackingEnabled] = useState(true)
-  const [staffPermissionsEnabled, setStaffPermissionsEnabled] = useState(false)
 
   // Outlet timings state - Loaded from Supabase
   const [applyMondayToAll, setApplyMondayToAll] = useState(false)
@@ -3680,6 +3690,19 @@ function StoreSettingsContent() {
                     <Bell size={14} />
                     Alerts
                   </button>
+                  {canManageUsers ? (
+                  <button
+                    onClick={() => setActiveTab('staff')}
+                    className={`px-4 py-2 font-semibold text-xs border-b-2 transition-colors flex items-center gap-1 whitespace-nowrap ${
+                      activeTab === 'staff'
+                        ? 'border-orange-600 text-orange-700'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    <Users size={14} />
+                    Staff
+                  </button>
+                  ) : null}
                   <button
                     onClick={() => setActiveTab('audit')}
                     className={`px-4 py-2 font-semibold text-xs border-b-2 transition-colors flex items-center gap-1 whitespace-nowrap ${
@@ -4934,6 +4957,10 @@ function StoreSettingsContent() {
               </div>
             )}
 
+            {activeTab === 'staff' && storeId && canManageUsers ? (
+              <StaffAndAccessPanel storeId={storeId} />
+            ) : null}
+
             {activeTab === 'audit' && (
               <div className="space-y-4 sm:space-y-6">
                 <div className="bg-white rounded-xl border border-gray-200 p-4 sm:p-6 shadow-sm">
@@ -4964,21 +4991,17 @@ function StoreSettingsContent() {
                         <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
                       </label>
                     </div>
-                    <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                      <div>
-                        <p className="font-semibold text-gray-900">Staff Permissions</p>
-                        <p className="text-sm text-gray-600">Enable role-based access control</p>
-                      </div>
-                      <label className="relative inline-flex items-center cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={staffPermissionsEnabled}
-                          onChange={(e) => setStaffPermissionsEnabled(e.target.checked)}
-                          className="sr-only peer"
-                        />
-                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                      </label>
-                    </div>
+                    <p className="text-sm text-slate-600 px-1">
+                      Manage managers and staff under{" "}
+                      <button
+                        type="button"
+                        className="font-semibold text-indigo-700 hover:underline"
+                        onClick={() => setActiveTab("staff")}
+                      >
+                        Staff & Access
+                      </button>
+                      .
+                    </p>
                   </div>
                 </div>
               </div>

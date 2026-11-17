@@ -11,7 +11,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Location from "expo-location";
-import { useLocationStore, getDeviceLocationReadiness } from "@/store/locationStore";
+import {
+  useLocationStore,
+  getDeviceLocationReadiness,
+  invalidateDeviceLocationReadiness,
+  withTimeout,
+} from "@/store/locationStore";
 import { useAddresses } from "@/hooks/useAddresses";
 import type { Address } from "@/services/address.service";
 import { GatiMitraColors } from "@/constants/gatimitra";
@@ -23,6 +28,8 @@ const TEXT_GRAY = "#6B7280";
 const TEXT_MUTED = "#9CA3AF";
 const BORDER = "#F3F4F6";
 const INITIAL_SAVED_VISIBLE = 3;
+/** System location-accuracy dialog must not pin the Enable spinner forever. */
+const ENABLE_PROVIDER_MS = 12_000;
 
 type Props = {
   visible: boolean;
@@ -42,7 +49,6 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const requestPermissionAndFetch = useLocationStore((s) => s.requestPermissionAndFetch);
-  const promptLocationPermissionIfNeeded = useLocationStore((s) => s.promptLocationPermissionIfNeeded);
   const {
     data: addresses = [],
     isLoading: addressesLoading,
@@ -59,43 +65,7 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
     onDismiss();
   }, [onDismiss]);
 
-  useEffect(() => {
-    if (!visible) return;
-    let cancelled = false;
-    const syncIfReady = async () => {
-      if (selectingId != null) return;
-      const readiness = await getDeviceLocationReadiness();
-      if (!readiness.isReady || cancelled) return;
-      const { reconcileActiveLocationFromGps } = await import(
-        "@/lib/reconcileActiveLocationFromGps"
-      );
-      const { useAuthStore } = await import("@/store/authStore");
-      await requestPermissionAndFetch({ forceDevice: true });
-      if (useAuthStore.getState().session) {
-        void reconcileActiveLocationFromGps(queryClient, {
-          allowRemoteSessionPreserve: true,
-        });
-      }
-      if (!cancelled) handleDismiss();
-    };
-    void syncIfReady();
-    return () => {
-      cancelled = true;
-    };
-  }, [visible, selectingId, requestPermissionAndFetch, handleDismiss, queryClient]);
-
-  const openLocationPage = useCallback(
-    (focusSearch: boolean) => {
-    handleDismiss();
-      router.push({
-        pathname: "/location",
-        params: focusSearch ? { focusSearch: "1" } : {},
-      });
-    },
-    [handleDismiss, router]
-  );
-
-  const showCurrentLocationNow = useCallback(async () => {
+  const showCurrentLocationNow = useCallback(() => {
     // Close sheet immediately; GPS + reconcile continue in background.
     handleDismiss();
     void (async () => {
@@ -112,71 +82,100 @@ export function LocationPermissionModal({ visible, onDismiss }: Props) {
     })();
   }, [handleDismiss, queryClient, requestPermissionAndFetch]);
 
+  // Auto-dismiss as soon as OS location is ready — never await GPS before closing.
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    const syncIfReady = async () => {
+      if (selectingId != null) return;
+      invalidateDeviceLocationReadiness();
+      const readiness = await getDeviceLocationReadiness({ force: true });
+      if (!readiness.isReady || cancelled) return;
+      showCurrentLocationNow();
+    };
+    void syncIfReady();
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, selectingId, showCurrentLocationNow]);
+
+  const openLocationPage = useCallback(
+    (focusSearch: boolean) => {
+      handleDismiss();
+      router.push({
+        pathname: "/location",
+        params: focusSearch ? { focusSearch: "1" } : {},
+      });
+    },
+    [handleDismiss, router]
+  );
+
+  const openAppSettings = useCallback(async () => {
+    if (Platform.OS === "ios") {
+      await Linking.openURL("app-settings:");
+    } else {
+      await Linking.openSettings();
+    }
+  }, []);
+
+  const promptDeviceLocationServices = useCallback(async (): Promise<boolean> => {
+    if (Platform.OS !== "android") {
+      await openAppSettings();
+      return false;
+    }
+    try {
+      await withTimeout(Location.enableNetworkProviderAsync(), ENABLE_PROVIDER_MS);
+    } catch {
+      // User dismissed the dialog or the provider call stalled.
+    }
+    invalidateDeviceLocationReadiness();
+    const after = await getDeviceLocationReadiness({ force: true });
+    return after.isReady;
+  }, [openAppSettings]);
+
   const handleEnableLocation = useCallback(async () => {
+    if (enabling) return;
     setEnabling(true);
     try {
-      const readiness = await getDeviceLocationReadiness();
+      // Fresh OS state — stale 5s cache made Enable feel stuck after Settings.
+      invalidateDeviceLocationReadiness();
+      const readiness = await getDeviceLocationReadiness({ force: true });
+
       if (readiness.permissionStatus === "denied") {
-        if (Platform.OS === "ios") {
-          await Linking.openURL("app-settings:");
-        } else {
-          await Linking.openSettings();
-        }
+        setEnabling(false);
+        await openAppSettings();
         return;
       }
+
       if (readiness.permissionStatus === "granted" && !readiness.servicesEnabled) {
-        if (Platform.OS === "android") {
-          try {
-            await Location.enableNetworkProviderAsync();
-          } catch {
-            // User dismissed the system location dialog.
-          }
-        } else {
-          await Linking.openURL("app-settings:");
-        }
-        const after = await getDeviceLocationReadiness();
-        if (after.isReady) {
-          await showCurrentLocationNow();
-        } else {
-          await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
-          const stillVisible = useLocationStore.getState().showPermissionModal;
-          if (!stillVisible) handleDismiss();
-        }
+        // Do not keep the Enable spinner over the system location dialog.
+        setEnabling(false);
+        const ready = await promptDeviceLocationServices();
+        if (ready) showCurrentLocationNow();
         return;
       }
+
+      // Clear spinner before the OS permission dialog so Enable never looks hung.
+      setEnabling(false);
       const { status } = await Location.requestForegroundPermissionsAsync();
+      invalidateDeviceLocationReadiness();
       if (status === "granted") {
-        const after = await getDeviceLocationReadiness();
+        const after = await getDeviceLocationReadiness({ force: true });
         if (after.isReady) {
-          await showCurrentLocationNow();
-        } else if (Platform.OS === "android") {
-          try {
-            await Location.enableNetworkProviderAsync();
-          } catch {
-            // ignore
-          }
-          const enabled = await getDeviceLocationReadiness();
-          if (enabled.isReady) {
-            await showCurrentLocationNow();
-          } else {
-            await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
-          }
+          showCurrentLocationNow();
+          return;
         }
+        const ready = await promptDeviceLocationServices();
+        if (ready) showCurrentLocationNow();
         return;
       }
-      if (Platform.OS === "ios") {
-        await Linking.openURL("app-settings:");
-      } else {
-        await Linking.openSettings();
-      }
+      await openAppSettings();
+    } catch {
+      // Keep sheet open so the user can pick a saved address or retry.
     } finally {
       setEnabling(false);
     }
-  }, [
-    handleDismiss,
-    promptLocationPermissionIfNeeded,
-    showCurrentLocationNow,
-  ]);
+  }, [enabling, openAppSettings, promptDeviceLocationServices, showCurrentLocationNow]);
 
   const handleSelectAddress = useCallback(
     (addr: Address) => {

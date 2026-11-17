@@ -4,8 +4,8 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { getAuthenticatedApiUser } from "@/lib/auth/api-session";
+import { getUserPermissions, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { logAPICall } from "@/lib/auth/activity-tracker";
 import {
@@ -16,24 +16,35 @@ import {
 export const runtime = "nodejs";
 
 async function requireCustomerAdmin(request: NextRequest) {
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
+  // Cookie-first auth (same as other /api/customers/* routes) — getUser()-only
+  // was returning 403/401 and left this page stuck on "Loading requests…".
+  const auth = await getAuthenticatedApiUser(request);
+  if (!auth.ok) {
+    return { error: NextResponse.json(auth.body, { status: auth.status }) };
+  }
+  const { user } = auth;
 
-  if (userError || !user) {
-    return { error: NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 }) };
+  const perms = await getUserPermissions(user.id, user.email ?? "");
+  if (!perms) {
+    return {
+      error: NextResponse.json(
+        {
+          success: false,
+          error: "Service temporarily unavailable",
+          code: "SERVICE_UNAVAILABLE",
+        },
+        { status: 503 }
+      ),
+    };
   }
 
-  const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
   const hasDashboardAccess = await hasDashboardAccessByAuth(
     user.id,
     user.email ?? "",
     "CUSTOMER"
   );
 
-  if (!userIsSuperAdmin && !hasDashboardAccess) {
+  if (!perms.isSuperAdmin && !hasDashboardAccess) {
     return {
       error: NextResponse.json(
         { success: false, error: "Insufficient permissions for Customer dashboard." },
@@ -42,7 +53,9 @@ async function requireCustomerAdmin(request: NextRequest) {
     };
   }
 
-  const systemUser = await getSystemUserByEmail(user.email ?? "");
+  const systemUser = perms.systemUserId
+    ? { id: perms.systemUserId }
+    : await getSystemUserByEmail(user.email ?? "");
   if (!systemUser) {
     return {
       error: NextResponse.json({ success: false, error: "User not found in system" }, { status: 404 }),
@@ -95,7 +108,11 @@ export async function POST(request: NextRequest) {
 
     const result = await completeAccountDeletionRequest({
       requestId,
-      reviewedBy: gate.user!.email ?? gate.systemUser!.email ?? String(gate.systemUser!.id),
+      reviewedBy:
+        gate.user?.email ??
+        ("email" in gate.systemUser! && typeof gate.systemUser.email === "string"
+          ? gate.systemUser.email
+          : String(gate.systemUser!.id)),
       reviewNotes: body.reviewNotes ?? null,
     });
 

@@ -133,6 +133,14 @@ type Props = {
   /** UPI app was opened — parent should wait for webhook (payment-confirming). */
   onUpiAppOpened?: () => void;
   /**
+   * Locked PhonePe / GPay / etc. — mint a server UPI intent and open the native
+   * Android app. Used instead of WebView when Expo Go / native SDK is unavailable.
+   * Return true if the UPI app was opened.
+   */
+  launchLockedUpiIntent?: () => Promise<boolean>;
+  /** Native Razorpay sheet is about to present — parent can dismiss Magicpin status sheet. */
+  onNativeSheetOpening?: () => void;
+  /**
    * Wallet top-up: open the native Android sheet only.
    * No "Opening secure payment" cover and no in-app WebView.
    */
@@ -868,6 +876,8 @@ export function RazorpayCheckoutModal({
   onCancel,
   onFailure,
   onUpiAppOpened,
+  launchLockedUpiIntent,
+  onNativeSheetOpening,
   checkServerStatus,
   onServerConfirmed,
   nativeOnly = false,
@@ -877,12 +887,19 @@ export function RazorpayCheckoutModal({
   const [tier, setTier] = useState<Tier | null>(null);
   const [webviewError, setWebviewError] = useState<string | null>(null);
   const [waitingUpiLaunch, setWaitingUpiLaunch] = useState(false);
-  const [nativeSheetOpen, setNativeSheetOpen] = useState(false);
+  /**
+   * Method lock for the WebView sheet. Starts as the user's pick; if Razorpay
+   * rejects a hard PhonePe/wallet lock we loosen to open UPI / full checkout.
+   */
+  const [webviewMethod, setWebviewMethod] = useState<RazorpayCheckoutMethod | null | undefined>(
+    undefined
+  );
+  const [, setNativeSheetOpen] = useState(false);
   const inFlightRef = useRef(false);
   const completedRef = useRef(false);
   const upiOpenedRef = useRef(false);
-
-  const upiAppLabel = upiAppDisplayName(checkoutMethod?.upiApp);
+  /** One automatic reopen with a looser method after "no payment method" errors. */
+  const webviewRetryRef = useRef(false);
 
   const schedulePaymentFailure = (handler: () => void) => {
     InteractionManager.runAfterInteractions(() => {
@@ -912,9 +929,11 @@ export function RazorpayCheckoutModal({
       inFlightRef.current = false;
       completedRef.current = false;
       upiOpenedRef.current = false;
+      webviewRetryRef.current = false;
       setTier(null);
       setWebviewError(null);
       setWaitingUpiLaunch(false);
+      setWebviewMethod(undefined);
       setNativeSheetOpen(false);
       return;
     }
@@ -925,8 +944,10 @@ export function RazorpayCheckoutModal({
     inFlightRef.current = true;
     completedRef.current = false;
     upiOpenedRef.current = false;
+    webviewRetryRef.current = false;
     setTier(null);
     setWebviewError(null);
+    setWebviewMethod(undefined);
     setNativeSheetOpen(false);
 
     const isExpoGo = Constants.appOwnership === "expo";
@@ -935,20 +956,29 @@ export function RazorpayCheckoutModal({
       await new Promise((r) => setTimeout(r, 60));
       if (cancelled || launchGen !== launchGenRef.current) return;
 
-      const goWebview = () => {
+      /**
+       * Always open Razorpay Standard Checkout so every Pay-using option is payable.
+       * Never pre-launch PhonePe/GPay intent (that path skipped the pay UI and
+       * jumped straight to Payment failed when the app could not open).
+       */
+      const goWebview = async (method: RazorpayCheckoutMethod | null) => {
         if (nativeOnly) {
           completedRef.current = true;
           inFlightRef.current = false;
           failOrCancel();
           return;
         }
+        setWebviewMethod(method);
         inFlightRef.current = false;
         setWaitingUpiLaunch(false);
         setTier("webview");
+        // Parent Magicpin status sheet can dismiss — payment UI is on screen.
+        onNativeSheetOpening?.();
       };
 
       if (isExpoGo) {
-        goWebview();
+        // Expo Go: no native Razorpay module — open Standard Checkout WebView.
+        await goWebview(checkoutMethod ?? null);
         return;
       }
 
@@ -987,12 +1017,13 @@ export function RazorpayCheckoutModal({
           description,
           onSheetOpening: () => {
             if (!nativeOnly) setNativeSheetOpen(true);
+            onNativeSheetOpening?.();
             startServerConfirmPoll();
           },
         });
         if (cancelled || completedRef.current || launchGen !== launchGenRef.current) return;
         if (!result.razorpayPaymentId || !result.razorpayOrderId || !result.razorpaySignature) {
-          goWebview();
+          await goWebview(checkoutMethod ?? null);
           return;
         }
         completedRef.current = true;
@@ -1004,28 +1035,17 @@ export function RazorpayCheckoutModal({
           code?: number | string;
           error?: { code?: number | string };
         };
-        if (errObj.fallback === true) {
-          goWebview();
-          return;
-        }
         if (isExplicitUserCancel(e)) {
           completedRef.current = true;
           schedulePaymentFailure(onCancel);
           return;
         }
-        if (isRazorpayNoMethodError(e)) {
-          completedRef.current = true;
-          failOrCancel();
-          return;
-        }
-        const codeRaw = errObj.code ?? errObj.error?.code;
-        const code = typeof codeRaw === "string" ? Number(codeRaw) : codeRaw;
-        if (code === 2) {
-          completedRef.current = true;
-          failOrCancel();
-          return;
-        }
-        goWebview();
+        // Any recoverable gateway / method error → Standard Checkout WebView.
+        // Loosen hard PhonePe/wallet locks so the customer can still pay.
+        const loosen =
+          isRazorpayNoMethodError(e) &&
+          (checkoutMethod?.upiApp != null || checkoutMethod?.wallet != null);
+        await goWebview(loosen ? { method: "upi", upiFlow: "intent" } : checkoutMethod ?? null);
       }
     })();
 
@@ -1037,10 +1057,17 @@ export function RazorpayCheckoutModal({
   }, [visible, orderKey, checkoutMethodKey]);
 
   // ── Tier 2 — WebView modal render                                   ──
+  const effectiveWebviewMethod =
+    webviewMethod === undefined ? checkoutMethod : webviewMethod;
   const html = useMemo(() => {
     if (tier !== "webview" || !orderParams) return "";
-    return buildCheckoutHtml({ orderParams, prefill, themeColor: theme, checkoutMethod });
-  }, [tier, orderParams, prefill, theme, checkoutMethod]);
+    return buildCheckoutHtml({
+      orderParams,
+      prefill,
+      themeColor: theme,
+      checkoutMethod: effectiveWebviewMethod,
+    });
+  }, [tier, orderParams, prefill, theme, effectiveWebviewMethod]);
 
   // Android back while payment overlay is open = same as dismiss
   useEffect(() => {
@@ -1162,12 +1189,34 @@ export function RazorpayCheckoutModal({
           return;
         }
         if (parsed.type === "error") {
+          const errDesc = String(
+            (parsed.error as { description?: string } | undefined)?.description ?? ""
+          ).toLowerCase();
+          const noMethod =
+            errDesc.includes("no appropriate payment method") ||
+            errDesc.includes("no payment method");
+          // Retry once with open UPI / full checkout instead of jumping to Payment failed.
+          if (!webviewRetryRef.current && (noMethod || checkoutMethod?.upiApp || checkoutMethod?.wallet)) {
+            webviewRetryRef.current = true;
+            completedRef.current = false;
+            setWebviewError(null);
+            setWebviewMethod(null);
+            setTier("webview");
+            return;
+          }
           completedRef.current = true;
           failOrCancel();
         }
       }}
-      onError={(syntheticEvent) => {
+      onError={() => {
         if (completedRef.current) return;
+        if (!webviewRetryRef.current) {
+          webviewRetryRef.current = true;
+          setWebviewError(null);
+          setWebviewMethod(null);
+          setTier("webview");
+          return;
+        }
         completedRef.current = true;
         failOrCancel();
       }}
@@ -1179,86 +1228,9 @@ export function RazorpayCheckoutModal({
     </View>
   );
 
-  if (showOpeningOverlay) {
-    return (
-      <Modal
-        visible
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          if (!completedRef.current) {
-            completedRef.current = true;
-            onCancel();
-          }
-        }}
-      >
-        <View style={styles.upiLaunchRoot}>
-          <View style={styles.upiLaunchDim}>
-            <View style={styles.upiLaunchCard}>
-              <ActivityIndicator color={theme} />
-              <AppText style={styles.upiLaunchText}>
-                {nativeSheetOpen ? "Confirming your payment…" : "Opening secure payment…"}
-              </AppText>
-              {nativeSheetOpen ? (
-                <AppText style={styles.upiLaunchSub}>This can take a few seconds.</AppText>
-              ) : null}
-              <Pressable
-                onPress={() => {
-                  if (!completedRef.current) {
-                    completedRef.current = true;
-                    onCancel();
-                  }
-                }}
-                hitSlop={10}
-                style={styles.upiLaunchCancelHit}
-              >
-                <AppText style={styles.upiLaunchCancel}>Cancel</AppText>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-    );
-  }
-
-  if (waitingUpiLaunch) {
-    return (
-      <Modal
-        visible
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          if (!completedRef.current) {
-            completedRef.current = true;
-            onCancel();
-          }
-        }}
-      >
-        <View style={styles.upiLaunchRoot}>
-          <View style={styles.upiLaunchDim}>
-            <View style={styles.upiLaunchCard}>
-              <ActivityIndicator color={theme} />
-              <AppText style={styles.upiLaunchText}>Redirecting {upiAppLabel}</AppText>
-              <Pressable
-                onPress={() => {
-                  if (!completedRef.current) {
-                    completedRef.current = true;
-                    onCancel();
-                  }
-                }}
-                hitSlop={10}
-                style={styles.upiLaunchCancelHit}
-              >
-                <AppText style={styles.upiLaunchCancel}>Cancel</AppText>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-    );
-  }
-
-  if (tier !== "webview") {
+  // While native/WebView is still spinning up, render nothing — parent keeps the
+  // Magicpin status sheet until onNativeSheetOpening fires.
+  if (showOpeningOverlay || waitingUpiLaunch || tier !== "webview") {
     return null;
   }
 

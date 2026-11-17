@@ -1,11 +1,11 @@
 /**
  * GatiMitra branding signature – page-end footer.
  * Tagline (brand accent) + brand name (soft watermark).
- * Minimal, elegant, blends with page ending.
+ * Home variant: underline width matches measured "GatiMitra" text exactly.
  */
 
-import { useEffect, useRef } from "react";
-import { View, StyleSheet, Animated } from "react-native";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { View, StyleSheet, Animated, type LayoutChangeEvent } from "react-native";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { AppText } from "@/components/AppText";
 
@@ -26,6 +26,7 @@ type BrandingFooterProps = {
 
 export function BrandingFooter({ variant = "default", compact = false }: BrandingFooterProps) {
   const opacity = useRef(new Animated.Value(0)).current;
+  const [brandWidth, setBrandWidth] = useState(0);
 
   useEffect(() => {
     Animated.timing(opacity, {
@@ -34,6 +35,11 @@ export function BrandingFooter({ variant = "default", compact = false }: Brandin
       useNativeDriver: true,
     }).start();
   }, [opacity]);
+
+  const onBrandLayout = useCallback((e: LayoutChangeEvent) => {
+    const w = Math.round(e.nativeEvent.layout.width);
+    if (w > 0) setBrandWidth((prev) => (prev === w ? prev : w));
+  }, []);
 
   const isHome = variant === "home";
   const isDiscovery = variant === "discovery";
@@ -68,11 +74,14 @@ export function BrandingFooter({ variant = "default", compact = false }: Brandin
             isDiscovery && styles.brandTextDiscovery,
           ]}
           bold
+          onLayout={isHome ? onBrandLayout : undefined}
         >
           {BRAND_LABEL}
         </AppText>
       </View>
-      {isHome ? <View style={styles.homeRule} /> : null}
+      {isHome && brandWidth > 0 ? (
+        <View style={[styles.homeRule, { width: brandWidth }]} />
+      ) : null}
     </Animated.View>
   );
 }
@@ -129,23 +138,24 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   taglineHome: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "600",
     color: GatiMitraColors.splashMint,
     textAlign: "center",
+    letterSpacing: 0.2,
   },
   brandTextHome: {
-    fontSize: 26,
+    fontSize: 28,
     fontWeight: "800",
     color: "#111827",
-    letterSpacing: 0.5,
+    letterSpacing: 0.4,
     transform: [{ scaleX: 1 }],
   },
   homeRule: {
-    width: 48,
     height: 3,
     borderRadius: 2,
     backgroundColor: GatiMitraColors.splashMint,
     marginTop: 6,
+    alignSelf: "center",
   },
 });

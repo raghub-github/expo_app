@@ -1,6 +1,7 @@
 import { getConfig } from "@/config/env";
 import { authFetch } from "@/services/authFetch";
 import { getOrCreateMerchantDeviceId } from "@/lib/merchantDeviceId";
+import { getCachedFoodOrdersForStore } from "@/lib/foodOrderCache";
 
 const getBase = () => getConfig().apiBaseUrl.replace(/\/+$/, "");
 
@@ -173,27 +174,94 @@ function isOrdersClientTimeout(err: unknown): boolean {
   return /timed out|timeout|aborted/i.test(msg);
 }
 
+/** After timeout, brief pause so we don't stampede — keep short so empty board recovers. */
+const FOOD_ORDERS_COOLDOWN_MS = 3_000;
+/**
+ * Client timeout for the board list. Server live deadline is 8s; allow network slack
+ * without pinning Android's ~6 sockets/host for 22s.
+ */
+const FOOD_ORDERS_TIMEOUT_MS = 14_000;
+
+/**
+ * Keep list-GET gates on globalThis — Hermes Fast Refresh can drop module-scope
+ * `const` Maps while exported helpers still run ("Property doesn't exist").
+ */
+type FoodOrdersGate = {
+  inFlight: Map<number, Promise<ApiFoodOrder[]>>;
+  cooldownUntil: Map<number, number>;
+};
+
+function foodOrdersGate(): FoodOrdersGate {
+  const g = globalThis as typeof globalThis & { __gmFoodOrdersGate?: FoodOrdersGate };
+  let gate = g.__gmFoodOrdersGate;
+  if (!gate || !(gate.cooldownUntil instanceof Map) || !(gate.inFlight instanceof Map)) {
+    gate = {
+      inFlight: new Map(),
+      cooldownUntil: new Map(),
+    };
+    g.__gmFoodOrdersGate = gate;
+  }
+  return gate;
+}
+
+export function getFoodOrdersCooldownRemainingMs(storeId: number): number {
+  try {
+    const until = foodOrdersGate().cooldownUntil.get(storeId) ?? 0;
+    return Math.max(0, until - Date.now());
+  } catch {
+    // Hermes Fast Refresh can leave a stale binding mid-reload; treat as no cooldown.
+    return 0;
+  }
+}
+
+export function clearFoodOrdersCooldown(storeId?: number): void {
+  const gate = foodOrdersGate();
+  if (storeId == null) {
+    gate.cooldownUntil.clear();
+    return;
+  }
+  gate.cooldownUntil.delete(storeId);
+}
+
 export async function fetchFoodOrders(
   storeId: number,
   token: string,
-  opts?: { limit?: number; from?: string; to?: string; allowRetry?: boolean }
+  opts?: { limit?: number; from?: string; to?: string; allowRetry?: boolean; force?: boolean }
 ): Promise<ApiFoodOrder[]> {
+  const gate = foodOrdersGate();
+  if (opts?.force) {
+    gate.cooldownUntil.delete(storeId);
+  }
+
+  const cooldownLeft = getFoodOrdersCooldownRemainingMs(storeId);
+  if (!opts?.force && cooldownLeft > 0) {
+    // Prefer last good board over a hard error during cooldown (empty UI).
+    const cached = getCachedFoodOrdersForStore(storeId);
+    if (cached.length > 0) return cached;
+    throw new Error("Request timed out. Pull to refresh and try again.");
+  }
+
+  const existing = gate.inFlight.get(storeId);
+  if (existing && !opts?.force) {
+    return existing;
+  }
+
   const q = new URLSearchParams();
   if (opts?.limit) q.set("limit", String(opts.limit));
   if (opts?.from) q.set("from", opts.from);
   if (opts?.to) q.set("to", opts.to);
   const qs = q.toString();
-  // Soft client abort — keep under Android's ~6 connections/host budget.
-  const HARD_TIMEOUT_MS = 18_000;
   const url = `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders${qs ? `?${qs}` : ""}`;
 
-  const once = async (): Promise<ApiFoodOrder[]> => {
-    const res = await authFetch(url, token, { timeoutMs: HARD_TIMEOUT_MS });
+  const runOnce = async (): Promise<ApiFoodOrder[]> => {
+    const res = await authFetch(url, token, { timeoutMs: FOOD_ORDERS_TIMEOUT_MS });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       const code = (err as { error?: string }).error;
       if (code === "orders_load_timeout") {
-        throw new Error("Orders took too long to load. Pull to refresh and try again.");
+        const timeoutErr = new Error("Orders took too long to load. Pull to refresh and try again.");
+        (timeoutErr as Error & { code?: string }).code = "orders_load_timeout";
+        throw timeoutErr;
       }
       throw new Error(code || "Failed to load orders");
     }
@@ -201,15 +269,43 @@ export async function fetchFoodOrders(
     return Array.isArray(data.orders) ? data.orders : [];
   };
 
-  try {
-    return await once();
-  } catch (first) {
-    // Skip retry while recovering — immediate double-fetch worsens pool starvation.
-    if (opts?.allowRetry === false) throw first;
-    if (!isOrdersClientTimeout(first)) throw first;
-    await new Promise((r) => setTimeout(r, 1_200));
-    return once();
-  }
+  // Declared before assignment: the `finally` below compares against `run`, and must not
+  // read it in its temporal dead zone (TS2454) even if runOnce ever threw synchronously.
+  let run: Promise<ApiFoodOrder[]> | undefined;
+  run = (async (): Promise<ApiFoodOrder[]> => {
+    try {
+      const orders = await runOnce();
+      foodOrdersGate().cooldownUntil.delete(storeId);
+      return orders;
+    } catch (e) {
+      const timedOut =
+        isOrdersClientTimeout(e) ||
+        (e instanceof Error && (e as Error & { code?: string }).code === "orders_load_timeout");
+      if (timedOut) {
+        // One quick retry — first attempt often loses the socket race to boot polls.
+        try {
+          await new Promise((r) => setTimeout(r, 400));
+          const orders = await runOnce();
+          foodOrdersGate().cooldownUntil.delete(storeId);
+          return orders;
+        } catch (retryErr) {
+          foodOrdersGate().cooldownUntil.set(storeId, Date.now() + FOOD_ORDERS_COOLDOWN_MS);
+          const cached = getCachedFoodOrdersForStore(storeId);
+          if (cached.length > 0) return cached;
+          throw retryErr;
+        }
+      }
+      throw e;
+    } finally {
+      const live = foodOrdersGate();
+      if (live.inFlight.get(storeId) === run) {
+        live.inFlight.delete(storeId);
+      }
+    }
+  })();
+
+  gate.inFlight.set(storeId, run);
+  return run;
 }
 
 /** Cancel unaccepted orders past the acceptance window (portal-open flush). */
@@ -226,7 +322,7 @@ export async function syncAcceptanceTimeout(
     const res = await authFetch(
       `${getBase()}/v1/merchant-partner/stores/${storeId}/sync-acceptance-timeout`,
       token,
-      { method: "POST", timeoutMs: 25_000 }
+      { method: "POST", timeoutMs: 12_000 }
     );
     const data = (await res.json().catch(() => ({}))) as { cancelled?: number; error?: string };
     if (!res.ok) {
@@ -454,46 +550,64 @@ export async function patchFoodOrderStatus(
   // needs to know which of them decided it. Audit only — authorisation still
   // comes from the token. A device id that cannot be read is simply omitted.
   const deviceId = await getOrCreateMerchantDeviceId().catch(() => "");
-  const res = await authFetch(
-    `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}`,
-    token,
-    {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        ...(deviceId ? { "x-gm-device-id": deviceId } : {}),
-      },
-      body: JSON.stringify({
-        status,
-        action_source: opts?.action_source ?? "app",
-        ...(st === "ACCEPTED"
-          ? {
-              accept_mode: opts?.accept_mode ?? "manual",
-              ...(opts?.preparation_time_minutes != null
-                ? { preparation_time_minutes: opts.preparation_time_minutes }
-                : {}),
-            }
-          : {}),
-        ...(st === "CANCELLED" ? { cancel_mode: opts?.cancel_mode ?? "manual" } : {}),
-        ...(rejectedReason ? { rejected_reason: rejectedReason } : {}),
-      }),
+  const body = JSON.stringify({
+    status,
+    action_source: opts?.action_source ?? "app",
+    ...(st === "ACCEPTED"
+      ? {
+          accept_mode: opts?.accept_mode ?? "manual",
+          ...(opts?.preparation_time_minutes != null
+            ? { preparation_time_minutes: opts.preparation_time_minutes }
+            : {}),
+        }
+      : {}),
+    ...(st === "CANCELLED" ? { cancel_mode: opts?.cancel_mode ?? "manual" } : {}),
+    ...(rejectedReason ? { rejected_reason: rejectedReason } : {}),
+  });
+
+  // Retry timeouts: Android's ~6 connections/host can starve the PATCH while
+  // food-orders list polls hang. Never report ready until a response (or
+  // reconcile) confirms the DB row moved.
+  const maxAttempts = 3;
+  let lastErr: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await authFetch(
+        `${getBase()}/v1/merchant-partner/stores/${storeId}/food-orders/${ordersFoodId}`,
+        token,
+        {
+          method: "PATCH",
+          timeoutMs: 25_000,
+          headers: {
+            "Content-Type": "application/json",
+            ...(deviceId ? { "x-gm-device-id": deviceId } : {}),
+          },
+          body,
+        }
+      );
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          code?: string;
+          actualStatus?: string;
+        };
+        const message = err.error || "Failed to update order";
+        if (err.code) {
+          throw new MerchantOrderDecisionError(message, err.code, err.actualStatus ?? "");
+        }
+        throw new Error(message);
+      }
+      const data = (await res.json()) as { order?: ApiFoodOrder };
+      if (!data.order) throw new Error("Order update failed");
+      return data.order;
+    } catch (e) {
+      lastErr = e;
+      if (e instanceof MerchantOrderDecisionError) throw e;
+      if (!isOrdersClientTimeout(e) || attempt >= maxAttempts) throw e;
+      await new Promise((r) => setTimeout(r, 600 * attempt));
     }
-  );
-  if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as {
-      error?: string;
-      code?: string;
-      actualStatus?: string;
-    };
-    const message = err.error || "Failed to update order";
-    if (err.code) {
-      throw new MerchantOrderDecisionError(message, err.code, err.actualStatus ?? "");
-    }
-    throw new Error(message);
   }
-  const data = (await res.json()) as { order?: ApiFoodOrder };
-  if (!data.order) throw new Error("Order update failed");
-  return data.order;
+  throw lastErr instanceof Error ? lastErr : new Error("Failed to update order");
 }
 
 export async function postFoodOrderPrepDelay(

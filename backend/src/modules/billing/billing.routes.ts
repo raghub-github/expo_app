@@ -92,6 +92,9 @@ const calculateBodySchema = z.object({
   pickupLon: z.number().optional(),
   serviceType: z.enum(["FOOD", "GROCERY", "PARCEL", "RIDE", "ALL"]).optional(),
   cityName: z.string().optional().nullable(),
+  /** Live / client geo — fills empty customer_addresses.postal_code/state on first bill. */
+  pincode: z.string().optional().nullable(),
+  stateName: z.string().optional().nullable(),
   userSegment: z.enum(["NEW", "EXISTING", "ALL"]).optional(),
   subscriptionOptIn: z.boolean().optional(),
   subscriptionPlanId: z.coerce.number().int().positive().optional(),
@@ -590,6 +593,8 @@ export async function billingRoutes(app: FastifyInstance) {
         pickupLon: body.pickupLon,
         serviceType: body.serviceType,
         cityName: body.cityName ?? null,
+        livePincode: body.pincode ?? null,
+        liveState: body.stateName ?? null,
         userSegment: body.userSegment,
         subscriptionOptIn: body.subscriptionOptIn,
         subscriptionPlanId: body.subscriptionPlanId,

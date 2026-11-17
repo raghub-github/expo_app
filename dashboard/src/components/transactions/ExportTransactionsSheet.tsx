@@ -149,7 +149,23 @@ const PAYMENT_STATUSES = [
   "created", "pending", "paid", "captured_unfinalized", "failed",
   "reconciliation_required", "refund_pending", "refunded", "refund_failed", "cancelled",
 ];
-const PAYMENT_MODES = ["razorpay", "wallet", "gati_cash", "mixed", "cash", "online", "upi", "card"];
+const PAYMENT_MODES = [
+  "upi",
+  "upi_qr",
+  "upi_phonepe",
+  "upi_google_pay",
+  "upi_paytm",
+  "upi_collect",
+  "card",
+  "netbanking",
+  "wallet",
+  "gaticash",
+  "gati_cash",
+  "mixed",
+  "cash",
+  "online",
+  "razorpay",
+];
 const SERVICES = [
   { value: "food", label: "Food" },
   { value: "grocery", label: "Grocery" },

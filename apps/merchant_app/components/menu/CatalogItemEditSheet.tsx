@@ -14,7 +14,8 @@ type Props = {
   oosLabel: string | null;
   onClose: () => void;
   onUpdateStock: () => void;
-  onEditItem: () => void;
+  /** Omit for staff stock-only access. */
+  onEditItem?: () => void;
 };
 
 export function CatalogItemEditSheet({
@@ -124,12 +125,20 @@ export function CatalogItemEditSheet({
           </View>
 
           <View style={styles.footer}>
-            <TouchableOpacity style={styles.updateStockBtn} onPress={onUpdateStock} activeOpacity={0.9}>
-              <Text style={styles.updateStockText}>Update stock</Text>
+            <TouchableOpacity
+              style={[styles.updateStockBtn, !onEditItem && styles.updateStockBtnSolo]}
+              onPress={onUpdateStock}
+              activeOpacity={0.9}
+            >
+              <Text style={[styles.updateStockText, !onEditItem && styles.updateStockTextSolo]}>
+                Update stock
+              </Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.editItemBtn} onPress={onEditItem} activeOpacity={0.9}>
-              <Text style={styles.editItemText}>Edit item</Text>
-            </TouchableOpacity>
+            {onEditItem ? (
+              <TouchableOpacity style={styles.editItemBtn} onPress={onEditItem} activeOpacity={0.9}>
+                <Text style={styles.editItemText}>Edit item</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         </Animated.View>
       </View>
@@ -305,10 +314,16 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     alignItems: "center",
   },
+  updateStockBtnSolo: {
+    backgroundColor: GatiMitraMerchant.textPrimary,
+  },
   updateStockText: {
     fontSize: 15,
     fontWeight: "800",
     color: GatiMitraMerchant.textPrimary,
+  },
+  updateStockTextSolo: {
+    color: "#FFFFFF",
   },
   editItemBtn: {
     flex: 1,

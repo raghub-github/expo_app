@@ -39,6 +39,9 @@ function isRetryableRequest(err: AxiosError): boolean {
   if (method === "post" && typeof config.url === "string" && config.url.includes("/distance/store-quote")) {
     return true;
   }
+  // Do NOT axios-retry /billing/calculate here. Under load it already takes
+  // 15–20s; stacked transport retries × React Query retries leave checkout
+  // stuck past the stall UI. RQ owns a short retry budget for this POST.
   if (method === "post" && typeof config.url === "string" && config.url.includes("/v1/rides/quote-batch")) {
     return true;
   }
@@ -90,12 +93,22 @@ export const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
-/** Attach Bearer token from SecureStore to every request */
+/** In-memory session first — SecureStore getItem after OTP can stall the spinner. */
+function peekAuthTokenSync(): string | null {
+  try {
+    const { useAuthStore } = require("@/store/authStore") as typeof import("@/store/authStore");
+    return useAuthStore.getState().session?.accessToken ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Attach Bearer token from memory (preferred) or SecureStore */
 api.interceptors.request.use(
   async (config) => {
     const cfg = config as RetryConfig;
     config.baseURL = getConfig().apiBaseUrl;
-    const token = await getItem(STORAGE_KEYS.AUTH_TOKEN);
+    const token = peekAuthTokenSync() ?? (await getItem(STORAGE_KEYS.AUTH_TOKEN));
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     } else if (
@@ -136,11 +149,21 @@ api.interceptors.response.use(
   async (err: AxiosError<{ message?: string; error?: string }>) => {
     const config = err.config as RetryConfig | undefined;
     if (config?.__startupGate) leaveStartupApiGate(config.url);
+    const signalAborted = config?.signal?.aborted === true;
     const isCanceled =
+      signalAborted ||
       err.code === "ERR_CANCELED" ||
       err.name === "CanceledError" ||
-      (typeof err.message === "string" && err.message.toLowerCase() === "canceled");
+      (typeof err.message === "string" &&
+        (err.message.toLowerCase() === "canceled" ||
+          err.message.toLowerCase() === "request aborted"));
     if (isCanceled) {
+      // Normalize XHR abort → CanceledError so React Query does not mark isError.
+      if (signalAborted && err.code !== "ERR_CANCELED") {
+        const canceled = new axios.CanceledError("canceled");
+        (canceled as AxiosError).config = config;
+        return Promise.reject(canceled);
+      }
       return Promise.reject(err);
     }
 

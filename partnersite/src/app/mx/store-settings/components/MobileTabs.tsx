@@ -1,6 +1,9 @@
 'use client'
 
+import { useMemo } from 'react'
 import { Crown, Clock, Power, ChefHat, Package, Users, Smartphone, Bell, Activity } from 'lucide-react'
+import { useMerchantSession } from '@/context/MerchantSessionContext'
+import { partnerSessionHasPermission } from '@/lib/auth/merchant-staff-permissions'
 
 interface MobileTabsProps {
   activeTab: string
@@ -8,17 +11,24 @@ interface MobileTabsProps {
 }
 
 export function MobileTabs({ activeTab, onTabChange }: MobileTabsProps) {
-  const tabs = [
-    { id: 'plans', label: 'Plans', icon: Crown },
-    { id: 'timings', label: 'Timings', icon: Clock },
-    { id: 'operations', label: 'Operations', icon: Power },
-    { id: 'menu-capacity', label: 'Menu', icon: ChefHat },
-    { id: 'delivery', label: 'Delivery', icon: Package },
-    { id: 'riders', label: 'Riders', icon: Users },
-    { id: 'pos', label: 'POS', icon: Smartphone },
-    { id: 'notifications', label: 'Alerts', icon: Bell },
-    { id: 'audit', label: 'Audit', icon: Activity },
-  ]
+  const merchantSession = useMerchantSession()
+  const canManageUsers = partnerSessionHasPermission(merchantSession?.parent, 'users')
+
+  const tabs = useMemo(() => {
+    const all = [
+      { id: 'plans', label: 'Plans', icon: Crown },
+      { id: 'timings', label: 'Timings', icon: Clock },
+      { id: 'operations', label: 'Operations', icon: Power },
+      { id: 'menu-capacity', label: 'Menu', icon: ChefHat },
+      { id: 'delivery', label: 'Delivery', icon: Package },
+      { id: 'riders', label: 'Riders', icon: Users },
+      { id: 'pos', label: 'POS', icon: Smartphone },
+      { id: 'notifications', label: 'Alerts', icon: Bell },
+      { id: 'staff', label: 'Staff', icon: Users, requireUsers: true as const },
+      { id: 'audit', label: 'Audit', icon: Activity },
+    ]
+    return all.filter((t) => !('requireUsers' in t && t.requireUsers) || canManageUsers)
+  }, [canManageUsers])
 
   return (
     <div className="lg:hidden mb-6">

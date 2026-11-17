@@ -8,6 +8,7 @@ export const STORE_SETTINGS_TAB_LABELS: Record<string, string> = {
   address: 'Store Address',
   pos: 'POS Integration',
   notifications: 'Notifications',
+  staff: 'Staff & Access',
   audit: 'Audit & Activity',
   gatimitra: 'Store on GatiMitra',
 }

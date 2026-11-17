@@ -21,7 +21,14 @@ export default async function MerchantVerificationsPage({
   const returnTo = params.returnTo?.trim() || null;
 
   return (
-    <div className={`${storeId ? "verification-typo" : "merchants-typo"} flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden`}>
+    <div
+      className={
+        storeId
+          ? // Let dashboard <main> be the only scroll parent so sticky store header works.
+            "verification-typo flex w-full max-w-full flex-col"
+          : "merchants-typo flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden"
+      }
+    >
       {storeId ? (
         <Suspense fallback={<VerificationPageSkeleton />}>
           <StoreVerificationInnerWrapper

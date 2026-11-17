@@ -9,6 +9,7 @@ import { getCustomerDashboardStats } from "@/lib/db/operations/customer-stats";
 import { getUserPermissions, hasDashboardAccessByAuth } from "@/lib/permissions/engine";
 import { logAPICall } from "@/lib/auth/activity-tracker";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
+import { getCached, setCached } from "@/lib/server-cache";
 
 export const runtime = 'nodejs';
 
@@ -69,12 +70,14 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Fetch dashboard statistics
-    const stats = await getCustomerDashboardStats(filters);
+    const cacheKey = `customer-stats:${JSON.stringify(filters)}`;
+    const cached = getCached<Awaited<ReturnType<typeof getCustomerDashboardStats>>>(cacheKey);
+    const stats = cached ?? (await getCustomerDashboardStats(filters));
+    if (!cached) setCached(cacheKey, stats, 30_000);
 
-    // Log activity
+    // Log activity (best-effort; don't block the response)
     const ipAddress = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || undefined;
-    await logAPICall(
+    void logAPICall(
       systemUser.id,
       "/api/customers/stats",
       "GET",

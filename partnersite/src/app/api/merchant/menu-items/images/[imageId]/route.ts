@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { validateMerchantFromSession } from "@/lib/auth/validate-merchant";
+import { partnerCanEditMenuDetails } from "@/lib/auth/merchant-staff-permissions";
 import { assertStoreAccess } from "@/lib/auth/assert-store-access";
 import { deleteItemImage } from "@/lib/merchant-menu-item-images";
 import { logStoreActivity } from "@/lib/store-activity-feed";
@@ -29,6 +30,12 @@ export async function DELETE(
     });
     if (!validation.isValid) {
       return NextResponse.json({ error: validation.error ?? "Merchant not found" }, { status: 403 });
+    }
+    if (!partnerCanEditMenuDetails(validation)) {
+      return NextResponse.json(
+        { error: "Staff cannot upload or change menu item images." },
+        { status: 403 }
+      );
     }
 
     const storeId = req.nextUrl.searchParams.get("storeId");

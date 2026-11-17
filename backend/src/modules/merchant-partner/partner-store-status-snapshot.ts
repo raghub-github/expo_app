@@ -53,14 +53,50 @@ function toIso(v: Date | string | null | undefined): string | null {
   return Number.isNaN(raw.getTime()) ? null : raw.toISOString();
 }
 
+/** Avoid stacking per-store ticks from dual Partner polls + global 30s engine. */
+const lastScheduleTickAtByStore = new Map<number, number>();
+const SCHEDULE_TICK_MIN_GAP_MS = 20_000;
+
+const partnerStatusInflight = new Map<number, Promise<PartnerStoreStatusSnapshot | null>>();
+
+async function maybeRunScheduleTickForStore(
+  storeId: number,
+  log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }
+): Promise<void> {
+  const last = lastScheduleTickAtByStore.get(storeId) ?? 0;
+  if (Date.now() - last < SCHEDULE_TICK_MIN_GAP_MS) return;
+  lastScheduleTickAtByStore.set(storeId, Date.now());
+  await runStoreScheduleTickForStore(storeId, log);
+}
+
 export async function buildPartnerStoreStatusSnapshot(
   storeId: number,
   log: { info: (o: object, msg?: string) => void; error: (o: object, msg?: string) => void }
 ): Promise<PartnerStoreStatusSnapshot | null> {
   if (!Number.isInteger(storeId) || storeId < 1) return null;
 
-  await runStoreScheduleTickForStore(storeId, log);
+  const existing = partnerStatusInflight.get(storeId);
+  if (existing) return existing;
 
+  const run = (async (): Promise<PartnerStoreStatusSnapshot | null> => {
+    // Debounced — Partner TopBar + store-settings both poll every 30s.
+    await maybeRunScheduleTickForStore(storeId, log);
+    return readPartnerStoreStatusSnapshot(storeId);
+  })();
+
+  partnerStatusInflight.set(storeId, run);
+  try {
+    return await run;
+  } finally {
+    if (partnerStatusInflight.get(storeId) === run) {
+      partnerStatusInflight.delete(storeId);
+    }
+  }
+}
+
+async function readPartnerStoreStatusSnapshot(
+  storeId: number
+): Promise<PartnerStoreStatusSnapshot | null> {
   const { rows, hoursRows } = await withSqlRetry(async () => {
     const sql = getSql();
     const storeRows = await sql`
@@ -176,4 +212,10 @@ export async function buildPartnerStoreStatusSnapshot(
         ? String(row.last_toggled_by_id).trim()
         : null,
   };
+}
+
+/** Mark a store as recently ticked (e.g. after POST /schedule-tick) so partner-status skips. */
+export function markStoreScheduleTickDone(storeId: number): void {
+  if (!Number.isInteger(storeId) || storeId < 1) return;
+  lastScheduleTickAtByStore.set(storeId, Date.now());
 }

@@ -13,7 +13,11 @@ export type StaffPermission = {
 
 export const STAFF_PERMISSIONS: StaffPermission[] = [
   { id: "home", title: "Home", description: "Business reports, payouts etc." },
-  { id: "menu", title: "Menu management", description: "Edit items and item details" },
+  {
+    id: "menu",
+    title: "Menu management",
+    description: "View catalog; mark in/out of stock (owners/managers also edit items & photos)",
+  },
   { id: "promo", title: "Marketing | Promo", description: "Create and manage discounts" },
   { id: "ads", title: "Marketing | Ads", description: "Create and manage ad campaigns" },
   {
@@ -50,9 +54,23 @@ export const ROLE_PERMISSION_IDS: Record<StaffRoleKey, ReadonlySet<string>> = {
     "outlet",
     "payouts",
   ]),
-  /** Home + operations: orders, feedback reply, live kitchen — no menu/payouts/Flow hub. */
-  STAFF: new Set(["home", "operations"]),
+  /** Home + ops + catalog stock toggles — no item edit/upload, payouts, or Flow hub. */
+  STAFF: new Set(["home", "operations", "menu"]),
 };
+
+/** Staff may open Catalog and toggle stock only — not edit details / upload photos. */
+export function partnerCanEditMenuDetails(
+  partner: { accessRole?: string | null; permissions?: string[] | null } | null | undefined
+): boolean {
+  if (!partnerHasPermission(partner, "menu")) return false;
+  return !isStaffAccessRole(partner);
+}
+
+export function partnerCanManageMenuStock(
+  partner: { accessRole?: string | null; permissions?: string[] | null } | null | undefined
+): boolean {
+  return partnerHasPermission(partner, "menu");
+}
 
 export function normalizeStaffRole(role: string | null | undefined): StaffRoleKey {
   const r = String(role ?? "")

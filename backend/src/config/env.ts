@@ -291,14 +291,15 @@ const EnvSchema = z.object({
 
   /**
    * Max GPS age (seconds) usable for NEW dispatch offers while Duty remains ON.
-   * App kill / Doze can delay pings; default 900s (15 min) is the location-safety
-   * window. Older than this → LOCATION_STALE (still ON DUTY, not offered NEW work
-   * until a ping arrives). Pending offers remain recoverable separately.
+   * App kill / Doze / OEM battery can delay pings for a long time; default 3600s
+   * (1h) keeps on-duty riders in the offer pool. Older → LOCATION_STALE (still
+   * ON DUTY, not offered until a ping). Accept still uses the FRESH window.
+   * Pending offers remain recoverable separately.
    * onDutyCandidates must NOT require this window — only offer eligibility does.
    */
   RIDER_DISPATCH_LOCATION_STALE_MAX_AGE_SECONDS: z
-    .preprocess(emptyToUndefined, z.coerce.number().int().min(30).max(3600))
-    .default(900),
+    .preprocess(emptyToUndefined, z.coerce.number().int().min(30).max(86_400))
+    .default(3600),
 
   /**
    * GAP 2 — final location revalidation when a rider ACCEPTS an offer. The offer was validated at

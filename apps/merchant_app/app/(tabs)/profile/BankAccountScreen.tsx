@@ -15,6 +15,8 @@ import { GatiMitraMerchant, H_PADDING, CARD_RADIUS } from "@/constants/theme";
 import { useSelectedStore } from "@/context/SelectedStoreContext";
 import { useAuth } from "@/context/AuthContext";
 import { useRequirePartnerPermission } from "@/hooks/useRequirePartnerPermission";
+import { StaffSensitiveBlur } from "@/components/StaffSensitiveBlur";
+import { isStaffAccessRole } from "@/lib/staffPermissions";
 import { AddBankAccountSheet } from "@/components/bank/AddBankAccountSheet";
 import {
   listBankAccounts,
@@ -25,9 +27,13 @@ import {
 } from "@/services/bankAccountApi";
 
 export default function BankAccountScreen() {
-  const bankAllowed = useRequirePartnerPermission("payouts", "/(tabs)/profile");
+  const { partner, token } = useAuth();
+  const staffLocked = isStaffAccessRole(partner);
+  const bankAllowed = useRequirePartnerPermission(
+    "payouts",
+    staffLocked ? false : "/(tabs)/profile"
+  );
   const { selectedStore } = useSelectedStore();
-  const { token } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [accounts, setAccounts] = useState<BankAccount[]>([]);
@@ -53,6 +59,12 @@ export default function BankAccountScreen() {
   }, [storeId, token]);
 
   useEffect(() => {
+    if (staffLocked) {
+      setLoading(false);
+      setAccounts([]);
+      setError(null);
+      return;
+    }
     if (!storeId || !token) {
       setLoading(false);
       if (!token) setError("Not signed in.");
@@ -60,7 +72,7 @@ export default function BankAccountScreen() {
       return;
     }
     reload();
-  }, [storeId, token, reload]);
+  }, [storeId, token, reload, staffLocked]);
 
   const handleVerify = async (acc: BankAccount) => {
     if (!storeId || !token) return;
@@ -134,8 +146,37 @@ export default function BankAccountScreen() {
     ]);
   };
 
-  if (!bankAllowed) {
+  if (!bankAllowed && !staffLocked) {
     return <View style={styles.centered} />;
+  }
+
+  if (staffLocked) {
+    return (
+      <View style={styles.container}>
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+          <StaffSensitiveBlur
+            locked
+            title="Bank details locked"
+            message="Bank account details are hidden for staff. Ask the owner to view or update payouts."
+            minHeight={220}
+          >
+            <View style={styles.accountCard}>
+              <Text style={styles.accName}>Account holder</Text>
+              <Text style={styles.accDetail}>****1234 · ABCD0XXXXXX</Text>
+              <Text style={styles.accDetail}>Sample Bank – Branch</Text>
+            </View>
+            <View style={[styles.accountCard, { marginTop: 10 }]}>
+              <Text style={styles.accName}>Secondary account</Text>
+              <Text style={styles.accDetail}>****5678 · ABCD0YYYYYY</Text>
+            </View>
+            <View style={[styles.addBtn, { marginTop: 12 }]}>
+              <Ionicons name="add-circle-outline" size={20} color={GatiMitraMerchant.primary} />
+              <Text style={styles.addBtnText}>Add Bank Account</Text>
+            </View>
+          </StaffSensitiveBlur>
+        </ScrollView>
+      </View>
+    );
   }
 
   if (loading && accounts.length === 0) {

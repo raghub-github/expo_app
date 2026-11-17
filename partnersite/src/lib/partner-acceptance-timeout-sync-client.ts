@@ -32,9 +32,18 @@ export function clearPartnerAcceptanceTimeoutSyncCache(storeId: string): void {
   sessionStorage.removeItem(denyKey(sid));
 }
 
+const DENY_TTL_MS = 5 * 60 * 1000;
+
 export function isPartnerAcceptanceTimeoutSyncDenied(storeId: string): boolean {
   if (typeof window === 'undefined') return false;
-  return Boolean(sessionStorage.getItem(denyKey(storeId.trim())));
+  const raw = sessionStorage.getItem(denyKey(storeId.trim()));
+  if (!raw) return false;
+  const at = Number(raw);
+  if (!Number.isFinite(at) || Date.now() - at > DENY_TTL_MS) {
+    sessionStorage.removeItem(denyKey(storeId.trim()));
+    return false;
+  }
+  return true;
 }
 
 export function isPartnerAcceptanceTimeoutSyncDone(storeId: string): boolean {
@@ -48,7 +57,7 @@ async function runSync(storeId: string, force: boolean): Promise<SyncResult> {
   if (!sid) return { ok: false, status: 400, cancelled: 0, error: 'store_id_required' };
 
   if (typeof window !== 'undefined' && !force) {
-    if (sessionStorage.getItem(denyKey(sid))) {
+    if (isPartnerAcceptanceTimeoutSyncDenied(sid)) {
       return { ok: false, status: 403, cancelled: 0, error: 'cached_forbidden' };
     }
     if (sessionStorage.getItem(okKey(sid))) {
@@ -76,6 +85,15 @@ async function runSync(storeId: string, force: boolean): Promise<SyncResult> {
         sessionStorage.setItem(okKey(sid), String(Date.now()));
         sessionStorage.removeItem(denyKey(sid));
       }
+      // Soft-skip from API (ownership mismatch) — mark done, no toast/retry spam.
+      if ((data as { skipped?: boolean }).skipped) {
+        return {
+          ok: true,
+          status: res.status,
+          cancelled: 0,
+          error: (data as { reason?: string }).reason ?? 'skipped',
+        };
+      }
       return {
         ok: true,
         status: res.status,
@@ -84,6 +102,7 @@ async function runSync(storeId: string, force: boolean): Promise<SyncResult> {
     }
 
     if (res.status === 403) {
+      // Transient / stale selection — cache briefly, allow retry after re-login or store switch.
       if (typeof window !== 'undefined') {
         sessionStorage.setItem(denyKey(sid), String(Date.now()));
       }
@@ -134,7 +153,7 @@ export function requestPartnerAcceptanceTimeoutSync(
 
   const force = options?.force === true;
   if (!force && typeof window !== 'undefined') {
-    if (sessionStorage.getItem(denyKey(sid))) {
+    if (isPartnerAcceptanceTimeoutSyncDenied(sid)) {
       return Promise.resolve({ ok: false, status: 403, cancelled: 0, error: 'cached_forbidden' });
     }
     if (sessionStorage.getItem(okKey(sid))) {

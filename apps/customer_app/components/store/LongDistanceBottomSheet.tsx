@@ -3,13 +3,17 @@ import { Modal, View, TouchableOpacity, Pressable, StyleSheet, Platform } from "
 import type { ComponentProps } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppText } from "@/components/AppText";
 import { AppAssetImage, useAppAssetUrl } from "@/components/AppAssetImage";
+import { InstantPressable } from "@/components/InstantPressable";
 import { CX } from "@/lib/appAssetKeys";
 import { GatiMitraColors } from "@/constants/gatimitra";
-import { reloadCustomerAppAssets } from "@/store/appAssetsStore";
 import { MerchantDarkPalette, useMerchantUiDark } from "@/features/merchant-detail/merchantUiTheme";
+import { toAbsoluteImageUrl } from "@/utils/mediaUrl";
+import { getAppAssetUrl, getAppAssetProxyUrl } from "@/store/appAssetsStore";
+import { enqueueImagePrefetchFront } from "@/lib/prefetchQueue";
 
 const POINTS: Array<{
   icon: ComponentProps<typeof Ionicons>["name"];
@@ -25,21 +29,33 @@ type Props = {
   onClose: () => void;
 };
 
+/** Warm hero into expo-image memory-disk as early as the asset URL is known. */
+export function prefetchLongDistanceSheetImage(): void {
+  const raw =
+    getAppAssetProxyUrl(CX.store.longDistanceSheet) ??
+    getAppAssetUrl(CX.store.longDistanceSheet);
+  if (!raw?.trim()) return;
+  const uri = toAbsoluteImageUrl(raw) ?? raw.trim();
+  if (!uri) return;
+  enqueueImagePrefetchFront([uri], 1);
+  void Image.prefetch(uri, { cachePolicy: "memory-disk" }).catch(() => undefined);
+}
+
 export function LongDistanceBottomSheet({ visible, onClose }: Props) {
   const insets = useSafeAreaInsets();
   const dark = useMerchantUiDark();
   const heroUrl = useAppAssetUrl(CX.store.longDistanceSheet);
 
+  // Prefetch only — never reload CMS assets on open (that delayed the sheet).
   useEffect(() => {
-    if (!visible) return;
-    void reloadCustomerAppAssets();
-  }, [visible]);
+    prefetchLongDistanceSheetImage();
+  }, [heroUrl]);
 
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="fade"
+      animationType="slide"
       statusBarTranslucent
       onRequestClose={onClose}
     >
@@ -55,7 +71,7 @@ export function LongDistanceBottomSheet({ visible, onClose }: Props) {
             style={styles.floatingClose}
             onPress={onClose}
             hitSlop={10}
-            activeOpacity={0.9}
+            activeOpacity={0.85}
             accessibilityRole="button"
             accessibilityLabel="Close"
           >
@@ -69,7 +85,7 @@ export function LongDistanceBottomSheet({ visible, onClose }: Props) {
                   style={styles.hero}
                   contentFit="contain"
                   accessibilityLabel="Long distance delivery"
-                  fresh
+                  transition={0}
                 />
               </View>
             ) : null}
@@ -87,12 +103,14 @@ export function LongDistanceBottomSheet({ visible, onClose }: Props) {
               ))}
             </View>
 
-            <Pressable
+            <InstantPressable
               onPress={onClose}
-              android_ripple={{ color: "rgba(255,255,255,0.28)" }}
-              style={({ pressed }) => [styles.ctaPress, pressed && styles.ctaPressed]}
+              pressedScale={0.97}
+              pressedOpacity={0.9}
+              haptic
               accessibilityRole="button"
               accessibilityLabel="Okay, got it!"
+              style={styles.ctaPress}
             >
               <LinearGradient
                 colors={GatiMitraColors.checkoutGradient}
@@ -102,7 +120,7 @@ export function LongDistanceBottomSheet({ visible, onClose }: Props) {
               >
                 <AppText style={styles.ctaText}>Okay, got it!</AppText>
               </LinearGradient>
-            </Pressable>
+            </InstantPressable>
           </View>
         </View>
       </View>
@@ -114,7 +132,7 @@ const styles = StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(15, 23, 42, 0.52)",
+    backgroundColor: "rgba(15, 23, 42, 0.45)",
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -217,10 +235,6 @@ const styles = StyleSheet.create({
       },
       android: { elevation: 5 },
     }),
-  },
-  ctaPressed: {
-    opacity: 0.86,
-    transform: [{ scale: 0.98 }],
   },
   cta: {
     minHeight: 52,

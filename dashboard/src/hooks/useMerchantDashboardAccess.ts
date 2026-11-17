@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useDashboardAccessQuery } from "@/hooks/queries/useDashboardAccessQuery";
+import { useAuthOptional } from "@/providers/AuthProvider";
 import {
   canToggleMerchantPortal,
   filterStoreScopedRoutesByMerchantAccess,
@@ -16,13 +17,28 @@ import type { DashboardSubRoute } from "@/lib/navigation/dashboard-routes";
 
 /** Client-side merchant dashboard capability checks from dashboard_access_points. */
 export function useMerchantDashboardAccess() {
+  const auth = useAuthOptional();
+  const authReady = auth?.authReady ?? false;
   const { isSuperAdmin, canTogglePortal, loading: permsLoading } = usePermissions();
-  const { data: dashboardAccessData, isLoading: accessLoading } = useDashboardAccessQuery();
+  const {
+    data: dashboardAccessData,
+    isLoading: accessLoading,
+    isError: accessError,
+  } = useDashboardAccessQuery();
 
   const accessPoints = dashboardAccessData?.accessPoints ?? [];
   /** Block mutations until access payload is present (avoids CTA flash / stale cache). */
-  const accessReady = !permsLoading && !accessLoading && dashboardAccessData != null;
-  const loading = permsLoading || accessLoading;
+  const accessReady =
+    authReady && !permsLoading && !accessLoading && dashboardAccessData != null;
+  /**
+   * Stay "loading" until auth + access settle. Disabled queries report isLoading=false
+   * before authReady — that used to flip Admin portal → Merchant on full reload.
+   */
+  const loading =
+    !authReady ||
+    permsLoading ||
+    accessLoading ||
+    (dashboardAccessData == null && !accessError);
 
   const hasAdminMerchantAccess = useMemo(
     () =>

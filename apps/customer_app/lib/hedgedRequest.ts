@@ -19,6 +19,11 @@ export type HedgedProvider<T> = {
   timeoutMs: number;
   /** Resolve null when the provider has no usable answer. */
   run: (signal: AbortSignal) => Promise<T | null>;
+  /**
+   * Soft reject: keep racing other providers. The first soft answer is kept as a
+   * fallback if nothing hard-wins (e.g. Mapbox v6 approximate street >45 m away).
+   */
+  accept?: (value: T) => boolean;
 };
 
 export type HedgedResult<T> = { value: T; provider: string };
@@ -31,6 +36,7 @@ export function runHedged<T>(
     let settled = false;
     let nextIndex = 0;
     let running = 0;
+    let softFallback: HedgedResult<T> | null = null;
     const controllers: AbortController[] = [];
     const timers: Array<ReturnType<typeof setTimeout>> = [];
 
@@ -72,12 +78,17 @@ export function runHedged<T>(
           running -= 1;
           if (settled) return;
           if (value != null) {
-            finish({ value, provider: provider.name });
-            return;
+            const hardWin = !provider.accept || provider.accept(value);
+            if (hardWin) {
+              finish({ value, provider: provider.name });
+              return;
+            }
+            // Soft: prefer the earliest (highest-priority) soft answer as fallback.
+            if (!softFallback) softFallback = { value, provider: provider.name };
           }
-          // Failed or empty: do not wait out the hedge delay for the next provider.
+          // Failed, empty, or soft: do not wait out the hedge delay for the next provider.
           if (nextIndex < providers.length) startNext();
-          else if (running === 0) finish(null);
+          else if (running === 0) finish(softFallback);
         });
 
       const next = providers[nextIndex];

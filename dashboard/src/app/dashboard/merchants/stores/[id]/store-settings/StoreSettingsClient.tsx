@@ -46,6 +46,7 @@ import { useStore } from "@/hooks/useStore";
 import { useMerchantDashboardAccess } from "@/hooks/useMerchantDashboardAccess";
 import { billingCycleLabel, billingCycleSuffix } from "@/lib/billingCycleLabel";
 import { isStoreDelisted } from "@/lib/merchants/store-delist";
+import { StaffAndAccessPanel } from "@/components/merchant/StaffAndAccessPanel";
 
 type StoreDetail = {
   id: number;
@@ -114,7 +115,7 @@ function Toggle({
 }
 
 const VALID_TABS = [
-  "plans", "timings", "operations", "menu-capacity", "delivery", "riders", "pos",
+  "plans", "timings", "operations", "menu-capacity", "delivery", "riders", "staff", "pos",
 ];
 
 /** Fallback so we always show 3 plan cards even if API returns empty (e.g. merchant_plans not seeded). */
@@ -1903,6 +1904,10 @@ export function StoreSettingsClient({ storeId }: { storeId: string }) {
               })()}
             </div>
           )}
+
+          {activeTab === "staff" && Number.isFinite(Number(storeId)) ? (
+            <StaffAndAccessPanel storeInternalId={Number(storeId)} />
+          ) : null}
 
           {["riders", "pos"].includes(activeTab) && (
             <div className="py-8 text-center">

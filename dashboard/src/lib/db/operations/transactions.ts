@@ -146,7 +146,13 @@ const UNION_CTE = sql`
       CASE
         WHEN COALESCE(po.gati_cash_applied,0) > 0.005 AND COALESCE(po.grand_total,0) <= 0.005 THEN 'gaticash'
         WHEN COALESCE(po.gati_cash_applied,0) > 0.005 THEN 'mixed'
-        ELSE po.payment_method
+        WHEN lower(COALESCE(po.payment_method,'')) IN ('upi_qr','qr') THEN 'upi_qr'
+        WHEN lower(COALESCE(po.payment_method,'')) LIKE 'upi_%' THEN lower(po.payment_method)
+        WHEN lower(COALESCE(po.payment_method,'')) LIKE 'wallet_%' THEN lower(po.payment_method)
+        WHEN lower(COALESCE(po.payment_method,'')) = 'netbanking' THEN 'netbanking'
+        WHEN lower(COALESCE(po.payment_method,'')) = 'card' THEN 'card'
+        WHEN lower(COALESCE(po.payment_method,'')) IN ('gati_cash','gaticash') THEN 'gaticash'
+        ELSE lower(COALESCE(po.payment_method, 'upi'))
       END AS payment_mode,
       ROUND((COALESCE(po.grand_total,0) + COALESCE(po.gati_cash_applied,0)) * 100)::bigint AS gross_paise,
       CASE WHEN po.payment_state IN ('finalized','paid')

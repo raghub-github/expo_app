@@ -39,6 +39,19 @@ export async function POST(req: NextRequest) {
         status: gate.status,
         error: gate.error,
       });
+      // Best-effort hygiene on portal open — do not surface ownership mismatches
+      // as hard 403s in the browser console (stale selectedStoreId / staff scope).
+      if (gate.status === 403) {
+        return NextResponse.json(
+          {
+            cancelled: 0,
+            skipped: true,
+            reason: 'forbidden',
+            store_id: storeId ? String(storeId).trim() : null,
+          },
+          { headers: { 'Cache-Control': 'private, no-store, max-age=0' } },
+        );
+      }
       return NextResponse.json({ error: gate.error }, { status: gate.status });
     }
 

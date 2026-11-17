@@ -1,7 +1,7 @@
 /**
  * Orders Management — real-time operational board for GatiMitra Partner.
- * - Horizontal status nav: Preparing | Ready | Picked Up | Completed | Scheduled
- * - Swipe left/right on the list to switch tabs.
+ * - Fixed search + status tabs; order list scrolls independently (Zomato-style).
+ * - Swipe left/right on the list to switch tabs (no full-page slide transform).
  */
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
@@ -17,22 +17,10 @@ import {
   ActivityIndicator,
   LayoutChangeEvent,
   FlatList,
-  SectionList,
   Alert,
-  useWindowDimensions,
 } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import Animated, {
-  runOnJS,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from "react-native-reanimated";
-
-/** Sticky section headers must live on the list itself (not a wrapping Animated.View). */
-const AnimatedSectionList = Animated.createAnimatedComponent(
-  SectionList<OrderRecord, { key: string; data: OrderRecord[] }>
-);
+import { runOnJS } from "react-native-reanimated";
 import { AppText as Text } from "@/components/AppText";
 import { Ionicons } from "@expo/vector-icons";
 import { useNowMs } from "@/hooks/useNowMs";
@@ -136,8 +124,6 @@ const SWIPE_TAB_ORDER: LiveFilterKey[] = [
 const SWIPE_THRESHOLD = 56;
 /** Flick past this (px/s) and the stage switches even on a short drag. */
 const SWIPE_VELOCITY = 550;
-/** List body tracks the finger — chrome (search / tabs) stays fixed outside this transform. */
-const SWIPE_DRAG_DAMPING = 0.85;
 
 function tabPillActiveStyle(isActive: boolean) {
   return isActive ? styles.tabPillActive : null;
@@ -437,9 +423,15 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     setFilterKey(resolveInitialFilterKey("", orders));
   }, [isHistory, loading, initialTabParam, orders]);
 
+  const liveListRef = useRef<FlatList<OrderRecord> | null>(null);
+
   const handleFilterChange = useCallback((key: LiveFilterKey) => {
     userSelectedTabRef.current = true;
     setFilterKey(key);
+    // Keep chrome fixed; only the list content swaps — reset scroll like Zomato stage tabs.
+    requestAnimationFrame(() => {
+      liveListRef.current?.scrollToOffset({ offset: 0, animated: false });
+    });
   }, []);
 
   /** `next` advances toward Scheduled, `previous` moves back toward Preparing. */
@@ -455,40 +447,24 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     [filterKey, handleFilterChange]
   );
 
-  const { width: windowWidth } = useWindowDimensions();
-  const dragX = useSharedValue(0);
-  const pageWidthSV = useSharedValue(Math.max(280, windowWidth));
-  const swipeCommitting = useSharedValue(false);
-
-  useEffect(() => {
-    pageWidthSV.value = Math.max(280, windowWidth);
-  }, [windowWidth, pageWidthSV]);
-
   /**
-   * Sideways pan only on the order list body. Search / banners / status pills
-   * stay outside this detector so the top chrome never slides with the finger.
-   * activeOffsetX / failOffsetY let taps and vertical scrolling reach order cards.
+   * Horizontal tab switch only — do NOT translate the list while dragging.
+   * Translating the ScrollView/FlatList made the whole board feel like one slide
+   * and fought native vertical scrolling (Zomato keeps chrome fixed + free list scroll).
+   * activeOffsetX / failOffsetY keep vertical flings on the list.
    */
   const tabSwipeGesture = useMemo(
     () =>
       Gesture.Pan()
         .enabled(!isHistory)
-        .activeOffsetX([-18, 18])
-        .failOffsetY([-14, 14])
+        .activeOffsetX([-24, 24])
+        .failOffsetY([-12, 12])
         .cancelsTouchesInView(false)
         .onTouchesDown((_e, state) => {
           "worklet";
-          swipeCommitting.value = false;
           if (horizontalGestureClaimed.value) {
             state.fail();
           }
-        })
-        .onUpdate((e) => {
-          "worklet";
-          if (horizontalGestureClaimed.value) return;
-          const maxDrag = Math.min(pageWidthSV.value * 0.42, 180);
-          const damped = e.translationX * SWIPE_DRAG_DAMPING;
-          dragX.value = Math.max(-maxDrag, Math.min(maxDrag, damped));
         })
         .onEnd((e) => {
           "worklet";
@@ -498,26 +474,11 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
           const commitPrev =
             e.translationX >= SWIPE_THRESHOLD || e.velocityX >= SWIPE_VELOCITY;
           if (commitNext || commitPrev) {
-            // Switch tab immediately — no exit/enter off-screen hop (that left a blank gap).
-            swipeCommitting.value = true;
             runOnJS(shiftTabBySwipe)(commitNext ? "next" : "previous");
-            dragX.value = withTiming(0, { duration: 120 });
-            return;
-          }
-          dragX.value = withTiming(0, { duration: 160 });
-        })
-        .onFinalize(() => {
-          "worklet";
-          if (!swipeCommitting.value) {
-            dragX.value = withTiming(0, { duration: 160 });
           }
         }),
-    [dragX, isHistory, pageWidthSV, shiftTabBySwipe, swipeCommitting]
+    [isHistory, shiftTabBySwipe]
   );
-
-  const swipeAreaStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: dragX.value }],
-  }));
 
   const liveBoardOrders = useMemo(
     () => orders.filter((o) => isVisibleOnLiveOrdersBoard(o, nowMs)),
@@ -597,7 +558,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     if (isHistory) {
       await loadHistoryOrders();
     } else {
-      await refetch();
+      await refetch({ force: true });
     }
     setRefreshing(false);
   }, [isHistory, loadHistoryOrders, refetch]);
@@ -858,12 +819,16 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
             try {
               const ok = await transitionOrder(item.id, "ready");
               if (!ok) {
-                Alert.alert("Couldn't mark ready", "Please tap Order Ready again.");
+                Alert.alert("Couldn't mark ready", "Please slide to mark ready again.");
               }
             } catch (e) {
+              const msg = e instanceof Error ? e.message : "";
+              if (/timed out/i.test(msg) || /network request failed/i.test(msg)) {
+                return;
+              }
               Alert.alert(
                 "Couldn't mark ready",
-                e instanceof Error ? e.message : "Please try again."
+                msg || "Please try again."
               );
             }
           })();
@@ -882,9 +847,8 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     !isHistory && (filterKey === "completed" || filterKey === "rto");
 
   /**
-   * Live scroll stack via SectionList sticky section headers:
-   * Search (fixed) → Ads (ListHeader, scrolls under search) →
-   * Status tabs (sticky section header) → Order cards (scroll under tabs).
+   * Live scroll stack:
+   * Search → ads → status CTAs (fixed) → order list scrolls independently.
    */
   const listHeader = isHistory ? (
     <>
@@ -896,33 +860,7 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       />
       <OrderDateRangeBar range={dateRange} onPress={() => setDateSheetOpen(true)} />
     </>
-  ) : (
-    <View style={styles.scrollChrome}>
-      {showPastOrdersBanner ? (
-        <PastOrdersBanner onPress={() => navPush("/order-history")} />
-      ) : null}
-      <HomeAdsStrip placement="orders" />
-      <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
-    </View>
-  );
-
-  const liveSections = useMemo(
-    () => [{ key: "live-orders", data: filteredOrders }],
-    [filteredOrders]
-  );
-
-  const renderStickyStatusTabs = useCallback(
-    () => (
-      <View style={styles.stickyTabsChrome}>
-        <StatusTabs
-          activeKey={filterKey as LiveFilterKey}
-          counts={liveCounts}
-          onChange={handleFilterChange}
-        />
-      </View>
-    ),
-    [filterKey, liveCounts, handleFilterChange]
-  );
+  ) : null;
 
   const stageEmptyBody = useMemo(() => {
     if (listLoading && sourceOrders.length === 0) {
@@ -970,6 +908,20 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
         onFilterPress={() => setFilterSheetOpen(true)}
         showFilter
       />
+      <View style={styles.adsChrome}>
+        {showPastOrdersBanner ? (
+          <PastOrdersBanner onPress={() => navPush("/order-history")} />
+        ) : null}
+        <HomeAdsStrip placement="orders" />
+        <StoreClosedActiveOrdersNotice visible={!isOnline && hasActiveOrders} />
+      </View>
+      <View style={styles.stickyTabsChrome}>
+        <StatusTabs
+          activeKey={filterKey as LiveFilterKey}
+          counts={liveCounts}
+          onChange={handleFilterChange}
+        />
+      </View>
     </View>
   ) : null;
 
@@ -999,9 +951,25 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
     );
   }
 
-  // NEVER mount sticky Animated SectionList with empty data — it infinite-loops
-  // ScrollViewStickyHeader (Maximum update depth) especially after staff login.
-  const listShowsStageEmpty = !isHistory && filteredOrders.length === 0;
+  const liveListEmpty = !isHistory ? stageEmptyBody : null;
+  const historyListEmpty =
+    listLoading && sourceOrders.length === 0 ? (
+      <View style={styles.loadingWrap}>
+        <ActivityIndicator size="large" color={GatiMitraMerchant.primary} />
+        <Text style={styles.loadingText}>Loading orders…</Text>
+      </View>
+    ) : (
+      <View style={styles.emptyWrap}>
+        <Ionicons name="receipt-outline" size={40} color={GatiMitraMerchant.textTertiary} />
+        <Text style={styles.emptyText}>
+          {search.trim()
+            ? "No orders match your search"
+            : activeFilterCount > 0
+              ? "No orders match your filters in this date range"
+              : "No completed, rejected, or RTO orders in this date range"}
+        </Text>
+      </View>
+    );
 
   return (
     <View style={styles.container}>
@@ -1044,116 +1012,18 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
       />
       {liveFixedChrome}
       <GestureDetector gesture={tabSwipeGesture}>
-        {/*
-          Apply swipe translate on the list itself — wrapping in Animated.View
-          with overflow:hidden breaks sticky section headers (CTA disappeared).
-        */}
-        {isHistory ? (
-          <Animated.View style={[styles.listSwipeArea]}>
-            <FlatList
-              data={filteredOrders}
-              keyExtractor={(item) => item.id}
-              renderItem={renderOrder}
-              keyboardShouldPersistTaps="handled"
-              ListHeaderComponent={listHeader}
-              contentContainerStyle={[
-                styles.listContent,
-                { paddingBottom: scrollBottomPadding },
-              ]}
-              ItemSeparatorComponent={() => <View style={styles.separator} />}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={onRefresh}
-                  colors={[GatiMitraMerchant.primary]}
-                  tintColor={GatiMitraMerchant.primary}
-                />
-              }
-              ListEmptyComponent={
-                listLoading && sourceOrders.length === 0 ? (
-                  <View style={styles.loadingWrap}>
-                    <ActivityIndicator
-                      size="large"
-                      color={GatiMitraMerchant.primary}
-                    />
-                    <Text style={styles.loadingText}>Loading orders…</Text>
-                  </View>
-                ) : (
-                  <View style={styles.emptyWrap}>
-                    <Ionicons
-                      name="receipt-outline"
-                      size={40}
-                      color={GatiMitraMerchant.textTertiary}
-                    />
-                    <Text style={styles.emptyText}>
-                      {search.trim()
-                        ? "No orders match your search"
-                        : activeFilterCount > 0
-                          ? "No orders match your filters in this date range"
-                          : "No completed, rejected, or RTO orders in this date range"}
-                    </Text>
-                  </View>
-                )
-              }
-              showsVerticalScrollIndicator={false}
-              initialNumToRender={8}
-              windowSize={5}
-              maxToRenderPerBatch={8}
-              updateCellsBatchingPeriod={50}
-              removeClippedSubviews={Platform.OS === "android"}
-              onViewableItemsChanged={onViewableItemsChanged}
-              viewabilityConfig={viewabilityConfig}
-            />
-          </Animated.View>
-        ) : listShowsStageEmpty ? (
-          /*
-           * Empty stage: do NOT use sticky Animated SectionList.
-           * Sentinel rows + sticky headers caused Maximum update depth
-           * (ScrollViewStickyHeader) after staff login with 0 preparing orders.
-           */
-          <Animated.View style={[styles.listSwipeArea, swipeAreaStyle]}>
-            <ScrollView
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={[
-                styles.listContent,
-                styles.listContentUnderChrome,
-                styles.listContentStageEmpty,
-                { paddingBottom: scrollBottomPadding },
-              ]}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={onRefresh}
-                  colors={[GatiMitraMerchant.primary]}
-                  tintColor={GatiMitraMerchant.primary}
-                />
-              }
-              showsVerticalScrollIndicator={false}
-            >
-              {listHeader}
-              <View style={styles.stickyTabsChrome}>
-                <StatusTabs
-                  activeKey={filterKey as LiveFilterKey}
-                  counts={liveCounts}
-                  onChange={handleFilterChange}
-                />
-              </View>
-              {stageEmptyBody}
-            </ScrollView>
-          </Animated.View>
-        ) : (
-          <AnimatedSectionList
-            style={[styles.listSwipeArea, swipeAreaStyle]}
-            sections={liveSections}
+        <View style={styles.listSwipeArea}>
+          <FlatList
+            ref={liveListRef}
+            data={filteredOrders}
             keyExtractor={(item) => item.id}
             renderItem={renderOrder}
-            renderSectionHeader={renderStickyStatusTabs}
-            stickySectionHeadersEnabled
             keyboardShouldPersistTaps="handled"
             ListHeaderComponent={listHeader}
             contentContainerStyle={[
               styles.listContent,
-              styles.listContentUnderChrome,
+              !isHistory && styles.listContentUnderChrome,
+              filteredOrders.length === 0 && styles.listContentStageEmpty,
               { paddingBottom: scrollBottomPadding },
             ]}
             ItemSeparatorComponent={() => <View style={styles.separator} />}
@@ -1165,17 +1035,22 @@ export function OrdersListScreen({ mode }: { mode: OrdersListMode }) {
                 tintColor={GatiMitraMerchant.primary}
               />
             }
+            ListEmptyComponent={isHistory ? historyListEmpty : liveListEmpty}
             showsVerticalScrollIndicator={false}
             initialNumToRender={8}
-            windowSize={5}
+            windowSize={7}
             maxToRenderPerBatch={8}
             updateCellsBatchingPeriod={50}
-            removeClippedSubviews={false}
-            extraData={`${filterKey}:${liveCounts.preparing}:${liveCounts.ready}:${liveCounts.picked_up}:${liveCounts.completed}:${liveCounts.rto}`}
+            removeClippedSubviews={Platform.OS === "android"}
+            extraData={
+              isHistory
+                ? undefined
+                : `${filterKey}:${liveCounts.preparing}:${liveCounts.ready}:${liveCounts.picked_up}:${liveCounts.completed}:${liveCounts.rto}`
+            }
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={viewabilityConfig}
           />
-        )}
+        </View>
       </GestureDetector>
     </View>
   );
@@ -1196,11 +1071,12 @@ const styles = StyleSheet.create({
     backgroundColor: GatiMitraMerchant.surfaceWarm,
     zIndex: 2,
   },
-  /** Scrollable block under sticky search — Past Orders + ads (tabs stick separately). */
-  scrollChrome: {
-    marginBottom: 4,
+  /** Ads sit under search and above status CTAs. */
+  adsChrome: {
+    marginTop: 4,
+    marginBottom: 2,
   },
-  /** Sticky section header — solid bg so order cards slide underneath cleanly. */
+  /** Status CTAs under ads — solid bg so order cards slide underneath cleanly. */
   stickyTabsChrome: {
     backgroundColor: GatiMitraMerchant.surfaceWarm,
     paddingBottom: 4,

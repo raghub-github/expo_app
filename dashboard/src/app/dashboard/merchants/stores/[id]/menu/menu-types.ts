@@ -211,6 +211,58 @@ export function itemHasCustomizationContent(item: MenuItem): boolean {
   );
 }
 
+export function itemPrimaryImageRejected(
+  item: Pick<MenuItem, "primary_image_moderation_status">
+): boolean {
+  return String(item.primary_image_moderation_status ?? "").toUpperCase() === "REJECTED";
+}
+
+export type MenuApprovalBadgeKind = "image_rejected" | "pending" | "rejected" | "approved";
+
+export type MenuApprovalBadge = {
+  kind: MenuApprovalBadgeKind;
+  label: string;
+  reason: string | null;
+};
+
+/**
+ * Photo reject keeps approval_status PENDING|APPROVED while primary image is REJECTED.
+ * Prefer "Image rejected" over "Pending" so merchant portal matches Partner Menu.
+ */
+export function resolveMenuApprovalBadge(
+  item: Pick<MenuItem, "approval_status" | "primary_image_moderation_status" | "rejection_reason">,
+  opts?: { pendingLabel?: string; showApproved?: boolean }
+): MenuApprovalBadge | null {
+  const approval = String(item.approval_status ?? "PENDING").toUpperCase();
+  const reason =
+    typeof item.rejection_reason === "string" ? item.rejection_reason.trim() || null : null;
+  const pendingLabel = opts?.pendingLabel ?? "Pending";
+
+  if (itemPrimaryImageRejected(item)) {
+    return { kind: "image_rejected", label: "Image rejected", reason };
+  }
+  if (approval === "REJECTED") {
+    return { kind: "rejected", label: "Rejected", reason };
+  }
+  if (approval === "PENDING") {
+    return { kind: "pending", label: pendingLabel, reason: null };
+  }
+  if (approval === "APPROVED" && opts?.showApproved !== false) {
+    return { kind: "approved", label: "Approved", reason: null };
+  }
+  return null;
+}
+
+/** Effective status for filters: image-rejected items count as REJECTED, not PENDING. */
+export function menuItemEffectiveApprovalFilterStatus(
+  item: Pick<MenuItem, "approval_status" | "primary_image_moderation_status">
+): "PENDING" | "APPROVED" | "REJECTED" {
+  if (itemPrimaryImageRejected(item)) return "REJECTED";
+  const st = String(item.approval_status ?? "PENDING").toUpperCase();
+  if (st === "APPROVED" || st === "REJECTED") return st;
+  return "PENDING";
+}
+
 export interface MenuCategory {
   id: number;
   store_id: number;

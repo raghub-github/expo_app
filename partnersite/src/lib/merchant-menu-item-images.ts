@@ -71,38 +71,85 @@ export async function addItemImageRow(
   `;
   const nextOrder = data.display_order ?? Number((orderRow as { next_order?: number })?.next_order ?? 0);
 
-  if (makePrimary) {
-    await pgClient`
-      UPDATE merchant_menu_item_images
-      SET is_primary = false, updated_at = NOW()
-      WHERE menu_item_id = ${menuItemId} AND is_primary = true
-    `;
-  }
+  // Reuse an existing row for the same URL instead of inserting duplicates
+  // (duplicate keys break the partner photo carousel).
+  const [existingSame] = await pgClient`
+    SELECT id FROM merchant_menu_item_images
+    WHERE menu_item_id = ${menuItemId}
+      AND TRIM(image_url) = ${data.image_url}
+    ORDER BY is_primary DESC, id DESC
+    LIMIT 1
+  `;
 
-  const [row] = autoApprove
-    ? await pgClient`
-        INSERT INTO merchant_menu_item_images (
-          menu_item_id, image_url, r2_key, is_primary, format, display_order,
-          moderation_status, rejection_reason, moderated_at, moderated_by
-        )
-        VALUES (
-          ${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary},
-          ${data.format ?? null}, ${nextOrder}, ${moderationStatus}, NULL, NOW(), ${moderatedBy}
-        )
-        RETURNING id
-      `
-    : await pgClient`
-        INSERT INTO merchant_menu_item_images (
-          menu_item_id, image_url, r2_key, is_primary, format, display_order,
-          moderation_status, rejection_reason, moderated_at, moderated_by
-        )
-        VALUES (
-          ${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary},
-          ${data.format ?? null}, ${nextOrder}, 'PENDING', NULL, NULL, NULL
-        )
-        RETURNING id
+  let imageId: number;
+  if (existingSame) {
+    imageId = Number((existingSame as { id: number }).id);
+    if (makePrimary) {
+      await pgClient`
+        UPDATE merchant_menu_item_images
+        SET is_primary = false, updated_at = NOW()
+        WHERE menu_item_id = ${menuItemId} AND is_primary = true AND id != ${imageId}
       `;
-  const imageId = Number((row as { id: number }).id);
+    }
+    if (autoApprove) {
+      await pgClient`
+        UPDATE merchant_menu_item_images
+        SET is_primary = ${makePrimary},
+            moderation_status = 'APPROVED',
+            rejection_reason = NULL,
+            moderated_at = NOW(),
+            moderated_by = ${moderatedBy},
+            r2_key = COALESCE(${data.r2_key ?? null}, r2_key),
+            updated_at = NOW()
+        WHERE id = ${imageId}
+      `;
+    } else {
+      await pgClient`
+        UPDATE merchant_menu_item_images
+        SET is_primary = ${makePrimary},
+            moderation_status = 'PENDING',
+            rejection_reason = NULL,
+            moderated_at = NULL,
+            moderated_by = NULL,
+            r2_key = COALESCE(${data.r2_key ?? null}, r2_key),
+            updated_at = NOW()
+        WHERE id = ${imageId}
+      `;
+    }
+  } else {
+    if (makePrimary) {
+      await pgClient`
+        UPDATE merchant_menu_item_images
+        SET is_primary = false, updated_at = NOW()
+        WHERE menu_item_id = ${menuItemId} AND is_primary = true
+      `;
+    }
+
+    const [row] = autoApprove
+      ? await pgClient`
+          INSERT INTO merchant_menu_item_images (
+            menu_item_id, image_url, r2_key, is_primary, format, display_order,
+            moderation_status, rejection_reason, moderated_at, moderated_by
+          )
+          VALUES (
+            ${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary},
+            ${data.format ?? null}, ${nextOrder}, ${moderationStatus}, NULL, NOW(), ${moderatedBy}
+          )
+          RETURNING id
+        `
+      : await pgClient`
+          INSERT INTO merchant_menu_item_images (
+            menu_item_id, image_url, r2_key, is_primary, format, display_order,
+            moderation_status, rejection_reason, moderated_at, moderated_by
+          )
+          VALUES (
+            ${menuItemId}, ${data.image_url}, ${data.r2_key ?? null}, ${makePrimary},
+            ${data.format ?? null}, ${nextOrder}, 'PENDING', NULL, NULL, NULL
+          )
+          RETURNING id
+        `;
+    imageId = Number((row as { id: number }).id);
+  }
 
   if (makePrimary) {
     const [itemRow] = await pgClient`
