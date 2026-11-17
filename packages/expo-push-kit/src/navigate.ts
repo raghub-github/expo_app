@@ -64,10 +64,40 @@ function resolveStructuredAnnouncementHref(data: Record<string, unknown>): strin
 }
 
 /**
+ * Prefer an explicit chip / marketing deep link (already a GatiMitra path).
+ * Category chips set deepLink + target_category_id from RemoteViews PendingIntents.
+ */
+function resolveMarketingChipHref(data: Record<string, unknown>): string | null {
+  const deepLink =
+    asString(data.deepLink).trim() || asString(data.deep_link).trim() || asString(data.screen).trim();
+  const categoryId = asString(data.target_category_id || data.targetCategoryId).trim();
+  const layout = asString(data.layout_style || data.layoutStyle).trim().toLowerCase();
+  const targetType = asString(data.target_type || data.targetType).trim().toUpperCase();
+  const isCategoryChip =
+    layout === "category_row" ||
+    deepLink.startsWith("/home/category/") ||
+    (targetType === "CATEGORY" && categoryId.length > 0);
+  if (!isCategoryChip) return null;
+  if (deepLink.startsWith("/home/category/")) return deepLink;
+  if (categoryId) {
+    const serviceId = asString(data.target_service_id || data.targetServiceId).trim().toLowerCase();
+    const st = serviceId === "grocery" ? "GROCERY" : "FOOD";
+    return `/home/category/${encodeURIComponent(categoryId)}?storeType=${encodeURIComponent(st)}`;
+  }
+  return null;
+}
+
+/**
  * Uses structured announcement targets first, then `screen` / `deepLink`.
  */
 export function navigateFromPushData(router: RouterLike, data: Record<string, unknown>): void {
   try {
+    const chipHref = resolveMarketingChipHref(data);
+    if (chipHref) {
+      router.push(chipHref);
+      return;
+    }
+
     const structured = resolveStructuredAnnouncementHref(data);
     if (structured) {
       router.push(structured);

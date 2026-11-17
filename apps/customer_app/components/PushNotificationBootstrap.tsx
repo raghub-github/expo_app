@@ -59,7 +59,6 @@ import {
 } from "@/lib/customer-order-status-machine";
 import {
   announcementDedupeKey,
-  formatRemainingHms,
   isCustomerAnnouncementData,
   parseAnnouncementCampaign,
 } from "@/lib/announcementCampaign";
@@ -89,6 +88,12 @@ const CUSTOMER_PUSH_CHANNELS = [
     sound: CX_SOUND,
   },
   { channelId: "customer_default", name: "Orders & updates", lightColor: "#14b8a6", sound: CX_SOUND },
+  {
+    channelId: "customer_marketing",
+    name: "Offers & campaigns",
+    lightColor: "#14b8a6",
+    sound: CX_SOUND,
+  },
   // Legacy silent channel kept so old tokens still resolve; new pushes use customer_order_cx.
   { channelId: "customer_live_order", name: "Live trip progress", lightColor: "#14b8a6", sound: undefined },
   { channelId: "customer_cx", name: "Orders & updates", lightColor: "#14b8a6", sound: CX_SOUND },
@@ -110,6 +115,35 @@ async function presentCampaignOnTray(
   if (postedCampaignTray.has(key)) return;
   postedCampaignTray.add(key);
   try {
+    const layout = String(data.layout_style ?? data.layoutStyle ?? "")
+      .trim()
+      .toLowerCase();
+    const wantsLiveTray =
+      layout === "countdown" ||
+      layout === "banner_image" ||
+      layout === "category_row" ||
+      parsed.countdownEnabled;
+
+    // Prefer native RemoteViews (live Chronometer) — never freeze "Offer valid for HH:MM:SS".
+    if (wantsLiveTray) {
+      const { showNativeMarketingNotification } = await import("@gatimitra/expo-push-kit");
+      const payload: Record<string, unknown> = {
+        ...data,
+        title: parsed.title || title || "GatiMitra",
+        body: parsed.body || body || "",
+        gm_tray: "1",
+      };
+      if (parsed.countdownEnabled && !payload.layout_style) {
+        payload.layout_style = "countdown";
+        payload.gm_marketing_layout = "1";
+      }
+      if (parsed.remainingAtSyncMs > 0 && payload.remaining_ms == null) {
+        payload.remaining_ms = String(parsed.remainingAtSyncMs);
+      }
+      const ok = await showNativeMarketingNotification(payload);
+      if (ok) return;
+    }
+
     const Notifications = await import("expo-notifications");
     const button = (parsed.ctaLabel || "Open").slice(0, 32);
     await Notifications.setNotificationCategoryAsync("gm_campaign_cta", [
@@ -119,14 +153,11 @@ async function presentCampaignOnTray(
         options: { opensAppToForeground: true },
       },
     ]);
-    const lines = [parsed.body];
-    if (parsed.countdownEnabled && parsed.remainingAtSyncMs > 0) {
-      lines.push(`Offer valid for ${formatRemainingHms(parsed.remainingAtSyncMs)}`);
-    }
+    // Fallback without frozen countdown line (cannot tick via Expo local notifications).
     await Notifications.scheduleNotificationAsync({
       content: {
         title: parsed.title || "GatiMitra",
-        body: lines.filter((line) => line && line.trim()).join("\n"),
+        body: (parsed.body || "").trim() || "GatiMitra",
         categoryIdentifier: "gm_campaign_cta",
         data: { ...data, gm_tray: "1" },
         sound: "default",

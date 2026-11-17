@@ -103,9 +103,15 @@ async function pollOnce(): Promise<void> {
   if (enabled === false) return;
 
   await withLock(LOCK_KEY, LOCK_TTL_MS, async () => {
-    const inactiveDays = (await readSetting<number>("inactive_user_reminder_days")) ?? 14;
     const a = await remindMerchantSubscriptions();
-    const b = await remindInactiveCustomers(inactiveDays);
+    // Off by default — quiet hours + 1m poller used to concentrate "We miss you"
+    // at ~07:00 IST every day. Opt in via inactive_user_reminder_enabled.
+    let b = 0;
+    const inactiveOn = await readSetting<boolean>("inactive_user_reminder_enabled");
+    if (inactiveOn === true) {
+      const inactiveDays = (await readSetting<number>("inactive_user_reminder_days")) ?? 14;
+      b = await remindInactiveCustomers(inactiveDays);
+    }
     const c = await remindLowWallet();
     const { pollAbandonedCartReminders } = await import("./abandonedCartReminder.js");
     const d = await pollAbandonedCartReminders();

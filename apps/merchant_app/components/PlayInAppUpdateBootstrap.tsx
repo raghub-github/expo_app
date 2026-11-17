@@ -1,12 +1,18 @@
 /**
  * Google Play In-App Updates — official Play Core UI only (no custom sheet).
- * Uses flexible update when allowed; falls back to the Play Store listing if
- * the in-app update flow cannot start. Requires a Play-distributed build.
- * Skipped in Expo Go / non-Android.
+ * Flexible update = Play Store "Update available" bottom sheet (Learn more / Update).
+ * Falls back to Play Store listing only if the in-app flow cannot start.
+ * Requires a Play-distributed build (not Expo Go / sideload).
  */
 
 import { useEffect, useRef, useState } from "react";
-import { AppState, Linking, Platform, type AppStateStatus } from "react-native";
+import {
+  AppState,
+  InteractionManager,
+  Linking,
+  Platform,
+  type AppStateStatus,
+} from "react-native";
 import Constants from "expo-constants";
 import * as Application from "expo-application";
 
@@ -42,6 +48,16 @@ function openPlayStoreListing() {
   void Linking.openURL(market).catch(() => {
     void Linking.openURL(https);
   });
+}
+
+function waitForInteractions(): Promise<void> {
+  return new Promise((resolve) => {
+    InteractionManager.runAfterInteractions(() => resolve());
+  });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Only one update host in the tree (avoids duplicate Play prompts on remount). */
@@ -87,27 +103,39 @@ function PlayInAppUpdateBootstrapInner() {
     ) => {
       const flexibleAllowed = extras?.isFlexibleUpdateAllowed !== false;
       const immediateAllowed = extras?.isImmediateUpdateAllowed === true;
-      const updateType =
-        flexibleAllowed || !immediateAllowed ? flexibleKind : immediateKind;
+      const attempts: number[] = [];
+      if (flexibleAllowed) attempts.push(flexibleKind);
+      if (immediateAllowed) attempts.push(immediateKind);
 
-      if (!flexibleAllowed && !immediateAllowed) {
+      if (attempts.length === 0) {
         openPlayStoreListing();
         return;
       }
 
-      try {
-        flowActiveRef.current = true;
-        await client.startUpdate({ updateType });
-      } catch (err) {
-        flowActiveRef.current = false;
-        if (__DEV__) console.warn("[PlayInAppUpdate] startUpdate failed, opening store:", err);
-        openPlayStoreListing();
+      await waitForInteractions();
+      if (cancelled || AppState.currentState !== "active") return;
+      await delay(400);
+
+      for (const updateType of attempts) {
+        try {
+          flowActiveRef.current = true;
+          await client.startUpdate({ updateType });
+          return;
+        } catch (err) {
+          flowActiveRef.current = false;
+          if (__DEV__) {
+            console.warn("[PlayInAppUpdate] startUpdate failed, retry/next:", err);
+          }
+          await delay(1200);
+        }
       }
+      openPlayStoreListing();
     };
 
     const promptIfNeeded = async () => {
       if (cancelled || dismissedRef.current || !clientRef.current) return;
       if (inFlightRef.current || flowActiveRef.current) return;
+      if (AppState.currentState !== "active") return;
 
       inFlightRef.current = true;
       try {
@@ -186,7 +214,9 @@ function PlayInAppUpdateBootstrapInner() {
         };
         client.addIntentSelectionListener(intentListener);
 
-        await promptIfNeeded();
+        await waitForInteractions();
+        await delay(800);
+        if (!cancelled) await promptIfNeeded();
       } catch (err) {
         if (__DEV__) console.warn("[PlayInAppUpdate] unavailable:", err);
       }

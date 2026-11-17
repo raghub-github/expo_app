@@ -1,9 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ImagePlus, Loader2, Replace, Trash2, Upload } from "lucide-react";
+import { ImagePlus, Loader2, Plus, Replace, Trash2, Upload } from "lucide-react";
 import type { AnnouncementTargetType } from "@/lib/notifications/customer-home-services";
-import { isAllowedGatimitraDeepLink } from "@/lib/notifications/customer-home-services";
+import {
+  buildAnnouncementDeepLink,
+  isAllowedGatimitraDeepLink,
+} from "@/lib/notifications/customer-home-services";
 import { CustomerAnnouncementPreview } from "@/components/notifications/CustomerAnnouncementPreview";
 
 type ServiceItem = {
@@ -17,6 +20,20 @@ type ServiceItem = {
 type CategoryItem = { id: number; name: string };
 type StoreItem = { storeId: string; name: string; city: string | null };
 
+export type AnnouncementLayoutStyle =
+  | "default"
+  | "banner_image"
+  | "category_row"
+  | "countdown";
+
+export type AnnouncementCategoryChipValue = {
+  categoryId: string;
+  label: string;
+  imageUrl: string;
+  deepLink: string;
+  serviceId: string;
+};
+
 export type AnnouncementExtrasValue = {
   targetType: AnnouncementTargetType;
   serviceId: string;
@@ -29,6 +46,8 @@ export type AnnouncementExtrasValue = {
   countdownEnabled: boolean;
   startsAt: string;
   endsAt: string;
+  layoutStyle: AnnouncementLayoutStyle;
+  categoryChips: AnnouncementCategoryChipValue[];
 };
 
 export const EMPTY_ANNOUNCEMENT_EXTRAS: AnnouncementExtrasValue = {
@@ -43,6 +62,8 @@ export const EMPTY_ANNOUNCEMENT_EXTRAS: AnnouncementExtrasValue = {
   countdownEnabled: false,
   startsAt: "",
   endsAt: "",
+  layoutStyle: "default",
+  categoryChips: [],
 };
 
 type Props = {
@@ -88,6 +109,17 @@ const TARGET_OPTIONS: Array<{ type: AnnouncementTargetType; label: string; sub: 
   { type: "CUSTOM_DEEP_LINK", label: "Custom", sub: "Approved GatiMitra route" },
 ];
 
+const LAYOUT_OPTIONS: Array<{
+  id: AnnouncementLayoutStyle;
+  label: string;
+  sub: string;
+}> = [
+  { id: "default", label: "Auto", sub: "Infer from image / countdown / chips" },
+  { id: "banner_image", label: "Big picture", sub: "Full-bleed image + title overlay" },
+  { id: "category_row", label: "Category covers", sub: "2–3 tappable category chips" },
+  { id: "countdown", label: "Live countdown", sub: "Ticking chronometer in tray" },
+];
+
 export function CustomerAnnouncementExtras({
   value,
   onChange,
@@ -97,16 +129,31 @@ export function CustomerAnnouncementExtras({
 }: Props) {
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [categories, setCategories] = useState<CategoryItem[]>([]);
+  const [chipCategories, setChipCategories] = useState<CategoryItem[]>([]);
   const [stores, setStores] = useState<StoreItem[]>([]);
   const [storeQ, setStoreQ] = useState("");
   const [catsLoading, setCatsLoading] = useState(false);
+  const [chipCatsLoading, setChipCatsLoading] = useState(false);
   const [storesLoading, setStoresLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [chipUploadingIdx, setChipUploadingIdx] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [chipDraftServiceId, setChipDraftServiceId] = useState("food");
+  const [chipDraftCategoryId, setChipDraftCategoryId] = useState("");
 
   const selectedService = useMemo(
     () => services.find((s) => s.id === value.serviceId) ?? null,
     [services, value.serviceId],
+  );
+
+  const chipServices = useMemo(
+    () => services.filter((s) => s.supportsCategory && Boolean(s.storeType)),
+    [services],
+  );
+
+  const chipService = useMemo(
+    () => chipServices.find((s) => s.id === chipDraftServiceId) ?? chipServices[0] ?? null,
+    [chipServices, chipDraftServiceId],
   );
 
   useEffect(() => {
@@ -158,6 +205,36 @@ export function CustomerAnnouncementExtras({
   }, [value.targetType, selectedService?.storeType]);
 
   useEffect(() => {
+    if (!chipService?.storeType) {
+      setChipCategories([]);
+      return;
+    }
+    let cancelled = false;
+    setChipCatsLoading(true);
+    fetch(`/api/admin/user-app-categories?storeType=${encodeURIComponent(chipService.storeType)}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        const items = Array.isArray(j?.data) ? j.data : Array.isArray(j?.items) ? j.items : [];
+        setChipCategories(
+          items.map((c: { id: number; name: string }) => ({
+            id: Number(c.id),
+            name: String(c.name),
+          })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setChipCategories([]);
+      })
+      .finally(() => {
+        if (!cancelled) setChipCatsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chipService?.storeType]);
+
+  useEffect(() => {
     if (value.targetType !== "STORE" || !value.serviceId) {
       setStores([]);
       return;
@@ -193,28 +270,92 @@ export function CustomerAnnouncementExtras({
     [onChange, value],
   );
 
+  const uploadImage = async (file: File | null, currentUrl?: string | null) => {
+    if (!file) return null;
+    const fd = new FormData();
+    fd.set("file", file);
+    if (currentUrl) fd.set("currentImageUrl", currentUrl);
+    const res = await fetch("/api/super-admin/notifications/campaigns/upload-image", {
+      method: "POST",
+      body: fd,
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.success || !j.url) {
+      throw new Error(j.error || "Upload failed");
+    }
+    return String(j.url);
+  };
+
   const onUpload = async (file: File | null) => {
     if (!file) return;
     setUploading(true);
     setUploadError(null);
     try {
-      const fd = new FormData();
-      fd.set("file", file);
-      if (value.imageUrl) fd.set("currentImageUrl", value.imageUrl);
-      const res = await fetch("/api/super-admin/notifications/campaigns/upload-image", {
-        method: "POST",
-        body: fd,
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.success || !j.url) {
-        throw new Error(j.error || "Upload failed");
-      }
-      patch({ imageUrl: String(j.url) });
+      const url = await uploadImage(file, value.imageUrl);
+      if (url) patch({ imageUrl: url });
     } catch (e) {
       setUploadError(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setUploading(false);
     }
+  };
+
+  const onChipCoverUpload = async (idx: number, file: File | null) => {
+    if (!file) return;
+    setChipUploadingIdx(idx);
+    setUploadError(null);
+    try {
+      const url = await uploadImage(file, value.categoryChips[idx]?.imageUrl);
+      if (!url) return;
+      const next = value.categoryChips.map((c, i) =>
+        i === idx ? { ...c, imageUrl: url } : c,
+      );
+      patch({ categoryChips: next, layoutStyle: "category_row" });
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setChipUploadingIdx(null);
+    }
+  };
+
+  const addCategoryChip = () => {
+    if (value.categoryChips.length >= 3 || !chipService || !chipDraftCategoryId) return;
+    const cat = chipCategories.find((c) => String(c.id) === chipDraftCategoryId);
+    if (!cat) return;
+    if (value.categoryChips.some((c) => c.categoryId === String(cat.id))) return;
+    let deepLink = `/home/category/${encodeURIComponent(String(cat.id))}`;
+    try {
+      const resolved = buildAnnouncementDeepLink({
+        targetType: "CATEGORY",
+        serviceId: chipService.id,
+        categoryId: String(cat.id),
+      });
+      deepLink = resolved.deepLink;
+    } catch {
+      /* keep fallback */
+    }
+    patch({
+      layoutStyle: "category_row",
+      categoryChips: [
+        ...value.categoryChips,
+        {
+          categoryId: String(cat.id),
+          label: cat.name.slice(0, 24),
+          imageUrl: "",
+          deepLink,
+          serviceId: chipService.id,
+        },
+      ],
+    });
+    setChipDraftCategoryId("");
+  };
+
+  const removeChip = (idx: number) => {
+    const next = value.categoryChips.filter((_, i) => i !== idx);
+    patch({
+      categoryChips: next,
+      layoutStyle: next.length >= 2 ? "category_row" : value.layoutStyle,
+    });
   };
 
   const needsService =
@@ -370,6 +511,146 @@ export function CustomerAnnouncementExtras({
       ) : null}
 
       <div className="border-t border-slate-100 pt-4">
+        <div className="text-sm font-semibold text-slate-900">Android tray layout</div>
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {LAYOUT_OPTIONS.map((opt) => {
+            const active = value.layoutStyle === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() =>
+                  patch({
+                    layoutStyle: opt.id,
+                    // Live countdown layout owns the toggle; leaving it turns countdown off.
+                    countdownEnabled: opt.id === "countdown",
+                    ...(opt.id === "countdown"
+                      ? {}
+                      : { startsAt: "", endsAt: "" }),
+                  })
+                }
+                className={
+                  "rounded-lg border px-3 py-2.5 text-left transition " +
+                  (active
+                    ? "border-teal-600 bg-teal-50/60 ring-1 ring-teal-600"
+                    : "border-slate-200 hover:border-slate-300 hover:bg-slate-50")
+                }
+              >
+                <div className="text-xs font-semibold text-slate-900">{opt.label}</div>
+                <div className="mt-0.5 text-[11px] text-slate-500">{opt.sub}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {value.layoutStyle === "category_row" || value.categoryChips.length > 0 ? (
+        <div className="border-t border-slate-100 pt-4 space-y-3">
+          <div>
+            <div className="text-sm font-semibold text-slate-900">Category cover chips</div>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Add 2–3 Food/Grocery categories with a cover image each. Each chip opens that
+              category.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <Field label="Service">
+              <select
+                value={chipService?.id ?? ""}
+                onChange={(e) => {
+                  setChipDraftServiceId(e.target.value);
+                  setChipDraftCategoryId("");
+                }}
+                className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600"
+              >
+                {chipServices.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Category">
+              <select
+                value={chipDraftCategoryId}
+                onChange={(e) => setChipDraftCategoryId(e.target.value)}
+                disabled={!chipService?.storeType || chipCatsLoading}
+                className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-1 focus:ring-teal-600 disabled:opacity-60"
+              >
+                <option value="">
+                  {chipCatsLoading ? "Loading…" : "Select category…"}
+                </option>
+                {chipCategories.map((c) => (
+                  <option key={c.id} value={String(c.id)}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <div className="flex items-end">
+              <button
+                type="button"
+                disabled={
+                  value.categoryChips.length >= 3 || !chipDraftCategoryId || !chipService
+                }
+                onClick={addCategoryChip}
+                className="inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-[#121212] px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                <Plus className="h-4 w-4" />
+                Add chip
+              </button>
+            </div>
+          </div>
+          {value.categoryChips.map((chip, idx) => (
+            <div
+              key={`${chip.categoryId}-${idx}`}
+              className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3"
+            >
+              {chip.imageUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={chip.imageUrl}
+                  alt=""
+                  className="h-14 w-20 rounded-md object-cover"
+                />
+              ) : (
+                <div className="flex h-14 w-20 items-center justify-center rounded-md border border-dashed border-slate-300 bg-white text-[10px] text-slate-400">
+                  Cover
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-slate-900">{chip.label}</div>
+                <div className="truncate text-[11px] text-slate-500">{chip.deepLink}</div>
+              </div>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                {chipUploadingIdx === idx ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Upload className="h-3.5 w-3.5" />
+                )}
+                Cover
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  className="hidden"
+                  onChange={(e) => void onChipCoverUpload(idx, e.target.files?.[0] ?? null)}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => removeChip(idx)}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="border-t border-slate-100 pt-4">
         <div className="text-sm font-semibold text-slate-900">CTA label (optional)</div>
         <p className="mt-0.5 text-xs text-slate-500">
           Shown exactly as entered. Leave blank for a plain notification with no button — the
@@ -396,7 +677,15 @@ export function CustomerAnnouncementExtras({
           </div>
           <button
             type="button"
-            onClick={() => patch({ countdownEnabled: !value.countdownEnabled })}
+            onClick={() =>
+              patch({
+                countdownEnabled: !value.countdownEnabled,
+                layoutStyle:
+                  !value.countdownEnabled && value.layoutStyle === "default"
+                    ? "countdown"
+                    : value.layoutStyle,
+              })
+            }
             className={
               "relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition " +
               (value.countdownEnabled ? "bg-teal-600" : "bg-slate-300")
@@ -437,7 +726,7 @@ export function CustomerAnnouncementExtras({
         <div className="text-sm font-semibold text-slate-900">Notification image (optional)</div>
         <p className="mt-0.5 text-xs text-slate-500">
           HTTPS/CDN image for Android rich push. JPEG, PNG, WebP or GIF · max 5 MB · prefer ~1200×600.
-          Devices that cannot render rich image fall back to title + body.
+          Required for Big picture layout.
         </p>
 
         {value.imageUrl ? (
@@ -502,7 +791,7 @@ export function CustomerAnnouncementExtras({
         <div className="border-t border-slate-100 pt-4">
           <div className="text-sm font-semibold text-slate-900">Live customer preview</div>
           <p className="mt-0.5 mb-3 text-xs text-slate-500">
-            Renderer is automatic: blank CTA → plain; CTA and/or image → rich GatiMitra card.
+            Mirrors the Android collapsed / expanded tray for the selected layout.
           </p>
           <CustomerAnnouncementPreview
             title={title}
@@ -511,6 +800,8 @@ export function CustomerAnnouncementExtras({
             ctaLabel={ctaTrimmed}
             countdownEnabled={value.countdownEnabled}
             endsAt={value.endsAt}
+            layoutStyle={value.layoutStyle}
+            categoryChips={value.categoryChips}
           />
         </div>
       ) : null}

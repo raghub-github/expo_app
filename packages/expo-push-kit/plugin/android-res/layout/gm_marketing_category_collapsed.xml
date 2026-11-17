@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="4dp">
+
+    <TextView
+        android:id="@+id/gm_mkt_title"
+        style="@style/TextAppearance.Compat.Notification.Title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/gm_mkt_body"
+        style="@style/TextAppearance.Compat.Notification.Info"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:paddingBottom="4dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center">
+
+        <LinearLayout
+            android:id="@+id/gm_mkt_chip1"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:padding="2dp">
+
+            <ImageView
+                android:id="@+id/gm_mkt_chip1_img"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:scaleType="centerCrop"
+                android:contentDescription="@null" />
+
+            <TextView
+                android:id="@+id/gm_mkt_chip1_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="1"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/gm_mkt_chip2"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:padding="2dp">
+
+            <ImageView
+                android:id="@+id/gm_mkt_chip2_img"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:scaleType="centerCrop"
+                android:contentDescription="@null" />
+
+            <TextView
+                android:id="@+id/gm_mkt_chip2_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="1"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/gm_mkt_chip3"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:padding="2dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:id="@+id/gm_mkt_chip3_img"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:scaleType="centerCrop"
+                android:contentDescription="@null" />
+
+            <TextView
+                android:id="@+id/gm_mkt_chip3_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="1"
+                android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

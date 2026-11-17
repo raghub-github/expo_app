@@ -770,6 +770,9 @@ export default function RootLayout() {
                 <AddressShareLinkCapture />
                 <CustomerSystemChrome />
                 <StatusBarRouteChromeGuard />
+                {/* Same as merchant: Play Core update host is not gated on splash.
+                    Official flexible Play bottom sheet (not a custom modal). */}
+                <PlayInAppUpdateBootstrap />
                 {splashExited ? (
                   <>
                     <AppErrorBoundary source="background-sync" fallback={() => null}>
@@ -824,7 +827,6 @@ export default function RootLayout() {
                     <AppErrorBoundary source="prefetch" fallback={() => null}>
                       <PushNotificationBootstrap />
                       <AbandonedCartReminderBootstrap />
-                      <PlayInAppUpdateBootstrap />
                       <WeatherRealtimeSync />
                       <PendingAddressShareResume />
                       <PendingCheckoutPaymentResume />
@@ -984,6 +986,27 @@ function LanguageSync() {
   return null;
 }
 
+/** Marketing RemoteViews chip PendingIntents use gatimitra:// + app path. */
+function pathFromGatimitraMarketingUrl(url: string | null): string | null {
+  if (!url || !/^gatimitra:/i.test(url)) return null;
+  try {
+    const withoutScheme = url.replace(/^gatimitra:\/\//i, "").replace(/^gatimitra:/i, "");
+    const path = withoutScheme.startsWith("/") ? withoutScheme : `/${withoutScheme}`;
+    if (
+      path.startsWith("/home") ||
+      path.startsWith("/offers") ||
+      path.startsWith("/orders") ||
+      path.startsWith("/profile") ||
+      path.startsWith("/notifications")
+    ) {
+      return path;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 function AddressShareLinkCapture() {
   const router = useRouter();
   const initialHandledRef = useRef(false);
@@ -1000,6 +1023,15 @@ function AddressShareLinkCapture() {
           router.replace(geoOpenToLocationMapPath(parsed) as any);
           return;
         }
+      }
+      const marketingPath = pathFromGatimitraMarketingUrl(url);
+      if (marketingPath) {
+        if (isInitial) {
+          if (initialHandledRef.current) return;
+          initialHandledRef.current = true;
+        }
+        router.push(marketingPath as any);
+        return;
       }
       const token = extractAddressShareToken(url);
       if (token) {

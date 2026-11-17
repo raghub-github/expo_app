@@ -121,6 +121,17 @@ export function announcementPresentationMode(opts: {
   return "plain";
 }
 
+/** Android-first Zomato-style tray layouts (RemoteViews). */
+export type AnnouncementLayoutStyle = "default" | "banner_image" | "category_row" | "countdown";
+
+export type AnnouncementCategoryChip = {
+  categoryId: string;
+  label: string;
+  imageUrl: string;
+  deepLink: string;
+  serviceId?: string | null;
+};
+
 export type CustomerAnnouncementFields = {
   title: string;
   body: string;
@@ -129,7 +140,76 @@ export type CustomerAnnouncementFields = {
   countdownEnabled: boolean;
   startsAt: Date | null;
   endsAt: Date | null;
+  layoutStyle: AnnouncementLayoutStyle;
+  categoryChips: AnnouncementCategoryChip[];
 };
+
+export function parseLayoutStyle(value: unknown): AnnouncementLayoutStyle {
+  const raw = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (raw === "banner_image" || raw === "banner") return "banner_image";
+  if (raw === "category_row" || raw === "category_chips" || raw === "categories") {
+    return "category_row";
+  }
+  if (raw === "countdown" || raw === "timer") return "countdown";
+  return "default";
+}
+
+export function parseCategoryChips(raw: unknown): AnnouncementCategoryChip[] {
+  let arr: unknown[] = [];
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) arr = parsed;
+    } catch {
+      return [];
+    }
+  } else if (Array.isArray(raw)) {
+    arr = raw;
+  }
+  const out: AnnouncementCategoryChip[] = [];
+  for (const item of arr) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const categoryId = trimToNull(rec.categoryId ?? rec.category_id ?? rec.id);
+    const label = sanitizePlainText(rec.label ?? rec.name ?? "", 24);
+    const imageUrl = trimToNull(rec.imageUrl ?? rec.image_url ?? rec.cover);
+    const deepLink = trimToNull(rec.deepLink ?? rec.deep_link);
+    const serviceId = trimToNull(rec.serviceId ?? rec.service_id);
+    if (!categoryId || !label || !imageUrl || !deepLink) continue;
+    if (!/^https:\/\//i.test(imageUrl)) continue;
+    if (!deepLink.startsWith("/")) continue;
+    out.push({
+      categoryId,
+      label,
+      imageUrl,
+      deepLink,
+      serviceId,
+    });
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
+export function validateLayoutFields(opts: {
+  layoutStyle: AnnouncementLayoutStyle;
+  imageUrl: string | null;
+  countdownEnabled: boolean;
+  chips: AnnouncementCategoryChip[];
+}): string | null {
+  if (opts.layoutStyle === "banner_image" && !opts.imageUrl) {
+    return "Banner layout requires a notification image";
+  }
+  if (opts.layoutStyle === "category_row") {
+    if (opts.chips.length < 2) return "Category row needs at least 2 category covers";
+    if (opts.chips.length > 3) return "Category row supports at most 3 covers";
+  }
+  if (opts.layoutStyle === "countdown" && !opts.countdownEnabled) {
+    return "Countdown layout requires countdown enabled with start/end";
+  }
+  return null;
+}
 
 export function parseCustomerAnnouncementFields(
   src: Record<string, unknown> | null | undefined,
@@ -150,6 +230,21 @@ export function parseCustomerAnnouncementFields(
   if (ctaLabel && String(raw.target_type ?? raw.targetType ?? "NONE").toUpperCase() === "NONE") {
     return { ok: false, error: "Select a tap destination when a CTA label is set" };
   }
+  let layoutStyle = parseLayoutStyle(raw.layout_style ?? raw.layoutStyle);
+  const categoryChips = parseCategoryChips(raw.category_chips ?? raw.categoryChips);
+  // Infer style from toggles when admin left layout on default.
+  if (layoutStyle === "default") {
+    if (categoryChips.length >= 2) layoutStyle = "category_row";
+    else if (window.countdownEnabled) layoutStyle = "countdown";
+    else if (imageUrl) layoutStyle = "banner_image";
+  }
+  const layoutError = validateLayoutFields({
+    layoutStyle,
+    imageUrl,
+    countdownEnabled: window.countdownEnabled,
+    chips: categoryChips,
+  });
+  if (layoutError) return { ok: false, error: layoutError };
   return {
     ok: true,
     fields: {
@@ -160,6 +255,8 @@ export function parseCustomerAnnouncementFields(
       countdownEnabled: window.countdownEnabled,
       startsAt: window.startsAt,
       endsAt: window.endsAt,
+      layoutStyle,
+      categoryChips,
     },
   };
 }
@@ -196,6 +293,12 @@ export function announcementPushExtras(opts: {
   if (opts.fields.endsAt) extras.ends_at = opts.fields.endsAt.toISOString();
   if (opts.fields.countdownEnabled && opts.fields.endsAt) {
     extras.remaining_ms = String(remainingMsUntil(opts.fields.endsAt, now));
+  }
+  if (opts.fields.layoutStyle && opts.fields.layoutStyle !== "default") {
+    extras.layout_style = opts.fields.layoutStyle;
+  }
+  if (opts.fields.categoryChips.length > 0) {
+    extras.category_chips = JSON.stringify(opts.fields.categoryChips);
   }
   return extras;
 }

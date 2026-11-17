@@ -1,7 +1,4 @@
-/**
- * Web stub — `sp-react-native-in-app-updates` only ships `.android` / `.ios`
- * entry points, so importing it into the Expo web/SSR graph fails Metro.
- */
+/** Web stub — Play in-app updates are Android-only. */
 export function PlayInAppUpdateBootstrap() {
   return null;
 }
