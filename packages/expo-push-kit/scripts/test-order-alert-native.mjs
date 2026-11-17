@@ -11,13 +11,23 @@
  * the suite — the point is to run it everywhere a JDK exists, including CI.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = join(here, "..", "plugin", "android-src");
+/** Customer FCM marketing trays, injected by withCustomerMarketingNotifications.js. */
+const MARKETING_DIR = join(SRC_DIR, "marketing");
 const TEST_DIR = join(here, "..", "plugin", "android-test");
 
 /** Classes free of Android imports — these compile and run for real. */
@@ -459,6 +469,43 @@ try {
     if (run.status !== 0) {
       failures += 1;
       process.stderr.write(run.stderr ?? "");
+    }
+  }
+  // 3. Customer marketing trays (android-src/marketing). Customer app only, so they
+  //    are templated once. Their Android / RN / Expo APIs cannot resolve here, so a
+  //    javac pass proves parsing only: any diagnostic other than an unresolved API is
+  //    a real break that would otherwise first surface in an EAS build.
+  if (existsSync(MARKETING_DIR)) {
+    const target = { role: "customer", pkg: "com.gatimitra.customer" };
+    const mktPath = join(work, "marketing", ...target.pkg.split("."));
+    mkdirSync(mktPath, { recursive: true });
+    const files = readdirSync(MARKETING_DIR).filter((f) => f.endsWith(".java"));
+    const rendered = new Map();
+    for (const file of files) {
+      const text = template(readFileSync(join(MARKETING_DIR, file), "utf8"), target);
+      rendered.set(`marketing/${file}`, text);
+      writeFileSync(join(mktPath, file), text, "utf8");
+    }
+    const selfRefs = checkFieldInitializerSelfReference(rendered);
+    const parse = spawnSync(
+      javac,
+      ["-proc:none", "-d", join(work, "marketing-out"), ...files.map((f) => join(mktPath, f))],
+      { encoding: "utf8" }
+    );
+    const syntax = String(parse.stderr ?? "")
+      .split(/\r?\n/)
+      .filter((l) => l.includes("error:"))
+      .filter(
+        (l) =>
+          !/cannot find symbol|does not exist|cannot access|does not override or implement/.test(l)
+      );
+    const problems = [...selfRefs, ...syntax];
+    if (problems.length > 0) {
+      failures += problems.length;
+      console.log(`  customer marketing: ${problems.length} problem(s)`);
+      for (const line of problems.slice(0, 12)) console.log(`    ${line}`);
+    } else {
+      console.log(`  customer marketing: ${files.length} source(s) parse, no self-references`);
     }
   }
 } finally {
