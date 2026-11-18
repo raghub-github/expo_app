@@ -104,6 +104,15 @@ public final class MarketingNotificationRenderer {
     for (Chip chip : chips) {
       chip.bitmap = downloadBitmap(chip.imageUrl, 400, 300);
     }
+    // If campaign only uploaded category covers (no hero), still show a tray image.
+    if (hero == null) {
+      for (Chip chip : chips) {
+        if (chip.bitmap != null) {
+          hero = chip.bitmap;
+          break;
+        }
+      }
+    }
 
     long endsAtMs = parseEndsAtMs(data);
     String cta = first(data, "cta_label", "ctaLabel");
@@ -138,7 +147,7 @@ public final class MarketingNotificationRenderer {
       builder.setWhen(endsAtMs).setUsesChronometer(true).setChronometerCountDown(true).setShowWhen(true);
     }
 
-    if (hero != null && "banner_image".equals(style)) {
+    if (hero != null) {
       builder.setLargeIcon(hero);
     }
 
@@ -191,10 +200,7 @@ public final class MarketingNotificationRenderer {
     RemoteViews rv = new RemoteViews(context.getPackageName(), layout);
     setText(rv, context, "gm_mkt_title", title);
     setText(rv, context, "gm_mkt_body", body);
-    if (hero != null) {
-      int imgId = resId(context, "id", "gm_mkt_image");
-      if (imgId != 0) rv.setImageViewBitmap(imgId, hero);
-    }
+    bindHeroImage(rv, context, hero);
     return rv;
   }
 
@@ -225,10 +231,7 @@ public final class MarketingNotificationRenderer {
         int ctaId = resId(context, "id", "gm_mkt_cta");
         if (ctaId != 0) rv.setViewVisibility(ctaId, android.view.View.VISIBLE);
       }
-      if (hero != null) {
-        int imgId = resId(context, "id", "gm_mkt_image");
-        if (imgId != 0) rv.setImageViewBitmap(imgId, hero);
-      }
+      bindHeroImage(rv, context, hero);
       bindChronometer(rv, context, endsAtMs);
       return rv;
     }
@@ -236,11 +239,19 @@ public final class MarketingNotificationRenderer {
     RemoteViews rv = new RemoteViews(context.getPackageName(), layout);
     setText(rv, context, "gm_mkt_title", title);
     setText(rv, context, "gm_mkt_body", body);
-    if (hero != null) {
-      int imgId = resId(context, "id", "gm_mkt_image");
-      if (imgId != 0) rv.setImageViewBitmap(imgId, hero);
-    }
+    bindHeroImage(rv, context, hero);
     return rv;
+  }
+
+  private static void bindHeroImage(RemoteViews rv, Context context, Bitmap hero) {
+    int imgId = resId(context, "id", "gm_mkt_image");
+    if (imgId == 0) return;
+    if (hero != null) {
+      rv.setImageViewBitmap(imgId, hero);
+      rv.setViewVisibility(imgId, android.view.View.VISIBLE);
+    } else {
+      rv.setViewVisibility(imgId, android.view.View.GONE);
+    }
   }
 
   private static void bindChips(
@@ -411,20 +422,45 @@ public final class MarketingNotificationRenderer {
   }
 
   private static Bitmap downloadBitmap(String urlStr, int maxW, int maxH) {
-    if (urlStr == null || !urlStr.startsWith("https://")) return null;
+    if (urlStr == null) return null;
+    String trimmed = urlStr.trim();
+    // Production campaigns must be HTTPS; also accept http://127.0.0.1 for local QA.
+    boolean okScheme =
+        trimmed.startsWith("https://")
+            || trimmed.startsWith("http://127.0.0.1")
+            || trimmed.startsWith("http://localhost");
+    if (!okScheme) {
+      Log.w(TAG, "image skipped (need https): " + trimmed);
+      return null;
+    }
     HttpURLConnection conn = null;
     try {
-      URL url = new URL(urlStr);
-      conn = (HttpURLConnection) url.openConnection();
-      conn.setConnectTimeout(8000);
-      conn.setReadTimeout(10000);
-      conn.setInstanceFollowRedirects(true);
-      conn.connect();
-      if (conn.getResponseCode() != 200) return null;
-      InputStream in = conn.getInputStream();
-      Bitmap raw = BitmapFactory.decodeStream(in);
-      in.close();
-      if (raw == null) return null;
+      URL url = new URL(trimmed);
+      conn = openFollowRedirects(url, 5);
+      if (conn == null) return null;
+      int code = conn.getResponseCode();
+      if (code != 200) {
+        Log.w(TAG, "image HTTP " + code + " for " + trimmed);
+        return null;
+      }
+      // Buffer fully — BitmapFactory.decodeStream on a network stream is unreliable
+      // (no mark/reset) and was the main cause of missing BigPicture / covers.
+      byte[] bytes = readAll(conn.getInputStream());
+      if (bytes == null || bytes.length == 0) {
+        Log.w(TAG, "image empty body for " + trimmed);
+        return null;
+      }
+      BitmapFactory.Options bounds = new BitmapFactory.Options();
+      bounds.inJustDecodeBounds = true;
+      BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+      BitmapFactory.Options opts = new BitmapFactory.Options();
+      opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+      opts.inSampleSize = sampleSizeFor(bounds.outWidth, bounds.outHeight, maxW, maxH);
+      Bitmap raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, opts);
+      if (raw == null) {
+        Log.w(TAG, "image decode failed for " + trimmed + " bytes=" + bytes.length);
+        return null;
+      }
       int w = raw.getWidth();
       int h = raw.getHeight();
       if (w <= maxW && h <= maxH) return raw;
@@ -435,11 +471,80 @@ public final class MarketingNotificationRenderer {
       if (scaled != raw) raw.recycle();
       return scaled;
     } catch (Throwable t) {
-      Log.w(TAG, "image download failed: " + t.getMessage());
+      Log.w(TAG, "image download failed: " + trimmed + " — " + t.getMessage());
       return null;
     } finally {
       if (conn != null) conn.disconnect();
     }
+  }
+
+  private static HttpURLConnection openFollowRedirects(URL start, int maxHops)
+      throws java.io.IOException {
+    URL current = start;
+    for (int hop = 0; hop < maxHops; hop++) {
+      HttpURLConnection conn = (HttpURLConnection) current.openConnection();
+      conn.setConnectTimeout(8000);
+      conn.setReadTimeout(12000);
+      conn.setInstanceFollowRedirects(false);
+      conn.setRequestProperty("User-Agent", "GatiMitra-Marketing/1.0");
+      conn.setRequestProperty("Accept", "image/*,*/*");
+      conn.connect();
+      int code = conn.getResponseCode();
+      if (code == HttpURLConnection.HTTP_MOVED_PERM
+          || code == HttpURLConnection.HTTP_MOVED_TEMP
+          || code == HttpURLConnection.HTTP_SEE_OTHER
+          || code == 307
+          || code == 308) {
+        String loc = conn.getHeaderField("Location");
+        conn.disconnect();
+        if (loc == null || loc.trim().isEmpty()) return null;
+        current = new URL(current, loc.trim());
+        String next = current.toString();
+        if (!(next.startsWith("https://")
+            || next.startsWith("http://127.0.0.1")
+            || next.startsWith("http://localhost"))) {
+          Log.w(TAG, "image redirect blocked: " + next);
+          return null;
+        }
+        continue;
+      }
+      return conn;
+    }
+    return null;
+  }
+
+  private static byte[] readAll(InputStream in) throws java.io.IOException {
+    if (in == null) return null;
+    java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream(32 * 1024);
+    byte[] buf = new byte[8192];
+    int n;
+    int total = 0;
+    final int maxBytes = 5 * 1024 * 1024;
+    try {
+      while ((n = in.read(buf)) != -1) {
+        total += n;
+        if (total > maxBytes) {
+          Log.w(TAG, "image exceeds 5MB — abort");
+          return null;
+        }
+        bos.write(buf, 0, n);
+      }
+    } finally {
+      try {
+        in.close();
+      } catch (Throwable ignored) {
+      }
+    }
+    return bos.toByteArray();
+  }
+
+  private static int sampleSizeFor(int w, int h, int maxW, int maxH) {
+    if (w <= 0 || h <= 0) return 1;
+    int sample = 1;
+    while ((w / (sample * 2)) >= maxW && (h / (sample * 2)) >= maxH) {
+      sample *= 2;
+    }
+    return Math.max(1, sample);
   }
 
   private static void setText(RemoteViews rv, Context context, String idName, String text) {

@@ -2,6 +2,7 @@ import { TouchableOpacity, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { HOME_DARK } from "@/constants/homeDarkTheme";
 import { useWalletBalance } from "@/hooks/useWalletBalance";
 import { walletBalanceFallback } from "@/lib/walletBalanceCache";
 import { AppText } from "@/components/AppText";
@@ -9,6 +10,7 @@ import { markWalletEntrySource } from "@/store/walletChromeStore";
 import { useIoniconsReady } from "@/lib/ioniconsReady";
 
 const TITLE_DARK = "#1F2937";
+const TITLE_ON_DARK = HOME_DARK.text;
 
 function formatPillBalance(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
@@ -25,12 +27,18 @@ function formatPillBalance(value: number): string {
 
 type Props = {
   variant?: "default" | "gridFirst";
-  /** When true, wallet matches Food Home (dark in discovery). Tabs Home stays light. */
+  /** When true, wallet matches Food Home (dark in discovery). */
   fromFoodHome?: boolean;
+  /** Tabs Home dark chrome — charcoal chip + light icon/text. */
+  dark?: boolean;
 };
 
 /** Compact circular wallet chip — icon + balance stacked in a circle. */
-export function GatiCashHeaderPill({ variant = "default", fromFoodHome = false }: Props) {
+export function GatiCashHeaderPill({
+  variant = "default",
+  fromFoodHome = false,
+  dark = false,
+}: Props) {
   const router = useRouter();
   const iconFontsLoaded = useIoniconsReady();
   const balanceQ = useWalletBalance();
@@ -69,20 +77,27 @@ export function GatiCashHeaderPill({ variant = "default", fromFoodHome = false }
     );
   }
 
+  const iconColor = dark ? TITLE_ON_DARK : TITLE_DARK;
+
   return (
     <TouchableOpacity
-      style={styles.pill}
+      style={[styles.pill, dark ? styles.pillDark : null]}
       activeOpacity={0.82}
       onPress={openWallet}
       accessibilityRole="button"
       accessibilityLabel={`GatiCash wallet, balance ${displayAmount} rupees`}
     >
       {iconFontsLoaded ? (
-        <Ionicons name="wallet-outline" size={15} color={TITLE_DARK} />
+        <Ionicons name="wallet-outline" size={15} color={iconColor} />
       ) : (
-        <View style={styles.walletDot} />
+        <View style={[styles.walletDot, dark ? styles.walletDotOnDark : null]} />
       )}
-      <AppText style={styles.amount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+      <AppText
+        style={[styles.amount, dark ? styles.amountOnDark : null]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        minimumFontScale={0.75}
+      >
         ₹{displayAmount}
       </AppText>
     </TouchableOpacity>
@@ -91,19 +106,23 @@ export function GatiCashHeaderPill({ variant = "default", fromFoodHome = false }
 
 const styles = StyleSheet.create({
   pill: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     backgroundColor: "rgba(255,255,255,0.55)",
     alignItems: "center",
     justifyContent: "center",
-    paddingTop: 4,
-    paddingBottom: 3,
+    paddingTop: 3,
+    paddingBottom: 2,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(15, 23, 42, 0.12)",
     shadowOpacity: 0,
     shadowRadius: 0,
     elevation: 0,
+  },
+  pillDark: {
+    backgroundColor: HOME_DARK.iconChip,
+    borderColor: HOME_DARK.border,
   },
   gridPill: {
     flexDirection: "row",
@@ -138,14 +157,17 @@ const styles = StyleSheet.create({
     maxWidth: 52,
   },
   amount: {
-    marginTop: 1,
-    fontSize: 8,
+    marginTop: 0,
+    fontSize: 10,
     fontWeight: "800",
     color: TITLE_DARK,
-    letterSpacing: -0.1,
-    lineHeight: 10,
-    maxWidth: 34,
+    letterSpacing: -0.15,
+    lineHeight: 12,
+    maxWidth: 38,
     textAlign: "center",
+  },
+  amountOnDark: {
+    color: TITLE_ON_DARK,
   },
   walletDot: {
     width: 14,
@@ -153,6 +175,9 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     borderWidth: 1.5,
     borderColor: TITLE_DARK,
+  },
+  walletDotOnDark: {
+    borderColor: TITLE_ON_DARK,
   },
   walletDotLight: {
     width: 10,

@@ -11,6 +11,10 @@
 import { withLock } from "@gatimitra/redis";
 import { loadDueScheduledCampaigns, recoverStaleRunningCampaigns, updateCampaignCounts, finalizeCampaignSend, readSetting } from "./db.js";
 import { send } from "./notificationService.js";
+import {
+  announcementPushExtras,
+  parseCustomerAnnouncementFields,
+} from "./customerAnnouncementCampaign.js";
 import type { TargetFilter, TemplateVariables } from "./types.js";
 
 const LOCK_KEY = "tick:notification-scheduler";
@@ -34,7 +38,35 @@ async function pollOnce(): Promise<void> {
       }
       try {
         const target = campaign.target_filter as unknown as TargetFilter;
-        const vars = campaign.variables as TemplateVariables;
+        const vars = {
+          ...((campaign.variables ?? {}) as Record<string, unknown>),
+          ...(campaign.override_title ? { title: campaign.override_title } : {}),
+          ...(campaign.override_body ? { body: campaign.override_body } : {}),
+          ...(campaign.override_image ? { image_url: campaign.override_image } : {}),
+        } as TemplateVariables;
+        let metadata: Record<string, unknown> | undefined;
+        if (String(campaign.template_code).toUpperCase() === "CUSTOMER_ANNOUNCEMENT") {
+          const parsed = parseCustomerAnnouncementFields({
+            ...vars,
+            title: campaign.override_title || (vars as Record<string, unknown>).title || "GatiMitra",
+            body: campaign.override_body || (vars as Record<string, unknown>).body || "",
+          });
+          if (parsed.ok) {
+            const v = vars as Record<string, unknown>;
+            metadata = announcementPushExtras({
+              campaignId: campaign.id,
+              fields: parsed.fields,
+              targetType:
+                (typeof v.target_type === "string" && v.target_type) ||
+                (typeof v.targetType === "string" && v.targetType) ||
+                null,
+              targetId:
+                (typeof v.target_id === "string" && v.target_id) ||
+                (typeof v.targetId === "string" && v.targetId) ||
+                null,
+            });
+          }
+        }
         const result = await send({
           templateCode: campaign.template_code,
           variables: vars,
@@ -46,6 +78,7 @@ async function pollOnce(): Promise<void> {
             imageUrl: campaign.override_image,
             deepLink: campaign.override_deep_link,
           },
+          ...(metadata ? { metadata } : {}),
         });
         const softSkip =
           result.skipReason === "no_recipients" || result.skipReason === "quiet_hours";

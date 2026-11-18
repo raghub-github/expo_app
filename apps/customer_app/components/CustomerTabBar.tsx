@@ -238,8 +238,9 @@ export function CustomerTabBar({ state, navigation }: BottomTabBarProps) {
     TABS[resolveOptimisticPrimaryTabIndex(activeRouteName, tabIndexForRoute)]?.routeName ??
     activeRouteName;
 
-  /** Discovery Food: filters own footing like cart; nav collapses to HOME edge. */
-  const darkChrome = discoveryLayout && chromeRouteName === "food";
+  /** Dark dock on Tabs Home + Discovery Food. */
+  const darkChrome =
+    chromeRouteName === "index" || (discoveryLayout && chromeRouteName === "food");
   const discoveryHandlersReady =
     darkChrome && discoveryChromeActive && !dockVisible && !!discoveryOnSort && !!discoveryOnFilters;
   /** HOME edge + Relevance|Filters dock (mirrors HOME + cart). */

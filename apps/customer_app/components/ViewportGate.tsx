@@ -95,7 +95,8 @@ export function ViewportGate({
     }
     if (mounted) return;
     check();
-    const id = setInterval(check, 180);
+    // 400ms is enough for below-fold mount; 180ms × many cells hammered measureInWindow in release.
+    const id = setInterval(check, 400);
     return () => clearInterval(id);
   }, [check, eager, markMounted, mounted]);
 

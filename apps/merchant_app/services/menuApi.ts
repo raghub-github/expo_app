@@ -231,10 +231,42 @@ export async function linkMenuCuisineFromCatalog(
   }
 }
 
-/** Unlink a cuisine from this store (DELETE …/cuisines/:cuisineId). */
+/** Create/link a cuisine by name (POST …/cuisines). Creates master row when missing. */
+export async function createMenuCuisineByName(
+  storeId: string,
+  token: string,
+  name: string
+): Promise<{ id: number }> {
+  const base = getApiBaseUrl();
+  const res = await authFetch(
+    `${base}/v1/merchant-menu/${encodeURIComponent(storeId)}/cuisines`,
+    token,
+    { method: "POST", body: JSON.stringify({ name: name.trim() }) }
+  );
+  const data = (await res.json().catch(() => ({}))) as {
+    id?: number;
+    message?: string;
+    error?: string;
+  };
+  if (!res.ok) {
+    throw new Error(
+      typeof data.message === "string" && data.message.trim()
+        ? data.message
+        : typeof data.error === "string"
+          ? data.error
+          : `Create cuisine failed: ${res.status}`
+    );
+  }
+  const id = Number(data.id);
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new Error("Create cuisine failed: invalid id");
+  }
+  return { id };
+}
+
 /**
- * After item save: link selected cuisine names that are in the master catalog but not yet on the store profile.
- * Plan limits enforced by the backend link endpoint.
+ * After item save: link selected cuisine names to the store profile.
+ * Missing catalog names are created+linked. Never throws — item save must stay clean.
  */
 export async function ensureStoreCuisinesLinkedForItemNames(
   storeId: string,
@@ -247,12 +279,20 @@ export async function ensureStoreCuisinesLinkedForItemNames(
     .filter(Boolean);
   if (names.length === 0) return { linked: 0, warnings: [] };
 
-  const { cuisines, catalog } = await fetchMenuCuisinesAndCatalog(storeId, token);
+  let cuisines: MenuCuisineOption[] = [];
+  let catalog: MenuCuisineOption[] = [];
+  try {
+    const fetched = await fetchMenuCuisinesAndCatalog(storeId, token);
+    cuisines = fetched.cuisines;
+    catalog = fetched.catalog;
+  } catch (e) {
+    console.warn("[ensureStoreCuisines] catalog load failed", e);
+  }
+
   const linkedLower = new Set(cuisines.map((c) => c.name.toLowerCase().trim()));
   const catalogByLower = new Map(catalog.map((c) => [c.name.toLowerCase().trim(), c]));
 
   let linked = 0;
-  const warnings: string[] = [];
 
   for (const name of names) {
     const key = name.toLowerCase().trim();
@@ -260,23 +300,23 @@ export async function ensureStoreCuisinesLinkedForItemNames(
     if (linkedLower.has(key)) continue;
 
     const cat = catalogByLower.get(key);
-    if (cat) {
-      try {
+    try {
+      if (cat) {
         await linkMenuCuisineFromCatalog(storeId, token, cat.id);
-        linked++;
-        linkedLower.add(key);
         catalogByLower.delete(key);
-      } catch (e) {
-        warnings.push(e instanceof Error ? e.message : String(e));
+      } else {
+        // Not in catalog — create + link instead of warning/blocking.
+        await createMenuCuisineByName(storeId, token, name);
       }
-    } else {
-      warnings.push(
-        `"${name}" could not be linked — it may already be on your store or not in the master cuisine list.`
-      );
+      linked++;
+      linkedLower.add(key);
+    } catch (e) {
+      // Soft-fail: item cuisine_type is already saved; do not surface cuisine link errors.
+      console.warn("[ensureStoreCuisines] link/create soft-failed", name, e);
     }
   }
 
-  return { linked, warnings };
+  return { linked, warnings: [] };
 }
 
 export async function unlinkMenuCuisine(

@@ -384,11 +384,18 @@ export function LovedMerchantsGridSkeleton({
 export function HomeOfferBannerSkeleton({
   width,
   height = 148,
+  dark = true,
 }: {
   width: number;
   height?: number;
+  dark?: boolean;
 }) {
-  return <GMSkeleton style={[offerBannerSkeletonStyles.wrap, { width, height, borderRadius: 12 }]} />;
+  return (
+    <GMSkeleton
+      dark={dark}
+      style={[offerBannerSkeletonStyles.wrap, { width, height, borderRadius: 12 }]}
+    />
+  );
 }
 
 const MERCHANT_HEADER_IMAGE_H = 196;

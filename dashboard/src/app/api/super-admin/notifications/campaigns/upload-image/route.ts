@@ -47,10 +47,16 @@ function publicOrigin(req: NextRequest): string {
     process.env.DASHBOARD_APP_URL?.trim() ||
     process.env.NEXT_PUBLIC_APP_URL?.trim() ||
     "";
-  if (fromEnv) return fromEnv.replace(/\/$/, "");
+  if (fromEnv) {
+    // Android marketing downloads require HTTPS — never emit http:// public URLs.
+    return fromEnv.replace(/\/$/, "").replace(/^http:\/\//i, "https://");
+  }
   const proto = req.headers.get("x-forwarded-proto") || "https";
   const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "";
-  if (host) return `${proto}://${host}`.replace(/\/$/, "");
+  if (host) {
+    const safeProto = proto === "http" ? "https" : proto;
+    return `${safeProto}://${host}`.replace(/\/$/, "");
+  }
   return "https://control.gatimitra.com";
 }
 

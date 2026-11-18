@@ -39,7 +39,7 @@
         android:id="@+id/gm_mkt_chrono"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:background="#E6000000"
+        android:background="@drawable/gm_mkt_chrono_pill"
         android:countDown="true"
         android:format="%s"
         android:gravity="center"

@@ -52,6 +52,9 @@ export type MenuApprovalBadge = {
  * Card badge for Partner Menu / Merchant Catalog.
  * Photo reject keeps approval_status PENDING|APPROVED while primary image is REJECTED —
  * never show "Pending Approval" in that case.
+ *
+ * Orphaned approval_status=PENDING (no change request / no pending photo) must not show
+ * a pending badge when Admin review queues are empty.
  */
 export function resolveMenuApprovalBadge(
   item: MenuItemRow,
@@ -60,6 +63,14 @@ export function resolveMenuApprovalBadge(
   const approval = String(item.approval_status ?? "PENDING").toUpperCase();
   const reason = typeof item.rejection_reason === "string" ? item.rejection_reason.trim() || null : null;
   const pendingLabel = opts?.pendingLabel ?? "Pending Approval";
+  const primaryMod = String(item.primary_image_moderation_status ?? "").toUpperCase();
+  const photoPending =
+    Boolean((item as { pending_review_image_url?: string | null }).pending_review_image_url) ||
+    (Boolean(itemDisplayImageUrl(item)) && primaryMod === "PENDING");
+  const changePending = Boolean(
+    (item as { has_pending_change_request?: boolean | null }).has_pending_change_request
+  );
+  const hasRealPendingWork = changePending || photoPending;
 
   if (itemPrimaryImageRejected(item)) {
     return { kind: "image_rejected", label: "Image rejected", reason };
@@ -69,7 +80,7 @@ export function resolveMenuApprovalBadge(
     return { kind: "rejected", label: "Rejected", reason };
   }
 
-  if (approval === "PENDING") {
+  if (approval === "PENDING" && hasRealPendingWork) {
     return { kind: "pending", label: pendingLabel, reason: null };
   }
 

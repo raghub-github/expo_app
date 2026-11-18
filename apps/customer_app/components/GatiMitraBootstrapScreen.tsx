@@ -1,14 +1,13 @@
 /**
- * Branded launch cover — flat mint + bundled splash wordmark (Zomato stack).
+ * Approved launch splash — full-bleed mint + large Lora Bold wordmark + tagline.
  *
- * Typography is baked into splash PNGs (bold Lora) so cold start never races
- * expo-font. Painting "GatiMitra" as Text before Lora loads made Android fall
- * back to system sans — the thin/normal flash seen in production.
- *
- * Full-bleed `splash-brand.png` matches phone aspect; Android 12 native icon
- * uses the square sibling. No spinner — brand-only, then home + skeletons.
+ * Native cold-start shows the same `splash-brand.png` via AppTheme windowBackground
+ * (`withBrandedNativeSplash`) before JS runs. This screen continues that brand until
+ * Home is ready. Panel chrome stays transparent so the native brand never flashes
+ * blank mint underneath a late Image decode. Typography is baked into the PNG via
+ * `npm run generate:splash`.
  */
-import { useEffect, useLayoutEffect, useRef, useCallback } from "react";
+import { useLayoutEffect, useRef, useCallback, useEffect } from "react";
 import {
   Image,
   Platform,
@@ -90,7 +89,8 @@ export function GatiMitraBootstrapScreen({
     onExitRef.current?.();
   }, []);
 
-  const handleSplashLayout = useCallback(() => {
+  /** Only after brand PNG pixels are ready — never hide native splash on empty mint. */
+  const handleBrandImageReady = useCallback(() => {
     if (splashReadyFiredRef.current) return;
     splashReadyFiredRef.current = true;
     if (!brandingLoggedRef.current && variant === "root") {
@@ -100,10 +100,6 @@ export function GatiMitraBootstrapScreen({
     }
     onSplashReadyRef.current?.();
   }, [variant]);
-
-  useEffect(() => {
-    handleSplashLayout();
-  }, [handleSplashLayout]);
 
   useEffect(() => {
     const chrome = useScreenChromeStore.getState();
@@ -163,7 +159,7 @@ export function GatiMitraBootstrapScreen({
         fadeDuration={0}
         accessibilityIgnoresInvertColors
         accessibilityLabel="GatiMitra"
-        onLoad={handleSplashLayout}
+        onLoad={handleBrandImageReady}
       />
     </>
   );
@@ -196,7 +192,6 @@ export function GatiMitraBootstrapScreen({
     <View
       style={rootStyle}
       accessibilityLabel="GatiMitra loading"
-      onLayout={handleSplashLayout}
     >
       {variant === "root" ? (
         <Animated.View
@@ -220,10 +215,13 @@ const styles = StyleSheet.create({
   inlineRoot: {
     flex: 1,
     width: "100%",
+    // Mint only for the soft index hold (no wordmark). Root variant stays
+    // transparent so native windowBackground brand remains visible.
     backgroundColor: GatiMitraColors.splashMint,
   },
   panel: {
-    backgroundColor: GatiMitraColors.splashMint,
+    // Transparent: native splash-brand windowBackground is the mint+logo base.
+    backgroundColor: "transparent",
   },
   statusFill: {
     position: "absolute",

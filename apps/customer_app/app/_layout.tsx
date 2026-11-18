@@ -6,7 +6,7 @@
 import "react-native-gesture-handler";
 import "../global.css";
 import { Stack, useRouter, useSegments } from "expo-router";
-import { useFonts } from "expo-font";
+import { loadAsync as loadFontAsync, useFonts } from "expo-font";
 import { Lora_400Regular, Lora_700Bold } from "@expo-google-fonts/lora";
 import { Poppins_600SemiBold, Poppins_700Bold } from "@expo-google-fonts/poppins";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -105,7 +105,7 @@ import {
 } from "@/lib/pendingReferral";
 import { capturePlayInstallReferrerOnce } from "@/lib/playInstallReferrer";
 import { referralService } from "@/services/referral.service";
-import { extendStartupApiGate } from "@/lib/startup-api-gate";
+import { endStartupApiGate, extendStartupApiGate } from "@/lib/startup-api-gate";
 import { startupLaunchLog, startupMeasure } from "@/lib/startupPerf";
 import { resetInitialShellReady, useInitialShellReady } from "@/lib/startupShellReady";
 import {
@@ -146,6 +146,7 @@ import {
   getSmsPermissionGranted,
 } from "@/lib/device-permissions";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { HOME_DARK } from "@/constants/homeDarkTheme";
 import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
 import { colors } from "@/theme";
@@ -244,8 +245,10 @@ void (async () => {
         return;
       }
       setRuntimeApiBaseUrl(stored);
-      // eslint-disable-next-line no-console
-      console.log("[env] using stored API base URL override:", stored);
+      if (__DEV__) {
+        // eslint-disable-next-line no-console
+        console.log("[env] using stored API base URL override:", stored);
+      }
     }
   } catch {
     /* AsyncStorage unavailable on first launch; ignore */
@@ -278,9 +281,20 @@ LogBox.ignoreLogs([
   "Push notifications (remote notifications) functionality provided by expo-notifications was removed from Expo Go",
 ]);
 
-// Keep the native mint splash until JS can hand off to Home skeletons (Zomato path)
-// or the branded JS cover (login / cold session).
+// Android: native `withBrandedNativeSplash` already shows splash-brand as
+// windowBackground and releases the mint A12 icon splash in MainActivity.
+// Keep preventAutoHide as a safety net, but never hold a blank mint frame —
+// hide immediately so the branded windowBackground stays visible while JS boots.
+// iOS still holds until the JS brand cover is ready.
+try {
+  SplashScreen.setOptions({ duration: 0, fade: false });
+} catch {
+  /* Expo Go / older clients */
+}
 void SplashScreen.preventAutoHideAsync().catch(() => {});
+if (Platform.OS === "android") {
+  void SplashScreen.hideAsync().catch(() => {});
+}
 ensureSplashHardDeadlineArmed();
 startupLaunchLog("NATIVE_SPLASH_VISIBLE");
 
@@ -302,7 +316,7 @@ function peekSyncReturningUser(): boolean {
 
 export default function RootLayout() {
   // Brand + header icon fonts together so wallet / notification never paint blank.
-  // MaterialCommunityIcons stays deferred (large map; not needed for Home header).
+  // MaterialCommunityIcons is deferred until after splash (large glyph map).
   // App-wide Lora/Poppins for UI — splash wordmark is a bundled PNG and must NOT
   // gate on this (async load previously caused thin system-sans flashes).
   const [brandFontsLoaded] = useFonts({
@@ -312,17 +326,15 @@ export default function RootLayout() {
     Poppins_700Bold,
     ...Ionicons.font,
   });
-  const [iconFontsLoaded] = useFonts({
-    ...MaterialCommunityIcons.font,
-  });
   void brandFontsLoaded;
-  void iconFontsLoaded;
   const hardDeadlineHit = useSplashDeadlineHit();
   const router = useRouter();
   const segments = useSegments() as string[];
   // Global flag is source of truth — shell-ready dismisses splash synchronously
   // via markSplashExited; local useState alone lagged behind Home's JS work.
   const splashExited = useSplashExitedFlag();
+  /** 0=pre-splash, 1=overlays, 2=location/realtime, 3=push/secondary prefetch */
+  const [postSplashPhase, setPostSplashPhase] = useState(0);
   const [homeDataPrefetched, setHomeDataPrefetched] = useState(false);
   const rootSegment = segments[0] ?? "";
   const onRootIndexHold = !rootSegment || rootSegment === "index";
@@ -358,15 +370,15 @@ export default function RootLayout() {
   const syncReturningRef = useRef(peekSyncReturningUser());
   const syncReturning = syncReturningRef.current;
   /**
-   * Zomato path:
-   * 1) Branded mint splash (wordmark) until we've left Index
-   * 2) Home skeletons immediately after — never blank mint / "Loading…"
+   * Approved splash = full-bleed brand (large Lora on mint).
+   * Native: withBrandedNativeSplash shows splash-brand as windowBackground immediately
+   * (A12 circular icon stays mint-only). JS cover continues the same asset until Home.
    */
   const destinationCommitted =
     (criticalReady || syncReturning) && !onRootIndexHold;
   const destinationReady = destinationCommitted && initialShellReady;
-  const appReady = destinationCommitted || splashExited;
-  // Keep Zomato brand splash until destination route is under us.
+  // Only destinationCommitted dismisses branding — never splashExited alone (avoids blank mint).
+  const appReady = destinationCommitted;
   const showBrandedCover = !destinationCommitted;
   // Soft home skeletons fill the gap while Tabs/Home JS + profile warm.
   const showHomeShellPlaceholder =
@@ -376,29 +388,29 @@ export default function RootLayout() {
     const first = markSplashExited(reason);
     if (!first) return;
     startupMeasure("branding_splash_exit", "process_start");
-    // Branded-layer on-screen duration (excludes native-only time before JS brand).
     startupMeasure("splash_visible_duration", "branding_visible");
     startupMeasure("usable_home_ready", "process_start");
     startupLaunchLog("BRANDED_SPLASH_DISMISS", {
       reason,
       blocksHome: true,
+      note: "js_fullbleed_brand_only",
     });
     void SplashScreen.hideAsync().catch(() => {});
     // Non-blocking map asset warm — must not sit on the dismiss path.
     void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike")).catch(() => {});
   }, []);
 
+  /** Native solid-mint splash can hide the moment the approved JS brand is painted. */
   const handleSplashReady = useCallback(() => {
     startupMeasure("native_splash_hide", "process_start");
     startupLaunchLog("NATIVE_SPLASH_HIDE", {
       phase: "js_brand_laid_out",
       blocksHome: false,
+      note: "native_was_mint_only",
     });
-    // Native splash can hide once JS brand is up — JS mint cover still owns the frame.
     void SplashScreen.hideAsync().catch(() => {});
   }, []);
 
-  /** Visual fade only — parent/shell-ready owns hard dismiss. */
   const handleSplashExitComplete = useCallback(() => {
     if (!isSplashExited()) dismissBrandingSplash("bootstrap_exit_complete");
   }, [dismissBrandingSplash]);
@@ -711,9 +723,35 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (hydrated && useAuthStore.getState().session) {
-      extendStartupApiGate(12_000);
+      // Short burst only — long 12s gate serialized home APIs on production latency.
+      extendStartupApiGate(4_000);
     }
   }, [hydrated]);
+
+  // Stagger post-splash hosts so release/Hermes doesn't pay one giant first-frame bill.
+  useEffect(() => {
+    if (!splashExited) {
+      setPostSplashPhase(0);
+      return;
+    }
+    setPostSplashPhase(1);
+    endStartupApiGate();
+    const t2 = setTimeout(() => setPostSplashPhase(2), 320);
+    const t3 = setTimeout(() => setPostSplashPhase(3), 900);
+    return () => {
+      clearTimeout(t2);
+      clearTimeout(t3);
+    };
+  }, [splashExited]);
+
+  // Defer MaterialCommunityIcons until after splash — not needed for Home header.
+  useEffect(() => {
+    if (!splashExited) return;
+    const t = setTimeout(() => {
+      void loadFontAsync(MaterialCommunityIcons.font).catch(() => {});
+    }, 500);
+    return () => clearTimeout(t);
+  }, [splashExited]);
 
   // Stage B after splash: permission sheet UX + backend selected + reconcile.
   // Fresh GPS itself starts earlier via kickEarlyFreshGpsIfReady (joined here).
@@ -738,9 +776,11 @@ export default function RootLayout() {
             <View
             style={{
               flex: 1,
-              // Soft home bg once destination is ready; mint only while branded cover owns the frame.
+              // Soft home bg once destination is ready. While the branded cover
+              // owns the frame, stay transparent so the native splash-brand
+              // windowBackground is never covered by a blank mint fill.
               backgroundColor: showBrandedCover
-                ? SPLASH_CHROME_COLOR
+                ? "transparent"
                 : GatiMitraColors.softBackground,
             }}
           >
@@ -773,21 +813,8 @@ export default function RootLayout() {
                 {/* Same as merchant: Play Core update host is not gated on splash.
                     Official flexible Play bottom sheet (not a custom modal). */}
                 <PlayInAppUpdateBootstrap />
-                {splashExited ? (
+                {postSplashPhase >= 1 ? (
                   <>
-                    <AppErrorBoundary source="background-sync" fallback={() => null}>
-                      <ReactQueryFocusSync />
-                      <StoreStatusRealtimeSync />
-                      <PreventServicesRealtimeSync />
-                      <RiderOnlineCheckRealtimeSync />
-                      <OrderRealtimeSync />
-                      <SessionRevokedHandler />
-                      <CustomerPermissionsRealtimeSync />
-                      <LocationPermissionResumeCheck />
-                      <LocationWatchSync />
-                      <CustomerResumeReconcile />
-                      <LanguageSync />
-                    </AppErrorBoundary>
                     <AppErrorBoundary source="overlay-hosts" fallback={() => null}>
                       <View
                         pointerEvents="box-none"
@@ -824,20 +851,37 @@ export default function RootLayout() {
                     >
                       <FlashSaleQtyLimitSheetHost />
                     </View>
-                    <AppErrorBoundary source="prefetch" fallback={() => null}>
-                      <PushNotificationBootstrap />
-                      <AbandonedCartReminderBootstrap />
-                      <WeatherRealtimeSync />
-                      <PendingAddressShareResume />
-                      <PendingCheckoutPaymentResume />
-                      <PendingReferralResume />
-                      <FoodHomeLayoutPrefetch />
-                      <ProfilePrefetch />
-                      <WalletBalancePrefetch />
-                      <CustomerServiceBlocksSync />
-                      <SubscriptionPlansPrefetch />
-                    </AppErrorBoundary>
                   </>
+                ) : null}
+                {postSplashPhase >= 2 ? (
+                  <AppErrorBoundary source="background-sync" fallback={() => null}>
+                    <ReactQueryFocusSync />
+                    <StoreStatusRealtimeSync />
+                    <PreventServicesRealtimeSync />
+                    <RiderOnlineCheckRealtimeSync />
+                    <OrderRealtimeSync />
+                    <SessionRevokedHandler />
+                    <CustomerPermissionsRealtimeSync />
+                    <LocationPermissionResumeCheck />
+                    <LocationWatchSync />
+                    <CustomerResumeReconcile />
+                    <LanguageSync />
+                  </AppErrorBoundary>
+                ) : null}
+                {postSplashPhase >= 3 ? (
+                  <AppErrorBoundary source="prefetch" fallback={() => null}>
+                    <PushNotificationBootstrap />
+                    <AbandonedCartReminderBootstrap />
+                    <WeatherRealtimeSync />
+                    <PendingAddressShareResume />
+                    <PendingCheckoutPaymentResume />
+                    <PendingReferralResume />
+                    <FoodHomeLayoutPrefetch />
+                    <ProfilePrefetch />
+                    <WalletBalancePrefetch />
+                    <CustomerServiceBlocksSync />
+                    <SubscriptionPlansPrefetch />
+                  </AppErrorBoundary>
                 ) : null}
               </>
             ) : null}
@@ -1314,11 +1358,8 @@ function LocationPermissionResumeCheck() {
           const { coords: before } = useLocationStore.getState();
           // Permission only — reconcile owns the pin when signed in.
           invalidateDeviceLocationReadiness();
-          await promptLocationPermissionIfNeeded({ skipDeviceFetch: true, force: true });
           const readiness = await getDeviceLocationReadiness({ force: true });
-          if (readiness.isReady && useLocationStore.getState().locationSource !== "selected") {
-            void requestPermissionAndFetch({ forceDevice: true });
-          }
+          // Backend pin first — then prompt (services-off / dismissed never auto-open).
           if (!readiness.isReady) {
             if (useAuthStore.getState().session) {
               const { applyActiveLocationFromBackend } = await import(
@@ -1326,7 +1367,12 @@ function LocationPermissionResumeCheck() {
               );
               await applyActiveLocationFromBackend(queryClient);
             }
+            await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
             return "done";
+          }
+          await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
+          if (useLocationStore.getState().locationSource !== "selected") {
+            void requestPermissionAndFetch({ forceDevice: true });
           }
           let reconciled = null as Awaited<ReturnType<typeof reconcileActiveLocationFromGps>>;
           if (useAuthStore.getState().session) {
@@ -1392,8 +1438,8 @@ function LocationPermissionResumeCheck() {
     return () => unsubscribe();
   }, [requestPermissionAndFetch, promptLocationPermissionIfNeeded, queryClient]);
 
-  // While the sheet is up, re-check OS readiness only (no GPS fetch). Starting
-  // progressive GPS every 1.5s made Enable feel stuck and burned battery.
+  // While the sheet is up, re-check OS readiness only (no GPS fetch). Prefer
+  // AppState return-from-Settings; keep a slow poll as fallback (≥5s).
   useEffect(() => {
     if (!showPermissionModal) return;
     if (useSmsPermissionStore.getState().blocksLocation) return;
@@ -1407,8 +1453,14 @@ function LocationPermissionResumeCheck() {
     };
 
     recheck();
-    const interval = setInterval(recheck, 2000);
-    return () => clearInterval(interval);
+    const interval = setInterval(recheck, 5_000);
+    const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
+      if (next === "active") recheck();
+    });
+    return () => {
+      clearInterval(interval);
+      sub.remove();
+    };
   }, [showPermissionModal, promptLocationPermissionIfNeeded]);
 
   return null;
@@ -1494,17 +1546,19 @@ function RootStack({
   const AUTH_CHROME = GatiMitraColors.splashMint;
   const resolvedStatusBarBackground = splashChromeActive
     ? SPLASH_CHROME_COLOR
-    : inDiscoveryFood
-      ? DiscoveryColors.bg
-      : inOnboardingStack
-        ? "transparent"
-        : inAuthStack
-          ? AUTH_CHROME
-          : immersiveStatusBar && statusBarBackground === "transparent"
-            ? "transparent"
-            : statusBarBackground === "transparent"
-              ? GatiMitraColors.softBackground
-              : statusBarBackground;
+    : inTabsHome
+      ? HOME_DARK.page
+      : inDiscoveryFood
+        ? DiscoveryColors.bg
+        : inOnboardingStack
+          ? "transparent"
+          : inAuthStack
+            ? AUTH_CHROME
+            : immersiveStatusBar && statusBarBackground === "transparent"
+              ? "transparent"
+              : statusBarBackground === "transparent"
+                ? GatiMitraColors.softBackground
+                : statusBarBackground;
   // Derive the icon style from the ACTUAL bar background so icons can never be
   // invisible (e.g. a screen that leaves "light" icons on a white bar). Splash keeps
   // its light icons over the mint chrome. Discovery Food always forces white icons.
@@ -1514,7 +1568,7 @@ function RootStack({
       : resolvedStatusBarBackground;
   const resolvedStatusBarStyle = splashChromeActive
     ? "light"
-    : inDiscoveryFood
+    : inDiscoveryFood || inTabsHome
       ? "light"
       : isLightBarColor(barBgForContrast)
         ? "dark"
@@ -1532,14 +1586,17 @@ function RootStack({
   }, [splashChromeActive]);
 
   useEffect(() => {
-    if (!inDiscoveryFood || splashChromeActive) return;
+    if ((!inDiscoveryFood && !inTabsHome) || splashChromeActive) return;
     NativeStatusBar.setHidden(false, "none");
     NativeStatusBar.setBarStyle("light-content", true);
     if (Platform.OS === "android") {
       NativeStatusBar.setTranslucent(true);
-      NativeStatusBar.setBackgroundColor(DiscoveryColors.bg, true);
+      NativeStatusBar.setBackgroundColor(
+        inTabsHome ? HOME_DARK.page : DiscoveryColors.bg,
+        true
+      );
     }
-  }, [inDiscoveryFood, splashChromeActive]);
+  }, [inDiscoveryFood, inTabsHome, splashChromeActive]);
 
   return (
     <>

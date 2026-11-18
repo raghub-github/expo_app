@@ -6,7 +6,7 @@
  */
 
 import { useLayoutEffect, useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { View, StyleSheet, Dimensions } from "react-native";
+import { View, Text, StyleSheet, Dimensions, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { AppAssetImage } from "@/components/AppAssetImage";
 import { GMSkeleton } from "@/components/ShimmerSkeleton";
@@ -23,28 +23,41 @@ import { useServiceCardOfferPills } from "@/hooks/useServiceCardOfferPills";
 import { InstantPressable } from "@/components/InstantPressable";
 import { HomeServicesGridSkeleton } from "@/components/home/HomeTabSkeletons";
 import { homeSkeletonLog } from "@/lib/homeSkeletonTelemetry";
+import { StoreFonts } from "@/constants/storeTypography";
+import { HOME_DARK } from "@/constants/homeDarkTheme";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const PAD = 16;
-/** Clear gutter between cards (row + column). */
+/** Clear gutter between cards (row + column) — magicpin-like airy grid. */
 const GAP = 12;
 const COLS = 2;
 const CARD_W = Math.floor((SCREEN_W - PAD * 2 - GAP * (COLS - 1)) / COLS);
 const DEFAULT_CARD_H = 126;
-const CARD_RADIUS = 14;
-/** Soft gray tile — sits slightly off the page white. */
-const CARD_BG = "#EBEBED";
-const CORNER_PILL_PAD_V = 5;
-const CORNER_PILL_PAD_H = 9;
+/** Magicpin-style soft tile radius. */
+const CARD_RADIUS = 22;
+const CORNER_PILL_PAD_V = 7;
+const CORNER_PILL_PAD_H = 10;
 const CORNER_PILL_INNER_R = 14;
 const CORNER_PILL_FONT = 9;
-const CORNER_PILL_LINE = 12;
+/** Extra line box so Lora descenders never clip in release/Hermes. */
+const CORNER_PILL_LINE = 14;
 /** Solid forest green — matches reference offer corner badge. */
 const OFFER_PILL_GREEN = "#15803D";
 /** Alias kept so Metro HMR never throws if a prior gradient paint still reads this name. */
 const OFFER_PILL_GREEN_TOP = OFFER_PILL_GREEN;
-/** Uniform illustration box for every service tile (prevents grocery art looking larger). */
-const SERVICE_IMAGE_BOX = 52;
+/**
+ * Large magicpin-style art — title-only cards leave room for the illustration.
+ * Kept clear of the top-right offer ribbon and bottom tag band.
+ */
+/** Bottom-right hero art — larger magicpin presence, still clears top ₹OFF. */
+const SERVICE_IMAGE_BOX = 90;
+/**
+ * Reserved bottom band for the tag pill. Illustration sits ABOVE this band so art
+ * never covers "Fresh & Fast" / "Going Out" / "Elect & Ecom" (local + release).
+ */
+const TAG_PILL_BAND_H = CORNER_PILL_PAD_V * 2 + CORNER_PILL_LINE + 2;
+/** Full-width tag is fine once art clears the band — no mid-word clip. */
+const TAG_PILL_MAX_W = CARD_W - 2;
 /** Delay illustration shimmer so disk-cache hits never flash grey. */
 const SERVICE_IMAGE_SKELETON_DELAY_MS = 180;
 
@@ -100,6 +113,7 @@ function ServiceCardImage({
     <View style={[styles.imageWrap, { width: SERVICE_IMAGE_BOX, height: SERVICE_IMAGE_BOX }]}>
       {showSkeleton && !imageVisible ? (
         <GMSkeleton
+          dark
           style={[
             styles.imageSkeleton,
             {
@@ -144,7 +158,7 @@ const FOOD: ServiceItem = {
   id: "food",
   title: "Order Food",
   description: "Delicious meals, delivered hot & fast to your door.",
-  pill: "Fresh & Fast Delivery",
+  pill: "Fresh & Fast",
   accentColor: "#7C3AED",
   assetKey: CX.home.serviceFood,
   /** Unused for navigation — Food uses navigateToFoodHome → tab `food`. */
@@ -174,8 +188,8 @@ const GROCERY: ServiceItem = {
   description: "Get daily essentials delivered to your home.",
   pill: "Fresh Daily",
   accentColor: "#EA580C",
-  // Cart art fills more of the canvas — match visual size of other tiles.
-  imageScale: 0.82,
+  // Cart art fills more of the canvas — slight shrink only.
+  imageScale: 0.92,
   assetKey: CX.home.serviceVoucher,
   route: "/home/grocery",
 };
@@ -315,13 +329,15 @@ function ServiceTile({
           { height: cardHeight },
           offerPillLabel ? styles.cardWithOffer : null,
         ]}
-        pressedScale={0.95}
-        pressedOpacity={0.9}
+        // No shrink on tap — scale made tiles look broken; grey wash is enough.
+        pressedScale={1}
+        pressedOpacity={1}
+        haptic={false}
         android_ripple={
           !canPress
             ? null
             : {
-                color: "rgba(34, 197, 94, 0.25)",
+                color: "rgba(255,255,255,0.14)",
                 borderless: false,
                 foreground: true,
               }
@@ -361,7 +377,13 @@ function ServiceTile({
         {offerPillLabel ? (
           <View style={styles.offerCornerPill} pointerEvents="none">
             <View style={styles.offerCornerPillFill}>
-              <AppText style={styles.offerCornerPillText} numberOfLines={1}>
+              <AppText
+                style={styles.offerCornerPillText}
+                numberOfLines={1}
+                maxFontSizeMultiplier={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.8}
+              >
                 {offerPillLabel}
               </AppText>
             </View>
@@ -374,39 +396,38 @@ function ServiceTile({
             !enabled && styles.textMuted,
             offerPillLabel ? styles.titleWithOffer : null,
           ]}
-          numberOfLines={1}
+          numberOfLines={2}
+          maxFontSizeMultiplier={1.15}
         >
           {item.title}
         </AppText>
-        <AppText
-          style={[
-            styles.description,
-            !enabled && styles.textMuted,
-            offerPillLabel ? styles.descriptionWithOffer : null,
-          ]}
-          numberOfLines={3}
-        >
-          {item.description}
-        </AppText>
+
+        {/* Art first, tag last — later sibling + elevation wins over the illustration. */}
+        <View style={styles.mediaCol} pointerEvents="none">
+          <ServiceCardImage assetKey={item.assetKey} imageScale={item.imageScale ?? 1} />
+        </View>
 
         {item.pill ? (
-          <View style={styles.tagCornerPill} pointerEvents="none">
+          <View style={styles.tagCornerPill} pointerEvents="none" collapsable={false}>
             <View
               style={[
                 styles.tagCornerPillFill,
                 { backgroundColor: enabled ? item.accentColor : "#9CA3AF" },
               ]}
+              collapsable={false}
             >
-              <AppText style={styles.tagCornerPillText} numberOfLines={1} maxFontSizeMultiplier={1}>
+              {/* RN Text (not AppText): tiny corner pills + Lora metrics clipped on Android. */}
+              <Text
+                style={styles.tagCornerPillText}
+                numberOfLines={1}
+                maxFontSizeMultiplier={1}
+                allowFontScaling={false}
+              >
                 {item.pill}
-              </AppText>
+              </Text>
             </View>
           </View>
         ) : null}
-
-        <View style={styles.mediaCol} pointerEvents="none">
-          <ServiceCardImage assetKey={item.assetKey} imageScale={item.imageScale ?? 1} />
-        </View>
 
         {pressed && canPress ? (
           <View style={styles.cardPressedOverlay} pointerEvents="none" />
@@ -431,16 +452,16 @@ export function HomeServicesRow({
   skeleton = false,
   onAccountBlockedPress,
 }: Props) {
-  const assets = useAppAssetsStore((s) => s.assets);
   const offerPills = useServiceCardOfferPills(true);
-  // Prefetch once per URI set — object identity churn from CMS refresh must not
-  // re-kick loads (AppAssetImage keeps last-good until the new URI paints).
-  const criticalUrisKey = HOME_CRITICAL_ASSET_KEYS.map(
-    (k) => assets[k]?.proxyUrl ?? assets[k]?.url ?? ""
-  ).join("|");
+  // Prefetch once per URI set — subscribe only to the fingerprint, not whole `assets`
+  // (CMS refresh used to re-render the entire service grid).
+  const criticalUrisKey = useAppAssetsStore((s) =>
+    HOME_CRITICAL_ASSET_KEYS.map(
+      (k) => s.assets[k]?.proxyUrl ?? s.assets[k]?.url ?? ""
+    ).join("|")
+  );
   useLayoutEffect(() => {
-    prefetchCriticalHomeAssetImagesSync(assets);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by URI fingerprint
+    prefetchCriticalHomeAssetImagesSync(useAppAssetsStore.getState().assets);
   }, [criticalUrisKey]);
 
   const services = useMemo(
@@ -490,26 +511,27 @@ const styles = StyleSheet.create({
   cardShadow: {
     width: CARD_W,
     borderRadius: CARD_RADIUS,
-    backgroundColor: CARD_BG,
+    backgroundColor: "#5A5A63",
+    // Flat tile — no box shadow.
     shadowOpacity: 0,
-    shadowRadius: 0,
-    shadowOffset: { width: 0, height: 0 },
     elevation: 0,
   },
   card: {
     width: "100%",
-    backgroundColor: CARD_BG,
+    backgroundColor: "#5A5A63",
     borderRadius: CARD_RADIUS,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(15, 23, 42, 0.04)",
-    paddingTop: 9,
-    paddingBottom: 28,
-    paddingHorizontal: 9,
+    borderColor: "rgba(255,255,255,0.10)",
+    paddingTop: 14,
+    // Room for the bottom tag band — title-only magicpin layout.
+    paddingBottom: TAG_PILL_BAND_H + 4,
+    paddingHorizontal: 14,
+    // Keep hidden for pressed overlay / radius — pill stays fully inside bounds.
     overflow: "hidden",
   },
   cardPressedOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(34, 197, 94, 0.08)",
+    backgroundColor: "rgba(255,255,255,0.14)",
     borderRadius: CARD_RADIUS,
     zIndex: 6,
   },
@@ -518,7 +540,7 @@ const styles = StyleSheet.create({
    * so titles (Order Food vs Book a Ride) stay vertically aligned.
    */
   cardWithOffer: {
-    paddingTop: 9,
+    paddingTop: 14,
   },
   /**
    * Reference corner badge (mirrored to top-right):
@@ -529,7 +551,7 @@ const styles = StyleSheet.create({
     top: 0,
     right: 0,
     zIndex: 8,
-    maxWidth: "58%",
+    maxWidth: "68%",
   },
   offerCornerPillFill: {
     paddingLeft: CORNER_PILL_PAD_H,
@@ -541,76 +563,72 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 0,
     borderTopLeftRadius: 0,
     borderBottomLeftRadius: CORNER_PILL_INNER_R,
-    overflow: "hidden",
+    // Visible so offer copy never clips mid-glyph in release.
+    overflow: "visible",
   },
   offerCornerPillText: {
     color: "#FFFFFF",
     fontSize: CORNER_PILL_FONT,
     fontWeight: "800",
-    letterSpacing: 0.2,
+    letterSpacing: 0.1,
     lineHeight: CORNER_PILL_LINE,
     includeFontPadding: false,
     textTransform: "uppercase",
   },
   disabledWash: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(248, 250, 249, 0.62)",
+    // Soft darken only — don’t turn the tile black.
+    backgroundColor: "rgba(0, 0, 0, 0.28)",
     borderRadius: CARD_RADIUS,
     zIndex: 4,
   },
   blockedOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(255,255,255,0.78)",
+    backgroundColor: "rgba(0,0,0,0.45)",
     borderRadius: CARD_RADIUS,
     zIndex: 6,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(220,38,38,0.22)",
+    borderColor: "rgba(220,38,38,0.35)",
     paddingHorizontal: 8,
     gap: 6,
   },
   frozenLabel: {
     fontSize: 14,
     fontWeight: "800",
-    color: "#DC2626",
+    color: "#F87171",
     letterSpacing: 0.3,
   },
   textMuted: {
-    color: "#9CA3AF",
+    color: HOME_DARK.textDim,
   },
   title: {
-    fontSize: 15.5,
+    fontSize: 17,
     fontWeight: "800",
-    color: "#111827",
-    lineHeight: 19,
-    marginRight: 58,
+    color: HOME_DARK.text,
+    lineHeight: 22,
+    letterSpacing: -0.3,
+    // Leave room for bottom-right art — title stays top-left like magicpin.
+    maxWidth: "58%",
+    paddingRight: 2,
+    zIndex: 3,
   },
   titleWithOffer: {
-    marginRight: 78,
-  },
-  description: {
-    marginTop: 6,
-    marginRight: 58,
-    paddingBottom: 4,
-    fontSize: 10,
-    fontWeight: "500",
-    color: "#9CA3AF",
-    lineHeight: 14,
-  },
-  descriptionWithOffer: {
-    marginRight: 58,
+    // Clear top-right offer ribbon only.
+    maxWidth: "52%",
+    marginRight: 8,
   },
   /**
-   * Bottom-left mirror of the top-right offer ribbon:
-   * flush to the card corner; soft curve on the free inner corner.
+   * Bottom-left corner tag — lives in TAG_PILL_BAND_H; art is parked above it.
    */
   tagCornerPill: {
     position: "absolute",
     left: 0,
     bottom: 0,
-    zIndex: 5,
-    maxWidth: "72%",
+    zIndex: 20,
+    elevation: Platform.OS === "android" ? 12 : 0,
+    maxWidth: TAG_PILL_MAX_W,
   },
   tagCornerPillFill: {
     paddingLeft: CORNER_PILL_PAD_H,
@@ -621,30 +639,35 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 0,
     borderBottomRightRadius: 0,
     borderTopRightRadius: CORNER_PILL_INNER_R,
-    overflow: "hidden",
+    // Do NOT clip text — labels must fully paint in local + production.
+    overflow: "visible",
+    alignSelf: "flex-start",
   },
   tagCornerPillText: {
     color: "#FFFFFF",
     fontSize: CORNER_PILL_FONT,
-    fontWeight: "800",
-    letterSpacing: 0.15,
     lineHeight: CORNER_PILL_LINE,
+    letterSpacing: 0.05,
     includeFontPadding: false,
+    // Family alone — Android clips when fontWeight is also set on custom faces.
+    fontFamily: StoreFonts.loraBold,
   },
   mediaCol: {
     position: "absolute",
-    right: 6,
-    bottom: 8,
+    right: -6,
+    // Flush bottom-right corner (magicpin) — left tag pill keeps higher zIndex.
+    bottom: -8,
     width: SERVICE_IMAGE_BOX,
     height: SERVICE_IMAGE_BOX,
-    alignItems: "center",
-    justifyContent: "center",
+    alignItems: "flex-end",
+    justifyContent: "flex-end",
     zIndex: 2,
+    elevation: 0,
   },
   imageWrap: {
     alignItems: "center",
     justifyContent: "center",
-    overflow: "hidden",
+    overflow: "visible",
   },
   imageSkeleton: {
     position: "absolute",
