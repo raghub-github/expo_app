@@ -4,7 +4,9 @@ import type { RiderLedgerEntry } from "@/src/services/api/riderApi";
 import {
   formatLedgerAmount,
   formatLedgerDateTime,
+  isZeroWalletJobEntry,
   ledgerEarningBanner,
+  ledgerJobBreakdownLine,
   ledgerOrderIdLine,
   ledgerStatusLabel,
   ledgerTransactionTitle,
@@ -47,6 +49,9 @@ export function LedgerTransactionRow({ entry, showDivider = false, onPress }: Pr
   const earningBanner = ledgerEarningBanner(entry, t);
   const orderIdLine = ledgerOrderIdLine(entry, t);
   const status = ledgerStatusLabel(entry, t);
+  const jobLine = ledgerJobBreakdownLine(entry, t);
+  const zeroJob = isZeroWalletJobEntry(entry);
+  const cashJob = entry.job?.cashCollected === true;
 
   return (
     <Pressable
@@ -62,7 +67,18 @@ export function LedgerTransactionRow({ entry, showDivider = false, onPress }: Pr
         <Text style={styles.title}>
           {title}
         </Text>
-        {earningBanner ? (
+        {cashJob ? (
+          <View style={styles.cashChip}>
+            <Ionicons name="cash-outline" size={11} color="#92400E" />
+            <Text style={styles.cashChipText}>{t("ledger.cashCollectedFlag", "Cash collected")}</Text>
+          </View>
+        ) : null}
+        {jobLine ? (
+          <Text style={styles.jobLine} numberOfLines={3}>
+            {jobLine}
+          </Text>
+        ) : null}
+        {earningBanner && !jobLine ? (
           <Text style={styles.earningBanner} numberOfLines={3}>
             {earningBanner}
           </Text>
@@ -75,12 +91,21 @@ export function LedgerTransactionRow({ entry, showDivider = false, onPress }: Pr
       </View>
 
       <View style={styles.amountCol}>
-        <View style={[styles.statusPill, { backgroundColor: visual.statusBg }]}>
-          <Text style={[styles.statusText, { color: visual.statusColor }]}>{status}</Text>
+        <View
+          style={[
+            styles.statusPill,
+            { backgroundColor: zeroJob ? "#F3F4F6" : visual.statusBg },
+          ]}
+        >
+          <Text style={[styles.statusText, { color: zeroJob ? "#4B5563" : visual.statusColor }]}>{status}</Text>
         </View>
-        <Text style={[styles.amount, isCredit ? styles.amountCredit : styles.amountDebit]}>
-          {isCredit ? "+" : "−"} ₹{formatLedgerAmount(entry.amount)}
-        </Text>
+        {zeroJob ? (
+          <Text style={[styles.amount, styles.amountNeutral]}>₹{formatLedgerAmount(0)}</Text>
+        ) : (
+          <Text style={[styles.amount, isCredit ? styles.amountCredit : styles.amountDebit]}>
+            {isCredit ? "+" : "−"} ₹{formatLedgerAmount(entry.amount)}
+          </Text>
+        )}
         <Text style={styles.date}>{formatLedgerDateTime(entry.createdAt)}</Text>
       </View>
     </Pressable>
@@ -158,6 +183,31 @@ const styles = StyleSheet.create({
   },
   amountDebit: {
     color: "#DC2626",
+  },
+  amountNeutral: {
+    color: "#4B5563",
+  },
+  cashChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 4,
+    backgroundColor: "#FEF3C7",
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    marginBottom: 4,
+  },
+  cashChipText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#92400E",
+  },
+  jobLine: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#374151",
+    marginBottom: 2,
   },
   date: {
     fontSize: 10,

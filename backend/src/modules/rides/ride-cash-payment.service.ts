@@ -35,9 +35,19 @@ export type ConfirmRideCashCollectionInput = {
   orderRef: string;
 };
 
+/**
+ *   cash_settled    — settled now in cash: wallet moved by R − C
+ *   paid_online     — the passenger had already paid the QR / in-app: take NO cash
+ *   free_ride       — an offer covered the fare: rider credited, nothing collected
+ *   already_settled — a repeat tap after a cash settlement
+ */
+export type RideCashConfirmOutcome = "cash_settled" | "paid_online" | "free_ride" | "already_settled";
+
 export type ConfirmRideCashCollectionResult = {
   ok: true;
   alreadySettled: boolean;
+  outcome: RideCashConfirmOutcome;
+  paymentMethod: string | null;
   orderId: string;
   customerBill: number;
   companyReceivable: number;
@@ -70,6 +80,35 @@ function riderOrderRefWhere(riderId: number, orderRef: string) {
   );
 }
 
+/** Result for a ride that is already settled / paid — read from the immutable settlement. */
+async function settledResult(
+  riderId: number,
+  orderCoreId: number,
+  orderIdText: string,
+  fallbackMethod: string | null,
+  outcomeHint?: RideCashConfirmOutcome
+): Promise<ConfirmRideCashCollectionResult> {
+  const { getRiderSettlementSummary } = await import("../../lib/rider-settlement-summary.js");
+  const s = await getRiderSettlementSummary(riderId, orderCoreId).catch(() => null);
+  const method = s?.paymentMethod ?? (normalizePaymentMethod(fallbackMethod) || null);
+  const outcome: RideCashConfirmOutcome =
+    outcomeHint ?? (method === "cash" ? "already_settled" : "paid_online");
+  return {
+    ok: true,
+    alreadySettled: true,
+    outcome,
+    paymentMethod: method,
+    orderId: orderIdText,
+    customerBill: s?.customerPayable ?? 0,
+    companyReceivable: s ? Math.max(0, Math.round((s.customerPayable - s.riderEntitlement) * 100) / 100) : 0,
+    riderEntitlement: s?.riderEntitlement ?? 0,
+    walletDebit: s?.walletDebit ?? 0,
+    walletCredit: s?.walletCredit ?? 0,
+    walletBalanceAfter: s?.walletBalanceAfter ?? null,
+    settlementId: s?.settlementId ?? "",
+  };
+}
+
 export async function confirmRideCashCollectionForRider(
   input: ConfirmRideCashCollectionInput
 ): Promise<ConfirmRideCashCollectionResult> {
@@ -79,29 +118,33 @@ export async function confirmRideCashCollectionForRider(
     throw Object.assign(new Error("Invalid rider session"), { statusCode: 403 });
   }
 
-  const [orderRow] = await db
-    .select({
-      id: ordersCore.id,
-      orderId: ordersCore.orderId,
-      customerId: ordersCore.customerId,
-      orderType: ordersCore.orderType,
-      status: ordersCore.status,
-      currentStatus: ordersCore.currentStatus,
-      paymentStatus: ordersCore.paymentStatus,
-      paymentMethod: ordersCore.paymentMethod,
-      billingSnapshot: ordersCore.billingSnapshot,
-      pickupLat: ordersCore.pickupLat,
-      pickupLon: ordersCore.pickupLon,
-      checkoutMetadata: ordersCore.checkoutMetadata,
-      riderId: ordersCore.riderId,
-      rideSettlementId: ordersRide.settlementId,
-      cashCollectedAt: ordersRide.cashCollectedAt,
-    })
-    .from(ordersCore)
-    .innerJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
-    .where(riderOrderRefWhere(riderId, input.orderRef))
-    .limit(1);
+  const readOrder = async () => {
+    const [row] = await db
+      .select({
+        id: ordersCore.id,
+        orderId: ordersCore.orderId,
+        customerId: ordersCore.customerId,
+        orderType: ordersCore.orderType,
+        status: ordersCore.status,
+        currentStatus: ordersCore.currentStatus,
+        paymentStatus: ordersCore.paymentStatus,
+        paymentMethod: ordersCore.paymentMethod,
+        billingSnapshot: ordersCore.billingSnapshot,
+        pickupLat: ordersCore.pickupLat,
+        pickupLon: ordersCore.pickupLon,
+        checkoutMetadata: ordersCore.checkoutMetadata,
+        riderId: ordersCore.riderId,
+        rideSettlementId: ordersRide.settlementId,
+        cashCollectedAt: ordersRide.cashCollectedAt,
+      })
+      .from(ordersCore)
+      .innerJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
+      .where(riderOrderRefWhere(riderId, input.orderRef))
+      .limit(1);
+    return row;
+  };
 
+  const orderRow = await readOrder();
   if (!orderRow?.id) {
     throw Object.assign(new Error("Ride order not found"), { statusCode: 404 });
   }
@@ -119,41 +162,54 @@ export async function confirmRideCashCollectionForRider(
       statusCode: 409,
     });
   }
-  const method = normalizePaymentMethod(orderRow.paymentMethod);
-  if (!isCashPaymentMethod(method)) {
-    throw Object.assign(new Error("This ride is not a cash payment"), {
-      statusCode: 409,
-      code: "NOT_CASH_ORDER",
-    });
-  }
 
   const customerPk = orderRow.customerId != null ? Number(orderRow.customerId) : 0;
   if (!Number.isFinite(customerPk) || customerPk <= 0) {
     throw Object.assign(new Error("Order has no linked customer"), { statusCode: 400 });
   }
+  const orderIdText = orderRow.orderId?.trim() || String(orderRow.id);
 
-  // Idempotent short-circuit — the settlement engine also guards on this but
-  // we prefer to return a 200 quickly if the rider taps twice.
-  if (orderRow.rideSettlementId && !isRideFarePaymentPending(orderRow.paymentStatus)) {
-    const orderIdText = orderRow.orderId?.trim() || String(orderRow.id);
-    return {
-      ok: true,
-      alreadySettled: true,
-      orderId: orderIdText,
-      customerBill: 0,
-      companyReceivable: 0,
-      riderEntitlement: 0,
-      walletDebit: 0,
-      walletCredit: 0,
-      walletBalanceAfter: null,
-      settlementId: orderRow.rideSettlementId,
-    };
-  }
-  if (!isRideFarePaymentPending(orderRow.paymentStatus)) {
-    throw Object.assign(new Error("Ride fare is already paid"), { statusCode: 409 });
+  // Already settled / already paid (double tap, or paid online meanwhile): report
+  // what actually happened instead of an error the rider cannot act on.
+  if (orderRow.rideSettlementId || !isRideFarePaymentPending(orderRow.paymentStatus)) {
+    return settledResult(riderId, orderRow.id, orderIdText, orderRow.paymentMethod ?? null);
   }
 
-  const settledPayable = await assertRideCustomerPaymentCollectable(orderRow.id);
+  // A free (offer) ride has nothing to collect — settle it as one.
+  let settledPayable: number;
+  try {
+    settledPayable = await assertRideCustomerPaymentCollectable(orderRow.id);
+  } catch (err) {
+    if ((err as { code?: string })?.code === "ALREADY_SETTLED") {
+      const { settleZeroBillRide } = await import("./ride-zero-bill.service.js");
+      const free = await settleZeroBillRide(orderRow.id).catch(() => null);
+      if (free) {
+        return settledResult(riderId, orderRow.id, orderIdText, "offer", "free_ride");
+      }
+      return settledResult(riderId, orderRow.id, orderIdText, orderRow.paymentMethod ?? null);
+    }
+    throw err;
+  }
+
+  // The rider may have shown a QR first. If the passenger paid it, the ride is
+  // paid online and no cash may be taken; otherwise close every open QR so it
+  // cannot be paid after the cash (a capture that still slips through is refunded).
+  const { resolveOpenQrBeforeCash } = await import("../../lib/online-qr-capture.js");
+  const qr = await resolveOpenQrBeforeCash(orderIdText, "ride_online_qr");
+  if (qr.paidOnline) {
+    return settledResult(riderId, orderRow.id, orderIdText, "online", "paid_online");
+  }
+
+  // Switching from online to cash is allowed while the fare is unpaid — the rider
+  // confirming the cash IS the choice (the old "This ride is not a cash payment"
+  // dead end left riders with the cash in hand and no way to settle).
+  const method = normalizePaymentMethod(orderRow.paymentMethod);
+  if (!isCashPaymentMethod(method)) {
+    await db
+      .update(ordersCore)
+      .set({ paymentMethod: "cash" })
+      .where(eq(ordersCore.id, orderRow.id));
+  }
 
   const billRes = await computeRideBillForCustomerOrder(db, {
     customerPk,
@@ -168,10 +224,8 @@ export async function confirmRideCashCollectionForRider(
 
   const customerBill = Math.round(Math.min(billRes.billing.final_amount, settledPayable) * 100) / 100;
   if (!(customerBill > 0)) {
-    throw Object.assign(new Error("Ride fare is already paid"), { statusCode: 409 });
+    return settledResult(riderId, orderRow.id, orderIdText, orderRow.paymentMethod ?? null);
   }
-
-  const orderIdText = orderRow.orderId?.trim() || String(orderRow.id);
 
   // Persist a payment_confirmed snapshot with method=cash so the audit surface
   // (customer app receipt + admin reports) always shows the cash lineage.
@@ -202,37 +256,50 @@ export async function confirmRideCashCollectionForRider(
       ? (orderRow.checkoutMetadata as Record<string, unknown>)
       : {};
 
-  const posting: SettlementPostingResult = await postCashRideSettlement({
-    orderCoreId: orderRow.id,
-    orderIdText,
-    riderId,
-    customerId: customerPk,
-    billing: {
-      customerBill,
-      components: rideBillingToSettlementComponents(billRes.billing, billRes.snapshot),
-      billingSnapshotId: snapshotId,
-      billingSnapshot: {
-        ...(billRes.snapshot ?? {}),
-        final_amount: customerBill,
+  let posting: SettlementPostingResult;
+  try {
+    posting = await postCashRideSettlement({
+      orderCoreId: orderRow.id,
+      orderIdText,
+      riderId,
+      customerId: customerPk,
+      billing: {
+        customerBill,
+        components: rideBillingToSettlementComponents(billRes.billing, billRes.snapshot),
+        billingSnapshotId: snapshotId,
+        billingSnapshot: {
+          ...(billRes.snapshot ?? {}),
+          final_amount: customerBill,
+        },
       },
-    },
-    geo: {
-      pickupLat: Number(orderRow.pickupLat ?? 0),
-      pickupLng: Number(orderRow.pickupLon ?? 0),
-      pickupPincode:
-        typeof (meta as { pickupPincode?: unknown }).pickupPincode === "string"
-          ? String((meta as { pickupPincode?: unknown }).pickupPincode)
-          : null,
-      pickupState:
-        typeof (meta as { pickupState?: unknown }).pickupState === "string"
-          ? String((meta as { pickupState?: unknown }).pickupState)
-          : null,
-    },
-  });
+      geo: {
+        pickupLat: Number(orderRow.pickupLat ?? 0),
+        pickupLng: Number(orderRow.pickupLon ?? 0),
+        pickupPincode:
+          typeof (meta as { pickupPincode?: unknown }).pickupPincode === "string"
+            ? String((meta as { pickupPincode?: unknown }).pickupPincode)
+            : null,
+        pickupState:
+          typeof (meta as { pickupState?: unknown }).pickupState === "string"
+            ? String((meta as { pickupState?: unknown }).pickupState)
+            : null,
+      },
+    });
+  } catch (err) {
+    // The engine re-checks the fare under a row lock: an online capture that won
+    // the race means the passenger paid online — report that, take no cash.
+    if ((err as { code?: string })?.code === "ALREADY_SETTLED") {
+      const after = await readOrder();
+      return settledResult(riderId, orderRow.id, orderIdText, after?.paymentMethod ?? null);
+    }
+    throw err;
+  }
 
   return {
     ok: true,
     alreadySettled: posting.alreadySettled,
+    outcome: posting.alreadySettled ? "already_settled" : "cash_settled",
+    paymentMethod: "cash",
     orderId: orderIdText,
     customerBill,
     companyReceivable: posting.settlement?.companyReceivable ?? 0,

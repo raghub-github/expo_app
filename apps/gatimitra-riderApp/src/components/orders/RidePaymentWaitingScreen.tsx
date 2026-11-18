@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   Alert,
+  AppState,
   FlatList,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -44,7 +45,18 @@ function riderApiErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
-const POLL_MS = 15_000;
+/** Order refresh while an online payment is awaited (backend truth, cheap read). */
+const POLL_MS = 5_000;
+/** Razorpay-backed QR status check while the QR is up (server-throttled). */
+const QR_STATUS_POLL_MS = 3_000;
+const PAYABLE_EPS = 0.005;
+
+function apiErrorCode(err: unknown): string {
+  if (err instanceof ApiError && err.payload && typeof err.payload === "object" && "code" in err.payload) {
+    return String((err.payload as { code?: string }).code ?? "");
+  }
+  return "";
+}
 const MINT = colors.primary[600];
 const MINT_DARK = colors.primary[700];
 /** Matches customer app Place Order CTA (`CHECKOUT_CTA_GREEN`). */
@@ -283,12 +295,44 @@ export function RidePaymentWaitingScreen() {
     [queryClient]
   );
 
+  const leavingRef = useRef(false);
+  const cashSheetOpenRef = useRef(false);
   useEffect(() => {
-    if (!order || !isRideFarePaymentSettled(order)) return;
+    cashSheetOpenRef.current = cashSheetOpen;
+  }, [cashSheetOpen]);
+  useEffect(() => {
+    if (!order || !isRideFarePaymentSettled(order) || leavingRef.current) return;
+    leavingRef.current = true;
+    if (cashSheetOpenRef.current && String(order.paymentMethod ?? "").trim().toLowerCase() === "online") {
+      // The passenger paid the QR while the rider was about to take cash.
+      Alert.alert(
+        t("orders.ridePaymentWait.paidOnlineTitle", "Already paid online"),
+        t(
+          "orders.ridePaymentWait.paidOnlineWhileCash",
+          "The passenger just paid online. Do not take cash — give back any cash you received."
+        )
+      );
+    }
     setOnlineSheetOpen(false);
     setCashSheetOpen(false);
-    goToSuccess(order);
-  }, [order, goToSuccess]);
+    const payable = Number(order.customerPayable);
+    const ps = String(order.paymentStatus ?? "").trim().toLowerCase();
+    const freeRideNotYetSettled =
+      Number.isFinite(payable) && payable <= PAYABLE_EPS && ps !== "paid" && ps !== "completed";
+    if (!freeRideNotYetSettled) {
+      goToSuccess(order);
+      return;
+    }
+    // Free (offer) ride: make sure the earning is credited (server re-checks the ₹0;
+    // idempotent) before showing success.
+    void riderApi
+      .completeFreeRide(orderId)
+      .catch(() => undefined)
+      .then(async () => {
+        const refreshed = await riderApi.getRideOrder(orderId).catch(() => order);
+        goToSuccess(refreshed ?? order);
+      });
+  }, [order, goToSuccess, orderId, t]);
 
   const cashMutation = useMutation({
     mutationFn: async () => {
@@ -308,11 +352,26 @@ export function RidePaymentWaitingScreen() {
       }
       return riderApi.confirmRideCashCollected(orderId);
     },
-    onSuccess: async () => {
+    onSuccess: async (res) => {
       setCashSheetOpen(false);
+      setOnlineSheetOpen(false);
+      setQrWatching(false);
       void queryClient.invalidateQueries({ queryKey: RIDER_ACTIVE_ORDERS_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: RIDER_RIDE_PAYMENT_HOLDS_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: ["rider", "orders", "detail", orderId] });
+      if (res?.outcome === "paid_online") {
+        // The passenger had already paid the QR / in-app — the server settled it
+        // online and took nothing from the wallet. The rider must not keep cash.
+        Alert.alert(
+          t("orders.ridePaymentWait.paidOnlineTitle", "Already paid online"),
+          t(
+            "orders.ridePaymentWait.paidOnlineBody",
+            "The passenger already paid {{amount}} online. Do not collect cash — your earning is credited to your wallet.",
+            { amount: formatFare(res.customerBill || fareAmount) }
+          )
+        );
+      }
+      leavingRef.current = true;
       const refreshed = await riderApi.getRideOrder(orderId);
       goToSuccess(refreshed);
     },
@@ -331,12 +390,15 @@ export function RidePaymentWaitingScreen() {
   });
 
   const [qrInfo, setQrInfo] = useState<{ qrImageUrl: string; amount: number } | null>(null);
+  /** True while a QR exists for this ride — keeps checking even if the sheet is closed. */
+  const [qrWatching, setQrWatching] = useState(false);
 
   const qrMutation = useMutation({
     mutationFn: async () => riderApi.createRideOnlineQr(orderId),
     onSuccess: (data) => {
       setQrError(null);
       setQrInfo({ qrImageUrl: data.qrImageUrl, amount: data.amount });
+      setQrWatching(true);
     },
     onError: (err) => {
       const message = String(
@@ -357,6 +419,20 @@ export function RidePaymentWaitingScreen() {
       }
     },
     onError: (err) => {
+      if (apiErrorCode(err) === "ALREADY_SETTLED") {
+        // Paid meanwhile (e.g. the passenger paid the QR): refresh — the screen
+        // moves to success on its own; never ask the rider for cash on top.
+        setCashSheetOpen(false);
+        void queryClient.invalidateQueries({ queryKey: ["rider", "orders", "detail", orderId] });
+        Alert.alert(
+          t("orders.ridePaymentWait.paidOnlineTitle", "Already paid online"),
+          riderApiErrorMessage(
+            err,
+            t("orders.ridePaymentWait.alreadySettled", "This ride is already paid. Do not collect cash.")
+          )
+        );
+        return;
+      }
       Alert.alert(
         t("common.error", "Something went wrong"),
         String(
@@ -366,6 +442,62 @@ export function RidePaymentWaitingScreen() {
       );
     },
   });
+
+  // Re-entering the screen (app restart, notification) for an online ride: resume
+  // watching any QR that may already be on the passenger's phone.
+  const resumeWatchRef = useRef(false);
+  useEffect(() => {
+    if (resumeWatchRef.current || !order) return;
+    resumeWatchRef.current = true;
+    if (!isCashRideOrder(order) && !isRideFarePaymentSettled(order)) setQrWatching(true);
+  }, [order]);
+
+  // Backend-verified QR status (the server asks Razorpay and finalizes on
+  // capture). Runs while a QR exists — sheet open or dismissed — and on resume.
+  useEffect(() => {
+    if (!qrWatching || !orderId) return;
+    let cancelled = false;
+    const tick = () => {
+      void riderApi
+        .checkRideOnlineQrStatus(orderId)
+        .then((res) => {
+          if (cancelled) return;
+          setLastCheckedAt(new Date());
+          if (res.status === "not_started") {
+            setQrWatching(false); // no QR yet — restarts when one is created
+            return;
+          }
+          if (res.status === "paid" || res.settled) {
+            setQrWatching(false);
+            void queryClient.invalidateQueries({ queryKey: ["rider", "orders", "detail", orderId] });
+            return;
+          }
+          if (res.status === "expired" || res.status === "failed") {
+            setQrWatching(false);
+            setQrInfo(null);
+            setQrError(
+              res.status === "expired"
+                ? t("orders.ridePaymentWait.qrExpired", "This QR expired. Tap Retry to generate a new one.")
+                : t(
+                    "orders.ridePaymentWait.qrPaymentFailed",
+                    "Payment failed. Ask the passenger to try again, then Retry."
+                  )
+            );
+          }
+        })
+        .catch(() => undefined);
+    };
+    tick();
+    const id = setInterval(tick, QR_STATUS_POLL_MS);
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") tick();
+    });
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      sub.remove();
+    };
+  }, [qrWatching, orderId, queryClient, t]);
 
   const openCashSheet = useCallback(() => {
     setCashSheetOpen(true);
@@ -475,7 +607,7 @@ export function RidePaymentWaitingScreen() {
     if (!isCashRide) {
       slides.push({
         id: "refresh",
-        title: t("orders.ridePaymentWait.autoRefresh", "Auto refresh every 15 sec"),
+        title: t("orders.ridePaymentWait.autoRefreshFast", "Payment confirms automatically in seconds"),
         subtitle: t("orders.ridePaymentWait.lastChecked", "Last checked: {{time}}", {
           time: formatClock(lastCheckedAt.toISOString()),
         }),

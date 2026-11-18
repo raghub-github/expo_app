@@ -1,6 +1,10 @@
 import { getSql } from "../db/client.js";
 import { readRideRiderPayoutSnapshot } from "./ride-rider-payout-snapshot.js";
-import { getRiderSettlementSummary, type RiderSettlementSummary } from "./rider-settlement-summary.js";
+import {
+  getRiderSettlementSummary,
+  listRiderSettlementSummaries,
+  type RiderSettlementSummary,
+} from "./rider-settlement-summary.js";
 
 export type RiderLedgerSegment =
   | "all"
@@ -76,9 +80,151 @@ export type RiderLedgerEntryDto = {
    *   online_earning      — customer paid online, earning credited
    */
   settlementKind: RiderSettlementKind | null;
+  /**
+   * The Ride/Parcel job this row belongs to — present on the wallet row a
+   * settlement posted AND on the ₹0 "cash collected, no wallet change" rows, so
+   * every job shows its cash / earning / wallet breakdown. Optional + additive:
+   * app builds that predate it ignore the key.
+   */
+  job?: RiderLedgerJobDto | null;
 };
 
 export type RiderSettlementKind = "cash_platform_share" | "cash_top_up" | "online_earning";
+
+export type RiderLedgerJobDto = {
+  settlementId: string;
+  serviceType: "person_ride" | "parcel";
+  /** How the customer paid this job. */
+  paymentMethod: "cash" | "online" | "offer";
+  /** True when the rider took cash from the customer for this job. */
+  cashCollected: boolean;
+  /** Cash in the rider's hand from the customer (0 for online / offer). */
+  cashAmount: number;
+  /** C — what the customer was billed. */
+  customerPayable: number;
+  /** What the customer paid GatiMitra online (QR / in-app / GatiCash). */
+  paidOnline: number;
+  /** R — the rider's total earning for the job. */
+  riderEarning: number;
+  /** Signed wallet movement: + credited, − deducted, 0 none (W = R − C for cash). */
+  walletChange: number;
+  /**
+   *   cash_platform_share — cash job, C > R: platform share deducted
+   *   cash_top_up         — cash job, C < R: company top-up credited
+   *   cash_no_change      — cash job, C = R: no wallet movement
+   *   online_earning      — paid online: earning credited
+   *   free_ride           — offer covered the fare: earning credited by the company
+   */
+  kind: "cash_platform_share" | "cash_top_up" | "cash_no_change" | "online_earning" | "free_ride";
+  explanation: string;
+};
+
+/** Synthetic history rows (jobs with no wallet row) carry the negated order id. */
+export const SETTLEMENT_ACTIVITY_ENTRY_TYPE = "cash_collection";
+
+function jobFromSettlement(s: RiderSettlementSummary): RiderLedgerJobDto {
+  const walletChange = Math.round((s.walletCredit - s.walletDebit) * 100) / 100;
+  const paymentMethod: RiderLedgerJobDto["paymentMethod"] =
+    s.paidBy === "offer" ? "offer" : s.paymentMethod;
+  const kind: RiderLedgerJobDto["kind"] =
+    paymentMethod === "offer"
+      ? "free_ride"
+      : paymentMethod === "online"
+        ? "online_earning"
+        : walletChange < 0
+          ? "cash_platform_share"
+          : walletChange > 0
+            ? "cash_top_up"
+            : "cash_no_change";
+  return {
+    settlementId: s.settlementId,
+    serviceType: s.serviceType,
+    paymentMethod,
+    cashCollected: paymentMethod === "cash",
+    cashAmount: paymentMethod === "cash" ? s.cashCollected : 0,
+    customerPayable: s.customerPayable,
+    paidOnline: paymentMethod === "online" ? s.platformCollected : 0,
+    riderEarning: s.riderEntitlement,
+    walletChange,
+    kind,
+    explanation: s.explanation,
+  };
+}
+
+function settlementActivityRow(s: RiderSettlementSummary): LedgerRow {
+  const service = s.serviceType;
+  const label = service === "parcel" ? "Cash parcel" : "Cash ride";
+  const inr = (n: number) => `₹${n.toFixed(2)}`;
+  const description =
+    s.paidBy === "offer"
+      ? `${service === "parcel" ? "Free parcel" : "Free ride"} — offer, no payment collected`
+      : s.paymentMethod === "cash"
+        ? `${label} — collected ${inr(s.cashCollected)} in cash · no wallet change`
+        : `${service === "parcel" ? "Parcel" : "Ride"} — paid online ${inr(s.platformCollected)}`;
+  return {
+    id: -s.orderCoreId,
+    entry_type: SETTLEMENT_ACTIVITY_ENTRY_TYPE,
+    amount: 0,
+    balance: s.walletBalanceAfter,
+    ref: s.settlementId,
+    ref_type: service === "parcel" ? "parcel_settlement" : "ride_settlement",
+    description,
+    metadata: { orderCoreId: s.orderCoreId, orderIdText: s.orderId, syntheticSettlementActivity: true },
+    created_at: s.settledAt,
+    service_type: service,
+  };
+}
+
+function isSettlementActivityRow(row: LedgerRow): boolean {
+  return row.entry_type === SETTLEMENT_ACTIVITY_ENTRY_TYPE && Number(row.id) < 0;
+}
+
+/** Wallet refs a Ride/Parcel settlement (or the legacy delivery credit) posts under. */
+function jobWalletRefs(orderCoreId: number): string[] {
+  return [
+    `rider_earn:delivery:${orderCoreId}`,
+    `ride_cash_settle:${orderCoreId}`,
+    `parcel_cash_settle:${orderCoreId}`,
+  ];
+}
+
+/**
+ * Jobs (settlements) of this rider in the period, keyed by order, plus the
+ * synthetic history rows for jobs that never touched the wallet.
+ */
+async function loadSettlementJobs(
+  riderId: number,
+  from?: Date,
+  to?: Date
+): Promise<{ jobs: Map<number, RiderLedgerJobDto>; activityRows: LedgerRow[] }> {
+  const jobs = new Map<number, RiderLedgerJobDto>();
+  const activityRows: LedgerRow[] = [];
+  const summaries = await listRiderSettlementSummaries(riderId, { from, to }).catch(() => []);
+  if (summaries.length === 0) return { jobs, activityRows };
+  for (const s of summaries) jobs.set(s.orderCoreId, jobFromSettlement(s));
+
+  // Which of these jobs moved the wallet (any time — a month boundary must not
+  // turn a real wallet row into a duplicate synthetic one).
+  const refs = summaries.flatMap((s) => jobWalletRefs(s.orderCoreId));
+  const sql = getSql();
+  const moved = new Set<number>();
+  try {
+    const rows = (await sql`
+      SELECT ref FROM wallet_ledger
+      WHERE rider_id = ${riderId} AND ref = ANY(${refs}::text[])
+    `) as { ref: string }[];
+    for (const r of rows) {
+      const m = String(r.ref).match(/:(\d+)$/);
+      if (m) moved.add(Number(m[1]));
+    }
+  } catch {
+    return { jobs, activityRows };
+  }
+  for (const s of summaries) {
+    if (!moved.has(s.orderCoreId)) activityRows.push(settlementActivityRow(s));
+  }
+  return { jobs, activityRows };
+}
 
 const SETTLEMENT_REF_TYPES = new Set(["ride_settlement", "parcel_settlement"]);
 
@@ -88,7 +234,9 @@ function settlementKindForRow(row: LedgerRow): RiderSettlementKind | null {
   // ride_cash_settle rows written before 0649 carry ref_type ride_settlement too.
   if (!SETTLEMENT_REF_TYPES.has(refType) && !/^(ride|parcel)_cash_settle:\d+$/.test(ref)) return null;
   const entryType = row.entry_type.toLowerCase();
-  if (entryType === "adjustment") return "cash_platform_share";
+  // 'cod_order' (positive) is the debit since the CHECK-constraint fix; rows from
+  // before 0649 were written as 'adjustment'.
+  if (entryType === "cod_order" || entryType === "adjustment") return "cash_platform_share";
   if (entryType !== "earning") return null;
   const meta = row.metadata ?? {};
   const method = String(meta.paymentMethod ?? "").toLowerCase();
@@ -438,7 +586,8 @@ async function resolveOrderCoreDetails(
 
 function mapRow(
   row: LedgerRow,
-  orderDetails: Map<number, { publicId: string; orderType: string | null }>
+  orderDetails: Map<number, { publicId: string; orderType: string | null }>,
+  jobs?: Map<number, RiderLedgerJobDto>
 ): RiderLedgerEntryDto {
   const entryType = row.entry_type.toLowerCase();
   const amount = Math.abs(Number(row.amount ?? 0));
@@ -455,10 +604,19 @@ function mapRow(
       : null;
   const resolvedPublicId = fromCore || readMetaOrderPublicId(meta) || null;
 
+  const synthetic = isSettlementActivityRow(row);
+  const ref = row.ref?.trim() ?? "";
+  const isJobWalletRow =
+    synthetic ||
+    /^rider_earn:delivery:\d+$/.test(ref) ||
+    /^(ride|parcel)_cash_settle:\d+$/.test(ref);
+  const job = coreId != null && isJobWalletRow ? jobs?.get(coreId) ?? null : null;
   return {
     id: Number(row.id),
     entryType,
-    flow: isCreditFlowType(entryType) ? "credit" : "debit",
+    // A ₹0 job row is neither money in nor out; "credit" keeps older app builds
+    // from painting it as a deduction.
+    flow: synthetic || isCreditFlowType(entryType) ? "credit" : "debit",
     category: categoryForRow(row, orderTypeByCoreId),
     description: descriptionForRow(row),
     amount,
@@ -470,6 +628,7 @@ function mapRow(
     createdAt: new Date(row.created_at).toISOString(),
     rejectionReason: extractRejectionReason(row),
     settlementKind: settlementKindForRow(row),
+    job,
   };
 }
 
@@ -932,10 +1091,16 @@ export async function getRiderLedgerForApp(args: {
     console.warn("[getRiderLedgerForApp] subscription renewal check failed:", err);
   }
 
-  const rows = await fetchLedgerRows(args.riderId, from, to);
+  const ledgerRows = await fetchLedgerRows(args.riderId, from, to);
   const pendingSettlement = await fetchPendingWithdrawalTotal(args.riderId, from, to);
   // Summary stays account-level for the period. Service chips filter the list only.
-  const summary = computeSummary(rows, monthLabel, pendingSettlement);
+  const summary = computeSummary(ledgerRows, monthLabel, pendingSettlement);
+  // Every Ride/Parcel job is in the history — a cash job where C = R moved the
+  // wallet by ₹0 and has no wallet row, so it is added as a ₹0 activity row.
+  const { jobs, activityRows } = await loadSettlementJobs(args.riderId, from, to);
+  const rows = [...ledgerRows, ...activityRows].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
   const orderTypeByCoreId = await orderTypeMapForRows(rows);
   const filtered = rows.filter((row) => segmentMatchesRow(segment, row, orderTypeByCoreId));
   const total = filtered.length;
@@ -948,7 +1113,7 @@ export async function getRiderLedgerForApp(args: {
   const orderDetails = await resolveOrderCoreDetails(orderCoreIds);
 
   return {
-    entries: slice.map((row) => mapRow(row, orderDetails)),
+    entries: slice.map((row) => mapRow(row, orderDetails, jobs)),
     total,
     hasMore,
     periodLabel: label,
@@ -987,6 +1152,7 @@ export async function getRiderLedgerEntryDetail(
   entryId: number,
 ): Promise<RiderLedgerEntryDetailDto | null> {
   const sql = getSql();
+  if (entryId < 0) return getSettlementActivityDetail(riderId, -entryId);
   let rows: LedgerRow[];
   try {
     rows = (await sql`
@@ -1011,6 +1177,7 @@ export async function getRiderLedgerEntryDetail(
     [extractOrderCoreIdFromRow(row)].filter((id): id is number => id != null),
   );
   const mapped = mapRow(row, details);
+  const linkedSettlement = await readLinkedSettlement(riderId, row, mapped);
   const meta = row.metadata ?? {};
   const razorpayPaymentId =
     metaString(meta, "razorpayPaymentId") ||
@@ -1091,7 +1258,38 @@ export async function getRiderLedgerEntryDetail(
     settlementFinalAmount: settlementRaw
       ? numOrNull(settlementRaw.final_settlement_amount)
       : null,
-    settlement: await readLinkedSettlement(riderId, row, mapped),
+    settlement: linkedSettlement,
+    job: linkedSettlement ? jobFromSettlement(linkedSettlement) : mapped.job ?? null,
+  };
+}
+
+/** Detail for a ₹0 job row (negative id = −order id): built from the settlement. */
+async function getSettlementActivityDetail(
+  riderId: number,
+  orderCoreId: number
+): Promise<RiderLedgerEntryDetailDto | null> {
+  const [s] = await listRiderSettlementSummaries(riderId, { orderCoreIds: [orderCoreId] });
+  if (!s) return null;
+  const row = settlementActivityRow(s);
+  const details = await resolveOrderCoreDetails([orderCoreId]);
+  const mapped = mapRow(row, details, new Map([[orderCoreId, jobFromSettlement(s)]]));
+  return {
+    ...mapped,
+    purpose: null,
+    paymentStatus: null,
+    paymentMethod: s.paidBy === "offer" ? "offer" : s.paymentMethod,
+    razorpayPaymentId: null,
+    razorpayOrderId: null,
+    paymentRecordId: null,
+    currency: "INR",
+    processedAt: s.settledAt,
+    refundStatus: null,
+    refundId: null,
+    settlementDifferenceReason: null,
+    settlementDifferenceAmount: null,
+    settlementDispatchOfferAmount: null,
+    settlementFinalAmount: null,
+    settlement: s,
   };
 }
 

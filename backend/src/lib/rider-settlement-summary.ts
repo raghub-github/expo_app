@@ -12,6 +12,8 @@ export type RiderSettlementSummary = {
   orderId: string;
   serviceType: "person_ride" | "parcel";
   paymentMethod: "cash" | "online";
+  /** "offer" when an offer covered the whole fare (customer paid ₹0). */
+  paidBy: "customer" | "offer";
   /** What the customer was billed (the invoice total). */
   customerPayable: number;
   /** Cash the rider took from the customer — never a wallet credit. */
@@ -74,12 +76,16 @@ const inr = (n: number) => `₹${Number.isInteger(n) ? n : n.toFixed(2)}`;
 
 export function explainSettlement(s: {
   paymentMethod: "cash" | "online";
+  paidBy?: "customer" | "offer";
   customerPayable: number;
   cashCollected: number;
   riderEntitlement: number;
   walletCredit: number;
   walletDebit: number;
 }): string {
+  if (s.paidBy === "offer") {
+    return `Free ride — an offer covered the fare. GatiMitra credited your full earning of ${inr(s.walletCredit)} to your wallet.`;
+  }
   if (s.paymentMethod === "online") {
     return `Customer paid ${inr(s.customerPayable)} online. Your earning of ${inr(s.walletCredit)} was credited to your wallet.`;
   }
@@ -117,6 +123,7 @@ function mapRow(row: Row): RiderSettlementSummary {
       | "person_ride"
       | "parcel",
     paymentMethod,
+    paidBy: (meta.paidBy === "offer" ? "offer" : "customer") as "customer" | "offer",
     customerPayable,
     cashCollected,
     platformCollected: paymentMethod === "online" ? num(row.customer_paid) : 0,
@@ -191,4 +198,45 @@ export async function resolveRiderOrderCoreId(riderId: number, orderRef: string)
         LIMIT 1
       `;
   return rows[0] ? Number(rows[0].id) : null;
+}
+
+/**
+ * Every Ride/Parcel settlement of a rider in a period (or for given orders), for
+ * the wallet history — including cash jobs that moved the wallet by ₹0, which
+ * have no wallet_ledger row of their own.
+ */
+export async function listRiderSettlementSummaries(
+  riderId: number,
+  opts: { from?: Date; to?: Date; orderCoreIds?: number[] }
+): Promise<RiderSettlementSummary[]> {
+  if (!(riderId > 0)) return [];
+  const sql = getSql();
+  const from = opts.from ? opts.from.toISOString() : null;
+  const to = opts.to ? opts.to.toISOString() : null;
+  const ids = opts.orderCoreIds?.filter((id) => Number.isFinite(id) && id > 0) ?? null;
+  if (ids && ids.length === 0) return [];
+  let rows: Row[];
+  try {
+    rows = (await sql`
+      SELECT s.settlement_id, s.order_core_id, s.order_id_text, c.formatted_order_id,
+             s.payment_mode, s.customer_bill, s.customer_paid, s.rider_earnings,
+             s.wallet_credit, s.wallet_debit, s.company_commission, s.tax_total,
+             s.status, s.posted_at, s.metadata,
+             s.service_type, s.cash_collected, s.promotion_subsidy, s.tip_amount,
+             s.incentive_amount, s.wallet_balance_before, s.wallet_balance_after,
+             s.reconciliation_status
+      FROM ride_settlements s
+      LEFT JOIN orders_core c ON c.id = s.order_core_id
+      WHERE s.rider_id = ${riderId}
+        AND (${from}::timestamptz IS NULL OR s.posted_at >= ${from}::timestamptz)
+        AND (${to}::timestamptz IS NULL OR s.posted_at <= ${to}::timestamptz)
+        AND (${ids == null} OR s.order_core_id = ANY(${ids ?? []}::bigint[]))
+      ORDER BY s.posted_at DESC
+      LIMIT 2000
+    `) as unknown as Row[];
+  } catch (err) {
+    console.warn("[listRiderSettlementSummaries] failed:", (err as Error)?.message ?? err);
+    return [];
+  }
+  return rows.map(mapRow);
 }

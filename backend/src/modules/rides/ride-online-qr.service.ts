@@ -14,6 +14,7 @@ import {
   createRazorpayRefund,
 } from "../../services/payment/razorpayService.js";
 import { getEnv } from "../../config/env.js";
+import { publishOrderEvent, publishRiderEvent } from "../realtime/publish.js";
 import { ulid } from "ulid";
 
 async function refundDuplicateOnlineQrPayment(input: {
@@ -21,11 +22,11 @@ async function refundDuplicateOnlineQrPayment(input: {
   amountPaise: number;
   orderId: string;
   qrId: string;
-}): Promise<void> {
+}): Promise<{ refundId: string | null; error: string | null }> {
   const paymentId = String(input.paymentId ?? "").trim();
-  if (!paymentId) return;
+  if (!paymentId) return { refundId: null, error: "missing_payment_id" };
   try {
-    await createRazorpayRefund({
+    const refund = await createRazorpayRefund({
       paymentId,
       amountPaise: input.amountPaise > 0 ? input.amountPaise : undefined,
       receipt: `dup_ride_qr_${input.qrId}_${paymentId}`.slice(0, 40),
@@ -39,11 +40,13 @@ async function refundDuplicateOnlineQrPayment(input: {
       "[ride-online-qr] refunded duplicate QR payment",
       JSON.stringify({ orderId: input.orderId, qrId: input.qrId, paymentId })
     );
+    return { refundId: String((refund as { id?: unknown })?.id ?? "") || null, error: null };
   } catch (err) {
-    console.warn(
-      "[ride-online-qr] duplicate refund failed",
-      (err as Error)?.message ?? err
-    );
+    const message = String((err as Error)?.message ?? err);
+    // Already fully refunded (a retry, or Razorpay auto-refund) is a success.
+    if (/not_refundable_status_refunded/.test(message)) return { refundId: null, error: null };
+    console.warn("[ride-online-qr] duplicate refund failed", message);
+    return { refundId: null, error: message };
   }
 }
 
@@ -313,13 +316,86 @@ export type FinalizeRideOnlineQrResult = {
   alreadyDone: boolean;
   orderId: string;
   amountPaid: number;
+  /** A capture that arrived after the ride was already settled another way — refunded. */
+  lateCaptureRefunded?: boolean;
 };
 
 /**
- * Called from the `qr_code.credited` webhook (signature + event-id dedup already done
- * by the webhook route). Backend-authoritative finalization of an online-QR ride
- * payment: verifies the ride is still payable, records the capture, and posts the
- * online settlement (rider wallet CREDIT = earnings). Idempotent at every layer.
+ * Stamp the refund outcome on a late-captured QR row. A failed refund stays
+ * REFUND_PENDING without a refundId, which the QR reconciler retries
+ * (retryLateCaptureRefunds) — a refund is never silently abandoned.
+ */
+export async function markLateCaptureRefund(
+  paymentRowId: number,
+  refund: { refundId: string | null; error: string | null }
+): Promise<void> {
+  const { getSql } = await import("../../db/client.js");
+  const sql = getSql();
+  const patch = refund.error
+    ? { refundError: refund.error, refundAttemptedAt: new Date().toISOString() }
+    : { refundId: refund.refundId ?? "already_refunded", refundError: null, refundedAt: new Date().toISOString() };
+  await sql`
+    UPDATE orders_core_payments
+    SET gateway_response = COALESCE(gateway_response, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb
+    WHERE id = ${paymentRowId}
+  `;
+}
+
+/** Retry a late-capture refund that failed (called by the QR reconciler). */
+export async function retryLateCaptureRefund(row: {
+  id: number;
+  orderId: string;
+  qrId: string;
+  razorpayPaymentId: string;
+  amountPaise: number;
+}): Promise<boolean> {
+  const refund = await refundDuplicateOnlineQrPayment({
+    paymentId: row.razorpayPaymentId,
+    amountPaise: row.amountPaise,
+    orderId: row.orderId,
+    qrId: row.qrId,
+  });
+  await markLateCaptureRefund(row.id, refund);
+  return refund.error == null;
+}
+
+async function recordRidePaymentEvent(args: {
+  eventType: string;
+  orderId: string;
+  razorpayPaymentId?: string | null;
+  amountPaise?: number | null;
+  failureMessage?: string | null;
+  payload?: Record<string, unknown>;
+}): Promise<void> {
+  try {
+    const { logPaymentEvent } = await import("../orders/order.placement.service.js");
+    await logPaymentEvent(getDb(), {
+      eventType: args.eventType,
+      source: QR_SOURCE,
+      orderId: args.orderId,
+      razorpayPaymentId: args.razorpayPaymentId ?? null,
+      amountPaise: args.amountPaise ?? null,
+      failureMessage: args.failureMessage ?? null,
+      payload: args.payload,
+    });
+  } catch {
+    /* audit is best-effort */
+  }
+}
+
+/**
+ * Backend-authoritative finalization of an online-QR ride payment. Reached from
+ * the webhook (`qr_code.credited` / `payment.captured` with QR notes), the
+ * reconciler, the rider/customer status checks and the cash switch — never from
+ * a client claim. Idempotent and race-safe:
+ *
+ *   - the payment row and the order row are locked FOR UPDATE, so two paths that
+ *     notice the same capture at once serialize; the second sees PAID and stops;
+ *   - a capture that lands after the ride was already settled another way (the
+ *     rider took cash, or the customer paid in-app) is a double payment — it is
+ *     refunded, never kept and never applied on top;
+ *   - the payment is committed first; if the settlement then fails, it is
+ *     recorded and the settlement reconciler posts it (never silently dropped).
  */
 export async function finalizeRideOnlineQrPayment(
   input: FinalizeRideOnlineQrInput
@@ -327,6 +403,7 @@ export async function finalizeRideOnlineQrPayment(
   const db = getDb();
   const qrId = String(input.qrId ?? "").trim();
   if (!qrId) throw Object.assign(new Error("Missing QR id"), { statusCode: 400 });
+  const newPaymentId = String(input.razorpayPaymentId ?? "").trim();
 
   const [payRow] = await db
     .select({
@@ -343,87 +420,124 @@ export async function finalizeRideOnlineQrPayment(
   if (!payRow?.orderId) {
     throw Object.assign(new Error("QR payment record not found"), { statusCode: 404 });
   }
-  // Idempotent: this QR was already captured (duplicate webhook).
-  if (String(payRow.paymentStatus ?? "").toUpperCase() === "PAID") {
-    const priorGr = (payRow.gatewayResponse ?? {}) as { razorpayPaymentId?: string };
-    const priorPaymentId = String(priorGr.razorpayPaymentId ?? "");
-    const newPaymentId = String(input.razorpayPaymentId ?? "");
-    if (newPaymentId && newPaymentId !== priorPaymentId) {
-      void refundDuplicateOnlineQrPayment({
-        paymentId: newPaymentId,
-        amountPaise: Math.round(Number(input.amountPaise) || 0),
-        orderId: payRow.orderId,
-        qrId,
-      }).catch(() => undefined);
-    }
-    return { ok: true, alreadyDone: true, orderId: payRow.orderId, amountPaid: Number(payRow.amount) };
-  }
 
   const [orderRow] = await db
     .select({
       id: ordersCore.id,
       orderId: ordersCore.orderId,
       customerId: ordersCore.customerId,
-      status: ordersCore.status,
-      currentStatus: ordersCore.currentStatus,
       paymentStatus: ordersCore.paymentStatus,
-      billingSnapshot: ordersCore.billingSnapshot,
       riderId: ordersCore.riderId,
     })
     .from(ordersCore)
     .where(eq(ordersCore.orderId, payRow.orderId))
     .limit(1);
   if (!orderRow?.id) throw Object.assign(new Error("Ride order not found"), { statusCode: 404 });
-
   const orderIdText = orderRow.orderId?.trim() || String(orderRow.id);
-  // Ride already settled by another path (e.g. cash) — mark QR consumed, do nothing else.
-  if (!isRideFarePaymentPending(orderRow.paymentStatus)) {
-    await db
-      .update(ordersCorePayments)
-      .set({ paymentStatus: "PAID", paidAt: new Date() })
-      .where(eq(ordersCorePayments.id, payRow.id));
-    return { ok: true, alreadyDone: true, orderId: orderIdText, amountPaid: Number(payRow.amount) };
-  }
-
   const customerPk = orderRow.customerId != null ? Number(orderRow.customerId) : 0;
-  const billRes = await computeRideBillForCustomerOrder(db, { customerPk, orderRef: orderIdText });
-  if (!billRes.ok) throw Object.assign(new Error(billRes.message), { statusCode: billRes.statusCode ?? 400 });
-  const fareDue = Math.round(billRes.billing.final_amount * 100) / 100;
 
-  const gr = (payRow.gatewayResponse ?? {}) as {
-    amountPaise?: number;
-    currency?: string;
-  };
+  const gr0 = (payRow.gatewayResponse ?? {}) as { amountPaise?: number };
   const expectedPaise =
-    typeof gr.amountPaise === "number" && gr.amountPaise > 0
-      ? Math.round(gr.amountPaise)
+    typeof gr0.amountPaise === "number" && gr0.amountPaise > 0
+      ? Math.round(gr0.amountPaise)
       : Math.round(Number(payRow.amount) * 100);
   const paidPaise = Math.round(Number(input.amountPaise) || 0);
   if (paidPaise > 0 && expectedPaise > 0 && Math.abs(paidPaise - expectedPaise) > 1) {
     throw Object.assign(
-      new Error(
-        `QR payment amount mismatch: expected ${expectedPaise} paise, got ${paidPaise}`
-      ),
+      new Error(`QR payment amount mismatch: expected ${expectedPaise} paise, got ${paidPaise}`),
       { statusCode: 409, code: "AMOUNT_MISMATCH" }
     );
   }
 
-  const now = new Date();
-  const prevSnap =
-    orderRow.billingSnapshot != null && typeof orderRow.billingSnapshot === "object"
-      ? (orderRow.billingSnapshot as Record<string, unknown>)
-      : {};
-  const amountPaid =
-    paidPaise > 0 ? Math.round((paidPaise / 100) * 100) / 100 : fareDue;
+  // The bill is only needed while the ride is still payable; computing it before
+  // the locked section keeps the lock short (it reads several tables).
+  const billRes = isRideFarePaymentPending(orderRow.paymentStatus)
+    ? await computeRideBillForCustomerOrder(db, { customerPk, orderRef: orderIdText })
+    : null;
+  if (billRes && !billRes.ok) {
+    throw Object.assign(new Error(billRes.message), { statusCode: billRes.statusCode ?? 400 });
+  }
+  const bill = billRes && billRes.ok ? billRes : null;
 
-  await db.transaction(async (tx) => {
+  const now = new Date();
+  type Outcome =
+    | { kind: "already_paid"; priorPaymentId: string; amount: number }
+    | { kind: "late_capture"; reason: string }
+    | { kind: "paid"; fareDue: number; prevSnap: Record<string, unknown>; amountPaid: number };
+
+  const outcome: Outcome = await db.transaction(async (tx) => {
+    const [lockedPay] = await tx
+      .select({
+        paymentStatus: ordersCorePayments.paymentStatus,
+        gatewayResponse: ordersCorePayments.gatewayResponse,
+        amount: ordersCorePayments.amount,
+      })
+      .from(ordersCorePayments)
+      .where(eq(ordersCorePayments.id, payRow.id))
+      .for("update");
+    const lockedGr = (lockedPay?.gatewayResponse ?? {}) as Record<string, unknown>;
+    const lockedStatus = String(lockedPay?.paymentStatus ?? "").toUpperCase();
+    if (lockedStatus === "PAID") {
+      return {
+        kind: "already_paid" as const,
+        priorPaymentId: String(lockedGr.razorpayPaymentId ?? ""),
+        amount: Number(lockedPay?.amount ?? payRow.amount),
+      };
+    }
+    if (lockedStatus === "REFUND_PENDING" || lockedStatus === "REFUNDED") {
+      return { kind: "late_capture" as const, reason: "already_refunded" };
+    }
+
+    const [lockedOrder] = await tx
+      .select({
+        paymentStatus: ordersCore.paymentStatus,
+        paymentMethod: ordersCore.paymentMethod,
+        billingSnapshot: ordersCore.billingSnapshot,
+      })
+      .from(ordersCore)
+      .where(eq(ordersCore.id, orderRow.id))
+      .for("update");
+
+    if (!isRideFarePaymentPending(lockedOrder?.paymentStatus) || !bill) {
+      const reason = `ride already settled (${String(lockedOrder?.paymentMethod ?? "unknown")}) before this QR capture`;
+      await tx
+        .update(ordersCorePayments)
+        .set({
+          paymentStatus: "REFUND_PENDING",
+          gatewayResponse: {
+            ...lockedGr,
+            razorpayPaymentId: newPaymentId || null,
+            capturedAt: now.toISOString(),
+            qrStatus: "closed",
+            paymentStatus: "REFUND_PENDING",
+            lateCaptureAfterSettlement: true,
+            lateCaptureReason: reason,
+          },
+        })
+        .where(eq(ordersCorePayments.id, payRow.id));
+      return { kind: "late_capture" as const, reason };
+    }
+
+    const fareDue = Math.round(bill.billing.final_amount * 100) / 100;
+    const prevSnap =
+      lockedOrder?.billingSnapshot != null && typeof lockedOrder.billingSnapshot === "object"
+        ? (lockedOrder.billingSnapshot as Record<string, unknown>)
+        : {};
+    const amountPaid = paidPaise > 0 ? Math.round(paidPaise) / 100 : fareDue;
+
     await tx
       .update(ordersCore)
       .set({
         paymentStatus: "completed",
         paymentMethod: "online",
         grandTotal: String(fareDue),
-        billingSnapshot: { ...prevSnap, ...billRes.snapshot, final_amount: fareDue, ride_fare_paid_at: now.toISOString() },
+        billingSnapshot: {
+          ...prevSnap,
+          ...bill.snapshot,
+          final_amount: fareDue,
+          ride_fare_paid_at: now.toISOString(),
+          ride_fare_paid_method: "online_qr",
+        },
         updatedAt: now,
       })
       .where(eq(ordersCore.id, orderRow.id));
@@ -437,8 +551,8 @@ export async function finalizeRideOnlineQrPayment(
         paymentStatus: "PAID",
         paidAt: now,
         gatewayResponse: {
-          ...((payRow.gatewayResponse ?? {}) as Record<string, unknown>),
-          razorpayPaymentId: input.razorpayPaymentId,
+          ...lockedGr,
+          razorpayPaymentId: newPaymentId || null,
           amountPaid,
           amountPaise: expectedPaise,
           currency: "INR",
@@ -448,12 +562,151 @@ export async function finalizeRideOnlineQrPayment(
         },
       })
       .where(eq(ordersCorePayments.id, payRow.id));
+    return { kind: "paid" as const, fareDue, prevSnap, amountPaid };
   });
 
+  if (outcome.kind === "already_paid") {
+    // multiple_use QRs cannot always be closed — a second capture is refunded.
+    if (newPaymentId && outcome.priorPaymentId && newPaymentId !== outcome.priorPaymentId) {
+      void refundDuplicateOnlineQrPayment({
+        paymentId: newPaymentId,
+        amountPaise: paidPaise,
+        orderId: payRow.orderId,
+        qrId,
+      }).catch(() => undefined);
+    }
+    return { ok: true, alreadyDone: true, orderId: orderIdText, amountPaid: outcome.amount };
+  }
+
+  if (outcome.kind === "late_capture") {
+    if (outcome.reason !== "already_refunded" && newPaymentId) {
+      const refund = await refundDuplicateOnlineQrPayment({
+        paymentId: newPaymentId,
+        amountPaise: paidPaise,
+        orderId: orderIdText,
+        qrId,
+      });
+      await markLateCaptureRefund(payRow.id, refund);
+      await recordRidePaymentEvent({
+        eventType: refund.error ? "QR_LATE_CAPTURE_REFUND_FAILED" : "QR_LATE_CAPTURE_REFUNDED",
+        orderId: orderIdText,
+        razorpayPaymentId: newPaymentId,
+        amountPaise: paidPaise,
+        failureMessage: refund.error,
+        payload: { qrId, reason: outcome.reason, refundId: refund.refundId },
+      });
+    }
+    return {
+      ok: true,
+      alreadyDone: true,
+      orderId: orderIdText,
+      amountPaid: paidPaise / 100,
+      lateCaptureRefunded: true,
+    };
+  }
+
+  const { fareDue } = outcome;
   void closeRazorpayQrCode(qrId).catch(() => undefined);
 
+  const riderId = orderRow.riderId != null ? Number(orderRow.riderId) : null;
+  try {
+    await ensureRideQrSettlement(orderRow.id);
+  } catch (err) {
+    // The payment is committed; the rider's credit is posted by the settlement
+    // reconciler (ensureRideQrSettlement again). Recorded, never swallowed.
+    console.error(
+      "[finalizeRideOnlineQrPayment] settlement failed — reconciler will retry",
+      orderIdText,
+      err
+    );
+    await recordRidePaymentEvent({
+      eventType: "RIDE_SETTLEMENT_FAILED",
+      orderId: orderIdText,
+      razorpayPaymentId: newPaymentId || null,
+      amountPaise: Math.round(fareDue * 100),
+      failureMessage: (err as Error)?.message ?? String(err),
+      payload: { qrId, orderCoreId: orderRow.id },
+    });
+  }
+
+  const paidEvent = {
+    type: "ride_fare_paid",
+    orderId: orderIdText,
+    method: "online",
+    qrId,
+    amountPaid: fareDue,
+  };
+  void publishOrderEvent(orderIdText, paidEvent);
+  if (riderId != null && riderId > 0) void publishRiderEvent(riderId, paidEvent);
+
+  return { ok: true, alreadyDone: false, orderId: orderIdText, amountPaid: fareDue };
+}
+
+/**
+ * Post the online settlement (rider wallet credit = earning) for a ride whose QR
+ * payment is recorded. The single code path for the first attempt (right after
+ * the payment commits) and every retry by the reconciler. Idempotent: the
+ * settlement row is unique per order and the wallet ref is unique per rider.
+ */
+export async function ensureRideQrSettlement(
+  orderCorePk: number
+): Promise<"settled" | "already_settled" | "not_paid" | "no_qr_payment"> {
+  const db = getDb();
+  const [order] = await db
+    .select({
+      id: ordersCore.id,
+      orderId: ordersCore.orderId,
+      customerId: ordersCore.customerId,
+      riderId: ordersCore.riderId,
+      paymentStatus: ordersCore.paymentStatus,
+      grandTotal: ordersCore.grandTotal,
+      billingSnapshot: ordersCore.billingSnapshot,
+      settlementId: ordersRide.settlementId,
+    })
+    .from(ordersCore)
+    .innerJoin(ordersRide, eq(ordersRide.orderId, ordersCore.id))
+    .where(eq(ordersCore.id, orderCorePk))
+    .limit(1);
+  if (!order?.id) throw Object.assign(new Error("Ride order not found"), { statusCode: 404 });
+  if (order.settlementId) return "already_settled";
+  if (isRideFarePaymentPending(order.paymentStatus)) return "not_paid";
+  const orderIdText = order.orderId?.trim() || String(order.id);
+
+  const [pay] = await db
+    .select({
+      transactionId: ordersCorePayments.transactionId,
+      amount: ordersCorePayments.amount,
+      gatewayResponse: ordersCorePayments.gatewayResponse,
+    })
+    .from(ordersCorePayments)
+    .where(
+      and(
+        eq(ordersCorePayments.orderId, orderIdText),
+        eq(ordersCorePayments.paymentMethod, QR_METHOD),
+        eq(ordersCorePayments.paymentStatus, "PAID")
+      )
+    )
+    .orderBy(desc(ordersCorePayments.paidAt))
+    .limit(1);
+  const gr = (pay?.gatewayResponse ?? {}) as { source?: string; razorpayPaymentId?: string | null };
+  if (!pay?.transactionId || gr.source !== QR_SOURCE) return "no_qr_payment";
+
+  const customerPk = order.customerId != null ? Number(order.customerId) : 0;
+  const billRes = await computeRideBillForCustomerOrder(db, { customerPk, orderRef: orderIdText });
+  if (!billRes.ok) {
+    throw Object.assign(new Error(billRes.message), { statusCode: billRes.statusCode ?? 400 });
+  }
+  // What the passenger actually paid (written with the payment) is the bill.
+  const paid = Math.round(Number(order.grandTotal ?? pay.amount) * 100) / 100;
+  const fareDue = paid > 0 ? paid : Math.round(Number(pay.amount) * 100) / 100;
+  const prevSnap =
+    order.billingSnapshot != null && typeof order.billingSnapshot === "object"
+      ? (order.billingSnapshot as Record<string, unknown>)
+      : {};
+  const razorpayPaymentId = gr.razorpayPaymentId ? String(gr.razorpayPaymentId) : null;
+
   const snapshotId = await insertRideCustomerPaymentSnapshot(db, {
-    orderCoreId: orderRow.id,
+    orderCoreId: order.id,
     orderIdText,
     customerId: customerPk,
     phase: "payment_confirmed",
@@ -467,46 +720,90 @@ export async function finalizeRideOnlineQrPayment(
       gatiCashApplied: 0,
       razorpayAmount: fareDue,
       amountPaid: fareDue,
-      razorpayPaymentId: input.razorpayPaymentId ?? undefined,
+      razorpayPaymentId: razorpayPaymentId ?? undefined,
     },
-    metadata: { source: QR_SOURCE, qrId },
+    metadata: { source: QR_SOURCE, qrId: pay.transactionId },
   });
-
-  const riderId = orderRow.riderId != null ? Number(orderRow.riderId) : null;
-  try {
-    await postOnlineRideSettlement({
-      orderCoreId: orderRow.id,
-      orderIdText,
-      riderId: riderId ?? null,
-      customerId: customerPk,
-      billing: {
-        customerBill: fareDue,
-        components: rideBillingToSettlementComponents(billRes.billing, billRes.snapshot),
-        billingSnapshotId: snapshotId,
-        billingSnapshot: { ...(billRes.snapshot ?? {}), final_amount: fareDue },
-      },
-      geo: {
-        pickupLat: Number((prevSnap as { pickupLat?: unknown }).pickupLat ?? 0),
-        pickupLng: Number((prevSnap as { pickupLon?: unknown }).pickupLon ?? 0),
-        pickupPincode:
-          typeof (prevSnap as { pickupPincode?: unknown }).pickupPincode === "string"
-            ? String((prevSnap as { pickupPincode?: unknown }).pickupPincode)
-            : null,
-        pickupState:
-          typeof (prevSnap as { pickupState?: unknown }).pickupState === "string"
-            ? String((prevSnap as { pickupState?: unknown }).pickupState)
-            : null,
-      },
-      paymentSplit: {
-        gatiCashApplied: 0,
-        razorpayAmount: fareDue,
-        razorpayOrderId: null,
-        razorpayPaymentId: input.razorpayPaymentId ?? null,
-      },
-    });
-  } catch (err) {
-    console.warn("[finalizeRideOnlineQrPayment] settlement engine failed:", err);
+  const posting = await postOnlineRideSettlement({
+    orderCoreId: order.id,
+    orderIdText,
+    riderId: order.riderId != null ? Number(order.riderId) : null,
+    customerId: customerPk,
+    billing: {
+      customerBill: fareDue,
+      components: rideBillingToSettlementComponents(billRes.billing, billRes.snapshot),
+      billingSnapshotId: snapshotId,
+      billingSnapshot: { ...(billRes.snapshot ?? {}), final_amount: fareDue },
+    },
+    // The engine resolves pickup geo from orders_core (withOrderPickupGeo).
+    geo: {},
+    paymentSplit: {
+      gatiCashApplied: 0,
+      razorpayAmount: fareDue,
+      razorpayOrderId: null,
+      razorpayPaymentId,
+    },
+  });
+  return posting.alreadySettled ? "already_settled" : "settled";
+}
+/**
+ * Rider app poll while the QR is on screen (and after it is dismissed): ask
+ * Razorpay, finalize on capture. Backend truth only — never a client claim.
+ */
+export async function reconcileRideOnlineQrForRider(input: {
+  riderId: number;
+  orderRef: string;
+}): Promise<{
+  ok: true;
+  status: "paid" | "pending" | "expired" | "failed" | "not_started";
+  orderId: string;
+  qrId: string | null;
+  amountPaid: number | null;
+  settled: boolean;
+  paymentMethod: string | null;
+}> {
+  const db = getDb();
+  const riderId = Number(input.riderId);
+  if (!Number.isFinite(riderId) || riderId <= 0) {
+    throw Object.assign(new Error("Invalid rider session"), { statusCode: 403 });
   }
-
-  return { ok: true, alreadyDone: false, orderId: orderIdText, amountPaid: fareDue };
+  const readOrder = async () => {
+    const [row] = await db
+      .select({
+        id: ordersCore.id,
+        orderId: ordersCore.orderId,
+        paymentStatus: ordersCore.paymentStatus,
+        paymentMethod: ordersCore.paymentMethod,
+      })
+      .from(ordersCore)
+      .where(and(riderOrderRefWhere(riderId, input.orderRef), eq(ordersCore.orderType, "person_ride")))
+      .limit(1);
+    return row;
+  };
+  const orderRow = await readOrder();
+  if (!orderRow?.id) throw Object.assign(new Error("Ride order not found"), { statusCode: 404 });
+  const orderIdText = orderRow.orderId?.trim() || String(orderRow.id);
+  if (!isRideFarePaymentPending(orderRow.paymentStatus)) {
+    return {
+      ok: true,
+      status: "paid",
+      orderId: orderIdText,
+      qrId: null,
+      amountPaid: null,
+      settled: true,
+      paymentMethod: orderRow.paymentMethod ?? null,
+    };
+  }
+  const { checkOrderOnlineQrThrottled } = await import("../../lib/online-qr-capture.js");
+  const res = await checkOrderOnlineQrThrottled(orderIdText, "ride_online_qr");
+  const after = res.status === "paid" ? await readOrder() : orderRow;
+  return {
+    ok: true,
+    status: res.status,
+    orderId: orderIdText,
+    qrId: res.qrId,
+    amountPaid: res.amountPaid,
+    settled: !isRideFarePaymentPending(after?.paymentStatus),
+    paymentMethod: after?.paymentMethod ?? null,
+  };
 }

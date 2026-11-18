@@ -122,6 +122,27 @@ async function pollOnce(): Promise<void> {
           `[online-qr-reconciler] finalized ${finalized} missed QR payment(s)`
         );
       }
+      // Paid rides whose settlement did not post (crash / DB blip after the
+      // payment committed), and late-capture refunds that failed the first time.
+      const { reconcileUnsettledRidesOnce, retryLateCaptureRefundsOnce } = await import(
+        "../../lib/ride-settlement-recovery.js"
+      );
+      try {
+        const rides = await reconcileUnsettledRidesOnce();
+        if (rides.settled > 0) {
+          console.info(`[online-qr-reconciler] settled ${rides.settled} unsettled paid ride(s)`);
+        }
+      } catch (e) {
+        console.warn("[online-qr-reconciler] ride settlement recovery failed", (e as Error).message);
+      }
+      try {
+        const refunds = await retryLateCaptureRefundsOnce();
+        if (refunds.refunded > 0) {
+          console.info(`[online-qr-reconciler] refunded ${refunds.refunded} late QR capture(s)`);
+        }
+      } catch (e) {
+        console.warn("[online-qr-reconciler] late-capture refund retry failed", (e as Error).message);
+      }
     });
   } finally {
     running = false;

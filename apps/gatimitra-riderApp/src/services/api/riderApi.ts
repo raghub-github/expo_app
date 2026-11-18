@@ -522,9 +522,31 @@ const RiderOrderSettlementSchema = z.object({
   reconciliationStatus: z.string(),
   settledAt: z.string(),
   explanation: z.string(),
+  /** "offer" when an offer covered the whole fare (customer paid ₹0). */
+  paidBy: z.enum(["customer", "offer"]).optional(),
 });
 
 export type RiderOrderSettlement = z.infer<typeof RiderOrderSettlementSchema>;
+
+/**
+ * Ride/Parcel job breakdown on a wallet history row: how the customer paid, the
+ * cash in hand, the earning and the wallet movement (W = R − C for cash).
+ */
+export const RiderLedgerJobSchema = z.object({
+  settlementId: z.string(),
+  serviceType: z.enum(["person_ride", "parcel"]),
+  paymentMethod: z.enum(["cash", "online", "offer"]),
+  cashCollected: z.boolean(),
+  cashAmount: z.number(),
+  customerPayable: z.number(),
+  paidOnline: z.number(),
+  riderEarning: z.number(),
+  walletChange: z.number(),
+  kind: z.enum(["cash_platform_share", "cash_top_up", "cash_no_change", "online_earning", "free_ride"]),
+  explanation: z.string(),
+});
+
+export type RiderLedgerJob = z.infer<typeof RiderLedgerJobSchema>;
 
 const RiderLedgerEntryDetailSchema = z.object({
   id: z.number(),
@@ -559,6 +581,7 @@ const RiderLedgerEntryDetailSchema = z.object({
     .nullable()
     .optional(),
   settlement: RiderOrderSettlementSchema.nullable().optional(),
+  job: RiderLedgerJobSchema.nullable().optional(),
 });
 
 export type RiderLedgerEntryDetail = z.infer<typeof RiderLedgerEntryDetailSchema>;
@@ -581,6 +604,7 @@ const RiderLedgerEntrySchema = z.object({
     .enum(["cash_platform_share", "cash_top_up", "online_earning"])
     .nullable()
     .optional(),
+  job: RiderLedgerJobSchema.nullable().optional(),
 });
 
 const RiderLedgerResponseSchema = z.object({
@@ -1284,6 +1308,13 @@ export const riderApi = {
     const responseSchema = z.object({
       ok: z.literal(true),
       alreadySettled: z.boolean(),
+      /**
+       * cash_settled — settled in cash now; paid_online — the passenger had already
+       * paid the QR / in-app (take NO cash); free_ride — offer covered the fare;
+       * already_settled — repeat tap.
+       */
+      outcome: z.enum(["cash_settled", "paid_online", "free_ride", "already_settled"]).optional(),
+      paymentMethod: z.string().nullable().optional(),
       orderId: z.string(),
       customerBill: z.number(),
       companyReceivable: z.number(),
@@ -1379,6 +1410,57 @@ export const riderApi = {
     });
     return client.request<z.infer<typeof responseSchema>>(
       `/v1/rider/orders/${orderId}/ride/online-qr`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        responseSchema,
+      }
+    );
+  },
+
+  /**
+   * Backend-authoritative ride QR status: the server asks Razorpay (throttled) and
+   * finalizes a captured payment. Polled while the QR is up so the ride confirms in
+   * seconds even if the webhook is late. Never trust a local tap as payment.
+   */
+  async checkRideOnlineQrStatus(orderId: string) {
+    const client = createApiClient();
+    const responseSchema = z.object({
+      ok: z.literal(true),
+      status: z.enum(["paid", "pending", "expired", "failed", "not_started"]),
+      orderId: z.string(),
+      qrId: z.string().nullable(),
+      amountPaid: z.number().nullable(),
+      settled: z.boolean(),
+      paymentMethod: z.string().nullable(),
+    });
+    return client.request<z.infer<typeof responseSchema>>(
+      `/v1/rider/orders/${orderId}/ride/online-qr/status`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        responseSchema,
+      }
+    );
+  },
+
+  /**
+   * Free (offer) ride — the passenger owes ₹0. The server re-checks the ₹0 and
+   * credits the rider's full earning to the wallet. Idempotent.
+   */
+  async completeFreeRide(orderId: string) {
+    const client = createApiClient();
+    const responseSchema = z.object({
+      ok: z.literal(true),
+      orderId: z.string(),
+      alreadySettled: z.boolean(),
+      settlementId: z.string().nullable(),
+      riderEntitlement: z.number(),
+      walletCredit: z.number(),
+      walletBalanceAfter: z.number().nullable(),
+    });
+    return client.request<z.infer<typeof responseSchema>>(
+      `/v1/rider/orders/${orderId}/ride/complete-free`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },

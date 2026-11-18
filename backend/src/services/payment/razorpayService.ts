@@ -746,9 +746,14 @@ export async function createRazorpayQrCode(
  * Close a Razorpay QR so it cannot accept further payments.
  * Used after the first captured credit when usage was multiple_use.
  */
-export async function closeRazorpayQrCode(qrId: string): Promise<void> {
+/**
+ * Close a QR so it accepts no further payments. Resolves true when Razorpay
+ * reports it closed (now or already), false when the close was refused — callers
+ * that must know (cash switch) check it; the rest ignore the result.
+ */
+export async function closeRazorpayQrCode(qrId: string): Promise<boolean> {
   const id = String(qrId ?? "").trim();
-  if (!id || id.startsWith("dummy_")) return;
+  if (!id || id.startsWith("dummy_")) return true;
   const res = await fetch(
     `https://api.razorpay.com/v1/payments/qr_codes/${encodeURIComponent(id)}/close`,
     {
@@ -759,20 +764,16 @@ export async function closeRazorpayQrCode(qrId: string): Promise<void> {
       },
     }
   );
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    // Razorpay does not allow closing multiple_use QRs; single_use may already be closed/paid.
-    if (
-      res.status === 400 &&
-      /already|closed|paid|multiple use|cannot be closed/i.test(text)
-    ) {
-      return;
-    }
-    console.warn(
-      "[closeRazorpayQrCode] failed",
-      JSON.stringify({ qrId: id, httpStatus: res.status, body: text.slice(0, 160) })
-    );
-  }
+  if (res.ok) return true;
+  const text = await res.text().catch(() => "");
+  // single_use QRs may already be closed / paid — that is a closed QR.
+  if (res.status === 400 && /multiple use|cannot be closed/i.test(text)) return false;
+  if (res.status === 400 && /already|closed|paid/i.test(text)) return true;
+  console.warn(
+    "[closeRazorpayQrCode] failed",
+    JSON.stringify({ qrId: id, httpStatus: res.status, body: text.slice(0, 160) })
+  );
+  return false;
 }
 
 export type RazorpayQrCapturedPayment = {

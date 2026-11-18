@@ -10,13 +10,22 @@ import type { PostpaidService, PostpaidSettlementResult } from "./postpaid-settl
  * first so balance-before/after are exact and concurrent settlements, recharges
  * and penalties on the same rider serialise instead of racing.
  *
- * Sign convention (what the trigger and the rider app both read):
- *   credit → entry_type 'earning',    amount > 0
- *   debit  → entry_type 'adjustment', amount < 0
- * The pre-0649 ride cash debit was written as a POSITIVE 'adjustment', which the
- * trigger reads as a credit; the engine then overwrote the balance, so balances
- * were right but the ledger row said the opposite of what happened.
+ * Sign convention — the ENTRY TYPE carries the direction, the amount is always
+ * positive. Prod enforces `wallet_ledger_amount_non_negative` (amount >= 0) on
+ * every wallet_ledger partition, and trigger_update_wallet_from_ledger applies
+ *   credit types (earning, refund, bonus, …)          → +ABS(amount)
+ *   debit types  (cod_order, withdrawal, purchase, …) → −ABS(amount)
+ *   credit → entry_type 'earning',   amount > 0
+ *   debit  → entry_type 'cod_order', amount > 0  (cash the rider collected for
+ *            the platform; the dashboard already labels it "COD Collected")
+ * A negative 'adjustment' (what this wrote before) violates the CHECK, so every
+ * cash Ride/Parcel whose fare exceeded the rider's earning failed to settle.
  */
+
+/** Debit entry type for the platform share of a cash job (trigger applies −ABS). */
+export const SETTLEMENT_DEBIT_ENTRY_TYPE = "cod_order";
+/** Credit entry type for an earning / company top-up (trigger applies +ABS). */
+export const SETTLEMENT_CREDIT_ENTRY_TYPE = "earning";
 
 export type SettlementWalletMovement = {
   balanceBefore: number;
@@ -95,8 +104,8 @@ export async function applySettlementWalletMovement(
       performed_by_type
     ) VALUES (
       ${args.riderId},
-      ${isCredit ? "earning" : "adjustment"},
-      ${(isCredit ? amount : -amount).toFixed(2)},
+      ${isCredit ? SETTLEMENT_CREDIT_ENTRY_TYPE : SETTLEMENT_DEBIT_ENTRY_TYPE},
+      ${amount.toFixed(2)},
       ${balanceAfter.toFixed(2)},
       ${args.service}, ${ref}, ${args.refType},
       ${isCredit ? args.creditDescription : args.debitDescription},

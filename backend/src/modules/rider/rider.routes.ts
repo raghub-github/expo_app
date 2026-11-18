@@ -1391,6 +1391,23 @@ export async function riderRoutes(app: FastifyInstance) {
       .enum(["cash_platform_share", "cash_top_up", "online_earning"])
       .nullable()
       .optional(),
+    /** Ride/Parcel job breakdown (cash collected, earning, wallet change). */
+    job: z
+      .object({
+        settlementId: z.string(),
+        serviceType: z.enum(["person_ride", "parcel"]),
+        paymentMethod: z.enum(["cash", "online", "offer"]),
+        cashCollected: z.boolean(),
+        cashAmount: z.number(),
+        customerPayable: z.number(),
+        paidOnline: z.number(),
+        riderEarning: z.number(),
+        walletChange: z.number(),
+        kind: z.enum(["cash_platform_share", "cash_top_up", "cash_no_change", "online_earning", "free_ride"]),
+        explanation: z.string(),
+      })
+      .nullable()
+      .optional(),
   });
 
   const RiderLedgerSummarySchema = z.object({
@@ -1476,7 +1493,8 @@ export async function riderRoutes(app: FastifyInstance) {
     {
       schema: {
         params: z.object({
-          entryId: z.coerce.number().int().positive(),
+          // Negative ids are ₹0 Ride/Parcel job rows (−order id) — see rider-wallet-ledger-app.
+          entryId: z.coerce.number().int().refine((n) => n !== 0, "invalid entry id"),
         }),
       },
     },
@@ -5013,6 +5031,9 @@ export async function riderRoutes(app: FastifyInstance) {
           200: z.object({
             ok: z.literal(true),
             alreadySettled: z.boolean(),
+            /** cash_settled | paid_online (take no cash) | free_ride | already_settled */
+            outcome: z.enum(["cash_settled", "paid_online", "free_ride", "already_settled"]),
+            paymentMethod: z.string().nullable(),
             orderId: z.string(),
             customerBill: z.number(),
             companyReceivable: z.number(),
@@ -5026,6 +5047,7 @@ export async function riderRoutes(app: FastifyInstance) {
           403: z.object({ error: z.string() }),
           404: z.object({ error: z.string() }),
           409: z.object({ error: z.string(), code: z.string().optional() }),
+          503: z.object({ error: z.string(), code: z.string().optional() }),
         },
       },
     },
@@ -5284,6 +5306,100 @@ export async function riderRoutes(app: FastifyInstance) {
         const status = err.statusCode ?? 500;
         const payload: { error: string; code?: string } = {
           error: err.message || "Could not check payment status",
+        };
+        if (err.code) payload.code = err.code;
+        return reply.status(status as 409).send(payload);
+      }
+    }
+  );
+
+  // Ride online-QR status: asks Razorpay (throttled, shared with the webhook and
+  // reconciler) and finalizes a captured payment. The rider app polls this while
+  // the QR is up — the payment confirms in seconds even if the webhook is late.
+  app.post(
+    "/orders/:id/ride/online-qr/status",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            status: z.enum(["paid", "pending", "expired", "failed", "not_started"]),
+            orderId: z.string(),
+            qrId: z.string().nullable(),
+            amountPaid: z.number().nullable(),
+            settled: z.boolean(),
+            paymentMethod: z.string().nullable(),
+          }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+          502: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      try {
+        const { reconcileRideOnlineQrForRider } = await import("../rides/ride-online-qr.service.js");
+        return await reconcileRideOnlineQrForRider({ riderId, orderRef: id });
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        const status = err.statusCode ?? 500;
+        const payload: { error: string; code?: string } = {
+          error: err.message || "Could not check payment status",
+        };
+        if (err.code) payload.code = err.code;
+        return reply.status(status as 409).send(payload);
+      }
+    }
+  );
+
+  // Free (offer) ride: the passenger owes ₹0. The server re-derives the ₹0 from
+  // the bill (a client "free" is never trusted) and credits the rider their full
+  // earning through the settlement engine. Idempotent.
+  app.post(
+    "/orders/:id/ride/complete-free",
+    {
+      schema: {
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            orderId: z.string(),
+            alreadySettled: z.boolean(),
+            settlementId: z.string().nullable(),
+            riderEntitlement: z.number(),
+            walletCredit: z.number(),
+            walletBalanceAfter: z.number().nullable(),
+          }),
+          400: z.object({ error: z.string(), code: z.string().optional() }),
+          403: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const riderId = parseRiderIdFromAuth(req.auth!.sub);
+      if (riderId == null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).status(403).send({ error: "Invalid rider session" });
+      }
+      const { id } = req.params as { id: string };
+      try {
+        const { completeZeroBillRideForRider } = await import("../rides/ride-zero-bill.service.js");
+        return await completeZeroBillRideForRider({ riderId, orderRef: id });
+      } catch (e) {
+        const err = e as Error & { statusCode?: number; code?: string };
+        const status = err.statusCode ?? 500;
+        const payload: { error: string; code?: string } = {
+          error: err.message || "Could not complete the ride",
         };
         if (err.code) payload.code = err.code;
         return reply.status(status as 409).send(payload);

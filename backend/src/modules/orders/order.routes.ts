@@ -1958,6 +1958,23 @@ export async function orderRoutes(app: FastifyInstance) {
         };
       }
 
+      // Parcel fare QR shown by the rider: while the customer's tracking screen is
+      // polling, ask Razorpay in the background (throttled per order, shared with
+      // the rider's poll and the webhook) so a paid QR lands within seconds.
+      if (
+        coreRow.orderType === "parcel" &&
+        !["delivered", "cancelled", "failed"].includes(String(coreDbStatus ?? "")) &&
+        !["paid", "completed"].includes(String(coreRow.paymentStatus ?? "").trim().toLowerCase()) &&
+        coreRow.orderId
+      ) {
+        const parcelOrderId = coreRow.orderId.trim();
+        void import("../../lib/online-qr-capture.js")
+          .then(({ checkOrderOnlineQrThrottled }) =>
+            checkOrderOnlineQrThrottled(parcelOrderId, "parcel_online_qr")
+          )
+          .catch(() => undefined);
+      }
+
       if (coreRow.orderType === "person_ride" && coreDbStatus === "delivered") {
         const ps = String(coreRow.paymentStatus ?? "").trim().toLowerCase();
         const paymentPending = ps !== "paid" && ps !== "completed";
@@ -1968,6 +1985,18 @@ export async function orderRoutes(app: FastifyInstance) {
         const snapPaid =
           typeof snapObj.ride_fare_paid_at === "string" &&
           snapObj.ride_fare_paid_at.trim().length > 0;
+
+        if (paymentPending && !snapPaid && coreRow.orderId) {
+          // The rider's QR may already be paid: check Razorpay (throttled, at most
+          // ~1.5 s here) so THIS response can already say paid — the refresh below
+          // re-reads the payment status.
+          const rideOrderId = coreRow.orderId.trim();
+          const { checkOrderOnlineQrThrottled } = await import("../../lib/online-qr-capture.js");
+          await Promise.race([
+            checkOrderOnlineQrThrottled(rideOrderId, "ride_online_qr").catch(() => null),
+            new Promise((resolve) => setTimeout(resolve, 1500)),
+          ]);
+        }
 
         if (paymentPending && !snapPaid) {
           if (
