@@ -141,6 +141,11 @@ import {
   resolvePersonRideCustomerPayable,
 } from "../../lib/ride-customer-payable.js";
 import { reconcileAndSettlePersonRideCustomerPayable } from "../../lib/settle-zero-payable-person-ride.js";
+import {
+  applyParcelFareCollected,
+  isParcelFareCollectionRequired,
+  resolveParcelCustomerPayable,
+} from "../../lib/parcel-fare-collection.js";
 import { loadRiderOrderLocationMedia } from "../../lib/rider-order-location-media.js";
 
 export const RIDER_ACCEPT_WINDOW_SEC = 60;
@@ -1447,26 +1452,16 @@ function mapParcelRow(row: ParcelRow, ledgerTotal?: number | null): RiderOrderSu
   // Prefer explicit pay_at; for cash/COD default to pickup when unset.
   const payAt = payAtConfigured ?? (isCash ? "pickup" : null);
   // SSOT = placement billing final_amount → grandTotal; never slab-only fareAmount first.
-  const snap =
-    row.billingSnapshot != null && typeof row.billingSnapshot === "object"
-      ? (row.billingSnapshot as Record<string, unknown>)
-      : null;
-  const snapFinal = snap != null ? Number(snap.final_amount) : NaN;
-  const grand = Number(row.grandTotal);
-  const fare = Number(row.fareAmount);
-  const payableRaw =
-    Number.isFinite(grand) && grand > 0
-      ? grand
-      : Number.isFinite(snapFinal) && snapFinal > 0
-        ? snapFinal
-        : Number.isFinite(fare) && fare > 0
-          ? fare
-          : NaN;
+  // A ₹0 grand total confirmed by the snapshot is a free (offer) parcel — payable 0,
+  // nothing to collect — not a reason to fall back to the raw fare.
+  const parcelPayable = resolveParcelCustomerPayable({
+    grandTotal: row.grandTotal,
+    fareAmount: row.fareAmount,
+    billingSnapshot: row.billingSnapshot,
+  });
   // Keep paise (e.g. 48.38) so rider drop/collect UI matches what customer paid.
   const customerPayable =
-    Number.isFinite(payableRaw) && payableRaw > 0
-      ? Math.round(payableRaw * 100) / 100
-      : undefined;
+    parcelPayable.payable > 0 ? parcelPayable.payable : parcelPayable.free ? 0 : undefined;
   const paymentCompleted = ["paid", "completed", "captured"].includes(
     String(payment.paymentStatus ?? "")
       .trim()
@@ -1542,7 +1537,12 @@ function mapParcelRow(row: ParcelRow, ledgerTotal?: number | null): RiderOrderSu
     paymentStatus: payment.paymentStatus,
     payAt,
     cashCollected: fareCollected,
-    paymentRequired: Boolean(payAt) && !fareCollected,
+    paymentRequired: isParcelFareCollectionRequired({
+      payAt,
+      cashCollectedAt: row.cashCollectedAt ?? null,
+      paymentStatus: payment.paymentStatus ?? null,
+      payable: parcelPayable,
+    }),
     customerPayable,
   };
   return attachSettlementBreakdown(
@@ -5146,7 +5146,7 @@ export async function confirmParcelCashCollectedForRider(
 ): Promise<RiderOrderSummary> {
   const db = getDb();
   const now = new Date();
-  const collectedMethod = opts?.method === "online" ? "online" : "cash";
+  const requestedMethod = opts?.method === "online" ? "online" : "cash";
 
   const [existing] = await db
     .select({
@@ -5203,73 +5203,94 @@ export async function confirmParcelCashCollectedForRider(
     });
   }
 
-  const amountRaw = Number(
-    existing.grandTotal ?? existing.finalFare ?? existing.estimatedFare ?? existing.fareAmount ?? 0
-  );
-  const customerBill =
-    Number.isFinite(amountRaw) && amountRaw > 0 ? Math.round(amountRaw * 100) / 100 : 0;
-  if (!(customerBill > 0)) {
-    throw Object.assign(new Error("Parcel fare amount is unavailable"), { statusCode: 409 });
-  }
-
   const orderIdText = existing.orderId.trim();
+  const payable = resolveParcelCustomerPayable(existing);
   const prevSnap =
     existing.billingSnapshot != null && typeof existing.billingSnapshot === "object"
       ? (existing.billingSnapshot as Record<string, unknown>)
       : {};
 
-  const gateway = collectedMethod === "online" ? "upi" : "cash";
-  const paymentMethodLabel = collectedMethod === "online" ? "ONLINE" : "CASH";
+  // ₹0 to collect (an offer covered the fare): complete the fare step, collect nothing.
+  if (!(payable.payable > 0.005)) {
+    if (!payable.free) {
+      throw Object.assign(new Error("Parcel fare amount is unavailable"), { statusCode: 409 });
+    }
+    await db.transaction(async (tx) => {
+      const [locked] = await tx
+        .select({ paymentStatus: ordersCore.paymentStatus })
+        .from(ordersCore)
+        .where(eq(ordersCore.id, existing.id))
+        .for("update");
+      if (["paid", "completed", "captured"].includes(String(locked?.paymentStatus ?? "").toLowerCase())) return;
+      await applyParcelFareCollected(tx, {
+        orderCoreId: existing.id,
+        orderIdText,
+        riderId,
+        customerBill: 0,
+        method: "offer",
+        payAt,
+        prevSnapshot: prevSnap,
+        now,
+      });
+    });
+    return getParcelOrderForRider(riderId, orderRef);
+  }
+
+  const { reconcileParcelOnlineQrForRider } = await import(
+    "../parcel/parcel-online-qr.service.js"
+  );
+
+  // "Customer paid online" is never taken from the rider's tap — only Razorpay
+  // proves it (the QR finalizer records it). Re-check the gateway and report.
+  if (requestedMethod === "online") {
+    const res = await reconcileParcelOnlineQrForRider({ riderId, orderRef });
+    if (res.status === "paid" || res.cashCollected) {
+      return getParcelOrderForRider(riderId, orderRef);
+    }
+    throw Object.assign(
+      new Error(
+        "Online payment not received yet. Ask the customer to pay on the QR — it confirms automatically."
+      ),
+      { statusCode: 409, code: "ONLINE_PAYMENT_NOT_RECEIVED" }
+    );
+  }
+
+  // Cash with a QR possibly still open: if the customer already paid it, the
+  // fare is paid online and no cash may be taken; otherwise close the QR first.
+  const { resolveOpenQrBeforeCash } = await import("../../lib/online-qr-capture.js");
+  const qr = await resolveOpenQrBeforeCash(orderIdText, "parcel_online_qr");
+  if (qr.paidOnline) {
+    return getParcelOrderForRider(riderId, orderRef);
+  }
 
   await db.transaction(async (tx) => {
-    await tx
-      .update(ordersParcel)
-      .set({
-        cashCollectedAt: now,
-        cashCollectedByRiderId: riderId,
-        amountCollected: String(customerBill),
-        finalFare: String(customerBill),
-        paymentMethod: collectedMethod,
-        updatedAt: now,
-      })
-      .where(eq(ordersParcel.orderId, existing.id));
-
-    await tx
-      .update(ordersCore)
-      .set({
-        paymentStatus: "completed",
-        paymentMethod: collectedMethod,
-        grandTotal: String(customerBill),
-        billingSnapshot: {
-          ...prevSnap,
-          final_amount: customerBill,
-          parcel_fare_paid_at: now.toISOString(),
-          parcel_fare_paid_method: collectedMethod,
-          parcel_fare_collected_by_rider_id: riderId,
-        },
-        updatedAt: now,
-      })
-      .where(eq(ordersCore.id, existing.id));
-
-    await tx.insert(ordersCorePayments).values({
-      orderId: orderIdText,
-      paymentGateway: gateway,
-      paymentMethod: paymentMethodLabel,
-      transactionId: `parcel_${collectedMethod}:${existing.id}:${now.getTime()}`,
-      amount: String(customerBill),
-      currency: "INR",
-      paymentStatus: "PAID",
-      gatewayResponse: {
-        source:
-          collectedMethod === "online"
-            ? "parcel_rider_online_collect"
-            : "parcel_rider_cash_collect",
-        payAt,
-        amountPaid: customerBill,
-        collectedByRiderId: riderId,
-        method: collectedMethod,
-      },
-      paidAt: now,
+    const [locked] = await tx
+      .select({ paymentStatus: ordersCore.paymentStatus, billingSnapshot: ordersCore.billingSnapshot })
+      .from(ordersCore)
+      .where(eq(ordersCore.id, existing.id))
+      .for("update");
+    const [lockedParcel] = await tx
+      .select({ cashCollectedAt: ordersParcel.cashCollectedAt })
+      .from(ordersParcel)
+      .where(eq(ordersParcel.orderId, existing.id))
+      .for("update");
+    const alreadyCollected =
+      lockedParcel?.cashCollectedAt != null ||
+      ["paid", "completed", "captured"].includes(String(locked?.paymentStatus ?? "").toLowerCase());
+    if (alreadyCollected) return; // a double tap, or the QR finalizer won the race
+    const lockedSnap =
+      locked?.billingSnapshot != null && typeof locked.billingSnapshot === "object"
+        ? (locked.billingSnapshot as Record<string, unknown>)
+        : prevSnap;
+    await applyParcelFareCollected(tx, {
+      orderCoreId: existing.id,
+      orderIdText,
+      riderId,
+      customerBill: payable.payable,
+      method: "cash",
+      payAt,
+      prevSnapshot: lockedSnap,
+      now,
     });
   });
 
@@ -5302,6 +5323,9 @@ async function markParcelPickedUpForRider(
         parcelPaymentMethod: ordersParcel.paymentMethod,
         corePaymentMethod: ordersCore.paymentMethod,
         cashCollectedAt: ordersParcel.cashCollectedAt,
+        grandTotal: ordersCore.grandTotal,
+        fareAmount: ordersCore.fareAmount,
+        billingSnapshot: ordersCore.billingSnapshot,
       })
       .from(ordersCore)
       .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
@@ -5346,10 +5370,27 @@ async function markParcelPickedUpForRider(
         .toLowerCase()
     );
     if (payAt === "pickup" && existing.cashCollectedAt == null && !paymentCompleted) {
-      throw Object.assign(
-        new Error("Collect payment at pickup before marking the parcel picked up"),
-        { statusCode: 409, code: "parcel_cash_required_at_pickup" }
-      );
+      const pickupPayable = resolveParcelCustomerPayable(existing);
+      if (!pickupPayable.free) {
+        throw Object.assign(
+          new Error("Collect payment at pickup before marking the parcel picked up"),
+          { statusCode: 409, code: "parcel_cash_required_at_pickup" }
+        );
+      }
+      // Free (offer) parcel: nothing to collect — record the ₹0 fare step and go on.
+      await applyParcelFareCollected(tx, {
+        orderCoreId: existing.id,
+        orderIdText: existing.orderId.trim(),
+        riderId,
+        customerBill: 0,
+        method: "offer",
+        payAt,
+        prevSnapshot:
+          existing.billingSnapshot != null && typeof existing.billingSnapshot === "object"
+            ? (existing.billingSnapshot as Record<string, unknown>)
+            : {},
+        now,
+      });
     }
 
     const activeAssignment = await loadActiveRiderAssignmentMilestones(tx, existing.id, riderId);
@@ -5584,6 +5625,9 @@ async function verifyParcelDeliveryOtpForRider(
         parcelPaymentMethod: ordersParcel.paymentMethod,
         corePaymentMethod: ordersCore.paymentMethod,
         cashCollectedAt: ordersParcel.cashCollectedAt,
+        grandTotal: ordersCore.grandTotal,
+        fareAmount: ordersCore.fareAmount,
+        billingSnapshot: ordersCore.billingSnapshot,
       })
       .from(ordersCore)
       .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
@@ -5620,10 +5664,27 @@ async function verifyParcelDeliveryOtpForRider(
           .toLowerCase()
       );
     if (dropPayAt === "drop" && !dropPaymentDone) {
-      throw Object.assign(
-        new Error("Collect payment at drop before completing delivery"),
-        { statusCode: 409, code: "parcel_cash_required_at_drop" }
-      );
+      const dropPayable = resolveParcelCustomerPayable(existing);
+      if (!dropPayable.free) {
+        throw Object.assign(
+          new Error("Collect payment at drop before completing delivery"),
+          { statusCode: 409, code: "parcel_cash_required_at_drop" }
+        );
+      }
+      // Free (offer) parcel: nothing to collect — record the ₹0 fare step and deliver.
+      await applyParcelFareCollected(tx, {
+        orderCoreId: existing.id,
+        orderIdText: existing.orderId.trim(),
+        riderId,
+        customerBill: 0,
+        method: "offer",
+        payAt: dropPayAt,
+        prevSnapshot:
+          existing.billingSnapshot != null && typeof existing.billingSnapshot === "object"
+            ? (existing.billingSnapshot as Record<string, unknown>)
+            : {},
+        now,
+      });
     }
 
     {
@@ -7285,6 +7346,13 @@ async function finalizePersonRideAfterComplete(
         customerPayable: payable,
       })
     ) {
+      return;
+    }
+    if (!(payable > 0.005)) {
+      // Free (offer) ride: credit the rider through the settlement engine now —
+      // the full earning, company-funded, recorded like every other ride.
+      const { settleZeroBillRide } = await import("../rides/ride-zero-bill.service.js");
+      await settleZeroBillRide(orderCorePk);
       return;
     }
     const { creditRiderOrderEarningOnDelivered } = await import(

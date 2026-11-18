@@ -16,6 +16,10 @@ import {
 } from "../../services/payment/razorpayService.js";
 import { getEnv } from "../../config/env.js";
 import { publishOrderEvent, publishRiderEvent } from "../realtime/publish.js";
+import {
+  applyParcelFareCollected,
+  resolveParcelCustomerPayable,
+} from "../../lib/parcel-fare-collection.js";
 import { ulid } from "ulid";
 
 async function refundDuplicateOnlineQrPayment(input: {
@@ -23,11 +27,11 @@ async function refundDuplicateOnlineQrPayment(input: {
   amountPaise: number;
   orderId: string;
   qrId: string;
-}): Promise<void> {
+}): Promise<{ refundId: string | null; error: string | null }> {
   const paymentId = String(input.paymentId ?? "").trim();
-  if (!paymentId) return;
+  if (!paymentId) return { refundId: null, error: "missing_payment_id" };
   try {
-    await createRazorpayRefund({
+    const refund = await createRazorpayRefund({
       paymentId,
       amountPaise: input.amountPaise > 0 ? input.amountPaise : undefined,
       receipt: `dup_qr_${input.qrId}_${paymentId}`.slice(0, 40),
@@ -41,11 +45,12 @@ async function refundDuplicateOnlineQrPayment(input: {
       "[parcel-online-qr] refunded duplicate QR payment",
       JSON.stringify({ orderId: input.orderId, qrId: input.qrId, paymentId })
     );
+    return { refundId: String((refund as { id?: unknown })?.id ?? "") || null, error: null };
   } catch (err) {
-    console.warn(
-      "[parcel-online-qr] duplicate refund failed",
-      (err as Error)?.message ?? err
-    );
+    const message = String((err as Error)?.message ?? err);
+    if (/not_refundable_status_refunded/.test(message)) return { refundId: null, error: null };
+    console.warn("[parcel-online-qr] duplicate refund failed", message);
+    return { refundId: null, error: message };
   }
 }
 
@@ -129,6 +134,7 @@ export async function createParcelOnlineQr(input: {
       cashCollectedAt: ordersParcel.cashCollectedAt,
       finalFare: ordersParcel.finalFare,
       estimatedFare: ordersParcel.estimatedFare,
+      billingSnapshot: ordersCore.billingSnapshot,
     })
     .from(ordersCore)
     .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
@@ -164,15 +170,15 @@ export async function createParcelOnlineQr(input: {
     });
   }
 
-  const amountRaw = Number(
-    orderRow.grandTotal ??
-      orderRow.finalFare ??
-      orderRow.estimatedFare ??
-      orderRow.fareAmount ??
-      0
-  );
-  const customerBill =
-    Number.isFinite(amountRaw) && amountRaw > 0 ? Math.round(amountRaw * 100) / 100 : 0;
+  // Same payable the rider's collect screen shows (lib/parcel-fare-collection.ts).
+  const resolvedPayable = resolveParcelCustomerPayable(orderRow);
+  const customerBill = resolvedPayable.payable;
+  if (resolvedPayable.free) {
+    throw Object.assign(new Error("Nothing to collect — this parcel is free for the customer"), {
+      statusCode: 409,
+      code: "ALREADY_SETTLED",
+    });
+  }
   if (!(customerBill > 0)) {
     throw Object.assign(new Error("Parcel fare amount is unavailable"), { statusCode: 409 });
   }
@@ -362,10 +368,17 @@ export async function finalizeParcelOnlineQrPayment(input: {
   amountPaise: number;
   currency?: string | null;
   paymentStatus?: string | null;
-}): Promise<{ ok: true; alreadyDone: boolean; orderId: string; amountPaid: number }> {
+}): Promise<{
+  ok: true;
+  alreadyDone: boolean;
+  orderId: string;
+  amountPaid: number;
+  lateCaptureRefunded?: boolean;
+}> {
   const db = getDb();
   const qrId = String(input.qrId ?? "").trim();
   if (!qrId) throw Object.assign(new Error("Missing QR id"), { statusCode: 400 });
+  const newPaymentId = String(input.razorpayPaymentId ?? "").trim();
 
   const [payRow] = await db
     .select({
@@ -387,27 +400,6 @@ export async function finalizeParcelOnlineQrPayment(input: {
   const gr = (payRow.gatewayResponse ?? {}) as ParcelQrGatewayResponse;
   if (gr.source !== PARCEL_QR_SOURCE) {
     throw Object.assign(new Error("Not a parcel online QR"), { statusCode: 400 });
-  }
-
-  if (String(payRow.paymentStatus ?? "").toUpperCase() === "PAID") {
-    // multiple_use QRs cannot be closed on this Razorpay account — refund any
-    // subsequent capture so the customer is not charged twice.
-    const priorPaymentId = String(gr.razorpayPaymentId ?? "");
-    const newPaymentId = String(input.razorpayPaymentId ?? "");
-    if (newPaymentId && newPaymentId !== priorPaymentId) {
-      void refundDuplicateOnlineQrPayment({
-        paymentId: newPaymentId,
-        amountPaise: Math.round(Number(input.amountPaise) || 0),
-        orderId: payRow.orderId,
-        qrId,
-      }).catch(() => undefined);
-    }
-    return {
-      ok: true,
-      alreadyDone: true,
-      orderId: payRow.orderId,
-      amountPaid: Number(payRow.amount),
-    };
   }
 
   const expectedPaise =
@@ -449,8 +441,7 @@ export async function finalizeParcelOnlineQrPayment(input: {
       id: ordersCore.id,
       orderId: ordersCore.orderId,
       riderId: ordersCore.riderId,
-      cashCollectedAt: ordersParcel.cashCollectedAt,
-      paymentStatus: ordersCore.paymentStatus,
+      payAt: ordersParcel.payAt,
     })
     .from(ordersCore)
     .innerJoin(ordersParcel, eq(ordersParcel.orderId, ordersCore.id))
@@ -466,66 +457,163 @@ export async function finalizeParcelOnlineQrPayment(input: {
     paidPaise > 0
       ? Math.round((paidPaise / 100) * 100) / 100
       : Math.round(Number(payRow.amount) * 100) / 100;
+  const riderId = Number(orderRow.riderId ?? gr.riderId ?? 0);
   const now = new Date();
 
-  await db
-    .update(ordersCorePayments)
-    .set({
-      paymentStatus: "PAID",
-      paidAt: now,
-      gatewayResponse: {
-        ...gr,
-        razorpayPaymentId: input.razorpayPaymentId,
-        amountPaid,
-        amountPaise: expectedPaise,
-        currency: "INR",
-        capturedAt: now.toISOString(),
-        qrStatus: "closed",
+  type Outcome =
+    | { kind: "already_paid"; priorPaymentId: string; amount: number }
+    | { kind: "late_capture"; reason: string }
+    | { kind: "paid" };
+
+  // Payment row + order row locked FOR UPDATE: the webhook, the reconciler and
+  // the rider's status poll can all notice the same capture — exactly one applies
+  // it. "Fare collected" is written in the same transaction as the QR → PAID.
+  const outcome: Outcome = await db.transaction(async (tx) => {
+    const [lockedPay] = await tx
+      .select({
+        paymentStatus: ordersCorePayments.paymentStatus,
+        gatewayResponse: ordersCorePayments.gatewayResponse,
+        amount: ordersCorePayments.amount,
+      })
+      .from(ordersCorePayments)
+      .where(eq(ordersCorePayments.id, payRow.id))
+      .for("update");
+    const lockedGr = (lockedPay?.gatewayResponse ?? {}) as ParcelQrGatewayResponse & Record<string, unknown>;
+    const lockedStatus = String(lockedPay?.paymentStatus ?? "").toUpperCase();
+    if (lockedStatus === "PAID") {
+      return {
+        kind: "already_paid" as const,
+        priorPaymentId: String(lockedGr.razorpayPaymentId ?? ""),
+        amount: Number(lockedPay?.amount ?? payRow.amount),
+      };
+    }
+    if (lockedStatus === "REFUND_PENDING" || lockedStatus === "REFUNDED") {
+      return { kind: "late_capture" as const, reason: "already_refunded" };
+    }
+
+    const [lockedOrder] = await tx
+      .select({
+        paymentStatus: ordersCore.paymentStatus,
+        paymentMethod: ordersCore.paymentMethod,
+        billingSnapshot: ordersCore.billingSnapshot,
+      })
+      .from(ordersCore)
+      .where(eq(ordersCore.id, orderRow.id))
+      .for("update");
+    const [lockedParcel] = await tx
+      .select({ cashCollectedAt: ordersParcel.cashCollectedAt })
+      .from(ordersParcel)
+      .where(eq(ordersParcel.orderId, orderRow.id))
+      .for("update");
+
+    const alreadyCollected =
+      lockedParcel?.cashCollectedAt != null ||
+      ["paid", "completed", "captured"].includes(
+        String(lockedOrder?.paymentStatus ?? "")
+          .trim()
+          .toLowerCase()
+      );
+    if (alreadyCollected || !(riderId > 0)) {
+      // The fare was already collected (cash, or another payment) before this
+      // capture: the customer paid twice. Refund — never keep or re-apply it.
+      const reason = !(riderId > 0)
+        ? "parcel has no assigned rider"
+        : `parcel fare already collected (${String(lockedOrder?.paymentMethod ?? "unknown")}) before this QR capture`;
+      await tx
+        .update(ordersCorePayments)
+        .set({
+          paymentStatus: "REFUND_PENDING",
+          gatewayResponse: {
+            ...lockedGr,
+            razorpayPaymentId: newPaymentId || null,
+            capturedAt: now.toISOString(),
+            qrStatus: "closed",
+            paymentStatus: "REFUND_PENDING",
+            lateCaptureAfterSettlement: true,
+            lateCaptureReason: reason,
+          },
+        })
+        .where(eq(ordersCorePayments.id, payRow.id));
+      return { kind: "late_capture" as const, reason };
+    }
+
+    await tx
+      .update(ordersCorePayments)
+      .set({
         paymentStatus: "PAID",
-        verifiedPaymentStatus: gatewayPaymentStatus || "captured",
-      },
-    })
-    .where(eq(ordersCorePayments.id, payRow.id));
+        paidAt: now,
+        gatewayResponse: {
+          ...lockedGr,
+          razorpayPaymentId: newPaymentId || null,
+          amountPaid,
+          amountPaise: expectedPaise,
+          currency: "INR",
+          capturedAt: now.toISOString(),
+          qrStatus: "closed",
+          paymentStatus: "PAID",
+          verifiedPaymentStatus: gatewayPaymentStatus || "captured",
+        },
+      })
+      .where(eq(ordersCorePayments.id, payRow.id));
+
+    await applyParcelFareCollected(tx, {
+      orderCoreId: orderRow.id,
+      orderIdText,
+      riderId,
+      customerBill: amountPaid,
+      method: "online",
+      payAt: orderRow.payAt ?? null,
+      prevSnapshot:
+        lockedOrder?.billingSnapshot != null && typeof lockedOrder.billingSnapshot === "object"
+          ? (lockedOrder.billingSnapshot as Record<string, unknown>)
+          : {},
+      now,
+      snapshotExtra: { parcel_fare_qr_id: qrId },
+    });
+    return { kind: "paid" as const };
+  });
+
+  if (outcome.kind === "already_paid") {
+    // multiple_use QRs cannot be closed on this Razorpay account — refund any
+    // subsequent capture so the customer is not charged twice.
+    if (newPaymentId && outcome.priorPaymentId && newPaymentId !== outcome.priorPaymentId) {
+      void refundDuplicateOnlineQrPayment({
+        paymentId: newPaymentId,
+        amountPaise: paidPaise,
+        orderId: payRow.orderId,
+        qrId,
+      }).catch(() => undefined);
+    }
+    return { ok: true, alreadyDone: true, orderId: orderIdText, amountPaid: outcome.amount };
+  }
+
+  if (outcome.kind === "late_capture") {
+    if (outcome.reason !== "already_refunded" && newPaymentId) {
+      const refund = await refundDuplicateOnlineQrPayment({
+        paymentId: newPaymentId,
+        amountPaise: paidPaise,
+        orderId: orderIdText,
+        qrId,
+      });
+      const { markLateCaptureRefund } = await import("../rides/ride-online-qr.service.js");
+      await markLateCaptureRefund(payRow.id, refund);
+    }
+    return { ok: true, alreadyDone: true, orderId: orderIdText, amountPaid, lateCaptureRefunded: true };
+  }
 
   // Prevent further scans on multiple_use QRs (single_use already auto-closes).
   void closeRazorpayQrCode(qrId).catch(() => undefined);
 
-  const alreadyCollected =
-    orderRow.cashCollectedAt != null ||
-    ["paid", "completed", "captured"].includes(
-      String(orderRow.paymentStatus ?? "")
-        .trim()
-        .toLowerCase()
-    );
-  if (alreadyCollected) {
-    return { ok: true, alreadyDone: true, orderId: orderIdText, amountPaid };
-  }
-
-  const riderId = Number(orderRow.riderId ?? gr.riderId ?? 0);
-  if (!Number.isFinite(riderId) || riderId <= 0) {
-    throw Object.assign(new Error("Parcel has no assigned rider"), { statusCode: 409 });
-  }
-
-  const { confirmParcelCashCollectedForRider } = await import(
-    "../rider/rider.orders.service.js"
-  );
-  await confirmParcelCashCollectedForRider(riderId, orderIdText, { method: "online" });
-
-  void publishOrderEvent(orderIdText, {
+  const paidEvent = {
     type: "parcel_fare_paid",
     orderId: orderIdText,
     method: "online",
     qrId,
-    razorpayPaymentId: input.razorpayPaymentId,
+    razorpayPaymentId: newPaymentId || null,
     amountPaid,
-  });
-  void publishRiderEvent(riderId, {
-    type: "parcel_fare_paid",
-    orderId: orderIdText,
-    method: "online",
-    qrId,
-    amountPaid,
-  });
+  };
+  void publishOrderEvent(orderIdText, paidEvent);
+  void publishRiderEvent(riderId, paidEvent);
 
   return { ok: true, alreadyDone: false, orderId: orderIdText, amountPaid };
 }
@@ -593,112 +681,16 @@ export async function reconcileParcelOnlineQrForRider(input: {
     };
   }
 
-  const [payRow] = await db
-    .select({
-      id: ordersCorePayments.id,
-      transactionId: ordersCorePayments.transactionId,
-      paymentStatus: ordersCorePayments.paymentStatus,
-      paymentGateway: ordersCorePayments.paymentGateway,
-      amount: ordersCorePayments.amount,
-      gatewayResponse: ordersCorePayments.gatewayResponse,
-    })
-    .from(ordersCorePayments)
-    .where(
-      and(
-        eq(ordersCorePayments.orderId, orderIdText),
-        eq(ordersCorePayments.paymentMethod, QR_METHOD)
-      )
-    )
-    .orderBy(desc(ordersCorePayments.createdAt))
-    .limit(1);
-
-  if (!payRow?.transactionId) {
-    return {
-      ok: true,
-      status: "not_started",
-      orderId: orderIdText,
-      qrId: null,
-      amountPaid: null,
-      cashCollected: false,
-    };
-  }
-
-  const gr = (payRow.gatewayResponse ?? {}) as ParcelQrGatewayResponse;
-  if (gr.source !== PARCEL_QR_SOURCE) {
-    return {
-      ok: true,
-      status: "not_started",
-      orderId: orderIdText,
-      qrId: null,
-      amountPaid: null,
-      cashCollected: false,
-    };
-  }
-
-  if (String(payRow.paymentStatus ?? "").toUpperCase() === "PAID") {
-    return {
-      ok: true,
-      status: "paid",
-      orderId: orderIdText,
-      qrId: payRow.transactionId,
-      amountPaid: Number(payRow.amount),
-      cashCollected: false,
-    };
-  }
-
-  const expiryEpoch = gr.expiresAtEpoch ?? gr.closeBy ?? null;
-  const expired =
-    typeof expiryEpoch === "number" ? expiryEpoch * 1000 <= Date.now() : false;
-
-  if (String(payRow.paymentGateway ?? "") !== QR_GATEWAY || gr.dummyMode) {
-    return {
-      ok: true,
-      status: expired ? "expired" : "pending",
-      orderId: orderIdText,
-      qrId: payRow.transactionId,
-      amountPaid: null,
-      cashCollected: false,
-    };
-  }
-
-  const payments = await fetchRazorpayQrPayments(payRow.transactionId);
-  const captured = payments.find((p) => p.status === "captured");
-  if (captured) {
-    const res = await finalizeParcelOnlineQrPayment({
-      qrId: payRow.transactionId,
-      razorpayPaymentId: captured.id || null,
-      amountPaise: captured.amount,
-      currency: "INR",
-      paymentStatus: "captured",
-    });
-    return {
-      ok: true,
-      status: "paid",
-      orderId: res.orderId,
-      qrId: payRow.transactionId,
-      amountPaid: res.amountPaid,
-      cashCollected: true,
-    };
-  }
-
-  const failed = payments.find((p) => p.status === "failed");
-  if (failed && !captured) {
-    return {
-      ok: true,
-      status: "failed",
-      orderId: orderIdText,
-      qrId: payRow.transactionId,
-      amountPaid: null,
-      cashCollected: false,
-    };
-  }
-
+  // One shared, throttled gateway check (lib/online-qr-capture.ts): several polls
+  // a second still cost at most one Razorpay call per order per interval.
+  const { checkOrderOnlineQrThrottled } = await import("../../lib/online-qr-capture.js");
+  const res = await checkOrderOnlineQrThrottled(orderIdText, PARCEL_QR_SOURCE);
   return {
     ok: true,
-    status: expired ? "expired" : "pending",
+    status: res.status,
     orderId: orderIdText,
-    qrId: payRow.transactionId,
-    amountPaid: null,
-    cashCollected: false,
+    qrId: res.qrId,
+    amountPaid: res.amountPaid,
+    cashCollected: res.status === "paid",
   };
 }

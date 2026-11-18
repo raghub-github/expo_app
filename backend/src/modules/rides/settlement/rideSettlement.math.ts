@@ -184,6 +184,14 @@ export type SettlementInput = {
    */
   riderWaitingEntitled?: boolean;
 
+  /**
+   * The earning the rider was shown and accepted (accept-time payout snapshot,
+   * tip excluded). The rider is never paid less: when the settlement math lands
+   * below it, the company funds the difference (`promiseTopUp`, counted in
+   * `promotionSubsidy`). Omitted / 0 → no floor.
+   */
+  riderEarningsFloor?: number | null;
+
   components: RideBillComponents;
 };
 
@@ -210,6 +218,11 @@ export type SettlementResult = {
    * earnings. Already included in `riderEarnings`.
    */
   promotionSubsidy: number;
+  /**
+   * Company-funded amount that lifted the rider to the earning they accepted
+   * (riderEarningsFloor). Included in `riderEarnings` and `promotionSubsidy`.
+   */
+  promiseTopUp: number;
   /** Company's take on the ride service. */
   companyCommission: number;
 
@@ -434,7 +447,7 @@ export function computeRideSettlement(input: SettlementInput): SettlementResult 
 
   const companyCommission = round2((commissionableBase * platformPct) / 100);
 
-  const riderEarnings = round2(
+  const computedRiderEarnings = round2(
     Math.max(
       0,
       commissionableBase -
@@ -447,6 +460,16 @@ export function computeRideSettlement(input: SettlementInput): SettlementResult 
     )
   );
 
+  // Acceptance promise: never pay less than the (tip-exclusive) earning the rider
+  // accepted. Company-funded, like the offer subsidy.
+  const earningFloor = pos(input.riderEarningsFloor ?? 0);
+  const computedExTip = round2(computedRiderEarnings - c.tipAmount);
+  const promiseTopUp =
+    earningFloor > 0 && earningFloor - computedExTip > 0.005
+      ? round2(earningFloor - computedExTip)
+      : 0;
+  const riderEarnings = round2(computedRiderEarnings + promiseTopUp);
+
   // The company-funded top-up that keeps the rider whole: what the rider would
   // have lost had the offer been allowed to shrink their share. Zero with no
   // offer, so this is purely additive to existing behaviour.
@@ -456,7 +479,7 @@ export function computeRideSettlement(input: SettlementInput): SettlementResult 
       commissionableBase -
         companyCommission -
         (commissionableBaseNet - round2((commissionableBaseNet * platformPct) / 100))
-    )
+    ) + promiseTopUp
   );
 
   // Company receivable: everything the company is owed for this ride.
@@ -473,7 +496,8 @@ export function computeRideSettlement(input: SettlementInput): SettlementResult 
         companyCommission +
         c.surgeCompanyShare +
         c.pickupIncentiveCompanyShare -
-        fareDiscountTotal
+        fareDiscountTotal -
+        promiseTopUp
     )
   );
 
@@ -518,6 +542,7 @@ export function computeRideSettlement(input: SettlementInput): SettlementResult 
     commissionableBase,
     commissionableBaseNet,
     promotionSubsidy,
+    promiseTopUp,
     companyCommission,
     companyReceivable,
     companyReceived,

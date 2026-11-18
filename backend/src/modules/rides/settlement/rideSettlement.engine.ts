@@ -79,6 +79,11 @@ export type OnlineSettlementInput = {
     razorpayOrderId?: string | null;
     razorpayPaymentId?: string | null;
   };
+  /**
+   * "offer" when an offer covered the whole fare (customer pays ₹0): the rider is
+   * still credited their full earning, funded by the company.
+   */
+  paidBy?: "customer" | "offer";
 };
 
 export type CashSettlementInput = {
@@ -157,6 +162,54 @@ async function resolveRiderWaitingEntitled(riderId: number | null): Promise<bool
   } catch (err) {
     console.warn("[rideSettlement] Max lookup failed, paying waiting through:", riderId, err);
     return true;
+  }
+}
+
+/**
+ * The earning the rider accepted (frozen accept-time payout snapshot), used as a
+ * floor so a ride never settles below what the rider was promised — including a
+ * free (offer) ride, where the customer pays ₹0 and the company funds it all.
+ *
+ * A snapshot whose parts do not add up to its total is not trusted as a promise
+ * (a few pre-#213 snapshots stored totals that never matched the breakdown).
+ */
+export function promiseFloorFromSnapshot(snap: {
+  baseEarning?: unknown;
+  waitingEarning?: unknown;
+  surgeEarning?: unknown;
+  totalEarning?: unknown;
+} | null): number | null {
+  if (!snap) return null;
+  const total = Number(snap.totalEarning);
+  const parts =
+    Number(snap.baseEarning ?? 0) + Number(snap.waitingEarning ?? 0) + Number(snap.surgeEarning ?? 0);
+  if (!Number.isFinite(total) || !(total > 0) || !Number.isFinite(parts)) return null;
+  if (Math.abs(total - parts) > 1) return null;
+  return round2(total);
+}
+
+async function loadRidePromiseFloor(orderCoreId: number): Promise<number | null> {
+  try {
+    const sql = getSql();
+    const rows = await sql<Array<{ billing_snapshot: unknown; accept_payout_snapshot: unknown }>>`
+      SELECT c.billing_snapshot, r.accept_payout_snapshot
+      FROM orders_core c
+      LEFT JOIN orders_ride r ON r.order_id = c.id
+      WHERE c.id = ${orderCoreId}
+      LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    const { resolveAcceptedPayoutSnapshot } = await import("../../../lib/rider-settlement-breakdown.js");
+    return promiseFloorFromSnapshot(
+      resolveAcceptedPayoutSnapshot({
+        billingSnapshot: row.billing_snapshot,
+        acceptPayoutSnapshot: row.accept_payout_snapshot,
+      })
+    );
+  } catch (err) {
+    console.warn("[rideSettlement] accept snapshot lookup failed (no floor):", orderCoreId, err);
+    return null;
   }
 }
 
@@ -462,9 +515,11 @@ export async function postOnlineRideSettlement(
     payoutRuleId: payout.payoutRuleId,
     commissionOnToll: (await loadRideWalletPolicy(sql)).commissionOnToll,
     riderWaitingEntitled: await resolveRiderWaitingEntitled(input.riderId ?? null),
+    riderEarningsFloor: await loadRidePromiseFloor(input.orderCoreId),
     components: input.billing.components,
   });
   const common = toCommonRideSettlement(result, "online", gatiCashApplied);
+  const paidByOffer = input.paidBy === "offer";
   const disagreement = rideWalletDisagreement(result, common);
 
   const billingSnapshot = input.billing.billingSnapshot ?? {};
@@ -545,17 +600,21 @@ export async function postOnlineRideSettlement(
           settlement: common,
           ...rideWalletRefs(input.orderCoreId),
           refType: "ride_settlement",
-          creditDescription: `Ride earning — ${input.orderIdText}`,
+          creditDescription: paidByOffer
+            ? `Free ride earning (offer) — ${input.orderIdText}`
+            : `Ride earning — ${input.orderIdText}`,
           debitDescription: `Ride settlement — ${input.orderIdText}`,
           metadata: {
-            source: "ride_online_settlement",
+            source: paidByOffer ? "ride_offer_settlement" : "ride_online_settlement",
             orderCoreId: input.orderCoreId,
             orderIdText: input.orderIdText,
             settlementId,
             component: "rider_earnings",
-            paymentMethod: "online",
+            paymentMethod: paidByOffer ? "offer" : "online",
             customerPayable: result.customerBill,
+            customerPaidOnline: paidByOffer ? 0 : result.customerPaid,
             riderEntitlement: result.riderEarnings,
+            promiseTopUp: result.promiseTopUp,
           },
         });
         walletBalanceBefore = moved.balanceBefore;
@@ -571,6 +630,10 @@ export async function postOnlineRideSettlement(
         walletBalanceBefore,
         walletBalanceAfter,
         reconciliationReason: disagreement,
+        extraMetadata: {
+          paidBy: paidByOffer ? "offer" : "customer",
+          ...(result.promiseTopUp > 0 ? { promiseTopUp: result.promiseTopUp } : {}),
+        },
       });
 
       await tx`
@@ -759,6 +822,7 @@ export async function postCashRideSettlement(
     cashCollected: customerBill,
     commissionOnToll: policy.commissionOnToll,
     riderWaitingEntitled: await resolveRiderWaitingEntitled(input.riderId ?? null),
+    riderEarningsFloor: await loadRidePromiseFloor(input.orderCoreId),
     components: input.billing.components,
   });
   const common = toCommonRideSettlement(result, "cash", 0);
@@ -773,6 +837,22 @@ export async function postCashRideSettlement(
 
   try {
     await sql.begin(async (tx) => {
+      // Lock the order and re-check it is still unpaid INSIDE the transaction:
+      // an online QR capture can finalize between the caller's check and here,
+      // and cash must never be settled on top of an online payment.
+      const lockedOrder = await tx<Array<{ payment_status: string | null }>>`
+        SELECT payment_status::text AS payment_status
+        FROM orders_core
+        WHERE id = ${input.orderCoreId}
+        FOR UPDATE
+      `;
+      const lockedStatus = String(lockedOrder[0]?.payment_status ?? "").trim().toLowerCase();
+      if (lockedStatus === "completed" || lockedStatus === "paid") {
+        throw Object.assign(new Error("Ride fare is already settled"), {
+          statusCode: 409,
+          code: "ALREADY_SETTLED",
+        });
+      }
       await insertSettlementRow(tx, {
         settlementId,
         orderCoreId: input.orderCoreId,
@@ -860,6 +940,7 @@ export async function postCashRideSettlement(
           customerPayable: customerBill,
           cashCollected: customerBill,
           riderEntitlement: result.riderEarnings,
+          promiseTopUp: result.promiseTopUp,
         },
       });
       walletBalanceAfter = moved.balanceAfter;
@@ -872,6 +953,7 @@ export async function postCashRideSettlement(
         walletBalanceBefore: moved.balanceBefore,
         walletBalanceAfter: moved.balanceAfter,
         reconciliationReason: disagreement,
+        extraMetadata: result.promiseTopUp > 0 ? { promiseTopUp: result.promiseTopUp } : undefined,
       });
 
       await tx`

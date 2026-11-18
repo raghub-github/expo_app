@@ -129,6 +129,26 @@ export async function selectRidePaymentMethodForRider(
   }
   const customerBill = Math.round(billRes.billing.final_amount * 100) / 100;
 
+  // Picking cash after showing a QR: if the passenger already paid it, the ride
+  // is paid online (the check finalizes it) — say so instead of letting the rider
+  // take cash too. The QR itself is closed only when the cash is confirmed.
+  if (method === "cash") {
+    const orderIdForQr = orderRow.orderId?.trim() || String(orderRow.id);
+    try {
+      const { checkOrderOnlineQrThrottled } = await import("../../lib/online-qr-capture.js");
+      const qr = await checkOrderOnlineQrThrottled(orderIdForQr, "ride_online_qr");
+      if (qr.status === "paid") {
+        throw Object.assign(new Error("The passenger has already paid online — do not collect cash"), {
+          statusCode: 409,
+          code: "ALREADY_SETTLED",
+        });
+      }
+    } catch (err) {
+      if ((err as { code?: string })?.code === "ALREADY_SETTLED") throw err;
+      // Gateway unreachable: confirm-cash re-checks (and closes the QR) before settling.
+    }
+  }
+
   const currentMethod = String(orderRow.paymentMethod ?? "").trim().toLowerCase();
   const changed = currentMethod !== method;
   if (changed) {

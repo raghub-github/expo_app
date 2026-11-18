@@ -120,25 +120,53 @@ export async function paymentRoutes(app: FastifyInstance) {
             payload: payloadObject,
           });
         } catch (err) {
-          // unique violation → duplicate delivery; ack with 200 so Razorpay stops retrying.
-          const code = (err as { code?: string })?.code;
+          // unique violation → we have seen this event id before. drizzle ≥0.44 wraps
+          // driver errors (DrizzleQueryError) with the Postgres error as `cause` —
+          // reading only err.code never matched, so every redelivery was re-run
+          // (prod: 72 WEBHOOK_DEDUP_INSERT_FAILED, 0 WEBHOOK_DUPLICATE).
+          const code =
+            (err as { code?: string })?.code ??
+            (err as { cause?: { code?: string } })?.cause?.code;
           if (code === "23505") {
+            // Razorpay only redelivers after a non-2xx (or a timeout). If the first
+            // attempt never finished (processed_at still NULL) this is the retry we
+            // asked for with a 5xx — process it again; every handler is idempotent.
+            // Acking it as a duplicate would drop the payment until the reconciler.
+            let alreadyProcessed = true;
+            try {
+              const [prior] = await db
+                .select({ processedAt: paymentWebhookEvents.processedAt })
+                .from(paymentWebhookEvents)
+                .where(eq(paymentWebhookEvents.eventId, eventId))
+                .limit(1);
+              alreadyProcessed = prior?.processedAt != null;
+            } catch {
+              alreadyProcessed = true;
+            }
+            if (alreadyProcessed) {
+              await logPaymentEvent(db, {
+                eventType: "WEBHOOK_DUPLICATE",
+                source: "webhook",
+                payload: { event, eventId, durationMs: Date.now() - startedAtMs },
+              });
+              return reply.send({ ok: true, duplicate: true });
+            }
             await logPaymentEvent(db, {
-              eventType: "WEBHOOK_DUPLICATE",
+              eventType: "WEBHOOK_REDELIVERY_REPROCESS",
               source: "webhook",
               payload: { event, eventId, durationMs: Date.now() - startedAtMs },
             });
-            return reply.send({ ok: true, duplicate: true });
+          } else {
+            // any other storage error → log and continue; don't block the business
+            // logic just because audit insert failed.
+            req.log.warn({ err }, "payment_webhook_events insert failed");
+            await logPaymentEvent(db, {
+              eventType: "WEBHOOK_DEDUP_INSERT_FAILED",
+              source: "webhook",
+              failureMessage: (err as Error)?.message ?? "unknown",
+              payload: { event, eventId, durationMs: Date.now() - startedAtMs },
+            });
           }
-          // any other storage error → log and continue; don't block the business
-          // logic just because audit insert failed.
-          req.log.warn({ err }, "payment_webhook_events insert failed");
-          await logPaymentEvent(db, {
-            eventType: "WEBHOOK_DEDUP_INSERT_FAILED",
-            source: "webhook",
-            failureMessage: (err as Error)?.message ?? "unknown",
-            payload: { event, eventId, durationMs: Date.now() - startedAtMs },
-          });
         }
       }
 
@@ -310,6 +338,7 @@ export async function paymentRoutes(app: FastifyInstance) {
               },
             });
           } catch (err) {
+            const failStatus = Number((err as { statusCode?: number })?.statusCode ?? 500);
             await logPaymentEvent(db, {
               eventType: "WEBHOOK_HANDLER_FAILED",
               source: "webhook",
@@ -319,11 +348,18 @@ export async function paymentRoutes(app: FastifyInstance) {
                 event,
                 eventId,
                 handler: "online_qr",
+                failStatus,
                 durationMs: Date.now() - startedAtMs,
               },
             });
-            // Do not 500 — ack so Razorpay stops retrying a payload we can't process;
-            // reconciliation/admin can recover. (Matches the existing handlers' posture.)
+            if (failStatus >= 500) {
+              // Transient (DB / gateway): 5xx so Razorpay redelivers — the redelivery
+              // is reprocessed (processed_at is still NULL); the reconciler also retries.
+              throw err;
+            }
+            // Deterministic rejection (unknown QR, amount mismatch): ack, keep the audit.
+            await markWebhookProcessed(db, eventId);
+            return reply.send({ ok: false, handler: "online_qr", error: (err as Error)?.message ?? "rejected" });
           }
           return reply.send({ ok: true });
         }
@@ -490,6 +526,58 @@ export async function paymentRoutes(app: FastifyInstance) {
                 payload: { event, eventId, handler: "food_checkout_qr_payment_captured" },
               });
               return reply.send({ ok: false, handler: "food_checkout_qr_payment_captured" });
+            }
+          }
+
+          // Rider-presented ride / parcel QR. Razorpay sends payment.captured within
+          // seconds of the scan (qr_code.credited is not always subscribed) with no
+          // order_id — only the QR's notes (orderRef + purpose). Finalize right here
+          // so both apps update immediately instead of waiting for the reconciler.
+          const qrPurpose = String(notes.purpose ?? "").trim();
+          if (!razorpayOrderId && (qrPurpose === "ride_fare_collect" || qrPurpose === "parcel_fare_collect")) {
+            const { finalizeQrFromCapturedPaymentWebhook } = await import("../../lib/online-qr-capture.js");
+            try {
+              const res = await finalizeQrFromCapturedPaymentWebhook({
+                orderRef: String(notes.orderRef ?? ""),
+                purpose: qrPurpose,
+                razorpayPaymentId,
+              });
+              await markWebhookProcessed(db, eventId);
+              await logPaymentEvent(db, {
+                eventType: "WEBHOOK_HANDLED_OK",
+                source: "webhook",
+                razorpayPaymentId,
+                orderId: res.orderId,
+                payload: {
+                  event,
+                  eventId,
+                  handler: "online_qr_payment_captured",
+                  qrId: res.qrId,
+                  service: res.source,
+                  alreadyDone: res.alreadyDone,
+                  durationMs: Date.now() - startedAtMs,
+                },
+              });
+              return reply.send({ ok: true, handler: "online_qr_payment_captured" });
+            } catch (err) {
+              const failStatus = Number((err as { statusCode?: number })?.statusCode ?? 500);
+              await logPaymentEvent(db, {
+                eventType: "WEBHOOK_HANDLER_FAILED",
+                source: "webhook",
+                razorpayPaymentId,
+                failureMessage: (err as Error)?.message ?? "unknown",
+                payload: {
+                  event,
+                  eventId,
+                  handler: "online_qr_payment_captured",
+                  orderRef: String(notes.orderRef ?? ""),
+                  failStatus,
+                  durationMs: Date.now() - startedAtMs,
+                },
+              });
+              if (failStatus >= 500) throw err; // Razorpay redelivers; reconciler retries
+              await markWebhookProcessed(db, eventId);
+              return reply.send({ ok: false, handler: "online_qr_payment_captured" });
             }
           }
 
@@ -813,6 +901,23 @@ export async function paymentRoutes(app: FastifyInstance) {
               paymentEntity?.error_reason ??
               "Payment failed at gateway."
           );
+          const failedNotes = (paymentEntity?.notes ?? {}) as Record<string, unknown>;
+          const failedPurpose = String(failedNotes.purpose ?? "").trim();
+          if (!razorpayOrderId && (failedPurpose === "ride_fare_collect" || failedPurpose === "parcel_fare_collect")) {
+            // A failed scan on a rider QR: the QR stays open, the customer can retry;
+            // the rider app sees "failed" from the status check. Ack (no 24 h retries).
+            await markWebhookProcessed(db, eventId);
+            await logPaymentEvent(db, {
+              eventType: "WEBHOOK_HANDLED_OK",
+              source: "webhook",
+              razorpayPaymentId: razorpayPaymentId ?? undefined,
+              orderId: String(failedNotes.orderRef ?? "") || undefined,
+              failureCode,
+              failureMessage,
+              payload: { event, eventId, handler: "online_qr_payment_failed", durationMs: Date.now() - startedAtMs },
+            });
+            return reply.send({ ok: true, handler: "online_qr_payment_failed" });
+          }
           if (!razorpayOrderId) {
             await logPaymentEvent(db, {
               eventType: "WEBHOOK_REJECTED_INVALID_PAYLOAD",

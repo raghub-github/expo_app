@@ -229,11 +229,16 @@ export default function OrderDetailsScreen() {
     refetchInterval: (query) => {
       const data = query.state.data;
       const status = normalizeCustomerOrderStatus(data?.status);
+      // Ride finished but the fare is still open — online (QR / in-app) OR cash
+      // handed to the rider. Keep polling until the backend says paid: the server
+      // also checks the rider's QR with Razorpay on each poll, and the rider's
+      // cash confirmation must flip this screen too (it used to stop at DELIVERED,
+      // leaving the passenger on "Pay cash" after the rider had confirmed it).
       if (
         data &&
         isPersonRideOrder(data) &&
         status === "DELIVERED" &&
-        shouldShowRideFarePaymentPendingScreen(data)
+        (shouldShowRideFarePaymentPendingScreen(data) || shouldShowRideCashPayScreen(data))
       ) {
         return 3_000;
       }

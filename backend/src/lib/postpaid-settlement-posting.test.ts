@@ -6,11 +6,28 @@ import { computePostpaidSettlement } from "./postpaid-settlement.js";
 
 /**
  * In-memory stand-in for one rider's wallet inside a transaction. The INSERT
- * branch reproduces prod's trigger_update_wallet_from_ledger for the two entry
- * types the settlement engine writes:
- *   'earning'    → total_balance += amount
- *   'adjustment' → total_balance += amount (credit when ≥ 0, debit when < 0)
+ * branch reproduces prod exactly (verified read-only against the live catalog):
+ *   CHECK wallet_ledger_amount_non_negative  → amount must be >= 0
+ *   trigger_update_wallet_from_ledger:
+ *     credit types  → total_balance += ABS(amount)
+ *     debit types   → total_balance -= ABS(amount)
+ *     'adjustment'  → signed by amount (only reachable with amount >= 0 here)
+ * The previous fake skipped the CHECK, which is how a negative 'adjustment'
+ * debit passed every unit test and then failed on every cash job in prod.
  */
+const TRIGGER_CREDIT_TYPES = new Set([
+  "earning", "refund", "bonus", "referral_bonus", "incentive", "surge",
+  "failed_withdrawal_revert", "cancellation_payout", "manual_add",
+]);
+const TRIGGER_DEBIT_TYPES = new Set([
+  "onboarding_fee", "withdrawal", "subscription_fee", "purchase", "cod_order", "manual_deduct", "other",
+]);
+function triggerDelta(entryType: string, amount: number): number {
+  if (TRIGGER_CREDIT_TYPES.has(entryType)) return Math.abs(amount);
+  if (TRIGGER_DEBIT_TYPES.has(entryType)) return -Math.abs(amount);
+  if (entryType === "adjustment") return amount;
+  return 0; // penalty / penalty_reversal are skipped by the trigger
+}
 function fakeWallet(opts: { balance: number; negativeUsed?: number; existingRefs?: string[]; trigger?: boolean }) {
   const state = {
     balance: opts.balance,
@@ -36,9 +53,17 @@ function fakeWallet(opts: { balance: number; negativeUsed?: number; existingRefs
     }
     if (text.startsWith("INSERT INTO wallet_ledger")) {
       const [, entryType, amount, balance, , ref] = values as [number, string, string, string, string, string];
+      if (Number(amount) < 0) {
+        return Promise.reject(
+          Object.assign(
+            new Error('new row for relation "wallet_ledger_0" violates check constraint "wallet_ledger_amount_non_negative"'),
+            { code: "23514" }
+          )
+        );
+      }
       state.ledger.push({ entryType, amount: Number(amount), balance: Number(balance), ref });
       state.refs.add(ref);
-      if (trigger) state.balance = Math.round((state.balance + Number(amount)) * 100) / 100;
+      if (trigger) state.balance = Math.round((state.balance + triggerDelta(entryType, Number(amount))) * 100) / 100;
       return Promise.resolve([]);
     }
     if (text.startsWith("UPDATE rider_wallet")) {
@@ -63,7 +88,7 @@ const base = {
   ...refs,
 };
 
-test("cash debit (C ₹70 > R ₹50) posts one negative adjustment that the trigger debits", async () => {
+test("cash debit (C ₹70 > R ₹50) posts one positive cod_order row that the trigger debits", async () => {
   const settlement = computePostpaidSettlement({
     service: "parcel",
     method: "cash",
@@ -76,8 +101,8 @@ test("cash debit (C ₹70 > R ₹50) posts one negative adjustment that the trig
   assert.deepEqual(moved, { balanceBefore: 500, balanceAfter: 480, posted: "debit", duplicate: false });
   assert.equal(state.balance, 480);
   assert.equal(state.ledger.length, 1);
-  assert.equal(state.ledger[0]!.entryType, "adjustment");
-  assert.equal(state.ledger[0]!.amount, -20, "the ledger row says what happened: a debit");
+  assert.equal(state.ledger[0]!.entryType, "cod_order", "the entry type carries the debit direction");
+  assert.equal(state.ledger[0]!.amount, 20, "amount is positive — prod CHECK amount >= 0");
   assert.equal(state.ledger[0]!.ref, refs.debitRef);
   assert.equal(state.lockedBeforeWrite, true, "wallet row is locked before anything is written");
 });
@@ -200,4 +225,29 @@ test("online settlement credits the full entitlement, never the customer payment
   const moved = await applySettlementWalletMovement(tx, { ...base, service: "person_ride", settlement });
   assert.equal(moved.balanceAfter, 50);
   assert.equal(state.ledger[0]!.amount, 50);
+});
+
+test("every posted row satisfies the prod CHECK (amount >= 0) for debit, credit and negative wallets", async () => {
+  const cases: Array<[number, number, number]> = [
+    // [customer payable paise, rider entitlement paise, starting balance]
+    [10832, 6320, 0], // GM10000439-shaped parcel: C ₹108.32 > R ₹63.20 on an empty wallet
+    [5828, 4428, -50], // ride C > R on an already negative wallet
+    [3000, 5000, -10], // C < R top-up on a negative wallet
+    [5000, 5000, 10],
+  ];
+  for (const [c, r, start] of cases) {
+    const settlement = computePostpaidSettlement({
+      service: "parcel",
+      method: "cash",
+      customerPayablePaise: c,
+      riderEntitlementPaise: r,
+      collectedPaise: c,
+    });
+    const { tx, state } = fakeWallet({ balance: start });
+    const moved = await applySettlementWalletMovement(tx, { ...base, service: "parcel", settlement });
+    const expected = Math.round((start + (r - c) / 100) * 100) / 100;
+    assert.equal(moved.balanceAfter, expected, `C=${c} R=${r} start=${start}`);
+    assert.equal(state.balance, expected);
+    assert.ok(state.ledger.every((l) => l.amount >= 0));
+  }
 });

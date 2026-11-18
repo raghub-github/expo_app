@@ -16,7 +16,9 @@ const LOCK_TTL_MS = 110_000;
 const INTERVAL_MS = 120_000;
 /** Give the inline settlement time to finish before treating it as missed. */
 const MIN_AGE = "3 minutes";
-const LOOKBACK = "72 hours";
+// 14 days: a cash parcel that failed to settle (e.g. the pre-fix CHECK-constraint
+// error on its wallet debit) is retried until it posts, not abandoned after 3 days.
+const LOOKBACK = "14 days";
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;

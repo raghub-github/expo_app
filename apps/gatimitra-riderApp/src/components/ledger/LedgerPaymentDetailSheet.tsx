@@ -48,9 +48,11 @@ function SettlementBreakdown({ s }: { s: SettlementDetail }) {
   return (
     <View style={styles.settlement}>
       <Text style={styles.settlementTitle}>
-        {isCash
-          ? t("ledger.settlementCashTitle", "{{service}} completed — Cash", { service })
-          : t("ledger.settlementOnlineTitle", "{{service}} completed — Online", { service })}
+        {s.paidBy === "offer"
+          ? t("ledger.settlementOfferTitle", "{{service}} completed — Free (offer)", { service })
+          : isCash
+            ? t("ledger.settlementCashTitle", "{{service}} completed — Cash", { service })
+            : t("ledger.settlementOnlineTitle", "{{service}} completed — Online", { service })}
       </Text>
       <Row label={t("ledger.settlementOrder", "Order")} value={s.orderId} />
       <Row label={t("ledger.settlementPayable", "Customer payable")} value={inr(s.customerPayable)} />

@@ -81,7 +81,43 @@ export function isRiderUpiPaymentLedgerEntry(entry: RiderLedgerEntry): boolean {
 
 /** Wallet row written by a Ride/Parcel settlement — opens the full breakdown. */
 export function isSettlementLedgerEntry(entry: RiderLedgerEntry): boolean {
-  return entry.settlementKind != null;
+  return entry.settlementKind != null || entry.job != null;
+}
+
+/** A Ride/Parcel job that moved the wallet by ₹0 (cash collected = earning). */
+export function isZeroWalletJobEntry(entry: RiderLedgerEntry): boolean {
+  return entry.job != null && Math.abs(entry.job.walletChange) < 0.005 && entry.amount < 0.005;
+}
+
+function inr(n: number): string {
+  return `₹${formatLedgerAmount(Math.abs(n))}`;
+}
+
+/**
+ * One line that explains a Ride/Parcel job on the wallet row: how the customer
+ * paid, what the rider earned and how the wallet moved (W = R − C for cash).
+ */
+export function ledgerJobBreakdownLine(entry: RiderLedgerEntry, t: TFunction): string | null {
+  const job = entry.job;
+  if (!job) return null;
+  const earned = t("ledger.jobEarned", "Earned {{amount}}", { amount: inr(job.riderEarning) });
+  const wallet =
+    Math.abs(job.walletChange) < 0.005
+      ? t("ledger.jobNoWalletChange", "No wallet change")
+      : job.walletChange > 0
+        ? t("ledger.jobWalletPlus", "Wallet +{{amount}}", { amount: inr(job.walletChange) })
+        : t("ledger.jobWalletMinus", "Wallet −{{amount}}", { amount: inr(job.walletChange) });
+  if (job.paymentMethod === "cash") {
+    return [
+      t("ledger.jobCashCollected", "Cash collected {{amount}}", { amount: inr(job.cashAmount) }),
+      earned,
+      wallet,
+    ].join(" · ");
+  }
+  if (job.paymentMethod === "offer") {
+    return [t("ledger.jobFreeRide", "Offer — customer paid ₹0"), earned, wallet].join(" · ");
+  }
+  return [t("ledger.jobPaidOnline", "Paid online {{amount}}", { amount: inr(job.paidOnline || job.customerPayable) }), earned, wallet].join(" · ");
 }
 
 export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): string {
@@ -90,6 +126,16 @@ export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): s
 
   // Cash jobs: the cash itself never touches the wallet — only the difference
   // between it and the rider's earning does. Say which way and why.
+  if (entry.job?.kind === "cash_no_change") {
+    return entry.category === "parcel"
+      ? t("ledger.titleParcelCashCollected", "Cash Parcel · Cash Collected")
+      : t("ledger.titleRideCashCollected", "Cash Ride · Cash Collected");
+  }
+  if (entry.job?.kind === "free_ride") {
+    return entry.category === "parcel"
+      ? t("ledger.titleParcelFree", "Free Parcel · Earning Credited")
+      : t("ledger.titleRideFree", "Free Ride · Earning Credited");
+  }
   if (entry.settlementKind === "cash_platform_share") {
     return entry.category === "parcel"
       ? t("ledger.titleParcelCashShare", "Cash Parcel · Platform Share")
@@ -133,6 +179,7 @@ export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): s
 }
 
 export function ledgerStatusLabel(entry: RiderLedgerEntry, t: TFunction): string {
+  if (isZeroWalletJobEntry(entry)) return t("ledger.statusNoChange", "No change");
   if (isRejectedWithdrawalLedgerEntry(entry)) {
     return t("ledger.statusRejected", "Rejected");
   }
