@@ -14,10 +14,13 @@ import { fetchRazorpayQrPayments } from "../../services/payment/razorpayService.
 import { finalizeRideOnlineQrPayment } from "./ride-online-qr.service.js";
 import { finalizeParcelOnlineQrPayment } from "../parcel/parcel-online-qr.service.js";
 import { tryRecoverFoodCheckoutQrPayment } from "../payment/food-checkout-qr-recover.js";
+import { recordReconcilerFailure, withRunDeadline } from "../../lib/reconciler-guard.js";
 
 const LOCK_KEY = "tick:ride-online-qr-reconciler";
 const LOCK_TTL_MS = 55_000;
 const DEFAULT_INTERVAL_MS = 60_000;
+/** A run that has not finished by now is abandoned so the next tick can run. */
+const RUN_DEADLINE_MS = 50_000;
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 
@@ -106,6 +109,12 @@ export async function reconcileOpenRideQrPaymentsOnce(): Promise<{
         `[online-qr-reconciler] check failed for QR ${qrId}:`,
         (err as Error).message
       );
+      await recordReconcilerFailure({
+        eventType: "ONLINE_QR_RECONCILE_FAILED",
+        orderId: null,
+        message: (err as Error)?.message ?? String(err),
+        payload: { qrId },
+      });
     }
   }
   return { finalized, checked: rows.length };
@@ -115,7 +124,7 @@ async function pollOnce(): Promise<void> {
   if (running) return;
   running = true;
   try {
-    await withLock(LOCK_KEY, LOCK_TTL_MS, async () => {
+    await withRunDeadline("online-qr-reconciler", RUN_DEADLINE_MS, () => withLock(LOCK_KEY, LOCK_TTL_MS, async () => {
       const { finalized } = await reconcileOpenRideQrPaymentsOnce();
       if (finalized > 0) {
         console.info(
@@ -143,7 +152,14 @@ async function pollOnce(): Promise<void> {
       } catch (e) {
         console.warn("[online-qr-reconciler] late-capture refund retry failed", (e as Error).message);
       }
+    }));
+  } catch (err) {
+    await recordReconcilerFailure({
+      eventType: "ONLINE_QR_RECONCILER_RUN_FAILED",
+      orderId: null,
+      message: (err as Error)?.message ?? String(err),
     });
+    throw err;
   } finally {
     running = false;
   }

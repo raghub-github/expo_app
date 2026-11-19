@@ -10,10 +10,15 @@
  */
 import { withLock } from "@gatimitra/redis";
 import { getSql } from "../db/client.js";
+import { recordReconcilerFailure, withRunDeadline } from "./reconciler-guard.js";
 
 const LOCK_KEY = "tick:parcel-settlement-reconciler";
 const LOCK_TTL_MS = 110_000;
 const INTERVAL_MS = 120_000;
+/** A run that has not finished by now is abandoned so the next tick can run. */
+const RUN_DEADLINE_MS = 100_000;
+/** First pass shortly after boot, so a deploy does not wait a full interval. */
+const FIRST_PASS_DELAY_MS = 30_000;
 /** Give the inline settlement time to finish before treating it as missed. */
 const MIN_AGE = "3 minutes";
 // 14 days: a cash parcel that failed to settle (e.g. the pre-fix CHECK-constraint
@@ -54,9 +59,22 @@ export async function reconcileUnsettledParcelsOnce(): Promise<{ checked: number
       if (res.credited) settled += 1;
       else if (res.error) {
         console.warn(`[parcel-settlement-reconciler] order ${r.id} not settled: ${res.error}`);
+        await recordReconcilerFailure({
+          eventType: "PARCEL_SETTLEMENT_RETRY_FAILED",
+          orderId: r.order_id,
+          message: res.error,
+          payload: { orderCoreId: Number(r.id), riderId: Number(r.rider_id) },
+        });
       }
     } catch (err) {
-      console.warn(`[parcel-settlement-reconciler] order ${r.id} failed:`, (err as Error).message);
+      const message = (err as Error)?.message ?? String(err);
+      console.warn(`[parcel-settlement-reconciler] order ${r.id} failed:`, message);
+      await recordReconcilerFailure({
+        eventType: "PARCEL_SETTLEMENT_RETRY_FAILED",
+        orderId: r.order_id,
+        message,
+        payload: { orderCoreId: Number(r.id), riderId: Number(r.rider_id) },
+      });
     }
   }
   return { checked: rows.length, settled };
@@ -66,12 +84,21 @@ async function pollOnce(): Promise<void> {
   if (running) return;
   running = true;
   try {
-    await withLock(LOCK_KEY, LOCK_TTL_MS, async () => {
-      const { checked, settled } = await reconcileUnsettledParcelsOnce();
-      if (checked > 0) {
-        console.info(`[parcel-settlement-reconciler] checked ${checked}, settled ${settled}`);
-      }
+    await withRunDeadline("parcel-settlement-reconciler", RUN_DEADLINE_MS, () =>
+      withLock(LOCK_KEY, LOCK_TTL_MS, async () => {
+        const { checked, settled } = await reconcileUnsettledParcelsOnce();
+        if (checked > 0) {
+          console.info(`[parcel-settlement-reconciler] checked ${checked}, settled ${settled}`);
+        }
+      })
+    );
+  } catch (err) {
+    await recordReconcilerFailure({
+      eventType: "PARCEL_SETTLEMENT_RECONCILER_RUN_FAILED",
+      orderId: null,
+      message: (err as Error)?.message ?? String(err),
     });
+    throw err;
   } finally {
     running = false;
   }
@@ -79,6 +106,12 @@ async function pollOnce(): Promise<void> {
 
 export async function startParcelSettlementReconciler(): Promise<void> {
   if (timer) return;
+  const first = setTimeout(() => {
+    void pollOnce().catch((e) =>
+      console.warn("[parcel-settlement-reconciler] first pass error", (e as Error).message)
+    );
+  }, FIRST_PASS_DELAY_MS);
+  if (first.unref) first.unref();
   timer = setInterval(() => {
     void pollOnce().catch((e) =>
       console.warn("[parcel-settlement-reconciler] poll error", (e as Error).message)
