@@ -15,6 +15,7 @@
  * settled another way (late captures) that failed to refund the first time.
  */
 import { getSql } from "../db/client.js";
+import { recordReconcilerFailure } from "./reconciler-guard.js";
 
 const MIN_AGE = "1 minute";
 const LOOKBACK = "14 days";
@@ -81,11 +82,21 @@ export async function reconcileUnsettledRidesOnce(): Promise<{ checked: number; 
       console.warn(
         `[ride-settlement-recovery] paid ride ${r.order_id ?? orderCorePk} has no settlement and no QR payment — needs review`
       );
+      await recordReconcilerFailure({
+        eventType: "RIDE_SETTLEMENT_NEEDS_REVIEW",
+        orderId: r.order_id,
+        message: "paid ride has no settlement and no QR payment",
+        payload: { orderCoreId: orderCorePk, riderId: Number(r.rider_id) },
+      });
     } catch (err) {
-      console.warn(
-        `[ride-settlement-recovery] ride ${r.order_id ?? orderCorePk} failed:`,
-        (err as Error)?.message ?? err
-      );
+      const message = (err as Error)?.message ?? String(err);
+      console.warn(`[ride-settlement-recovery] ride ${r.order_id ?? orderCorePk} failed:`, message);
+      await recordReconcilerFailure({
+        eventType: "RIDE_SETTLEMENT_RETRY_FAILED",
+        orderId: r.order_id,
+        message,
+        payload: { orderCoreId: orderCorePk, riderId: Number(r.rider_id) },
+      });
     }
   }
   return { checked: rows.length, settled };
