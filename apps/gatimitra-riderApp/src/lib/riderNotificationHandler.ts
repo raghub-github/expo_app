@@ -43,6 +43,8 @@ export async function startDispatchBuzzerFromPush(
       expiresAt:
         pushField(data, "expiresAt", "expires_at", "acceptUntil", "accept_until", "acceptDeadlineAt") ||
         null,
+      // The push already carries the card's keys (pickupAddress, amount, km…).
+      details: data,
     });
   } catch {
     return false;

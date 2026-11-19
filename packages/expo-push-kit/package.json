@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx --test src/controller.test.ts src/app-integration.test.ts src/orderAlert.test.ts src/pendingOrderAction.test.ts src/tokenRotation.test.ts src/appAudience.test.ts && node scripts/test-order-alert-native.mjs",
+    "test": "node --import tsx --test src/controller.test.ts src/app-integration.test.ts src/orderAlert.test.ts src/pendingOrderAction.test.ts src/tokenRotation.test.ts src/appAudience.test.ts src/orderAlertDetails.test.ts && node scripts/test-order-alert-native.mjs",
     "lint": "echo \"(expo-push-kit) no lint configured\"",
     "test:native": "node scripts/test-order-alert-native.mjs"
   },

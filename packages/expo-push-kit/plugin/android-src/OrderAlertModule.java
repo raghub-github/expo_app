@@ -41,6 +41,72 @@ public class OrderAlertModule extends ReactContextBaseJavaModule {
     }
   }
 
+  /**
+   * startAlert plus the offer details the app already holds (addresses,
+   * earnings, distances, deadline, items). Without them an app-started alert
+   * drew a detail-less card until a push happened to land. `detailsJson` is a
+   * flat JSON object using the same keys as the FCM data payload.
+   */
+  @ReactMethod
+  public void startAlertWithDetails(
+      String sessionId,
+      String orderId,
+      String offerId,
+      String soundType,
+      String detailsJson,
+      Promise promise
+  ) {
+    try {
+      Context ctx = getReactApplicationContext();
+      java.util.Map<String, String> details = parseDetails(detailsJson);
+      OrderAlertController.start(
+          ctx,
+          sessionId,
+          orderId,
+          offerId,
+          soundType,
+          details.get("title"),
+          details.get("body")
+      );
+      OrderAlertController.applyDetails(ctx, sessionId, details);
+      promise.resolve(toMap(OrderAlertController.getActive(ctx)));
+    } catch (Throwable t) {
+      promise.reject("E_ALERT_START", t);
+    }
+  }
+
+  /** Refresh the details of a live alert (e.g. FCM-started, app now knows more). */
+  @ReactMethod
+  public void updateAlertDetails(String sessionId, String detailsJson, Promise promise) {
+    try {
+      OrderAlertController.applyDetails(getReactApplicationContext(), sessionId, parseDetails(detailsJson));
+      promise.resolve(true);
+    } catch (Throwable t) {
+      promise.reject("E_ALERT_DETAILS", t);
+    }
+  }
+
+  /** Flat string map from the app's JSON; nested values and nulls are dropped. */
+  private static java.util.Map<String, String> parseDetails(String json) {
+    java.util.Map<String, String> out = new java.util.HashMap<>();
+    if (json == null || json.trim().length() == 0) return out;
+    try {
+      JSONObject obj = new JSONObject(json);
+      java.util.Iterator<String> keys = obj.keys();
+      while (keys.hasNext()) {
+        String key = keys.next();
+        Object value = obj.opt(key);
+        if (value == null || value == JSONObject.NULL) continue;
+        if (value instanceof JSONObject || value instanceof org.json.JSONArray) continue;
+        String text = String.valueOf(value).trim();
+        if (text.length() == 0 || "null".equalsIgnoreCase(text)) continue;
+        out.put(key, text.length() > 2000 ? text.substring(0, 2000) : text);
+      }
+    } catch (Throwable ignored) {
+    }
+    return out;
+  }
+
   @ReactMethod
   public void persistSoundSettings(
       boolean enabled,

@@ -327,7 +327,94 @@ public final class OrderAlertController {
       String title,
       String body
   ) {
-    if (context == null || sessionId == null || sessionId.trim().length() == 0) return;
+    if (!writePresentation(context, sessionId, data, title, body)) return;
+    try {
+      OrderAlertLockActivity.refreshLive(context);
+    } catch (Throwable ignored) {
+    }
+    try {
+      JSONObject row = OrderAlertController.getActive(context);
+      if (row != null) {
+        if (OrderAlertVisibility.shouldSuppressOverlayWindow(context)) {
+          OrderAlertOverlay.hideAll(context);
+          // Lock / in-app: still post heads-up so lock screen / shade is not empty.
+          OrderAlertHeadsUp.show(context, row.optString("sessionId", sessionId));
+        } else {
+          OrderAlertOverlay.show(context, row);
+          OrderAlertHeadsUp.show(context, row.optString("sessionId", sessionId));
+        }
+        ensureService(
+            context,
+            row.optString("sessionId", sessionId),
+            row.optString("orderId", ""),
+            row.optString("offerId", ""),
+            row.optString("soundType", defaultSound()),
+            row.optString("title", title),
+            row.optString("body", body),
+            row.optString("pickup", ""),
+            row.optString("drop", ""),
+            row.optString("orderType", "")
+        );
+      }
+    } catch (Throwable ignored) {
+    }
+  }
+
+  /**
+   * Offer details sent by the app (WebSocket offer / order board) for an alert
+   * it started itself. Without this an app-started alert carried no details, so
+   * the floating card drew "Address unavailable" until a push happened to land.
+   *
+   * Writes the same session-row fields the FCM path writes, then refreshes any
+   * card already on screen. It never re-arms audio for a muted or retired
+   * session, and never posts a heads-up of its own — the app owns in-app UI.
+   */
+  public static void applyDetails(Context context, String sessionId, Map<String, String> data) {
+    if (context == null || data == null || data.isEmpty()) return;
+    String sid = sessionId == null ? "" : sessionId.trim();
+    if (sid.length() == 0) return;
+    if (!writePresentation(context, sid, data, first(data, "title"), first(data, "body", "message"))) return;
+    try {
+      OrderAlertLockActivity.refreshLive(context);
+    } catch (Throwable ignored) {
+    }
+    try {
+      JSONObject row = getSessionById(context, sid);
+      if (row == null || STATE_TERMINAL.equals(row.optString("alertState", STATE_ACTIVE))) return;
+      JSONObject active = getActive(context);
+      if (active == null || !sid.equals(active.optString("sessionId", ""))) return;
+      // Gated inside show(): JS-owned / app in front / locked → no card.
+      OrderAlertOverlay.show(context, row);
+      if (STATE_ACTIVE.equals(row.optString("alertState", STATE_ACTIVE))
+          && first(data, "expiresAt", "expires_at", "acceptUntil").length() > 0) {
+        // Reschedule the service's offer-expiry stop with the real deadline.
+        ensureService(
+            context,
+            sid,
+            row.optString("orderId", ""),
+            row.optString("offerId", ""),
+            row.optString("soundType", defaultSound()),
+            row.optString("title", ""),
+            row.optString("body", ""),
+            row.optString("pickup", ""),
+            row.optString("drop", ""),
+            row.optString("orderType", "")
+        );
+      }
+    } catch (Throwable ignored) {
+    }
+  }
+
+  /** Persist the card details carried by `data` onto the session row. False when no row. */
+  private static boolean writePresentation(
+      Context context,
+      String sessionId,
+      Map<String, String> data,
+      String title,
+      String body
+  ) {
+    if (context == null || sessionId == null || sessionId.trim().length() == 0) return false;
+    if (data == null) data = java.util.Collections.emptyMap();
     String display = publicOrderId(data);
     String amount = first(data, "amount", "orderAmount", "grandTotal");
     String customer = first(data, "customerName", "customerLabel", "customer");
@@ -360,10 +447,30 @@ public final class OrderAlertController {
         "customerNote"
     );
     String payment = first(data, "paymentMethod", "payment_method", "paymentMode");
+    // Rider earnings breakdown — the card derives the base line from these so
+    // its rows add up to the promised total, as the in-app sheet does.
+    String waiting = first(data, "waitingEarning", "waiting_earning");
+    String surge = first(data, "surgeEarning", "surge_earning");
+    String firstMile = first(data, "firstMileEarning", "prePickupCompanyFunded", "first_mile_earning");
+    String tip = first(data, "tipAmount", "customerTipAmount", "tip_amount");
+    String payAt = first(data, "payAt", "pay_at");
+    // Address / type lines — written here too so an app-started session (which
+    // began with none) gains them when its details arrive.
+    String pickupLine = resolvePickup(data);
+    String dropLine = resolveDrop(data);
+    String typeLine = resolveOrderType(data);
     synchronized (LOCK) {
       JSONObject row = findSession(context, sessionId, "", "");
-      if (row == null) return;
+      if (row == null) return false;
       try {
+        if (pickupLine.length() > 0) row.put("pickup", pickupLine);
+        if (dropLine.length() > 0) row.put("drop", dropLine);
+        if (typeLine.length() > 0) row.put("orderType", typeLine);
+        if (waiting.length() > 0) row.put("waitingEarning", waiting);
+        if (surge.length() > 0) row.put("surgeEarning", surge);
+        if (firstMile.length() > 0) row.put("firstMileEarning", firstMile);
+        if (tip.length() > 0) row.put("tipAmount", tip);
+        if (payAt.length() > 0) row.put("payAt", payAt);
         if (display.length() > 0) row.put("displayOrderId", display);
         if (amount.length() > 0 && !"0".equals(amount) && !"0.0".equals(amount)) row.put("amount", amount);
         if (customer.length() > 0) row.put("customerName", customer);
@@ -384,32 +491,7 @@ public final class OrderAlertController {
       } catch (Exception ignored) {
       }
     }
-    try {
-      JSONObject row = OrderAlertController.getActive(context);
-      if (row != null) {
-        if (OrderAlertVisibility.shouldSuppressOverlayWindow(context)) {
-          OrderAlertOverlay.hideAll(context);
-          // Lock / in-app: still post heads-up so lock screen / shade is not empty.
-          OrderAlertHeadsUp.show(context, row.optString("sessionId", sessionId));
-        } else {
-          OrderAlertOverlay.show(context, row);
-          OrderAlertHeadsUp.show(context, row.optString("sessionId", sessionId));
-        }
-        ensureService(
-            context,
-            row.optString("sessionId", sessionId),
-            row.optString("orderId", ""),
-            row.optString("offerId", ""),
-            row.optString("soundType", defaultSound()),
-            row.optString("title", title),
-            row.optString("body", body),
-            row.optString("pickup", ""),
-            row.optString("drop", ""),
-            row.optString("orderType", "")
-        );
-      }
-    } catch (Throwable ignored) {
-    }
+    return true;
   }
 
   static String publicOrderId(Map<String, String> data) {

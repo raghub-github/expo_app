@@ -21,6 +21,7 @@ public final class OrderAlertNativeTest {
     presentation();
     decisionLedger();
     richCard();
+    appSheetCard();
 
     System.out.println("  " + passed + " passed, " + failed + " failed  [role=" + ROLE + "]");
     if (failed > 0) System.exit(1);
@@ -651,6 +652,140 @@ public final class OrderAlertNativeTest {
     // ---- the money headline still refuses to print a worthless job.
     eq("zero amount stays hidden", "", OrderAlertCardText.formatAmount("0"));
     eq("real amount formats", "₹142", OrderAlertCardText.formatAmount("142"));
+  }
+
+  // ------------------------------------------------- in-app-sheet parity card
+
+  /**
+   * The floating card mirrors the in-app offer sheet. Every number on it must
+   * be the one the sheet shows, and nothing may be printed that the payload did
+   * not carry ("Address unavailable" / "Distance unavailable" rows are gone).
+   */
+  private static void appSheetCard() {
+    // ---- badge
+    if (RIDER) {
+      eq("ride badge", "New ride!", OrderAlertCardText.newOrderBadge("person_ride"));
+      eq("parcel badge", "New parcel!", OrderAlertCardText.newOrderBadge("parcel"));
+      eq("food badge", "New order!", OrderAlertCardText.newOrderBadge("food"));
+    } else {
+      eq("merchant badge is always New order!", "New order!", OrderAlertCardText.newOrderBadge("parcel"));
+    }
+
+    // ---- earnings breakdown: base is DERIVED so the rows add up to the total
+    String[][] ride = OrderAlertCardText.earningRows("person_ride", "75", "0", "20", "", "");
+    String[][] food = OrderAlertCardText.earningRows("food", "60", "10", "", "5", "0");
+    String[][] onlyTotal = OrderAlertCardText.earningRows("parcel", "48", "", "", "", "");
+    String[][] over = OrderAlertCardText.earningRows("parcel", "30", "", "50", "", "");
+    if (RIDER) {
+      eq("ride rows", 3, ride.length);
+      eq("ride base derived (75 - 20 surge)", "₹55", ride[0][1]);
+      eq("ride base label", "Base earnings", ride[0][0]);
+      eq("surge row", "+ ₹20", ride[1][1]);
+      eq("surge kind", "surge", ride[1][2]);
+      eq("total last", "total", ride[2][2]);
+      eq("total value", "₹75", ride[2][1]);
+      eq("food rows: base, waiting, first-mile, total", 4, food.length);
+      eq("food base label", "Trip earning", food[0][0]);
+      eq("food base derived (60 - 10 - 5)", "₹45", food[0][1]);
+      eq("waiting row", "+ ₹10", food[1][1]);
+      eq("first-mile row", "First-mile allowance", food[2][0]);
+      eq("no parts -> a single total row, no duplicate base", 1, onlyTotal.length);
+      eq("single total value", "₹48", onlyTotal[0][1]);
+      eq("parts above the total clamp the base at zero", "₹0", over[0][1]);
+    } else {
+      eq("merchant never gets a rider breakdown", 0, ride.length);
+      eq("merchant never gets a rider breakdown (total only)", 0, onlyTotal.length);
+    }
+    eq("no total -> no earnings card at all", 0,
+        OrderAlertCardText.earningRows("food", "", "10", "", "", "").length);
+    eq("zero total -> no zero-rupee card", 0, OrderAlertCardText.earningRows("food", "0", "", "", "", "").length);
+    eq("garbage total -> no card", 0, OrderAlertCardText.earningRows("food", "abc", "", "", "", "").length);
+
+    // ---- distances, as the sheet computes them
+    eq("overall = pickup + trip", "5.7", OrderAlertCardText.overallKm("1.2", "4.5", ""));
+    eq("sum beats a stale sent overall", "5", OrderAlertCardText.overallKm("2", "3", "9"));
+    eq("sent overall when a leg is missing", "9", OrderAlertCardText.overallKm("", "4", "9"));
+    eq("trip alone", "4.5", OrderAlertCardText.overallKm("", "4.5", ""));
+    eq("nothing known", "", OrderAlertCardText.overallKm("", "", ""));
+    String[] cells = OrderAlertCardText.distanceCells("1.2", "4.5", "");
+    eq("three cells", 3, cells.length);
+    eq("to pickup cell", "1.2 km", cells[0]);
+    eq("trip cell", "4.5 km", cells[1]);
+    eq("overall cell", "5.7 km", cells[2]);
+    String[] partial = OrderAlertCardText.distanceCells("", "4.5", null);
+    eq("unknown leg shows a dash, not a lie", "—", partial[0]);
+    eq("overall falls back to trip", "4.5 km", partial[2]);
+    eq("no leg known -> no strip (never Distance unavailable)", 0,
+        OrderAlertCardText.distanceCells("", "0", null).length);
+
+    // ---- payment
+    eq("cash chip", "Cash", OrderAlertCardText.paymentChip("cash"));
+    eq("COD chip", "Cash", OrderAlertCardText.paymentChip("COD"));
+    eq("online chip", "Paid online", OrderAlertCardText.paymentChip("online"));
+    eq("upi chip", "Paid online", OrderAlertCardText.paymentChip("UPI"));
+    eq("unknown payment -> no chip", "", OrderAlertCardText.paymentChip("something"));
+    eq("missing payment -> no chip", "", OrderAlertCardText.paymentChip(null));
+    if (RIDER) {
+      eq("parcel collect at drop", "Fare collect at Drop",
+          OrderAlertCardText.fareCollectLabel("parcel", "cash", "drop"));
+      eq("parcel cash defaults to pickup", "Fare collect at Pickup",
+          OrderAlertCardText.fareCollectLabel("parcel", "cash", ""));
+      eq("parcel prepaid", "Payment paid", OrderAlertCardText.fareCollectLabel("parcel", "online", ""));
+      eq("parcel with no payment info -> never guessed", "",
+          OrderAlertCardText.fareCollectLabel("parcel", "", ""));
+      eq("rides get no parcel banner", "",
+          OrderAlertCardText.fareCollectLabel("person_ride", "cash", "pickup"));
+    } else {
+      eq("merchant gets no parcel banner", "", OrderAlertCardText.fareCollectLabel("parcel", "cash", "drop"));
+    }
+
+    // ---- people and items
+    eq("placeholder customer hidden", "", OrderAlertCardText.customerLine("Customer"));
+    eq("real customer kept", "Rahul S", OrderAlertCardText.customerLine(" Rahul S "));
+    String json = "[{\"q\":2,\"n\":\"Paneer Burger\",\"v\":\"Half\"},{\"q\":1,\"n\":\"Coke\"}]";
+    String[][] items = OrderAlertCardText.itemCells(json, 5);
+    eq("two item rows", 2, items.length);
+    eq("qty cell", "2", items[0][0]);
+    eq("name with variant", "Paneer Burger (Half)", items[0][1]);
+    eq("second row", "Coke", items[1][1]);
+    String[][] piped = OrderAlertCardText.itemCells("2x Dosa|1× Idli", 5);
+    eq("pipe qty", "2", piped[0][0]);
+    eq("pipe name", "Dosa", piped[0][1]);
+    eq("pipe times-sign form", "Idli", piped[1][1]);
+    eq("row count", 2, OrderAlertCardText.itemRowCount(json));
+    eq("more items", "+2 more items", OrderAlertCardText.moreItemsLabel(7, 5));
+    eq("one more item", "+1 more item", OrderAlertCardText.moreItemsLabel(6, 5));
+    eq("nothing more", "", OrderAlertCardText.moreItemsLabel(5, 5));
+
+    // ---- timer bar
+    eq("half the window left", 0.5f, OrderAlertCardText.remainingFraction(1_000L, 61_000L, 31_000L));
+    eq("expired -> empty bar", 0f, OrderAlertCardText.remainingFraction(1_000L, 61_000L, 70_000L));
+    eq("no deadline -> hide the bar", -1f, OrderAlertCardText.remainingFraction(1_000L, 0L, 5_000L));
+    eq("unknown start -> 60 s window", 0.5f, OrderAlertCardText.remainingFraction(0L, 130_000L, 100_000L));
+    check("last 10 s are urgent", OrderAlertCardText.isUrgent(100_000L, 92_000L));
+    check("20 s left is calm", !OrderAlertCardText.isUrgent(100_000L, 80_000L));
+    check("no deadline is never urgent", !OrderAlertCardText.isUrgent(0L, 80_000L));
+
+    // ---- change detection: the reason the card now refreshes in place
+    String a = OrderAlertCardText.signature(new String[] {"S1", "person_ride", "", "", "75"});
+    String b = OrderAlertCardText.signature(new String[] {"S1", "person_ride", "MG Road", "", "75"});
+    check("an address arriving changes the signature", !a.equals(b));
+    eq("same data, same signature", a,
+        OrderAlertCardText.signature(new String[] {"S1", "person_ride", "", "", "75"}));
+    check("field boundaries are kept (ab|c vs a|bc)",
+        !OrderAlertCardText.signature(new String[] {"ab", "c"})
+            .equals(OrderAlertCardText.signature(new String[] {"a", "bc"})));
+    eq("nulls are safe", OrderAlertCardText.signature(new String[] {"", ""}),
+        OrderAlertCardText.signature(new String[] {null, null}));
+
+    // ---- heads-up title carries the money
+    if (RIDER) {
+      eq("rider heads-up title", "Bike Ride · You earn ₹75",
+          OrderAlertCardText.headsUpTitle("person_ride", "75"));
+    } else {
+      eq("merchant heads-up title", "New order · ₹420", OrderAlertCardText.headsUpTitle("", "420"));
+    }
+    check("button label present", OrderAlertCardText.openButtonLabel().length() > 0);
   }
 
   private static void check(String name, boolean ok) {

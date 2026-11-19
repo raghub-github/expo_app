@@ -11,14 +11,19 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Process;
 import android.provider.Settings;
+import android.text.TextUtils;
+import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.widget.Button;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.LinearInterpolator;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import org.json.JSONObject;
 
@@ -27,6 +32,16 @@ import org.json.JSONObject;
  *
  * Shown only over the lock screen / other apps (home). Never while Partner is
  * the foreground app — IncomingOrderModal owns in-app Accept/Reject.
+ *
+ * The card mirrors the in-app offer sheet (rider IncomingOrderModal / merchant
+ * IncomingOrderModal): white sheet, "New order!" badge, live timer bar, order
+ * id, earnings breakdown or order items, distance strip and pickup → drop
+ * timeline. Rows the payload did not carry are left out — never a placeholder.
+ *
+ * The card is REBUILT IN PLACE whenever the session's details change. An alert
+ * started from the app (WebSocket offer, no details yet) used to draw an empty
+ * card, and the rich FCM that landed a moment later was ignored as
+ * "already attached" — which is how riders saw "Address unavailable".
  *
  * User can close or swipe the card away without stopping the buzzer; the same
  * session will not reappear until a new order arrives.
@@ -39,11 +54,32 @@ public final class OrderAlertOverlay {
   private static final Handler MAIN = new Handler(Looper.getMainLooper());
   private static final float SWIPE_DISMISS_DP = 96f;
 
+  // Palette — matches the in-app sheets (slate text on white, brand accent).
+  private static final String INK = "#0F172A";
+  private static final String INK_2 = "#1E293B";
+  private static final String MUTED = "#64748B";
+  private static final String LINE = "#E2E8F0";
+  private static final String SURFACE = "#F8FAFC";
+  private static final String URGENT = "#DC2626";
+
   private static View attachedView;
   private static String attachedSessionId;
+  private static String attachedSignature;
   private static WindowManager attachedWm;
 
   private OrderAlertOverlay() {}
+
+  private static String accent() {
+    return OrderAlertCardText.RIDER ? "#0F766E" : "#2E9B6E";
+  }
+
+  private static String accentSoft() {
+    return OrderAlertCardText.RIDER ? "#F0FDFA" : "#ECFDF5";
+  }
+
+  private static String accentInk() {
+    return OrderAlertCardText.RIDER ? "#115E59" : "#166534";
+  }
 
   static boolean canDraw(Context context) {
     if (context == null) return false;
@@ -227,6 +263,63 @@ public final class OrderAlertOverlay {
     return context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
   }
 
+  /** The session row this card renders; an empty row (never null) when it is gone. */
+  static JSONObject sessionRow(Context context, String sessionId) {
+    JSONObject row = null;
+    try {
+      if (sessionId != null && sessionId.trim().length() > 0) {
+        row = OrderAlertController.getSessionById(context, sessionId.trim());
+      }
+    } catch (Throwable ignored) {
+    }
+    if (row == null) {
+      try {
+        row = OrderAlertController.getActive(context);
+      } catch (Throwable ignored) {
+      }
+    }
+    return row != null ? row : new JSONObject();
+  }
+
+  /**
+   * Everything the card draws, as one string. Equal → the card on screen is
+   * current; different → rebuild in place. pickup/drop/orderType fall back to
+   * the caller's arguments exactly as buildCard does, so two callers passing
+   * the same session never ping-pong rebuilds.
+   */
+  static String cardSignature(
+      Context context,
+      String sessionId,
+      String pickup,
+      String drop,
+      String orderType
+  ) {
+    JSONObject row = sessionRow(context, sessionId);
+    return OrderAlertCardText.signature(new String[] {
+        sessionId,
+        pick(row.optString("orderType", ""), orderType),
+        pick(row.optString("pickup", ""), pickup),
+        pick(row.optString("drop", ""), drop),
+        row.optString("displayOrderId", ""),
+        row.optString("amount", ""),
+        row.optString("customerName", ""),
+        row.optString("expiresAt", ""),
+        row.optString("storeName", ""),
+        row.optString("itemCount", ""),
+        row.optString("toPickupKm", ""),
+        row.optString("tripDistanceKm", ""),
+        row.optString("overallKm", ""),
+        row.optString("itemsJson", ""),
+        row.optString("specialInstructions", ""),
+        row.optString("paymentMethod", ""),
+        row.optString("waitingEarning", ""),
+        row.optString("surgeEarning", ""),
+        row.optString("firstMileEarning", ""),
+        row.optString("tipAmount", ""),
+        row.optString("payAt", "")
+    });
+  }
+
   private static void showOnMain(
       Context host,
       Context app,
@@ -263,11 +356,27 @@ public final class OrderAlertOverlay {
         return;
       }
 
+      String signature = cardSignature(app, sessionId, pickup, drop, orderType);
       if (attachedView != null
           && sessionId.equals(attachedSessionId)
           && attachedView.getParent() != null) {
-        debug(app, "OVERLAY_VISIBLE", sessionId, orderId, "reason=already_attached");
-        return;
+        if (signature.equals(attachedSignature)) {
+          debug(app, "OVERLAY_VISIBLE", sessionId, orderId, "reason=already_attached");
+          return;
+        }
+        // Same offer, richer data (FCM after a detail-less app start, or the
+        // app pushing its own details): refresh the card where it stands.
+        try {
+          View fresh = buildCard(app, sessionId, orderId, offerId, title, body, pickup, drop, orderType);
+          if (swapCardContent(app, attachedView, fresh, sessionId)) {
+            attachedSignature = signature;
+            debug(app, "OVERLAY_REFRESHED", sessionId, orderId, "reason=details_changed");
+            return;
+          }
+        } catch (Throwable t) {
+          debug(app, "OVERLAY_REFRESH_FAILED", sessionId, orderId, "err=" + t.getMessage());
+        }
+        removeLocked(app, attachedSessionId, "reason=refresh_fallback");
       }
 
       if (attachedView != null) {
@@ -289,15 +398,21 @@ public final class OrderAlertOverlay {
 
       View card = buildCard(app, sessionId, orderId, offerId, title, body, pickup, drop, orderType);
       WindowManager.LayoutParams params = overlayParams(app);
-      // Swipe on title/price only — leave × and Accept/Reject fully tappable.
-      View titleHandle = card.findViewWithTag("gm_overlay_title");
-      View priceHandle = card.findViewWithTag("gm_overlay_price");
-      if (titleHandle != null) attachSwipeToDismiss(app, titleHandle, card, sessionId);
-      if (priceHandle != null) attachSwipeToDismiss(app, priceHandle, card, sessionId);
+      wireSwipe(app, card, sessionId);
       try {
+        // Slide up + fade in — short, so the card feels instant.
+        card.setAlpha(0f);
+        card.setTranslationY(dp(app, 28));
         wm.addView(card, params);
+        card.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(200L)
+            .setInterpolator(new DecelerateInterpolator())
+            .start();
         attachedView = card;
         attachedSessionId = sessionId;
+        attachedSignature = signature;
         attachedWm = wm;
         debug(
             app,
@@ -311,6 +426,7 @@ public final class OrderAlertOverlay {
       } catch (Throwable t) {
         attachedView = null;
         attachedSessionId = null;
+        attachedSignature = null;
         attachedWm = null;
         debug(
             app,
@@ -321,6 +437,33 @@ public final class OrderAlertOverlay {
         );
       }
     }
+  }
+
+  /**
+   * Move a freshly built card's content into the root already on screen, so a
+   * detail refresh never removes the window (no flicker, no re-animation, no
+   * second permission round-trip).
+   */
+  static boolean swapCardContent(Context context, View host, View freshRoot, String sessionId) {
+    if (!(host instanceof ViewGroup) || !(freshRoot instanceof ViewGroup)) return false;
+    ViewGroup target = (ViewGroup) host;
+    ViewGroup source = (ViewGroup) freshRoot;
+    java.util.ArrayList<View> children = new java.util.ArrayList<>();
+    for (int i = 0; i < source.getChildCount(); i++) children.add(source.getChildAt(i));
+    source.removeAllViews();
+    target.removeAllViews();
+    for (View child : children) target.addView(child);
+    host.setTranslationX(0f);
+    wireSwipe(context, host, sessionId);
+    return true;
+  }
+
+  /** Swipe on the header / id row only — the × and the CTA stay fully tappable. */
+  static void wireSwipe(Context context, View card, String sessionId) {
+    View titleHandle = card.findViewWithTag("gm_overlay_title");
+    View priceHandle = card.findViewWithTag("gm_overlay_price");
+    if (titleHandle != null) attachSwipeToDismiss(context, titleHandle, card, sessionId);
+    if (priceHandle != null) attachSwipeToDismiss(context, priceHandle, card, sessionId);
   }
 
   private static void removeLocked(Context app, String sessionId, String extra) {
@@ -342,6 +485,7 @@ public final class OrderAlertOverlay {
     }
     attachedView = null;
     attachedSessionId = null;
+    attachedSignature = null;
     attachedWm = null;
     debug(app, "OVERLAY_REMOVED", sid, "", extra);
   }
@@ -410,6 +554,10 @@ public final class OrderAlertOverlay {
     });
   }
 
+  // ------------------------------------------------------------------------
+  // Card
+  // ------------------------------------------------------------------------
+
   static View buildCard(
       final Context context,
       final String sessionId,
@@ -421,10 +569,27 @@ public final class OrderAlertOverlay {
       String drop,
       String orderType
   ) {
-    int pad = dp(context, 12);
+    JSONObject row = sessionRow(context, sessionId);
+    final boolean rider = OrderAlertCardText.RIDER;
+    String type = pick(row.optString("orderType", ""), orderType);
+    String pickupText = OrderAlertCardText.displayPickup(pick(row.optString("pickup", ""), pickup));
+    String dropText = safeText(pick(row.optString("drop", ""), drop));
+    String displayId = OrderAlertCardText.publicOrderId(
+        row.optString("displayOrderId", ""),
+        firstNonEmpty(row.optString("title", ""), row.optString("body", ""))
+    );
+    String amount = row.optString("amount", "");
+    String customer = OrderAlertCardText.customerLine(row.optString("customerName", ""));
+    String storeName = safeText(row.optString("storeName", ""));
+    String itemsLabel = OrderAlertCardText.itemCountLabel(row.optString("itemCount", ""));
+    String paymentMethod = row.optString("paymentMethod", "");
+    String paymentChip = OrderAlertCardText.paymentChip(paymentMethod);
+    long expiresAtMs = parseEpochMs(row.optString("expiresAt", ""));
+    long startedAtMs = row.optLong("startedAt", 0L);
+
     LinearLayout root = new LinearLayout(context);
     root.setOrientation(LinearLayout.VERTICAL);
-    root.setPadding(pad, pad, pad, 0);
+    root.setPadding(dp(context, 10), dp(context, 6), dp(context, 10), 0);
     root.setLayoutParams(new ViewGroup.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT
@@ -432,277 +597,582 @@ public final class OrderAlertOverlay {
 
     LinearLayout card = new LinearLayout(context);
     card.setOrientation(LinearLayout.VERTICAL);
-    card.setPadding(dp(context, 16), dp(context, 14), dp(context, 16), dp(context, 14));
-    GradientDrawable bg = new GradientDrawable();
-    bg.setColor(Color.parseColor("#111827"));
-    bg.setCornerRadius(dp(context, 16));
-    bg.setStroke(dp(context, 1), Color.parseColor("#14B8A6"));
-    card.setBackground(bg);
+    card.setPadding(0, dp(context, 14), 0, dp(context, 14));
+    card.setBackground(rounded("#FFFFFF", dp(context, 22), LINE, dp(context, 1)));
     if (Build.VERSION.SDK_INT >= 21) {
-      card.setElevation(dp(context, 10));
+      card.setElevation(dp(context, 14));
     }
 
-    JSONObject active = null;
-    try {
-      active = OrderAlertController.getActive(context);
-    } catch (Throwable ignored) {
-    }
-    String displayId = active != null ? active.optString("displayOrderId", "") : "";
-    if (displayId.matches("^\\d+$")) displayId = "";
-    String amount = active != null ? active.optString("amount", "") : "";
-    String customer = active != null ? active.optString("customerName", "") : "";
-    String amountLabel = formatAmount(amount);
-
-    // Row 1: NEW ORDER ........ ₹price  [×]
+    // ---- header: [• New ride!] ............ [0:27] [✕]
     LinearLayout header = new LinearLayout(context);
     header.setOrientation(LinearLayout.HORIZONTAL);
     header.setGravity(Gravity.CENTER_VERTICAL);
-    header.setLayoutParams(new LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
-    ));
+    header.setTag("gm_overlay_title");
+    header.setPadding(dp(context, 16), 0, dp(context, 12), 0);
+    header.setLayoutParams(matchWrap());
 
-    LinearLayout titleCol = new LinearLayout(context);
-    titleCol.setOrientation(LinearLayout.VERTICAL);
-    LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-    titleCol.setLayoutParams(titleLp);
+    TextView badge = text(context, "•  " + OrderAlertCardText.newOrderBadge(type), 12, "#FFFFFF", true);
+    badge.setBackground(rounded(accent(), dp(context, 999), null, 0));
+    badge.setPadding(dp(context, 11), dp(context, 5), dp(context, 12), dp(context, 5));
+    badge.setLetterSpacing(0.02f);
+    header.addView(badge);
 
-    TextView brand = new TextView(context);
-    brand.setText(OrderAlertCardText.brandLine());
-    brand.setTextColor(Color.parseColor("#5EEAD4"));
-    brand.setTextSize(11);
-    brand.setTypeface(Typeface.DEFAULT_BOLD);
-    brand.setLetterSpacing(0.06f);
-    titleCol.addView(brand);
+    View spacer = new View(context);
+    spacer.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1f));
+    header.addView(spacer);
 
-    TextView heading = new TextView(context);
-    heading.setText(headingFor(orderType));
-    heading.setTag("gm_overlay_title");
-    heading.setTextColor(Color.parseColor("#F9FAFB"));
-    heading.setTextSize(15);
-    heading.setTypeface(Typeface.DEFAULT_BOLD);
-    heading.setLetterSpacing(0.04f);
-    titleCol.addView(heading);
-
-    String typeLabel = OrderAlertCardText.typeLine(orderType);
-    if (typeLabel.length() > 0) {
-      TextView typeView = new TextView(context);
-      typeView.setText(typeLabel);
-      typeView.setTag("gm_overlay_type");
-      typeView.setTextColor(Color.parseColor("#A7F3D0"));
-      typeView.setTextSize(13);
-      typeView.setTypeface(Typeface.DEFAULT_BOLD);
-      titleCol.addView(typeView);
-    }
-    header.addView(titleCol);
-
-    if (amountLabel.length() > 0) {
-      TextView price = new TextView(context);
-      // Riders are sent their own payout in this field; merchants are sent the
-      // order total. Rendering both as a bare rupee figure invites a rider to
-      // read the number as the fare.
-      price.setText(OrderAlertCardText.amountLabel(amount));
-      price.setTag("gm_overlay_price");
-      price.setTextColor(Color.WHITE);
-      price.setTextSize(15);
-      price.setTypeface(Typeface.DEFAULT_BOLD);
-      price.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-      price.setPadding(dp(context, 8), 0, dp(context, 8), 0);
-      header.addView(price);
+    TextView timer = null;
+    if (expiresAtMs > 0L) {
+      long now = System.currentTimeMillis();
+      timer = text(context, OrderAlertCardText.countdownClock(expiresAtMs, now), 13, accentInk(), true);
+      timer.setTag("gm_overlay_countdown");
+      timer.setPadding(dp(context, 10), dp(context, 4), dp(context, 10), dp(context, 4));
+      styleTimer(context, timer, OrderAlertCardText.isUrgent(expiresAtMs, now));
+      header.addView(timer);
     }
 
-    TextView close = new TextView(context);
-    close.setText("×");
-    close.setTextColor(Color.parseColor("#D1D5DB"));
-    close.setTextSize(22);
-    close.setTypeface(Typeface.DEFAULT_BOLD);
+    TextView close = text(context, "✕", 14, "#475569", true);
     close.setGravity(Gravity.CENTER);
-    close.setPadding(dp(context, 10), dp(context, 4), dp(context, 4), dp(context, 4));
+    close.setBackground(rounded("#F1F5F9", dp(context, 999), null, 0));
+    LinearLayout.LayoutParams closeLp = new LinearLayout.LayoutParams(dp(context, 32), dp(context, 32));
+    closeLp.leftMargin = dp(context, 8);
+    close.setLayoutParams(closeLp);
     close.setContentDescription("Close");
     close.setClickable(true);
     close.setOnClickListener(v -> dismissCardByUser(context, sessionId));
     header.addView(close);
     card.addView(header);
 
-    // Server-authoritative countdown — never invent a fresh acceptance window.
-    long expiresAtMs = parseEpochMs(active != null ? active.optString("expiresAt", "") : "");
+    // ---- live timer bar (shrinks to zero at the server deadline)
+    View fill = null;
     if (expiresAtMs > 0L) {
-      TextView countdown = new TextView(context);
-      countdown.setTag("gm_overlay_countdown");
-      countdown.setTextColor(Color.parseColor("#5EEAD4"));
-      countdown.setTextSize(14);
-      countdown.setTypeface(Typeface.DEFAULT_BOLD);
-      countdown.setText(OrderAlertCardText.acceptWithinLabel(expiresAtMs, System.currentTimeMillis()));
-      LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(
-          ViewGroup.LayoutParams.MATCH_PARENT,
-          ViewGroup.LayoutParams.WRAP_CONTENT
-      );
-      cLp.topMargin = dp(context, 6);
-      countdown.setLayoutParams(cLp);
-      card.addView(countdown);
-      startCountdown(context, countdown, sessionId, expiresAtMs);
+      FrameLayout track = new FrameLayout(context);
+      track.setBackground(rounded("#EEF2F6", dp(context, 2), null, 0));
+      LinearLayout.LayoutParams trackLp = new LinearLayout.LayoutParams(
+          ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 4));
+      trackLp.topMargin = dp(context, 10);
+      trackLp.leftMargin = dp(context, 16);
+      trackLp.rightMargin = dp(context, 16);
+      track.setLayoutParams(trackLp);
+      fill = new View(context);
+      fill.setBackground(rounded(accent(), dp(context, 2), null, 0));
+      fill.setLayoutParams(new FrameLayout.LayoutParams(
+          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+      fill.setPivotX(0f);
+      float f = OrderAlertCardText.remainingFraction(startedAtMs, expiresAtMs, System.currentTimeMillis());
+      fill.setScaleX(f < 0f ? 1f : f);
+      track.addView(fill);
+      card.addView(track);
     }
 
-    // Who the job is for, and how big it is.
-    String storeName = OrderAlertCardText.storeLine(
-        active != null ? active.optString("storeName", "") : ""
-    );
-    String itemsLabel = OrderAlertCardText.itemCountLabel(
-        active != null ? active.optString("itemCount", "") : ""
-    );
-    String storeLine = storeName;
-    if (itemsLabel.length() > 0) {
-      storeLine = storeLine.length() > 0 ? storeLine + "  ·  " + itemsLabel : itemsLabel;
-    }
-    if (storeLine.length() > 0) {
-      TextView storeView = metaRow(context, storeLine);
-      storeView.setTextColor(Color.parseColor("#F9FAFB"));
-      storeView.setTypeface(Typeface.DEFAULT_BOLD);
-      card.addView(storeView);
-    }
+    // ---- scrollable body
+    LinearLayout bodyCol = new LinearLayout(context);
+    bodyCol.setOrientation(LinearLayout.VERTICAL);
+    bodyCol.setPadding(dp(context, 16), dp(context, 12), dp(context, 16), 0);
 
-    String pickupLabel = displayPickup(pickup);
-    if (pickupLabel.length() > 0) {
-      card.addView(sectionRow(context, "PICKUP", pickupLabel));
-    } else {
-      card.addView(sectionRow(context, "PICKUP", "Address unavailable"));
-    }
-
-    String dropLabel = safeText(drop);
-    if (dropLabel.length() > 0) {
-      card.addView(sectionRow(context, "DROP", dropLabel));
-    } else {
-      card.addView(sectionRow(context, "DROP", "Address unavailable"));
-    }
-
-    // Distinct legs — never mix rider→pickup with trip distance.
-    String distances = OrderAlertCardText.distanceSummary(
-        active != null ? active.optString("toPickupKm", "") : "",
-        active != null ? active.optString("tripDistanceKm", "") : "",
-        active != null ? active.optString("overallKm", "") : ""
-    );
-    if (distances.length() > 0) {
-      TextView distanceView = metaRow(context, distances);
-      distanceView.setTextColor(Color.parseColor("#A7F3D0"));
-      card.addView(distanceView);
-    } else {
-      TextView distanceView = metaRow(context, "Distance unavailable");
-      distanceView.setTextColor(Color.parseColor("#94A3B8"));
-      card.addView(distanceView);
-    }
-
-    if (displayId.length() > 0) {
-      TextView idView = new TextView(context);
-      idView.setText(displayId);
-      idView.setTextColor(Color.WHITE);
-      idView.setTextSize(20);
-      idView.setTypeface(Typeface.DEFAULT_BOLD);
-      LinearLayout.LayoutParams idLp = new LinearLayout.LayoutParams(
-          ViewGroup.LayoutParams.MATCH_PARENT,
-          ViewGroup.LayoutParams.WRAP_CONTENT
-      );
-      idLp.topMargin = dp(context, 6);
-      idView.setLayoutParams(idLp);
-      card.addView(idView);
-    }
-
-    if (customer.length() > 0 && !"Customer".equalsIgnoreCase(customer)) {
-      card.addView(metaRow(context, customer));
-    }
-    // Amount is on the header row — do not repeat on a 3rd row.
-
-    String payment = active != null ? safeText(active.optString("paymentMethod", "")) : "";
-    if (payment.length() > 0) {
-      card.addView(metaRow(context, "Payment: " + payment));
-    }
-
-    String itemsJson = active != null ? safeText(active.optString("itemsJson", "")) : "";
-    String[] itemLines = OrderAlertCardText.itemLines(itemsJson, 6);
-    if (itemLines.length > 0) {
-      TextView itemsHeading = metaRow(context, "ORDER ITEMS");
-      itemsHeading.setTextColor(Color.parseColor("#5EEAD4"));
-      itemsHeading.setTypeface(Typeface.DEFAULT_BOLD);
-      card.addView(itemsHeading);
-      for (String line : itemLines) {
-        if (line.length() == 0) continue;
-        card.addView(metaRow(context, line));
+    // Chips: category + payment
+    String category = OrderAlertCardText.bannerLabel(type);
+    if (category.length() > 0 || paymentChip.length() > 0) {
+      LinearLayout chips = new LinearLayout(context);
+      chips.setOrientation(LinearLayout.HORIZONTAL);
+      chips.setGravity(Gravity.CENTER_VERTICAL);
+      chips.setLayoutParams(matchWrap());
+      if (category.length() > 0) {
+        chips.addView(chip(context, category, accentSoft(), accentInk(), 0));
       }
-    } else {
-      String detail = firstNonEmpty(title, body);
-      if (!OrderAlertCardText.isGenericDetail(detail)) {
-        TextView detailView = metaRow(context, detail);
-        detailView.setMaxLines(2);
-        card.addView(detailView);
+      if (paymentChip.length() > 0) {
+        boolean cash = "Cash".equals(paymentChip);
+        chips.addView(chip(
+            context,
+            paymentChip,
+            cash ? "#FFFBEB" : "#F0FDF4",
+            cash ? "#92400E" : "#15803D",
+            category.length() > 0 ? dp(context, 6) : 0));
       }
+      bodyCol.addView(chips);
     }
 
-    String special = active != null ? safeText(active.optString("specialInstructions", "")) : "";
-    if (special.length() > 0) {
-      TextView specialView = metaRow(context, "⚠ " + special);
-      specialView.setTextColor(Color.parseColor("#FCA5A5"));
-      specialView.setMaxLines(3);
-      card.addView(specialView);
-    }
-
-    // Accept/Reject belong inside the secure in-app flow — floating card only opens.
-    LinearLayout actions = new LinearLayout(context);
-    actions.setOrientation(LinearLayout.HORIZONTAL);
-    LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
-    );
-    actionsLp.topMargin = dp(context, 12);
-    actions.setLayoutParams(actionsLp);
-
-    Button open = actionButton(
+    // Order id row (also a swipe handle)
+    LinearLayout idRow = new LinearLayout(context);
+    idRow.setOrientation(LinearLayout.HORIZONTAL);
+    idRow.setGravity(Gravity.CENTER_VERTICAL);
+    idRow.setTag("gm_overlay_price");
+    LinearLayout.LayoutParams idRowLp = matchWrap();
+    idRowLp.topMargin = dp(context, 8);
+    idRow.setLayoutParams(idRowLp);
+    TextView idView = text(
         context,
-        OrderAlertCardText.openToAcceptLabel(),
-        Color.parseColor("#0F766E"),
-        Color.WHITE
-    );
-    open.setLayoutParams(new LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        dp(context, 48)
-    ));
+        displayId.length() > 0 ? displayId : OrderAlertCardText.headingFor(type),
+        displayId.length() > 0 ? 20 : 17,
+        INK,
+        true);
+    idView.setSingleLine(true);
+    idView.setEllipsize(TextUtils.TruncateAt.END);
+    idView.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+    idRow.addView(idView);
+    TextView when = text(context, "Just now", 12, MUTED, false);
+    when.setPadding(dp(context, 8), 0, 0, 0);
+    idRow.addView(when);
+    bodyCol.addView(idRow);
+
+    if (rider) {
+      buildRiderBody(context, bodyCol, row, type, amount, customer, storeName, itemsLabel,
+          paymentMethod, pickupText, dropText);
+    } else {
+      buildMerchantBody(context, bodyCol, row, amount, customer, itemsLabel, paymentChip, title, body);
+    }
+
+    String special = safeText(row.optString("specialInstructions", ""));
+    if (special.length() > 0) {
+      TextView note = text(context, "Note:  " + special, 13, "#92400E", false);
+      note.setMaxLines(3);
+      note.setEllipsize(TextUtils.TruncateAt.END);
+      note.setBackground(rounded("#FFFBEB", dp(context, 12), "#FDE68A", dp(context, 1)));
+      note.setPadding(dp(context, 12), dp(context, 9), dp(context, 12), dp(context, 9));
+      LinearLayout.LayoutParams noteLp = matchWrap();
+      noteLp.topMargin = dp(context, 10);
+      note.setLayoutParams(noteLp);
+      bodyCol.addView(note);
+    }
+
+    card.addView(capHeight(context, bodyCol));
+
+    // ---- CTA. Accept / Reject happen in the app's secure flow; the card opens it.
+    TextView open = text(context, OrderAlertCardText.openButtonLabel(), 16, "#FFFFFF", true);
+    open.setGravity(Gravity.CENTER);
+    open.setBackground(rounded(accent(), dp(context, 14), null, 0));
+    LinearLayout.LayoutParams openLp = new LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 52));
+    openLp.topMargin = dp(context, 14);
+    openLp.leftMargin = dp(context, 16);
+    openLp.rightMargin = dp(context, 16);
+    open.setLayoutParams(openLp);
+    open.setClickable(true);
+    open.setContentDescription(OrderAlertCardText.openToAcceptLabel());
     open.setOnClickListener(v -> {
       v.setEnabled(false);
+      v.setAlpha(0.75f);
       OrderAlertActions.handle(context, "open", sessionId);
     });
-    actions.addView(open);
-    card.addView(actions);
+    card.addView(open);
+
     root.addView(card);
+    if (timer != null) {
+      startCountdown(context, timer, fill, sessionId, startedAtMs, expiresAtMs);
+    }
     return root;
   }
 
+  /** Rider body: who/what, parcel fare banner, earnings, distances, route. */
+  private static void buildRiderBody(
+      Context context,
+      LinearLayout bodyCol,
+      JSONObject row,
+      String type,
+      String amount,
+      String customer,
+      String storeName,
+      String itemsLabel,
+      String paymentMethod,
+      String pickupText,
+      String dropText
+  ) {
+    String lowerType = safeText(type).toLowerCase();
+    boolean food = lowerType.equals("food") || lowerType.equals("grocery");
+
+    // Who the job is for: passenger / sender for ride & parcel, store for food.
+    String who = food ? storeName : customer;
+    if (who.length() > 0 || (food && itemsLabel.length() > 0)) {
+      LinearLayout whoRow = new LinearLayout(context);
+      whoRow.setOrientation(LinearLayout.HORIZONTAL);
+      whoRow.setGravity(Gravity.CENTER_VERTICAL);
+      LinearLayout.LayoutParams whoLp = matchWrap();
+      whoLp.topMargin = dp(context, 4);
+      whoRow.setLayoutParams(whoLp);
+      if (who.length() > 0) {
+        TextView name = text(context, who, 14, INK_2, true);
+        name.setMaxLines(2);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        name.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        whoRow.addView(name);
+      }
+      if (food && itemsLabel.length() > 0) {
+        whoRow.addView(chip(context, itemsLabel, accentSoft(), accentInk(), who.length() > 0 ? dp(context, 8) : 0));
+      }
+      bodyCol.addView(whoRow);
+    }
+
+    String fare = OrderAlertCardText.fareCollectLabel(type, paymentMethod, row.optString("payAt", ""));
+    if (fare.length() > 0) {
+      TextView fareChip = chip(context, fare, "#FFFBEB", "#92400E", 0);
+      LinearLayout.LayoutParams fareLp = new LinearLayout.LayoutParams(
+          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+      fareLp.topMargin = dp(context, 8);
+      fareChip.setLayoutParams(fareLp);
+      bodyCol.addView(fareChip);
+    }
+
+    // Earnings — same rows, same order, same derived base as the in-app sheet.
+    String[][] earnings = OrderAlertCardText.earningRows(
+        type,
+        amount,
+        row.optString("waitingEarning", ""),
+        row.optString("surgeEarning", ""),
+        row.optString("firstMileEarning", ""),
+        row.optString("tipAmount", ""));
+    if (earnings.length > 0) {
+      LinearLayout box = panel(context);
+      for (String[] line : earnings) {
+        boolean total = "total".equals(line[2]);
+        if (total && earnings.length > 1) {
+          View divider = new View(context);
+          divider.setBackgroundColor(Color.parseColor(LINE));
+          LinearLayout.LayoutParams dLp = new LinearLayout.LayoutParams(
+              ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 1));
+          dLp.topMargin = dp(context, 6);
+          dLp.bottomMargin = dp(context, 6);
+          divider.setLayoutParams(dLp);
+          box.addView(divider);
+        }
+        String tone = INK_2;
+        if ("surge".equals(line[2])) tone = "#B45309";
+        else if ("tip".equals(line[2])) tone = "#15803D";
+        else if ("firstMile".equals(line[2])) tone = "#4F46E5";
+        LinearLayout r = new LinearLayout(context);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams rLp = matchWrap();
+        if (!total) rLp.bottomMargin = dp(context, 4);
+        r.setLayoutParams(rLp);
+        TextView label = text(context, line[0], 13, total ? "#475569" : (tone.equals(INK_2) ? MUTED : tone), true);
+        label.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        r.addView(label);
+        TextView value = text(context, line[1], total ? 24 : 14, total ? INK : tone, true);
+        r.addView(value);
+        box.addView(r);
+      }
+      bodyCol.addView(box);
+    }
+
+    // Distance strip: To pickup | Trip | Overall
+    String[] cells = OrderAlertCardText.distanceCells(
+        row.optString("toPickupKm", ""),
+        row.optString("tripDistanceKm", ""),
+        row.optString("overallKm", ""));
+    if (cells.length == 3) {
+      LinearLayout strip = new LinearLayout(context);
+      strip.setOrientation(LinearLayout.HORIZONTAL);
+      strip.setBackground(rounded(SURFACE, dp(context, 12), LINE, dp(context, 1)));
+      strip.setPadding(dp(context, 6), dp(context, 8), dp(context, 6), dp(context, 8));
+      LinearLayout.LayoutParams stripLp = matchWrap();
+      stripLp.topMargin = dp(context, 10);
+      strip.setLayoutParams(stripLp);
+      String[] labels = new String[] {"TO PICKUP", "TRIP", "OVERALL"};
+      for (int i = 0; i < 3; i++) {
+        if (i > 0) {
+          View div = new View(context);
+          div.setBackgroundColor(Color.parseColor(LINE));
+          div.setLayoutParams(new LinearLayout.LayoutParams(dp(context, 1), ViewGroup.LayoutParams.MATCH_PARENT));
+          strip.addView(div);
+        }
+        LinearLayout cell = new LinearLayout(context);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setGravity(Gravity.CENTER_HORIZONTAL);
+        cell.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView l = text(context, labels[i], 10, MUTED, true);
+        l.setLetterSpacing(0.04f);
+        l.setGravity(Gravity.CENTER);
+        cell.addView(l);
+        TextView v = text(context, cells[i], 15, INK, true);
+        v.setGravity(Gravity.CENTER);
+        v.setPadding(0, dp(context, 3), 0, 0);
+        cell.addView(v);
+        strip.addView(cell);
+      }
+      bodyCol.addView(strip);
+    }
+
+    // Route timeline: • Pickup → • Drop
+    String pickupLine = pickupText;
+    if (food && storeName.length() > 0 && !storeName.equalsIgnoreCase(pickupText)) {
+      pickupLine = pickupText.length() > 0 ? storeName + " · " + pickupText : storeName;
+    } else if (pickupLine.length() == 0) {
+      pickupLine = storeName;
+    }
+    boolean hasPickup = pickupLine.length() > 0;
+    boolean hasDrop = dropText.length() > 0;
+    if (hasPickup || hasDrop) {
+      LinearLayout route = new LinearLayout(context);
+      route.setOrientation(LinearLayout.VERTICAL);
+      route.setBackground(rounded("#FFFFFF", dp(context, 12), LINE, dp(context, 1)));
+      route.setPadding(dp(context, 12), dp(context, 10), dp(context, 12), dp(context, 4));
+      LinearLayout.LayoutParams routeLp = matchWrap();
+      routeLp.topMargin = dp(context, 10);
+      route.setLayoutParams(routeLp);
+      if (hasPickup) {
+        route.addView(routeStop(context, "PICKUP", pickupLine,
+            OrderAlertCardText.kmLabel(row.optString("toPickupKm", "")), "#22C55E", hasDrop));
+      }
+      if (hasDrop) {
+        route.addView(routeStop(context, "DROP", dropText,
+            OrderAlertCardText.kmLabel(row.optString("tripDistanceKm", "")), "#EF4444", false));
+      }
+      bodyCol.addView(route);
+    }
+  }
+
+  /** Merchant body: customer, item list, order total — as the in-app sheet. */
+  private static void buildMerchantBody(
+      Context context,
+      LinearLayout bodyCol,
+      JSONObject row,
+      String amount,
+      String customer,
+      String itemsLabel,
+      String paymentChip,
+      String title,
+      String body
+  ) {
+    if (customer.length() > 0 || itemsLabel.length() > 0) {
+      LinearLayout whoRow = new LinearLayout(context);
+      whoRow.setOrientation(LinearLayout.HORIZONTAL);
+      whoRow.setGravity(Gravity.CENTER_VERTICAL);
+      LinearLayout.LayoutParams whoLp = matchWrap();
+      whoLp.topMargin = dp(context, 4);
+      whoRow.setLayoutParams(whoLp);
+      TextView name = text(context, customer.length() > 0 ? customer : "Customer order", 14, INK_2, true);
+      name.setMaxLines(1);
+      name.setEllipsize(TextUtils.TruncateAt.END);
+      name.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+      whoRow.addView(name);
+      if (itemsLabel.length() > 0) {
+        whoRow.addView(chip(context, itemsLabel, accentSoft(), accentInk(), dp(context, 8)));
+      }
+      bodyCol.addView(whoRow);
+    }
+
+    String itemsJson = safeText(row.optString("itemsJson", ""));
+    final int maxRows = 5;
+    String[][] items = OrderAlertCardText.itemCells(itemsJson, maxRows);
+    if (items.length > 0) {
+      TextView heading = text(context, "ORDER ITEMS", 11, MUTED, true);
+      heading.setLetterSpacing(0.05f);
+      LinearLayout.LayoutParams hLp = matchWrap();
+      hLp.topMargin = dp(context, 12);
+      heading.setLayoutParams(hLp);
+      bodyCol.addView(heading);
+
+      LinearLayout list = panel(context);
+      ((LinearLayout.LayoutParams) list.getLayoutParams()).topMargin = dp(context, 6);
+      for (int i = 0; i < items.length; i++) {
+        LinearLayout r = new LinearLayout(context);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams rLp = matchWrap();
+        if (i > 0) rLp.topMargin = dp(context, 7);
+        r.setLayoutParams(rLp);
+        TextView qty = text(context, items[i][0] + "×", 12, accentInk(), true);
+        qty.setGravity(Gravity.CENTER);
+        qty.setMinWidth(dp(context, 34));
+        qty.setBackground(rounded("#FFFFFF", dp(context, 8), LINE, dp(context, 1)));
+        qty.setPadding(dp(context, 6), dp(context, 3), dp(context, 6), dp(context, 3));
+        r.addView(qty);
+        TextView n = text(context, items[i][1], 14, INK_2, false);
+        n.setMaxLines(2);
+        n.setEllipsize(TextUtils.TruncateAt.END);
+        n.setPadding(dp(context, 10), 0, 0, 0);
+        n.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        r.addView(n);
+        list.addView(r);
+      }
+      String more = OrderAlertCardText.moreItemsLabel(OrderAlertCardText.itemRowCount(itemsJson), items.length);
+      if (more.length() > 0) {
+        TextView moreView = text(context, more, 12, "#2563EB", true);
+        moreView.setPadding(0, dp(context, 8), 0, 0);
+        list.addView(moreView);
+      }
+      bodyCol.addView(list);
+    } else {
+      String detail = firstNonEmpty(title, body);
+      if (!OrderAlertCardText.isGenericDetail(detail)) {
+        TextView detailView = text(context, detail, 13, "#475569", false);
+        detailView.setMaxLines(2);
+        detailView.setPadding(0, dp(context, 6), 0, 0);
+        bodyCol.addView(detailView);
+      }
+    }
+
+    String money = OrderAlertCardText.formatAmount(amount);
+    if (money.length() > 0) {
+      LinearLayout totalRow = panel(context);
+      totalRow.setOrientation(LinearLayout.HORIZONTAL);
+      totalRow.setGravity(Gravity.CENTER_VERTICAL);
+      TextView label = text(context, OrderAlertCardText.earningsCaption(), 13, "#475569", true);
+      label.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+      totalRow.addView(label);
+      if (paymentChip.length() > 0) {
+        boolean cash = "Cash".equals(paymentChip);
+        LinearLayout.LayoutParams pLp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        pLp.rightMargin = dp(context, 8);
+        TextView pay = chip(context, cash ? "Cash" : "Paid", cash ? "#FFFBEB" : "#F0FDF4",
+            cash ? "#92400E" : "#15803D", 0);
+        pay.setLayoutParams(pLp);
+        totalRow.addView(pay);
+      }
+      totalRow.addView(text(context, money, 22, INK, true));
+      bodyCol.addView(totalRow);
+    }
+  }
+
+  /** One timeline stop: coloured dot + connector, label + km chip, address. */
+  private static LinearLayout routeStop(
+      Context context,
+      String label,
+      String address,
+      String kmChip,
+      String dotColor,
+      boolean connectorBelow
+  ) {
+    LinearLayout row = new LinearLayout(context);
+    row.setOrientation(LinearLayout.HORIZONTAL);
+    row.setLayoutParams(matchWrap());
+
+    LinearLayout dotCol = new LinearLayout(context);
+    dotCol.setOrientation(LinearLayout.VERTICAL);
+    dotCol.setGravity(Gravity.CENTER_HORIZONTAL);
+    dotCol.setPadding(0, dp(context, 4), 0, 0);
+    dotCol.setLayoutParams(new LinearLayout.LayoutParams(dp(context, 12), ViewGroup.LayoutParams.MATCH_PARENT));
+    View dot = new View(context);
+    dot.setBackground(rounded(dotColor, dp(context, 5), null, 0));
+    dot.setLayoutParams(new LinearLayout.LayoutParams(dp(context, 10), dp(context, 10)));
+    dotCol.addView(dot);
+    if (connectorBelow) {
+      View connector = new View(context);
+      connector.setBackgroundColor(Color.parseColor(LINE));
+      LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(dp(context, 2), 0, 1f);
+      cLp.topMargin = dp(context, 4);
+      connector.setLayoutParams(cLp);
+      dotCol.addView(connector);
+    }
+    row.addView(dotCol);
+
+    LinearLayout textCol = new LinearLayout(context);
+    textCol.setOrientation(LinearLayout.VERTICAL);
+    textCol.setPadding(dp(context, 10), 0, 0, dp(context, 10));
+    textCol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+    LinearLayout labelRow = new LinearLayout(context);
+    labelRow.setOrientation(LinearLayout.HORIZONTAL);
+    labelRow.setGravity(Gravity.CENTER_VERTICAL);
+    labelRow.setLayoutParams(matchWrap());
+    TextView labelView = text(context, label, 11, MUTED, true);
+    labelView.setLetterSpacing(0.05f);
+    labelView.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+    labelRow.addView(labelView);
+    if (kmChip.length() > 0) {
+      labelRow.addView(chip(context, kmChip, accentSoft(), accentInk(), dp(context, 6)));
+    }
+    textCol.addView(labelRow);
+
+    TextView addr = text(context, address, 13, INK_2, false);
+    addr.setMaxLines(3);
+    addr.setEllipsize(TextUtils.TruncateAt.END);
+    addr.setPadding(0, dp(context, 3), 0, 0);
+    addr.setLineSpacing(dp(context, 2), 1f);
+    textCol.addView(addr);
+    row.addView(textCol);
+    return row;
+  }
+
   /**
-   * Ticks the remaining seconds once per second and retires the alert at zero.
+   * Wrap the body in a ScrollView capped at half the screen, so a long item
+   * list never pushes the CTA off a small phone. Short bodies keep their own
+   * height (no empty scroll area).
+   */
+  private static View capHeight(Context context, LinearLayout bodyCol) {
+    DisplayMetrics dm = context.getResources().getDisplayMetrics();
+    int maxPx = Math.round(dm.heightPixels * 0.5f);
+    int widthPx = Math.max(dp(context, 200), dm.widthPixels - dp(context, 20));
+    int measured = 0;
+    try {
+      bodyCol.measure(
+          View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY),
+          View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+      measured = bodyCol.getMeasuredHeight();
+    } catch (Throwable ignored) {
+    }
+    ScrollView scroll = new ScrollView(context);
+    scroll.setVerticalScrollBarEnabled(false);
+    scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+    scroll.setFillViewport(false);
+    scroll.addView(bodyCol, new ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    scroll.setLayoutParams(new LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        measured > maxPx ? maxPx : ViewGroup.LayoutParams.WRAP_CONTENT));
+    return scroll;
+  }
+
+  /**
+   * Ticks the clock and the timer bar once per second.
    *
-   * Keyed on sessionId: a tick that fires after a newer offer replaced this card
-   * must not stop the new one, and a detached view must not keep a timer alive.
+   * Stops once its view has left the window (card replaced, refreshed or
+   * hidden) — a detached card must not keep a timer alive. Offer expiry itself
+   * is owned by the foreground service, which runs whether or not a card is on
+   * screen; the stop here is only the visible card's own courtesy.
    */
   private static void startCountdown(
       final Context context,
-      final TextView view,
+      final TextView label,
+      final View fill,
       final String sessionId,
+      final long startedAtMs,
       final long expiresAtMs
   ) {
     final Context app = context.getApplicationContext();
     final Runnable[] tick = new Runnable[1];
+    final int[] attach = new int[] {0, 0}; // seen attached, ticks before attach
+    final boolean[] urgentNow = new boolean[] {false};
     tick[0] = () -> {
-      if (view.getParent() == null) return;
-      long leftMs = expiresAtMs - System.currentTimeMillis();
+      if (label.isAttachedToWindow()) {
+        attach[0] = 1;
+      } else if (attach[0] == 1 || ++attach[1] > 8) {
+        return;
+      }
+      long now = System.currentTimeMillis();
+      long leftMs = expiresAtMs - now;
+      boolean urgent = OrderAlertCardText.isUrgent(expiresAtMs, now);
+      if (urgent != urgentNow[0]) {
+        urgentNow[0] = urgent;
+        styleTimer(context, label, urgent);
+        if (fill != null) fill.setBackground(rounded(urgent ? "#EF4444" : accent(), dp(context, 2), null, 0));
+      }
       if (leftMs <= 0L) {
-        view.setText("Offer expired");
+        label.setText("Expired");
+        if (fill != null) fill.setScaleX(0f);
         try {
           OrderAlertController.stop(app, sessionId);
         } catch (Throwable ignored) {
         }
         return;
       }
-      view.setText(OrderAlertCardText.acceptWithinLabel(expiresAtMs, System.currentTimeMillis()));
+      label.setText(OrderAlertCardText.countdownClock(expiresAtMs, now));
+      if (fill != null) {
+        float f = OrderAlertCardText.remainingFraction(startedAtMs, expiresAtMs, now + 1000L);
+        if (f >= 0f) {
+          fill.animate().scaleX(f).setDuration(1000L).setInterpolator(new LinearInterpolator()).start();
+        }
+      }
       MAIN.postDelayed(tick[0], 1000L);
     };
     MAIN.post(tick[0]);
+  }
+
+  private static void styleTimer(Context context, TextView timer, boolean urgent) {
+    timer.setTextColor(Color.parseColor(urgent ? URGENT : accentInk()));
+    timer.setBackground(rounded(urgent ? "#FEF2F2" : accentSoft(), dp(context, 999),
+        urgent ? "#FECACA" : null, urgent ? dp(context, 1) : 0));
   }
 
   /** Accepts epoch millis or an ISO-8601 instant; 0 means "no usable deadline". */
@@ -710,7 +1180,7 @@ public final class OrderAlertOverlay {
     return OrderAlertCardText.parseEpochMs(raw);
   }
 
-  /** Gap above the system navigation bar so Accept/Reject stay tappable. */
+  /** Gap above the system navigation bar so the CTA stays tappable. */
   static int bottomSafePx(Context context) {
     int nav = 0;
     try {
@@ -718,85 +1188,67 @@ public final class OrderAlertOverlay {
       if (resId > 0) nav = context.getResources().getDimensionPixelSize(resId);
     } catch (Throwable ignored) {
     }
-    return nav + dp(context, 16);
+    return nav + dp(context, 12);
   }
 
-  private static TextView metaRow(Context context, String text) {
+  // ------------------------------------------------------------------------
+  // View helpers
+  // ------------------------------------------------------------------------
+
+  private static TextView text(Context context, String value, int sp, String color, boolean bold) {
     TextView tv = new TextView(context);
-    tv.setText(text);
-    tv.setTextColor(Color.parseColor("#D1D5DB"));
-    tv.setTextSize(13);
+    tv.setText(value);
+    tv.setTextSize(sp);
+    tv.setTextColor(Color.parseColor(color));
+    tv.setIncludeFontPadding(false);
+    tv.setTypeface(bold ? Typeface.DEFAULT_BOLD : Typeface.create("sans-serif", Typeface.NORMAL));
+    return tv;
+  }
+
+  private static TextView chip(Context context, String value, String bg, String fg, int leftMarginPx) {
+    TextView tv = text(context, value, 11, fg, true);
+    tv.setSingleLine(true);
+    tv.setEllipsize(TextUtils.TruncateAt.END);
+    tv.setBackground(rounded(bg, dp(context, 999), null, 0));
+    tv.setPadding(dp(context, 9), dp(context, 4), dp(context, 9), dp(context, 4));
     LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
-    );
-    lp.topMargin = dp(context, 4);
+        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    lp.leftMargin = leftMarginPx;
     tv.setLayoutParams(lp);
     return tv;
   }
 
-  private static LinearLayout sectionRow(Context context, String label, String value) {
-    LinearLayout row = new LinearLayout(context);
-    row.setOrientation(LinearLayout.VERTICAL);
-    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+  /** Soft slate panel (earnings / items / total), as the in-app cards. */
+  private static LinearLayout panel(Context context) {
+    LinearLayout box = new LinearLayout(context);
+    box.setOrientation(LinearLayout.VERTICAL);
+    box.setBackground(rounded(SURFACE, dp(context, 12), LINE, dp(context, 1)));
+    box.setPadding(dp(context, 12), dp(context, 10), dp(context, 12), dp(context, 10));
+    LinearLayout.LayoutParams lp = matchWrap();
+    lp.topMargin = dp(context, 10);
+    box.setLayoutParams(lp);
+    return box;
+  }
+
+  private static GradientDrawable rounded(String fill, int radiusPx, String stroke, int strokePx) {
+    GradientDrawable d = new GradientDrawable();
+    d.setColor(Color.parseColor(fill));
+    d.setCornerRadius(radiusPx);
+    if (stroke != null && strokePx > 0) d.setStroke(strokePx, Color.parseColor(stroke));
+    return d;
+  }
+
+  private static LinearLayout.LayoutParams matchWrap() {
+    return new LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT
     );
-    lp.topMargin = dp(context, 8);
-    row.setLayoutParams(lp);
-
-    TextView labelView = new TextView(context);
-    labelView.setText(label);
-    labelView.setTextColor(Color.parseColor("#5EEAD4"));
-    labelView.setTextSize(11);
-    labelView.setTypeface(Typeface.DEFAULT_BOLD);
-    labelView.setLetterSpacing(0.05f);
-    row.addView(labelView);
-
-    TextView valueView = new TextView(context);
-    valueView.setText(value);
-    valueView.setTextColor(Color.parseColor("#F9FAFB"));
-    valueView.setTextSize(13);
-    valueView.setMaxLines(2);
-    LinearLayout.LayoutParams vLp = new LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
-    );
-    vLp.topMargin = dp(context, 2);
-    valueView.setLayoutParams(vLp);
-    row.addView(valueView);
-    return row;
   }
 
-  private static Button actionButton(Context context, String label, int bgColor, int fg) {
-    Button btn = new Button(context);
-    btn.setText(label);
-    btn.setAllCaps(true);
-    btn.setTextColor(fg);
-    btn.setTextSize(14);
-    btn.setTypeface(Typeface.DEFAULT_BOLD);
-    GradientDrawable bg = new GradientDrawable();
-    bg.setColor(bgColor);
-    bg.setCornerRadius(dp(context, 10));
-    btn.setBackground(bg);
-    btn.setPadding(dp(context, 8), 0, dp(context, 8), 0);
-    if (Build.VERSION.SDK_INT >= 21) {
-      btn.setStateListAnimator(null);
-      btn.setElevation(0);
-    }
-    return btn;
-  }
-
-  private static String headingFor(String orderType) {
-    return OrderAlertCardText.headingFor(orderType);
-  }
-
-  private static String displayOrderType(String raw) {
-    return OrderAlertCardText.displayOrderType(raw);
-  }
-
-  private static String displayPickup(String raw) {
-    return OrderAlertCardText.displayPickup(raw);
+  /** The session row's value when it has one, else the caller's argument. */
+  private static String pick(String fromRow, String fromArgs) {
+    String a = safeText(fromRow);
+    return a.length() > 0 ? a : safeText(fromArgs);
   }
 
   private static String firstNonEmpty(String a, String b) {
@@ -812,10 +1264,6 @@ public final class OrderAlertOverlay {
       return "";
     }
     return v;
-  }
-
-  private static String formatAmount(String raw) {
-    return OrderAlertCardText.formatAmount(raw);
   }
 
   private static String sessionSafe(String value) {

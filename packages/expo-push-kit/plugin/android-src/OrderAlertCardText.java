@@ -396,4 +396,253 @@ public final class OrderAlertCardText {
     String lower = v.toLowerCase();
     return lower.contains("new order") || v.matches("(?i)^order\\s*#?\\s*\\d+$");
   }
+
+  // ------------------------------------------------------------------------
+  // Rich card (mirrors the in-app IncomingOrderModal sheets)
+  // ------------------------------------------------------------------------
+
+  /** Whole rupees from a payload number, or 0 for missing / zero / garbage. */
+  public static long rupees(String raw) {
+    String v = safe(raw).replace("₹", "").replace(",", "").trim();
+    if (v.length() == 0) return 0L;
+    try {
+      double n = Double.parseDouble(v);
+      if (!(n > 0)) return 0L;
+      return Math.round(n);
+    } catch (Throwable t) {
+      return 0L;
+    }
+  }
+
+  private static double km(String raw) {
+    String v = safe(raw).toLowerCase().replace("km", "").trim();
+    if (v.length() == 0) return 0d;
+    try {
+      double n = Double.parseDouble(v);
+      return n > 0 ? n : 0d;
+    } catch (Throwable t) {
+      return 0d;
+    }
+  }
+
+  private static boolean isRide(String orderType) {
+    String v = safe(orderType).toLowerCase().replace('-', '_');
+    return "ride".equals(v) || "person_ride".equals(v) || "bike".equals(v) || "bike_ride".equals(v);
+  }
+
+  private static boolean isParcel(String orderType) {
+    return "parcel".equals(safe(orderType).toLowerCase());
+  }
+
+  /** The pill over the card, as the in-app fuse badge words it. */
+  public static String newOrderBadge(String orderType) {
+    if (!RIDER) return "New order!";
+    if (isRide(orderType)) return "New ride!";
+    if (isParcel(orderType)) return "New parcel!";
+    return "New order!";
+  }
+
+  /** Category chip text; never invents a category the payload did not send. */
+  public static String bannerLabel(String orderType) {
+    return displayOrderType(orderType);
+  }
+
+  /**
+   * Rider earnings breakdown exactly as the in-app offer sheet builds it: the
+   * base line is DERIVED (total − waiting − surge − first-mile − tip) so the
+   * rows always add up to the total the rider is promised.
+   *
+   * Each row is {label, value, kind}; kind is base | waiting | surge |
+   * firstMile | tip | total. The total row is always last. Merchants never get
+   * a breakdown, and no total means no rows at all (never a "₹0" card).
+   */
+  public static String[][] earningRows(
+      String orderType,
+      String totalRaw,
+      String waitingRaw,
+      String surgeRaw,
+      String firstMileRaw,
+      String tipRaw
+  ) {
+    if (!RIDER) return new String[0][];
+    long total = rupees(totalRaw);
+    if (total <= 0) return new String[0][];
+    long waiting = rupees(waitingRaw);
+    long surge = rupees(surgeRaw);
+    long firstMile = rupees(firstMileRaw);
+    long tip = rupees(tipRaw);
+    java.util.ArrayList<String[]> rows = new java.util.ArrayList<>();
+    if (waiting + surge + firstMile + tip > 0) {
+      long base = Math.max(0L, total - waiting - surge - firstMile - tip);
+      String baseLabel = isRide(orderType) ? "Base earnings" : "Trip earning";
+      rows.add(new String[] {baseLabel, "₹" + base, "base"});
+      if (waiting > 0) rows.add(new String[] {"Waiting charge", "+ ₹" + waiting, "waiting"});
+      if (surge > 0) rows.add(new String[] {"Surge", "+ ₹" + surge, "surge"});
+      if (firstMile > 0) rows.add(new String[] {"First-mile allowance", "+ ₹" + firstMile, "firstMile"});
+      if (tip > 0) rows.add(new String[] {"Customer tip", "+ ₹" + tip, "tip"});
+    }
+    rows.add(new String[] {"Total earnings", "₹" + total, "total"});
+    return rows.toArray(new String[0][]);
+  }
+
+  /**
+   * Overall distance, computed as the in-app sheet does: to-pickup + trip when
+   * both legs are known, else the overall the payload carried, else whichever
+   * single leg is known. Returns a bare km number ("5.7") or "".
+   */
+  public static String overallKm(String toPickupKm, String tripKm, String overallKm) {
+    double a = km(toPickupKm);
+    double b = km(tripKm);
+    double sent = km(overallKm);
+    double total = a > 0 && b > 0 ? a + b : (sent > 0 ? sent : (b > 0 ? b : a));
+    if (!(total > 0)) return "";
+    double rounded = Math.rint(total * 10.0) / 10.0;
+    if (Math.abs(rounded - Math.rint(rounded)) < 0.001) return String.valueOf((long) Math.rint(rounded));
+    return String.valueOf(rounded);
+  }
+
+  /**
+   * The To pickup / Trip / Overall strip. "—" marks an unknown leg so the three
+   * columns stay aligned; an empty array means no leg is known and the caller
+   * drops the whole strip instead of printing "Distance unavailable".
+   */
+  public static String[] distanceCells(String toPickupKm, String tripKm, String overallKm) {
+    String a = kmLabel(toPickupKm);
+    String b = kmLabel(tripKm);
+    String c = kmLabel(overallKm(toPickupKm, tripKm, overallKm));
+    if (a.length() == 0 && b.length() == 0 && c.length() == 0) return new String[0];
+    return new String[] {
+        a.length() > 0 ? a : "—",
+        b.length() > 0 ? b : "—",
+        c.length() > 0 ? c : "—",
+    };
+  }
+
+  /** Short payment chip: "Cash", "Paid online", or "" when unknown. */
+  public static String paymentChip(String paymentMethod) {
+    String v = safe(paymentMethod).toLowerCase();
+    if (v.length() == 0) return "";
+    if (v.contains("cash") || v.contains("cod")) return "Cash";
+    if (v.contains("online") || v.contains("upi") || v.contains("card") || v.contains("wallet")
+        || v.contains("prepaid") || v.contains("paid") || v.contains("razorpay")) {
+      return "Paid online";
+    }
+    return "";
+  }
+
+  /**
+   * Parcel fare banner, worded as the in-app sheet: paid online / collect at
+   * pickup / collect at drop. Empty for other services, and when the payload
+   * says nothing about payment — never guessed.
+   */
+  public static String fareCollectLabel(String orderType, String paymentMethod, String payAt) {
+    if (!RIDER || !isParcel(orderType)) return "";
+    String chip = paymentChip(paymentMethod);
+    String at = safe(payAt).toLowerCase();
+    if ("Paid online".equals(chip) && at.length() == 0) return "Payment paid";
+    if ("drop".equals(at)) return "Fare collect at Drop";
+    if ("pickup".equals(at) || "Cash".equals(chip)) return "Fare collect at Pickup";
+    return "";
+  }
+
+  /** "" for a missing or placeholder customer name ("Customer"). */
+  public static String customerLine(String name) {
+    String v = safe(name);
+    if (v.length() == 0 || "customer".equalsIgnoreCase(v) || "null".equalsIgnoreCase(v)) return "";
+    return v;
+  }
+
+  /** {qty, name} rows for the merchant item list; variant folded into the name. */
+  public static String[][] itemCells(String raw, int maxRows) {
+    String v = safe(raw);
+    if (v.length() == 0 || !v.startsWith("[")) {
+      String[] lines = itemLines(raw, maxRows);
+      String[][] out = new String[lines.length][];
+      for (int i = 0; i < lines.length; i++) {
+        Matcher m = Pattern.compile("^(\\d+)\\s*(?:x|X|×)\\s*(.+)$").matcher(lines[i]);
+        out[i] = m.find() ? new String[] {m.group(1), safe(m.group(2))} : new String[] {"1", lines[i]};
+      }
+      return out;
+    }
+    String[] lines = itemLines(v, maxRows);
+    String[][] out = new String[lines.length][];
+    for (int i = 0; i < lines.length; i++) {
+      String sep = " × ";
+      int at = lines[i].indexOf(sep);
+      out[i] = at > 0
+          ? new String[] {lines[i].substring(0, at), lines[i].substring(at + sep.length())}
+          : new String[] {"1", lines[i]};
+    }
+    return out;
+  }
+
+  /** Number of item rows the payload carried (variants count once). */
+  public static int itemRowCount(String raw) {
+    String v = safe(raw);
+    if (v.length() == 0) return 0;
+    if (v.startsWith("[")) {
+      int n = 0;
+      for (int i = 0; i < v.length(); i++) if (v.charAt(i) == '{') n++;
+      return n;
+    }
+    return v.split("\\|").length;
+  }
+
+  /** "+3 more items" when the list was cut, else "". */
+  public static String moreItemsLabel(int totalRows, int shownRows) {
+    int more = totalRows - shownRows;
+    if (more <= 0) return "";
+    return "+" + more + (more == 1 ? " more item" : " more items");
+  }
+
+  /**
+   * Fraction of the acceptance window still left (0..1) for the shrinking
+   * timer bar. A missing or implausible start falls back to a 60 s window;
+   * -1 means "no deadline", so the caller hides the bar.
+   */
+  public static float remainingFraction(long startedAtMs, long expiresAtMs, long nowMs) {
+    if (expiresAtMs <= 0L) return -1f;
+    long left = expiresAtMs - nowMs;
+    if (left <= 0L) return 0f;
+    long window = expiresAtMs - startedAtMs;
+    if (startedAtMs <= 0L || window <= 0L || window > 15L * 60L * 1000L || left > window) {
+      window = Math.max(left, 60_000L);
+    }
+    float f = (float) left / (float) window;
+    return f < 0f ? 0f : (f > 1f ? 1f : f);
+  }
+
+  /** Last ten seconds: the timer turns red. */
+  public static boolean isUrgent(long expiresAtMs, long nowMs) {
+    return expiresAtMs > 0L && expiresAtMs - nowMs <= 10_000L;
+  }
+
+  /** Mixed-case CTA for the card button (the shade action keeps the caps form). */
+  public static String openButtonLabel() {
+    return "Open to accept  →";
+  }
+
+  /** Heads-up title: "Bike Ride · You earn ₹75" / "New order · ₹420". */
+  public static String headsUpTitle(String orderType, String amountRaw) {
+    String type = displayOrderType(orderType);
+    String head = type.length() > 0 ? type : (RIDER ? "New order received" : "New order");
+    String money = amountLabel(amountRaw);
+    return money.length() > 0 ? head + " · " + money : head;
+  }
+
+  /**
+   * Change detector for the floating card. Equal signatures mean the card on
+   * screen already shows this data; anything else is rebuilt in place, which is
+   * how a card first drawn from a detail-less start fills in when the rich push
+   * lands a moment later.
+   */
+  public static String signature(String[] parts) {
+    StringBuilder sb = new StringBuilder();
+    if (parts != null) {
+      for (String p : parts) {
+        sb.append(p == null ? "" : p.trim()).append('\u001F');
+      }
+    }
+    return sb.toString();
+  }
 }
