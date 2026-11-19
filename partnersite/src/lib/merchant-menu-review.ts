@@ -110,8 +110,15 @@ function normField(field: string, v: unknown): string {
   if (NUMERIC_FIELDS.has(field)) {
     if (typeof v === 'string' && v.trim() === '') return 'null'
     const n = Number(v)
+    // Collapse 79 / "79.00" / 79.0 so untouched prices are not captured
     return Number.isFinite(n) ? String(n) : 'null'
   }
+  // Postgres numeric/bigint sometimes arrives as string even for non-listed fields
+  if (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim())) {
+    const n = Number(v.trim())
+    if (Number.isFinite(n)) return String(n)
+  }
+  if (typeof v === 'bigint') return String(v)
   if (field === 'customizations') {
     const c = canonicalizeCustomizations(v)
     if (isEmptyish(c)) return 'null'

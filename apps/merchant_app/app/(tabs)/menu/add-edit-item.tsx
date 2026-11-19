@@ -961,10 +961,20 @@ export default function AddEditItemScreen() {
 
     setSaveInProgress(true);
     try {
+      const linkCuisinesSoft = async () => {
+        if (!showItemCuisineField || !storeId || !token) return;
+        try {
+          await ensureStoreCuisinesLinkedForItemNames(storeId, token, cuisineType);
+        } catch {
+          /* cuisine link must never block item save */
+        }
+      };
+
       if (isEdit && itemId != null) {
         const isApproved = itemData?.approval_status === "APPROVED";
         if (isApproved && storeId && token) {
           await createUpdateRequest(storeId, itemId, token, { requested_payload: payload });
+          await linkCuisinesSoft();
           queryClient.invalidateQueries({ queryKey: menuKeys.items(storeId) });
           queryClient.invalidateQueries({ queryKey: menuKeys.item(storeId, itemId) });
           Alert.alert(
@@ -974,17 +984,12 @@ export default function AddEditItemScreen() {
           );
         } else {
           await updateMutation.mutateAsync({ itemId, body: payload });
+          await linkCuisinesSoft();
           Alert.alert("Saved", "Item updated.", [{ text: "OK", onPress: () => router.back() }]);
         }
       } else {
         const created = await createMutation.mutateAsync(payload);
-        try {
-          if (showItemCuisineField) {
-            await ensureStoreCuisinesLinkedForItemNames(storeId, token, cuisineType);
-          }
-        } catch {
-          /* non-fatal */
-        }
+        await linkCuisinesSoft();
         if (created.pending_review && created.review_request_id) {
           if (pendingImage && token && storeId) {
             try {

@@ -14,16 +14,19 @@ const appJson = require("./app.json");
 const APP_ICON = "./assets/icon.png";
 const APP_ADAPTIVE_FOREGROUND = "./assets/adaptive-icon.png";
 const APP_ICON_BG = "#000000";
-/** Match GatiMitraBootstrapScreen mint so native → JS handoff is one continuous splash. */
+/** Match JS GatiMitraBootstrapScreen mint for a seamless native → brand handoff. */
 const LAUNCHER_SPLASH_BG = "#14b8a6";
 /**
- * Branded native splash (bold Lora wordmark + tagline on mint).
- * Same PNG is rendered by GatiMitraBootstrapScreen — one visual, no Text font race.
- * Regenerate with: npm run generate:splash (embeds Lora_700Bold.ttf).
+ * Android 12+ SplashScreen icon MUST stay solid mint (no wordmark) — the system
+ * crops it to a small circle. Do NOT put splash-brand.png here.
  *
- * Image cannot be omitted: expo-splash-screen's Android prebuild always writes
- * `windowSplashScreenAnimatedIcon -> @drawable/splashscreen_logo` and aapt2 fails
- * if the drawable is missing.
+ * Full-bleed approved Lora brand (logo + tagline) is installed as AppTheme
+ * windowBackground by `./plugins/withBrandedNativeSplash.js`, which also calls
+ * SplashScreenManager.hide() in MainActivity so the mint A12 overlay never sits
+ * for the JS boot (~10s blank mint bug). JS `GatiMitraBootstrapScreen` continues
+ * the same `splash-brand.png` until Home is ready.
+ *
+ * Regenerate with: npm run generate:splash
  */
 const LAUNCHER_SPLASH_IMAGE = "./assets/images/splash-android12.png";
 
@@ -188,6 +191,9 @@ module.exports = {
         },
       ],
       "expo-video",
+      // LAST: full-bleed brand windowBackground + immediate A12 splash release.
+      // Must run after other style plugins so AppTheme.windowBackground is not overwritten.
+      "./plugins/withBrandedNativeSplash.js",
       // Razorpay Native SDK (Standard Checkout — UPI, cards, wallets, netbanking).
       // react-native-razorpay uses the classic React Native autolinking mechanism —
       // no dedicated Expo config plugin required. Expo SDK 54 already ships with

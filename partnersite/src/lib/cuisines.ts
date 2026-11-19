@@ -28,6 +28,11 @@ function normalizeCuisineName(name: string): string {
     .join(' ');
 }
 
+/** Escape %/_ so PostgREST ilike does exact case-insensitive match. */
+function ilikeExact(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
 /**
  * Ensure merchant_store_cuisines matches legacy merchant_stores.cuisine_types (text[]).
  * Only names that resolve to existing cuisine_master rows are linked — never inserts into cuisine_master.
@@ -92,6 +97,95 @@ export async function upsertStoreCuisines(storePkId: number, cuisineNames: strin
         { onConflict: 'store_id,cuisine_id' }
       );
   }
+}
+
+/**
+ * Resolve a cuisine name to cuisine_master (create a non-default row if missing),
+ * then link it to the store. Used when partners add free-text cuisines on menu items.
+ */
+export async function ensureCuisineLinkedByName(
+  storePkId: number,
+  rawName: string
+): Promise<{ id: number; createdMaster: boolean }> {
+  const name = normalizeCuisineName(rawName);
+  if (!storePkId || !name) {
+    throw new Error('store and cuisine name required');
+  }
+  const db = getSupabaseAdmin();
+  const slug = slugifyCuisine(name);
+
+  const exact = ilikeExact(name);
+  const { data: byCustom } = await db
+    .from('merchant_store_cuisines')
+    .select('cuisine_id')
+    .eq('store_id', storePkId)
+    .ilike('custom_name', exact)
+    .limit(1)
+    .maybeSingle();
+  if (byCustom?.cuisine_id) {
+    return { id: Number(byCustom.cuisine_id), createdMaster: false };
+  }
+
+  let cuisineId: number | null = null;
+  let createdMaster = false;
+
+  const { data: bySlug } = await db
+    .from('cuisine_master')
+    .select('id')
+    .eq('slug', slug)
+    .maybeSingle();
+  if (bySlug?.id) cuisineId = Number(bySlug.id);
+
+  if (!cuisineId) {
+    const { data: byName } = await db
+      .from('cuisine_master')
+      .select('id')
+      .ilike('name', exact)
+      .limit(1)
+      .maybeSingle();
+    if (byName?.id) cuisineId = Number(byName.id);
+  }
+
+  if (!cuisineId) {
+    const { data: inserted, error: insErr } = await db
+      .from('cuisine_master')
+      .insert({
+        slug,
+        name,
+        is_default: false,
+        is_active: true,
+        display_order: 9999,
+      })
+      .select('id')
+      .single();
+    if (insErr || !inserted?.id) {
+      // Race: another request may have created the same slug
+      const { data: again } = await db
+        .from('cuisine_master')
+        .select('id')
+        .eq('slug', slug)
+        .maybeSingle();
+      if (!again?.id) {
+        console.error('[cuisines] ensureCuisineLinkedByName insert failed', insErr);
+        throw new Error(insErr?.message || 'Failed to create cuisine');
+      }
+      cuisineId = Number(again.id);
+    } else {
+      cuisineId = Number(inserted.id);
+      createdMaster = true;
+    }
+  }
+
+  const { error: linkErr } = await db.from('merchant_store_cuisines').upsert(
+    { store_id: storePkId, cuisine_id: cuisineId, custom_name: name },
+    { onConflict: 'store_id,cuisine_id' }
+  );
+  if (linkErr) {
+    console.error('[cuisines] ensureCuisineLinkedByName link failed', linkErr);
+    throw new Error(linkErr.message || 'Failed to link cuisine');
+  }
+
+  return { id: cuisineId, createdMaster };
 }
 
 /** Get distinct cuisine names configured for a store (custom name or master name). */

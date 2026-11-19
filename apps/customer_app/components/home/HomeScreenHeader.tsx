@@ -3,6 +3,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { HOME_HEADER_BELOW_STATUS_GAP, resolveTopSafeInset } from "@/constants/layout";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { HOME_DARK } from "@/constants/homeDarkTheme";
 import type { CustomerWeatherContext } from "@/services/weather.service";
 import { GatiCashHeaderPill } from "@/components/home/GatiCashHeaderPill";
 import { AppText } from "@/components/AppText";
@@ -13,21 +14,11 @@ const PAD = 16;
 /** Same content width as header row (pin → action icons). */
 const CONTENT_W = SCREEN_W - PAD * 2;
 
-const TITLE_DARK = "#111827";
-const TEXT_MUTED = "#6B7280";
-const WEATHER_BORDER = "rgba(0, 0, 0, 0.035)";
-const ICON_BORDER = "rgba(0, 0, 0, 0.04)";
+const TITLE = HOME_DARK.text;
+const WEATHER_BORDER = HOME_DARK.border;
 const GREEN = GatiMitraColors.splashMint;
-const GREEN_TEXT = "#15803D";
-const PAGE_BG = GatiMitraColors.softBackground;
-
-const WEATHER_SHADOW = {
-  shadowColor: "#0f172a",
-  shadowOffset: { width: 0, height: 1 },
-  shadowOpacity: 0.035,
-  shadowRadius: 4,
-  elevation: 1,
-};
+const GREEN_TEXT = GatiMitraColors.splashMint;
+const PAGE_BG = HOME_DARK.page;
 
 type Props = {
   locationPrimary: string;
@@ -153,7 +144,7 @@ export function HomeLocationHeader({
                 {primaryLabel}
               </AppText>
               {iconFontsLoaded ? (
-                <Ionicons name="chevron-down" size={15} color={TITLE_DARK} style={styles.locationChevron} />
+                <Ionicons name="chevron-down" size={15} color={TITLE} style={styles.locationChevron} />
               ) : (
                 <View style={styles.chevronFallback} />
               )}
@@ -170,7 +161,7 @@ export function HomeLocationHeader({
         </TouchableOpacity>
 
         <View style={styles.headerIcons}>
-          <GatiCashHeaderPill />
+          <GatiCashHeaderPill dark />
           <TouchableOpacity
             style={styles.iconBtn}
             activeOpacity={0.75}
@@ -178,7 +169,7 @@ export function HomeLocationHeader({
             accessibilityLabel="Notifications"
           >
             {iconFontsLoaded ? (
-              <Ionicons name="notifications-outline" size={18} color={TITLE_DARK} />
+              <Ionicons name="notifications-outline" size={18} color={TITLE} />
             ) : (
               <View style={styles.bellFallback} />
             )}
@@ -228,7 +219,7 @@ export function HomeWeatherBanner({
 
           <View style={styles.weatherRight}>
             <AppText style={styles.weatherPromo}>{promo}</AppText>
-            <Ionicons name="chevron-forward" size={14} color="#9CA3AF" />
+            <Ionicons name="chevron-forward" size={14} color={HOME_DARK.textDim} />
           </View>
         </TouchableOpacity>
         </View>
@@ -246,13 +237,13 @@ export function HomeWeatherBanner({
       <View style={styles.weatherWrap}>
         <View style={[styles.weatherBanner, styles.weatherSkeleton]} accessibilityLabel="Loading weather">
           <View style={styles.weatherLeft}>
-            <GMSkeleton style={styles.skeletonIcon} />
-            <GMSkeleton style={styles.skeletonTemp} />
-            <GMSkeleton style={styles.skeletonLabel} />
+            <GMSkeleton dark style={styles.skeletonIcon} />
+            <GMSkeleton dark style={styles.skeletonTemp} />
+            <GMSkeleton dark style={styles.skeletonLabel} />
           </View>
           <View style={styles.weatherDivider} />
           <View style={styles.weatherRight}>
-            <GMSkeleton style={styles.skeletonPromo} />
+            <GMSkeleton dark style={styles.skeletonPromo} />
           </View>
         </View>
       </View>
@@ -335,7 +326,7 @@ const styles = StyleSheet.create({
     marginLeft: 3,
     borderRightWidth: 2,
     borderBottomWidth: 2,
-    borderColor: TITLE_DARK,
+    borderColor: TITLE,
     transform: [{ rotate: "45deg" }],
     marginTop: -2,
   },
@@ -344,7 +335,7 @@ const styles = StyleSheet.create({
     height: 16,
     borderRadius: 8,
     borderWidth: 2,
-    borderColor: TITLE_DARK,
+    borderColor: TITLE,
   },
   locationTextBlock: {
     marginLeft: 8,
@@ -363,7 +354,7 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     fontSize: 16,
     fontWeight: "700",
-    color: TITLE_DARK,
+    color: TITLE,
     letterSpacing: -0.35,
   },
   locationChevron: {
@@ -399,9 +390,9 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: "rgba(255,255,255,0.55)",
+    backgroundColor: HOME_DARK.iconChip,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(15, 23, 42, 0.12)",
+    borderColor: HOME_DARK.border,
     alignItems: "center",
     justifyContent: "center",
     shadowOpacity: 0,
@@ -421,7 +412,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 4,
     borderWidth: 2,
-    borderColor: "#fff",
+    borderColor: PAGE_BG,
   },
   badgeText: {
     fontSize: 9,
@@ -433,13 +424,12 @@ const styles = StyleSheet.create({
     maxWidth: CONTENT_W,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: HOME_DARK.weather,
     borderWidth: 1,
     borderColor: WEATHER_BORDER,
     borderRadius: 999,
     paddingVertical: 7,
     paddingHorizontal: 12,
-    ...WEATHER_SHADOW,
   },
   weatherLeft: {
     flexDirection: "row",
@@ -454,7 +444,7 @@ const styles = StyleSheet.create({
   weatherTemp: {
     fontSize: 16,
     fontWeight: "800",
-    color: TITLE_DARK,
+    color: TITLE,
     marginRight: 6,
     letterSpacing: -0.4,
     flexShrink: 0,
@@ -462,13 +452,13 @@ const styles = StyleSheet.create({
   weatherLabel: {
     fontSize: 11,
     fontWeight: "600",
-    color: TITLE_DARK,
+    color: TITLE,
     flexShrink: 0,
   },
   weatherDivider: {
     width: 1,
     height: 16,
-    backgroundColor: "#E5E7EB",
+    backgroundColor: HOME_DARK.border,
     marginHorizontal: 8,
     flexShrink: 0,
   },
@@ -480,12 +470,12 @@ const styles = StyleSheet.create({
   weatherPromo: {
     fontSize: 11,
     fontWeight: "500",
-    color: TITLE_DARK,
+    color: HOME_DARK.textMuted,
     marginRight: 4,
     flexShrink: 0,
   },
   weatherSkeleton: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: HOME_DARK.weather,
   },
   skeletonIcon: {
     width: 20,

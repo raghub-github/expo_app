@@ -18,7 +18,7 @@ export type CategoryUiConfig = {
     required_for_root: boolean;
     inherit_on_subcategory: boolean;
   };
-  /** When true, merchant may link more cuisines from `cuisine_master` (plan limits apply). No free-text new cuisines. */
+  /** When true, merchant may link more cuisines from `cuisine_master` (plan limits apply). Free-text names create non-default master rows. */
   allow_create_custom_cuisine: boolean;
   /**
    * Item form profile by store type.
@@ -491,10 +491,32 @@ export async function createCustomCuisine(opts: {
     if (byPrefix) masterId = Number(byPrefix.id);
   }
 
+  // Free-text cuisines on menu items: create a non-default master row when missing.
+  if (masterId == null) {
+    try {
+      const [inserted] = await sql<{ id: number }[]>`
+        INSERT INTO cuisine_master (slug, name, is_default, is_active, display_order)
+        VALUES (${slug}, ${name}, FALSE, TRUE, 9999)
+        RETURNING id
+      `;
+      if (inserted) masterId = Number(inserted.id);
+    } catch (e) {
+      const code = (e as { code?: string })?.code;
+      if (code === "23505") {
+        const [again] = await sql<{ id: number }[]>`
+          SELECT id FROM cuisine_master WHERE slug = ${slug} LIMIT 1
+        `;
+        if (again) masterId = Number(again.id);
+      } else {
+        throw e;
+      }
+    }
+  }
+
   if (masterId == null) {
     throw new CategoryRuleError(
       "cuisine_not_found",
-      "Cuisine is not in the master list. Pick from the store cuisine list or ask an admin to add it to cuisine_master.",
+      "Could not create or resolve cuisine. Try again or pick another name.",
       400
     );
   }
@@ -518,6 +540,18 @@ export async function createCustomCuisine(opts: {
     INSERT INTO merchant_store_cuisines (store_id, cuisine_id, custom_name)
     VALUES (${opts.storeIdNum}, ${masterId}, ${name})
     ON CONFLICT (store_id, cuisine_id) DO UPDATE SET custom_name = EXCLUDED.custom_name
+  `;
+  await sql`
+    UPDATE merchant_stores
+    SET cuisine_types = CASE
+      WHEN cuisine_types IS NULL THEN ARRAY[${name}]::text[]
+      WHEN EXISTS (
+        SELECT 1 FROM unnest(cuisine_types) AS t(v)
+        WHERE lower(trim(v)) = lower(trim(${name}))
+      ) THEN cuisine_types
+      ELSE cuisine_types || ARRAY[${name}]::text[]
+    END
+    WHERE id = ${opts.storeIdNum}
   `;
   return { id: masterId };
 }

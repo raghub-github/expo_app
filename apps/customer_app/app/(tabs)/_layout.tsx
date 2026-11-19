@@ -4,6 +4,7 @@ import { AndroidBackHandler } from "@/components/AndroidBackHandler";
 import { CustomerTabBar, customerTabBarOffset } from "@/components/CustomerTabBar";
 import { HomeColdStartSkeleton } from "@/components/home/HomeTabSkeletons";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { HOME_DARK } from "@/constants/homeDarkTheme";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
 import {
   fetchProfileWithCache,
@@ -140,6 +141,9 @@ export default function TabsLayout() {
             headerShown: false,
             lazy: false,
             freezeOnBlur: false,
+            sceneStyle: { backgroundColor: HOME_DARK.page },
+            statusBarStyle: "light",
+            statusBarBackgroundColor: HOME_DARK.page,
           }}
         />
         <Tabs.Screen

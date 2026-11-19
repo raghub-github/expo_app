@@ -66,8 +66,37 @@ export type { LocationPermissionStatus, DeviceLocationReadiness };
 /** Mapbox reverse-geocode budget — keep under the 5–7s fresh-address SLA. */
 const GEOCODE_MS = 3_500;
 const STORAGE_KEY = "@gatimitra/last_selected_location_v1";
+/** Survives cold start — "Device location not enabled" sheet must not reopen on every entry. */
+const LOCATION_SHEET_DISMISS_KEY = "@gatimitra/cx_location_enable_sheet_dismissed_v1";
 /** Toggle verbose location logging for field debugging (raw coords, accuracy, PIN). */
 const LOCATION_DEBUG = __DEV__;
+
+async function readLocationSheetPersistDismissed(): Promise<boolean> {
+  try {
+    return (await AsyncStorage.getItem(LOCATION_SHEET_DISMISS_KEY)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeLocationSheetPersistDismissed(dismissed: boolean): void {
+  if (dismissed) {
+    AsyncStorage.setItem(LOCATION_SHEET_DISMISS_KEY, "1").catch(() => {});
+  } else {
+    AsyncStorage.removeItem(LOCATION_SHEET_DISMISS_KEY).catch(() => {});
+  }
+}
+
+function hasUsableDeliveryPin(state: {
+  coords: { latitude: number; longitude: number } | null;
+  address: ReverseGeocodeResult | null;
+}): boolean {
+  return (
+    state.coords != null &&
+    state.address != null &&
+    !isPlaceholderAddress(state.address)
+  );
+}
 
 function logLocation(event: string, data: Record<string, unknown>): void {
   if (!LOCATION_DEBUG) return;
@@ -730,21 +759,30 @@ type LocationState = {
   /** True after initial in-memory bootstrap attempt (success or empty). */
   locationHydrated: boolean;
   showPermissionModal: boolean;
-  /** User closed the sheet this session — re-prompt on next cold start only. */
+  /**
+   * User closed the enable sheet — in-memory for this process.
+   * Also mirrored to AsyncStorage so cold starts do not re-nag.
+   */
   locationSheetDismissedSession: boolean;
   /** True after detecting watchdog — stop endless "Detecting location…". */
   detectingTimedOut: boolean;
   hydrate: () => Promise<void>;
   clearPersistedSelection: () => Promise<void>;
-  requestPermissionAndFetch: (options?: { forceDevice?: boolean }) => Promise<void>;
+  requestPermissionAndFetch: (options?: {
+    forceDevice?: boolean;
+    /** When true, may open the enable sheet. Default false — Home GPS kick must not nag. */
+    openSheet?: boolean;
+  }) => Promise<void>;
   setShowPermissionModal: (show: boolean) => void;
   /**
-   * Show location sheet on launch until app permission + device location are both on.
-   * `skipDeviceFetch`: only ensure permission / sheet state — do not push GPS into the
-   * store (cold-start / resume reconcile owns that decision).
+   * Auto sheet: first-time undetermined permission only (unless dismissed).
+   * Services-off / denied never auto-open — header tap uses forceFromUser.
    */
   promptLocationPermissionIfNeeded: (options?: {
+    /** @deprecated Ignored for sheet open; use forceFromUser. */
     force?: boolean;
+    /** Explicit user action (header tap) — always allow opening the sheet. */
+    forceFromUser?: boolean;
     skipDeviceFetch?: boolean;
   }) => Promise<void>;
   setAddress: (address: ReverseGeocodeResult | null) => void;
@@ -790,6 +828,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
   detectingTimedOut: false,
 
   hydrate: async () => {
+    const persistDismissed = await readLocationSheetPersistDismissed();
     const already = get();
     if (
       already.locationHydrated &&
@@ -797,6 +836,9 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       !isPlaceholderAddress(already.address)
     ) {
       AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+      if (persistDismissed && !already.locationSheetDismissedSession) {
+        set({ locationSheetDismissedSession: true });
+      }
       return;
     }
     // Clear any previously persisted *selected* pin so cold start cannot lock onto an old city.
@@ -827,6 +869,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       sessionSelectionKind: null,
       sessionBoundAddressId: null,
       detectingTimedOut: false,
+      ...(persistDismissed ? { locationSheetDismissedSession: true } : {}),
       ...(fillMissingCoords && cached
         ? {
             coords: { latitude: cached.lat, longitude: cached.lon },
@@ -849,11 +892,18 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
   },
 
-  setShowPermissionModal: (show) =>
-    set({
-      showPermissionModal: show,
-      ...(show ? { locationSheetDismissedSession: false } : { locationSheetDismissedSession: true }),
-    }),
+  setShowPermissionModal: (show) => {
+    if (!show) {
+      writeLocationSheetPersistDismissed(true);
+      set({
+        showPermissionModal: false,
+        locationSheetDismissedSession: true,
+      });
+      return;
+    }
+    // Opening from UI — do not clear persist dismiss (auto paths still stay quiet).
+    set({ showPermissionModal: true });
+  },
 
   promptLocationPermissionIfNeeded: async (options) => {
     // SMS step owns the screen first — never open location sheet or GPS dialogs over it.
@@ -862,9 +912,10 @@ export const useLocationStore = create<LocationState>((set, get) => ({
     }
     try {
       const readiness = await getDeviceLocationReadiness(
-        options?.force ? { force: true } : undefined
+        options?.force || options?.forceFromUser ? { force: true } : undefined
       );
       if (readiness.isReady) {
+        writeLocationSheetPersistDismissed(false);
         set({
           permissionStatus: "granted",
           showPermissionModal: false,
@@ -881,17 +932,62 @@ export const useLocationStore = create<LocationState>((set, get) => ({
         await get().requestPermissionAndFetch({ forceDevice: true });
         return;
       }
-      if (!options?.force && get().locationSheetDismissedSession) {
+
+      const state = get();
+      const persistDismissed = await readLocationSheetPersistDismissed();
+      if (persistDismissed && !state.locationSheetDismissedSession) {
+        set({ locationSheetDismissedSession: true });
+      }
+
+      // Header / explicit tap — always allow the sheet.
+      if (options?.forceFromUser) {
+        set({
+          permissionStatus: readiness.permissionStatus,
+          showPermissionModal: true,
+        });
+        return;
+      }
+
+      // Sheet already visible (Enable poll / resume) — keep it; only refresh status.
+      if (state.showPermissionModal) {
         set({ permissionStatus: readiness.permissionStatus });
         return;
       }
-      set({
-        permissionStatus: readiness.permissionStatus,
-        showPermissionModal: true,
-      });
+
+      // Dismissed this session or a prior cold start — stay quiet (do not open).
+      if (state.locationSheetDismissedSession || persistDismissed) {
+        set({ permissionStatus: readiness.permissionStatus });
+        return;
+      }
+
+      // Saved / last-known delivery pin already works — don't nag for GPS.
+      if (hasUsableDeliveryPin(state)) {
+        set({ permissionStatus: readiness.permissionStatus });
+        return;
+      }
+
+      // Auto-open ONLY for first-time undetermined permission.
+      // "Device location not enabled" (services off / denied) must not appear on every entry.
+      if (readiness.permissionStatus === "undetermined") {
+        set({
+          permissionStatus: "undetermined",
+          showPermissionModal: true,
+        });
+        return;
+      }
+
+      set({ permissionStatus: readiness.permissionStatus });
     } catch {
-      if (!options?.force && get().locationSheetDismissedSession) return;
-      set({ showPermissionModal: true });
+      if (options?.forceFromUser) {
+        set({ showPermissionModal: true });
+        return;
+      }
+      const state = get();
+      if (state.showPermissionModal) return;
+      const persistDismissed = await readLocationSheetPersistDismissed();
+      if (state.locationSheetDismissedSession || persistDismissed) return;
+      if (hasUsableDeliveryPin(state)) return;
+      // Fail closed without nagging services-off users on every launch.
     }
   },
 
@@ -961,6 +1057,7 @@ export const useLocationStore = create<LocationState>((set, get) => ({
 
   requestPermissionAndFetch: async (options) => {
     const forceDevice = options?.forceDevice === true;
+    const openSheetRequested = options?.openSheet === true;
     // Mark hydrated on first attempt; hydration may also come from AsyncStorage clear.
     if (!get().locationHydrated) set({ locationHydrated: true });
 
@@ -983,7 +1080,12 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       const readiness = await getDeviceLocationReadiness();
       logMetric("location_permission_ms", Date.now() - permT0);
       if (readiness.isReady) {
-        set({ permissionStatus: "granted", showPermissionModal: false });
+        writeLocationSheetPersistDismissed(false);
+        set({
+          permissionStatus: "granted",
+          showPermissionModal: false,
+          locationSheetDismissedSession: false,
+        });
         // Permission already granted — fetch even if SMS sheet is up (no OS dialog).
         const ok = await progressiveDeviceFetch(forceDevice);
         if (!ok) set({ loading: false });
@@ -994,10 +1096,24 @@ export const useLocationStore = create<LocationState>((set, get) => ({
         set({ loading: false });
         return;
       }
+
+      const persistDismissed = await readLocationSheetPersistDismissed();
+      if (persistDismissed) {
+        set({ locationSheetDismissedSession: true });
+      }
+      const suppressed =
+        get().locationSheetDismissedSession || persistDismissed || hasUsableDeliveryPin(get());
+
+      // Home GPS kick / Stage B must NOT open "Device location not enabled" every entry.
+      // Only first-time undetermined (never asked) may auto-open, unless openSheet was set.
+      const mayAutoOpenUndetermined =
+        readiness.permissionStatus === "undetermined" && !suppressed;
+      const openSheet = openSheetRequested || mayAutoOpenUndetermined;
+
       if (readiness.permissionStatus === "denied") {
         set({
           permissionStatus: "denied",
-          showPermissionModal: true,
+          showPermissionModal: openSheet,
           loading: false,
         });
         return;
@@ -1005,15 +1121,15 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       if (readiness.permissionStatus === "undetermined") {
         set({
           permissionStatus: "undetermined",
-          showPermissionModal: true,
+          showPermissionModal: openSheet,
           loading: false,
         });
         return;
       }
-      // App permission granted but device location toggle is off.
+      // App permission granted but device location toggle is off — no auto nag.
       set({
         permissionStatus: "granted",
-        showPermissionModal: true,
+        showPermissionModal: openSheetRequested,
         loading: false,
       });
     } catch (e) {
@@ -1021,7 +1137,8 @@ export const useLocationStore = create<LocationState>((set, get) => ({
       set({
         error: message,
         loading: false,
-        showPermissionModal: !isSmsBlockingLocationPrompts(),
+        // Never pop the sheet from a background GPS failure.
+        showPermissionModal: false,
       });
     }
   },

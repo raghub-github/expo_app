@@ -228,15 +228,29 @@ export type MenuApprovalBadge = {
 /**
  * Photo reject keeps approval_status PENDING|APPROVED while primary image is REJECTED.
  * Prefer "Image rejected" over "Pending" so merchant portal matches Partner Menu.
+ * Orphaned approval_status=PENDING (no pending photo / change work) must not show Pending.
  */
 export function resolveMenuApprovalBadge(
-  item: Pick<MenuItem, "approval_status" | "primary_image_moderation_status" | "rejection_reason">,
+  item: Pick<MenuItem, "approval_status" | "primary_image_moderation_status" | "rejection_reason"> & {
+    pending_review_image_url?: string | null;
+    has_pending_change_request?: boolean | null;
+    item_image_url?: string | null;
+  },
   opts?: { pendingLabel?: string; showApproved?: boolean }
 ): MenuApprovalBadge | null {
   const approval = String(item.approval_status ?? "PENDING").toUpperCase();
   const reason =
     typeof item.rejection_reason === "string" ? item.rejection_reason.trim() || null : null;
   const pendingLabel = opts?.pendingLabel ?? "Pending";
+  const primaryMod = String(item.primary_image_moderation_status ?? "").toUpperCase();
+  const hasImage = Boolean(
+    (typeof item.pending_review_image_url === "string" && item.pending_review_image_url.trim()) ||
+      (typeof item.item_image_url === "string" && item.item_image_url.trim())
+  );
+  const photoPending =
+    Boolean(item.pending_review_image_url) || (hasImage && primaryMod === "PENDING");
+  const changePending = Boolean(item.has_pending_change_request);
+  const hasRealPendingWork = changePending || photoPending;
 
   if (itemPrimaryImageRejected(item)) {
     return { kind: "image_rejected", label: "Image rejected", reason };
@@ -244,7 +258,7 @@ export function resolveMenuApprovalBadge(
   if (approval === "REJECTED") {
     return { kind: "rejected", label: "Rejected", reason };
   }
-  if (approval === "PENDING") {
+  if (approval === "PENDING" && hasRealPendingWork) {
     return { kind: "pending", label: pendingLabel, reason: null };
   }
   if (approval === "APPROVED" && opts?.showApproved !== false) {

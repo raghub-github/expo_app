@@ -26,6 +26,7 @@ import {
   invalidateDeviceLocationReadiness,
 } from "@gatimitra/expo-location-kit";
 import { runNotificationPushAllow } from "@/lib/notificationPushAllow";
+import { isSessionGpsBootstrapActive } from "@/lib/sessionLocationBootstrap";
 
 export function CustomerPermissionSheetsHost() {
   const segments = useSegments() as string[];
@@ -57,20 +58,33 @@ export function CustomerPermissionSheetsHost() {
     if (useNotificationPushPromptStore.getState().showSheet) return;
     await runExclusiveActiveLocationReconcile(async () => {
       invalidateDeviceLocationReadiness();
-      await promptLocationPermissionIfNeeded({ force: true, skipDeviceFetch: true });
       const readiness = await getDeviceLocationReadiness({ force: true });
-      if (readiness.isReady) {
-        void requestPermissionAndFetch({ forceDevice: true });
+
+      // Restore saved / backend pin BEFORE any sheet decision — HOME in the sheet
+      // meant the store was still empty while addresses already existed.
+      if (!readiness.isReady && useAuthStore.getState().session) {
+        const { applyActiveLocationFromBackend } = await import(
+          "@/lib/applyActiveLocationFromBackend"
+        );
+        await applyActiveLocationFromBackend(queryClient);
       }
+
+      // No forceFromUser — undetermined only; services-off / dismissed stay quiet.
+      await promptLocationPermissionIfNeeded({ skipDeviceFetch: true });
+
       if (!readiness.isReady) {
-        if (useAuthStore.getState().session) {
-          const { applyActiveLocationFromBackend } = await import(
-            "@/lib/applyActiveLocationFromBackend"
-          );
-          await applyActiveLocationFromBackend(queryClient);
-        }
         return "done";
       }
+
+      // Join the shared progressive session — skip if Stage A early kick / Stage B
+      // already owns acquisition (forceDevice restarts feel like a second GPS storm).
+      if (
+        useLocationStore.getState().locationSource !== "selected" &&
+        !isSessionGpsBootstrapActive()
+      ) {
+        void requestPermissionAndFetch({ forceDevice: true });
+      }
+
       if (useAuthStore.getState().session) {
         const result = await reconcileActiveLocationFromGps(queryClient);
         if (__DEV__) {
@@ -83,7 +97,7 @@ export function CustomerPermissionSheetsHost() {
             retentionRadiusM: result?.retentionRadiusM ?? null,
           });
         }
-      } else {
+      } else if (!isSessionGpsBootstrapActive()) {
         await requestPermissionAndFetch({ forceDevice: true });
       }
       return "done";
@@ -114,18 +128,20 @@ export function CustomerPermissionSheetsHost() {
         invalidateDeviceLocationReadiness();
         const readiness = await getDeviceLocationReadiness({ force: true });
         const loc = useLocationStore.getState();
-        if (readiness.isReady && loc.locationSource !== "selected") {
-          void requestPermissionAndFetch({ forceDevice: true });
-        }
+        // Resume GPS is owned by LocationPermissionResumeCheck — sheets only open UI.
         if (!isActiveLocationReconcileReady()) {
           await finishActiveLocationBootstrap();
-        } else if (readiness.isReady && useAuthStore.getState().session) {
+        } else if (
+          readiness.isReady &&
+          loc.locationSource !== "selected" &&
+          useAuthStore.getState().session
+        ) {
           void reconcileActiveLocationFromGps(queryClient);
         }
       })();
     });
     return () => sub.remove();
-  }, [canShow, recheckAfterAppActive, finishActiveLocationBootstrap, requestPermissionAndFetch, queryClient]);
+  }, [canShow, recheckAfterAppActive, finishActiveLocationBootstrap, queryClient]);
 
   useEffect(() => {
     if (!canShow || blocksLocation || allowInFlight) return;

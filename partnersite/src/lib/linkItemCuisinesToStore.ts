@@ -1,12 +1,15 @@
 /**
  * Link item cuisine selections to the store profile via cuisine_master + plan limits
- * (POST /api/merchant/store-cuisines/link). Call after a menu item is saved successfully.
+ * (POST /api/merchant/store-cuisines/link or ensure-name). Call after a menu item is saved successfully.
+ *
+ * Free-text cuisines that are not in the catalog are still added (created + linked).
+ * Failures here must not block the already-saved menu item — keep errors soft.
  */
 export async function linkItemCuisineSelectionsToStoreProfile(
   storeId: string,
   cuisineTypeCsv: string | null | undefined
 ): Promise<{ linked: number; errors: string[] }> {
-  const names = (cuisineTypeCsv ?? "")
+  const names = (cuisineTypeCsv ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
@@ -20,8 +23,12 @@ export async function linkItemCuisineSelectionsToStoreProfile(
     cuisineDetails?: Array<{ id?: number; name?: string }>;
     catalog?: Array<{ id?: number; name?: string }>;
   };
+
+  // Auth / load failures: item is already saved — do not surface a hard toast.
   if (!res.ok) {
-    return { linked: 0, errors: ['Could not load store cuisines'] };
+    console.warn('[linkItemCuisines] Could not load store cuisines', res.status);
+    // Still try ensure-by-name so free-text cuisines get created/linked when possible.
+    return ensureNamesWithoutCatalog(storeId, names);
   }
 
   const linkedNames = new Set<string>();
@@ -65,21 +72,67 @@ export async function linkItemCuisineSelectionsToStoreProfile(
         linkedNames.add(key);
         catalogByName.delete(key);
       } else {
-        const err = (await lr.json().catch(() => ({}))) as { message?: string; error?: string };
-        errors.push(
-          typeof err.message === 'string' && err.message.trim()
-            ? err.message
-            : typeof err.error === 'string'
-              ? err.error
-              : `Could not link "${name}"`
-        );
+        // Fall back to ensure-by-name (covers inactive catalog rows, etc.)
+        const ensured = await ensureOneName(storeId, name);
+        if (ensured.ok) {
+          linked++;
+          linkedNames.add(key);
+        } else if (ensured.message) {
+          errors.push(ensured.message);
+        }
       }
     } else {
-      errors.push(
-        `"${name}" is not available in the cuisine catalog. Pick a cuisine from the list or ask support to add it.`
-      );
+      // Not in catalog — create + link instead of blocking the partner.
+      const ensured = await ensureOneName(storeId, name);
+      if (ensured.ok) {
+        linked++;
+        linkedNames.add(key);
+      } else if (ensured.message) {
+        // Only surface plan-limit style errors; never "not in catalog".
+        errors.push(ensured.message);
+      }
     }
   }
 
+  return { linked, errors };
+}
+
+async function ensureOneName(
+  storeId: string,
+  name: string
+): Promise<{ ok: boolean; message?: string }> {
+  const lr = await fetch('/api/merchant/store-cuisines/ensure-name', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ storeId, name }),
+  });
+  if (lr.ok) return { ok: true };
+  const err = (await lr.json().catch(() => ({}))) as { message?: string; error?: string };
+  const message =
+    typeof err.message === 'string' && err.message.trim()
+      ? err.message
+      : typeof err.error === 'string' && err.error !== 'Not authenticated' && err.error !== 'Merchant not found'
+        ? err.error
+        : undefined;
+  // Soft-skip auth/transient failures so item save UX stays clean.
+  if (lr.status === 401 || lr.status === 403) {
+    console.warn('[linkItemCuisines] ensure-name auth failed', lr.status, name);
+    return { ok: false };
+  }
+  return { ok: false, message: message || `Could not add "${name}"` };
+}
+
+async function ensureNamesWithoutCatalog(
+  storeId: string,
+  names: string[]
+): Promise<{ linked: number; errors: string[] }> {
+  let linked = 0;
+  const errors: string[] = [];
+  for (const name of names) {
+    const ensured = await ensureOneName(storeId, name);
+    if (ensured.ok) linked++;
+    else if (ensured.message) errors.push(ensured.message);
+  }
   return { linked, errors };
 }

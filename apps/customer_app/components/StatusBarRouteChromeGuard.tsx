@@ -8,6 +8,7 @@ import {
 } from "react-native";
 import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { HOME_DARK } from "@/constants/homeDarkTheme";
 
 const DEFAULT_SOLID_BAR = GatiMitraColors.softBackground;
 const ONBOARDING_BAR = GatiMitraColors.splashMint;
@@ -29,6 +30,26 @@ function barStyleFromChrome(
 function applyBarVisibility(barStyle: "light-content" | "dark-content") {
   NativeStatusBar.setHidden(false, "none");
   NativeStatusBar.setBarStyle(barStyle, true);
+}
+
+/** Tabs Home dark shell — white icons + matching page chrome. */
+function applyTabsHomeStatusBar() {
+  applyBarVisibility("light-content");
+  if (Platform.OS === "android") {
+    NativeStatusBar.setTranslucent(true);
+    NativeStatusBar.setBackgroundColor(HOME_DARK.page, true);
+  }
+  useScreenChromeStore.setState({
+    statusBarBackground: HOME_DARK.page,
+    statusBarStyle: "light",
+    hideStatusBarSpacer: true,
+  });
+}
+
+function isTabsHomeRoute(segments: readonly string[]): boolean {
+  const root = segments[0] ?? "";
+  const leaf = segments[1] ?? "";
+  return root === "(tabs)" && (leaf === "" || leaf === "index");
 }
 
 function assertSplashStatusBar() {
@@ -121,6 +142,8 @@ export function StatusBarRouteChromeGuard() {
   useEffect(() => {
     if (bootstrapActive) {
       assertSplashStatusBar();
+    } else if (isTabsHomeRoute(segments)) {
+      applyTabsHomeStatusBar();
     } else if (routeAllowsImmersiveStatusBar(segments, hideStatusBarSpacer)) {
       const chrome = useScreenChromeStore.getState();
       applyBarVisibility(
@@ -154,6 +177,10 @@ export function StatusBarRouteChromeGuard() {
       if (state !== "active") return;
       if (useScreenChromeStore.getState().bootstrapActive) {
         assertSplashStatusBar();
+        return;
+      }
+      if (isTabsHomeRoute(segments)) {
+        applyTabsHomeStatusBar();
         return;
       }
       if (routeAllowsImmersiveStatusBar(segments, hideStatusBarSpacer)) {
@@ -192,6 +219,10 @@ export function StatusBarRouteChromeGuard() {
   useEffect(() => {
     if (bootstrapActive) {
       assertSplashStatusBar();
+      return;
+    }
+    if (isTabsHomeRoute(segments)) {
+      applyTabsHomeStatusBar();
       return;
     }
     if (routeAllowsImmersiveStatusBar(segments, hideStatusBarSpacer)) {

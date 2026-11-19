@@ -15,7 +15,7 @@
       "backgroundColor": "#14b8a6"
     },
     "assetBundlePatterns": [
-      "**/*"
+      "assets/**/*"
     ],
     "androidStatusBar": {
       "hidden": false,

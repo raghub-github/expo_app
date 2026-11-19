@@ -93,6 +93,7 @@ import {
   type UserAppCategoryItem,
 } from "@/services/userAppCategory.service";
 import { useLocationStore } from "@/store/locationStore";
+import { isSessionGpsBootstrapActive } from "@/lib/sessionLocationBootstrap";
 import { useStoreStatusStore } from "@/store/storeStatusStore";
 import { useDebouncedCoords } from "@/hooks/useDebouncedCoords";
 import { useLocationWeather } from "@/hooks/useLocationWeather";
@@ -740,6 +741,8 @@ export default function FoodMerchantsScreen() {
     if (!locationHydrated) return;
     if (locationSource === "selected") return;
     if (permissionStatus !== "granted" && permissionStatus !== "undetermined") return;
+    // Session bootstrap already owns progressive GPS — don't start a parallel storm.
+    if (isSessionGpsBootstrapActive()) return;
     const hasCoords = useLocationStore.getState().coords != null;
     // Cache on screen → progressive refine. Empty → first fix.
     void requestPermissionAndFetch({ forceDevice: !hasCoords });
@@ -2840,7 +2843,8 @@ export default function FoodMerchantsScreen() {
           onScroll={
             isGridFirstLayout || isClassicLayout ? onClassicOrGridScroll : undefined
           }
-          scrollEventThrottle={1}
+          // 16ms ≈ 60fps sampling — throttle=1 flooded the JS thread during fling in release/Hermes.
+          scrollEventThrottle={16}
           onScrollBeginDrag={onFoodHomeListScrollBegin}
           onScrollEndDrag={onFoodHomeListScrollEndDrag}
           onMomentumScrollBegin={onFoodHomeListScrollBegin}

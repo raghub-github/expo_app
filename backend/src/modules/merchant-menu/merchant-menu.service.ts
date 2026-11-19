@@ -1696,35 +1696,23 @@ export async function setItemApproval(
   return (result.count ?? 0) > 0;
 }
 
-/** When merchant edits an item or its variants/addons/customizations, set item back to PENDING and log. */
+/**
+ * Image Review uses merchant_menu_item_images.moderation_status; Changes Review uses
+ * merchant_menu_item_review_requests. Do not flip live approval_status APPROVED → PENDING
+ * (orphan "Pending Approval" badges with empty Admin queues).
+ */
 export async function setItemPendingForReReview(
   itemId: number,
   storeIdNum: number,
   opts: { changed_by: string; changed_by_role?: string }
 ): Promise<boolean> {
+  void opts;
   const sql = getSql();
-  const [before] = await sql`
-    SELECT approval_status::text FROM merchant_menu_items WHERE id = ${itemId} AND store_id = ${storeIdNum}
-  `;
-  const previousStatus = before ? (before as any).approval_status : null;
   const result = await sql`
     UPDATE merchant_menu_items
-    SET approval_status = 'PENDING'::merchant_menu_item_approval_status,
-        approved_at = NULL,
-        approved_by = NULL,
-        updated_at = NOW()
+    SET updated_at = NOW()
     WHERE id = ${itemId} AND store_id = ${storeIdNum}
   `;
-  if ((result.count ?? 0) > 0 && previousStatus !== "PENDING") {
-    try {
-      await sql`
-        INSERT INTO merchant_menu_item_approval_log (menu_item_id, previous_status, new_status, changed_by, changed_by_role, note)
-        VALUES (${itemId}, ${previousStatus}, 'PENDING', ${opts.changed_by}, ${opts.changed_by_role ?? "merchant"}, 'Edited by merchant – pending re-review')
-      `;
-    } catch {
-      /* log table may not exist */
-    }
-  }
   return (result.count ?? 0) > 0;
 }
 

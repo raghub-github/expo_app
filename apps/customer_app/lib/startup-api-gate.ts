@@ -98,3 +98,14 @@ export async function gateStartupApiCall<T>(fn: () => Promise<T>): Promise<T> {
 export function extendStartupApiGate(ms = 10_000): void {
   startupEndsAt = Math.max(startupEndsAt, Date.now() + ms);
 }
+
+/**
+ * End the cold-start concurrency gate (Home shell / splash exit).
+ * In-flight requests still release slots via leaveStartupApiGate.
+ */
+export function endStartupApiGate(): void {
+  startupEndsAt = 0;
+  while (waiters.length) {
+    releaseNextWaiter();
+  }
+}

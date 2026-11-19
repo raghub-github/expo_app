@@ -1,12 +1,11 @@
 /**
  * Zomato-style Home skeletons:
- * - Cold start: real header + real tab bar; main body = rotating slogans + spinner
+ * - Cold start: real header + real tab bar; main body = text shimmer + spinner
  * - Section skeletons: still used for progressive Home content swap-in
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
-  Text,
   StyleSheet,
   Dimensions,
   ActivityIndicator,
@@ -16,6 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Reanimated, {
   Easing,
   cancelAnimation,
+  interpolateColor,
   useAnimatedStyle,
   useSharedValue,
   withDelay,
@@ -27,6 +27,8 @@ import { GMSkeleton, HomeOfferBannerSkeleton } from "@/components/ShimmerSkeleto
 import { AppText } from "@/components/AppText";
 import { HomeLocationHeader } from "@/components/home/HomeScreenHeader";
 import { GatiMitraColors } from "@/constants/gatimitra";
+import { HOME_DARK } from "@/constants/homeDarkTheme";
+import { StoreFonts } from "@/constants/storeTypography";
 import {
   HOME_HEADER_BELOW_STATUS_GAP,
   HOME_WEATHER_BANNER_H,
@@ -52,9 +54,10 @@ const GAP = 12;
 const COLS = 2;
 const CARD_W = Math.floor((SCREEN_W - PAD * 2 - GAP * (COLS - 1)) / COLS);
 const PROMO_W = SCREEN_W - PAD * 2;
-const PAGE_BG = GatiMitraColors.softBackground;
+
+const PAGE_BG = HOME_DARK.page;
 const TAB_ACTIVE = GatiMitraColors.primaryMint;
-const TAB_INACTIVE = GatiMitraColors.textSecondary;
+const TAB_INACTIVE = HOME_DARK.textMuted;
 /** Short single-line slogans — never wrap on phone widths. */
 const HOME_LOADING_SLOGANS = [
   "Give us a sec — lining up nearby.",
@@ -65,7 +68,12 @@ const HOME_LOADING_SLOGANS = [
   "Warming up GatiMitra…",
 ] as const;
 
-const SLOGAN_SWAP_MS = 1200;
+/** Full-line rotation while shimmer keeps running (instant swap, no fade). */
+const SLOGAN_ROTATE_MS = 3200;
+/** One left→right highlight pass (seamless loop). */
+const SHIMMER_SWEEP_MS = 1600;
+const SLOGAN_MUTED = HOME_DARK.textDim;
+const SLOGAN_BRIGHT = GatiMitraColors.splashMint;
 
 /** Survives remounts so the next Home open doesn't repeat the last slogan. */
 let lastHomeLoadingSloganIndex: number | null = null;
@@ -113,13 +121,13 @@ export function HomeLocationHeaderSkeleton({ reason = "location_pending" }: { re
       onLayout={life.onLayout}
     >
       <View style={styles.locationRow}>
-        <GMSkeleton style={styles.pinCircle} />
+        <GMSkeleton dark style={styles.pinCircle} />
         <View style={styles.locationTextCol}>
-          <GMSkeleton style={styles.locationPrimaryLine} />
-          <GMSkeleton style={styles.locationSecondaryLine} />
+          <GMSkeleton dark style={styles.locationPrimaryLine} />
+          <GMSkeleton dark style={styles.locationSecondaryLine} />
         </View>
-        <GMSkeleton style={styles.walletPill} />
-        <GMSkeleton style={styles.bellCircle} />
+        <GMSkeleton dark style={styles.walletPill} />
+        <GMSkeleton dark style={styles.bellCircle} />
       </View>
     </View>
   );
@@ -135,7 +143,7 @@ export function HomeWeatherBannerSkeleton({ reason = "weather_pending" }: { reas
       onLayout={life.onLayout}
     >
       <View style={styles.weatherWrap}>
-        <GMSkeleton style={styles.weatherPill} />
+        <GMSkeleton dark style={styles.weatherPill} />
       </View>
     </View>
   );
@@ -154,9 +162,9 @@ export function HomePromoBannerSkeleton({
     <View style={styles.promoWrap} accessibilityLabel="Loading offers" onLayout={life.onLayout}>
       <HomeOfferBannerSkeleton width={PROMO_W} height={cardHeight} />
       <View style={styles.dotsRow}>
-        <GMSkeleton style={styles.dot} />
-        <GMSkeleton style={styles.dot} />
-        <GMSkeleton style={styles.dot} />
+        <GMSkeleton dark style={styles.dot} />
+        <GMSkeleton dark style={styles.dot} />
+        <GMSkeleton dark style={styles.dot} />
       </View>
     </View>
   );
@@ -176,11 +184,11 @@ export function HomeServicesGridSkeleton({
       {Array.from({ length: 6 }).map((_, i) => (
         <View key={i} style={[styles.cardShadow, { height: cardHeight, width: CARD_W }]}>
           <View style={[styles.card, { height: cardHeight }]}>
-            <GMSkeleton style={styles.cardTitle} />
-            <GMSkeleton style={styles.cardDesc} />
-            <GMSkeleton style={styles.cardDescShort} />
-            <GMSkeleton style={styles.cardPill} />
-            <GMSkeleton style={styles.cardArt} />
+            <GMSkeleton dark style={styles.cardTitle} />
+            <GMSkeleton dark style={styles.cardDesc} />
+            <GMSkeleton dark style={styles.cardDescShort} />
+            <GMSkeleton dark style={styles.cardPill} />
+            <GMSkeleton dark style={styles.cardArt} />
           </View>
         </View>
       ))}
@@ -203,74 +211,55 @@ export function HomeBrandBannerSkeleton({
       accessibilityLabel="Loading brand banner"
       onLayout={life.onLayout}
     >
-      <GMSkeleton style={[styles.brandBanner, { height: bannerHeight }]} />
+      <GMSkeleton dark style={[styles.brandBanner, { height: bannerHeight }]} />
     </View>
-  );
-}
-
-/** Soft pulse ring — Reanimated UI-thread (not blocked by JS bridge). */
-function PulseRing({ delayMs, size }: { delayMs: number; size: number }) {
-  const progress = useSharedValue(0);
-  useEffect(() => {
-    progress.value = withDelay(
-      delayMs,
-      withRepeat(
-        withTiming(1, { duration: 1600, easing: Easing.out(Easing.cubic) }),
-        -1,
-        false
-      )
-    );
-    return () => cancelAnimation(progress);
-  }, [delayMs, progress]);
-  const style = useAnimatedStyle(() => ({
-    opacity: 0.28 * (1 - progress.value),
-    transform: [{ scale: 0.55 + progress.value * 0.7 }],
-  }));
-  return (
-    <Reanimated.View
-      pointerEvents="none"
-      style={[
-        styles.pulseRing,
-        { width: size, height: size, borderRadius: size / 2 },
-        style,
-      ]}
-    />
   );
 }
 
 function BounceDot({ delayMs }: { delayMs: number }) {
   const y = useSharedValue(0);
+  const opacity = useSharedValue(0.4);
   useEffect(() => {
     y.value = withDelay(
       delayMs,
       withRepeat(
         withSequence(
-          withTiming(-7, { duration: 280, easing: Easing.out(Easing.quad) }),
-          withTiming(0, { duration: 280, easing: Easing.in(Easing.quad) }),
-          withTiming(0, { duration: 420 })
+          withTiming(-11, { duration: 320, easing: Easing.out(Easing.cubic) }),
+          withTiming(0, { duration: 320, easing: Easing.in(Easing.cubic) }),
+          withTiming(0, { duration: 360 })
         ),
         -1,
         false
       )
     );
-    return () => cancelAnimation(y);
-  }, [delayMs, y]);
-  const style = useAnimatedStyle(() => {
-    const lifted = y.value < 0 ? -y.value / 7 : 0;
-    return {
-      transform: [{ translateY: y.value }],
-      opacity: 0.35 + Math.min(1, lifted) * 0.65,
+    opacity.value = withDelay(
+      delayMs,
+      withRepeat(
+        withSequence(
+          withTiming(1, { duration: 320, easing: Easing.out(Easing.quad) }),
+          withTiming(0.4, { duration: 320, easing: Easing.in(Easing.quad) }),
+          withTiming(0.4, { duration: 360 })
+        ),
+        -1,
+        false
+      )
+    );
+    return () => {
+      cancelAnimation(y);
+      cancelAnimation(opacity);
     };
-  });
+  }, [delayMs, y, opacity]);
+  const style = useAnimatedStyle(() => ({
+    transform: [{ translateY: y.value }],
+    opacity: opacity.value,
+  }));
   return <Reanimated.View style={[styles.bounceDot, style]} />;
 }
 
-/** Compact Zomato-like spinner — small OS indicator + light pulse. */
-function ZomatoLoadSpinner() {
+/** Compact brand spinner under the shimmer line. */
+function SimpleLoadSpinner() {
   return (
     <View style={styles.spinnerStage} accessibilityLabel="Loading">
-      <PulseRing delayMs={0} size={40} />
-      <PulseRing delayMs={500} size={40} />
       <ActivityIndicator size="small" color={GatiMitraColors.splashMint} />
     </View>
   );
@@ -278,68 +267,69 @@ function ZomatoLoadSpinner() {
 
 function BounceDots() {
   return (
-    <View style={styles.bounceDotsRow}>
+    <View style={styles.bounceDotsRow} collapsable={false}>
       <BounceDot delayMs={0} />
-      <BounceDot delayMs={140} />
-      <BounceDot delayMs={280} />
+      <BounceDot delayMs={150} />
+      <BounceDot delayMs={300} />
     </View>
   );
 }
 
 /**
- * Slogan: no background chip. Fade + vertical slide via marginTop / color
- * (layout-safe on this cold-start shell).
+ * Single-line soft pulse (one Reanimated worklet) — per-glyph color interpolate
+ * was spawning ~30 UI-thread nodes and remounting them every slogan rotate,
+ * which janked the post-splash frame on release/Hermes mid devices.
  */
-function AnimatedLoadingSlogan() {
-  // Fresh random pick on every mount; never equal to the previous open's slogan.
+function ShimmerSlogan() {
   const [index, setIndex] = useState(() => {
     const next = pickNextHomeLoadingSloganIndex(lastHomeLoadingSloganIndex);
     lastHomeLoadingSloganIndex = next;
     return next;
   });
-  const [tick, setTick] = useState(0);
-  const lastSwapAt = useRef(Date.now());
+  const pulse = useSharedValue(0);
+  const line = HOME_LOADING_SLOGANS[index] ?? HOME_LOADING_SLOGANS[0]!;
 
   useEffect(() => {
-    const motionId = setInterval(() => setTick((n) => n + 1), 50);
-    const swapId = setInterval(() => {
+    pulse.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: SHIMMER_SWEEP_MS, easing: Easing.inOut(Easing.quad) }),
+        withTiming(0, { duration: SHIMMER_SWEEP_MS, easing: Easing.inOut(Easing.quad) })
+      ),
+      -1,
+      false
+    );
+    return () => cancelAnimation(pulse);
+  }, [pulse]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
       setIndex((i) => {
         const next = pickNextHomeLoadingSloganIndex(i);
         lastHomeLoadingSloganIndex = next;
-        lastSwapAt.current = Date.now();
         return next;
       });
-    }, SLOGAN_SWAP_MS);
-    return () => {
-      clearInterval(motionId);
-      clearInterval(swapId);
-    };
+    }, SLOGAN_ROTATE_MS);
+    return () => clearInterval(id);
   }, []);
 
-  const elapsed = tick * 50;
-  const wave = Math.sin(elapsed / 320);
-  const light = (Math.sin(elapsed / 450) + 1) / 2;
-  const sinceSwap = Date.now() - lastSwapAt.current;
-  // Slide in after each swap — keep opacity at 1 so text never looks washed out.
-  const enter = Math.min(1, sinceSwap / 400);
-  const enterEased = 1 - Math.pow(1 - enter, 3);
-  const slideY = (1 - enterEased) * 16 + wave * 4;
-  const line = HOME_LOADING_SLOGANS[index] ?? HOME_LOADING_SLOGANS[0]!;
+  const textStyle = useAnimatedStyle(() => ({
+    color: interpolateColor(pulse.value, [0, 1], [SLOGAN_MUTED, SLOGAN_BRIGHT]),
+    opacity: 0.72 + pulse.value * 0.28,
+  }));
 
   return (
     <View
       collapsable={false}
-      style={[styles.sloganAnimWrap, { marginTop: slideY }]}
+      style={styles.sloganAnimWrap}
+      accessibilityLabel={line}
     >
-      <Text
-        style={[
-          styles.sloganText,
-          { color: light > 0.55 ? "#0F766E" : "#4B5563" },
-        ]}
+      <Reanimated.Text
+        style={[styles.sloganGlyph, styles.sloganLine, textStyle]}
+        allowFontScaling={false}
         numberOfLines={1}
       >
         {line}
-      </Text>
+      </Reanimated.Text>
     </View>
   );
 }
@@ -348,7 +338,7 @@ function AnimatedLoadingSlogan() {
  * Cold-start Home shell (Zomato reference):
  * - Real header with live/cached location (updates as store hydrates)
  * - Real tab bar chrome (icons gated on Ionicons ready)
- * - Main body: animated slogan + pulse rings + spinner + bounce dots
+ * - Main body: text shimmer slogan + simple spinner + bounce dots
  */
 export function HomeColdStartSkeleton({ reason = "tabs_hold" }: { reason?: string }) {
   const insets = useSafeAreaInsets();
@@ -432,12 +422,13 @@ export function HomeColdStartSkeleton({ reason = "tabs_hold" }: { reason?: strin
 
       <View style={[styles.mainBody, { paddingBottom: tabBarReserve + 28 }]} collapsable={false}>
         <View style={styles.sloganCenter} accessibilityLabel="Loading content" collapsable={false}>
-          <AnimatedLoadingSlogan />
-          <ZomatoLoadSpinner />
+          <ShimmerSlogan />
+          <SimpleLoadSpinner />
         </View>
-        {/* Dots sit just above the absolute tab bar. */}
+        {/* Dots sit just above the absolute tab bar — no elevation (Android freezes Reanimated). */}
         <View
           pointerEvents="none"
+          collapsable={false}
           style={[styles.dotsDock, { bottom: tabBarReserve + 10 }]}
         >
           <BounceDots />
@@ -446,6 +437,7 @@ export function HomeColdStartSkeleton({ reason = "tabs_hold" }: { reason?: strin
 
       <View
         pointerEvents="none"
+        collapsable={false}
         style={[styles.tabSheet, { paddingBottom: bottomInset, height: 58 + bottomInset }]}
         accessibilityLabel="Home tabs"
       >
@@ -512,25 +504,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     alignSelf: "center",
   },
-  sloganText: {
-    fontSize: 15,
-    lineHeight: 22,
-    textAlign: "center",
-    color: "#374151",
-    fontFamily: "Lora_700Bold",
-    width: "100%",
-  },
-  spinnerStage: {
-    marginTop: 14,
-    width: 40,
-    height: 40,
+  sloganShimmerRow: {
+    flexDirection: "row",
+    flexWrap: "nowrap",
     alignItems: "center",
     justifyContent: "center",
   },
-  pulseRing: {
-    position: "absolute",
-    borderWidth: 1.5,
-    borderColor: GatiMitraColors.splashMint,
+  sloganLine: {
+    width: "100%",
+    textAlign: "center",
+  },
+  sloganGlyph: {
+    fontSize: 16,
+    lineHeight: 24,
+    // Family alone — Android ignores/breaks custom faces when fontWeight is also set.
+    fontFamily: StoreFonts.loraBold,
+    letterSpacing: 0.15,
+    includeFontPadding: false,
+    color: SLOGAN_MUTED,
+  },
+  spinnerStage: {
+    marginTop: 16,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
   },
   dotsDock: {
     position: "absolute",
@@ -538,18 +535,21 @@ const styles = StyleSheet.create({
     right: 0,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "visible",
+    zIndex: 2,
   },
   bounceDotsRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 7,
-    height: 14,
+    gap: 8,
+    height: 24,
+    overflow: "visible",
   },
   bounceDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 3,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
     backgroundColor: GatiMitraColors.splashMint,
   },
   tabIconFallback: {
@@ -643,76 +643,76 @@ const styles = StyleSheet.create({
     gap: GAP,
   },
   cardShadow: {
-    borderRadius: 14,
+    borderRadius: 22,
   },
   card: {
     width: "100%",
-    backgroundColor: "#EBEBED",
-    borderRadius: 14,
-    paddingTop: 12,
-    paddingHorizontal: 12,
+    backgroundColor: "#5A5A63",
+    borderRadius: 22,
+    paddingTop: 14,
+    paddingHorizontal: 14,
     overflow: "hidden",
   },
   cardTitle: {
-    height: 14,
-    width: "58%",
+    height: 16,
+    width: "52%",
     borderRadius: 6,
     marginBottom: 8,
   },
   cardDesc: {
-    height: 10,
-    width: "78%",
-    borderRadius: 5,
-    marginBottom: 5,
+    height: 0,
+    width: 0,
+    opacity: 0,
   },
   cardDescShort: {
-    height: 10,
-    width: "55%",
-    borderRadius: 5,
-    marginBottom: 10,
+    height: 0,
+    width: 0,
+    opacity: 0,
   },
   cardPill: {
     position: "absolute",
-    left: 10,
-    bottom: 10,
-    height: 22,
-    width: 88,
-    borderRadius: 11,
+    left: 0,
+    bottom: 0,
+    height: 28,
+    width: 96,
+    borderRadius: 0,
+    borderBottomLeftRadius: 22,
+    borderTopRightRadius: 14,
   },
   cardArt: {
     position: "absolute",
-    right: 10,
-    bottom: 12,
-    width: 52,
-    height: 52,
-    borderRadius: 12,
+    right: -4,
+    bottom: -6,
+    width: 90,
+    height: 90,
+    borderRadius: 14,
   },
   brandWrap: {
-    paddingHorizontal: PAD,
-    marginTop: 16,
-    marginBottom: 4,
+    paddingHorizontal: 0,
+    marginTop: 8,
+    marginBottom: 0,
   },
   brandBanner: {
-    width: SCREEN_W - PAD * 2,
-    borderRadius: 16,
+    width: SCREEN_W,
+    borderRadius: 0,
   },
   tabSheet: {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: HOME_DARK.card,
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#E5E7EB",
+    borderTopColor: HOME_DARK.border,
     justifyContent: "flex-start",
     paddingTop: 8,
-    shadowColor: "#0F172A",
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: -2 },
-    elevation: 12,
+    // No elevation — Android hardware layers freeze Reanimated bounce dots above.
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
   },
   tabRow: {
     flexDirection: "row",
