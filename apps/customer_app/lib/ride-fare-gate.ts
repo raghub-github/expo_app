@@ -95,6 +95,23 @@ export const RIDE_DUE_FARE_NOTICE =
   "Please clear the previous due fare to complete or book a new ride.";
 
 /** POST ride-fare-payment returned 409 — fare already settled; refresh UI instead of failing. */
+/**
+ * 409 for an in-app payment that landed after the ride / parcel was already paid
+ * another way (cash to the captain, the captain's QR): the backend refunds this
+ * payment. Show that — never a payment-success screen for money being returned.
+ */
+export function isFarePaidElsewhereRefundError(error: unknown): string | null {
+  const err = error as {
+    status?: number;
+    message?: string;
+    response?: { status?: number; data?: { message?: string } };
+  };
+  const status = err.status ?? err.response?.status;
+  const message = String(err.response?.data?.message ?? err.message ?? "");
+  if (status === 409 && /already paid/i.test(message) && /refund/i.test(message)) return message;
+  return null;
+}
+
 export function isRideFareAlreadyPaidError(error: unknown): boolean {
   const err = error as {
     status?: number;

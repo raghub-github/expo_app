@@ -15,6 +15,8 @@ import {
   readStoredGatiCashTxnId,
 } from "../../lib/gaticash-txn-id.js";
 import { customers, ordersCore, ordersParcel } from "../../db/schema.js";
+import { settleLateInAppFarePayment } from "../../lib/late-fare-capture.js";
+import { toTimestamptzParam } from "../../lib/sql-timestamps.js";
 import { customerOrderRefWhere } from "../../lib/order-ref-resolve.js";
 import { normalizeCustomerOrderStatus } from "../../lib/customer-order-status-resolve.js";
 
@@ -548,6 +550,43 @@ export async function getParcelFareBillForCustomer(input: {
   };
 }
 
+/**
+ * The parcel fare was already collected (rider cash, the rider's QR, or an
+ * earlier checkout). Same payment again → idempotent success; a different
+ * captured payment → refunded (lib/late-fare-capture.ts) and the app is told.
+ */
+async function answerParcelFareAlreadyPaid(
+  input: { razorpayOrderId?: string; razorpayPaymentId?: string; razorpaySignature?: string },
+  orderIdText: string,
+  amountPaid: number,
+  amountPaise: number | null
+): Promise<{ ok: true; amountPaid: number }> {
+  const paymentId = input.razorpayPaymentId?.trim() || null;
+  const signatureValid = Boolean(
+    input.razorpayOrderId?.trim() &&
+      paymentId &&
+      input.razorpaySignature?.trim() &&
+      verifyRazorpaySignature(input.razorpayOrderId.trim(), paymentId, input.razorpaySignature.trim())
+  );
+  const late = await settleLateInAppFarePayment({
+    service: "parcel",
+    orderIdText,
+    razorpayOrderId: input.razorpayOrderId?.trim() || null,
+    razorpayPaymentId: paymentId,
+    signatureValid,
+    amountPaise,
+  });
+  if (late.samePayment) return { ok: true, amountPaid };
+  throw Object.assign(
+    new Error(
+      late.refunded
+        ? "This parcel fare was already paid. Your online payment is being refunded to the original payment method."
+        : "Parcel fare is already paid"
+    ),
+    { statusCode: 409, code: late.refunded ? "ALREADY_PAID_REFUNDED" : "ALREADY_PAID" }
+  );
+}
+
 export async function confirmParcelFarePaymentForCustomer(input: {
   customerSub: string;
   orderRef: string;
@@ -603,7 +642,12 @@ export async function confirmParcelFarePaymentForCustomer(input: {
   }
 
   if (!isPaymentPending(orderRow.paymentStatus) || orderRow.cashCollectedAt != null) {
-    throw Object.assign(new Error("Parcel fare is already paid"), { statusCode: 409 });
+    return answerParcelFareAlreadyPaid(
+      input,
+      orderRow.orderId?.trim() || String(orderRow.id),
+      Math.round((Number(orderRow.grandTotal) || 0) * 100) / 100,
+      null
+    );
   }
 
   // Prefer live bill (GST / booking rules) so confirm matches checkout payable.
@@ -672,6 +716,8 @@ export async function confirmParcelFarePaymentForCustomer(input: {
   }
 
   const now = new Date();
+  // postgres.js bind params must be text, not a raw Date (a Date param 500s — see #340).
+  const nowParam = toTimestamptzParam(now);
   const prevSnap =
     orderRow.billingSnapshot != null && typeof orderRow.billingSnapshot === "object"
       ? (orderRow.billingSnapshot as Record<string, unknown>)
@@ -704,7 +750,8 @@ export async function confirmParcelFarePaymentForCustomer(input: {
   });
 
   // Single SQL transaction: lock → debit (idempotent) → mark paid → capture row.
-  await sql.begin(async (tx) => {
+  // "already": collected by someone else while this checkout ran (nothing debited).
+  const txOutcome = await sql.begin(async (tx): Promise<"settled" | "already"> => {
     const locked = await tx<{ payment_status: string | null }[]>`
       SELECT payment_status
       FROM orders_core
@@ -712,7 +759,7 @@ export async function confirmParcelFarePaymentForCustomer(input: {
       FOR UPDATE
     `;
     if (!isPaymentPending(locked[0]?.payment_status)) {
-      return;
+      return "already";
     }
 
     // Existing capture for this txn → heal paid flags and exit (webhook / double-tap).
@@ -727,20 +774,20 @@ export async function confirmParcelFarePaymentForCustomer(input: {
         SET payment_status = 'completed',
             payment_method = ${paymentMethodLabel},
             grand_total = ${String(fareDue)},
-            updated_at = ${now}
+            updated_at = ${nowParam}::timestamptz
         WHERE id = ${orderRow.id}
       `;
       await tx`
         UPDATE orders_parcel
-        SET cash_collected_at = COALESCE(cash_collected_at, ${now}),
+        SET cash_collected_at = COALESCE(cash_collected_at, ${nowParam}::timestamptz),
             amount_collected = ${String(fareDue)},
             final_fare = ${String(fareDue)},
             payment_method = ${paymentMethodLabel},
             is_cod = false,
-            updated_at = ${now}
+            updated_at = ${nowParam}::timestamptz
         WHERE order_id = ${orderRow.id}
       `;
-      return;
+      return "settled";
     }
 
     if (gatiCashApplied > 0.005 && gatiCashTxnId) {
@@ -771,18 +818,18 @@ export async function confirmParcelFarePaymentForCustomer(input: {
           payment_method = ${paymentMethodLabel},
           grand_total = ${String(fareDue)},
           billing_snapshot = ${snapText}::text::jsonb,
-          updated_at = ${now}
+          updated_at = ${nowParam}::timestamptz
       WHERE id = ${orderRow.id}
     `;
 
     await tx`
       UPDATE orders_parcel
-      SET cash_collected_at = ${now},
+      SET cash_collected_at = ${nowParam}::timestamptz,
           amount_collected = ${String(fareDue)},
           final_fare = ${String(fareDue)},
           payment_method = ${paymentMethodLabel},
           is_cod = false,
-          updated_at = ${now}
+          updated_at = ${nowParam}::timestamptz
       WHERE order_id = ${orderRow.id}
     `;
 
@@ -800,7 +847,7 @@ export async function confirmParcelFarePaymentForCustomer(input: {
           'INR',
           'PAID',
           ${gatewayPayload}::text::jsonb,
-          ${now}
+          ${nowParam}::timestamptz
         )
       `;
     } catch (err) {
@@ -808,7 +855,20 @@ export async function confirmParcelFarePaymentForCustomer(input: {
       if (!/duplicate key|unique constraint/i.test(msg)) throw err;
       // Concurrent insert won — order rows already updated above.
     }
+    return "settled";
   });
+
+  if (txOutcome === "already") {
+    return answerParcelFareAlreadyPaid(input, orderIdText, fareDue, Math.round(razorpayDue * 100));
+  }
+
+  // Paid in-app: a QR still open on the rider's phone can no longer be paid
+  // (a capture that still lands is refunded by the QR finalizer).
+  void import("../../lib/online-qr-capture.js")
+    .then(({ closeOpenQrsPaidElsewhere }) =>
+      closeOpenQrsPaidElsewhere(orderIdText, "parcel_online_qr", "paid_in_app")
+    )
+    .catch(() => undefined);
 
   return { ok: true, amountPaid: fareDue };
 }

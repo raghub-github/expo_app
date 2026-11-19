@@ -1223,13 +1223,19 @@ export async function riderRoutes(app: FastifyInstance) {
         ),
       ]);
       const total = wallet ? Number(wallet.totalBalance ?? 0) : 0;
-      const food = wallet ? Number(wallet.earningsFood ?? 0) : 0;
-      const parcel = wallet ? Number(wallet.earningsParcel ?? 0) : 0;
-      const ride = wallet ? Number(wallet.earningsPersonRide ?? 0) : 0;
+      const { getRiderWalletBreakdown, jobAwareServiceEarnings } = await import(
+        "../../lib/rider-wallet-breakdown.js"
+      );
+      // Ride/Parcel jobs count their full earning R (cash jobs included), not just
+      // what moved through the wallet.
+      const { food, parcel, ride } = await jobAwareServiceEarnings(riderId, {
+        food: wallet ? Number(wallet.earningsFood ?? 0) : 0,
+        parcel: wallet ? Number(wallet.earningsParcel ?? 0) : 0,
+        ride: wallet ? Number(wallet.earningsPersonRide ?? 0) : 0,
+      });
       const { getRiderWithdrawableBalance, getRiderWithdrawalLimits } = await import(
         "../../lib/rider-withdrawal.service.js"
       );
-      const { getRiderWalletBreakdown } = await import("../../lib/rider-wallet-breakdown.js");
       const [withdrawable, breakdownDetail, limits] = await Promise.all([
         getRiderWithdrawableBalance(riderId),
         getRiderWalletBreakdown(riderId),

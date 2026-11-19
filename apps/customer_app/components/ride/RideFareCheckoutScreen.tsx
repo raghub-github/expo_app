@@ -31,7 +31,7 @@ import { CheckoutGatiCashWalletBar } from "@/components/checkout/CheckoutGatiCas
 import { CheckoutOffersSheet } from "@/components/checkout/CheckoutOffersSheet";
 import { walletService } from "@/services/wallet.service";
 import { addressService } from "@/services/address.service";
-import { isRideFareAlreadyPaidError } from "@/lib/ride-fare-gate";
+import { isFarePaidElsewhereRefundError, isRideFareAlreadyPaidError } from "@/lib/ride-fare-gate";
 import {
   fetchRideFareCheckoutOffers,
   resolveAppliedRideOfferDiscount,
@@ -368,6 +368,14 @@ export function RideFareCheckoutScreen({ order, onBack }: Props) {
         await refreshRidePaymentState();
         navigatePaymentSuccess(totalPaid);
       } catch (e) {
+        const refundMessage = isFarePaidElsewhereRefundError(e);
+        if (refundMessage) {
+          await refreshRidePaymentState();
+          Alert.alert("Ride already paid", refundMessage, [
+            { text: "OK", onPress: () => router.back() },
+          ]);
+          return;
+        }
         if (isRideFareAlreadyPaidError(e)) {
           await refreshRidePaymentState();
           navigatePaymentSuccess(totalPaid);

@@ -32,6 +32,26 @@ const CREDIT_ENTRY_TYPES = new Set([
   "cancellation_payout",
 ]);
 
+/**
+ * Money the rider EARNED — work, incentives, company-funded payouts. Earnings
+ * totals (home week/month, earnings graph) count only these. Other credits are
+ * real wallet movements but not earnings: manual_add is money the rider paid in
+ * (wallet recharge, penalty / dues payment) or an admin credit; penalty_reversal
+ * and refund undo a deduction. Counting them inflated earnings (a rider with two
+ * ₹15,273 penalty reversals showed ₹38,510 "earned").
+ */
+const EARNING_ENTRY_TYPES = new Set([
+  "earning",
+  "bonus",
+  "referral_bonus",
+  "incentive",
+  "surge",
+  "cancellation_payout",
+]);
+
+/** Undo a deduction: counted back in the NET summary, never as gross earnings. */
+const DEDUCTION_REVERSAL_TYPES = new Set(["penalty_reversal", "refund"]);
+
 /** Credits that are not earnings (must not inflate totals / graphs). */
 const CREDIT_FLOW_ONLY_TYPES = new Set(["failed_withdrawal_revert"]);
 
@@ -118,6 +138,36 @@ export type RiderLedgerJobDto = {
   kind: "cash_platform_share" | "cash_top_up" | "cash_no_change" | "online_earning" | "free_ride";
   explanation: string;
 };
+
+/**
+ * Earnings for Ride/Parcel jobs come from the SETTLEMENT, not the wallet: a cash
+ * job's earning R is partly cash in hand (only R − C, or nothing, touches the
+ * wallet), so summing wallet credits under-counted every cash job. For a settled
+ * job the wallet rows that just move its money — the delivery credit, the
+ * dynamic-incentive credit, the cash platform share — are replaced by its R.
+ */
+const JOB_MONEY_REF = /^(?:rider_earn:(?:delivery|dyn)|ride_cash_settle|parcel_cash_settle):(\d+)$/;
+
+function jobMoneyOrderId(ref: string | null | undefined): number | null {
+  const m = String(ref ?? "").trim().match(JOB_MONEY_REF);
+  return m ? Number(m[1]) : null;
+}
+
+/** Which of these orders have a Ride/Parcel settlement for this rider (any date). */
+async function settledOrderIdsAmong(riderId: number, orderIds: number[]): Promise<Set<number>> {
+  const ids = [...new Set(orderIds.filter((id) => Number.isFinite(id) && id > 0))];
+  if (ids.length === 0) return new Set();
+  try {
+    const sql = getSql();
+    const rows = (await sql`
+      SELECT order_core_id FROM ride_settlements
+      WHERE rider_id = ${riderId} AND order_core_id = ANY(${ids}::bigint[])
+    `) as { order_core_id: string | number }[];
+    return new Set(rows.map((r) => Number(r.order_core_id)));
+  } catch {
+    return new Set();
+  }
+}
 
 /** Synthetic history rows (jobs with no wallet row) carry the negated order id. */
 export const SETTLEMENT_ACTIVITY_ENTRY_TYPE = "cash_collection";
@@ -417,8 +467,10 @@ function computeSummary(
   rows: LedgerRow[],
   monthLabel: string,
   pendingSettlement: number,
+  jobEarnings?: { settledOrderIds: Set<number>; earningsInPeriod: number },
 ): RiderLedgerSummaryDto {
-  let grossEarnings = 0;
+  // Ride/Parcel jobs count their earning R once (from the settlement).
+  let grossEarnings = jobEarnings?.earningsInPeriod ?? 0;
   let earningsDeductions = 0;
   let totalWithdrawals = 0;
 
@@ -429,6 +481,10 @@ function computeSummary(
     if (entryType === "failed_withdrawal_revert") {
       continue;
     }
+    const jobId = jobMoneyOrderId(row.ref);
+    if (jobId != null && jobEarnings?.settledOrderIds.has(jobId)) {
+      continue; // the job's money movement — its earning is counted via R
+    }
     if (isWithdrawalRow(row)) {
       totalWithdrawals += amount;
       continue;
@@ -437,7 +493,7 @@ function computeSummary(
       earningsDeductions += amount;
       continue;
     }
-    if (isCreditEntryType(entryType)) {
+    if (EARNING_ENTRY_TYPES.has(entryType) || DEDUCTION_REVERSAL_TYPES.has(entryType)) {
       grossEarnings += amount;
     }
   }
@@ -762,16 +818,32 @@ async function sumCreditEarningsForPeriod(
   to: Date,
 ): Promise<number> {
   const sql = getSql();
-  const creditTypes = Array.from(CREDIT_ENTRY_TYPES);
+  const creditTypes = Array.from(EARNING_ENTRY_TYPES);
 
   try {
+    // Wallet credits that are not a settled Ride/Parcel job's money movement,
+    // plus the earning R of every job settled in the period (cash jobs included).
     const [row] = (await sql`
-      SELECT COALESCE(SUM(ABS(amount::numeric)), 0) AS total
-      FROM wallet_ledger
-      WHERE rider_id = ${riderId}
-        AND created_at >= ${from.toISOString()}
-        AND created_at <= ${to.toISOString()}
-        AND LOWER(entry_type) = ANY(${creditTypes})
+      SELECT
+        (SELECT COALESCE(SUM(ABS(w.amount::numeric)), 0)
+           FROM wallet_ledger w
+          WHERE w.rider_id = ${riderId}
+            AND w.created_at >= ${from.toISOString()}
+            AND w.created_at <= ${to.toISOString()}
+            AND LOWER(w.entry_type::text) = ANY(${creditTypes})
+            AND NOT (
+              COALESCE(w.ref, '') ~ '^rider_earn:(delivery|dyn):[0-9]+$'
+              AND EXISTS (
+                SELECT 1 FROM ride_settlements s
+                WHERE s.rider_id = ${riderId}
+                  AND s.order_core_id = split_part(w.ref, ':', 3)::bigint
+              )
+            )) +
+        (SELECT COALESCE(SUM(s.rider_earnings::numeric), 0)
+           FROM ride_settlements s
+          WHERE s.rider_id = ${riderId}
+            AND s.posted_at >= ${from.toISOString()}
+            AND s.posted_at <= ${to.toISOString()}) AS total
     `) as { total: string | number }[];
     return Number(row?.total ?? 0);
   } catch {
@@ -779,7 +851,7 @@ async function sumCreditEarningsForPeriod(
     let total = 0;
     for (const row of rows) {
       if (isWithdrawalRow(row)) continue;
-      if (isCreditEntryType(row.entry_type.toLowerCase())) {
+      if (EARNING_ENTRY_TYPES.has(row.entry_type.toLowerCase())) {
         total += Math.abs(Number(row.amount ?? 0));
       }
     }
@@ -956,14 +1028,28 @@ export async function getRiderLedgerGraphForApp(args: {
 
   const fetched = await fetchLedgerRows(args.riderId, from, to);
   const graphOrderTypes = await orderTypeMapForRows(fetched);
-  const rows = fetched.filter((row) => segmentMatchesRow(segment, row, graphOrderTypes));
+  const settledForGraph = await settledOrderIdsAmong(
+    args.riderId,
+    fetched.map((r) => jobMoneyOrderId(r.ref)).filter((id): id is number => id != null)
+  );
+  // A settled Ride/Parcel job is graphed once from its settlement (R), below.
+  const rows = fetched.filter(
+    (row) =>
+      segmentMatchesRow(segment, row, graphOrderTypes) &&
+      !settledForGraph.has(jobMoneyOrderId(row.ref) ?? -1)
+  );
+  const graphJobs = (await listRiderSettlementSummaries(args.riderId, { from, to }).catch(() => [])).filter(
+    (j) =>
+      segment === "all" ||
+      (segment === "ride" && j.serviceType === "person_ride") ||
+      (segment === "parcel" && j.serviceType === "parcel")
+  );
 
   const coreIds = [
-    ...new Set(
-      rows
-        .map((row) => parseEarningRef(row.ref)?.coreId)
-        .filter((id): id is number => id != null),
-    ),
+    ...new Set([
+      ...rows.map((row) => parseEarningRef(row.ref)?.coreId).filter((id): id is number => id != null),
+      ...graphJobs.map((j) => j.orderCoreId),
+    ]),
   ];
 
   const sql = getSql();
@@ -990,7 +1076,7 @@ export async function getRiderLedgerGraphForApp(args: {
 
   for (const row of rows) {
     const entryType = row.entry_type.toLowerCase();
-    if (!isCreditEntryType(entryType)) continue;
+    if (!EARNING_ENTRY_TYPES.has(entryType)) continue;
 
     const amount = round2(Math.abs(Number(row.amount ?? 0)));
     if (amount <= 0) continue;
@@ -1000,8 +1086,12 @@ export async function getRiderLedgerGraphForApp(args: {
     const dayKey = dayKeyIst(new Date(row.created_at));
     creditByDay.set(dayKey, round2((creditByDay.get(dayKey) ?? 0) + amount));
 
-    if (INCENTIVE_ENTRY_TYPES.has(entryType)) {
+    if (INCENTIVE_ENTRY_TYPES.has(entryType) || entryType === "incentive") {
       incentive = round2(incentive + amount);
+      continue;
+    }
+    if (entryType === "surge") {
+      surge = round2(surge + amount);
       continue;
     }
 
@@ -1032,6 +1122,22 @@ export async function getRiderLedgerGraphForApp(args: {
 
     // Other credits (refund, penalty_reversal, etc.) count toward total + order earning bucket.
     orderEarning = round2(orderEarning + amount);
+  }
+
+  for (const job of graphJobs) {
+    const amount = round2(Math.max(0, job.riderEntitlement));
+    if (amount <= 0) continue;
+    totalEarning = round2(totalEarning + amount);
+    const dayKey = dayKeyIst(new Date(job.settledAt));
+    creditByDay.set(dayKey, round2((creditByDay.get(dayKey) ?? 0) + amount));
+    orderIds.add(job.orderCoreId);
+    const dayOrders = ordersByDay.get(dayKey) ?? new Set<number>();
+    dayOrders.add(job.orderCoreId);
+    ordersByDay.set(dayKey, dayOrders);
+    const split = splitDeliveryLedgerAmount(amount, billingByCoreId.get(job.orderCoreId), null);
+    orderEarning = round2(orderEarning + split.orderEarning);
+    surge = round2(surge + split.surge);
+    waiting = round2(waiting + split.waiting);
   }
 
   const breakdownSum = round2(orderEarning + incentive + surge + waiting);
@@ -1093,11 +1199,19 @@ export async function getRiderLedgerForApp(args: {
 
   const ledgerRows = await fetchLedgerRows(args.riderId, from, to);
   const pendingSettlement = await fetchPendingWithdrawalTotal(args.riderId, from, to);
-  // Summary stays account-level for the period. Service chips filter the list only.
-  const summary = computeSummary(ledgerRows, monthLabel, pendingSettlement);
   // Every Ride/Parcel job is in the history — a cash job where C = R moved the
   // wallet by ₹0 and has no wallet row, so it is added as a ₹0 activity row.
   const { jobs, activityRows } = await loadSettlementJobs(args.riderId, from, to);
+  // Summary stays account-level for the period. Service chips filter the list only.
+  const settledOrderIds = await settledOrderIdsAmong(
+    args.riderId,
+    ledgerRows.map((r) => jobMoneyOrderId(r.ref)).filter((id): id is number => id != null)
+  );
+  const earningsInPeriod = [...jobs.values()].reduce((sum, j) => sum + j.riderEarning, 0);
+  const summary = computeSummary(ledgerRows, monthLabel, pendingSettlement, {
+    settledOrderIds,
+    earningsInPeriod: Math.round(earningsInPeriod * 100) / 100,
+  });
   const rows = [...ledgerRows, ...activityRows].sort(
     (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
   );
