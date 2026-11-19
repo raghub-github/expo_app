@@ -142,8 +142,10 @@ export default function TabsLayout() {
             lazy: false,
             freezeOnBlur: false,
             sceneStyle: { backgroundColor: HOME_DARK.page },
-            statusBarStyle: "light",
-            statusBarBackgroundColor: HOME_DARK.page,
+            // Light status-bar icons over the dark home are applied by
+            // StatusBarRouteChromeGuard (applyTabsHomeStatusBar). statusBarStyle /
+            // statusBarBackgroundColor are native-stack options that bottom tabs
+            // neither type nor read.
           }}
         />
         <Tabs.Screen
