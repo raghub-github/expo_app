@@ -133,6 +133,8 @@ export default function OrderAlertPushHandler() {
         device: dev,
         notificationDate: startedAtFromPush(data, date),
         alertSessionId: extractAlertSessionId(data),
+        // Push data carries the native card's keys (amount, itemsJson, …).
+        details: data,
       });
     }
 

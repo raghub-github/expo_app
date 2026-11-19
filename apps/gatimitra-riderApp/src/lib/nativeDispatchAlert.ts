@@ -9,7 +9,9 @@ import {
   riderSoundTypeForService,
   startNativeOrderAlert,
   stopNativeOrderAlert,
+  updateNativeOrderAlertDetails,
   type NativeOrderAlert,
+  type NativeOrderAlertDetails,
 } from "@gatimitra/expo-push-kit";
 import { stopOrderAlertSound } from "@/src/lib/playOrderAlertSound";
 
@@ -65,6 +67,11 @@ export async function startRiderDispatchBuzzer(args: {
   serviceType?: string | null;
   alertSessionId?: string | null;
   expiresAt?: string | null;
+  /**
+   * The offer as the in-app sheet shows it (see buildRiderNativeAlertDetails).
+   * Feeds the native floating / lock-screen card so it is never detail-less.
+   */
+  details?: NativeOrderAlertDetails | null;
 }): Promise<boolean> {
   if (!isNativeOrderAlertAvailable()) return false;
 
@@ -79,6 +86,8 @@ export async function startRiderDispatchBuzzer(args: {
       return false;
     }
     lastSessionId = active.sessionId;
+    // FCM-started card: align it with the in-app sheet's numbers.
+    if (args.details) await updateNativeOrderAlertDetails(active.sessionId, args.details);
     await claimNativeOrderAlert(active.sessionId);
     const state = String(active.alertState ?? "active").toLowerCase();
     // Terminal = accept/reject/expiry/cancel — never restart audio for these.
@@ -104,6 +113,7 @@ export async function startRiderDispatchBuzzer(args: {
         orderId: args.orderId,
         offerId: args.orderId,
         soundType: riderSoundTypeForService(args.serviceType),
+        details: args.details,
       });
       if (started?.sessionId) lastSessionId = started.sessionId;
       return Boolean(started?.sessionId);
@@ -123,11 +133,27 @@ export async function startRiderDispatchBuzzer(args: {
     orderId: args.orderId,
     offerId: args.orderId,
     soundType: riderSoundTypeForService(args.serviceType),
+    details: args.details,
   });
   if (!started?.sessionId) return false;
   lastSessionId = started.sessionId;
   await claimNativeOrderAlert(started.sessionId);
   return true;
+}
+
+/**
+ * The in-app offer gained data after the alert started (earnings enrichment,
+ * addresses from the offer fetch): refresh the native card for that offer.
+ * Never starts, re-arms or claims an alert — only updates its details.
+ */
+export async function refreshRiderDispatchAlertDetails(
+  orderId: string,
+  details: NativeOrderAlertDetails | null | undefined
+): Promise<void> {
+  if (!details || !isNativeOrderAlertAvailable()) return;
+  const active = await getActiveNativeOrderAlert().catch(() => null);
+  if (!active?.sessionId || !orderTokensMatch(active, orderId)) return;
+  await updateNativeOrderAlertDetails(active.sessionId, details);
 }
 
 export async function attachRiderDispatchBuzzer(): Promise<string | null> {

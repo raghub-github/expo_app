@@ -50,10 +50,8 @@ public final class OrderAlertHeadsUp {
     if (orderId.length() == 0) orderId = display;
     String trayTag = trayTagForOrder(orderId);
     String orderType = row.optString("orderType", "");
-    String typeLabel = OrderAlertCardText.displayOrderType(orderType);
-    String title = typeLabel.length() > 0
-        ? OrderAlertCardText.brandLine() + " · " + typeLabel
-        : OrderAlertCardText.headingFor(orderType);
+    // "Bike Ride · You earn ₹75" — the money is readable in the collapsed row.
+    String title = OrderAlertCardText.headsUpTitle(orderType, row.optString("amount", ""));
     String body = OrderAlertCardText.shadeBodyRich(
         display,
         orderType,

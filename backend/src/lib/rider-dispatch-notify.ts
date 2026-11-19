@@ -142,6 +142,33 @@ function attachEarnings(
 }
 
 
+/**
+ * Earnings parts the native alert card itemises, keyed as the card reads them.
+ *
+ * Same rule as the in-app offer sheet: surge is the sum of the applied surge
+ * lines, first-mile is only the COMPANY-funded part (a pool-funded first-mile
+ * is already inside the base), and the card derives the base line itself so
+ * every row adds up to the `amount` total. Zero / unknown parts are omitted.
+ */
+export function dispatchCardBreakdownMetadata(
+  earnings: DispatchOfferRiderEarnings | null | undefined
+): Record<string, string> {
+  if (!earnings) return {};
+  const out: Record<string, string> = {};
+  const put = (key: string, value: number | undefined) => {
+    const n = Math.round(Number(value) || 0);
+    if (n > 0) out[key] = String(n);
+  };
+  put("waitingEarning", earnings.waitingEarning);
+  put(
+    "surgeEarning",
+    (earnings.appliedSurges ?? []).reduce((sum, s) => sum + Math.round(Number(s.amount) || 0), 0)
+  );
+  put("firstMileEarning", earnings.prePickupCompanyFunded);
+  put("tipAmount", earnings.customerTipAmount);
+  return out;
+}
+
 function needsDirectFcmFallback(skipReason: string | null | undefined): boolean {
   const reason = String(skipReason ?? "").toLowerCase();
   return (
@@ -230,6 +257,16 @@ export async function notifyRiderDispatchOffer(
   const pickupStoreName = String(opts?.pickupStoreName ?? "").trim();
   const pickupAddress = String(opts?.pickupAddress ?? "").trim();
   const dropAddress = String(opts?.dropAddress ?? "").trim();
+  // A wave fan-out resolves addresses once and passes them in. Re-alerts and
+  // force-assign did not, so their cards read "Address unavailable" — resolve
+  // here (one indexed lookup, under the same card deadline) when not supplied.
+  const callerSuppliedLocations =
+    opts?.pickupStoreName !== undefined ||
+    opts?.pickupAddress !== undefined ||
+    opts?.dropAddress !== undefined;
+  const locationsPromise: Promise<OrderCardLocations | null> = callerSuppliedLocations
+    ? Promise.resolve(null)
+    : resolveOrderCardLocations(target.orderCoreId).catch(() => null);
   try {
     const displayId = target.formattedOrderId?.trim() || target.orderId;
     const label = SERVICE_LABEL[target.serviceType];
@@ -334,16 +371,31 @@ export async function notifyRiderDispatchOffer(
 
 
     const fcmSend = async () => {
+      let cardBody = body;
       try {
-        // One deadline, both lookups. Whatever has landed by then rides along; the
+        // One deadline, every lookup. Whatever has landed by then rides along; the
         // rest is omitted rather than guessed, and the WS follow-up still carries
         // the full earnings breakdown to the in-app sheet.
         const { deadline, cancel } = startDeadline(CARD_ENRICHMENT_BUDGET_MS);
-        const [offerExpiresAtMs, cardEarnings] = await Promise.all([
+        const [offerExpiresAtMs, cardEarnings, lateLocations] = await Promise.all([
           underDeadline(offerExpiryPromise, deadline).then((v) => v ?? null),
           underDeadline(earningsPromise, deadline).then((v) => v ?? null),
+          underDeadline(locationsPromise, deadline).then((v) => v ?? null),
         ]);
         cancel();
+        const cardStoreName = pickupStoreName || lateLocations?.storeName || "";
+        const cardPickupAddress = pickupAddress || lateLocations?.pickupAddress || "";
+        const cardDropAddress = dropAddress || lateLocations?.dropAddress || "";
+        if (lateLocations) {
+          cardBody = `${[
+            displayId,
+            cardStoreName || cardPickupAddress || null,
+            cardDropAddress ? `Drop: ${cardDropAddress}` : null,
+            `${dist} to pickup`,
+          ]
+            .filter((p): p is string => Boolean(p && String(p).trim()))
+            .join(" · ")} — tap to accept`;
+        }
 
         // The rider must never be shown the customer's bill as if it were theirs.
         // This is the rider's own payout and nothing else.
@@ -364,8 +416,8 @@ export async function notifyRiderDispatchOffer(
           earningAmount: riderPayout != null ? String(riderPayout) : "",
           payout: riderPayout != null ? String(riderPayout) : "",
           distanceKm: distanceKmNum,
-          merchantName: pickupStoreName,
-          dropArea: dropAddress,
+          merchantName: cardStoreName,
+          dropArea: cardDropAddress,
         };
         const sharedMetadata = {
           type: "dispatch_offer",
@@ -399,12 +451,14 @@ export async function notifyRiderDispatchOffer(
           ...(cardEarnings?.totalDistanceKm
             ? { overallKm: String(cardEarnings.totalDistanceKm) }
             : {}),
-          ...(pickupStoreName ? { storeName: pickupStoreName } : {}),
+          // Earnings parts so the card itemises the total like the in-app sheet.
+          ...(riderPayout != null ? dispatchCardBreakdownMetadata(cardEarnings) : {}),
+          ...(cardStoreName ? { storeName: cardStoreName } : {}),
           // Address lines — distinct from distance so the card can show both.
-          ...(pickupAddress ? { pickupAddress } : {}),
-          ...(dropAddress ? { dropAddress, dropArea: dropAddress } : {}),
+          ...(cardPickupAddress ? { pickupAddress: cardPickupAddress } : {}),
+          ...(cardDropAddress ? { dropAddress: cardDropAddress, dropArea: cardDropAddress } : {}),
         };
-        const sharedOverrides = { title, body };
+        const sharedOverrides = { title, body: cardBody };
 
 
         let templateUsed = "RIDER_NEW_ORDER";
@@ -474,7 +528,7 @@ export async function notifyRiderDispatchOffer(
               orderId: target.orderId,
               serviceType: target.serviceType,
               title,
-              body,
+              body: cardBody,
               data: {
                 ...sharedMetadata,
                 waveNumber: target.waveNumber,
@@ -517,7 +571,7 @@ export async function notifyRiderDispatchOffer(
           orderId: target.orderId,
           serviceType: target.serviceType,
           title,
-          body,
+          body: cardBody,
           data: {
             type: "dispatch_offer",
             gmType: "DISPATCH_OFFER",

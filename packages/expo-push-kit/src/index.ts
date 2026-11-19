@@ -108,6 +108,9 @@ export {
   isNativeOrderAlertAvailable,
   isNativeOrderAlertAudiblyActive,
   startNativeOrderAlert,
+  updateNativeOrderAlertDetails,
+  serializeNativeAlertDetails,
+  deadlineEpochMs,
   stopNativeOrderAlert,
   getActiveNativeOrderAlert,
   claimNativeOrderAlert,
@@ -125,6 +128,7 @@ export {
   riderAlertSessionId,
   riderSoundTypeForService,
   type NativeOrderAlert,
+  type NativeOrderAlertDetails,
   type NativeOrderAlertSoundType,
   type NativePendingOrderAction,
 } from "./orderAlert";

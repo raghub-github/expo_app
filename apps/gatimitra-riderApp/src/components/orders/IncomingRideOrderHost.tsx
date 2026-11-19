@@ -37,8 +37,10 @@ import {
   playIncomingOrderAlert,
   playOrderAlertSound,
 } from "@/src/lib/playOrderAlertSound";
+import { buildRiderNativeAlertDetails } from "@/src/lib/nativeAlertDetails";
 import {
   attachRiderDispatchBuzzer,
+  refreshRiderDispatchAlertDetails,
   startRiderDispatchBuzzer,
   stopRiderDispatchBuzzer,
 } from "@/src/lib/nativeDispatchAlert";
@@ -597,6 +599,9 @@ export function IncomingRideOrderHost() {
         // Prefer attaching to the FCM session when present; expiresAt stops
         // background audio even if JS timers are suspended.
         expiresAt: head?.acceptDeadlineAt ?? null,
+        // Same offer the in-app sheet renders → the native card over other
+        // apps / the lock screen shows the same addresses, money and km.
+        details: head ? buildRiderNativeAlertDetails(toIncomingOrder(head, 0)) : null,
       });
       if (cancelled) return;
       if (native) {
@@ -636,6 +641,20 @@ export function IncomingRideOrderHost() {
       cancelled = true;
     };
   }, [isOnDuty, poolHeadId, acceptanceSettings, session?.riderId, session?.userId, soundHandoffEpoch]);
+
+  // Earnings / addresses often land after the offer itself (WS enrichment,
+  // offer fetch). Keep the native floating card in step with the in-app sheet.
+  const headNativeDetailsKey = useMemo(() => {
+    const head = poolHeadId ? orders.find((o) => o.id === poolHeadId) : undefined;
+    const details = head ? buildRiderNativeAlertDetails(toIncomingOrder(head, 0)) : null;
+    return details ? JSON.stringify(details) : "";
+  }, [orders, poolHeadId]);
+  useEffect(() => {
+    if (!isOnDuty || !poolHeadId || !headNativeDetailsKey) return;
+    void refreshRiderDispatchAlertDetails(poolHeadId, JSON.parse(headNativeDetailsKey)).catch(
+      () => undefined
+    );
+  }, [isOnDuty, poolHeadId, headNativeDetailsKey]);
 
   useEffect(() => {
     void attachRiderDispatchBuzzer();

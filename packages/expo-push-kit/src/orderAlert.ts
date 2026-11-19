@@ -17,6 +17,7 @@ import {
   parseNativePendingOrderAction,
   type NativePendingOrderAction,
 } from "./pendingOrderAction";
+import { serializeNativeAlertDetails, type NativeOrderAlertDetails } from "./orderAlertDetails";
 export {
   extractAlertSessionId,
   merchantAlertSessionId,
@@ -39,6 +40,11 @@ export type NativeOrderAlert = {
 };
 
 export type { NativePendingOrderAction } from "./pendingOrderAction";
+export {
+  serializeNativeAlertDetails,
+  deadlineEpochMs,
+  type NativeOrderAlertDetails,
+} from "./orderAlertDetails";
 
 type NativeOrderAlertModule = {
   startAlert: (
@@ -47,6 +53,15 @@ type NativeOrderAlertModule = {
     offerId: string | null,
     soundType: string | null
   ) => Promise<NativeOrderAlert | null>;
+  /** Newer binaries only — older ones fall back to startAlert (no details). */
+  startAlertWithDetails?: (
+    sessionId: string,
+    orderId: string | null,
+    offerId: string | null,
+    soundType: string | null,
+    detailsJson: string
+  ) => Promise<NativeOrderAlert | null>;
+  updateAlertDetails?: (sessionId: string, detailsJson: string) => Promise<boolean>;
   stopAlert: (sessionId: string | null) => Promise<boolean>;
   getActiveAlert: () => Promise<NativeOrderAlert | null>;
   claimAlert: (sessionId: string) => Promise<NativeOrderAlert | null>;
@@ -91,10 +106,25 @@ export async function startNativeOrderAlert(args: {
   orderId?: string | null;
   offerId?: string | null;
   soundType?: NativeOrderAlertSoundType | string | null;
+  /**
+   * Offer details for the native floating / lock-screen card (same keys as the
+   * FCM data payload). Without them an app-started alert drew an empty card.
+   */
+  details?: NativeOrderAlertDetails | null;
 }): Promise<NativeOrderAlert | null> {
   const sessionId = String(args.sessionId ?? "").trim();
   if (!sessionId || !Native) return null;
   try {
+    const detailsJson = serializeNativeAlertDetails(args.details);
+    if (detailsJson && typeof Native.startAlertWithDetails === "function") {
+      return await Native.startAlertWithDetails(
+        sessionId,
+        args.orderId ?? "",
+        args.offerId ?? "",
+        args.soundType ?? "notification",
+        detailsJson
+      );
+    }
     return await Native.startAlert(
       sessionId,
       args.orderId ?? "",
@@ -103,6 +133,25 @@ export async function startNativeOrderAlert(args: {
     );
   } catch {
     return null;
+  }
+}
+
+/**
+ * Push the app's offer details onto a live native alert (e.g. one the FCM
+ * started) so its card shows exactly what the in-app sheet shows. No-op on
+ * binaries that predate the method.
+ */
+export async function updateNativeOrderAlertDetails(
+  sessionId: string | null | undefined,
+  details: NativeOrderAlertDetails | null | undefined
+): Promise<boolean> {
+  const sid = String(sessionId ?? "").trim();
+  const detailsJson = serializeNativeAlertDetails(details);
+  if (!sid || !detailsJson || !Native || typeof Native.updateAlertDetails !== "function") return false;
+  try {
+    return Boolean(await Native.updateAlertDetails(sid, detailsJson));
+  } catch {
+    return false;
   }
 }
 

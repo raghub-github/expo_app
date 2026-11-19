@@ -125,9 +125,30 @@ type ContinueArgs = {
   notificationDate?: number | null;
   androidNotificationId?: string | null;
   alertSessionId?: string | null;
+  /**
+   * Order details for the native floating / lock-screen card (the push data
+   * itself: displayOrderId, amount, itemsJson, …). An alert JS starts without
+   * them draws a detail-less card.
+   */
+  details?: Record<string, unknown> | null;
 };
 
 let session: NewOrderAlertSession | null = null;
+
+/** Latest card details per order, for whichever path ends up starting native. */
+const nativeDetailsByOrder = new Map<string, Record<string, unknown>>();
+
+function rememberNativeAlertDetails(orderId: string, details: Record<string, unknown> | null | undefined): void {
+  const id = String(orderId ?? "").trim();
+  if (!id || !details) return;
+  nativeDetailsByOrder.delete(id);
+  nativeDetailsByOrder.set(id, details);
+  while (nativeDetailsByOrder.size > 20) {
+    const oldest = nativeDetailsByOrder.keys().next().value;
+    if (oldest == null) break;
+    nativeDetailsByOrder.delete(oldest);
+  }
+}
 const parkedSessions = new Map<string, NewOrderAlertSession>();
 let persistedConfig: PersistedAlertConfig | null = null;
 let hydrated = false;
@@ -280,6 +301,7 @@ async function ensureNativeBuzzer(orderId: string, alertSessionId?: string | nul
     sessionId: sid,
     orderId,
     soundType: "notification",
+    details: nativeDetailsByOrder.get(orderId) ?? null,
   });
   if (!started?.sessionId) return false;
   // Muted sessions still resolve from startAlert — treat as "native not audible".
@@ -747,6 +769,7 @@ export async function continueOrStartNewOrderAlert(args: ContinueArgs): Promise<
   await hydrateNewOrderAlertManager();
   const orderId = String(args.orderId || "").trim();
   if (!orderId) return null;
+  rememberNativeAlertDetails(orderId, args.details);
 
   // Guarantee B: delayed START / stale tray after global terminate must never revive.
   if (isOrderAlertGloballyRetired(orderId)) {

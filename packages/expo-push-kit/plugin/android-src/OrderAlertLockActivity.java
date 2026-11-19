@@ -2,6 +2,7 @@ package {{PACKAGE}};
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
@@ -24,6 +25,76 @@ public class OrderAlertLockActivity extends Activity {
   private static WeakReference<OrderAlertLockActivity> live;
   private static final float SWIPE_DISMISS_DP = 96f;
   private PowerManager.WakeLock screenWake;
+  private FrameLayout cardRoot;
+  private String shownSessionId = "";
+  private String cardSig = "";
+
+  /**
+   * Details for the session on screen changed (the rich push landed after an
+   * app-started alert, or the app sent its own). Rebuild the lock card so it
+   * never keeps showing a detail-less first draw.
+   */
+  static void refreshLive(Context context) {
+    try {
+      final OrderAlertLockActivity activity = live != null ? live.get() : null;
+      if (activity == null || activity.isFinishing()) return;
+      activity.runOnUiThread(activity::rebuildIfChanged);
+    } catch (Throwable ignored) {
+    }
+  }
+
+  private void rebuildIfChanged() {
+    try {
+      if (isFinishing() || cardRoot == null || shownSessionId.length() == 0) return;
+      JSONObject row = OrderAlertController.getSessionById(this, shownSessionId);
+      if (row == null) return;
+      String sig = OrderAlertOverlay.cardSignature(
+          this,
+          shownSessionId,
+          row.optString("pickup", ""),
+          row.optString("drop", ""),
+          row.optString("orderType", "")
+      );
+      if (sig.equals(cardSig)) return;
+      renderCard(row);
+    } catch (Throwable ignored) {
+    }
+  }
+
+  private void renderCard(JSONObject row) {
+    String sid = shownSessionId;
+    cardRoot.removeAllViews();
+    View card = OrderAlertOverlay.buildCard(
+        this,
+        sid,
+        row.optString("orderId", ""),
+        row.optString("offerId", ""),
+        "NEW ORDER",
+        row.optString("body", ""),
+        row.optString("pickup", ""),
+        row.optString("drop", ""),
+        row.optString("orderType", "")
+    );
+    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT,
+        FrameLayout.LayoutParams.WRAP_CONTENT
+    );
+    lp.gravity = Gravity.BOTTOM;
+    lp.bottomMargin = OrderAlertOverlay.bottomSafePx(this);
+    cardRoot.addView(card, lp);
+
+    View titleHandle = card.findViewWithTag("gm_overlay_title");
+    View priceHandle = card.findViewWithTag("gm_overlay_price");
+    if (titleHandle != null) attachSwipe(titleHandle, card, sid);
+    if (priceHandle != null) attachSwipe(priceHandle, card, sid);
+    cardSig = OrderAlertOverlay.cardSignature(
+        this,
+        sid,
+        row.optString("pickup", ""),
+        row.optString("drop", ""),
+        row.optString("orderType", "")
+    );
+  }
 
   static void finishLive() {
     try {
@@ -78,34 +149,34 @@ public class OrderAlertLockActivity extends Activity {
       }
     }
 
-    FrameLayout root = new FrameLayout(this);
-    root.setBackgroundColor(Color.TRANSPARENT);
-    View card = OrderAlertOverlay.buildCard(
-        this,
-        sid,
-        row.optString("orderId", ""),
-        row.optString("offerId", ""),
-        "NEW ORDER",
-        row.optString("body", ""),
-        row.optString("pickup", ""),
-        row.optString("drop", ""),
-        row.optString("orderType", "")
-    );
-    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-        FrameLayout.LayoutParams.MATCH_PARENT,
-        FrameLayout.LayoutParams.WRAP_CONTENT
-    );
-    lp.gravity = Gravity.BOTTOM;
-    lp.bottomMargin = OrderAlertOverlay.bottomSafePx(this);
-    root.addView(card, lp);
-
-    View titleHandle = card.findViewWithTag("gm_overlay_title");
-    View priceHandle = card.findViewWithTag("gm_overlay_price");
-    if (titleHandle != null) attachSwipe(titleHandle, card, sid);
-    if (priceHandle != null) attachSwipe(priceHandle, card, sid);
+    cardRoot = new FrameLayout(this);
+    cardRoot.setBackgroundColor(Color.TRANSPARENT);
+    shownSessionId = sid;
+    JSONObject shown = OrderAlertController.getSessionById(this, sid);
+    renderCard(shown != null ? shown : row);
+    FrameLayout root = cardRoot;
 
     setContentView(root);
     AlertEngineLog.log(this, "LOCK_CARD_SHOWN", sid, row.optString("orderId", ""), null);
+  }
+
+  /** A newer offer re-fired the full-screen intent while this card is up: show it. */
+  @Override
+  protected void onNewIntent(Intent intent) {
+    super.onNewIntent(intent);
+    try {
+      setIntent(intent);
+      String sid = intent != null ? intent.getStringExtra(OrderAlertController.EXTRA_SESSION_ID) : null;
+      sid = sid == null ? "" : sid.trim();
+      if (sid.length() == 0 || cardRoot == null) return;
+      if (OrderAlertOverlay.isCardDismissed(this, sid)) return;
+      JSONObject row = OrderAlertController.getSessionById(this, sid);
+      if (row == null) return;
+      shownSessionId = sid;
+      renderCard(row);
+      pulseScreenOn();
+    } catch (Throwable ignored) {
+    }
   }
 
   private void requestShowOverKeyguard() {
