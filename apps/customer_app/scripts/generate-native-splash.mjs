@@ -117,21 +117,18 @@ function brandSvg(width, height, ttfPath) {
 </svg>`;
 }
 
-function android12Svg(ttfPath) {
-  // Window + icon share SPLASH_MINT so the Android 12 circle is invisible.
-  // Keep wordmark inside ~60% safe diameter so left/right never crop on A12+.
-  const family = ttfPath ? "LoraBold" : "Georgia, 'Times New Roman', Times, serif";
-  void family;
+/**
+ * Android 12+ SplashScreen API always draws this as a small centered icon.
+ * Putting the wordmark here made a tiny unprofessional "first splash".
+ * Solid mint only — MainActivity releases this overlay immediately so the
+ * full-bleed AppTheme windowBackground (`plugins/withBrandedNativeSplash.js`
+ * → splash-brand.png) is the first meaningful frame, continued by JS.
+ */
+function android12Svg(_ttfPath) {
+  void _ttfPath;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${ICON}" height="${ICON}" viewBox="0 0 ${ICON} ${ICON}">
-  ${fontFaceCss(ttfPath)}
   <rect width="${ICON}" height="${ICON}" fill="${SPLASH_MINT}"/>
-  ${brandStack(ICON, ICON, ttfPath, {
-    titleSize: 108,
-    tagSize: 26,
-    titleY: 500,
-    maxTagWidthRatio: 0.9,
-  })}
 </svg>`;
 }
 
@@ -153,17 +150,19 @@ async function main() {
     console.log(`[generate-native-splash] Using bold Lora: ${loraBold}`);
   }
   await renderSvg(brandSvg(BRAND_W, BRAND_H, loraBold), BRAND_OUT, BRAND_W, BRAND_H);
+  // Native A12 icon = solid mint (no text). Full brand = windowBackground + JS cover.
   await renderSvg(android12Svg(loraBold), ANDROID12_OUT, ICON, ICON);
   console.log(
     JSON.stringify(
       {
         splashMint: SPLASH_MINT,
-        layout: "zomato-flat-mint-hairline-tagline",
+        layout: "windowBackground-brand + mint-A12-icon + js-cover",
         font: loraBold ? "Lora_700Bold" : "Georgia-fallback",
         outputs: [
           path.relative(projectRoot, BRAND_OUT),
           path.relative(projectRoot, ANDROID12_OUT),
         ],
+        note: "A12 icon stays mint-only; withBrandedNativeSplash shows splash-brand immediately.",
       },
       null,
       2

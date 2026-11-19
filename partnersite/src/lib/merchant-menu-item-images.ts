@@ -1,41 +1,23 @@
 import { client as pgClient } from "@/lib/drizzle";
 import { deleteFromR2 } from "@/lib/r2";
 
+/**
+ * Photo uploads go to Image Review via merchant_menu_item_images.moderation_status.
+ * Do NOT flip live approval_status APPROVED → PENDING — that falsely shows
+ * "Pending Approval" on Partner Menu while Admin queues are empty.
+ * Kept as a touch/updated_at helper for call-site compatibility.
+ */
 export async function setItemPendingForReReview(
   itemId: number,
   storeIdNum: number,
   opts: { changed_by: string; changed_by_role?: string },
 ): Promise<boolean> {
-  const [before] = await pgClient`
-    SELECT approval_status::text AS approval_status
-    FROM merchant_menu_items
-    WHERE id = ${itemId} AND store_id = ${storeIdNum}
-    LIMIT 1
-  `;
-  const previousStatus = before ? String((before as { approval_status?: string }).approval_status ?? "") : null;
+  void opts;
   const result = await pgClient`
     UPDATE merchant_menu_items
-    SET approval_status = 'PENDING'::merchant_menu_item_approval_status,
-        approved_at = NULL,
-        approved_by = NULL,
-        updated_at = NOW()
+    SET updated_at = NOW()
     WHERE id = ${itemId} AND store_id = ${storeIdNum}
   `;
-  if ((result.count ?? 0) > 0 && previousStatus !== "PENDING") {
-    try {
-      await pgClient`
-        INSERT INTO merchant_menu_item_approval_log (
-          menu_item_id, previous_status, new_status, changed_by, changed_by_role, note
-        )
-        VALUES (
-          ${itemId}, ${previousStatus}, 'PENDING', ${opts.changed_by},
-          ${opts.changed_by_role ?? "merchant"}, 'Edited by merchant – pending re-review'
-        )
-      `;
-    } catch {
-      /* log table may not exist */
-    }
-  }
   return (result.count ?? 0) > 0;
 }
 
@@ -181,13 +163,11 @@ export async function addItemImageRow(
         WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
       `;
     } else {
+      // Keep existing approval_status; Image Review is driven by image moderation_status.
       await pgClient`
         UPDATE merchant_menu_items
         SET item_image_url = ${data.image_url},
-            approval_status = 'PENDING'::merchant_menu_item_approval_status,
             rejection_reason = NULL,
-            approved_at = NULL,
-            approved_by = NULL,
             updated_at = NOW()
         WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
       `;
@@ -235,47 +215,23 @@ export async function deleteItemImage(imageId: number, storeIdNum: number): Prom
         SET is_primary = true, updated_at = NOW()
         WHERE id = ${(nextPrimary as { id: number }).id}
       `;
-      const modStatus = String((nextPrimary as { moderation_status?: string }).moderation_status ?? "PENDING").toUpperCase();
-      const itemStatus = modStatus === "APPROVED" || modStatus === "REJECTED" ? modStatus : "PENDING";
       const nextUrl = (nextPrimary as { image_url: string }).image_url;
       const nextRejection: string | null =
         (nextPrimary as { rejection_reason?: string | null }).rejection_reason ?? null;
-      if (itemStatus === "APPROVED") {
-        await pgClient`
-          UPDATE merchant_menu_items
-          SET item_image_url = ${nextUrl},
-              approval_status = 'APPROVED'::merchant_menu_item_approval_status,
-              rejection_reason = NULL,
-              updated_at = NOW()
-          WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
-        `;
-      } else if (itemStatus === "REJECTED") {
-        await pgClient`
-          UPDATE merchant_menu_items
-          SET item_image_url = ${nextUrl},
-              approval_status = 'REJECTED'::merchant_menu_item_approval_status,
-              rejection_reason = ${nextRejection},
-              updated_at = NOW()
-          WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
-        `;
-      } else {
-        await pgClient`
-          UPDATE merchant_menu_items
-          SET item_image_url = ${nextUrl},
-              approval_status = 'PENDING'::merchant_menu_item_approval_status,
-              rejection_reason = NULL,
-              updated_at = NOW()
-          WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
-        `;
-      }
+      const modStatus = String((nextPrimary as { moderation_status?: string }).moderation_status ?? "PENDING").toUpperCase();
+      // Update live image URL / rejection note only — do not flip item approval_status.
+      await pgClient`
+        UPDATE merchant_menu_items
+        SET item_image_url = ${nextUrl},
+            rejection_reason = ${modStatus === "REJECTED" ? nextRejection : null},
+            updated_at = NOW()
+        WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
+      `;
     } else {
       await pgClient`
         UPDATE merchant_menu_items
         SET item_image_url = NULL,
-            approval_status = 'PENDING'::merchant_menu_item_approval_status,
             rejection_reason = NULL,
-            approved_at = NULL,
-            approved_by = NULL,
             updated_at = NOW()
         WHERE id = ${menuItemId} AND store_id = ${storeIdNum}
       `;

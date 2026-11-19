@@ -2,14 +2,15 @@
  * Profile tab — GatiMitra-style account card with GMitra Plus subscription strip.
  */
 
-import { useCallback, useMemo, useState, useEffect, useLayoutEffect } from "react";
+import { useCallback, useMemo, useState, useEffect } from "react";
 import { AppText } from "@/components/AppText";
 
 import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable, ActivityIndicator, Platform, StatusBar as NativeStatusBar } from "react-native";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
-import { useFocusEffect, useRouter, useSegments } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
+import { useFocusEffect, useRouter } from "expo-router";
 import { markWalletEntrySource } from "@/store/walletChromeStore";
 import { StatusBar } from "expo-status-bar";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -62,11 +63,9 @@ export default function ProfileScreen() {
   useTabScreenDebug("profile");
   const { t } = useTranslation();
   const router = useRouter();
-  const segments = useSegments();
   const queryClient = useQueryClient();
   const insets = useAppSafeAreaInsets();
-  /** Pushed from food home (`/profile`) — root layout omits the status-bar spacer. */
-  const inProfileStack = segments[0] === "profile";
+  const isFocused = useIsFocused();
   /** Solid status-bar pad — content scrolls below icons, never under them. */
   const statusBarPad = insets.top;
   const profileContentTopPad = STATUS_BAR_TO_HEADER_GAP + 6;
@@ -78,20 +77,8 @@ export default function ProfileScreen() {
     : null;
   const plusCtaSubtitle = defaultPrice ? formatPlanPriceLine(defaultPrice) : null;
 
-  useLayoutEffect(() => {
-    useScreenChromeStore.getState().setImmersiveStatusBarChrome(false);
-    useScreenChromeStore.setState({
-      statusBarBackground: PAGE_BG,
-      statusBarStyle: "dark",
-      hideStatusBarSpacer: true,
-    });
-    if (Platform.OS === "android") {
-      NativeStatusBar.setTranslucent(false);
-      NativeStatusBar.setBackgroundColor(PAGE_BG, true);
-      NativeStatusBar.setBarStyle("dark-content", true);
-    }
-  }, [inProfileStack]);
-
+  // Only while Profile is focused — never re-paint dark-content on leave
+  // (that raced Home and made status icons invisible on the dark Home shell).
   useFocusEffect(
     useCallback(() => {
       useScreenChromeStore.getState().setImmersiveStatusBarChrome(false);
@@ -337,7 +324,8 @@ export default function ProfileScreen() {
 
   return (
     <View style={[styles.screen, { paddingTop: statusBarPad }]}>
-      <StatusBar style="dark" backgroundColor={PAGE_BG} />
+      {/* Only while focused — otherwise this dark StatusBar fights Home's light icons. */}
+      {isFocused ? <StatusBar style="dark" backgroundColor={PAGE_BG} /> : null}
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[

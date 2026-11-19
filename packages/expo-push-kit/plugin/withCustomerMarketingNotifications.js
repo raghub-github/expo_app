@@ -80,6 +80,23 @@ function copyMarketingLayouts(androidProjectRoot) {
   }
 }
 
+function copyMarketingDrawables(androidProjectRoot) {
+  const srcDir = path.join(__dirname, "android-res", "drawable");
+  const destDir = path.join(
+    androidProjectRoot,
+    "app",
+    "src",
+    "main",
+    "res",
+    "drawable"
+  );
+  fs.mkdirSync(destDir, { recursive: true });
+  if (!fs.existsSync(srcDir)) return;
+  for (const file of fs.readdirSync(srcDir).filter((f) => f.endsWith(".xml"))) {
+    fs.copyFileSync(path.join(srcDir, file), path.join(destDir, file));
+  }
+}
+
 function patchMessagingService(androidManifest, packageName) {
   const app = AndroidConfig.Manifest.getMainApplicationOrThrow(androidManifest);
   const ours = `${packageName}.CustomerMarketingMessagingService`;
@@ -171,6 +188,7 @@ function withCustomerMarketingNotifications(config) {
       if (!packageName) return mod;
       copyMarketingJava(mod.modRequest.platformProjectRoot, packageName);
       copyMarketingLayouts(mod.modRequest.platformProjectRoot);
+      copyMarketingDrawables(mod.modRequest.platformProjectRoot);
       return mod;
     },
   ]);

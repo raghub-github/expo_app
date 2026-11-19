@@ -29,11 +29,17 @@ export function FeaturedOffersPrefetch() {
     // Instant ribbon paint from disk — network refresh after settle.
     seedFeaturedOffersHomeQueryIfCached(queryClient, params);
     const timer = setTimeout(() => {
+      // Home ribbon first — ride pills wait so cold-start API slots stay free.
       void prefetchFeaturedOffersHome(queryClient, params);
-      void prefetchFeaturedOffersRide(queryClient, params);
       void prefetchServiceCardOfferPills(queryClient, params);
     }, LOCATION_SETTLE_MS);
-    return () => clearTimeout(timer);
+    const rideTimer = setTimeout(() => {
+      void prefetchFeaturedOffersRide(queryClient, params);
+    }, LOCATION_SETTLE_MS + 900);
+    return () => {
+      clearTimeout(timer);
+      clearTimeout(rideTimer);
+    };
   }, [
     locationHydrated,
     params.lat,

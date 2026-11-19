@@ -15,12 +15,14 @@ const VERTICAL_GAPS = 14;
 /** Keep in sync with HomeServicesRow GAP. */
 const GRID_ROW_GAP = 12;
 const GRID_TOP_MARGIN = 10;
-const BRAND_TOP_GAP = 16;
+const BRAND_TOP_GAP = 10;
 /**
  * Extra air above the floating tab sheet inside the fitted one-screen budget.
  * Keeps the brand card fully visible without relying on a finger scroll.
  */
 const TAB_SHEET_VISUAL_GAP = 12;
+/** Bump when brand card sizing changes — busts frozen layout cache. */
+const BRAND_LAYOUT_REV = "fw-lora-v12-home-dark-soft";
 
 /**
  * Promo + service + brand sizes for Home.
@@ -40,7 +42,7 @@ export function useHomeScreenLayout(_showWeather: boolean) {
   return useMemo(() => {
     const topInset = resolveTopSafeInset(insets.top);
     const bottomNavH = resolveCustomerBottomNavHeight(insets.bottom);
-    const layoutKey = `${screenH}|${topInset}|${bottomNavH}`;
+    const layoutKey = `${BRAND_LAYOUT_REV}|${screenH}|${topInset}|${bottomNavH}`;
 
     if (frozenRef.current && frozenRef.current.key === layoutKey) {
       return frozenRef.current;
@@ -52,9 +54,8 @@ export function useHomeScreenLayout(_showWeather: boolean) {
     const topBlock = HEADER_H + HOME_HEADER_BELOW_STATUS_GAP;
     const availableH = screenH - topInset - bottomNavH;
 
-    // Comfortable floors — do not shrink below these on short screens (allow scroll).
-    // Keep ≥132 so HomeBrandBanner wordmark + tagline + subline never clip.
-    const brandH = Math.min(144, Math.max(132, Math.round(screenH * 0.145)));
+    // magicpin end-card ≈ 20% screen (+6px), never include tab-bar height here.
+    const brandH = Math.min(206, Math.max(174, Math.round(screenH * 0.2) + 6));
     const promoCardH = Math.min(140, Math.max(128, Math.round(screenH * 0.155)));
     const promoBlock = promoCardH + PROMO_DOTS_H + 8;
 

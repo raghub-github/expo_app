@@ -5647,11 +5647,11 @@ function MenuContent() {
       </div>
       </div>
 
-      {/* Modals - portaled to body so overlay covers sidebar and blurs */}
+      {/* Modals — centered in main content (equal L/R gap from sidebar via --mx-partner-sidebar-w) */}
       {/* Add Item Modal */}
       {showAddModal && typeof document !== 'undefined' && createPortal(
         <div
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md"
+          className="fixed inset-y-0 right-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md left-0 md:left-[var(--mx-partner-sidebar-w,14rem)]"
           onClick={() => {
             setAddItemSaved(null);
             setShowAddModal(false);
@@ -5767,8 +5767,11 @@ function MenuContent() {
 
       {/* Edit Item Modal */}
       {showEditModal && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md" onClick={() => setShowEditModal(false)}>
-          <div onClick={e => e.stopPropagation()} className="max-h-[92vh] overflow-hidden">
+        <div
+          className="fixed inset-y-0 right-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-md left-0 md:left-[var(--mx-partner-sidebar-w,14rem)]"
+          onClick={() => setShowEditModal(false)}
+        >
+          <div onClick={e => e.stopPropagation()} className="max-h-[92vh] overflow-hidden mx-3 md:mx-6 w-full flex justify-center">
             {(() => {
               const editingItem = menuItems.find((m) => m.item_id === editingId);
               const isEditingLocked = !!(editingItem as any)?.is_locked_by_plan;

@@ -1,6 +1,6 @@
 /**
  * GET/POST /api/merchant/stores/[id]/menu/cuisines
- * List linked + catalog cuisines; POST resolves name to cuisine_master only (no new master rows).
+ * List linked + catalog cuisines; POST resolves/creates cuisine_master and links to the store.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { assertStoreAccess } from "../assert-store-access";

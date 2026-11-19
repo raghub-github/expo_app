@@ -82,18 +82,53 @@ function isEmptyish(value: unknown): boolean {
   return false;
 }
 
+/** Collapse 79 / "79.00" / 79.0 so untouched prices are not captured as diffs. */
+function normalizeNumericString(raw: string): string | null {
+  const t = raw.trim();
+  if (!/^-?\d+(\.\d+)?$/.test(t)) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n)) return null;
+  // Money/qty safe: drop trailing zeros via Number→String
+  return String(n);
+}
+
 function normalizeComparable(value: unknown): string {
   if (isEmptyish(value)) return "null";
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
   if (typeof value === "boolean") return value ? "true" : "false";
-  if (Array.isArray(value) || (typeof value === "object" && value !== null)) {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "bigint") return String(value);
+  if (typeof value === "string") {
+    const asNum = normalizeNumericString(value);
+    if (asNum != null) return asNum;
+    return value.trim();
+  }
+  if (Array.isArray(value)) {
+    try {
+      const normalized = value.map((v) => {
+        if (typeof v === "string") {
+          const asNum = normalizeNumericString(v);
+          return asNum != null ? Number(asNum) : v.trim();
+        }
+        if (typeof v === "number" && Number.isFinite(v)) return v;
+        return v;
+      });
+      // Order-insensitive for tag/allergen lists
+      const sortable = normalized.every((v) => typeof v === "string" || typeof v === "number");
+      const arr = sortable
+        ? [...normalized].sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }))
+        : normalized;
+      return JSON.stringify(arr);
+    } catch {
+      return String(value);
+    }
+  }
+  if (typeof value === "object" && value !== null) {
     try {
       return JSON.stringify(value, Object.keys(value as object).sort());
     } catch {
       return String(value);
     }
   }
-  if (typeof value === "string") return value.trim();
   return String(value);
 }
 

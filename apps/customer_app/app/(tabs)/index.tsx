@@ -16,10 +16,13 @@ import {
   type AppStateStatus,
 } from "react-native";
 import { useQueryClient } from "@tanstack/react-query";
+import { useIsFocused } from "@react-navigation/native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
+import { StatusBar } from "expo-status-bar";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { resolveCustomerBottomNavHeight } from "@/constants/layout";
+import { HOME_DARK } from "@/constants/homeDarkTheme";
 import { NATURAL_VERTICAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import { HomeLocationHeader, HomeWeatherBanner } from "@/components/home/HomeScreenHeader";
 import { HomeLocationHeaderSkeleton } from "@/components/home/HomeTabSkeletons";
@@ -54,6 +57,7 @@ import { resetFoodHomeListScrollGuard } from "@/lib/foodHomeScrollGuard";
 import { warmFoodHomeEntry } from "@/lib/navigateToFoodHome";
 import { useTabScreenDebug } from "@/lib/tabNavDebug";
 import { markInitialShellReady } from "@/lib/startupShellReady";
+import { isSessionGpsBootstrapActive } from "@/lib/sessionLocationBootstrap";
 import { startupLaunchLog, startupProcessAgeMs } from "@/lib/startupPerf";
 import {
   collectCriticalHomeAssetUris,
@@ -63,13 +67,15 @@ import { enqueueImagePrefetchFront } from "@/lib/prefetchQueue";
 import { useHomeSkeletonFlags } from "@/hooks/useHomeSkeletonFlags";
 import { homeSkeletonLog } from "@/lib/homeSkeletonTelemetry";
 
-const PAGE_BG = GatiMitraColors.softBackground;
-const STATUS_CHROME = GatiMitraColors.softBackground;
+/** Tabs Home — softer dark shell (not pure black). */
+const PAGE_BG = HOME_DARK.page;
+const STATUS_CHROME = HOME_DARK.page;
 export default function HomeScreen() {
   useTabScreenDebug("index");
   const insets = useAppSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const isFocused = useIsFocused();
   const shellMarkedRef = useRef(false);
 
   const markHomeShellReady = useCallback((reason: string) => {
@@ -160,17 +166,26 @@ export default function HomeScreen() {
     // Explicit delivery pin — never force GPS over it (Stage B / reconcile own policy).
     if (locationSource === "selected" && coords) return;
     if (gpsKickRef.current && coords) return;
-    // After first interactions/splash — do not block Home's first usable frame.
-    const task = InteractionManager.runAfterInteractions(() => {
+    // Early kick / Stage B already owns the process GPS session — don't storm readiness.
+    if (isSessionGpsBootstrapActive()) {
+      gpsKickRef.current = true;
+      return;
+    }
+    // Prefer a short timeout over InteractionManager — continuous Reanimated + GPS
+    // can starve runAfterInteractions for a long time on release builds.
+    const timer = setTimeout(() => {
       const loc = useLocationStore.getState();
       if (loc.locationSource === "selected" && loc.coords) return;
       if (gpsKickRef.current && loc.coords) return;
+      if (isSessionGpsBootstrapActive()) {
+        gpsKickRef.current = true;
+        return;
+      }
       gpsKickRef.current = true;
       // Never forceDevice here — selected delivery pins are owned by Stage B / reconcile.
-      // Empty or cached "current" still acquires / refines via progressive GPS.
       void requestPermissionAndFetch({ forceDevice: false });
-    });
-    return () => task.cancel();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [locationHydrated, locationSource, coords, requestPermissionAndFetch]);
 
   // Food JS chunk ASAP — do not wait for InteractionManager (that was the Suspense blank).
@@ -333,19 +348,27 @@ export default function HomeScreen() {
   // paint never races splash/bootstrap (spacer 0 + header GAP-only = overlap).
   useFocusEffect(
     useCallback(() => {
-      NativeStatusBar.setHidden(false, "none");
-      if (Platform.OS === "android") {
-        // Edge-to-edge: stay translucent so we only pad once via insets.top
-        // (non-translucent + insets.top double-spaced the header under the clock).
-        NativeStatusBar.setTranslucent(true);
-        NativeStatusBar.setBackgroundColor("transparent", true);
-        NativeStatusBar.setBarStyle("dark-content", true);
-      }
-      useScreenChromeStore.setState({
-        statusBarBackground: STATUS_CHROME,
-        statusBarStyle: "dark",
-        hideStatusBarSpacer: true,
-      });
+      const applyHomeStatusBar = () => {
+        NativeStatusBar.setHidden(false, "none");
+        NativeStatusBar.setBarStyle("light-content", true);
+        if (Platform.OS === "android") {
+          // Match Home page chrome — white icons on dark shell.
+          NativeStatusBar.setTranslucent(true);
+          NativeStatusBar.setBackgroundColor(STATUS_CHROME, true);
+        }
+        useScreenChromeStore.setState({
+          statusBarBackground: STATUS_CHROME,
+          statusBarStyle: "light",
+          hideStatusBarSpacer: true,
+        });
+      };
+      // Apply now, then again after sibling tab cleanups / root chrome settle
+      // (Profile/Orders used to leave dark-content and win the race).
+      applyHomeStatusBar();
+      const t0 = setTimeout(applyHomeStatusBar, 0);
+      const t1 = setTimeout(applyHomeStatusBar, 64);
+      const task = InteractionManager.runAfterInteractions(applyHomeStatusBar);
+
       resetFoodHomeListScrollGuard();
       // Only remount tiles after idle resume via AppState — not every focus (avoids UI flash).
       prioritizeVisibleMerchantBanners(12);
@@ -358,6 +381,12 @@ export default function HomeScreen() {
           refetchType: "active",
         });
       }
+
+      return () => {
+        clearTimeout(t0);
+        clearTimeout(t1);
+        task.cancel?.();
+      };
     }, [queryClient])
   );
 
@@ -380,6 +409,10 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container} onLayout={onHomeShellLayout}>
+      {/* Only while focused — Profile's mounted StatusBar(dark) was winning the race. */}
+      {isFocused ? (
+        <StatusBar style="light" backgroundColor={STATUS_CHROME} translucent />
+      ) : null}
       {/* Location header only — plain sticky, no shadow. Weather scrolls with body. */}
       <View style={styles.stickyHeader} pointerEvents="box-none">
         {showLocationSkeleton ? (
@@ -396,6 +429,11 @@ export default function HomeScreen() {
                 loc.showPermissionModal ||
                 (!loc.coords && loc.detectingTimedOut)
               ) {
+                // Explicit header tap — always allow the sheet even after dismiss.
+                void loc.promptLocationPermissionIfNeeded({
+                  forceFromUser: true,
+                  skipDeviceFetch: true,
+                });
                 loc.setShowPermissionModal(true);
                 return;
               }
@@ -410,8 +448,8 @@ export default function HomeScreen() {
         style={styles.body}
         contentContainerStyle={[
           styles.bodyContent,
-          // Tab sheet overlays the scene — pad past it so brand never sits underneath.
-          { paddingBottom: resolveCustomerBottomNavHeight(insets.bottom) + 48 },
+          // Clear the floating tab sheet — brand card keeps magicpin height (no tab pad inside).
+          { paddingBottom: resolveCustomerBottomNavHeight(insets.bottom) + 10 },
         ]}
         {...NATURAL_VERTICAL_SCROLL_PROPS}
         scrollEnabled
@@ -490,6 +528,6 @@ const styles = StyleSheet.create({
     flexGrow: 0,
   },
   brandSpacer: {
-    height: 12,
+    height: 8,
   },
 });

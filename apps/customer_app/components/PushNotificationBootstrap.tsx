@@ -444,6 +444,7 @@ function PushNotificationBootstrapInner() {
       onNotificationOpen: handleOpen,
       onForeground: handleForeground,
       log: (message: string, extra?: Record<string, unknown>) => {
+        if (!__DEV__) return;
         if (extra) console.log(`[push:customer] ${message}`, extra);
         else console.log(`[push:customer] ${message}`);
       },
@@ -575,48 +576,56 @@ function PushNotificationBootstrapInner() {
     foregroundSyncAtRef.current = now;
     void (async () => {
       let snap = await controller.refresh({ syncIfGranted: true });
-      console.log("[push:customer] post-login refresh", {
-        osStatus: snap.osStatus,
-        syncStatus: snap.syncStatus,
-        lastBackendSyncOk: snap.lastBackendSyncOk,
-        hasExpo: !!snap.expoPushToken,
-        hasNative: !!snap.nativePushToken,
-        error: snap.error,
-        expoGo,
-      });
+      if (__DEV__) {
+        console.log("[push:customer] post-login refresh", {
+          osStatus: snap.osStatus,
+          syncStatus: snap.syncStatus,
+          lastBackendSyncOk: snap.lastBackendSyncOk,
+          hasExpo: !!snap.expoPushToken,
+          hasNative: !!snap.nativePushToken,
+          error: snap.error,
+          expoGo,
+        });
+      }
       if (
         snap.lastBackendSyncOk === false ||
         snap.syncStatus === "error" ||
         (snap.error && String(snap.error).trim())
       ) {
-        console.error("[push:customer] push_token_register_failed", {
-          phase: "post-login-refresh",
-          osStatus: snap.osStatus,
-          syncStatus: snap.syncStatus,
-          lastBackendSyncOk: snap.lastBackendSyncOk,
-          error: snap.error,
-        });
+        if (__DEV__) {
+          console.error("[push:customer] push_token_register_failed", {
+            phase: "post-login-refresh",
+            osStatus: snap.osStatus,
+            syncStatus: snap.syncStatus,
+            lastBackendSyncOk: snap.lastBackendSyncOk,
+            error: snap.error,
+          });
+        }
       }
       if (snap.osStatus === "granted" && !expoGo) {
         snap = await controller.syncTokens({ force: true });
         if (!snap.nativePushToken || !snap.expoPushToken) {
-          console.log("[push:customer] native-retry sync", {
-            syncStatus: snap.syncStatus,
-            hasExpo: !!snap.expoPushToken,
-            hasNative: !!snap.nativePushToken,
-            error: snap.error,
-          });
+          if (__DEV__) {
+            console.log("[push:customer] native-retry sync", {
+              syncStatus: snap.syncStatus,
+              hasExpo: !!snap.expoPushToken,
+              hasNative: !!snap.nativePushToken,
+              error: snap.error,
+            });
+          }
           if (
             snap.lastBackendSyncOk === false ||
             (!snap.expoPushToken && !snap.nativePushToken)
           ) {
-            console.error("[push:customer] push_token_register_failed", {
-              phase: "post-login-sync",
-              osStatus: snap.osStatus,
-              syncStatus: snap.syncStatus,
-              lastBackendSyncOk: snap.lastBackendSyncOk,
-              error: snap.error,
-            });
+            if (__DEV__) {
+              console.error("[push:customer] push_token_register_failed", {
+                phase: "post-login-sync",
+                osStatus: snap.osStatus,
+                syncStatus: snap.syncStatus,
+                lastBackendSyncOk: snap.lastBackendSyncOk,
+                error: snap.error,
+              });
+            }
           }
         }
       }

@@ -19,7 +19,9 @@ export async function ensureStoreCuisinesLinkedForItemNames(
     catalog?: Array<{ id: number; name: string }>;
   };
   if (!res.ok || j.success === false) {
-    return { linked: 0, skippedMessages: ["Could not load store cuisines"] };
+    // Soft-fail: item already saved; don't toast cuisine load failures.
+    console.warn("[ensureStoreCuisines] Could not load store cuisines", res.status);
+    return { linked: 0, skippedMessages: [] };
   }
 
   const linkedList = Array.isArray(j.cuisines) ? j.cuisines : [];
@@ -68,14 +70,8 @@ export async function ensureStoreCuisinesLinkedForItemNames(
         linked++;
         linkedLower.add(key);
       } else {
-        const err = (await cr.json().catch(() => ({}))) as { message?: string; error?: string };
-        skippedMessages.push(
-          typeof err.message === "string" && err.message.trim()
-            ? err.message
-            : typeof err.error === "string"
-              ? err.error
-              : `Could not add "${name}" to store cuisines`
-        );
+        // Soft-fail: item already saved with cuisine_type; avoid blocking UX for catalog misses.
+        console.warn("[ensureStoreCuisines] create soft-failed", name, cr.status);
       }
     }
   }

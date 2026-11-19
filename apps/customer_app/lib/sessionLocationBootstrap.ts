@@ -261,11 +261,10 @@ export async function bootstrapFreshDeviceLocation(queryClient: QueryClient): Pr
       }
       useLocationStore.setState({
         permissionStatus: readiness.permissionStatus,
-        showPermissionModal: true,
-        locationSheetDismissedSession: false,
         loading: false,
         detectingTimedOut: false,
       });
+      // Restore saved / backend pin first — sheet only if still no usable address.
       if (useAuthStore.getState().session) {
         const { applyActiveLocationFromBackend } = await import(
           "@/lib/applyActiveLocationFromBackend"
@@ -273,6 +272,9 @@ export async function bootstrapFreshDeviceLocation(queryClient: QueryClient): Pr
         await applyActiveLocationFromBackend(queryClient);
         logHomeLocationVisible("backend_selected_while_permission_off");
       }
+      await useLocationStore.getState().promptLocationPermissionIfNeeded({
+        skipDeviceFetch: true,
+      });
       const { coords, address } = useLocationStore.getState();
       if (coords) {
         void restoreAndPrefetchLocationWeather(queryClient, address, coords);
@@ -398,6 +400,14 @@ export async function bootstrapFreshDeviceLocation(queryClient: QueryClient): Pr
 
     return "done";
   });
+}
+
+/**
+ * True once early kick or Stage B has claimed the process GPS session.
+ * Home / sheets host must not start a parallel permission+fetch storm.
+ */
+export function isSessionGpsBootstrapActive(): boolean {
+  return earlyGpsKicked || stageBStarted;
 }
 
 /** Reset on logout / account switch so the next session can bootstrap again. */

@@ -1957,7 +1957,9 @@ function CheckoutScreen() {
       try {
         const readiness = await getDeviceLocationReadiness();
         if (!readiness.isReady) {
-          useLocationStore.getState().promptLocationPermissionIfNeeded({ force: true });
+          useLocationStore.getState().promptLocationPermissionIfNeeded({
+            skipDeviceFetch: true,
+          });
           return;
         }
         const { coords } = await Location.getCurrentPositionAsync({

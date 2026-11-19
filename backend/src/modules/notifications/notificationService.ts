@@ -72,6 +72,10 @@ import {
   softSkipWarningForTarget,
   templateRoleMatchesTarget,
 } from "./campaignTarget.js";
+import {
+  announcementPushExtras,
+  parseCustomerAnnouncementFields,
+} from "./customerAnnouncementCampaign.js";
 
 const FCM_TOPIC_PREFIX = "topic:";
 
@@ -726,11 +730,19 @@ function pushDataForRow(row: CreateLogRow): Record<string, unknown> {
         }
       : {}),
     ...metadata,
+    // Re-apply critical rich fields after metadata spread so empty/stale meta
+    // keys cannot wipe HTTPS image URLs or chip JSON from the FCM data map.
     ...(deepLink
       ? {
           screen: deepLink,
           deepLink,
           deep_link: deepLink,
+        }
+      : {}),
+    ...(imageUrl
+      ? {
+          imageUrl,
+          image_url: imageUrl,
         }
       : {}),
     ...(ctaLabel ? { cta_label: ctaLabel } : {}),
@@ -1239,7 +1251,33 @@ async function sendImpl(intent: SendIntent): Promise<SendResult> {
     if (starts) meta.starts_at = starts;
     const ends = pick("ends_at");
     if (ends) meta.ends_at = ends;
-    if (rendered.imageUrl) meta.imageUrl = rendered.imageUrl;
+    if (rendered.imageUrl) {
+      meta.imageUrl = rendered.imageUrl;
+      meta.image_url = rendered.imageUrl;
+    } else {
+      const img = pick("image_url") || pick("imageUrl");
+      if (img) {
+        meta.imageUrl = img;
+        meta.image_url = img;
+      }
+    }
+    const layout = pick("layout_style") || pick("layoutStyle");
+    if (layout) meta.layout_style = layout;
+    // Prefer stringified chips already in meta; else lift from variables.
+    if (meta.category_chips == null && meta.categoryChips == null) {
+      const fromVar = (vars as Record<string, unknown>).category_chips
+        ?? (vars as Record<string, unknown>).categoryChips;
+      if (typeof fromVar === "string" && fromVar.trim()) {
+        meta.category_chips = fromVar.trim();
+      } else if (Array.isArray(fromVar) && fromVar.length > 0) {
+        meta.category_chips = JSON.stringify(fromVar);
+      }
+    } else if (Array.isArray(meta.category_chips)) {
+      meta.category_chips = JSON.stringify(meta.category_chips);
+    } else if (Array.isArray(meta.categoryChips)) {
+      meta.category_chips = JSON.stringify(meta.categoryChips);
+      delete meta.categoryChips;
+    }
     meta.notification_type = "CUSTOMER_ANNOUNCEMENT";
     intent.metadata = meta;
   }
@@ -1963,7 +2001,36 @@ export async function resendCampaign(
   await markCampaignStarted(campaignId);
   try {
     const roleDefaultDeepLink = "/notifications";
-    const storedVars = (campaign.variables ?? {}) as TemplateVariables;
+    const storedVars = {
+      ...((campaign.variables ?? {}) as Record<string, unknown>),
+      ...(campaign.override_title ? { title: campaign.override_title } : {}),
+      ...(campaign.override_body ? { body: campaign.override_body } : {}),
+      ...(campaign.override_image ? { image_url: campaign.override_image } : {}),
+    } as TemplateVariables;
+    // Rebuild rich marketing metadata from stored campaign variables so resend
+    // still delivers imageUrl / category_chips / layout_style / countdown.
+    let resendMetadata: Record<string, unknown> | undefined;
+    if (String(campaign.template_code).toUpperCase() === "CUSTOMER_ANNOUNCEMENT") {
+      const parsed = parseCustomerAnnouncementFields({
+        ...storedVars,
+        title: campaign.override_title || storedVars.title || "GatiMitra",
+        body: campaign.override_body || storedVars.body || "",
+      });
+      if (parsed.ok) {
+        resendMetadata = announcementPushExtras({
+          campaignId,
+          fields: parsed.fields,
+          targetType:
+            (typeof storedVars.target_type === "string" && storedVars.target_type) ||
+            (typeof storedVars.targetType === "string" && storedVars.targetType) ||
+            null,
+          targetId:
+            (typeof storedVars.target_id === "string" && storedVars.target_id) ||
+            (typeof storedVars.targetId === "string" && storedVars.targetId) ||
+            null,
+        });
+      }
+    }
     const result = await send({
       templateCode: campaign.template_code,
       variables: {
@@ -1981,6 +2048,7 @@ export async function resendCampaign(
         imageUrl: campaign.override_image,
         deepLink: campaign.override_deep_link?.trim() || roleDefaultDeepLink,
       },
+      ...(resendMetadata ? { metadata: resendMetadata } : {}),
     });
     // Missing tokens / quiet hours are soft complete — never mark failed for Expo Go / empty audience.
     const softSkip =

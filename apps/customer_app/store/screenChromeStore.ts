@@ -31,7 +31,9 @@ const applyImmersiveChrome = (active: boolean) =>
   active
     ? {
         statusBarBackground: "transparent",
-        statusBarStyle: DEFAULT_STATUS_BAR_STYLE,
+        // Transparent immersive is usually over dark heroes — keep light icons.
+        // Light pages that need dark icons must set statusBarStyle explicitly.
+        statusBarStyle: "light" as const,
         hideStatusBarSpacer: true,
       }
     : {
