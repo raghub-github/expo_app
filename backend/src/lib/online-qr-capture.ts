@@ -235,6 +235,43 @@ export async function finalizeQrFromCapturedPaymentWebhook(input: {
   });
 }
 
+/**
+ * The job was paid another way (customer in-app checkout): close every open QR
+ * for it so the passenger cannot pay twice. Best-effort — a capture that still
+ * lands is refunded by the finalizer (the job is no longer payable).
+ */
+export async function closeOpenQrsPaidElsewhere(
+  orderIdText: string,
+  source: OnlineQrSource,
+  reason: string
+): Promise<number> {
+  const open = await loadQrRows(orderIdText, source, ["INITIATED"], 5);
+  const sql = getSql();
+  let closed = 0;
+  for (const row of open) {
+    const qrId = String(row.transaction_id ?? "").trim();
+    if (!qrId) continue;
+    let closedOnGateway = false;
+    if (row.payment_gateway === "razorpay" && !qrId.startsWith("dummy_")) {
+      closedOnGateway = await closeRazorpayQrCode(qrId).catch(() => false);
+    }
+    await sql`
+      UPDATE orders_core_payments
+      SET payment_status = 'EXPIRED',
+          gateway_response = COALESCE(gateway_response, '{}'::jsonb) || ${JSON.stringify({
+            qrStatus: "closed",
+            paymentStatus: "EXPIRED",
+            closedReason: reason,
+            closedOnGateway,
+            closedAt: new Date().toISOString(),
+          })}::text::jsonb
+      WHERE id = ${row.id} AND upper(payment_status) = 'INITIATED'
+    `;
+    closed += 1;
+  }
+  return closed;
+}
+
 export type OpenQrBeforeCashResult =
   | { paidOnline: true; qrId: string; amountPaid: number }
   | { paidOnline: false; closed: number };

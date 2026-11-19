@@ -45,6 +45,55 @@ export type RiderWalletBreakdown = {
   };
 };
 
+/**
+ * Per-service lifetime earnings with Ride/Parcel jobs counted by their earning R.
+ *
+ * rider_wallet.earnings_<service> is bumped by the ledger trigger only for
+ * `earning` rows, so a cash job — whose earning is mostly cash in hand, with only
+ * R − C (or nothing) touching the wallet — was missing. For settled jobs, replace
+ * their wallet earning credits with R. Food (prepaid, no settlement) unchanged.
+ */
+export async function jobAwareServiceEarnings(
+  riderId: number,
+  columns: { food: number; parcel: number; ride: number }
+): Promise<{ food: number; parcel: number; ride: number }> {
+  const out = { ...columns };
+  try {
+    const sql = getSql();
+    const jobs = (await sql`
+      SELECT COALESCE(service_type, 'person_ride') AS svc, COALESCE(SUM(rider_earnings::numeric), 0) AS r
+      FROM ride_settlements
+      WHERE rider_id = ${riderId}
+      GROUP BY 1
+    `) as unknown as Array<{ svc: string; r: unknown }>;
+    const credited = (await sql`
+      SELECT LOWER(w.service_type::text) AS svc, COALESCE(SUM(w.amount::numeric), 0) AS c
+      FROM wallet_ledger w
+      WHERE w.rider_id = ${riderId}
+        AND LOWER(w.entry_type::text) = 'earning'
+        AND w.service_type IS NOT NULL
+        AND COALESCE(w.ref, '') ~ '^rider_earn:(delivery|dyn):[0-9]+$'
+        AND EXISTS (
+          SELECT 1 FROM ride_settlements s
+          WHERE s.rider_id = ${riderId}
+            AND s.order_core_id = split_part(w.ref, ':', 3)::bigint
+        )
+      GROUP BY 1
+    `) as unknown as Array<{ svc: string | null; c: unknown }>;
+    for (const j of jobs) {
+      const key = svcKey(j.svc);
+      if (key === "parcel" || key === "ride") out[key] = round2(out[key] + num(j.r));
+    }
+    for (const c of credited) {
+      const key = svcKey(c.svc);
+      if (key === "parcel" || key === "ride") out[key] = round2(out[key] - num(c.c));
+    }
+  } catch {
+    return columns; // best-effort: fall back to the wallet columns
+  }
+  return out;
+}
+
 export async function getRiderWalletBreakdown(riderId: number): Promise<RiderWalletBreakdown> {
   const db = getDb();
   const [w] = await db.select().from(riderWallet).where(eq(riderWallet.riderId, riderId)).limit(1);
@@ -59,6 +108,13 @@ export async function getRiderWalletBreakdown(riderId: number): Promise<RiderWal
   const food = mk(w?.earningsFood, w?.penaltiesFood);
   const parcel = mk(w?.earningsParcel, w?.penaltiesParcel);
   const ride = mk(w?.earningsPersonRide, w?.penaltiesPersonRide);
+  const earned = await jobAwareServiceEarnings(riderId, {
+    food: food.earnings,
+    parcel: parcel.earnings,
+    ride: ride.earnings,
+  });
+  parcel.earnings = earned.parcel;
+  ride.earnings = earned.ride;
   const common = { subscriptionDebited: 0, otherOffers: 0, otherPenaltyReverts: 0 };
 
   // Ledger-derived reverts + offers per service. Tolerant of enum variants.

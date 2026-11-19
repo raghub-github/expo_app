@@ -20,9 +20,51 @@ import { computeRideBillForCustomerOrder } from "./ride-bill.service.js";
 import { insertRideCustomerPaymentSnapshot } from "../../lib/persist-ride-customer-payment-snapshot.js";
 import { postOnlineRideSettlement } from "./settlement/rideSettlement.engine.js";
 import { rideBillingToSettlementComponents } from "./settlement/billingToComponents.js";
+import {
+  findPaidFareCapture,
+  restoreFareGatiCash,
+  settleLateInAppFarePayment,
+} from "../../lib/late-fare-capture.js";
 
 function roundInr(value: number): number {
   return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+/**
+ * The ride is already paid (rider took cash, passenger paid the rider's QR, or an
+ * earlier checkout). The SAME payment again is an idempotent success; a different
+ * captured payment is refunded (lib/late-fare-capture.ts) and the app is told so.
+ */
+async function answerRideFareAlreadyPaid(
+  input: { razorpayOrderId?: string; razorpayPaymentId?: string; razorpaySignature?: string },
+  orderIdText: string,
+  amountPaid: number,
+  amountPaise: number | null
+): Promise<{ ok: true; amountPaid: number }> {
+  const paymentId = input.razorpayPaymentId?.trim() || null;
+  const signatureValid = Boolean(
+    input.razorpayOrderId?.trim() &&
+      paymentId &&
+      input.razorpaySignature?.trim() &&
+      verifyRazorpaySignature(input.razorpayOrderId.trim(), paymentId, input.razorpaySignature.trim())
+  );
+  const late = await settleLateInAppFarePayment({
+    service: "person_ride",
+    orderIdText,
+    razorpayOrderId: input.razorpayOrderId?.trim() || null,
+    razorpayPaymentId: paymentId,
+    signatureValid,
+    amountPaise,
+  });
+  if (late.samePayment) return { ok: true, amountPaid };
+  throw Object.assign(
+    new Error(
+      late.refunded
+        ? "This ride was already paid. Your online payment is being refunded to the original payment method."
+        : "Ride fare is already paid"
+    ),
+    { statusCode: 409, code: late.refunded ? "ALREADY_PAID_REFUNDED" : "ALREADY_PAID" }
+  );
 }
 
 export async function confirmRideFarePaymentForCustomer(input: {
@@ -78,7 +120,12 @@ export async function confirmRideFarePaymentForCustomer(input: {
   }
 
   if (!isRideFarePaymentPending(orderRow.paymentStatus)) {
-    throw Object.assign(new Error("Ride fare is already paid"), { statusCode: 409 });
+    return answerRideFareAlreadyPaid(
+      input,
+      orderRow.orderId?.trim() || String(orderRow.id),
+      roundInr(Number(orderRow.grandTotal) || 0),
+      null
+    );
   }
 
   const settledPayable = await assertRideCustomerPaymentCollectable(orderRow.id);
@@ -174,8 +221,9 @@ export async function confirmRideFarePaymentForCustomer(input: {
       : {};
   const orderIdText = orderRow.orderId?.trim() || String(orderRow.id);
 
+  let gatiCashTxnId: string | null = null;
   if (gatiCashApplied > 0.005) {
-    await debitCustomerGatiCashForRideFare(sql, {
+    gatiCashTxnId = await debitCustomerGatiCashForRideFare(sql, {
       customerInternalId: customerPk,
       orderIdText,
       amount: gatiCashApplied,
@@ -200,6 +248,9 @@ export async function confirmRideFarePaymentForCustomer(input: {
       .update(ordersCore)
       .set({
         paymentStatus: "completed",
+        // How the passenger actually paid — a rider's earlier "cash" pick must
+        // not survive an in-app payment (receipts, dashboard, settlement mode).
+        paymentMethod: razorpayDue > 0.005 ? "online" : "wallet",
         grandTotal: String(fareDue),
         billingSnapshot: {
           ...prevSnap,
@@ -256,8 +307,30 @@ export async function confirmRideFarePaymentForCustomer(input: {
   // Another concurrent finalizer already settled this ride — idempotent success,
   // skip the (non-idempotent) snapshot + settlement engine to avoid duplication.
   if (alreadySettled) {
-    return { ok: true, amountPaid: fareDue };
+    // Our own concurrent double tap won → idempotent. Otherwise the ride was paid
+    // another way while this checkout ran: refund the capture, return the GatiCash.
+    const paidBy = await findPaidFareCapture(orderIdText);
+    const settledByInApp = paidBy?.source === "person_ride_fare";
+    if (gatiCashApplied > 0.005 && !settledByInApp) {
+      await restoreFareGatiCash({
+        service: "person_ride",
+        customerPk,
+        orderIdText,
+        amount: gatiCashApplied,
+        gatiCashTxnId,
+      });
+    }
+    if (settledByInApp && !(razorpayDue > 0.005)) return { ok: true, amountPaid: fareDue };
+    return answerRideFareAlreadyPaid(input, orderIdText, fareDue, Math.round(razorpayDue * 100));
   }
+
+  // Paid in-app: a QR still open on the rider's phone can no longer be paid
+  // (a capture that still lands is refunded by the QR finalizer).
+  void import("../../lib/online-qr-capture.js")
+    .then(({ closeOpenQrsPaidElsewhere }) =>
+      closeOpenQrsPaidElsewhere(orderIdText, "ride_online_qr", "paid_in_app")
+    )
+    .catch(() => undefined);
 
   const snapshotId = await insertRideCustomerPaymentSnapshot(db, {
     orderCoreId: orderRow.id,

@@ -37,7 +37,7 @@ import { walletService } from "@/services/wallet.service";
 import { useProfile } from "@/hooks/useProfile";
 import { CheckoutGatiCashWalletBar } from "@/components/checkout/CheckoutGatiCashWalletBar";
 import { ParcelFarePaymentSuccessSheet } from "@/components/parcel/ParcelFarePaymentSuccessSheet";
-import { isRideFareAlreadyPaidError } from "@/lib/ride-fare-gate";
+import { isFarePaidElsewhereRefundError, isRideFareAlreadyPaidError } from "@/lib/ride-fare-gate";
 
 const MINT_DARK = GatiMitraColors.deepMintStart;
 
@@ -207,6 +207,13 @@ export function ParcelFareCheckoutScreen({ order, onBack, initiallyPaid = false 
             : totalPaid;
         showPaymentSuccess(confirmed);
       } catch (e) {
+        const refundMessage = isFarePaidElsewhereRefundError(e);
+        if (refundMessage) {
+          Alert.alert("Parcel fare already paid", refundMessage, [
+            { text: "OK", onPress: () => router.back() },
+          ]);
+          return;
+        }
         if (isRideFareAlreadyPaidError(e)) {
           showPaymentSuccess(totalPaid);
           return;
