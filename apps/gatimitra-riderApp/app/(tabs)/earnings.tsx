@@ -319,7 +319,6 @@ export default function EarningsScreen() {
           withdrawable={display.withdrawable}
           minWithdrawal={display.minWithdrawal}
           maxWithdrawal={display.maxWithdrawal}
-          withdrawReserve={display.withdrawReserve}
           bankAccount={bankAccount}
           onClose={() => setWithdrawOpen(false)}
           onSuccess={() => {

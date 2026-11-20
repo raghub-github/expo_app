@@ -12,8 +12,6 @@ import {
 import { readRiderWalletBalance } from "./rider-subscription-wallet.js";
 import { WalletFrozenError } from "./wallet-freeze.js";
 import { readPayoutAmountLimits } from "./payout-amount-limits.js";
-import { isOnlyMinBalanceRestriction, minBalanceWithdrawReserve } from "@gatimitra/financial-rules";
-import { loadRideWalletPolicy } from "../modules/rides/settlement/rideSettlement.repository.js";
 
 export const MIN_RIDER_WITHDRAWAL_AMOUNT = 100;
 export const MAX_RIDER_WITHDRAWAL_AMOUNT = 100_000;
@@ -68,25 +66,12 @@ export async function getRiderPendingWithdrawalTotal(riderId: number): Promise<n
 }
 
 /**
- * What a withdrawal must leave in the wallet: the Ride/Parcel minimum balance while
- * that rule is in enforce mode, else nothing. Policy unreadable → 0 (never block a
- * payout on a guess).
+ * Withdrawable = the positive balance, nothing held back. A rider stays active
+ * while the wallet is above the floor (−₹200), so withdrawing down to ₹0 never
+ * pauses them; a balance at or below ₹0 has nothing to withdraw.
  */
-export async function getRiderWithdrawReserve(): Promise<number> {
-  try {
-    const policy = await loadRideWalletPolicy();
-    return minBalanceWithdrawReserve({
-      threshold: policy.minWalletBalance,
-      mode: policy.minBalanceMode,
-    });
-  } catch {
-    return 0;
-  }
-}
-
-/** Pure rule shared by the read path and the locked write path. */
-export function withdrawableFromBalance(balance: number, reserve: number): number {
-  return round2(Math.max(0, round2(balance) - Math.max(0, reserve)));
+export function withdrawableFromBalance(balance: number): number {
+  return round2(Math.max(0, round2(balance)));
 }
 
 /**
@@ -95,23 +80,10 @@ export function withdrawableFromBalance(balance: number, reserve: number): numbe
  * Every pending request is debited from the wallet the moment it is created
  * (wallet_ledger 'withdrawal' → total_balance), so the balance is ALREADY net of
  * pending payouts. Subtracting them again under-offered any rider with a request
- * in flight. The minimum-balance reserve stays in the wallet so a withdrawal can
- * never silently pause the rider's Ride + Parcel orders.
+ * in flight.
  */
 export async function getRiderWithdrawableBalance(riderId: number): Promise<number> {
-  const [balance, reserve] = await Promise.all([
-    readRiderWalletBalance(riderId),
-    getRiderWithdrawReserve(),
-  ]);
-  return withdrawableFromBalance(balance, reserve);
-}
-
-function insufficientWithdrawableMessage(reserve: number): string {
-  if (reserve > 0) {
-    const r = Number.isInteger(reserve) ? `₹${reserve}` : `₹${reserve.toFixed(2)}`;
-    return `Insufficient withdrawable balance. ${r} must stay in your wallet to keep receiving Ride and Parcel orders.`;
-  }
-  return "Insufficient withdrawable balance";
+  return withdrawableFromBalance(await readRiderWalletBalance(riderId));
 }
 
 async function getVerifiedBankMethod(riderId: number) {
@@ -172,15 +144,7 @@ async function assertRiderCanWithdraw(riderId: number): Promise<void> {
   if (restrictions.globalWalletBlock) {
     throw new Error("Wallet balance is blocked. Clear dues before withdrawing.");
   }
-  // A rider paused only by the minimum-balance rule is not "restricted" in the
-  // support sense — the reserve check below explains exactly what can be withdrawn.
-  const onlyMinBalance = isOnlyMinBalanceRestriction({
-    blockedServices: restrictions.blacklistBlockedServices,
-    minBalance: restrictions.walletMinBalance,
-    blockedStatus: restrictions.accountRestrictedReason === "blocked_status",
-    globalWalletBlock: restrictions.globalWalletBlock,
-  });
-  if (restrictions.accountRestricted && !onlyMinBalance) {
+  if (restrictions.accountRestricted) {
     throw new Error("Account is restricted. Contact support.");
   }
 }
@@ -255,10 +219,9 @@ export async function createRiderWithdrawalRequest(
     );
   }
 
-  const reserve = await getRiderWithdrawReserve();
-  const withdrawable = withdrawableFromBalance(await readRiderWalletBalance(riderId), reserve);
+  const withdrawable = withdrawableFromBalance(await readRiderWalletBalance(riderId));
   if (amount > withdrawable) {
-    throw new Error(insufficientWithdrawableMessage(reserve));
+    throw new Error("Insufficient withdrawable balance");
   }
 
   return sql.begin(async (tx) => {
@@ -281,9 +244,9 @@ export async function createRiderWithdrawalRequest(
       throw new Error("Insufficient wallet balance");
     }
     // Re-checked under the row lock: total_balance is already net of every pending
-    // request (each was debited at creation), so only the reserve is held back.
-    if (amount > withdrawableFromBalance(currentBalance, reserve)) {
-      throw new Error(insufficientWithdrawableMessage(reserve));
+    // request (each was debited at creation), so nothing else is held back.
+    if (amount > withdrawableFromBalance(currentBalance)) {
+      throw new Error("Insufficient withdrawable balance");
     }
 
     const [withdrawal] = await tx`

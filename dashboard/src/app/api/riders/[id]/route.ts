@@ -24,6 +24,8 @@ import {
   decryptRiderAccountNumber,
   maskRiderAccountNumber,
 } from "@/lib/rider-bank-account-crypto";
+import { loadWalletActiveFloor } from "@/lib/rider-negative-wallet-blocks";
+import { isWalletAtOrBelowFloor } from "@gatimitra/financial-rules";
 
 export const runtime = 'nodejs';
 
@@ -276,9 +278,10 @@ export async function GET(
     }
 
     const totalBal = walletRow ? Number(walletRow.totalBalance) : 0;
+    const walletFloor = await loadWalletActiveFloor();
     const wallet = walletRow ? {
       totalBalance: walletRow.totalBalance,
-      globalWalletBlock: totalBal <= -200,
+      globalWalletBlock: isWalletAtOrBelowFloor(totalBal, walletFloor),
       earningsFood: walletRow.earningsFood,
       earningsParcel: walletRow.earningsParcel,
       earningsPersonRide: walletRow.earningsPersonRide,

@@ -8,6 +8,8 @@ import { getDb } from "@/lib/db/client";
 import { riders, riderWallet, onboardingPayments, walletLedger } from "@/lib/db/schema";
 import { eq, desc, sql } from "drizzle-orm";
 import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { loadWalletActiveFloor } from "@/lib/rider-negative-wallet-blocks";
+import { isWalletAtOrBelowFloor } from "@gatimitra/financial-rules";
 
 export const runtime = "nodejs";
 
@@ -92,7 +94,7 @@ export async function GET(
     let wallet: WalletPayload | null = walletRow
       ? {
           totalBalance: walletRow.totalBalance,
-          globalWalletBlock: totalBal <= -200,
+          globalWalletBlock: isWalletAtOrBelowFloor(totalBal, await loadWalletActiveFloor()),
           earningsFood: walletRow.earningsFood,
           earningsParcel: walletRow.earningsParcel,
           earningsPersonRide: walletRow.earningsPersonRide,
@@ -115,7 +117,7 @@ export async function GET(
       if (Number.isFinite(ledgerBalance)) {
         wallet = {
           totalBalance: ledgerBalance.toFixed(2),
-          globalWalletBlock: ledgerBalance <= -200,
+          globalWalletBlock: isWalletAtOrBelowFloor(ledgerBalance, await loadWalletActiveFloor()),
           earningsFood: "0",
           earningsParcel: "0",
           earningsPersonRide: "0",

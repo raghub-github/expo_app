@@ -16,7 +16,8 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { canPerformRiderActionAnyService } from "@/lib/permissions/actions";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { logActionByAuth } from "@/lib/audit/logger";
-import { GLOBAL_BLOCK_THRESHOLD } from "@/lib/rider-negative-wallet-blocks";
+import { loadWalletActiveFloor } from "@/lib/rider-negative-wallet-blocks";
+import { isWalletAtOrBelowFloor } from "@gatimitra/financial-rules";
 import { deleteCachedByPrefix } from "@/lib/server-cache";
 import { getRedisClient } from "@/lib/redis";
 
@@ -223,7 +224,7 @@ export async function POST(
           ${"Cleared from rider dashboard Subscription Dues card"},
           ${JSON.stringify({
             source: "dashboard_clear_subscription_dues",
-            globalWalletBlockAfter: balanceAfter <= GLOBAL_BLOCK_THRESHOLD,
+            globalWalletBlockAfter: isWalletAtOrBelowFloor(balanceAfter, await loadWalletActiveFloor()),
           })}::jsonb
         )
         RETURNING id
@@ -274,7 +275,7 @@ export async function POST(
         duesOutstandingAfter: 0,
         dispatchBlockedAfter: false,
         totalBalance: balanceAfter,
-        globalWalletBlock: balanceAfter <= GLOBAL_BLOCK_THRESHOLD,
+        globalWalletBlock: isWalletAtOrBelowFloor(balanceAfter, await loadWalletActiveFloor()),
         adminClearId,
         walletLedgerId,
       },

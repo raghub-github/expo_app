@@ -627,14 +627,14 @@ export function RiderBlacklistClient() {
                   <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" aria-hidden />
                   <p className="text-xs font-medium text-amber-900">
                     {globalWalletBlock
-                      ? "All services blocked. Balance below -₹200. Unlock at ₹0."
+                      ? "All services blocked: wallet balance is at or below the wallet floor (−₹200 by default). Unlocks as soon as the balance is above it."
                       : `Wallet blocks active: ${negativeWalletBlocks
                           .map((b) =>
                             b.serviceType === "person_ride"
                               ? "Person ride"
                               : b.serviceType.charAt(0).toUpperCase() + b.serviceType.slice(1)
                           )
-                          .join(", ")} — unlocks when balance > -50 per service`}
+                          .join(", ")} — per-service penalty limit exceeded`}
                   </p>
                 </div>
               )}

@@ -2,6 +2,11 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import { riderNegativeWalletBlocks, riderWallet } from "../db/schema.js";
 import { loadRideWalletPolicy } from "../modules/rides/settlement/rideSettlement.repository.js";
+import {
+  DEFAULT_WALLET_ACTIVE_FLOOR,
+  isWalletAtOrBelowFloor,
+  normalizeWalletActiveFloor,
+} from "./rider-wallet-min-balance.js";
 
 /**
  * Backwards-compatible default thresholds. The live values are sourced from
@@ -10,7 +15,8 @@ import { loadRideWalletPolicy } from "../modules/rides/settlement/rideSettlement
  * missing or the config table has not been created yet.
  */
 export const NEGATIVE_WALLET_THRESHOLD = 50;
-export const GLOBAL_BLOCK_THRESHOLD = -200;
+/** Fallback wallet floor: a rider is active while the balance is ABOVE this. */
+export const GLOBAL_BLOCK_THRESHOLD = DEFAULT_WALLET_ACTIVE_FLOOR;
 
 async function resolveThresholds(): Promise<{
   serviceNegativeThreshold: number;
@@ -23,9 +29,7 @@ async function resolveThresholds(): Promise<{
       serviceNegativeThreshold: Number.isFinite(policy.serviceNegativeThreshold)
         ? policy.serviceNegativeThreshold
         : NEGATIVE_WALLET_THRESHOLD,
-      globalBlockThreshold: Number.isFinite(policy.globalBlockThreshold)
-        ? policy.globalBlockThreshold
-        : GLOBAL_BLOCK_THRESHOLD,
+      globalBlockThreshold: normalizeWalletActiveFloor(policy.globalBlockThreshold),
       autoUnblockOnZero: policy.autoUnblockOnZero !== false,
     };
   } catch {
@@ -121,7 +125,9 @@ export async function syncNegativeWalletBlocks(riderId: number): Promise<void> {
     return;
   }
 
-  if (totalBalance <= thresholds.globalBlockThreshold) {
+  // At or below the floor → every service paused; above it the global block lifts
+  // (the rows above were already cleared and are only re-added here).
+  if (isWalletAtOrBelowFloor(totalBalance, thresholds.globalBlockThreshold)) {
     for (const service of SERVICES) {
       await db
         .insert(riderNegativeWalletBlocks)

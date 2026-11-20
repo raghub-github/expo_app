@@ -337,6 +337,18 @@ const RiderWalletMinBalanceSchema = z.object({
 
 export type RiderWalletMinBalance = z.infer<typeof RiderWalletMinBalanceSchema>;
 
+/** THE wallet rule: active while balance > floor (Super Admin, default −₹200). */
+const RiderWalletFloorSchema = z.object({
+  floor: z.number(),
+  balance: z.number(),
+  blocked: z.boolean(),
+  unlockAmount: z.number(),
+  clearDuesAmount: z.number(),
+  message: z.string().nullable(),
+});
+
+export type RiderWalletFloor = z.infer<typeof RiderWalletFloorSchema>;
+
 const AccountRestrictionsSchema = z
   .object({
     accountRestricted: z.boolean().optional(),
@@ -352,8 +364,10 @@ const AccountRestrictionsSchema = z
     penaltyEventId: z.string().nullable().optional(),
     penaltyTitle: z.string().nullable().optional(),
     penaltyFormattedOrderId: z.string().nullable().optional(),
-    /** ₹200 minimum-balance status for Ride + Parcel (absent on older backends). */
+    /** Retired positive-minimum rule — always "off" on current backends. */
     walletMinBalance: RiderWalletMinBalanceSchema.optional(),
+    /** Wallet floor status (absent on older backends). */
+    walletFloor: RiderWalletFloorSchema.optional(),
   })
   .transform((raw) => {
     const walletBlockServices =
@@ -405,6 +419,7 @@ const AccountRestrictionsSchema = z
       penaltyTitle: raw.penaltyTitle?.trim() || null,
       penaltyFormattedOrderId: raw.penaltyFormattedOrderId?.trim() || null,
       walletMinBalance: raw.walletMinBalance ?? null,
+      walletFloor: raw.walletFloor ?? null,
     };
   });
 
@@ -426,8 +441,6 @@ const EarningsSummarySchema = z.object({
   hasBankAccount: z.boolean(),
   minWithdrawal: z.number().optional(),
   maxWithdrawal: z.number().optional(),
-  /** Kept in the wallet by withdrawals (Ride/Parcel minimum balance). */
-  withdrawReserve: z.number().optional(),
   canWithdraw: z.boolean().optional(),
   isFrozen: z.boolean().optional(),
   freezeReason: z.string().nullable().optional(),
@@ -463,6 +476,7 @@ const EarningsSummarySchema = z.object({
       penaltyTitle: null,
       penaltyFormattedOrderId: null,
       walletMinBalance: null,
+      walletFloor: null,
     }
   ),
 });
@@ -1340,7 +1354,7 @@ export const riderApi = {
 
   /**
    * Settlement for a completed Ride/Parcel. settlement is null while payment is
-   * still pending; walletMinBalance is the ₹200 minimum-balance status.
+   * still pending. walletMinBalance is the retired positive-minimum rule (always "off").
    */
   async getOrderSettlement(orderId: string) {
     const client = createApiClient();

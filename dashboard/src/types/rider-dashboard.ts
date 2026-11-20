@@ -172,9 +172,21 @@ export interface RiderSummary {
     }
   >;
   /**
-   * Wallet minimum-balance policy (Ride + Parcel), evaluated with the backend's own
-   * evaluator. `restricted` true only in enforce mode while below the minimum.
+   * THE wallet rule: the rider is active while the balance is ABOVE `floor`
+   * (Super Admin "Global block threshold", default −₹200); at or below it every
+   * service is paused. Same evaluator as the backend.
    */
+  walletFloor?: {
+    floor: number;
+    balance: number;
+    blocked: boolean;
+    /** Minimum whole-rupee recharge that unlocks. */
+    unlockAmount: number;
+    /** Recharge that clears all dues (balance → ₹0). */
+    clearDuesAmount: number;
+    message: string | null;
+  } | null;
+  /** Retired positive-minimum rule — always the neutral "off" status. */
   walletMinBalance?: {
     mode: "off" | "warn" | "enforce";
     threshold: number;

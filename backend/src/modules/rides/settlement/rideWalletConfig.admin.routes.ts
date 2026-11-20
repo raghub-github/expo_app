@@ -32,12 +32,14 @@ function internalSecretGrantsAdmin(req: FastifyRequest): boolean {
 
 const updateBodySchema = z.object({
   serviceNegativeThreshold: z.number().positive().max(100_000),
+  /** Wallet floor: a rider is active while the balance is ABOVE this (default −200). */
   globalBlockThreshold: z.number().negative().min(-1_000_000),
   cashSettlementEnabled: z.boolean().optional(),
   autoUnblockOnZero: z.boolean().optional(),
   commissionOnToll: z.boolean().optional(),
-  /** Minimum available wallet balance for Ride + Parcel (₹). */
-  minWalletBalance: z.number().min(0).max(100_000).optional(),
+  // Retired positive minimum-balance fields: still accepted from older admin
+  // clients so a save never fails, but ignored (the rule no longer exists).
+  minWalletBalance: z.number().optional(),
   minBalanceMode: z.enum(["off", "warn", "enforce"]).optional(),
   reason: z.string().max(500).optional(),
 });
@@ -48,8 +50,6 @@ const policyResponseSchema = z.object({
   cashSettlementEnabled: z.boolean(),
   autoUnblockOnZero: z.boolean(),
   commissionOnToll: z.boolean(),
-  minWalletBalance: z.number(),
-  minBalanceMode: z.enum(["off", "warn", "enforce"]),
 });
 
 const historyRowSchema = z.object({
@@ -110,8 +110,6 @@ export const rideWalletConfigAdminRoutes: FastifyPluginAsync = async (app) => {
             cashSettlementEnabled: body.cashSettlementEnabled,
             autoUnblockOnZero: body.autoUnblockOnZero,
             commissionOnToll: body.commissionOnToll,
-            minWalletBalance: body.minWalletBalance,
-            minBalanceMode: body.minBalanceMode,
             reason: body.reason ?? null,
           });
           return policy;

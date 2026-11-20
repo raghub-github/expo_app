@@ -189,24 +189,80 @@ export declare function validateCancellationSlabs(slabs: CancellationSlab[]): st
 /** Reference defaults (seeded by migration): grace 1–5, then 60% / 35% / 20% (top open-ended). */
 export declare const DEFAULT_CANCELLATION_SLABS: CancellationSlab[];
 /**
- * Minimum available wallet balance for post-paid (cash-capable) services.
+ * A rider is ACTIVE while their wallet balance is ABOVE the floor configured in
+ * Super Admin → Ride Billing & Wallet → "Global block threshold"
+ * (ride_wallet_config.global_block_threshold, default −₹200).
  *
- * A rider who collects cash owes the platform its share out of their wallet, so
- * the wallet needs headroom before they take another cash-capable job. Below the
- * configured minimum (₹200 by default, ride_wallet_config.min_wallet_balance):
+ *   balance >  floor  → active (a negative balance down to the floor is allowed)
+ *   balance <= floor  → every service is paused until the balance is back above it
  *
- *   off     — nothing happens
- *   warn    — the rider sees the shortfall and can recharge; dispatch unaffected
- *   enforce — no new Person Ride or Parcel assignments until the balance is back
+ * The per-service penalty threshold (negative usage per service) is a separate,
+ * Super-Admin-configured penalty rule and is evaluated by syncNegativeWalletBlocks.
  *
- * Food is prepaid (no cash collection) so it is never restricted by this rule; a
- * restricted rider can still earn back above the minimum on food.
- *
- * Computed from the committed wallet balance every time restrictions are read,
- * so it can never go stale or be lifted by the app — there is no stored block row
- * to forget to clear after a recharge. The negative-wallet blocks are separate
- * and unchanged.
+ * History: migration 0649 added a positive "minimum wallet balance" (₹200,
+ * enforce) for Ride + Parcel. That was wrong — riders were paused at ₹0..₹199
+ * although a wallet only has to stay above −₹200. It is retired: nothing reads
+ * min_wallet_balance / min_balance_mode any more, and `walletMinBalance` in API
+ * responses is always the neutral status below so installed apps show nothing.
  */
+export declare const DEFAULT_WALLET_ACTIVE_FLOOR = -200;
+/** Signed rupees: "₹250", "-₹250", "₹199.50". */
+export declare function formatSignedRupees(n: number): string;
+/** The configured floor, or −₹200 when the value is missing / invalid / positive. */
+export declare function normalizeWalletActiveFloor(value: unknown): number;
+/** True when the wallet is at or below the floor (all services paused). */
+export declare function isWalletAtOrBelowFloor(balance: number, floor: number): boolean;
+/**
+ * Smallest whole-rupee recharge that lifts the balance strictly above the floor
+ * (0 when already above). x = ⌊floor − balance⌋ + 1 is the least integer with
+ * balance + x > floor: −₹250 → ₹51 (−₹199), −₹200 → ₹1, −₹200.50 → ₹1.
+ */
+export declare function walletUnlockAmount(balance: number, floor: number): number;
+export type WalletFloorStatus = {
+    floor: number;
+    balance: number;
+    /** balance <= floor → every service paused. */
+    blocked: boolean;
+    /** Minimum whole-rupee recharge that unlocks (0 when active). */
+    unlockAmount: number;
+    /** Recharge that clears all dues (balance → ₹0); 0 when not negative. */
+    clearDuesAmount: number;
+    message: string | null;
+};
+export declare function evaluateWalletFloor(input: {
+    balance: number;
+    floor: unknown;
+}): WalletFloorStatus;
+export type StoredWalletBlock = {
+    serviceType: string;
+    reason: string;
+};
+/** Block reasons owned by the wallet engine (recomputed by syncNegativeWalletBlocks). */
+export declare const WALLET_ENGINE_BLOCK_REASONS: readonly ["negative_wallet", "global_emergency"];
+/**
+ * Live wallet block state from the current balance plus the rows
+ * syncNegativeWalletBlocks last wrote.
+ *
+ * Rows are a cache of a decision taken at the last wallet event; the balance is
+ * the truth. A recharge that lifts the wallet above the floor must unblock the
+ * rider at once, even if no sync has run since — so:
+ *   - global: decided live from the balance (a stale global_emergency row is ignored);
+ *   - negative_wallet rows: honoured while the wallet is ≤ ₹0, ignored once it is
+ *     positive and auto-unblock is on (exactly when the sync clears them);
+ *   - any other reason (fraud, manual, compliance…) is always honoured.
+ * `staleRows` tells the caller the rows disagree with the live balance (rows the
+ * balance has lifted, or a floor breach with no global row yet) — resync.
+ */
+export declare function resolveWalletBlockState(input: {
+    balance: number;
+    floor: unknown;
+    autoUnblockOnZero?: boolean;
+    storedBlocks: readonly StoredWalletBlock[];
+}): {
+    globalBlocked: boolean;
+    effectiveBlocks: StoredWalletBlock[];
+    staleRows: boolean;
+};
 export type MinBalanceMode = "off" | "warn" | "enforce";
 export declare const MIN_BALANCE_RESTRICTED_SERVICES: readonly ["parcel", "person_ride"];
 export type MinBalanceRestrictedService = (typeof MIN_BALANCE_RESTRICTED_SERVICES)[number];
@@ -214,48 +270,17 @@ export type RiderMinBalanceStatus = {
     mode: MinBalanceMode;
     threshold: number;
     balance: number;
-    /** Exact recharge that brings the balance back to the minimum. */
     shortfall: number;
     belowMinimum: boolean;
-    /** True only in enforce mode while below the minimum. */
     restricted: boolean;
     restrictedServices: MinBalanceRestrictedService[];
     message: string | null;
 };
-export declare function normalizeMinBalanceMode(value: unknown): MinBalanceMode;
-export declare function evaluateMinWalletBalance(input: {
-    balance: number;
-    threshold: number;
-    mode: MinBalanceMode;
-}): RiderMinBalanceStatus;
 /**
- * Amount a withdrawal must leave in the wallet. In enforce mode the minimum is a
- * float the platform relies on for Ride/Parcel cash jobs; letting a rider withdraw
- * it just restricts them a moment later (GMR1001 withdrew ₹2,271 — the whole
- * wallet — and was immediately paused for Ride + Parcel). Warn/off reserve nothing.
+ * The retired positive-minimum rule always reports "off": never restricted, no
+ * shortfall, no message. Installed rider apps read `walletMinBalance` and show a
+ * "Recharge to ₹200" banner only when belowMinimum/restricted — so they now show
+ * nothing, and the wallet floor (globalWalletBlock) is the only balance gate.
  */
-export declare function minBalanceWithdrawReserve(input: {
-    threshold: number;
-    mode: MinBalanceMode;
-}): number;
-/**
- * True when the ONLY thing restricting a rider is the minimum-balance rule — the
- * rider app then shows "Recharge" instead of a red "Account Restricted / Support",
- * and withdrawals explain the reserve instead of "Account is restricted".
- */
-export declare function isOnlyMinBalanceRestriction(input: {
-    blockedServices: readonly string[];
-    minBalance: Pick<RiderMinBalanceStatus, "restricted" | "restrictedServices"> | null | undefined;
-    blockedStatus?: boolean;
-    globalWalletBlock?: boolean;
-}): boolean;
-/**
- * What a rider must pay to clear their wallet: the negative balance, or — while
- * the minimum-balance policy is active — the shortfall up to the minimum.
- */
-export declare function riderWalletRechargeDue(input: {
-    balance: number;
-    threshold: number;
-    mode: MinBalanceMode;
-}): number;
+export declare function neutralMinBalanceStatus(balance: number): RiderMinBalanceStatus;
 //# sourceMappingURL=index.d.ts.map
