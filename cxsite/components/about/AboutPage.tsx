@@ -1,5 +1,7 @@
 'use client'
 
+import Image from 'next/image'
+import Link from 'next/link'
 import type { LucideIcon } from 'lucide-react'
 import {
   Bike,
@@ -22,6 +24,7 @@ import {
   Users,
   Zap,
 } from 'lucide-react'
+import { GATIMITRA_TEAM, GATIMITRA_STORY } from '@/lib/team'
 
 /** Shared with landing hero: soft grey panel + crisp borders */
 const panel =
@@ -38,10 +41,7 @@ function BrandIcon({ Icon, className = iconLg }: { Icon: LucideIcon; className?:
 const sectionTitle = (text: string, subtitle?: string) => (
   <div className="mx-auto mb-12 max-w-3xl text-center">
     <h2 className="text-3xl font-semibold tracking-tight text-neutral-900 sm:text-4xl">{text}</h2>
-    <div
-      className="mx-auto mt-4 h-1 w-20 rounded-full bg-gradient-to-r from-[#109D4C] via-[#16c2a5] to-[#4b2ad4]"
-      aria-hidden
-    />
+    <div className="mx-auto mt-4 h-1 w-20 rounded-full bg-[#109D4C]" aria-hidden />
     {subtitle ? (
       <p className="mt-4 text-base font-normal leading-relaxed text-neutral-600 sm:text-[17px] sm:leading-[1.75]">
         {subtitle}
@@ -121,46 +121,116 @@ export default function AboutPage() {
     'text-[15px] font-normal leading-[1.9] text-neutral-600 sm:text-base sm:leading-[2] text-pretty'
 
   return (
-    <div
-      className="landing-hero-ref min-h-screen antialiased"
-      style={{
-        background: 'linear-gradient(165deg, #f7f7f7 0%, #f2f2f2 42%, #fafafa 100%)',
-      }}
-    >
-      {/* Hero — padding clears sticky header; tight to nav after header pb-0 */}
-      <section className="px-4 pb-16 pt-20 md:px-8 md:pt-24">
-        <div className="mx-auto max-w-3xl text-center">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-[#109D4C]">
-            Our story
-          </p>
-          <h1 className="mb-5 bg-gradient-to-r from-[#109D4C] via-[#16c2a5] to-[#4b2ad4] bg-clip-text text-4xl font-semibold tracking-tight text-transparent sm:text-5xl md:text-6xl">
-            About GatiMitra
-          </h1>
-          <p className="mb-2 text-sm font-semibold text-[#109D4C] sm:text-base">
-            Made for your Moments
-          </p>
-          <p className="mb-6 text-xl font-semibold text-neutral-900 sm:text-2xl">
-            India&apos;s #1 super App.
-          </p>
-          <div
-            className="mx-auto mb-10 h-1 w-24 rounded-full bg-gradient-to-r from-[#109D4C] to-[#4b2ad4]"
-            aria-hidden
-          />
-          <p className={`${body} mx-auto max-w-2xl`}>
-            GatiMitra is a next-generation hyperlocal platform built to simplify everyday life. We connect
-            people, merchants, and delivery partners in one dependable ecosystem—so whether you are ordering
-            food, booking a ride, or sending a parcel, the experience feels fast, clear, and trustworthy.
-          </p>
-          <p className={`${body} mx-auto mt-6 max-w-2xl`}>
-            Our focus is simple: empower local businesses with better reach, create fair earning
-            opportunities for partners, and give every customer transparency and care at every step.
-          </p>
+    <div className="min-h-screen w-full bg-[#f7f7f5] antialiased">
+      <div className="w-full bg-[#109D4C]">
+        <p className="w-full px-4 py-2 text-[12px] font-medium text-white sm:px-6 lg:px-8 md:text-[13px]">
+          Our story, leadership, and mission — built for everyday India.
+        </p>
+      </div>
+
+      {/* Hero — story + image */}
+      <section className="w-full px-4 pb-12 pt-8 sm:px-6 lg:px-8 md:pb-16 md:pt-10">
+        <div className="grid w-full items-center gap-10 lg:grid-cols-2 lg:gap-12">
+          <div className="relative mx-auto aspect-[4/3] w-full overflow-hidden rounded-lg border border-black/10 bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)] lg:mx-0">
+            <Image
+              src={GATIMITRA_STORY.aboutImage}
+              alt="About GatiMitra — our story"
+              fill
+              className="object-contain p-4"
+              sizes="(max-width: 1024px) 100vw, 50vw"
+              priority
+            />
+          </div>
+          <div>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-[#109D4C]">
+              Our story
+            </p>
+            <h1 className="mb-4 bg-gradient-to-r from-[#109D4C] via-[#16c2a5] to-[#4b2ad4] bg-clip-text text-4xl font-semibold tracking-tight text-transparent sm:text-5xl">
+              About GatiMitra
+            </h1>
+            <p className="mb-2 text-lg font-semibold text-neutral-900 sm:text-xl">
+              {GATIMITRA_STORY.headline}
+            </p>
+            <div
+              className="mb-6 h-1 w-24 rounded-full bg-gradient-to-r from-[#109D4C] to-[#4b2ad4]"
+              aria-hidden
+            />
+            <p className={`${body} max-w-xl`}>{GATIMITRA_STORY.summary}</p>
+            <p className={`${body} mt-4 max-w-xl`}>
+              Founded in {GATIMITRA_STORY.foundedYear} from {GATIMITRA_STORY.foundedPlace}. Our focus
+              is simple: empower local businesses with better reach, create fair earning opportunities
+              for partners, and give every customer transparency and care at every step.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Leadership — SEO + photos for Google person search */}
+      <section className="w-full px-4 py-12 sm:px-6 lg:px-8 md:py-14" id="team">
+        <div className="w-full">
+          {sectionTitle(
+            'The faces behind our growth',
+            'Founder & CEO, Co-Founder & MD, and Tech Lead — the leadership building GatiMitra.'
+          )}
+          <div className="grid gap-6 sm:grid-cols-3">
+            {GATIMITRA_TEAM.map((member) => (
+              <Link
+                key={member.slug}
+                href={`/team/${member.slug}`}
+                className="group overflow-hidden rounded-2xl border border-black/[0.06] bg-white/90 shadow-[0_12px_40px_rgba(0,0,0,0.06)] transition hover:-translate-y-1 hover:shadow-[0_16px_48px_rgba(16,157,76,0.1)]"
+              >
+                <div className="relative mx-auto mt-6 h-36 w-36 overflow-hidden rounded-full ring-4 ring-[#109D4C]/25">
+                  <Image
+                    src={member.imagePath}
+                    alt={`${member.name}, ${member.jobTitle} at GatiMitra`}
+                    fill
+                    className="object-cover object-top"
+                    sizes="144px"
+                  />
+                </div>
+                <div className="p-5 text-center">
+                  <h2 className="text-lg font-semibold text-neutral-900">{member.name}</h2>
+                  <p className="mt-1 text-sm font-semibold text-[#109D4C]">{member.jobTitle}</p>
+                  <p className="mt-3 line-clamp-3 text-sm text-neutral-600">{member.bio}</p>
+                  <span className="mt-3 inline-block text-sm font-semibold text-[#109D4C] group-hover:underline">
+                    Full profile →
+                  </span>
+                </div>
+              </Link>
+            ))}
+          </div>
+          <div className="mt-8 text-center">
+            <Link
+              href="/team"
+              className="inline-flex rounded-full bg-[#109D4C] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#0d7a3c]"
+            >
+              View full team page
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      {/* Journey milestones */}
+      <section className="w-full px-4 py-12 sm:px-6 lg:px-8 md:py-14">
+        <div className="w-full max-w-3xl mx-auto">
+          {sectionTitle('Our journey')}
+          <div className="space-y-6">
+            {GATIMITRA_STORY.milestones.map((m) => (
+              <div key={m.year} className={`${panel} flex flex-col gap-2 sm:flex-row sm:gap-6`}>
+                <div className="shrink-0 text-2xl font-bold text-[#109D4C]">{m.year}</div>
+                <div>
+                  <h3 className="text-lg font-semibold text-neutral-900">{m.event}</h3>
+                  <p className={`${body} mt-1`}>{m.description}</p>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
       {/* Vision & Mission */}
-      <section className="px-4 py-14 md:px-8">
-        <div className="mx-auto grid max-w-6xl gap-8 md:grid-cols-2">
+      <section className="w-full px-4 py-12 sm:px-6 lg:px-8 md:py-14">
+        <div className="grid w-full gap-8 md:grid-cols-2">
           <div className={panel}>
             <div className="mb-4 flex">
               <BrandIcon Icon={Target} />
@@ -195,8 +265,8 @@ export default function AboutPage() {
       </section>
 
       {/* Core services */}
-      <section className="px-4 py-14 md:px-8">
-        <div className="mx-auto max-w-7xl">
+      <section className="w-full px-4 py-12 sm:px-6 lg:px-8 md:py-14">
+        <div className="w-full">
           {sectionTitle(
             'What we offer',
             'One platform for the services you use most—each designed around clarity and everyday convenience.'
@@ -216,9 +286,9 @@ export default function AboutPage() {
       </section>
 
       {/* Why choose */}
-      <section className="px-4 py-14 md:px-8">
+      <section className="w-full px-4 py-12 sm:px-6 lg:px-8 md:py-14">
         <div
-          className="mx-auto max-w-6xl rounded-3xl border border-[#109D4C]/10 px-4 py-14 sm:px-8"
+          className="w-full rounded-3xl border border-[#109D4C]/10 px-4 py-14 sm:px-8"
           style={{
             background:
               'linear-gradient(145deg, rgba(16,157,76,0.06) 0%, rgba(22,194,165,0.05) 40%, rgba(75,42,212,0.05) 100%)',
@@ -240,8 +310,8 @@ export default function AboutPage() {
       </section>
 
       {/* Technology */}
-      <section className="px-4 py-14 md:px-8">
-        <div className="mx-auto max-w-4xl">
+      <section className="w-full px-4 py-12 sm:px-6 lg:px-8 md:py-14">
+        <div className="w-full">
           {sectionTitle('Built on modern technology')}
           <div className={panel}>
             <p className={`${body} mb-8`}>
@@ -272,8 +342,8 @@ export default function AboutPage() {
       </section>
 
       {/* Trust */}
-      <section className="px-4 py-14 md:px-8">
-        <div className="mx-auto max-w-4xl">
+      <section className="w-full px-4 py-12 sm:px-6 lg:px-8 md:py-14">
+        <div className="w-full">
           {sectionTitle(
             'Trust, safety & transparency',
             'Your confidence in every order and every ride is something we work to earn—every day.'
@@ -293,8 +363,8 @@ export default function AboutPage() {
       </section>
 
       {/* Communities */}
-      <section className="px-4 py-14 md:px-8">
-        <div className="mx-auto max-w-4xl">
+      <section className="w-full px-4 py-12 sm:px-6 lg:px-8 md:py-14">
+        <div className="w-full">
           {sectionTitle('Empowering local communities')}
           <div className={`${panel} text-center`}>
             <p className={`${body} mx-auto max-w-2xl text-lg`}>
@@ -307,8 +377,8 @@ export default function AboutPage() {
       </section>
 
       {/* Values */}
-      <section className="px-4 py-14 md:px-8">
-        <div className="mx-auto max-w-6xl">
+      <section className="w-full px-4 py-12 sm:px-6 lg:px-8 md:py-14">
+        <div className="w-full">
           {sectionTitle('Our values')}
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-5">
             {values.map(({ Icon, title, description }) => (
@@ -325,8 +395,8 @@ export default function AboutPage() {
       </section>
 
       {/* Roadmap */}
-      <section className="px-4 pb-24 pt-14 md:px-8">
-        <div className="mx-auto max-w-4xl">
+      <section className="w-full px-4 pb-16 pt-10 sm:px-6 lg:px-8 md:pb-20">
+        <div className="w-full">
           {sectionTitle('What’s next')}
           <div className={panel}>
             <ul className="space-y-5">

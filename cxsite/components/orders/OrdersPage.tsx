@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useAppSelector } from '@/lib/hooks'
 import { supabase } from '@/lib/supabase'
@@ -119,8 +120,10 @@ interface UnifiedOrder {
   color: string
   items: ApiOrderLineItem[]
   paymentMethod?: string | null
+  paymentStatus?: string | null
   pickupAddress?: string | null
   dropAddress?: string | null
+  deliveryAddress?: string | null
   cancelReason?: string
   cancelledByLabel?: string
   refundPercentage?: number
@@ -435,12 +438,44 @@ function mapApiOrderToUnified(order: ApiOrderSummary): UnifiedOrder {
     color: serviceType === 'food' ? 'orange' : serviceType === 'person' ? 'blue' : 'purple',
     items: order.items ?? [],
     paymentMethod: order.paymentMethod,
+    paymentStatus: order.paymentStatus,
     pickupAddress: order.pickupAddress,
     dropAddress: order.dropAddress,
+    deliveryAddress: order.deliveryAddress,
     cancelReason: order.cancellationReason ?? undefined,
     cancelledByLabel: order.cancelledByLabel ?? undefined,
     raw: order as unknown as FoodOrder,
   }
+}
+
+function formatPaymentMethod(method: string | null | undefined): string {
+  const m = (method || 'cod').trim().toLowerCase()
+  if (m === 'cod' || m === 'cash') return 'Cash on delivery'
+  if (m === 'upi') return 'UPI'
+  if (m === 'card' || m === 'credit_card' || m === 'debit_card') return 'Card'
+  if (m === 'wallet' || m === 'gaticash') return 'GatiCash wallet'
+  if (m === 'razorpay' || m === 'online' || m === 'prepaid') return 'Online payment'
+  return method?.replace(/_/g, ' ').toUpperCase() || 'Cash on delivery'
+}
+
+function formatPaymentStatus(status: string | null | undefined): { label: string; ok: boolean } {
+  const s = (status || '').trim().toUpperCase()
+  if (!s) return { label: 'Pending', ok: false }
+  if (s === 'PAID' || s === 'SUCCESS' || s === 'CAPTURED' || s === 'COMPLETED') {
+    return { label: 'Paid', ok: true }
+  }
+  if (s === 'FAILED' || s === 'PAYMENT_FAILED') return { label: 'Failed', ok: false }
+  if (s === 'REFUNDED' || s === 'PARTIAL_REFUND') return { label: 'Refunded', ok: false }
+  if (s === 'PENDING' || s === 'CREATED' || s === 'INCOMPLETE') {
+    return { label: 'Payment incomplete', ok: false }
+  }
+  return { label: status!.replace(/_/g, ' '), ok: false }
+}
+
+function serviceTypeLabel(t: 'food' | 'person' | 'parcel'): string {
+  if (t === 'food') return 'Food delivery'
+  if (t === 'person') return 'Ride'
+  return 'Parcel'
 }
 
 function OrdersPageClient({
@@ -460,11 +495,12 @@ function OrdersPageClient({
   const [statusTab, setStatusTab] = useState<StatusTab>(() => parseInitialStatusTab(initialFilter))
   const [searchQuery, setSearchQuery] = useState('')
   const [copiedOrderId, setCopiedOrderId] = useState<string | null>(null)
-  const [dateFrom, setDateFrom] = useState(() => toDateInputValue(new Date(Date.now() - 7 * 86400000)))
-  const [dateTo, setDateTo] = useState(() => toDateInputValue(new Date()))
+  // Default: all dates so every order shows
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [showDatePicker, setShowDatePicker] = useState(false)
-  const [draftDateFrom, setDraftDateFrom] = useState(dateFrom)
-  const [draftDateTo, setDraftDateTo] = useState(dateTo)
+  const [draftDateFrom, setDraftDateFrom] = useState('')
+  const [draftDateTo, setDraftDateTo] = useState('')
   const datePickerRef = useRef<HTMLDivElement>(null)
   const [showSuccess, setShowSuccess] = useState(false)
   const [successData, setSuccessData] = useState<{ orderIds: string[], total: number, restaurantCount: number } | null>(null)
@@ -715,156 +751,149 @@ function OrdersPageClient({
     return <OrdersPageLoading />
   }
 
+  const formatOrderedOnCard = (dateStr: string) => {
+    try {
+      const d = new Date(dateStr)
+      if (Number.isNaN(d.getTime())) return dateStr
+      const date = d.toLocaleDateString('en-US', {
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+      })
+      const time = d.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      })
+      return `${date} at ${time}`
+    } catch {
+      return formatDate(dateStr)
+    }
+  }
+
+  const itemsLineForCard = (order: UnifiedOrder) => {
+    if (order.serviceType === 'food' && order.items?.length) {
+      return order.items.map((i) => `${i.quantity} x ${i.name}`).join(', ')
+    }
+    const route = getRouteParts(order)
+    if (route) return `${route.pickup} → ${route.drop}`
+    return order.subtitle || '—'
+  }
+
+  const locationForCard = (order: UnifiedOrder) => {
+    if (order.serviceType === 'food') {
+      const drop = (order.dropAddress || '').trim()
+      if (drop) {
+        const parts = drop.split(',').map((p) => p.trim()).filter(Boolean)
+        return parts.slice(-2).join(', ') || 'Food delivery'
+      }
+      return 'Food delivery'
+    }
+    const drop = (order.dropAddress || '').trim()
+    if (drop) {
+      const parts = drop.split(',').map((p) => p.trim()).filter(Boolean)
+      return parts.slice(-2).join(', ') || drop
+    }
+    return order.serviceType === 'person' ? 'Ride' : 'Parcel'
+  }
+
   return (
-    <div className="flex h-screen overflow-hidden bg-[#F0F2F5]">
-        {/* Sidebar — desktop, sticky full height */}
-        <aside className="hidden h-screen w-56 shrink-0 flex-col border-r border-gray-200/80 bg-white lg:flex">
-          <div className="border-b border-gray-100 px-4 py-4">
+    <div className="min-h-screen w-full bg-[#f4f6f5]">
+      {/* Top bar — search inline (no separate row) */}
+      <header className="sticky top-0 z-20 w-full border-b border-black/[0.06] bg-white/95 backdrop-blur">
+        <div className="flex w-full flex-wrap items-center gap-3 px-4 py-3 sm:flex-nowrap sm:px-6 lg:px-10 xl:px-14">
+          <div className="flex shrink-0 items-center gap-3">
             <button
               type="button"
               onClick={() => router.push(backNavigationUrl)}
-              className="flex items-center gap-2 text-sm text-gray-500 transition hover:text-gray-800"
+              className="flex h-10 w-10 items-center justify-center rounded-full text-[#1c1c1c] transition hover:bg-[#f0f4f1]"
+              aria-label="Go back"
             >
-              <i className="fas fa-arrow-left text-xs" />
-              Back
+              <i className="fas fa-arrow-left text-sm" />
             </button>
-          </div>
-          <nav className="flex-1 px-3 py-4">
-            <div className="rounded-xl bg-[#16c2a5]/10 px-3 py-2.5">
-              <div className="flex items-center gap-2 text-sm font-semibold text-[#16c2a5]">
-                <i className="fas fa-shopping-bag text-sm" />
-                Orders
-                <i className="fas fa-chevron-down ml-auto text-[10px] opacity-70" />
-              </div>
+            <div className="min-w-0">
+              <p className="text-lg font-bold leading-tight text-[#1c1c1c]">My Orders</p>
+              {!isLoading && (
+                <p className="text-xs text-[#6b7a70]">{orders.length} total orders</p>
+              )}
             </div>
-            <ul className="relative mt-2 space-y-0.5 pl-4 before:absolute before:bottom-2 before:left-[1.35rem] before:top-2 before:w-px before:bg-gray-200">
-              {(['food', 'person', 'parcel'] as const).map((key) => {
-                const meta = FILTER_META[key]
-                const active = sidebarFilter === key
-                return (
-                  <li key={key} className="relative pl-5">
-                    <span className="absolute left-0 top-1/2 h-px w-3 bg-gray-200" />
-                    <button
-                      type="button"
-                      onClick={() => setSidebarFilter(key)}
-                      className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition ${
-                        active
-                          ? 'bg-[#16c2a5]/10 font-semibold text-[#16c2a5]'
-                          : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                      }`}
-                    >
-                      <i className={`${meta.icon} w-4 text-center text-xs`} />
-                      <span>{key === 'person' ? 'Person' : meta.label}</span>
-                      <span className={`ml-auto rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                        active ? 'bg-[#16c2a5]/20 text-[#16c2a5]' : 'bg-gray-100 text-gray-500'
-                      }`}>
-                        {sidebarCounts[key]}
-                      </span>
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
+          </div>
+
+          <div className="relative min-w-0 flex-1 order-3 w-full sm:order-none sm:w-auto">
+            <i className="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-xs text-[#8a968e]" />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search orders…"
+              className="w-full rounded-xl border border-[#d8e0db] bg-[#f4f6f5] py-2.5 pl-9 pr-3 text-sm text-[#1c1c1c] outline-none transition placeholder:text-[#8a968e] focus:border-[#109D4C] focus:bg-white focus:ring-2 focus:ring-[#109D4C]/15"
+            />
+          </div>
+
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <Link
+              href="/reviews"
+              className="inline-flex rounded-xl bg-[#109D4C] px-4 py-2 text-xs font-bold text-white transition hover:bg-[#0d7a3c]"
+            >
+              Reviews
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      {/* Brand banner */}
+      <section className="relative w-full overflow-hidden bg-[#109D4C]">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0"
+          style={{
+            backgroundImage:
+              'radial-gradient(ellipse 80% 120% at 0% 0%, rgba(255,255,255,0.22), transparent 55%), radial-gradient(ellipse 60% 80% at 100% 100%, rgba(8,90,45,0.55), transparent 50%)',
+          }}
+        />
+        <div className="relative flex w-full flex-col gap-4 px-4 py-7 sm:flex-row sm:items-end sm:justify-between sm:px-6 sm:py-9 lg:px-10 xl:px-14">
+          <div className="text-white">
+            <h1 className="text-2xl font-bold tracking-tight sm:text-3xl lg:text-4xl">My Orders</h1>
+            <p className="mt-1 text-sm text-white/85">
+              Track food, rides, and parcels in one place
+            </p>
+          </div>
+          <div ref={datePickerRef} className="relative">
             <button
               type="button"
-              onClick={() => setSidebarFilter('all')}
-              className={`mt-3 w-full rounded-lg px-3 py-2 text-left text-xs font-medium transition ${
-                sidebarFilter === 'all' ? 'text-[#16c2a5]' : 'text-gray-400 hover:text-gray-600'
-              }`}
+              onClick={() => {
+                setDraftDateFrom(dateFrom)
+                setDraftDateTo(dateTo)
+                setShowDatePicker((v) => !v)
+              }}
+              className="inline-flex items-center gap-2 rounded-xl border border-white/25 bg-white/15 px-4 py-2.5 text-sm font-medium text-white backdrop-blur-sm transition hover:bg-white/25"
             >
-              Show all services
+              <i className="far fa-calendar" />
+              {formatDateRangeLabel(dateFrom, dateTo)}
+              <i className={`fas fa-chevron-down text-[10px] transition ${showDatePicker ? 'rotate-180' : ''}`} />
             </button>
-          </nav>
-        </aside>
-
-        {/* Main column */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          {/* Mobile back + title — sticky */}
-          <div className="shrink-0 border-b border-gray-200/80 bg-white px-4 py-3 lg:hidden">
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => router.push(backNavigationUrl)}
-                className="flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 text-gray-600"
-                aria-label="Go back"
-              >
-                <i className="fas fa-arrow-left text-xs" />
-              </button>
-              <div>
-                <h1 className="text-base font-bold text-[#1C1C1C]">My Orders</h1>
-                {!isLoading && (
-                  <p className="text-xs text-gray-500">{orders.length} total orders</p>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Sticky header: title, tabs, search */}
-          <div ref={datePickerRef} className="relative shrink-0 border-b border-gray-200/60 bg-[#F0F2F5] px-4 py-4 sm:px-6 lg:px-8">
-            {/* Header row — desktop */}
-            <div className="mb-4 hidden items-start justify-between gap-4 lg:flex">
-              <div>
-                <h1 className="text-2xl font-bold tracking-tight text-[#1C1C1C]">My Orders</h1>
-                {!isLoading && (
-                  <p className="mt-0.5 text-sm text-gray-500">{orders.length} total orders</p>
-                )}
-              </div>
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDraftDateFrom(dateFrom)
-                    setDraftDateTo(dateTo)
-                    setShowDatePicker((v) => !v)
-                  }}
-                  className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-600 shadow-sm transition hover:border-gray-300"
-                >
-                  <i className="far fa-calendar text-[#16c2a5]" />
-                  {formatDateRangeLabel(dateFrom, dateTo)}
-                  <i className={`fas fa-chevron-down text-[10px] text-gray-400 transition ${showDatePicker ? 'rotate-180' : ''}`} />
-                </button>
-              </div>
-            </div>
-
-            {/* Mobile: date */}
-            <div className="mb-3 lg:hidden">
-              <button
-                type="button"
-                onClick={() => {
-                  setDraftDateFrom(dateFrom)
-                  setDraftDateTo(dateTo)
-                  setShowDatePicker((v) => !v)
-                }}
-                className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-600"
-              >
-                <i className="far fa-calendar shrink-0 text-[#16c2a5]" />
-                <span className="truncate">{formatDateRangeLabel(dateFrom, dateTo)}</span>
-                <i className={`fas fa-chevron-down text-[10px] text-gray-400 transition ${showDatePicker ? 'rotate-180' : ''}`} />
-              </button>
-            </div>
-
             {showDatePicker && (
-              <div className="absolute right-4 top-full z-30 mt-2 w-[calc(100%-2rem)] max-w-sm rounded-xl border border-gray-200 bg-white p-4 shadow-lg sm:right-6 lg:right-8 lg:w-72">
-                <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-500">Date range</p>
+              <div className="absolute right-0 top-full z-30 mt-2 w-[min(100vw-2rem,18rem)] rounded-xl border border-[#e2e8e4] bg-white p-4 shadow-lg">
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-[#6b7a70]">Date range</p>
                 <div className="space-y-3">
                   <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-gray-600">From</span>
+                    <span className="mb-1 block text-xs font-medium text-[#3d4a42]">From</span>
                     <input
                       type="date"
                       value={draftDateFrom}
                       max={draftDateTo || undefined}
                       onChange={(e) => setDraftDateFrom(e.target.value)}
-                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#16c2a5] focus:ring-2 focus:ring-[#16c2a5]/20"
+                      className="w-full rounded-lg border border-[#d8e0db] px-3 py-2 text-sm outline-none focus:border-[#109D4C] focus:ring-2 focus:ring-[#109D4C]/20"
                     />
                   </label>
                   <label className="block">
-                    <span className="mb-1 block text-xs font-medium text-gray-600">To</span>
+                    <span className="mb-1 block text-xs font-medium text-[#3d4a42]">To</span>
                     <input
                       type="date"
                       value={draftDateTo}
                       min={draftDateFrom || undefined}
                       onChange={(e) => setDraftDateTo(e.target.value)}
-                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#16c2a5] focus:ring-2 focus:ring-[#16c2a5]/20"
+                      className="w-full rounded-lg border border-[#d8e0db] px-3 py-2 text-sm outline-none focus:border-[#109D4C] focus:ring-2 focus:ring-[#109D4C]/20"
                     />
                   </label>
                 </div>
@@ -875,7 +904,7 @@ function OrdersPageClient({
                       setDraftDateFrom(toDateInputValue(new Date(Date.now() - 7 * 86400000)))
                       setDraftDateTo(toDateInputValue(new Date()))
                     }}
-                    className="rounded-lg bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-200"
+                    className="rounded-lg bg-[#eef2ef] px-2.5 py-1 text-xs font-medium text-[#3d4a42] hover:bg-[#e2e8e4]"
                   >
                     Last 7 days
                   </button>
@@ -885,7 +914,7 @@ function OrdersPageClient({
                       setDraftDateFrom(toDateInputValue(new Date(Date.now() - 30 * 86400000)))
                       setDraftDateTo(toDateInputValue(new Date()))
                     }}
-                    className="rounded-lg bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-200"
+                    className="rounded-lg bg-[#eef2ef] px-2.5 py-1 text-xs font-medium text-[#3d4a42] hover:bg-[#e2e8e4]"
                   >
                     Last 30 days
                   </button>
@@ -895,7 +924,7 @@ function OrdersPageClient({
                       setDraftDateFrom('')
                       setDraftDateTo('')
                     }}
-                    className="rounded-lg bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-200"
+                    className="rounded-lg bg-[#eef2ef] px-2.5 py-1 text-xs font-medium text-[#3d4a42] hover:bg-[#e2e8e4]"
                   >
                     All dates
                   </button>
@@ -904,7 +933,7 @@ function OrdersPageClient({
                   <button
                     type="button"
                     onClick={() => setShowDatePicker(false)}
-                    className="flex-1 rounded-lg border border-gray-200 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
+                    className="flex-1 rounded-lg border border-[#d8e0db] py-2 text-sm font-medium text-[#3d4a42] hover:bg-[#f4f6f5]"
                   >
                     Cancel
                   </button>
@@ -915,273 +944,278 @@ function OrdersPageClient({
                       setDateTo(draftDateTo)
                       setShowDatePicker(false)
                     }}
-                    className="flex-1 rounded-lg bg-[#16c2a5] py-2 text-sm font-semibold text-white hover:bg-[#14b095]"
+                    className="flex-1 rounded-lg bg-[#109D4C] py-2 text-sm font-semibold text-white hover:bg-[#0d7a3c]"
                   >
                     Apply
                   </button>
                 </div>
               </div>
             )}
-
-            {/* Mobile service chips */}
-            <div className="mb-3 flex gap-2 overflow-x-auto pb-0.5 lg:hidden scrollbar-hide">
-              {(['all', 'food', 'person', 'parcel'] as SidebarFilter[]).map((key) => {
-                const label = key === 'all' ? 'All' : key === 'person' ? 'Rides' : FILTER_META[key].label
-                const count =
-                  key === 'all'
-                    ? orders.length
-                    : sidebarCounts[key as keyof typeof sidebarCounts]
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setSidebarFilter(key)}
-                    className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ${
-                      sidebarFilter === key
-                        ? 'bg-[#16c2a5] text-white'
-                        : 'border border-gray-200 bg-white text-gray-600'
-                    }`}
-                  >
-                    {label}
-                    <span className={`rounded-full px-1.5 text-[10px] ${sidebarFilter === key ? 'bg-white/25' : 'bg-gray-100'}`}>
-                      {count}
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-
-            {/* Status tabs */}
-            <div className="mb-3 flex gap-6 overflow-x-auto border-b border-gray-200 scrollbar-hide">
-              {([
-                { id: 'all' as StatusTab, label: 'All Orders', icon: 'fas fa-shopping-bag' },
-                { id: 'completed' as StatusTab, label: 'Completed', icon: 'fas fa-check-circle' },
-                { id: 'cancelled' as StatusTab, label: 'Cancelled', icon: 'fas fa-times-circle' },
-              ]).map((tab) => {
-                const active = statusTab === tab.id
-                const count = statusCounts[tab.id]
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setStatusTab(tab.id)}
-                    className={`relative flex shrink-0 items-center gap-2 pb-3 text-sm font-medium transition ${
-                      active ? 'text-[#16c2a5]' : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    <i className={`${tab.icon} text-sm ${tab.id === 'cancelled' && !active ? 'text-red-400' : ''}`} />
-                    {tab.label}
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                      active ? 'bg-[#16c2a5]/15 text-[#16c2a5]' : 'bg-gray-100 text-gray-500'
-                    }`}>
-                      {count}
-                    </span>
-                    {active && (
-                      <span className="absolute bottom-0 left-0 right-0 h-0.5 rounded-full bg-[#16c2a5]" />
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-
-            {/* Search */}
-            <div className="relative">
-              <i className="fas fa-search absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-gray-400" />
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search orders…"
-                className="w-full rounded-xl border border-gray-200 bg-white py-2.5 pl-10 pr-4 text-sm text-gray-800 shadow-sm outline-none transition placeholder:text-gray-400 focus:border-[#16c2a5] focus:ring-2 focus:ring-[#16c2a5]/20"
-              />
-            </div>
-          </div>
-
-          {/* Scrollable order list only */}
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-4 sm:px-6 lg:px-8">
-            {isLoading ? (
-              <div className="flex flex-col items-center justify-center py-24">
-                <div className="mb-4 h-10 w-10 animate-spin rounded-full border-[3px] border-[#16c2a5] border-t-transparent" />
-                <p className="text-sm text-gray-500">Loading your orders…</p>
-              </div>
-            ) : filteredOrders.length === 0 ? (
-              <div className="rounded-2xl border border-gray-100 bg-white px-6 py-16 text-center shadow-sm">
-                <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-gray-50">
-                  <i className={`text-2xl ${statusTab === 'cancelled' ? 'fas fa-ban text-red-400' : 'fas fa-receipt text-gray-300'}`} />
-                </div>
-                <h2 className="mb-1 text-lg font-bold text-[#1C1C1C]">
-                  {statusTab === 'cancelled'
-                    ? 'No cancelled orders'
-                    : statusTab === 'completed'
-                    ? 'No completed orders'
-                    : searchQuery.trim()
-                    ? 'No matching orders'
-                    : 'No orders found'}
-                </h2>
-                <p className="mx-auto mb-6 max-w-sm text-sm text-gray-500">
-                  {searchQuery.trim()
-                    ? 'Try a different search term or clear the search box.'
-                    : statusTab === 'all'
-                    ? 'Your orders will appear here once you place them.'
-                    : `No ${statusTab} orders for the selected service.`}
-                </p>
-                {statusTab === 'all' && !searchQuery.trim() && (
-                  sidebarFilter === 'parcel' && !parcelEnabled ? (
-                    <span
-                      className="relative inline-flex cursor-not-allowed items-center gap-2 rounded-xl bg-gray-200 px-5 py-2.5 text-sm font-semibold text-gray-500"
-                      title="Parcel — Coming soon in your area"
-                    >
-                      <i className="fas fa-plus text-xs" />
-                      Send a parcel
-                      <SoonBadge placement="inline" />
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        router.push(
-                          sidebarFilter === 'person' ? '/ride' : sidebarFilter === 'parcel' ? '/parcel' : '/order'
-                        )
-                      }
-                      className="inline-flex items-center gap-2 rounded-xl bg-[#16c2a5] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#14b095]"
-                    >
-                      <i className="fas fa-plus text-xs" />
-                      {sidebarFilter === 'person' ? 'Book a ride' : sidebarFilter === 'parcel' ? 'Send a parcel' : 'Start ordering'}
-                    </button>
-                  )
-                )}
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {filteredOrders.map((order) => {
-                  const statusConfig = getStatusConfig(order.status, order.serviceType)
-                  const serviceConfig = serviceIcons[order.serviceType]
-                  const cancelled = isCancelledStatus(order.status)
-                  const active = isOrderActive(order.status)
-                  const canCancel = canCancelOrder(order.status)
-                  const route = getRouteParts(order)
-                  const isDelivered = isCompletedStatus(order.status)
-
-                  const cancelNote = formatCancellationDisplay(order.cancelReason, order.cancelledByLabel)
-
-                  return (
-                    <article
-                      key={order.id}
-                      className="flex overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-sm transition hover:shadow-md"
-                    >
-                      <div
-                        className={`w-1 shrink-0 ${cancelled ? 'bg-red-400' : 'bg-[#16c2a5]'}`}
-                        aria-hidden
-                      />
-                      <div className="min-w-0 flex-1">
-                      <div className="p-5">
-                        <div className="flex items-start gap-4">
-                          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[#16c2a5]/10">
-                            <i className={`${serviceConfig.icon} text-lg text-[#16c2a5]`} />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="font-bold text-[#1C1C1C]">{formatServiceTitle(order)}</p>
-                                <p className="mt-0.5 text-xs text-gray-400">{formatDate(order.createdAt)}</p>
-                              </div>
-                              <div className="shrink-0 text-right">
-                                <p className="text-lg font-bold text-[#1C1C1C]">{formatOrderMoney(order.amount)}</p>
-                                <span
-                                  className={`mt-1 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
-                                    isDelivered
-                                      ? 'bg-emerald-50 text-emerald-600'
-                                      : cancelled
-                                      ? 'bg-red-50 text-red-600'
-                                      : statusConfig.color
-                                  }`}
-                                >
-                                  <i className={`${isDelivered ? 'fas fa-check-circle' : statusConfig.icon} text-[9px]`} />
-                                  {statusConfig.label}
-                                </span>
-                              </div>
-                            </div>
-
-                            {route && (
-                              <div className="mt-4 rounded-xl bg-[#F5F7FA] px-4 py-3">
-                                <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:gap-3">
-                                  <div className="flex min-w-0 flex-1 items-start gap-2">
-                                    <i className="fas fa-map-marker-alt mt-0.5 shrink-0 text-xs text-[#16c2a5]" />
-                                    <span className="line-clamp-2 text-xs leading-relaxed text-gray-600">{route.pickup}</span>
-                                  </div>
-                                  <i className="fas fa-arrow-right hidden shrink-0 text-[10px] text-gray-300 sm:block" />
-                                  <div className="flex min-w-0 flex-1 items-start gap-2">
-                                    <i className="fas fa-map-marker-alt mt-0.5 shrink-0 text-xs text-[#16c2a5]" />
-                                    <span className="line-clamp-2 text-xs leading-relaxed text-gray-600">{route.drop}</span>
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-
-                            {!route && order.serviceType === 'food' && order.subtitle && (
-                              <p className="mt-3 text-xs text-gray-500">{order.subtitle}</p>
-                            )}
-
-                            <div className="mt-4 flex items-center justify-between border-t border-gray-100 pt-4">
-                              <button
-                                type="button"
-                                onClick={() => copyOrderId(order.orderNumber)}
-                                className="inline-flex items-center gap-1.5 rounded-lg bg-gray-50 px-2.5 py-1 font-mono text-[11px] text-gray-500 transition hover:bg-gray-100"
-                              >
-                                {displayOrderId(order.orderNumber)}
-                                <i className={`text-[10px] ${copiedOrderId === order.orderNumber ? 'fas fa-check text-emerald-500' : 'far fa-copy'}`} />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setSelectedOrder(order)}
-                                className="text-xs font-semibold text-[#16c2a5] transition hover:text-[#14b095]"
-                              >
-                                View details <i className="fas fa-chevron-right ml-0.5 text-[9px]" />
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {cancelled && cancelNote && (
-                        <div className="border-t border-red-50 bg-red-50/40 px-5 py-3">
-                          <p className="text-xs text-red-600">
-                            <span className="font-semibold">Reason:</span> {cancelNote}
-                          </p>
-                        </div>
-                      )}
-
-                      {active && (
-                        <div className="border-t border-gray-100 px-5 py-3">
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#16c2a5] py-2.5 text-sm font-semibold text-white transition hover:bg-[#14b095]"
-                            >
-                              <i className="fas fa-map-marker-alt text-xs" />
-                              Track order
-                            </button>
-                            {canCancel && (
-                              <button
-                                type="button"
-                                onClick={() => handleCancelClick(order)}
-                                className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-red-200 py-2.5 text-sm font-semibold text-red-600 transition hover:bg-red-50"
-                              >
-                                <i className="fas fa-times-circle text-xs" />
-                                Cancel
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                      </div>
-                    </article>
-                  )
-                })}
-              </div>
-            )}
           </div>
         </div>
+      </section>
+
+      <main className="w-full px-4 py-5 sm:px-6 sm:py-7 lg:px-10 xl:px-14">
+        {/* One toolbar row: service + status (search is in header) */}
+        <div className="mb-5 flex flex-wrap items-center gap-2">
+          {(['all', 'food', 'person', 'parcel'] as SidebarFilter[]).map((key) => {
+            const label = key === 'all' ? 'All' : key === 'person' ? 'Rides' : FILTER_META[key].label
+            const count =
+              key === 'all' ? orders.length : sidebarCounts[key as keyof typeof sidebarCounts]
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setSidebarFilter(key)}
+                className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-semibold transition ${
+                  sidebarFilter === key
+                    ? 'bg-[#109D4C] text-white'
+                    : 'border border-[#d8e0db] bg-white text-[#3d4a42] hover:bg-[#eef2ef]'
+                }`}
+              >
+                {label}
+                <span
+                  className={`rounded-full px-1.5 text-[10px] ${
+                    sidebarFilter === key ? 'bg-white/25' : 'bg-[#eef2ef]'
+                  }`}
+                >
+                  {count}
+                </span>
+              </button>
+            )
+          })}
+
+          <span className="mx-1 hidden h-5 w-px bg-[#d8e0db] sm:block" aria-hidden />
+
+          {(
+            [
+              { id: 'all' as StatusTab, label: 'All Orders' },
+              { id: 'completed' as StatusTab, label: 'Completed' },
+              { id: 'cancelled' as StatusTab, label: 'Cancelled' },
+            ] as const
+          ).map((tab) => {
+            const active = statusTab === tab.id
+            const count = statusCounts[tab.id]
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setStatusTab(tab.id)}
+                className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-semibold transition ${
+                  active
+                    ? 'bg-[#142018] text-white'
+                    : 'border border-[#d8e0db] bg-white text-[#3d4a42] hover:bg-[#eef2ef]'
+                }`}
+              >
+                {tab.label}
+                <span
+                  className={`rounded-full px-1.5 text-[10px] ${
+                    active ? 'bg-white/20' : 'bg-[#eef2ef]'
+                  }`}
+                >
+                  {count}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+
+        {isLoading ? (
+          <div className="flex flex-col items-center justify-center py-24">
+            <div className="mb-4 h-10 w-10 animate-spin rounded-full border-[3px] border-[#109D4C] border-t-transparent" />
+            <p className="text-sm text-[#6b7a70]">Loading your orders…</p>
+          </div>
+        ) : filteredOrders.length === 0 ? (
+          <div className="w-full rounded-2xl border border-[#e2e8e4] bg-white px-6 py-16 text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#eef2ef]">
+              <i
+                className={`text-2xl ${
+                  statusTab === 'cancelled' ? 'fas fa-ban text-red-400' : 'fas fa-receipt text-[#c5cdc8]'
+                }`}
+              />
+            </div>
+            <h2 className="mb-1 text-lg font-bold text-[#142018]">
+              {statusTab === 'cancelled'
+                ? 'No cancelled orders'
+                : statusTab === 'completed'
+                  ? 'No completed orders'
+                  : searchQuery.trim()
+                    ? 'No matching orders'
+                    : 'No orders found'}
+            </h2>
+            <p className="mx-auto mb-6 max-w-sm text-sm text-[#6b7a70]">
+              {searchQuery.trim()
+                ? 'Try a different search term or clear the search box.'
+                : statusTab === 'all'
+                  ? 'Your orders will appear here once you place them.'
+                  : `No ${statusTab} orders for the selected service.`}
+            </p>
+            {statusTab === 'all' && !searchQuery.trim() ? (
+              sidebarFilter === 'parcel' && !parcelEnabled ? (
+                <span
+                  className="relative inline-flex cursor-not-allowed items-center gap-2 rounded-xl bg-gray-200 px-5 py-2.5 text-sm font-semibold text-gray-500"
+                  title="Parcel — Coming soon in your area"
+                >
+                  <i className="fas fa-plus text-xs" />
+                  Send a parcel
+                  <SoonBadge placement="inline" />
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() =>
+                    router.push(
+                      sidebarFilter === 'person'
+                        ? '/ride'
+                        : sidebarFilter === 'parcel'
+                          ? '/parcel'
+                          : '/order'
+                    )
+                  }
+                  className="inline-flex items-center gap-2 rounded-xl bg-[#109D4C] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[#0d7a3c]"
+                >
+                  <i className="fas fa-plus text-xs" />
+                  {sidebarFilter === 'person'
+                    ? 'Book a ride'
+                    : sidebarFilter === 'parcel'
+                      ? 'Send a parcel'
+                      : 'Start ordering'}
+                </button>
+              )
+            ) : null}
+          </div>
+        ) : (
+          <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {filteredOrders.map((order) => {
+              const serviceConfig = serviceIcons[order.serviceType]
+              const cancelled = isCancelledStatus(order.status)
+              const active = isOrderActive(order.status)
+              const canCancel = canCancelOrder(order.status)
+              const isDelivered = isCompletedStatus(order.status)
+              const cancelNote = formatCancellationDisplay(
+                order.cancelReason,
+                order.cancelledByLabel
+              )
+              const statusLabel = isDelivered
+                ? 'Delivered'
+                : cancelled
+                  ? 'Cancelled'
+                  : getStatusConfig(order.status, order.serviceType).label
+
+              return (
+                <article
+                  key={order.id}
+                  className="flex w-full flex-col rounded-2xl border border-[#e2e8e4] bg-white p-4 shadow-[0_1px_3px_rgba(16,60,40,0.04)] transition hover:border-[#109D4C]/35 hover:shadow-md sm:p-5"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-[#eef2ef] text-[#6b7a70]">
+                      <i className={`${serviceConfig.icon} text-lg`} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-base font-bold text-[#142018]">
+                            {formatServiceTitle(order)}
+                          </p>
+                          <p className="mt-0.5 truncate text-xs text-[#6b7a70]">
+                            {locationForCard(order)}
+                          </p>
+                        </div>
+                        <span className="shrink-0 pt-0.5 text-right text-xs font-semibold text-[#6b7a70]">
+                          {statusLabel}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="my-3.5 border-t border-[#eef2ef]" />
+
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#8a968e]">
+                        Order number
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => copyOrderId(order.orderNumber)}
+                        className="mt-0.5 inline-flex items-center gap-1.5 text-sm font-semibold text-[#142018] hover:text-[#109D4C]"
+                      >
+                        {displayOrderId(order.orderNumber).replace(/^#/, '')}
+                        <i
+                          className={`text-[10px] ${
+                            copiedOrderId === order.orderNumber
+                              ? 'fas fa-check text-[#109D4C]'
+                              : 'far fa-copy text-[#8a968e]'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#8a968e]">
+                        Total amount
+                      </p>
+                      <p className="mt-0.5 text-sm font-semibold text-[#142018]">
+                        {formatOrderMoney(order.amount)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#8a968e]">
+                        {order.serviceType === 'food' ? 'Items' : 'Route'}
+                      </p>
+                      <p className="mt-0.5 line-clamp-2 text-sm font-medium leading-snug text-[#142018]">
+                        {itemsLineForCard(order)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#8a968e]">
+                        Ordered on
+                      </p>
+                      <p className="mt-0.5 text-sm font-medium text-[#142018]">
+                        {formatOrderedOnCard(order.createdAt)}
+                      </p>
+                    </div>
+                  </div>
+
+                  {cancelled && cancelNote ? (
+                    <p className="mt-3 text-xs text-red-600">
+                      <span className="font-semibold">Reason:</span> {cancelNote}
+                    </p>
+                  ) : null}
+
+                  <div className="mt-auto flex flex-wrap items-center justify-end gap-2 pt-4">
+                    {active ? (
+                      <>
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-[#109D4C] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#0d7a3c]"
+                        >
+                          Track
+                        </button>
+                        {canCancel ? (
+                          <button
+                            type="button"
+                            onClick={() => handleCancelClick(order)}
+                            className="inline-flex items-center rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
+                          >
+                            Cancel
+                          </button>
+                        ) : null}
+                      </>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setSelectedOrder(order)}
+                      className="inline-flex items-center rounded-lg border border-[#109D4C] px-3.5 py-1.5 text-xs font-semibold text-[#109D4C] transition hover:bg-[#e8f3ec]"
+                    >
+                      View Details
+                    </button>
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </main>
 
       {/* Success Modal */}
       {showSuccess && successData && (
@@ -1215,122 +1249,308 @@ function OrdersPageClient({
       )}
 
       {/* Order Detail Modal */}
-      {selectedOrder && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSelectedOrder(null)}></div>
-          <div className="relative bg-white rounded-2xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto">
-            {/* Header */}
-            <div className={`sticky top-0 px-6 py-4 text-white ${
-              selectedOrder.serviceType === 'food' ? 'bg-orange-500' :
-              selectedOrder.serviceType === 'person' ? 'bg-sky-500' :
-              'bg-violet-500'
-            }`}>
-              <button 
-                onClick={() => setSelectedOrder(null)}
-                className="absolute top-4 right-4 w-8 h-8 rounded-full bg-white/20 flex items-center justify-center"
-              >
-                <i className="fas fa-times"></i>
-              </button>
-              <p className="text-sm text-white/80">
-                {selectedOrder.serviceType === 'food' ? 'Order ID' : 
-                 selectedOrder.serviceType === 'person' ? 'Booking ID' : 'Tracking ID'}
-              </p>
-              <p className="font-bold">{selectedOrder.orderNumber}</p>
-            </div>
-            
-            <div className="p-6 space-y-4">
-              {/* Title & Icon */}
-              <div className="flex items-center gap-3">
-                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${serviceIcons[selectedOrder.serviceType].bg}`}>
-                  <i className={`${serviceIcons[selectedOrder.serviceType].icon} ${serviceIcons[selectedOrder.serviceType].color}`}></i>
+      {selectedOrder && (() => {
+        const st = getStatusConfig(selectedOrder.status, selectedOrder.serviceType)
+        const pay = formatPaymentStatus(selectedOrder.paymentStatus)
+        const cancelled = isCancelledStatus(selectedOrder.status)
+        const completed = isCompletedStatus(selectedOrder.status)
+        const active = isOrderActive(selectedOrder.status)
+        const canCancel = canCancelOrder(selectedOrder.status)
+        const cancelNote = formatCancellationDisplay(
+          selectedOrder.cancelReason,
+          selectedOrder.cancelledByLabel
+        )
+        const idLabel =
+          selectedOrder.serviceType === 'food'
+            ? 'Order ID'
+            : selectedOrder.serviceType === 'person'
+              ? 'Booking ID'
+              : 'Tracking ID'
+        const deliveryLine =
+          selectedOrder.serviceType === 'food'
+            ? selectedOrder.deliveryAddress || selectedOrder.dropAddress
+            : null
+        const itemSubtotal = selectedOrder.items.reduce((sum, item) => {
+          const line = item.lineTotal ?? item.price * item.quantity
+          return sum + (Number.isFinite(line) ? line : 0)
+        }, 0)
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4">
+            <div
+              className="absolute inset-0 bg-black/55 backdrop-blur-[2px]"
+              onClick={() => setSelectedOrder(null)}
+            />
+            <div className="relative flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:rounded-2xl">
+              {/* Header */}
+              <div className="shrink-0 bg-[#109D4C] px-5 pb-5 pt-4 text-white">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-white/75">
+                      {idLabel}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => copyOrderId(selectedOrder.orderNumber)}
+                      className="mt-0.5 inline-flex items-center gap-2 text-left"
+                    >
+                      <span className="truncate text-xl font-bold">
+                        {displayOrderId(selectedOrder.orderNumber)}
+                      </span>
+                      <i
+                        className={`text-xs ${
+                          copiedOrderId === selectedOrder.orderNumber
+                            ? 'fas fa-check text-white'
+                            : 'far fa-copy text-white/70'
+                        }`}
+                      />
+                    </button>
+                    <p className="mt-1 text-xs text-white/80">
+                      {serviceTypeLabel(selectedOrder.serviceType)} ·{' '}
+                      {formatDate(selectedOrder.createdAt)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedOrder(null)}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/20 transition hover:bg-white/30"
+                    aria-label="Close"
+                  >
+                    <i className="fas fa-times text-sm" />
+                  </button>
                 </div>
-                <div>
-                  <p className="font-semibold text-gray-900">{selectedOrder.title}</p>
-                  <p className="text-sm text-gray-500">{formatDate(selectedOrder.createdAt)}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold ${
+                      completed
+                        ? 'bg-white text-[#0d7a3c]'
+                        : cancelled
+                          ? 'bg-red-500 text-white'
+                          : 'bg-white/20 text-white'
+                    }`}
+                  >
+                    <i className={`${completed ? 'fas fa-check-circle' : st.icon} text-[10px]`} />
+                    {selectedOrder.statusLabel}
+                  </span>
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                      pay.ok ? 'bg-white/20 text-white' : 'bg-amber-400/90 text-[#3a2a00]'
+                    }`}
+                  >
+                    {pay.label}
+                  </span>
                 </div>
               </div>
 
-              {/* Status */}
-              <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full ${getStatusConfig(selectedOrder.status, selectedOrder.serviceType).color}`}>
-                <i className={getStatusConfig(selectedOrder.status, selectedOrder.serviceType).icon}></i>
-                <span className="font-medium text-sm">{selectedOrder.statusLabel}</span>
-              </div>
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5">
+                {/* Store / service */}
+                <div className="flex items-center gap-3">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[#e8f3ec] text-[#109D4C]">
+                    <i className={`${serviceIcons[selectedOrder.serviceType].icon} text-lg`} />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-base font-bold text-[#142018]">
+                      {formatServiceTitle(selectedOrder)}
+                    </p>
+                    <p className="text-xs text-[#6b7a70]">
+                      {selectedOrder.serviceType === 'food'
+                        ? selectedOrder.subtitle
+                        : serviceTypeLabel(selectedOrder.serviceType)}
+                    </p>
+                  </div>
+                  <div className="ml-auto shrink-0 text-right">
+                    <p className="text-lg font-bold text-[#142018]">
+                      {formatOrderMoney(selectedOrder.amount)}
+                    </p>
+                  </div>
+                </div>
 
-              {/* Service-specific details */}
-              {selectedOrder.serviceType === 'food' && selectedOrder.items.length > 0 && (
-                <div className="bg-gray-50 rounded-xl p-4">
-                  <p className="text-sm font-semibold text-gray-700 mb-3">Order Items</p>
-                  {selectedOrder.items.map((item, index) => (
-                    <div key={index} className="flex justify-between py-2 border-b border-gray-200 last:border-0">
-                      <div>
-                        <span className="text-gray-600">{item.quantity}x </span>
-                        <span className="text-gray-900">{item.name}</span>
-                        {item.variantName ? (
-                          <p className="text-xs text-gray-500 mt-0.5">{item.variantName}</p>
-                        ) : null}
-                        {item.customization ? (
-                          <p className="text-xs text-gray-500 mt-0.5">{item.customization}</p>
-                        ) : null}
+                {/* Food items */}
+                {selectedOrder.serviceType === 'food' ? (
+                  <div className="rounded-2xl border border-[#e2e8e4] bg-[#f8faf8] p-4">
+                    <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-[#6b7a70]">
+                      Items ({selectedOrder.items.length || 0})
+                    </p>
+                    {selectedOrder.items.length > 0 ? (
+                      <ul className="space-y-2.5">
+                        {selectedOrder.items.map((item, index) => (
+                          <li key={index} className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm text-[#142018]">
+                                <span className="font-semibold text-[#109D4C]">
+                                  {item.quantity}×
+                                </span>{' '}
+                                {item.name}
+                              </p>
+                              {item.variantName ? (
+                                <p className="text-xs text-[#6b7a70]">{item.variantName}</p>
+                              ) : null}
+                              {item.customization ? (
+                                <p className="text-xs text-[#6b7a70]">{item.customization}</p>
+                              ) : null}
+                            </div>
+                            <span className="shrink-0 text-sm font-semibold text-[#142018]">
+                              {formatLineItemMoney(item)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-sm text-[#6b7a70]">Item details unavailable</p>
+                    )}
+                    {selectedOrder.items.length > 0 ? (
+                      <div className="mt-3 flex justify-between border-t border-[#e2e8e4] pt-3 text-sm">
+                        <span className="text-[#6b7a70]">Items total</span>
+                        <span className="font-semibold text-[#142018]">
+                          ₹{Math.round(itemSubtotal)}
+                        </span>
                       </div>
-                      <span className="font-medium">{formatLineItemMoney(item)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+                    ) : null}
+                  </div>
+                ) : null}
 
-              {selectedOrder.serviceType === 'person' && (
-                <div className="bg-gray-50 rounded-xl p-4 space-y-3">
-                  <div className="flex items-start gap-3">
-                    <div className="w-3 h-3 bg-green-500 rounded-full mt-1.5"></div>
-                    <div>
-                      <p className="text-xs text-gray-500">Pickup</p>
-                      <p className="font-medium text-gray-900">{selectedOrder.pickupAddress ?? '—'}</p>
+                {/* Route — ride / parcel */}
+                {(selectedOrder.serviceType === 'person' ||
+                  selectedOrder.serviceType === 'parcel') && (
+                  <div className="rounded-2xl border border-[#e2e8e4] bg-[#f8faf8] p-4">
+                    <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-[#6b7a70]">
+                      Route
+                    </p>
+                    <div className="relative space-y-4 pl-1">
+                      <div className="absolute bottom-2 left-[7px] top-2 w-px bg-[#d8e0db]" aria-hidden />
+                      <div className="relative flex gap-3">
+                        <span className="relative z-[1] mt-1 h-3.5 w-3.5 shrink-0 rounded-full border-2 border-[#109D4C] bg-white" />
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-[#109D4C]">
+                            Pickup
+                          </p>
+                          <p className="mt-0.5 text-sm leading-snug text-[#142018]">
+                            {selectedOrder.pickupAddress || '—'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="relative flex gap-3">
+                        <span className="relative z-[1] mt-1 h-3.5 w-3.5 shrink-0 rounded-full bg-[#ef4f5f]" />
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-[#ef4f5f]">
+                            {selectedOrder.serviceType === 'person' ? 'Drop-off' : 'Delivery'}
+                          </p>
+                          <p className="mt-0.5 text-sm leading-snug text-[#142018]">
+                            {selectedOrder.dropAddress || '—'}
+                          </p>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <div className="flex items-start gap-3">
-                    <div className="w-3 h-3 bg-red-500 rounded-full mt-1.5"></div>
-                    <div>
-                      <p className="text-xs text-gray-500">Drop-off</p>
-                      <p className="font-medium text-gray-900">{selectedOrder.dropAddress ?? '—'}</p>
+                )}
+
+                {/* Food delivery address */}
+                {selectedOrder.serviceType === 'food' && deliveryLine ? (
+                  <div className="rounded-2xl border border-[#e2e8e4] bg-[#f8faf8] p-4">
+                    <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.1em] text-[#6b7a70]">
+                      Deliver to
+                    </p>
+                    <div className="flex gap-2">
+                      <i className="fas fa-map-marker-alt mt-0.5 text-xs text-[#109D4C]" />
+                      <p className="text-sm leading-snug text-[#142018]">{deliveryLine}</p>
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Payment & summary */}
+                <div className="rounded-2xl border border-[#e2e8e4] p-4">
+                  <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-[#6b7a70]">
+                    Payment
+                  </p>
+                  <div className="space-y-2.5 text-sm">
+                    <div className="flex justify-between gap-3">
+                      <span className="text-[#6b7a70]">Method</span>
+                      <span className="font-semibold text-[#142018]">
+                        {formatPaymentMethod(selectedOrder.paymentMethod)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-[#6b7a70]">Status</span>
+                      <span
+                        className={`font-semibold ${
+                          pay.ok ? 'text-[#109D4C]' : 'text-amber-700'
+                        }`}
+                      >
+                        {pay.label}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-3 border-t border-[#eef2ef] pt-2.5">
+                      <span className="font-bold text-[#142018]">Order total</span>
+                      <span className="text-lg font-bold text-[#109D4C]">
+                        {formatOrderMoney(selectedOrder.amount)}
+                      </span>
                     </div>
                   </div>
                 </div>
-              )}
 
-              {selectedOrder.serviceType === 'parcel' && (
-                <div className="bg-gray-50 rounded-xl p-4 space-y-3">
-                  <div className="flex items-start gap-3">
-                    <div className="w-3 h-3 bg-green-500 rounded-full mt-1.5"></div>
-                    <div>
-                      <p className="text-xs text-gray-500">Pickup</p>
-                      <p className="font-medium text-gray-900">{selectedOrder.pickupAddress ?? '—'}</p>
-                    </div>
+                {/* Cancellation */}
+                {cancelled && (cancelNote || selectedOrder.refundAmount != null) ? (
+                  <div className="rounded-2xl border border-red-100 bg-red-50/70 p-4">
+                    <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.1em] text-red-600">
+                      Cancellation
+                    </p>
+                    {cancelNote ? (
+                      <p className="text-sm text-red-700">
+                        <span className="font-semibold">Reason:</span> {cancelNote}
+                      </p>
+                    ) : null}
+                    {selectedOrder.refundPercentage != null ? (
+                      <p className="mt-1 text-sm text-red-700">
+                        Refund: {selectedOrder.refundPercentage}%
+                        {selectedOrder.refundAmount != null
+                          ? ` (${formatOrderMoney(selectedOrder.refundAmount)})`
+                          : ''}
+                      </p>
+                    ) : null}
                   </div>
-                  <div className="flex items-start gap-3">
-                    <div className="w-3 h-3 bg-red-500 rounded-full mt-1.5"></div>
-                    <div>
-                      <p className="text-xs text-gray-500">Delivery</p>
-                      <p className="font-medium text-gray-900">{selectedOrder.dropAddress ?? '—'}</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Total */}
-              <div className="flex justify-between text-lg font-bold text-gray-900 pt-4 border-t">
-                <span>Total</span>
-                <span>{formatOrderMoney(selectedOrder.amount)}</span>
+                ) : null}
               </div>
 
-              {/* Payment Method */}
-              <div className="flex items-center gap-2 text-sm text-gray-500">
-                <i className="fas fa-credit-card"></i>
-                <span>Payment: {(selectedOrder.paymentMethod ?? 'cod').toUpperCase()}</span>
+              {/* Footer actions */}
+              <div className="shrink-0 border-t border-[#eef2ef] bg-white px-5 py-4">
+                <div className="flex gap-2">
+                  {active ? (
+                    <>
+                      <button
+                        type="button"
+                        className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#109D4C] py-3 text-sm font-bold text-white hover:bg-[#0d7a3c]"
+                      >
+                        <i className="fas fa-location-arrow text-xs" />
+                        Track order
+                      </button>
+                      {canCancel ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedOrder(null)
+                            handleCancelClick(selectedOrder)
+                          }}
+                          className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-red-200 py-3 text-sm font-bold text-red-600 hover:bg-red-50"
+                        >
+                          Cancel
+                        </button>
+                      ) : null}
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedOrder(null)}
+                      className="flex w-full items-center justify-center rounded-xl bg-[#109D4C] py-3 text-sm font-bold text-white hover:bg-[#0d7a3c]"
+                    >
+                      Close
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Cancel Warning Modal */}
       {showCancelWarning && cancellingOrder && (

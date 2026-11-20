@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import { 
   Briefcase, 
@@ -382,8 +381,7 @@ const Careers = () => {
 
   if (loadingError) {
     return (
-      <div className="min-h-screen bg-white flex flex-col">
-        <Header />
+      <div className="min-h-screen bg-[#f7f7f5] flex flex-col">
         <div className="flex-1 flex items-center justify-center">
           <div className="text-red-500 text-center">
             <p className="text-xl font-semibold">{loadingError}</p>
@@ -395,31 +393,34 @@ const Careers = () => {
   }
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen w-full bg-[#f7f7f5]">
+      <div className="w-full bg-[#109D4C]">
+        <p className="w-full px-4 py-2 text-[12px] font-medium text-white sm:px-6 lg:px-8 md:text-[13px]">
+          Careers at GatiMitra — join the team building local logistics.
+        </p>
+      </div>
 
-
-      <Header />
       {/* Hero Section */}
-      <section className="relative overflow-hidden bg-gradient-to-br from-blue-50 to-white py-16 md:py-24">
-        <div className="container mx-auto px-4">
-          <div className="max-w-3xl mx-auto text-center">
-            <div className="inline-flex items-center px-4 py-2 bg-blue-100 text-blue-700 rounded-full text-sm font-semibold mb-6">
+      <section className="relative w-full overflow-hidden bg-white py-10 md:py-14">
+        <div className="w-full px-4 sm:px-6 lg:px-8">
+          <div className="w-full text-center">
+            <div className="inline-flex items-center px-4 py-2 bg-[#109D4C]/10 text-[#0d7a3d] rounded-full text-sm font-semibold mb-6">
               <Star className="w-4 h-4 mr-2" />
               <span>We're Hiring</span>
             </div>
-            <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
-              Shape the Future of <span className="text-blue-600">Local Logistics</span>
+            <h1 className="text-4xl md:text-5xl font-bold text-[#1a1a1a] mb-6">
+              Shape the Future of <span className="text-[#109D4C]">Local Logistics</span>
             </h1>
-            <p className="text-lg md:text-xl text-gray-600 mb-8 max-w-2xl mx-auto">
+            <p className="text-lg md:text-xl text-[#666] mb-8 max-w-2xl mx-auto">
               At <b>GatiMitra</b>, we're on a mission to make deliveries faster, smarter, and more reliable for everyone. Join a passionate team that's transforming how India moves, one parcel at a time.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <a href="#positions" className="inline-flex items-center justify-center bg-blue-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors">
+              <a href="#positions" className="inline-flex items-center justify-center bg-[#109D4C] text-white px-8 py-3 rounded-md font-semibold hover:bg-[#0d7a3d] transition-colors">
                 View Open Roles
                 <ArrowRight className="w-5 h-5 ml-2" />
               </a>
               <button
-                className="inline-flex items-center justify-center border-2 border-gray-300 text-gray-700 px-8 py-3 rounded-lg font-semibold hover:border-blue-600 hover:text-blue-600 transition-colors"
+                className="inline-flex items-center justify-center border border-black/15 bg-white text-[#333] px-8 py-3 rounded-md font-semibold hover:border-[#109D4C] hover:text-[#109D4C] transition-colors"
                 onClick={() => {
                   const section = document.getElementById('why-work-with-us');
                   if (section) {
@@ -436,7 +437,7 @@ const Careers = () => {
 
       {/* Stats */}
       <div className="bg-gray-50 border-y py-8">
-        <div className="container mx-auto px-4">
+        <div className="w-full px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
             {[
               { value: '50+', label: 'Team Members' },
@@ -455,7 +456,7 @@ const Careers = () => {
 
       {/* Why Join Us */}
       <section id="why-work-with-us" className="py-16 md:py-24">
-        <div className="container mx-auto px-4">
+        <div className="w-full px-4 sm:px-6 lg:px-8">
           <motion.div 
             className="text-center mb-12"
             initial={{ opacity: 0, y: 40 }} 
@@ -472,13 +473,13 @@ const Careers = () => {
             {benefits.map((benefit, index) => (
               <motion.div
                 key={index}
-                className="group bg-white border border-gray-200 rounded-xl p-6 hover:border-blue-600 hover:shadow-lg transition-all duration-300"
+                className="group bg-white border border-gray-200 rounded-xl p-6 hover:border-[#109D4C] hover:shadow-lg transition-all duration-300"
                 initial={{ opacity: 0, y: 30 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true }}
                 transition={{ duration: 0.5, delay: index * 0.1 }}
               >
-                <div className="w-12 h-12 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center mb-4 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                <div className="w-12 h-12 bg-[#109D4C]/15 text-[#109D4C] rounded-lg flex items-center justify-center mb-4 group-hover:bg-[#109D4C] group-hover:text-white transition-colors">
                   {benefit.icon}
                 </div>
                 <h3 className="text-lg font-semibold text-gray-900 mb-2">{benefit.title}</h3>
@@ -491,7 +492,7 @@ const Careers = () => {
 
       {/* Open Positions */}
       <section id="positions" className="py-16 bg-gray-50">
-        <div className="container mx-auto px-4">
+        <div className="w-full px-4 sm:px-6 lg:px-8">
           <motion.div
             className="text-center mb-12"
             initial={{ opacity: 0, y: 40 }}
@@ -516,8 +517,8 @@ const Careers = () => {
                   key={category}
                   className={`px-5 py-2.5 rounded-full font-medium transition-all ${
                     filter === category 
-                      ? 'bg-blue-600 text-white shadow-md' 
-                      : 'bg-white text-gray-700 border hover:border-blue-600 hover:text-blue-600'
+                      ? 'bg-[#109D4C] text-white shadow-md' 
+                      : 'bg-white text-gray-700 border hover:border-[#109D4C] hover:text-[#109D4C]'
                   }`}
                   onClick={() => setFilter(category)}
                 >
@@ -527,7 +528,7 @@ const Careers = () => {
             </div>
 
             {/* Search Bar - Right Side */}
-            <div className="flex items-center bg-white border border-gray-300 rounded-lg px-4 py-2.5 w-full md:w-64 hover:border-blue-600 transition-colors">
+            <div className="flex items-center bg-white border border-gray-300 rounded-lg px-4 py-2.5 w-full md:w-64 hover:border-[#109D4C] transition-colors">
               <Search className="w-5 h-5 text-gray-500 mr-2" />
               <input
                 type="text"
@@ -542,7 +543,7 @@ const Careers = () => {
           {/* Job Listings */}
           {loading ? (
             <div className="text-center py-12">
-              <div className="animate-spin w-12 h-12 mx-auto border-4 border-blue-600 border-t-transparent rounded-full mb-4"></div>
+              <div className="animate-spin w-12 h-12 mx-auto border-4 border-[#109D4C] border-t-transparent rounded-full mb-4"></div>
               <p className="text-gray-600">Loading job listings...</p>
             </div>
           ) : loadingError ? (
@@ -554,7 +555,7 @@ const Careers = () => {
               <p className="text-gray-600">{loadingError}</p>
               <button 
                 onClick={() => window.location.reload()}
-                className="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                className="mt-4 px-6 py-2 bg-[#109D4C] text-white rounded-lg hover:bg-[#0d7a3d] transition-colors"
               >
                 Retry
               </button>
@@ -566,7 +567,7 @@ const Careers = () => {
                   filteredJobs.map((job, idx) => (
                     <motion.div
                       key={job.id}
-                      className="bg-white border border-gray-200 rounded-xl p-4 hover:border-blue-600 hover:shadow-lg transition-all duration-300"
+                      className="bg-white border border-gray-200 rounded-xl p-4 hover:border-[#109D4C] hover:shadow-lg transition-all duration-300"
                       initial={{ opacity: 0, y: 30 }}
                       whileInView={{ opacity: 1, y: 0 }}
                       viewport={{ once: true }}
@@ -578,7 +579,7 @@ const Careers = () => {
                             <div className="flex-1">
                               <h3 className="text-lg font-bold text-gray-900 mb-1.5">{job.role || 'Position'}</h3>
                               <div className="flex flex-wrap gap-2 mb-2">
-                                <span className="inline-flex items-center px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm">
+                                <span className="inline-flex items-center px-3 py-1 bg-[#109D4C]/15 text-[#0d7a3d] rounded-full text-sm">
                                   <MapPin className="w-3 h-3 mr-1" />
                                   {job.location || 'Remote'}
                                 </span>
@@ -600,9 +601,9 @@ const Careers = () => {
                           </div>
                           {/* Application Count - Only show if > 0 */}
                           {applicationCounts[job.id] > 0 && (
-                            <div className="mt-2 p-2 bg-blue-50 rounded-lg flex items-center">
-                              <UserCheck className="w-3 h-3 text-blue-600 mr-2" />
-                              <span className="text-xs font-medium text-blue-700">
+                            <div className="mt-2 p-2 bg-[#109D4C]/[0.08] rounded-lg flex items-center">
+                              <UserCheck className="w-3 h-3 text-[#109D4C] mr-2" />
+                              <span className="text-xs font-medium text-[#0d7a3d]">
                                 {applicationCounts[job.id]} {applicationCounts[job.id] === 1 ? 'application' : 'applications'}
                               </span>
                             </div>
@@ -611,14 +612,14 @@ const Careers = () => {
                         <div className="flex gap-3 pt-2 mt-3 border-t border-gray-100">
                           <button 
                             onClick={() => handleApplyClick(job)}
-                            className="flex-1 bg-blue-600 text-white py-2.5 px-4 rounded-lg font-medium hover:bg-blue-700 transition-colors flex items-center justify-center text-sm"
+                            className="flex-1 bg-[#109D4C] text-white py-2.5 px-4 rounded-lg font-medium hover:bg-[#0d7a3d] transition-colors flex items-center justify-center text-sm"
                           >
                             Apply Now
                             <ArrowRight className="w-4 h-4 ml-2" />
                           </button>
                           <button 
                             onClick={() => handleViewDetailsClick(job)}
-                            className="flex-1 border border-gray-300 text-gray-700 py-2.5 px-4 rounded-lg font-medium hover:border-blue-600 hover:text-blue-600 transition-colors text-sm flex items-center justify-center"
+                            className="flex-1 border border-gray-300 text-gray-700 py-2.5 px-4 rounded-lg font-medium hover:border-[#109D4C] hover:text-[#109D4C] transition-colors text-sm flex items-center justify-center"
                           >
                             <Eye className="w-4 h-4 mr-2" />
                             Details
@@ -652,7 +653,7 @@ const Careers = () => {
 
       {/* Hiring Process */}
       <section className="py-16 md:py-24">
-        <div className="container mx-auto px-4">
+        <div className="w-full px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-12">
             <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">How We Hire</h2>
             <p className="text-gray-600 max-w-2xl mx-auto">
@@ -671,7 +672,7 @@ const Careers = () => {
                   className="relative"
                 >
                   <div className="bg-white border border-gray-200 rounded-xl p-6 text-center hover:shadow-lg transition-shadow">
-                    <div className="w-12 h-12 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-lg mx-auto mb-4">
+                    <div className="w-12 h-12 bg-[#109D4C] text-white rounded-full flex items-center justify-center font-bold text-lg mx-auto mb-4">
                       {step.step}
                     </div>
                     <h3 className="font-semibold text-gray-900 mb-2">{step.title}</h3>
@@ -686,7 +687,7 @@ const Careers = () => {
 
       {/* FAQ */}
       <section className="py-16 md:py-24">
-        <div className="container mx-auto px-4">
+        <div className="w-full px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-12">
             <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Frequently Asked Questions</h2>
             <p className="text-gray-600">Get answers to common questions about working at GatiMitra</p>
@@ -717,17 +718,17 @@ const Careers = () => {
       </section>
 
       {/* CTA */}
-      <section className="py-16 bg-gradient-to-r from-blue-600 to-blue-700">
-        <div className="container mx-auto px-4">
+      <section className="py-16 bg-gradient-to-r from-[#109D4C] to-[#0d7a3d]">
+        <div className="w-full px-4 sm:px-6 lg:px-8">
           <div className="max-w-3xl mx-auto text-center text-white">
             <h2 className="text-3xl md:text-4xl font-bold mb-6">Ready to Make an Impact?</h2>
-            <p className="text-lg mb-8 text-blue-100">
+            <p className="text-lg mb-8 text-white/85">
               Join GatiMitra and help us deliver smiles, speed, and reliability to millions. Your journey starts here.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <a 
                 href="#positions" 
-                className="inline-flex items-center justify-center bg-white text-blue-600 px-8 py-3.5 rounded-lg font-semibold hover:bg-gray-100 transition-colors"
+                className="inline-flex items-center justify-center bg-white text-[#109D4C] px-8 py-3.5 rounded-lg font-semibold hover:bg-gray-100 transition-colors"
               >
                 Browse All Positions
                 <ArrowRight className="w-5 h-5 ml-2" />
@@ -765,7 +766,7 @@ const Careers = () => {
                     <div className={`
                       w-8 h-8 rounded-full flex items-center justify-center font-semibold text-sm
                       ${currentStep >= step.number 
-                        ? 'bg-blue-600 text-white' 
+                        ? 'bg-[#109D4C] text-white' 
                         : 'bg-gray-200 text-gray-500'
                       }
                     `}>
@@ -777,7 +778,7 @@ const Careers = () => {
                     </div>
                     <span className="text-xs mt-2 font-medium">{step.title}</span>
                     {step.number < steps.length && (
-                      <div className={`h-1 w-16 mt-4 ${currentStep > step.number ? 'bg-blue-600' : 'bg-gray-200'}`}></div>
+                      <div className={`h-1 w-16 mt-4 ${currentStep > step.number ? 'bg-[#109D4C]' : 'bg-gray-200'}`}></div>
                     )}
                   </div>
                 ))}
@@ -1115,9 +1116,9 @@ const Careers = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center p-4 bg-blue-50 rounded-lg">
-                    <AlertCircle className="w-5 h-5 text-blue-600 mr-3" />
-                    <p className="text-sm text-blue-700">
+                  <div className="flex items-center p-4 bg-[#109D4C]/[0.08] rounded-lg">
+                    <AlertCircle className="w-5 h-5 text-[#109D4C] mr-3" />
+                    <p className="text-sm text-[#0d7a3d]">
                       By submitting, you confirm that all information provided is accurate and complete.
                     </p>
                   </div>
@@ -1129,7 +1130,7 @@ const Careers = () => {
                   <button
                     type="button"
                     onClick={prevStep}
-                    className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg font-medium hover:border-blue-600 hover:text-blue-600 transition-colors"
+                    className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg font-medium hover:border-[#109D4C] hover:text-[#109D4C] transition-colors"
                   >
                     Back
                   </button>
@@ -1137,7 +1138,7 @@ const Careers = () => {
                   <button
                     type="button"
                     onClick={() => setShowApplicationModal(false)}
-                    className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg font-medium hover:border-blue-600 hover:text-blue-600 transition-colors"
+                    className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg font-medium hover:border-[#109D4C] hover:text-[#109D4C] transition-colors"
                   >
                     Cancel
                   </button>
@@ -1150,7 +1151,7 @@ const Careers = () => {
                   className={`px-6 py-3 rounded-lg font-medium flex items-center transition-colors ${
                     isSubmitting 
                       ? 'bg-gray-400 text-white cursor-not-allowed' 
-                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                      : 'bg-[#109D4C] text-white hover:bg-[#0d7a3d]'
                   }`}
                 >
                   {isSubmitting ? (
@@ -1179,7 +1180,7 @@ const Careers = () => {
               <div>
                 <h2 className="text-2xl font-bold text-gray-900">{selectedJob.role || 'Position Details'}</h2>
                 <div className="flex flex-wrap gap-2 mt-2">
-                  <span className="inline-flex items-center px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm">
+                  <span className="inline-flex items-center px-3 py-1 bg-[#109D4C]/15 text-[#0d7a3d] rounded-full text-sm">
                     <MapPin className="w-3 h-3 mr-1" />
                     {selectedJob.location || 'Remote'}
                   </span>
@@ -1227,7 +1228,7 @@ const Careers = () => {
                   <ul className="space-y-2">
                     {selectedJob.responsibilities.split(',').map((resp, index) => (
                       <li key={index} className="flex items-start">
-                        <CheckCircle className="w-5 h-5 text-blue-500 mr-2 mt-0.5 flex-shrink-0" />
+                        <CheckCircle className="w-5 h-5 text-[#109D4C] mr-2 mt-0.5 flex-shrink-0" />
                         <span className="text-gray-600">{resp.trim()}</span>
                       </li>
                     ))}
@@ -1241,7 +1242,7 @@ const Careers = () => {
                     setShowJobDetailsModal(false);
                     handleApplyClick(selectedJob);
                   }}
-                  className="w-full bg-blue-600 text-white py-3.5 px-4 rounded-lg font-semibold hover:bg-blue-700 transition-colors flex items-center justify-center"
+                  className="w-full bg-[#109D4C] text-white py-3.5 px-4 rounded-lg font-semibold hover:bg-[#0d7a3d] transition-colors flex items-center justify-center"
                 >
                   Apply for this Position
                   <ArrowRight className="w-5 h-5 ml-2" />

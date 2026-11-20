@@ -4,12 +4,11 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { requireRiderApiAuth, riderAuthFailureResponse } from "@/lib/auth/require-rider-api-auth";
 import { getDb } from "@/lib/db/client";
 import { riders, orders } from "@/lib/db/schema";
 import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
 import { listRiderOrdersPaginated } from "@/lib/riders/rider-orders-query";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 
 export const runtime = "nodejs";
 
@@ -28,6 +27,8 @@ type RiderOrderUiRow = {
   walletDebited?: boolean;
   hasLedgerEntry?: boolean;
   earningCreditPending?: boolean;
+  walletLedgerTitle?: string | null;
+  walletLedgerReason?: string | null;
   paymentStatus?: string | null;
   riderAssignmentStatus?: string | null;
   riderRideUnassigned?: boolean;
@@ -62,6 +63,8 @@ function mapCoreOrderRow(row: {
   walletCredited?: boolean;
   walletDebited?: boolean;
   hasLedgerEntry?: boolean;
+  walletLedgerTitle?: string | null;
+  walletLedgerReason?: string | null;
   paymentStatus?: string | null;
   riderAssignmentStatus?: string | null;
   riderRideUnassigned?: boolean;
@@ -90,6 +93,8 @@ function mapCoreOrderRow(row: {
     walletDebited: row.walletDebited === true,
     hasLedgerEntry: row.hasLedgerEntry === true || row.walletCredited === true || row.walletDebited === true,
     earningCreditPending: row.earningCreditPending === true,
+    walletLedgerTitle: row.walletLedgerTitle ?? null,
+    walletLedgerReason: row.walletLedgerReason ?? null,
     paymentStatus: row.paymentStatus ?? null,
     riderAssignmentStatus: row.riderAssignmentStatus ?? null,
     riderRideUnassigned: row.riderRideUnassigned ?? false,
@@ -113,20 +118,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
-
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
-    const hasRiderAccess = await hasDashboardAccessByAuth(user.id, user.email ?? "", "RIDER");
-    if (!userIsSuperAdmin && !hasRiderAccess) {
-      return NextResponse.json({ success: false, error: "Insufficient permissions." }, { status: 403 });
-    }
+    const auth = await requireRiderApiAuth(request);
+    if (!auth.ok) return riderAuthFailureResponse(auth);
 
     const { id } = await params;
     const riderId = parseInt(id, 10);
@@ -178,6 +171,8 @@ export async function GET(
               walletDebited: row.walletDebited,
               hasLedgerEntry: row.hasLedgerEntry,
               earningCreditPending: row.earningCreditPending,
+              walletLedgerTitle: row.walletLedgerTitle,
+              walletLedgerReason: row.walletLedgerReason,
               paymentStatus: row.paymentStatus,
               riderAssignmentStatus: row.riderAssignmentStatus,
               riderRideUnassigned: row.riderRideUnassigned,

@@ -239,20 +239,28 @@ export function StaffAndAccessPanel({ storeInternalId }: { storeInternalId: numb
     }
   };
 
-  const startOtp = async (
+  /** Open OTP modal only — never send SMS until explicit Send OTP. */
+  const startOtp = (
     purpose: "invite" | "remove_staff" | "logout_device" | "logout_all"
   ) => {
     setOtpPurpose(purpose);
     setOtpDigits("");
     setOtpRequestId(null);
     setOtpOpen(true);
+    setOtpSending(false);
+    setOtpMasked("No OTP sent yet — press Send OTP to continue.");
+  };
+
+  const sendOrResendOtp = async () => {
+    if (!otpPurpose || otpSending) return;
     setOtpSending(true);
+    const isFirst = !otpRequestId;
     try {
       const res = await fetch(`${base}/action-otp/send`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ purpose }),
+        body: JSON.stringify({ purpose: otpPurpose }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.message || data.error || "OTP send failed");
@@ -264,8 +272,8 @@ export function StaffAndAccessPanel({ storeInternalId }: { storeInternalId: numb
           : "OTP sent to owner"
       );
       if (typeof data.devOtp === "string") setOtpDigits(data.devOtp);
+      toast.success(isFirst ? "OTP sent" : "OTP resent");
     } catch (e) {
-      setOtpOpen(false);
       toast.error(e instanceof Error ? e.message : "OTP failed");
     } finally {
       setOtpSending(false);
@@ -622,11 +630,7 @@ export function StaffAndAccessPanel({ storeInternalId }: { storeInternalId: numb
               OTP goes to the store owner phone/email — not the invitee.
             </p>
             <p className="mt-2 whitespace-pre-line text-xs text-gray-500">{otpMasked}</p>
-            {otpSending ? (
-              <div className="mt-4 flex items-center gap-2 text-sm text-gray-500">
-                <Loader2 className="h-4 w-4 animate-spin" /> Sending…
-              </div>
-            ) : (
+            {otpRequestId ? (
               <input
                 value={otpDigits}
                 onChange={(e) => setOtpDigits(e.target.value.replace(/\D/g, "").slice(0, 6))}
@@ -634,7 +638,18 @@ export function StaffAndAccessPanel({ storeInternalId }: { storeInternalId: numb
                 placeholder="••••••"
                 maxLength={6}
               />
-            )}
+            ) : null}
+            <div className="mt-3 flex justify-end">
+              <button
+                type="button"
+                onClick={() => void sendOrResendOtp()}
+                disabled={otpSending || otpVerifying}
+                className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-700 hover:underline disabled:opacity-50"
+              >
+                {otpSending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                {otpSending ? "Sending…" : otpRequestId ? "Resend OTP" : "Send OTP"}
+              </button>
+            </div>
             <div className="mt-4 flex gap-2">
               <button
                 type="button"
@@ -650,7 +665,9 @@ export function StaffAndAccessPanel({ storeInternalId }: { storeInternalId: numb
               </button>
               <button
                 type="button"
-                disabled={otpSending || otpVerifying || otpDigits.length < 4}
+                disabled={
+                  otpSending || otpVerifying || otpDigits.length < 4 || !otpRequestId
+                }
                 onClick={() => void verifyAndRun()}
                 className="flex-1 rounded-xl bg-gray-900 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
               >

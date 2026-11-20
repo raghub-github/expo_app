@@ -328,7 +328,8 @@ export function StaffAndAccessPanel({ storeId }: { storeId: string }) {
     setOtpResendSec(30);
   };
 
-  const startOtp = async (
+  /** Open OTP modal only — never send SMS until explicit Send OTP / Resend OTP. */
+  const startOtp = (
     purpose: "invite" | "remove_staff" | "logout_device" | "logout_all"
   ) => {
     setOtpPurpose(purpose);
@@ -337,7 +338,7 @@ export function StaffAndAccessPanel({ storeId }: { storeId: string }) {
     setOtpResendSec(0);
     setOtpExpirySec(0);
     setOtpOpen(true);
-    setOtpSending(true);
+    setOtpSending(false);
     setOtpMeta({
       title:
         purpose === "remove_staff"
@@ -347,36 +348,18 @@ export function StaffAndAccessPanel({ storeId }: { storeId: string }) {
             : "Verify that it's you",
       body:
         purpose === "invite"
-          ? "Confirm this invite. OTP is sent to the owner phone and email — not the invited number."
+          ? "Press Send OTP. The code goes to the owner phone and email — not the invited number."
           : purpose === "remove_staff"
-            ? "Enter the OTP sent to the owner phone and email to permanently remove this user."
-            : "Enter the OTP sent to the owner phone and email to continue.",
-      masked: "",
+            ? "Press Send OTP, then enter the code from the owner phone and email to remove this user."
+            : "Press Send OTP, then enter the code from the owner phone and email to continue.",
+      masked: "No OTP sent yet — press Send OTP to continue.",
     });
-    try {
-      const res = await fetch(
-        `/api/merchant/staff/action-otp/send?storeId=${encodeURIComponent(storeId)}`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ purpose }),
-        }
-      );
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || data.error || "Could not send OTP");
-      applyOtpSendResult(data);
-    } catch (e) {
-      setOtpOpen(false);
-      toast.error(e instanceof Error ? e.message : "OTP failed");
-    } finally {
-      setOtpSending(false);
-    }
   };
 
-  const resendOtp = async () => {
+  const sendOrResendOtp = async () => {
     if (!otpPurpose || otpResendSec > 0 || otpSending) return;
     setOtpSending(true);
+    const isFirst = !otpRequestId;
     try {
       const res = await fetch(
         `/api/merchant/staff/action-otp/send?storeId=${encodeURIComponent(storeId)}`,
@@ -388,11 +371,11 @@ export function StaffAndAccessPanel({ storeId }: { storeId: string }) {
         }
       );
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.message || data.error || "Could not resend OTP");
+      if (!res.ok) throw new Error(data.message || data.error || "Could not send OTP");
       applyOtpSendResult(data, true);
-      toast.success("OTP resent");
+      toast.success(isFirst ? "OTP sent" : "OTP resent");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not resend OTP");
+      toast.error(e instanceof Error ? e.message : "Could not send OTP");
     } finally {
       setOtpSending(false);
     }
@@ -508,7 +491,7 @@ export function StaffAndAccessPanel({ storeId }: { storeId: string }) {
       return;
     }
     setPendingInvite({ name, phone, role: inviteRole });
-    await startOtp("invite");
+    startOtp("invite");
   };
 
   const saveOwnerContact = async () => {
@@ -927,11 +910,7 @@ export function StaffAndAccessPanel({ storeId }: { storeId: string }) {
             <h3 className="text-lg font-bold text-slate-900">{otpMeta.title}</h3>
             <p className="mt-1 text-sm text-slate-600">{otpMeta.body}</p>
             <p className="mt-2 whitespace-pre-line text-xs text-slate-500">{otpMeta.masked}</p>
-            {otpSending ? (
-              <div className="mt-4 flex items-center gap-2 text-sm text-slate-500">
-                <Loader2 className="h-4 w-4 animate-spin" /> Sending OTP…
-              </div>
-            ) : (
+            {otpRequestId ? (
               <input
                 value={otpDigits}
                 onChange={(e) => setOtpDigits(e.target.value.replace(/\D/g, "").slice(0, 6))}
@@ -940,31 +919,36 @@ export function StaffAndAccessPanel({ storeId }: { storeId: string }) {
                 inputMode="numeric"
                 maxLength={6}
               />
-            )}
+            ) : null}
             <div className="mt-3 flex items-center justify-between gap-3 text-xs">
               <span
                 className={`font-medium ${
-                  otpExpirySec <= 0
-                    ? "text-red-600"
-                    : otpExpirySec <= 60
-                      ? "text-amber-700"
-                      : "text-slate-500"
+                  !otpRequestId
+                    ? "text-slate-500"
+                    : otpExpirySec <= 0
+                      ? "text-red-600"
+                      : otpExpirySec <= 60
+                        ? "text-amber-700"
+                        : "text-slate-500"
                 }`}
               >
-                {otpExpirySec <= 0
-                  ? "OTP expired — resend a new code"
-                  : `Expires in ${Math.floor(otpExpirySec / 60)}:${String(otpExpirySec % 60).padStart(2, "0")}`}
+                {!otpRequestId
+                  ? "Waiting for Send OTP"
+                  : otpExpirySec <= 0
+                    ? "OTP expired — send a new code"
+                    : `Expires in ${Math.floor(otpExpirySec / 60)}:${String(otpExpirySec % 60).padStart(2, "0")}`}
               </span>
-              {otpResendSec > 0 ? (
+              {otpRequestId && otpResendSec > 0 ? (
                 <span className="text-slate-500">Resend OTP in {otpResendSec}s</span>
               ) : (
                 <button
                   type="button"
-                  onClick={() => void resendOtp()}
+                  onClick={() => void sendOrResendOtp()}
                   disabled={otpSending || otpVerifying}
-                  className="font-semibold text-indigo-600 hover:underline disabled:opacity-50"
+                  className="inline-flex items-center gap-1 font-semibold text-indigo-600 hover:underline disabled:opacity-50"
                 >
-                  {otpSending ? "Sending…" : "Resend OTP"}
+                  {otpSending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  {otpSending ? "Sending…" : otpRequestId ? "Resend OTP" : "Send OTP"}
                 </button>
               )}
             </div>

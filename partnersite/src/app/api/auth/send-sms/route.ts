@@ -11,7 +11,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { Webhook, WebhookVerificationError } from "standardwebhooks";
-import { checkAndRecordSmsSend, isBlockedPhone } from "@/lib/auth/sms-send-guard";
+import { checkAndRecordSmsSendAsync } from "@/lib/auth/sms-send-guard";
+import { maskReviewPhone, shouldSuppressMsg91Sms } from "@/lib/auth/review-sms-bypass";
 
 const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
 const SEND_SMS_HOOK_SECRET = process.env.SUPABASE_SEND_SMS_HOOK_SECRET;
@@ -165,18 +166,41 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid phone" }, { status: 400 });
     }
 
-    // SMS_BLOCKED_PHONES (opt-in, empty by default) — e.g. a store-review number while
-    // its backend fixed-OTP bypass is on.
-    if (isBlockedPhone(mobile)) {
-      console.warn(`[send-sms] blocked number …${mobile.slice(-4)} — SMS NOT sent`);
+    // Armed Google/merchant/rider review phones + SMS_BLOCKED_PHONES never hit MSG91.
+    // Returning 200 keeps Supabase happy; real login uses backend fixed review OTP.
+    const suppress = shouldSuppressMsg91Sms(phoneTrimmed);
+    if (suppress.suppress) {
+      console.warn(
+        JSON.stringify({
+          audit: "otp_sms",
+          timestamp: new Date().toISOString(),
+          maskedPhone: maskReviewPhone(phoneTrimmed),
+          endpoint: "/api/auth/send-sms",
+          triggerSource: "supabase_send_sms_hook",
+          result: "skipped",
+          rateLimitDecision: suppress.reason,
+          surface: suppress.surface ?? null,
+          msg91Status: "not_called",
+        }),
+      );
       return NextResponse.json({ success: true }, { status: 200 });
     }
 
-    // Per-phone cooldown + daily cap — stops retry loops / SMS bombing on any number.
-    const guard = checkAndRecordSmsSend(mobile);
+    // Per-phone cooldown + window/daily caps — stops retry loops / SMS bombing.
+    const correlationId = crypto.randomUUID();
+    const guard = await checkAndRecordSmsSendAsync(mobile);
     if (!guard.allowed) {
       console.warn(
-        `[send-sms] per-phone limit (${guard.reason}) for …${mobile.slice(-4)} — SMS NOT sent`,
+        JSON.stringify({
+          audit: "otp_sms",
+          correlationId,
+          timestamp: new Date().toISOString(),
+          maskedPhone: `******${mobile.slice(-4)}`,
+          endpoint: "/api/auth/send-sms",
+          triggerSource: "supabase_send_sms_hook",
+          result: "blocked",
+          rateLimitDecision: guard.reason,
+        }),
       );
       const message = "Too many OTP requests for this number. Please wait a bit and try again.";
       return NextResponse.json(
@@ -186,7 +210,36 @@ export async function POST(req: NextRequest) {
     }
 
     // Respond immediately so Supabase does not hit the 5-second hook timeout.
-    sendSmsViaMsg91(mobile, otpTrimmed).catch(() => {});
+    sendSmsViaMsg91(mobile, otpTrimmed)
+      .then(() => {
+        console.info(
+          JSON.stringify({
+            audit: "otp_sms",
+            correlationId,
+            timestamp: new Date().toISOString(),
+            maskedPhone: `******${mobile.slice(-4)}`,
+            endpoint: "/api/auth/send-sms",
+            triggerSource: "supabase_send_sms_hook",
+            result: "sent",
+            msg91Status: "accepted",
+            rateLimitDecision: "allowed",
+          }),
+        );
+      })
+      .catch(() => {
+        console.warn(
+          JSON.stringify({
+            audit: "otp_sms",
+            correlationId,
+            timestamp: new Date().toISOString(),
+            maskedPhone: `******${mobile.slice(-4)}`,
+            endpoint: "/api/auth/send-sms",
+            triggerSource: "supabase_send_sms_hook",
+            result: "failed",
+            rateLimitDecision: "allowed",
+          }),
+        );
+      });
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (e) {

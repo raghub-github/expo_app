@@ -752,6 +752,7 @@ export const en = {
     verificationPending: "Verification pending",
     accountRejectedNote: "Your bank account was rejected. Please add a valid account.",
     requestWithdrawal: "Request Withdrawal",
+    submitWithdrawal: "Submit Withdrawal",
     walletFrozenTitle: "Wallet Frozen",
     walletFrozen: "Withdrawals are currently disabled.",
     walletFrozenReason: "Withdrawals are currently disabled.\nReason: {{reason}}",

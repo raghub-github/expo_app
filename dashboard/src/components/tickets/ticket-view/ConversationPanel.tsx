@@ -653,7 +653,7 @@ function MessageBlock({
     const t = String(msg.senderType ?? "").toUpperCase();
     if (t === "MERCHANT") return "Merchant";
     if (t === "RIDER") return "Rider";
-    if (t === "CUSTOMER") return "Customer";
+    if (t === "CUSTOMER" || t === "CUSTOMER_WEBSITE") return "Customer";
     return "Participant";
   })();
   const participantSourceLabel = /app/i.test(String(msg.messageType ?? ""))

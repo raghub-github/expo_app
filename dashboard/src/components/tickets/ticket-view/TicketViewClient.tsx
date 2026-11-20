@@ -356,7 +356,14 @@ export function TicketViewClient({ ticketId }: { ticketId: number | string }) {
   /** No ticket yet and query hasn't failed — light skeleton only (never GM spinner). */
   const stillLoading = !ticket && !isError && isPending;
   const raisedType = String(ticket?.sourceRole || ticket?.ticketSource || "").toUpperCase();
-  const contactLabel = raisedType === "RIDER" ? "Rider" : raisedType === "CUSTOMER" ? "Customer" : raisedType === "MERCHANT" ? "Merchant" : null;
+  const contactLabel =
+    raisedType === "RIDER"
+      ? "Rider"
+      : raisedType === "CUSTOMER" || raisedType === "CUSTOMER_WEBSITE"
+        ? "Customer"
+        : raisedType === "MERCHANT"
+          ? "Merchant"
+          : null;
   const corporateFields = useMemo(
     () => parseCorporateEnquiryFromDescription(ticket?.description),
     [ticket?.description]

@@ -21,6 +21,7 @@ export const DEFAULT_EARNINGS_SUMMARY: EarningsSummary = {
     accountRestricted: false,
     accountRestrictedReason: "none",
     globalWalletBlock: false,
+    negativeWalletBlocks: [],
     blacklistBlockedServices: [],
     allServicesBlacklisted: false,
     penaltyDue: 0,

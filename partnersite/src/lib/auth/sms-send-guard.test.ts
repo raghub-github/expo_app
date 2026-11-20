@@ -33,9 +33,14 @@ describe("SMS_BLOCKED_PHONES (explicit opt-in)", () => {
   });
 });
 
-describe("per-phone cooldown + daily cap", () => {
+describe("per-phone cooldown + window + daily caps", () => {
   beforeEach(() => __resetSmsSendGuardForTests());
-  const env = { OTP_SEND_MIN_INTERVAL_SEC: "45", OTP_SEND_DAILY_CAP: "3" };
+  const env = {
+    OTP_SEND_MIN_INTERVAL_SEC: "60",
+    OTP_SEND_15M_CAP: "3",
+    OTP_SEND_1H_CAP: "5",
+    OTP_SEND_DAILY_CAP: "3",
+  };
 
   it("allows one send per cooldown window, per number", () => {
     const t = 1_000_000;
@@ -43,26 +48,47 @@ describe("per-phone cooldown + daily cap", () => {
     const blocked = checkAndRecordSmsSend("+919876543210", t + 10_000, env);
     assert.equal(blocked.allowed, false);
     assert.equal(blocked.allowed === false && blocked.reason, "cooldown");
-    assert.equal(blocked.allowed === false && blocked.retryAfterSec, 35);
+    assert.equal(blocked.allowed === false && blocked.retryAfterSec, 50);
     assert.deepEqual(checkAndRecordSmsSend("9876543211", t + 10_000, env), { allowed: true });
-    assert.deepEqual(checkAndRecordSmsSend("9876543210", t + 45_000, env), { allowed: true });
+    assert.deepEqual(checkAndRecordSmsSend("9876543210", t + 60_000, env), { allowed: true });
+  });
+
+  it("caps sends in a 15-minute window", () => {
+    const tight = {
+      OTP_SEND_MIN_INTERVAL_SEC: "1",
+      OTP_SEND_15M_CAP: "3",
+      OTP_SEND_1H_CAP: "10",
+      OTP_SEND_DAILY_CAP: "20",
+    };
+    let t = 2_000_000;
+    for (let i = 0; i < 3; i++, t += 2_000) {
+      assert.deepEqual(checkAndRecordSmsSend("9876543210", t, tight), { allowed: true });
+    }
+    const capped = checkAndRecordSmsSend("9876543210", t, tight);
+    assert.equal(capped.allowed === false && capped.reason, "window_15m");
   });
 
   it("caps sends per day, then resets after 24 h", () => {
+    const dayEnv = {
+      OTP_SEND_MIN_INTERVAL_SEC: "1",
+      OTP_SEND_15M_CAP: "100",
+      OTP_SEND_1H_CAP: "100",
+      OTP_SEND_DAILY_CAP: "3",
+    };
     let t = 5_000_000;
     for (let i = 0; i < 3; i++, t += 60_000) {
-      assert.deepEqual(checkAndRecordSmsSend("9876543210", t, env), { allowed: true });
+      assert.deepEqual(checkAndRecordSmsSend("9876543210", t, dayEnv), { allowed: true });
     }
-    const capped = checkAndRecordSmsSend("9876543210", t, env);
+    const capped = checkAndRecordSmsSend("9876543210", t, dayEnv);
     assert.equal(capped.allowed === false && capped.reason, "daily_cap");
-    assert.deepEqual(checkAndRecordSmsSend("9876543210", 5_000_000 + 24 * 3_600_000, env), {
+    assert.deepEqual(checkAndRecordSmsSend("9876543210", 5_000_000 + 24 * 3_600_000, dayEnv), {
       allowed: true,
     });
   });
 
-  it("defaults to 45 s / 15 per day", () => {
+  it("defaults to 60 s / 3 per 15m / 5 per hour / 15 per day", () => {
     assert.deepEqual(checkAndRecordSmsSend("9876543210", 0, {}), { allowed: true });
-    const r = checkAndRecordSmsSend("9876543210", 44_000, {});
+    const r = checkAndRecordSmsSend("9876543210", 59_000, {});
     assert.equal(r.allowed === false && r.reason, "cooldown");
   });
 });

@@ -1562,13 +1562,13 @@ export default function RidersPage() {
                             </th>
                             <th className="px-3 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Order Status</th>
                             <th className="px-3 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Amount</th>
-                            <th className="px-3 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Credit / Debit</th>
+                            <th className="px-3 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-[200px]">Credit / Debit</th>
                             <th className="px-3 py-1.5 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Time</th>
                             <th className="px-3 py-1.5 text-right text-[10px] font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap">Actions</th>
                           </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-100">
-                          {displayedOrders.map((order: { id: number; orderType: string; status: string; fareAmount?: number | string | null; riderEarning?: number; walletCredited?: boolean; walletDebited?: boolean; hasLedgerEntry?: boolean; earningCreditPending?: boolean; createdAt: string; formattedOrderId?: string | null; orderId?: string | null; externalRef?: string | null; displayOrderId?: string | null }) => {
+                          {displayedOrders.map((order: { id: number; orderType: string; status: string; fareAmount?: number | string | null; riderEarning?: number; walletCredited?: boolean; walletDebited?: boolean; hasLedgerEntry?: boolean; earningCreditPending?: boolean; walletLedgerTitle?: string | null; walletLedgerReason?: string | null; createdAt: string; formattedOrderId?: string | null; orderId?: string | null; externalRef?: string | null; displayOrderId?: string | null }) => {
                             const extra = approvedExtraByOrderId.get(order.id) ?? 0;
                             const earning = Number(order.riderEarning || 0);
                             const totalAmount = earning + extra;
@@ -1576,6 +1576,8 @@ export default function RidersPage() {
                             const isPendingCredit = walletEntry === "Pending";
                             const isDebit = walletEntry === "Debit";
                             const noLedger = !order.walletCredited && !order.walletDebited && !order.hasLedgerEntry;
+                            const ledgerTitle = order.walletLedgerTitle?.trim() || null;
+                            const ledgerReason = order.walletLedgerReason?.trim() || null;
                             return (
                               <tr key={order.id} className="hover:bg-gray-50/60 transition-colors">
                                 <td className="px-3 py-1.5">
@@ -1633,8 +1635,26 @@ export default function RidersPage() {
                                     <span className="text-xs text-gray-400">—</span>
                                   )}
                                 </td>
-                                <td className="px-3 py-1.5 whitespace-nowrap">
-                                  <WalletEntryBadge entry={walletEntry} />
+                                <td className="px-3 py-2 align-top min-w-[200px] max-w-[260px]">
+                                  <div className="flex flex-col gap-1.5">
+                                    <WalletEntryBadge entry={walletEntry} />
+                                    {ledgerTitle ? (
+                                      <p
+                                        className="text-[11px] leading-snug text-slate-800 font-semibold"
+                                        title={ledgerTitle}
+                                      >
+                                        {ledgerTitle}
+                                      </p>
+                                    ) : null}
+                                    {ledgerReason ? (
+                                      <p
+                                        className="text-[10px] leading-snug text-slate-500"
+                                        title={ledgerReason}
+                                      >
+                                        {ledgerReason}
+                                      </p>
+                                    ) : null}
+                                  </div>
                                 </td>
                                 <td className="px-3 py-1.5 text-[11px] text-gray-600 whitespace-nowrap tabular-nums leading-tight">
                                   {new Date(order.createdAt).toLocaleString()}
@@ -3541,12 +3561,24 @@ function WalletEntryBadge({ entry }: { entry: "Credit" | "Debit" | "Pending" | "
     return <span className="text-xs text-gray-400">—</span>;
   }
   if (entry === "Credit") {
-    return <span className="text-xs font-medium text-emerald-700">Credit</span>;
+    return (
+      <span className="inline-flex w-fit items-center rounded-md bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-600/15">
+        Credit
+      </span>
+    );
   }
   if (entry === "Debit") {
-    return <span className="text-xs font-medium text-red-700">Debit</span>;
+    return (
+      <span className="inline-flex w-fit items-center rounded-md bg-red-50 px-1.5 py-0.5 text-[11px] font-semibold text-red-700 ring-1 ring-inset ring-red-600/15">
+        Debit
+      </span>
+    );
   }
-  return <span className="text-xs font-medium text-amber-700">Pending</span>;
+  return (
+    <span className="inline-flex w-fit items-center rounded-md bg-amber-50 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-inset ring-amber-600/15">
+      Pending
+    </span>
+  );
 }
 
 function riderWithdrawalUiStatus(status: unknown): string {

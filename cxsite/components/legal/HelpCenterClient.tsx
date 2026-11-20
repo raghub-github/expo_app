@@ -178,25 +178,25 @@ export default function HelpCenterClient() {
     ).slice(0, 30);
   }, [query]);
 
+  const pagePad = "w-full px-4 sm:px-6 lg:px-8";
+
   return (
-    <main className="min-h-screen bg-white">
-      {/* Hero */}
-      <header className="relative border-b border-slate-100 bg-gradient-to-br from-emerald-50 via-white to-violet-50">
-        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-emerald-400 via-violet-500 to-pink-500" />
-        <div className="mx-auto max-w-5xl px-4 md:px-8 pt-12 pb-14 text-center">
-          <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-slate-900">
+    <main className="min-h-screen w-full bg-[#f7f7f5] text-[#1a1a1a]">
+      <header className="w-full border-b border-black/[0.08] bg-white">
+        <div className={`${pagePad} py-10 md:py-12 text-center`}>
+          <h1 className="text-3xl font-bold tracking-tight text-[#1a1a1a] md:text-5xl">
             How can we help?
           </h1>
-          <p className="mt-3 text-slate-600 max-w-2xl mx-auto">
+          <p className="mx-auto mt-3 max-w-2xl text-[15px] leading-relaxed text-[#666]">
             Browse by topic or search across hundreds of answers about your GatiMitra orders,
             wallet, rides, payments and account.
           </p>
 
-          <div className="mt-7 mx-auto max-w-2xl">
+          <div className="mx-auto mt-7 max-w-2xl">
             <div className="relative">
               <Search
                 size={20}
-                className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+                className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[#999]"
               />
               <input
                 type="search"
@@ -204,27 +204,34 @@ export default function HelpCenterClient() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Try: refund, OTP, lost item, GMitra Max…"
-                className="w-full rounded-2xl border border-slate-200 bg-white pl-12 pr-4 py-4 text-base text-slate-900 shadow-sm shadow-slate-200/40 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:border-emerald-400"
+                className="w-full rounded-lg border border-black/10 bg-white py-3.5 pl-12 pr-4 text-base text-[#1a1a1a] shadow-[0_1px_2px_rgba(0,0,0,0.04)] placeholder:text-[#999] outline-none focus:border-[#109D4C] focus:ring-1 focus:ring-[#109D4C]/25"
               />
             </div>
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-2 text-xs text-[#777]">
               Pulled directly from our FAQ — {ALL_FAQS.length} questions and growing.
             </p>
           </div>
         </div>
       </header>
 
-      {/* Search results */}
+      <div className="w-full bg-[#109D4C]">
+        <p className={`${pagePad} py-2 text-[12px] font-medium text-white md:text-[13px]`}>
+          Tickets, reports, feedback — one inbox. Agents track every thread and reply to your
+          email.
+        </p>
+      </div>
+
       {filtered !== null && (
-        <section className="mx-auto max-w-5xl px-4 md:px-8 py-10">
-          <h2 className="text-xl font-bold text-slate-900 mb-4">
-            {filtered.length} {filtered.length === 1 ? "result" : "results"} for &ldquo;{query}&rdquo;
+        <section className={`${pagePad} py-8 md:py-10`}>
+          <h2 className="mb-4 text-xl font-bold text-[#1a1a1a]">
+            {filtered.length} {filtered.length === 1 ? "result" : "results"} for &ldquo;{query}
+            &rdquo;
           </h2>
           {filtered.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-300 p-8 text-center">
-              <p className="text-slate-600">
+            <div className="rounded-lg border border-dashed border-black/15 bg-white p-8 text-center">
+              <p className="text-[#666]">
                 No answers matched your search. Try a shorter term or{" "}
-                <Link href="/support" className="text-emerald-700 underline font-medium">
+                <Link href="/support" className="font-medium text-[#109D4C] underline">
                   contact our support team
                 </Link>
                 .
@@ -235,12 +242,10 @@ export default function HelpCenterClient() {
               {filtered.map((f, i) => (
                 <li
                   key={i}
-                  className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm hover:border-emerald-300 transition-colors"
+                  className="rounded-lg border border-black/10 bg-white p-4 shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-colors hover:border-[#109D4C]/35"
                 >
-                  <div className="font-semibold text-slate-900">{f.question}</div>
-                  <div className="mt-1 text-sm text-slate-600 leading-6 line-clamp-3">
-                    {f.answer}
-                  </div>
+                  <div className="font-semibold text-[#1a1a1a]">{f.question}</div>
+                  <div className="mt-1 line-clamp-3 text-sm leading-6 text-[#666]">{f.answer}</div>
                 </li>
               ))}
             </ul>
@@ -248,70 +253,75 @@ export default function HelpCenterClient() {
         </section>
       )}
 
-      {/* Category grid (hidden when searching) */}
       {filtered === null && (
-        <section className="mx-auto max-w-6xl px-4 md:px-8 py-12">
-          <h2 className="text-xl font-bold text-slate-900 mb-1">Browse by topic</h2>
-          <p className="text-sm text-slate-600 mb-6">
+        <section className={`${pagePad} py-8 md:py-10`}>
+          <h2 className="mb-1 text-xl font-bold text-[#1a1a1a]">Browse by topic</h2>
+          <p className="mb-6 text-sm text-[#666]">
             Tap a category to see related answers and the full policy.
           </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {CATEGORIES.map((c) => {
               const matches = ALL_FAQS.filter((f) => matchCategory(f, c)).slice(0, 5);
               const isOpen = openCategory === c.key;
               return (
                 <div
                   key={c.key}
-                  className={`group rounded-2xl border bg-white shadow-sm transition-all ${isOpen ? "border-emerald-300 shadow-emerald-100" : "border-slate-200 hover:border-emerald-200 hover:shadow-md"}`}
+                  className={`group rounded-lg border bg-white shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-all ${
+                    isOpen
+                      ? "border-[#109D4C]/40 shadow-[0_4px_16px_rgba(16,157,76,0.08)]"
+                      : "border-black/10 hover:border-[#109D4C]/30"
+                  }`}
                 >
                   <button
                     type="button"
                     onClick={() => setOpenCategory(isOpen ? null : c.key)}
-                    className="w-full text-left p-5 flex items-start gap-3"
+                    className="flex w-full items-start gap-3 p-5 text-left"
                   >
-                    <div className="w-10 h-10 shrink-0 rounded-xl bg-gradient-to-br from-emerald-500 to-violet-600 text-white flex items-center justify-center shadow-md shadow-emerald-100">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#109D4C] text-white">
                       {c.icon}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-3">
-                        <h3 className="font-bold text-slate-900">{c.title}</h3>
+                        <h3 className="font-bold text-[#1a1a1a]">{c.title}</h3>
                         <ChevronRight
                           size={16}
-                          className={`text-slate-400 transition-transform ${isOpen ? "rotate-90 text-emerald-600" : ""}`}
+                          className={`text-[#999] transition-transform ${
+                            isOpen ? "rotate-90 text-[#109D4C]" : ""
+                          }`}
                         />
                       </div>
-                      <p className="mt-1 text-sm text-slate-600 leading-5">{c.description}</p>
+                      <p className="mt-1 text-sm leading-5 text-[#666]">{c.description}</p>
                     </div>
                   </button>
 
                   {isOpen && (
-                    <div className="border-t border-slate-100 px-5 pb-5 pt-3">
+                    <div className="border-t border-black/[0.06] px-5 pb-5 pt-3">
                       {matches.length > 0 ? (
                         <ul className="space-y-2">
                           {matches.map((f, i) => (
                             <li key={i} className="text-sm">
                               <details className="group/q">
-                                <summary className="cursor-pointer text-slate-800 font-medium hover:text-emerald-700 marker:hidden list-none flex items-start gap-1.5">
-                                  <span className="mt-1.5 inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
+                                <summary className="flex list-none cursor-pointer items-start gap-1.5 font-medium text-[#222] marker:hidden hover:text-[#109D4C]">
+                                  <span className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[#109D4C]" />
                                   <span>{f.question}</span>
                                 </summary>
-                                <p className="ml-3 mt-1.5 text-slate-600 leading-6">{f.answer}</p>
+                                <p className="ml-3 mt-1.5 leading-6 text-[#666]">{f.answer}</p>
                               </details>
                             </li>
                           ))}
                         </ul>
                       ) : (
-                        <p className="text-sm text-slate-500 italic">
+                        <p className="text-sm italic text-[#888]">
                           No specific answers tagged yet — see the policies below.
                         </p>
                       )}
 
-                      <div className="mt-4 pt-3 border-t border-slate-100 flex flex-wrap gap-2">
+                      <div className="mt-4 flex flex-wrap gap-2 border-t border-black/[0.06] pt-3">
                         {c.relatedSlugs.map((slug) => (
                           <Link
                             key={slug}
                             href={`/${slug}`}
-                            className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+                            className="inline-flex items-center gap-1 rounded-full bg-[#109D4C]/10 px-3 py-1 text-xs font-semibold text-[#0d7a3d] hover:bg-[#109D4C]/18"
                           >
                             <FileText size={11} /> {slug.replace(/-/g, " ")}
                           </Link>
@@ -326,26 +336,25 @@ export default function HelpCenterClient() {
         </section>
       )}
 
-      {/* Bottom CTA */}
-      <section className="mx-auto max-w-5xl px-4 md:px-8 pb-16">
-        <div className="rounded-3xl bg-gradient-to-br from-emerald-600 via-emerald-700 to-violet-700 p-8 md:p-10 text-white shadow-xl shadow-emerald-200/50">
-          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+      <section className={`${pagePad} pb-12 md:pb-16`}>
+        <div className="rounded-lg bg-[#109D4C] p-8 text-white md:p-10">
+          <div className="flex flex-col items-start justify-between gap-6 md:flex-row md:items-center">
             <div>
-              <h3 className="text-2xl md:text-3xl font-bold">Still need a hand?</h3>
-              <p className="mt-2 text-emerald-50 max-w-xl">
+              <h3 className="text-2xl font-bold md:text-3xl">Still need a hand?</h3>
+              <p className="mt-2 max-w-xl text-white/90">
                 Our support team reads every message. Median first-response time is under 4 hours.
               </p>
             </div>
-            <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+            <div className="flex w-full flex-col gap-3 sm:flex-row md:w-auto">
               <Link
                 href="/support"
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-white text-emerald-700 px-5 py-3 font-bold hover:bg-emerald-50"
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-white px-5 py-3 font-bold text-[#0d7a3d] hover:bg-[#f3faf6]"
               >
                 <MessageCircle size={18} /> Submit a ticket
               </Link>
               <Link
-                href="/contact-us"
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-white/15 backdrop-blur border border-white/30 px-5 py-3 font-semibold hover:bg-white/25"
+                href="/support?type=reach"
+                className="inline-flex items-center justify-center gap-2 rounded-md border border-white/30 bg-white/15 px-5 py-3 font-semibold hover:bg-white/25"
               >
                 Reach us <ArrowRight size={16} />
               </Link>

@@ -22,7 +22,8 @@ export async function ensureStorePublicSlug(
 
   const approval = String(row.approval_status ?? '').toUpperCase()
   const status = String(row.status ?? '').toUpperCase()
-  if (approval !== 'APPROVED' || status !== 'ACTIVE' || row.is_active === false) return null
+  // is_active is live online/offline — closed ACTIVE+APPROVED stores still get a public slug.
+  if (approval !== 'APPROVED' || status !== 'ACTIVE') return null
   if (row.deleted_at) return null
 
   const db = getDb()

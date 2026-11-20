@@ -214,10 +214,11 @@ async function fetchNearbyViaBbox(
   radiusKm: number
 ): Promise<WebRestaurantRow[]> {
   const delta = BBOX_DEGREE_APPROX * (radiusKm / 10)
+  // Do not filter is_active — schedule engine flips it for OPEN/CLOSED.
+  // Match get_nearby_merchant_stores: list ACTIVE+APPROVED incl. closed (UI shows Closed).
   const { data, error } = await getDb()
     .from('merchant_stores')
     .select(STORE_SELECT)
-    .eq('is_active', true)
     .eq('status', 'ACTIVE')
     .eq('approval_status', 'APPROVED')
     .not('latitude', 'is', null)
@@ -245,10 +246,11 @@ async function fetchNearbyViaBbox(
 }
 
 export async function fetchPanIndiaStores(): Promise<WebRestaurantRow[]> {
+  // Do not filter is_active — that flag tracks live online/offline, not listing eligibility.
+  // Closed stores stay visible (same as customer-app nearby RPC).
   const { data, error } = await getDb()
     .from('merchant_stores')
     .select(STORE_SELECT)
-    .eq('is_active', true)
     .eq('status', 'ACTIVE')
     .eq('approval_status', 'APPROVED')
     .order('store_name', { ascending: true })

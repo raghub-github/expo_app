@@ -14,6 +14,7 @@ import {
   openRazorpayCheckout,
   isNativeRazorpayAvailable,
   extractRazorpayError,
+  formatRazorpayUserMessage,
   isRazorpayUserCancel,
   startServerConfirmPoll,
 } from "@/src/lib/razorpay-native";
@@ -201,10 +202,12 @@ export function NegativeWalletPayCard() {
           // Server already cleared the dues (webhook) — ignore a late SDK error.
           if (duesConfirmed) return;
           if (!isRazorpayUserCancel(rzpErr)) {
-            const { description, code } = extractRazorpayError(rzpErr);
             Alert.alert(
               t("common.error", "Error"),
-              description || code || t("subscription.payFailed", "Payment failed")
+              formatRazorpayUserMessage(
+                rzpErr,
+                t("subscription.payFailed", "Payment failed")
+              )
             );
           }
         }
@@ -293,10 +296,12 @@ export function NegativeWalletPayCard() {
           })
           .catch(() => undefined);
         if (!isRazorpayUserCancel(rzpErr)) {
-          const { description, code } = extractRazorpayError(rzpErr);
           Alert.alert(
             t("common.error", "Error"),
-            description || code || t("home.penaltyPayFailedMessage", "Could not start payment.")
+            formatRazorpayUserMessage(
+              rzpErr,
+              t("home.penaltyPayFailedMessage", "Could not start payment.")
+            )
           );
         }
       }

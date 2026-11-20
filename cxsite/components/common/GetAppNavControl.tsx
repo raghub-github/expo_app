@@ -1,6 +1,6 @@
 'use client'
 
-import { AndroidRobotIcon, AppleStoreIcon } from '@/components/common/StoreBrandIcons'
+import { AppleStoreIcon, GooglePlayIcon } from '@/components/common/StoreBrandIcons'
 
 type Tone = 'nav' | 'landing' | 'drawer'
 
@@ -10,36 +10,40 @@ const TONE: Record<
     wrap: string
     label: string
     iconBtn: string
-    icon: string
+    playIcon: string
+    appleIcon: string
   }
 > = {
   landing: {
-    wrap: 'inline-flex items-center gap-2 text-[11px] font-medium leading-tight tracking-tight text-black sm:text-[12px] lg:text-[13px] xl:text-[14px]',
+    wrap: 'inline-flex h-9 shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full bg-white/70 px-2 text-[13px] font-bold text-neutral-900 shadow-none transition hover:bg-white',
     label:
-      'rounded-sm py-0.5 transition-colors hover:text-[#109D4C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C]/35',
+      'font-lora hidden whitespace-nowrap px-1 font-bold text-neutral-800 transition-colors hover:text-[#0d8a42] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C]/35 xl:inline',
     iconBtn:
-      'inline-flex items-center justify-center rounded-sm p-0.5 transition-colors hover:text-[#109D4C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C]/35',
-    icon: 'h-5 w-5 sm:h-6 sm:w-6',
+      'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-black/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C]/35',
+    playIcon: 'h-4 w-4',
+    appleIcon: 'h-4 w-4 text-neutral-900',
   },
   nav: {
-    wrap: 'inline-flex items-center gap-2 px-3 py-2 text-[14px] font-medium text-text',
+    wrap: 'inline-flex h-9 shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full bg-white/70 px-2 text-[13px] font-bold text-neutral-900 shadow-none transition hover:bg-white',
     label:
-      'rounded-md px-0.5 py-0.5 transition-colors hover:text-purple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple/30',
+      'font-lora hidden whitespace-nowrap px-1 font-bold text-neutral-800 transition-colors hover:text-[#0d8a42] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C]/35 xl:inline',
     iconBtn:
-      'inline-flex items-center justify-center rounded-md p-1 transition-colors hover:bg-[rgba(75,42,212,0.08)] hover:text-purple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple/30',
-    icon: 'h-5 w-5',
+      'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-black/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C]/35',
+    playIcon: 'h-4 w-4',
+    appleIcon: 'h-4 w-4 text-neutral-900',
   },
   drawer: {
-    wrap: 'flex w-full items-center gap-2 px-5 py-3 text-[15px] font-medium text-gray-700',
+    wrap: 'font-lora flex w-full items-center gap-2 px-5 py-3 text-[15px] font-bold text-neutral-800',
     label:
-      'rounded-md py-0.5 transition-colors hover:text-purple focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple/30',
+      'rounded-md py-0.5 transition-colors hover:text-[#0d8a42] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C]/35',
     iconBtn:
-      'inline-flex items-center justify-center rounded-md p-1.5 text-purple transition-colors hover:bg-[rgba(75,42,212,0.08)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple/30',
-    icon: 'h-5 w-5',
+      'inline-flex items-center justify-center rounded-md p-1.5 transition-colors hover:bg-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C]/35',
+    playIcon: 'h-5 w-5',
+    appleIcon: 'h-5 w-5 text-neutral-900',
   },
 }
 
-/** Reference-style “Get app:” + separate Android / Apple hit targets (all open download modal). */
+/** Compact “Get app” control with Google Play + App Store marks. */
 export default function GetAppNavControl({
   onOpen,
   tone = 'nav',
@@ -52,25 +56,25 @@ export default function GetAppNavControl({
   return (
     <div className={t.wrap} role="group" aria-label="Get app">
       <button type="button" onClick={onOpen} className={t.label}>
-        Get app:
+        Get app
       </button>
       <button
         type="button"
         onClick={onOpen}
         className={t.iconBtn}
-        aria-label="Get Android app"
-        title="Android"
+        aria-label="Get Android app on Google Play"
+        title="Google Play"
       >
-        <AndroidRobotIcon className={t.icon} />
+        <GooglePlayIcon className={t.playIcon} />
       </button>
       <button
         type="button"
         onClick={onOpen}
         className={t.iconBtn}
-        aria-label="Get iOS app"
-        title="iOS"
+        aria-label="Get iOS app on the App Store"
+        title="App Store"
       >
-        <AppleStoreIcon className={t.icon} />
+        <AppleStoreIcon className={t.appleIcon} />
       </button>
     </div>
   )

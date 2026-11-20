@@ -377,7 +377,7 @@ export async function getRiderAccountRestrictions(
     blacklist.allServicesBlacklisted;
 
   if (blockedStatus) {
-    accountRestrictedReason = "all_services_blacklist";
+    accountRestrictedReason = "blocked_status";
     blacklistBlockedServices = ["food", "parcel", "person_ride"];
     allServicesBlacklisted = true;
   } else if (globalWalletBlock || hasGlobalEmergencyBlock) {

@@ -19,7 +19,12 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   const marketing = [
     "/",
+    "/about",
     "/about-us",
+    "/team",
+    "/team/bhim-pratap",
+    "/team/bhishm-pratap",
+    "/team/raghu-bhunia",
     "/careers",
     "/corporates",
     "/order",
@@ -36,36 +41,66 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   const staticPaths = Array.from(new Set([...marketing, ...utility, ...legal]));
 
-  const staticEntries: MetadataRoute.Sitemap = staticPaths.map((path) => ({
-    url: `${BASE}${path}`,
-    lastModified,
-    changeFrequency: legal.includes(path) ? "yearly" : "weekly",
-    priority: path === "/" ? 1.0 : legal.includes(path) ? 0.6 : 0.7,
-  }));
+  const staticEntries: MetadataRoute.Sitemap = staticPaths.map((path) => {
+    const isTeam = path === "/team" || path.startsWith("/team/");
+    const isAbout = path === "/about";
+    return {
+      url: `${BASE}${path}`,
+      lastModified,
+      changeFrequency: legal.includes(path)
+        ? ("yearly" as const)
+        : isTeam || isAbout
+          ? ("monthly" as const)
+          : ("weekly" as const),
+      priority:
+        path === "/"
+          ? 1.0
+          : isTeam || isAbout
+            ? 0.9
+            : legal.includes(path)
+              ? 0.6
+              : 0.7,
+    };
+  });
 
   const db = getSupabaseServiceRole() ?? supabase;
+  // Include closed stores too — is_active is online/offline, not index eligibility.
   const { data: stores } = await db
     .from("merchant_stores")
-    .select("public_slug, updated_at")
+    .select("id, public_slug, updated_at, store_name, store_display_name, city, landmark, approval_status, status, is_active, deleted_at")
     .eq("approval_status", "APPROVED")
     .eq("status", "ACTIVE")
-    .eq("is_active", true)
-    .is("deleted_at", null)
-    .not("public_slug", "is", null);
+    .is("deleted_at", null);
 
-  const restaurantEntries: MetadataRoute.Sitemap = (stores ?? [])
-    .map((row) => {
-      const slug = String((row as { public_slug?: string }).public_slug ?? "").trim();
-      if (!slug) return null;
-      const updated = (row as { updated_at?: string }).updated_at;
-      return {
-        url: `${BASE}${restaurantPublicPath(slug)}`,
-        lastModified: updated ? new Date(updated) : lastModified,
-        changeFrequency: "weekly" as const,
-        priority: 0.8,
-      };
-    })
-    .filter((e): e is NonNullable<typeof e> => e != null);
+  const { ensureStorePublicSlug } = await import("@/lib/server/ensureStorePublicSlug");
+
+  const restaurantEntries: MetadataRoute.Sitemap = [];
+  for (const raw of stores ?? []) {
+    const row = raw as {
+      id: number;
+      public_slug?: string | null;
+      updated_at?: string;
+      deleted_at?: string | null;
+      approval_status?: string | null;
+      status?: string | null;
+      is_active?: boolean | null;
+      store_name?: string | null;
+      store_display_name?: string | null;
+      city?: string | null;
+      landmark?: string | null;
+    };
+    let slug = String(row.public_slug ?? "").trim();
+    if (!slug) {
+      slug = (await ensureStorePublicSlug(row as Parameters<typeof ensureStorePublicSlug>[0])) ?? "";
+    }
+    if (!slug) continue;
+    restaurantEntries.push({
+      url: `${BASE}${restaurantPublicPath(slug)}`,
+      lastModified: row.updated_at ? new Date(row.updated_at) : lastModified,
+      changeFrequency: "daily",
+      priority: 0.85,
+    });
+  }
 
   return [...staticEntries, ...restaurantEntries];
 }

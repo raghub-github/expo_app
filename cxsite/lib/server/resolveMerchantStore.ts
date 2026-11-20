@@ -59,11 +59,12 @@ export async function resolveMerchantStore(
   return null
 }
 
+/** ACTIVE+APPROVED stores are publicly linkable; is_active is online/offline only. */
 export function isStorePubliclyVisible(row: MerchantStoreRow): boolean {
   if (row.deleted_at) return false
   const approval = String(row.approval_status ?? '').toUpperCase()
   const status = String(row.status ?? '').toUpperCase()
-  return approval === 'APPROVED' && status === 'ACTIVE' && row.is_active !== false
+  return approval === 'APPROVED' && status === 'ACTIVE'
 }
 
 export function storeDisplayName(row: MerchantStoreRow): string {

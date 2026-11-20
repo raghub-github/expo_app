@@ -21,7 +21,7 @@ Started with a single idea: every Indian city deserves a reliable, safe, transpa
 | Registered office | [Full registered office address with PIN], India |
 | Corporate office | [Full corporate office address with PIN], India |
 | Email | hello@gatimitra.com |
-| Phone | +91-XX-XXXXXXXX |
+| Phone | +91 79888 52917 |
 | Website | https://gatimitra.com |
 
 ## Our services
