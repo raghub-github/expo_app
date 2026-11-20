@@ -17,10 +17,11 @@ import { walletBlockHistoryReason } from "@/lib/rider-restriction-display";
 import {
   evaluateWalletFloor,
   neutralMinBalanceStatus,
+  resolveWalletBlockState,
   type RiderMinBalanceStatus,
   type WalletFloorStatus,
 } from "@gatimitra/financial-rules";
-import { loadWalletActiveFloor } from "@/lib/rider-negative-wallet-blocks";
+import { loadWalletBlockPolicy } from "@/lib/rider-negative-wallet-blocks";
 import {
   riders,
   withdrawalRequests,
@@ -640,11 +641,29 @@ export async function GET(
     const walletTotalForBlocks = walletRow ? Number(walletRow.totalBalance ?? 0) : 0;
     // THE wallet rule (same evaluator + same policy row as the backend): a rider is
     // active while the balance is ABOVE the Super Admin floor (default −₹200).
+    const walletPolicy = await loadWalletBlockPolicy();
     const walletFloor: WalletFloorStatus = evaluateWalletFloor({
       balance: Number.isFinite(walletTotalForBlocks) ? walletTotalForBlocks : 0,
-      floor: await loadWalletActiveFloor(),
+      floor: walletPolicy.floor,
     });
     const globalWalletBlockForHistory = walletFloor.blocked;
+    // Stored block rows are a cache (the DB trigger and both sync engines write
+    // them); show only what the live balance still enforces — the same filter the
+    // backend applies before dispatch — so the card never shows a lifted block.
+    const liveBlockKeys = new Set(
+      resolveWalletBlockState({
+        balance: walletFloor.balance,
+        floor: walletPolicy.floor,
+        autoUnblockOnZero: walletPolicy.autoUnblockOnZero,
+        storedBlocks: negativeWalletBlockRows.map((b) => ({
+          serviceType: String(b.serviceType),
+          reason: String((b as { reason?: string }).reason ?? "negative_wallet"),
+        })),
+      }).effectiveBlocks.map((b) => `${b.serviceType}|${b.reason}`)
+    );
+    const liveWalletBlockRows = negativeWalletBlockRows.filter((b) =>
+      liveBlockKeys.has(`${String(b.serviceType)}|${String((b as { reason?: string }).reason ?? "negative_wallet")}`)
+    );
 
     const blacklistHistoryList = blacklistRows.slice(0, 30).map((r) => ({
       id: r.id,
@@ -660,7 +679,7 @@ export async function GET(
       restrictionType: "agent_blacklist" as const,
     }));
 
-    const walletRestrictionHistory = negativeWalletBlockRows.map((b, index) => ({
+    const walletRestrictionHistory = liveWalletBlockRows.map((b, index) => ({
       id: -(index + 1),
       serviceType: (b.serviceType as string) || "all",
       banned: true,
@@ -970,7 +989,7 @@ export async function GET(
         blacklistStatusByService,
         blacklistHistory: restrictionHistory,
         restrictionHistory,
-        negativeWalletBlocks: negativeWalletBlockRows.map((b) => ({
+        negativeWalletBlocks: liveWalletBlockRows.map((b) => ({
           serviceType: b.serviceType,
           reason: b.reason,
           blockReason: (b as { reason?: string }).reason === "global_emergency" ? "global" as const : "service" as const,
