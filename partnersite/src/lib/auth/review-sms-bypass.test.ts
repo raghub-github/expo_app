@@ -40,19 +40,21 @@ describe("armed Google review phone — zero MSG91", () => {
     assert.equal(r.suppress, false);
   });
 
+  // A realistic number here: 99999 99999 itself is never SMSed (undeliverable dummy),
+  // so it cannot show the review switch failing closed.
   it("half-configured review mode does not suppress (fail closed for bypass)", () => {
-    const r = shouldSuppressMsg91Sms("9999999999", {
+    const r = shouldSuppressMsg91Sms("9876501234", {
       GOOGLE_REVIEW_MODE: "true",
-      GOOGLE_REVIEW_PHONE: "+919999999999",
+      GOOGLE_REVIEW_PHONE: "+919876501234",
       // missing OTP
     });
     assert.equal(r.suppress, false);
   });
 
   it("review mode disabled → normal OTP behavior", () => {
-    const r = shouldSuppressMsg91Sms("9999999999", {
+    const r = shouldSuppressMsg91Sms("9876501234", {
       GOOGLE_REVIEW_MODE: "false",
-      GOOGLE_REVIEW_PHONE: "+919999999999",
+      GOOGLE_REVIEW_PHONE: "+919876501234",
       GOOGLE_REVIEW_OTP: "123456",
     });
     assert.equal(r.suppress, false);
@@ -71,7 +73,7 @@ describe("merchant + rider review identities", () => {
     };
     assert.equal(shouldSuppressMsg91Sms("7367878981", env).suppress, true);
     assert.equal(shouldSuppressMsg91Sms("9113194305", env).suppress, true);
-    assert.equal(shouldSuppressMsg91Sms("9999999999", env).suppress, false);
+    assert.equal(shouldSuppressMsg91Sms("9876501234", env).suppress, false);
   });
 });
 
@@ -96,4 +98,19 @@ describe("getArmedReviewOtp", () => {
       "123456",
     );
   });
+});
+
+// ---- undeliverable dummy numbers (2026-11-20: MSG91 "Failed" + billed for 99999 99999) ----
+import { isUndeliverableDummyPhone, shouldSuppressMsg91Sms as suppressForDummy } from "./review-sms-bypass";
+
+it("send-sms hook never bills MSG91 for 99999 99999 and other dummy numbers", () => {
+  for (const p of ["+919999999999", "919999999999", "9999999999", "+910000000000", "1234567890"]) {
+    assert.equal(isUndeliverableDummyPhone(p), true, p);
+    const d = suppressForDummy(p, {});
+    assert.equal(d.suppress, true, p);
+    assert.equal(d.suppress && d.reason, "undeliverable");
+  }
+  for (const p of ["+919113194305", "+916504992804"]) {
+    assert.equal(suppressForDummy(p, {}).suppress, false, p);
+  }
 });

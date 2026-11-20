@@ -39,6 +39,14 @@ export function canonicalSubscriberDigits(phone: string | null | undefined): str
   return null;
 }
 
+/** A number no operator issues: one repeated digit, or 1234567890. Mirrors the backend. */
+export function isUndeliverableDummyPhone(phone: string | null | undefined): boolean {
+  const d = canonicalSubscriberDigits(phone);
+  if (!d) return false;
+  if (/^(\d)\1{9}$/.test(d)) return true;
+  return d === "1234567890" || d === "0123456789";
+}
+
 export function maskReviewPhone(phone: string | null | undefined): string {
   const c = canonicalSubscriberDigits(phone);
   if (!c) return "****";
@@ -114,13 +122,20 @@ export function matchArmedReviewSurface(
 export function shouldSuppressMsg91Sms(
   phone: string,
   env: Env = process.env,
-): { suppress: true; reason: "review_bypass" | "sms_blocked"; surface?: string } | { suppress: false } {
+):
+  | { suppress: true; reason: "review_bypass" | "sms_blocked" | "undeliverable"; surface?: string }
+  | { suppress: false } {
   if (isArmedReviewPhone(phone, env)) {
     return {
       suppress: true,
       reason: "review_bypass",
       surface: matchArmedReviewSurface(phone, env) ?? undefined,
     };
+  }
+  // Numbers no operator issues (99999 99999 — the Play Console dummy — etc.):
+  // MSG91 rejects them but still bills every attempt.
+  if (isUndeliverableDummyPhone(phone)) {
+    return { suppress: true, reason: "undeliverable" };
   }
   const k = phoneKey(phone) || canonicalSubscriberDigits(phone) || "";
   if (k) {

@@ -74,10 +74,20 @@ export function shouldSuppressMsg91Sms(
  * Cxsite customer `/api/auth/otp` — only Google Play review phone gets fixed OTP.
  * Merchant/rider review numbers still receive real MSG91 SMS on the website.
  */
+/** A number no operator issues: one repeated digit, or 1234567890. Mirrors the backend. */
+export function isUndeliverableDummyPhone(phone: string | null | undefined): boolean {
+  const d = canonicalSubscriberDigits(phone)
+  if (!d) return false
+  if (/^(\d)\1{9}$/.test(d)) return true
+  return d === '1234567890' || d === '0123456789'
+}
+
 export function shouldSuppressCxCustomerOtp(
   phone: string,
   env: Env = process.env
-): { suppress: true; reason: 'review_bypass' | 'sms_blocked'; otp?: string } | { suppress: false } {
+):
+  | { suppress: true; reason: 'review_bypass' | 'sms_blocked' | 'undeliverable'; otp?: string }
+  | { suppress: false } {
   const key = canonicalSubscriberDigits(phone)
   if (!key) return { suppress: false }
 
@@ -88,6 +98,9 @@ export function shouldSuppressCxCustomerOtp(
       return { suppress: true, reason: 'review_bypass', otp: reviewOtp }
     }
   }
+
+  // 99999 99999 etc.: MSG91 rejects them but still bills each attempt.
+  if (isUndeliverableDummyPhone(key)) return { suppress: true, reason: 'undeliverable' }
 
   for (const part of String(env.SMS_BLOCKED_PHONES ?? '').split(',')) {
     const bk = canonicalSubscriberDigits(part)

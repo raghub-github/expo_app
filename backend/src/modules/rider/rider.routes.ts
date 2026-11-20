@@ -1110,6 +1110,8 @@ export async function riderRoutes(app: FastifyInstance) {
     minWithdrawal: z.number().optional(),
     /** Max amount per withdrawal request. */
     maxWithdrawal: z.number().optional(),
+    /** Kept in the wallet by withdrawals (Ride/Parcel minimum balance, enforce mode). */
+    withdrawReserve: z.number().optional(),
     canWithdraw: z.boolean().optional(),
     isFrozen: z.boolean().optional(),
     freezeReason: z.string().nullable().optional(),
@@ -1233,14 +1235,16 @@ export async function riderRoutes(app: FastifyInstance) {
         parcel: wallet ? Number(wallet.earningsParcel ?? 0) : 0,
         ride: wallet ? Number(wallet.earningsPersonRide ?? 0) : 0,
       });
-      const { getRiderWithdrawableBalance, getRiderWithdrawalLimits } = await import(
-        "../../lib/rider-withdrawal.service.js"
-      );
-      const [withdrawable, breakdownDetail, limits] = await Promise.all([
-        getRiderWithdrawableBalance(riderId),
+      const { getRiderWithdrawReserve, getRiderWithdrawalLimits, withdrawableFromBalance } =
+        await import("../../lib/rider-withdrawal.service.js");
+      const [withdrawReserve, breakdownDetail, limits] = await Promise.all([
+        getRiderWithdrawReserve(),
         getRiderWalletBreakdown(riderId),
         getRiderWithdrawalLimits(),
       ]);
+      // Same rule the withdrawal request enforces: the balance is already net of
+      // pending payouts; only the minimum-balance reserve is held back.
+      const withdrawable = withdrawableFromBalance(total, withdrawReserve);
       const isFrozen = Boolean(wallet?.isFrozen);
       let freezeReason = isFrozen
         ? (typeof wallet?.freezeReason === "string" && wallet.freezeReason.trim()
@@ -1274,6 +1278,7 @@ export async function riderRoutes(app: FastifyInstance) {
         hasBankAccount,
         minWithdrawal: limits.minAmount,
         maxWithdrawal: limits.maxAmount,
+        withdrawReserve,
         canWithdraw:
           withdrawable >= limits.minAmount &&
           !isFrozen &&

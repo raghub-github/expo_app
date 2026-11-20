@@ -16,6 +16,7 @@ import {
 import { walletBlockHistoryReason } from "@/lib/rider-restriction-display";
 import {
   evaluateMinWalletBalance,
+  minBalanceWithdrawReserve,
   normalizeMinBalanceMode,
   type RiderMinBalanceStatus,
 } from "@gatimitra/financial-rules";
@@ -1014,7 +1015,12 @@ export async function GET(
           const globalWalletBlock = total <= -200;
           // Never show negative withdrawable — cash-out is 0 when wallet is in debt.
           const rawWithdrawable = toNum((walletRow as { withdrawable?: unknown }).withdrawable ?? walletRow.totalBalance);
-          const withdrawable = Math.max(0, Math.min(rawWithdrawable, total));
+          // Same rule as the rider app / withdrawal API: the Ride+Parcel minimum stays
+          // in the wallet while that rule is in enforce mode.
+          const withdrawReserve = walletMinBalance
+            ? minBalanceWithdrawReserve({ threshold: walletMinBalance.threshold, mode: walletMinBalance.mode })
+            : 0;
+          const withdrawable = Math.max(0, Math.min(rawWithdrawable, total) - withdrawReserve);
           const locked = toNum((walletRow as { locked?: unknown }).locked ?? 0);
           const security = toNum((walletRow as { securityBalance?: unknown }).securityBalance ?? 0);
           const isFrozen = Boolean((walletRow as { isFrozen?: boolean }).isFrozen);

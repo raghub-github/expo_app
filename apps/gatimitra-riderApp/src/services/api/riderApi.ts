@@ -426,6 +426,8 @@ const EarningsSummarySchema = z.object({
   hasBankAccount: z.boolean(),
   minWithdrawal: z.number().optional(),
   maxWithdrawal: z.number().optional(),
+  /** Kept in the wallet by withdrawals (Ride/Parcel minimum balance). */
+  withdrawReserve: z.number().optional(),
   canWithdraw: z.boolean().optional(),
   isFrozen: z.boolean().optional(),
   freezeReason: z.string().nullable().optional(),
