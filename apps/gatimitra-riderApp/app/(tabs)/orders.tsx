@@ -306,7 +306,14 @@ export default function OrdersScreen() {
       });
     }
 
-    if (showServiceRestrictedBanner) {
+    // Minimum-balance pause is not an account restriction a rider should take to
+    // Support: Food keeps working and the fix is a recharge. When it is the ONLY
+    // cause and the amber "Recharge" slide below is showing, skip the red
+    // "Account Restricted / Support" slide (it duplicated the same cause).
+    const minBalanceSlideCoversRestriction =
+      minBalanceIsOnlyRestriction && walletMinBalance?.belowMinimum === true && !showPenaltyBanner;
+
+    if (showServiceRestrictedBanner && !minBalanceSlideCoversRestriction) {
       slides.push({
         id: "account_restricted",
         type: "account_restricted",

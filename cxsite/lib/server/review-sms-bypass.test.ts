@@ -3,7 +3,11 @@
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { shouldSuppressMsg91Sms } from './review-sms-bypass'
+import {
+  isUndeliverableDummyPhone,
+  shouldSuppressCxCustomerOtp,
+  shouldSuppressMsg91Sms,
+} from './review-sms-bypass'
 
 describe('cxsite review SMS bypass', () => {
   it('review phone → suppress MSG91 and expose fixed OTP', () => {
@@ -27,4 +31,17 @@ describe('cxsite review SMS bypass', () => {
       false
     )
   })
+})
+
+it("website OTP never bills MSG91 for 99999 99999 and other dummy numbers", () => {
+  for (const p of ["+919999999999", "9999999999", "+910000000000", "1234567890"]) {
+    assert.equal(isUndeliverableDummyPhone(p), true, p)
+    const r = shouldSuppressCxCustomerOtp(p, {})
+    assert.equal(r.suppress, true, p)
+    assert.equal(r.suppress && r.reason, "undeliverable")
+  }
+  for (const p of ["+919113194305", "+916504992804", "9876543210"]) {
+    assert.equal(isUndeliverableDummyPhone(p), false, p)
+    assert.equal(shouldSuppressCxCustomerOtp(p, {}).suppress, false, p)
+  }
 })

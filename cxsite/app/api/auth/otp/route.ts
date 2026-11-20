@@ -69,6 +69,12 @@ export async function POST(req: NextRequest) {
         msg91: false,
       })
     }
+    if (suppressCheck.suppress && suppressCheck.reason === 'undeliverable') {
+      return NextResponse.json(
+        { channel: 'blocked', error: 'Enter a valid 10-digit mobile number.' },
+        { status: 400 }
+      )
+    }
     if (suppressCheck.suppress) {
       return NextResponse.json(
         { channel: 'blocked', error: 'OTP SMS is blocked for this number.' },

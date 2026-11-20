@@ -229,6 +229,27 @@ export declare function evaluateMinWalletBalance(input: {
     mode: MinBalanceMode;
 }): RiderMinBalanceStatus;
 /**
+ * Amount a withdrawal must leave in the wallet. In enforce mode the minimum is a
+ * float the platform relies on for Ride/Parcel cash jobs; letting a rider withdraw
+ * it just restricts them a moment later (GMR1001 withdrew ₹2,271 — the whole
+ * wallet — and was immediately paused for Ride + Parcel). Warn/off reserve nothing.
+ */
+export declare function minBalanceWithdrawReserve(input: {
+    threshold: number;
+    mode: MinBalanceMode;
+}): number;
+/**
+ * True when the ONLY thing restricting a rider is the minimum-balance rule — the
+ * rider app then shows "Recharge" instead of a red "Account Restricted / Support",
+ * and withdrawals explain the reserve instead of "Account is restricted".
+ */
+export declare function isOnlyMinBalanceRestriction(input: {
+    blockedServices: readonly string[];
+    minBalance: Pick<RiderMinBalanceStatus, "restricted" | "restrictedServices"> | null | undefined;
+    blockedStatus?: boolean;
+    globalWalletBlock?: boolean;
+}): boolean;
+/**
  * What a rider must pay to clear their wallet: the negative balance, or — while
  * the minimum-balance policy is active — the shortfall up to the minimum.
  */

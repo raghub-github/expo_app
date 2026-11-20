@@ -16,6 +16,7 @@ import {
 import { getEnv } from "../../config/env.js";
 import { deliverSupabaseOtpViaMsg91 } from "../../services/otp/msg91DeliverSupabaseOtp.js";
 import { checkAndRecordOtpSend } from "./otpSendGuard.js";
+import { isAutomatedTestClientIp, isUndeliverableDummyPhone, otpClientIp } from "./otpAutomatedClient.js";
 import {
   fingerprintIp,
   logOtpAudit,
@@ -1015,6 +1016,43 @@ export async function authRoutes(app: FastifyInstance) {
           ok: true,
           appType: typeof appType === "string" ? appType : undefined,
         });
+        return {
+          requestId,
+          expiresInSec,
+          smsSent: true,
+        };
+      }
+
+      // Numbers no operator issues (99999 99999, 12345 67890, …). MSG91 rejects them
+      // but still bills each attempt; a 4xx is final in every app (no Supabase fallback).
+      if (isUndeliverableDummyPhone(phoneE164)) {
+        req.log?.warn?.({ phoneTail, appType }, "[OTP] undeliverable dummy number — SMS NOT sent");
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (reply as any).code(400).send({
+          error: "invalid_phone",
+          message: "Enter a valid 10-digit mobile number.",
+        });
+      }
+
+      // Google Play automated testers (pre-launch report / review robots) retry logins
+      // with the Play Console numbers for hours and cannot read an SMS. Answer exactly
+      // like a backend-delivered OTP (requestId, no useSupabase → the app stays on the
+      // backend verify path and never calls Supabase), but send nothing. The stored
+      // code is random and never delivered, so verify simply fails for the robot.
+      const otpClient = otpClientIp(req.headers as Record<string, string | string[] | undefined>, req.ip);
+      if (isAutomatedTestClientIp(otpClient)) {
+        otpStore.set(requestId, {
+          phoneE164,
+          otp: Math.floor(100000 + Math.random() * 900000).toString(),
+          expiresAtMs: Date.now() + expiresInSec * 1000,
+          attempts: 0,
+          isReview: false,
+          appType: typeof appType === "string" ? appType : undefined,
+        });
+        req.log?.warn?.(
+          { phoneTail, appType, requestId, clientIp: otpClient },
+          "[OTP] automated test client (Google Play) — SMS suppressed",
+        );
         return {
           requestId,
           expiresInSec,

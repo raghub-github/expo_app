@@ -346,7 +346,10 @@ export function evaluateMinWalletBalance(input) {
     const restricted = belowMinimum && mode === "enforce";
     let message = null;
     if (restricted) {
-        message = `Your available wallet balance is below ${minBalRupees(threshold)}. Recharge your wallet to continue receiving new assignments.`;
+        // Name exactly what is paused and what still works. "Recharge to continue
+        // receiving new assignments" read as a full account block to a rider who was
+        // on Food duty and still getting Food orders.
+        message = `Ride and Parcel orders are paused: your wallet balance ${minBalRupees(balance)} is below the ${minBalRupees(threshold)} minimum. Recharge ${minBalRupees(shortfall)} to resume. Food orders continue as usual.`;
     }
     else if (belowMinimum) {
         message = `Your available wallet balance is below ${minBalRupees(threshold)}. Recharge ${minBalRupees(shortfall)} to keep receiving Ride and Parcel assignments without interruption.`;
@@ -361,6 +364,31 @@ export function evaluateMinWalletBalance(input) {
         restrictedServices: restricted ? [...MIN_BALANCE_RESTRICTED_SERVICES] : [],
         message,
     };
+}
+/**
+ * Amount a withdrawal must leave in the wallet. In enforce mode the minimum is a
+ * float the platform relies on for Ride/Parcel cash jobs; letting a rider withdraw
+ * it just restricts them a moment later (GMR1001 withdrew ₹2,271 — the whole
+ * wallet — and was immediately paused for Ride + Parcel). Warn/off reserve nothing.
+ */
+export function minBalanceWithdrawReserve(input) {
+    if (input.mode !== "enforce")
+        return 0;
+    const threshold = Number.isFinite(input.threshold) ? input.threshold : 0;
+    return minBalRound2(Math.max(0, threshold));
+}
+/**
+ * True when the ONLY thing restricting a rider is the minimum-balance rule — the
+ * rider app then shows "Recharge" instead of a red "Account Restricted / Support",
+ * and withdrawals explain the reserve instead of "Account is restricted".
+ */
+export function isOnlyMinBalanceRestriction(input) {
+    if (input.blockedStatus || input.globalWalletBlock)
+        return false;
+    if (!input.minBalance?.restricted)
+        return false;
+    const minSet = new Set(input.minBalance.restrictedServices);
+    return input.blockedServices.every((s) => minSet.has(s === "ride" ? "person_ride" : s));
 }
 /**
  * What a rider must pay to clear their wallet: the negative balance, or — while

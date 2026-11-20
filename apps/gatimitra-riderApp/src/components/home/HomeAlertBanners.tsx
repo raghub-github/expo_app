@@ -322,12 +322,17 @@ export function WalletMinBalanceBanner({
             ? t("home.walletMinBalanceRestrictedTitle", "Recharge to get Ride & Parcel orders")
             : t("home.walletMinBalanceTitle", "Low wallet balance")}
         </Text>
-        <Text style={styles.penaltySub} numberOfLines={2}>
+        <Text style={styles.penaltySub} numberOfLines={3}>
           {message ??
-            t(
-              "home.walletMinBalanceSub",
-              "Your available wallet balance is below the minimum. Recharge your wallet to continue receiving new assignments."
-            )}
+            (restricted
+              ? t(
+                  "home.walletMinBalanceRestrictedSub",
+                  "Ride and Parcel orders are paused until your wallet is back to the minimum balance. Food orders continue as usual."
+                )
+              : t(
+                  "home.walletMinBalanceSub",
+                  "Your wallet balance is below the minimum. Recharge to keep receiving Ride and Parcel orders."
+                ))}
         </Text>
       </View>
       <View style={styles.ctaCol}>

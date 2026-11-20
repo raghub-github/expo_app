@@ -29,7 +29,7 @@ for (const [balance, below, shortfall] of CASES) {
     if (below) {
       assert.equal(
         s.message,
-        "Your available wallet balance is below ₹200. Recharge your wallet to continue receiving new assignments."
+        `Ride and Parcel orders are paused: your wallet balance ₹${balance} is below the ₹200 minimum. Recharge ₹${shortfall} to resume. Food orders continue as usual.`
       );
     } else {
       assert.equal(s.message, null);
@@ -79,7 +79,7 @@ test("a cash-ride debit that crosses the minimum restricts; a recharge back to i
 test("paise-level balances keep an exact shortfall", () => {
   const s = evaluateMinWalletBalance({ balance: 199.99, threshold: T, mode: "enforce" });
   assert.equal(s.shortfall, 0.01);
-  assert.match(s.message ?? "", /below ₹200\./);
+  assert.match(s.message ?? "", /balance ₹199\.99 is below the ₹200 minimum\. Recharge ₹0\.01 to resume\./);
 });
 
 test("recharge due covers the larger of the negative balance and the shortfall", () => {
@@ -95,4 +95,46 @@ test("unknown modes fail safe to off", () => {
   assert.equal(normalizeMinBalanceMode("warn"), "warn");
   assert.equal(normalizeMinBalanceMode("block"), "off");
   assert.equal(normalizeMinBalanceMode(null), "off");
+});
+
+// ---- withdrawal reserve + "is the minimum the only cause" (GMR1001, 2026-11-20) ----
+import { isOnlyMinBalanceRestriction, minBalanceWithdrawReserve } from "@gatimitra/financial-rules";
+
+test("enforce mode reserves the minimum from withdrawals; warn/off reserve nothing", () => {
+  assert.equal(minBalanceWithdrawReserve({ threshold: 200, mode: "enforce" }), 200);
+  assert.equal(minBalanceWithdrawReserve({ threshold: 200, mode: "warn" }), 0);
+  assert.equal(minBalanceWithdrawReserve({ threshold: 200, mode: "off" }), 0);
+  assert.equal(minBalanceWithdrawReserve({ threshold: -5, mode: "enforce" }), 0);
+});
+
+test("a ₹0 wallet paused only by the minimum is recognised as min-balance-only", () => {
+  const minBalance = evaluateMinWalletBalance({ balance: 0, threshold: T, mode: "enforce" });
+  assert.equal(
+    isOnlyMinBalanceRestriction({ blockedServices: ["parcel", "person_ride"], minBalance }),
+    true
+  );
+  // A manual Food blacklist on top is a real restriction → Support banner stays.
+  assert.equal(
+    isOnlyMinBalanceRestriction({ blockedServices: ["food", "parcel", "person_ride"], minBalance }),
+    false
+  );
+  // Account-level block / global wallet block are never "just the minimum".
+  assert.equal(
+    isOnlyMinBalanceRestriction({ blockedServices: ["parcel"], minBalance, blockedStatus: true }),
+    false
+  );
+  assert.equal(
+    isOnlyMinBalanceRestriction({ blockedServices: ["parcel"], minBalance, globalWalletBlock: true }),
+    false
+  );
+  // Not restricted by the minimum at all.
+  const ok = evaluateMinWalletBalance({ balance: 500, threshold: T, mode: "enforce" });
+  assert.equal(isOnlyMinBalanceRestriction({ blockedServices: [], minBalance: ok }), false);
+});
+
+test("the restricted message names what is paused and that Food continues", () => {
+  const s = evaluateMinWalletBalance({ balance: 0, threshold: T, mode: "enforce" });
+  assert.match(String(s.message), /Ride and Parcel orders are paused/);
+  assert.match(String(s.message), /Food orders continue/);
+  assert.doesNotMatch(String(s.message), /continue receiving new assignments/);
 });

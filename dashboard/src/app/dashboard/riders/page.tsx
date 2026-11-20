@@ -1150,7 +1150,29 @@ export default function RidersPage() {
             <div className="px-4 py-2.5">
               <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5 text-sm">
                   <InfoInline label="City" value={rider.city || "—"} />
-                  <InfoInline label="Status" value={(riderSummary?.rider?.status ?? rider.status) === "BLOCKED" ? <span className="font-medium text-red-600">BLOCKED</span> : (riderSummary?.rider?.status ?? rider.status)} />
+                  <InfoInline
+                    label="Status"
+                    value={
+                      <>
+                        {(riderSummary?.rider?.status ?? rider.status) === "BLOCKED" ? (
+                          <span className="font-medium text-red-600">BLOCKED</span>
+                        ) : (
+                          riderSummary?.rider?.status ?? rider.status
+                        )}
+                        {/* The minimum-balance rule pauses Ride + Parcel with no blacklist row,
+                            so "ACTIVE" alone read as "not blocked" while the app showed a
+                            restriction. Surface it next to the status. */}
+                        {riderSummary?.walletMinBalance?.restricted ? (
+                          <span
+                            className="ml-2 inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800"
+                            title={`Wallet ₹${riderSummary.walletMinBalance.balance} is below the ₹${riderSummary.walletMinBalance.threshold} minimum (enforce). Food is unaffected.`}
+                          >
+                            Ride &amp; Parcel paused · wallet below ₹{riderSummary.walletMinBalance.threshold}
+                          </span>
+                        ) : null}
+                      </>
+                    }
+                  />
                   <InfoInline
                     label="KYC"
                     value={
