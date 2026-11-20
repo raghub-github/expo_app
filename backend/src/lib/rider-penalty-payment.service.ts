@@ -10,8 +10,7 @@ import {
 } from "../db/schema.js";
 import { applyFifoAllocation } from "./rider-negative-wallet-blocks.js";
 import { syncRiderDutyWithRestrictions } from "./rider-account-restrictions.js";
-import { riderWalletRechargeDue } from "./rider-wallet-min-balance.js";
-import { loadRideWalletPolicy } from "../modules/rides/settlement/rideSettlement.repository.js";
+import { evaluateWalletFloor } from "./rider-wallet-min-balance.js";
 import { getEnv } from "../config/env.js";
 import { logPaymentEvent } from "../modules/orders/order.placement.service.js";
 import {
@@ -57,22 +56,14 @@ async function ensureWalletRow(riderId: number): Promise<void> {
 }
 
 /**
- * Payable = the entire current negative balance (→ wallet becomes exactly ₹0),
- * or — while the minimum-balance policy is on — the shortfall up to the minimum
- * (₹200 by default). Returns 0 when nothing is due. The rider cannot edit it.
+ * Payable = the entire current negative balance (→ wallet becomes exactly ₹0).
+ * Returns 0 when the wallet is not negative. The rider cannot edit it. (A positive
+ * "minimum balance" top-up no longer exists — the wallet only has to stay above
+ * the −₹200 floor; clearing the negative always satisfies that.)
  */
 async function getPayableNegativeRupees(riderId: number): Promise<number> {
   const balance = await readWalletBalance(riderId);
-  let threshold = 0;
-  let mode: "off" | "warn" | "enforce" = "off";
-  try {
-    const policy = await loadRideWalletPolicy();
-    threshold = policy.minWalletBalance;
-    mode = policy.minBalanceMode;
-  } catch {
-    // Policy unreadable: fall back to clearing the negative balance only.
-  }
-  return riderWalletRechargeDue({ balance, threshold, mode });
+  return evaluateWalletFloor({ balance, floor: undefined }).clearDuesAmount;
 }
 
 /** Latest snapshot of the rider's active negative-wallet (penalty) service blocks. */

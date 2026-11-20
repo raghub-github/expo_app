@@ -66,10 +66,12 @@ export function resolveRiderServiceRestriction(input: {
       .join(", ")})`;
   }
 
+  // A global wallet block lifts as soon as the balance is back ABOVE the floor
+  // (−₹200 by default) — not at ₹0. Per-service blocks follow the penalty limit.
   const unlockHint = isBlockedByWalletOnly
     ? input.globalWalletBlock
-      ? "Unlocks when balance ≥ 0"
-      : "Unlocks when balance > -50 for this service"
+      ? "Unlocks when the balance is above the wallet floor (−₹200 by default)"
+      : "Unlocks when this service's penalty debt is within the limit"
     : null;
 
   return {
@@ -83,7 +85,7 @@ export function resolveRiderServiceRestriction(input: {
 
 export function walletBlockHistoryReason(block: NegativeWalletBlockRow, globalWalletBlock: boolean): string {
   if (block.reason === "global_emergency" || globalWalletBlock) {
-    return "Wallet balance below -₹200 — all services auto-blocked";
+    return "Wallet balance at or below the wallet floor (−₹200 by default) — all services auto-blocked";
   }
   const service = block.serviceType === "person_ride" ? "Person ride" : block.serviceType;
   return `Negative wallet balance exceeded threshold for ${service}`;

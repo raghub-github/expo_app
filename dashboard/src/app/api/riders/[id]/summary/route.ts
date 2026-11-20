@@ -15,11 +15,13 @@ import {
 } from "@/lib/riders/resolve-penalty-order-display-ids";
 import { walletBlockHistoryReason } from "@/lib/rider-restriction-display";
 import {
-  evaluateMinWalletBalance,
-  minBalanceWithdrawReserve,
-  normalizeMinBalanceMode,
+  evaluateWalletFloor,
+  neutralMinBalanceStatus,
+  resolveWalletBlockState,
   type RiderMinBalanceStatus,
+  type WalletFloorStatus,
 } from "@gatimitra/financial-rules";
+import { loadWalletBlockPolicy } from "@/lib/rider-negative-wallet-blocks";
 import {
   riders,
   withdrawalRequests,
@@ -637,8 +639,31 @@ export async function GET(
 
     // Blacklist/whitelist history (latest first, for UI) + wallet auto-block rows from rider_negative_wallet_blocks
     const walletTotalForBlocks = walletRow ? Number(walletRow.totalBalance ?? 0) : 0;
-    const globalWalletBlockForHistory =
-      Number.isFinite(walletTotalForBlocks) && walletTotalForBlocks <= -200;
+    // THE wallet rule (same evaluator + same policy row as the backend): a rider is
+    // active while the balance is ABOVE the Super Admin floor (default −₹200).
+    const walletPolicy = await loadWalletBlockPolicy();
+    const walletFloor: WalletFloorStatus = evaluateWalletFloor({
+      balance: Number.isFinite(walletTotalForBlocks) ? walletTotalForBlocks : 0,
+      floor: walletPolicy.floor,
+    });
+    const globalWalletBlockForHistory = walletFloor.blocked;
+    // Stored block rows are a cache (the DB trigger and both sync engines write
+    // them); show only what the live balance still enforces — the same filter the
+    // backend applies before dispatch — so the card never shows a lifted block.
+    const liveBlockKeys = new Set(
+      resolveWalletBlockState({
+        balance: walletFloor.balance,
+        floor: walletPolicy.floor,
+        autoUnblockOnZero: walletPolicy.autoUnblockOnZero,
+        storedBlocks: negativeWalletBlockRows.map((b) => ({
+          serviceType: String(b.serviceType),
+          reason: String((b as { reason?: string }).reason ?? "negative_wallet"),
+        })),
+      }).effectiveBlocks.map((b) => `${b.serviceType}|${b.reason}`)
+    );
+    const liveWalletBlockRows = negativeWalletBlockRows.filter((b) =>
+      liveBlockKeys.has(`${String(b.serviceType)}|${String((b as { reason?: string }).reason ?? "negative_wallet")}`)
+    );
 
     const blacklistHistoryList = blacklistRows.slice(0, 30).map((r) => ({
       id: r.id,
@@ -654,7 +679,7 @@ export async function GET(
       restrictionType: "agent_blacklist" as const,
     }));
 
-    const walletRestrictionHistory = negativeWalletBlockRows.map((b, index) => ({
+    const walletRestrictionHistory = liveWalletBlockRows.map((b, index) => ({
       id: -(index + 1),
       serviceType: (b.serviceType as string) || "all",
       banned: true,
@@ -722,30 +747,9 @@ export async function GET(
       }
     }
 
-    // Wallet minimum-balance policy (Ride + Parcel). Same evaluator AND same policy row
-    // as the backend (getRiderAccountRestrictions → loadRideWalletPolicy: newest active
-    // ride_wallet_config; no row / unreadable → off), so the Blacklist Status card shows
-    // exactly what dispatch and the duty toggle enforce. Before this the card said
-    // "Allowed" while enforce mode was blocking Parcel + Person Ride.
-    let walletMinBalance: RiderMinBalanceStatus | null = null;
-    try {
-      const cfgRows = (await getSql()`
-        SELECT min_wallet_balance, min_balance_mode
-        FROM ride_wallet_config
-        WHERE is_active = TRUE
-        ORDER BY id DESC
-        LIMIT 1
-      `) as unknown as { min_wallet_balance: string | number | null; min_balance_mode: string | null }[];
-      const cfg = cfgRows[0];
-      const threshold = Number(cfg?.min_wallet_balance);
-      walletMinBalance = evaluateMinWalletBalance({
-        balance: walletRow ? Number(walletRow.totalBalance ?? 0) : 0,
-        threshold: Number.isFinite(threshold) ? threshold : 200,
-        mode: cfg ? normalizeMinBalanceMode(cfg.min_balance_mode) : "off",
-      });
-    } catch {
-      walletMinBalance = null;
-    }
+    // The positive "minimum wallet balance" (₹200, Ride + Parcel) rule is retired —
+    // the wallet only has to stay above the floor. Neutral status kept for API shape.
+    const walletMinBalance: RiderMinBalanceStatus = neutralMinBalanceStatus(walletTotalForBlocks);
 
     // Cancellation-rate AUTO-BLOCKS (rider_cancellation_service_blocks) — surfaced so the
     // Blacklist Status card and Activity Log can explain WHY a service was auto-blocked.
@@ -985,7 +989,7 @@ export async function GET(
         blacklistStatusByService,
         blacklistHistory: restrictionHistory,
         restrictionHistory,
-        negativeWalletBlocks: negativeWalletBlockRows.map((b) => ({
+        negativeWalletBlocks: liveWalletBlockRows.map((b) => ({
           serviceType: b.serviceType,
           reason: b.reason,
           blockReason: (b as { reason?: string }).reason === "global_emergency" ? "global" as const : "service" as const,
@@ -1012,15 +1016,10 @@ export async function GET(
         wallet: walletRow ? (() => {
           const toNum = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
           const total = toNum(walletRow.totalBalance);
-          const globalWalletBlock = total <= -200;
+          const globalWalletBlock = walletFloor.blocked;
           // Never show negative withdrawable — cash-out is 0 when wallet is in debt.
           const rawWithdrawable = toNum((walletRow as { withdrawable?: unknown }).withdrawable ?? walletRow.totalBalance);
-          // Same rule as the rider app / withdrawal API: the Ride+Parcel minimum stays
-          // in the wallet while that rule is in enforce mode.
-          const withdrawReserve = walletMinBalance
-            ? minBalanceWithdrawReserve({ threshold: walletMinBalance.threshold, mode: walletMinBalance.mode })
-            : 0;
-          const withdrawable = Math.max(0, Math.min(rawWithdrawable, total) - withdrawReserve);
+          const withdrawable = Math.max(0, Math.min(rawWithdrawable, total));
           const locked = toNum((walletRow as { locked?: unknown }).locked ?? 0);
           const security = toNum((walletRow as { securityBalance?: unknown }).securityBalance ?? 0);
           const isFrozen = Boolean((walletRow as { isFrozen?: boolean }).isFrozen);
@@ -1059,6 +1058,7 @@ export async function GET(
         orderMetrics,
         cancellationServiceBlocks,
         walletMinBalance,
+        walletFloor,
         onboardingFees,
         paymentCompleted,
         approvalQueueEligible,

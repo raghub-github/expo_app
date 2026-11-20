@@ -1,140 +1,153 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  evaluateMinWalletBalance,
-  normalizeMinBalanceMode,
-  riderWalletRechargeDue,
+  DEFAULT_WALLET_ACTIVE_FLOOR,
+  evaluateWalletFloor,
+  formatSignedRupees,
+  isWalletAtOrBelowFloor,
+  neutralMinBalanceStatus,
+  normalizeWalletActiveFloor,
+  resolveWalletBlockState,
+  walletUnlockAmount,
 } from "./rider-wallet-min-balance.js";
 
-const T = 200;
+/**
+ * THE wallet rule: a rider is ACTIVE while the wallet balance is ABOVE the floor
+ * (Super Admin "Global block threshold", default −₹200). At or below it, every
+ * service pauses until the balance is back above it. There is no positive minimum.
+ */
+const F = -200;
 
-// Spec wallet matrix: ₹500, ₹220, ₹200, ₹199, ₹180 (+ negative).
-const CASES: Array<[number, boolean, number]> = [
-  [500, false, 0],
-  [220, false, 0],
-  [200, false, 0],
-  [199, true, 1],
-  [180, true, 20],
-  [0, true, 200],
-  [-30, true, 230],
+// Spec matrix: active ⇔ balance > −200.
+const CASES: Array<[number, boolean]> = [
+  [2271, true],
+  [200, true],
+  [199, true],
+  [0, true], // GMR1001 after withdrawing the whole wallet — must stay active
+  [-50, true],
+  [-199, true],
+  [-199.99, true],
+  [-200, false],
+  [-200.01, false],
+  [-250, false],
+  [-1000, false],
 ];
 
-for (const [balance, below, shortfall] of CASES) {
-  test(`enforce: balance ₹${balance} → ${below ? `restricted, recharge ₹${shortfall}` : "eligible"}`, () => {
-    const s = evaluateMinWalletBalance({ balance, threshold: T, mode: "enforce" });
-    assert.equal(s.belowMinimum, below);
-    assert.equal(s.restricted, below);
-    assert.equal(s.shortfall, shortfall);
-    assert.deepEqual(s.restrictedServices, below ? ["parcel", "person_ride"] : []);
-    if (below) {
-      assert.equal(
-        s.message,
-        `Ride and Parcel orders are paused: your wallet balance ₹${balance} is below the ₹200 minimum. Recharge ₹${shortfall} to resume. Food orders continue as usual.`
-      );
-    } else {
-      assert.equal(s.message, null);
-    }
+for (const [balance, active] of CASES) {
+  test(`balance ${formatSignedRupees(balance)} → ${active ? "ACTIVE" : "all services paused"}`, () => {
+    const s = evaluateWalletFloor({ balance, floor: F });
+    assert.equal(s.blocked, !active);
+    assert.equal(isWalletAtOrBelowFloor(balance, F), !active);
+    assert.equal(s.message == null, active);
   });
 }
 
-test("food is never restricted by the minimum-balance rule", () => {
-  const s = evaluateMinWalletBalance({ balance: 10, threshold: T, mode: "enforce" });
-  assert.ok(!(s.restrictedServices as string[]).includes("food"));
+test("default floor is −₹200; bad / positive configs fall back to it", () => {
+  assert.equal(DEFAULT_WALLET_ACTIVE_FLOOR, -200);
+  assert.equal(normalizeWalletActiveFloor(undefined), -200);
+  assert.equal(normalizeWalletActiveFloor(null), -200);
+  assert.equal(normalizeWalletActiveFloor(""), -200);
+  assert.equal(normalizeWalletActiveFloor("abc"), -200);
+  assert.equal(normalizeWalletActiveFloor(200), -200); // the old positive minimum is never a floor
+  assert.equal(normalizeWalletActiveFloor("-500.00"), -500); // numeric(10,2) from Postgres
+  assert.equal(normalizeWalletActiveFloor(-300), -300);
+  assert.equal(normalizeWalletActiveFloor(0), 0);
 });
 
-test("warn mode shows the shortfall but never restricts dispatch", () => {
-  const s = evaluateMinWalletBalance({ balance: 150, threshold: T, mode: "warn" });
-  assert.equal(s.belowMinimum, true);
-  assert.equal(s.restricted, false);
-  assert.deepEqual(s.restrictedServices, []);
-  assert.equal(s.shortfall, 50);
-  assert.match(s.message ?? "", /Recharge ₹50/);
+test("a configured floor of −₹500 keeps a −₹300 wallet active", () => {
+  assert.equal(evaluateWalletFloor({ balance: -300, floor: -500 }).blocked, false);
+  assert.equal(evaluateWalletFloor({ balance: -500, floor: -500 }).blocked, true);
 });
 
-test("off mode and a ₹0 threshold do nothing", () => {
-  for (const s of [
-    evaluateMinWalletBalance({ balance: -50, threshold: T, mode: "off" }),
-    evaluateMinWalletBalance({ balance: -50, threshold: 0, mode: "enforce" }),
-  ]) {
-    assert.equal(s.belowMinimum, false);
-    assert.equal(s.restricted, false);
-    assert.equal(s.shortfall, 0);
+test("unlock amount = least whole rupee that lifts the wallet strictly above the floor", () => {
+  assert.equal(walletUnlockAmount(-250, F), 51); // −250 + 51 = −199
+  assert.equal(walletUnlockAmount(-200, F), 1); // −200 + 1 = −199
+  assert.equal(walletUnlockAmount(-200.5, F), 1); // −199.50
+  assert.equal(walletUnlockAmount(-250.75, F), 51); // −199.75
+  assert.equal(walletUnlockAmount(-199, F), 0);
+  assert.equal(walletUnlockAmount(0, F), 0);
+  // Exhaustive: for every paise balance in [−400, −200], unlock is minimal and sufficient.
+  for (let paise = -40000; paise <= -20000; paise += 1) {
+    const b = paise / 100;
+    const x = walletUnlockAmount(b, F);
+    assert.ok(b + x > F, `insufficient at ${b}`);
+    assert.ok(!(b + (x - 1) > F), `not minimal at ${b}`);
   }
 });
 
-test("a cash-ride debit that crosses the minimum restricts; a recharge back to it restores", () => {
-  const before = evaluateMinWalletBalance({ balance: 210, threshold: T, mode: "enforce" });
-  assert.equal(before.restricted, false);
-  const afterDebit = evaluateMinWalletBalance({ balance: 210 - 20, threshold: T, mode: "enforce" });
-  assert.equal(afterDebit.restricted, true);
-  assert.equal(afterDebit.shortfall, 10);
-  const afterRecharge = evaluateMinWalletBalance({
-    balance: 190 + afterDebit.shortfall,
-    threshold: T,
-    mode: "enforce",
+test("blocked status explains the pause, the unlock and the full dues", () => {
+  const s = evaluateWalletFloor({ balance: -250, floor: F });
+  assert.equal(s.unlockAmount, 51);
+  assert.equal(s.clearDuesAmount, 250);
+  assert.equal(
+    s.message,
+    "Your wallet balance -₹250 is at or below the -₹200 limit, so all services are paused. Recharge at least ₹51 to unlock (₹250 clears all dues)."
+  );
+  const active = evaluateWalletFloor({ balance: -80, floor: F });
+  assert.equal(active.unlockAmount, 0);
+  assert.equal(active.clearDuesAmount, 80);
+  assert.equal(active.message, null);
+});
+
+test("the retired positive minimum never restricts anything", () => {
+  for (const balance of [-500, -1, 0, 4, 190, 199.99, 200, 5000]) {
+    const s = neutralMinBalanceStatus(balance);
+    assert.equal(s.mode, "off");
+    assert.equal(s.belowMinimum, false);
+    assert.equal(s.restricted, false);
+    assert.deepEqual(s.restrictedServices, []);
+    assert.equal(s.shortfall, 0);
+    assert.equal(s.message, null);
+  }
+});
+
+// ---- live block state vs stored rows -------------------------------------------
+const G = (s: string) => ({ serviceType: s, reason: "global_emergency" });
+const N = (s: string) => ({ serviceType: s, reason: "negative_wallet" });
+
+test("a stale global_emergency row never keeps a rider above the floor blocked", () => {
+  const r = resolveWalletBlockState({
+    balance: -150,
+    floor: F,
+    storedBlocks: [G("food"), G("parcel"), G("person_ride")],
   });
-  assert.equal(afterRecharge.restricted, false);
+  assert.equal(r.globalBlocked, false);
+  assert.deepEqual(r.effectiveBlocks, []);
+  assert.equal(r.staleRows, true);
 });
 
-test("paise-level balances keep an exact shortfall", () => {
-  const s = evaluateMinWalletBalance({ balance: 199.99, threshold: T, mode: "enforce" });
-  assert.equal(s.shortfall, 0.01);
-  assert.match(s.message ?? "", /balance ₹199\.99 is below the ₹200 minimum\. Recharge ₹0\.01 to resume\./);
+test("at the floor the rider is blocked live even before the sync wrote rows", () => {
+  const r = resolveWalletBlockState({ balance: -200, floor: F, storedBlocks: [] });
+  assert.equal(r.globalBlocked, true);
+  assert.equal(r.staleRows, true, "missing global rows → resync");
+  const synced = resolveWalletBlockState({ balance: -200, floor: F, storedBlocks: [G("food")] });
+  assert.equal(synced.staleRows, false);
 });
 
-test("recharge due covers the larger of the negative balance and the shortfall", () => {
-  assert.equal(riderWalletRechargeDue({ balance: -30, threshold: T, mode: "off" }), 30);
-  assert.equal(riderWalletRechargeDue({ balance: -30, threshold: T, mode: "warn" }), 230);
-  assert.equal(riderWalletRechargeDue({ balance: 150, threshold: T, mode: "enforce" }), 50);
-  assert.equal(riderWalletRechargeDue({ balance: 150, threshold: T, mode: "off" }), 0);
-  assert.equal(riderWalletRechargeDue({ balance: 500, threshold: T, mode: "enforce" }), 0);
+test("per-service penalty rows hold while ≤ ₹0 and lift once positive (auto-unblock)", () => {
+  const neg = resolveWalletBlockState({ balance: -60, floor: F, storedBlocks: [N("food")] });
+  assert.deepEqual(neg.effectiveBlocks, [N("food")]);
+  assert.equal(neg.staleRows, false);
+  const pos = resolveWalletBlockState({ balance: 10, floor: F, storedBlocks: [N("food")] });
+  assert.deepEqual(pos.effectiveBlocks, []);
+  assert.equal(pos.staleRows, true);
+  const noAuto = resolveWalletBlockState({
+    balance: 10,
+    floor: F,
+    autoUnblockOnZero: false,
+    storedBlocks: [N("food")],
+  });
+  assert.deepEqual(noAuto.effectiveBlocks, [N("food")]);
 });
 
-test("unknown modes fail safe to off", () => {
-  assert.equal(normalizeMinBalanceMode("ENFORCE"), "enforce");
-  assert.equal(normalizeMinBalanceMode("warn"), "warn");
-  assert.equal(normalizeMinBalanceMode("block"), "off");
-  assert.equal(normalizeMinBalanceMode(null), "off");
+test("fraud / manual blocks are always honoured", () => {
+  const fraud = { serviceType: "parcel", reason: "fraud" };
+  const r = resolveWalletBlockState({ balance: 5000, floor: F, storedBlocks: [fraud, G("food")] });
+  assert.deepEqual(r.effectiveBlocks, [fraud]);
 });
 
-// ---- withdrawal reserve + "is the minimum the only cause" (GMR1001, 2026-11-20) ----
-import { isOnlyMinBalanceRestriction, minBalanceWithdrawReserve } from "@gatimitra/financial-rules";
-
-test("enforce mode reserves the minimum from withdrawals; warn/off reserve nothing", () => {
-  assert.equal(minBalanceWithdrawReserve({ threshold: 200, mode: "enforce" }), 200);
-  assert.equal(minBalanceWithdrawReserve({ threshold: 200, mode: "warn" }), 0);
-  assert.equal(minBalanceWithdrawReserve({ threshold: 200, mode: "off" }), 0);
-  assert.equal(minBalanceWithdrawReserve({ threshold: -5, mode: "enforce" }), 0);
-});
-
-test("a ₹0 wallet paused only by the minimum is recognised as min-balance-only", () => {
-  const minBalance = evaluateMinWalletBalance({ balance: 0, threshold: T, mode: "enforce" });
-  assert.equal(
-    isOnlyMinBalanceRestriction({ blockedServices: ["parcel", "person_ride"], minBalance }),
-    true
-  );
-  // A manual Food blacklist on top is a real restriction → Support banner stays.
-  assert.equal(
-    isOnlyMinBalanceRestriction({ blockedServices: ["food", "parcel", "person_ride"], minBalance }),
-    false
-  );
-  // Account-level block / global wallet block are never "just the minimum".
-  assert.equal(
-    isOnlyMinBalanceRestriction({ blockedServices: ["parcel"], minBalance, blockedStatus: true }),
-    false
-  );
-  assert.equal(
-    isOnlyMinBalanceRestriction({ blockedServices: ["parcel"], minBalance, globalWalletBlock: true }),
-    false
-  );
-  // Not restricted by the minimum at all.
-  const ok = evaluateMinWalletBalance({ balance: 500, threshold: T, mode: "enforce" });
-  assert.equal(isOnlyMinBalanceRestriction({ blockedServices: [], minBalance: ok }), false);
-});
-
-test("the restricted message names what is paused and that Food continues", () => {
-  const s = evaluateMinWalletBalance({ balance: 0, threshold: T, mode: "enforce" });
-  assert.match(String(s.message), /Ride and Parcel orders are paused/);
-  assert.match(String(s.message), /Food orders continue/);
-  assert.doesNotMatch(String(s.message), /continue receiving new assignments/);
+test("signed rupee formatting", () => {
+  assert.equal(formatSignedRupees(-250), "-₹250");
+  assert.equal(formatSignedRupees(199.5), "₹199.50");
+  assert.equal(formatSignedRupees(0), "₹0");
 });

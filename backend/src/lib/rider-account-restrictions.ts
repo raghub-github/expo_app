@@ -13,12 +13,16 @@ import {
   riders,
 } from "../db/schema.js";
 import { recordRiderDutyLog } from "./rider-duty-log.service.js";
-import {
-  GLOBAL_BLOCK_THRESHOLD,
-  NEGATIVE_WALLET_THRESHOLD,
-} from "./rider-negative-wallet-blocks.js";
+import { NEGATIVE_WALLET_THRESHOLD } from "./rider-negative-wallet-blocks.js";
 import { splitWalletNegativeBalance } from "./rider-wallet-balance-split.js";
-import { evaluateMinWalletBalance, type RiderMinBalanceStatus } from "./rider-wallet-min-balance.js";
+import {
+  DEFAULT_WALLET_ACTIVE_FLOOR,
+  evaluateWalletFloor,
+  neutralMinBalanceStatus,
+  resolveWalletBlockState,
+  type RiderMinBalanceStatus,
+  type WalletFloorStatus,
+} from "./rider-wallet-min-balance.js";
 import { loadRideWalletPolicy } from "../modules/rides/settlement/rideSettlement.repository.js";
 
 function round2(n: number): number {
@@ -42,22 +46,38 @@ export type RiderAccountRestrictions = {
   penaltyEventId: string | null;
   penaltyTitle: string | null;
   penaltyFormattedOrderId: string | null;
-  /** Minimum-balance policy for Ride + Parcel, from the committed balance. */
+  /**
+   * Retired positive-minimum rule — always the neutral "off" status. Kept only so
+   * installed apps that read it keep parsing (they show nothing for it).
+   */
   walletMinBalance: RiderMinBalanceStatus;
+  /** THE wallet rule: active while balance > floor (Super Admin, default −₹200). */
+  walletFloor: WalletFloorStatus;
 };
 
-async function readMinBalanceStatus(totalBalance: number): Promise<RiderMinBalanceStatus> {
-  try {
-    const policy = await loadRideWalletPolicy();
-    return evaluateMinWalletBalance({
-      balance: totalBalance,
-      threshold: policy.minWalletBalance,
-      mode: policy.minBalanceMode,
-    });
-  } catch {
-    // Policy unreadable → never restrict on a guess.
-    return evaluateMinWalletBalance({ balance: totalBalance, threshold: 0, mode: "off" });
+/**
+ * Stored block rows are a cache of the last wallet event; when the live balance
+ * has already lifted them (recharge with no sync since), ask the wallet engine to
+ * recompute — at most once a minute per rider, never on the request path.
+ */
+const lastWalletResyncAt = new Map<number, number>();
+const WALLET_RESYNC_MIN_INTERVAL_MS = 60_000;
+
+function scheduleWalletBlockResync(riderId: number): void {
+  const now = Date.now();
+  const last = lastWalletResyncAt.get(riderId) ?? 0;
+  if (now - last < WALLET_RESYNC_MIN_INTERVAL_MS) return;
+  lastWalletResyncAt.set(riderId, now);
+  if (lastWalletResyncAt.size > 5_000) {
+    for (const [id, at] of lastWalletResyncAt) {
+      if (now - at > WALLET_RESYNC_MIN_INTERVAL_MS) lastWalletResyncAt.delete(id);
+    }
   }
+  setImmediate(() => {
+    void import("./rider-negative-wallet-blocks.js")
+      .then((m) => m.syncNegativeWalletBlocks(riderId))
+      .catch((err) => console.warn("[rider-account-restrictions] wallet resync failed", riderId, err));
+  });
 }
 
 function normServiceType(s: string): string {
@@ -333,17 +353,29 @@ export async function getRiderAccountRestrictions(
     ]);
 
   const totalBalance = round2(Number(wallet?.totalBalance ?? 0));
-  const walletMinBalance = await readMinBalanceStatus(totalBalance);
+  const policy = await loadRideWalletPolicy().catch(() => null);
+  const floor = policy?.globalBlockThreshold ?? DEFAULT_WALLET_ACTIVE_FLOOR;
+  const walletFloor = evaluateWalletFloor({ balance: totalBalance, floor });
+  const walletMinBalance = neutralMinBalanceStatus(totalBalance);
   const walletPenaltiesSum = walletPenaltiesColumnSum(wallet ?? null);
   const split = splitWalletNegativeBalance(totalBalance, wallet ?? null, {
     subscriptionDuesOutstanding,
     activePenaltyTotal,
   });
-  const globalWalletBlock = totalBalance <= GLOBAL_BLOCK_THRESHOLD;
-  const negativeWalletBlocks = blockRows.map((row: { serviceType: string; reason: string }) => ({
-    serviceType: row.serviceType,
-    reason: row.reason,
-  }));
+  // Live decision from the balance + the configured floor. Stored rows the
+  // balance has already lifted are ignored here and cleaned up in the background.
+  const blockState = resolveWalletBlockState({
+    balance: totalBalance,
+    floor,
+    autoUnblockOnZero: policy?.autoUnblockOnZero,
+    storedBlocks: blockRows.map((row: { serviceType: string; reason: string }) => ({
+      serviceType: row.serviceType,
+      reason: row.reason,
+    })),
+  });
+  if (blockState.staleRows) scheduleWalletBlockResync(riderId);
+  const globalWalletBlock = blockState.globalBlocked;
+  const negativeWalletBlocks = blockState.effectiveBlocks;
 
   const riderStatus = rider?.status ?? "INACTIVE";
   const blockedStatus = riderStatus === "BLOCKED" || riderStatus === "BANNED";
@@ -367,8 +399,7 @@ export async function getRiderAccountRestrictions(
   let blacklistBlockedServices = mergeBlockedServices(
     blacklist.blockedServices,
     walletBlockedServices,
-    cancellationBlockedServices,
-    walletMinBalance.restrictedServices
+    cancellationBlockedServices
   );
   let allServicesBlacklisted =
     blacklistBlockedServices.length >= 3 ||
@@ -432,6 +463,7 @@ export async function getRiderAccountRestrictions(
     penaltyTitle: penaltyNotice.penaltyTitle,
     penaltyFormattedOrderId: penaltyNotice.penaltyFormattedOrderId,
     walletMinBalance,
+    walletFloor,
   };
 }
 

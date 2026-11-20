@@ -1,7 +1,6 @@
 import React from "react";
-import { View, StyleSheet, TouchableOpacity } from "react-native";
+import { View, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import { AppText } from "@/components/AppText";
 import { useOrderSettlement } from "@/src/hooks/useOrderSettlement";
@@ -53,7 +52,6 @@ export function PostpaidSettlementCard({ orderId }: { orderId: string | undefine
   const { t } = useTranslation();
   const { data } = useOrderSettlement(orderId);
   const s = data?.settlement;
-  const minBalance = data?.walletMinBalance;
   if (!s) return null;
 
   const service =
@@ -122,25 +120,6 @@ export function PostpaidSettlementCard({ orderId }: { orderId: string | undefine
 
       <AppText style={styles.explanation}>{s.explanation}</AppText>
 
-      {minBalance?.belowMinimum ? (
-        <TouchableOpacity
-          style={styles.minBalance}
-          activeOpacity={0.8}
-          onPress={() => router.push("/(tabs)/earnings")}
-          accessibilityRole="button"
-        >
-          <Ionicons name="alert-circle" size={16} color="#B45309" />
-          <AppText style={styles.minBalanceText}>
-            {minBalance.message ??
-              t("settlement.minBalance", "Recharge {{amount}} to keep receiving Ride and Parcel orders.", {
-                amount: formatInr(minBalance.shortfall),
-              })}
-          </AppText>
-          <AppText style={styles.minBalanceCta}>
-            {t("settlement.recharge", "Recharge {{amount}}", { amount: formatInr(minBalance.shortfall) })}
-          </AppText>
-        </TouchableOpacity>
-      ) : null}
     </View>
   );
 }
@@ -186,15 +165,4 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: "#475569",
   },
-  minBalance: {
-    marginTop: 10,
-    borderRadius: 10,
-    backgroundColor: "#FFFBEB",
-    borderWidth: 1,
-    borderColor: "#FDE68A",
-    padding: 10,
-    gap: 6,
-  },
-  minBalanceText: { fontFamily: LORA_REGULAR, fontSize: 12.5, lineHeight: 17, color: "#92400E" },
-  minBalanceCta: { fontFamily: POPPINS_BOLD, fontSize: 13, color: "#B45309" },
 });

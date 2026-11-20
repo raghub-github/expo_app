@@ -1,8 +1,8 @@
 import type { Sql } from "postgres";
 import { getSql } from "../../../db/client.js";
 import {
-  normalizeMinBalanceMode,
-  type MinBalanceMode,
+  DEFAULT_WALLET_ACTIVE_FLOOR,
+  normalizeWalletActiveFloor,
 } from "../../../lib/rider-wallet-min-balance.js";
 
 /**
@@ -13,51 +13,24 @@ import {
 
 export type RideWalletPolicy = {
   serviceNegativeThreshold: number;
+  /**
+   * The wallet floor: a rider is active while the balance is ABOVE this value
+   * (default −₹200); at or below it every service is paused. Always normalized
+   * (finite and ≤ 0) — see normalizeWalletActiveFloor.
+   */
   globalBlockThreshold: number;
   cashSettlementEnabled: boolean;
   autoUnblockOnZero: boolean;
   commissionOnToll: boolean;
-  /** Minimum available wallet balance for Ride + Parcel (see rider-wallet-min-balance.ts). */
-  minWalletBalance: number;
-  minBalanceMode: MinBalanceMode;
 };
 
 const DEFAULT_POLICY: RideWalletPolicy = {
   serviceNegativeThreshold: 50,
-  globalBlockThreshold: -200,
+  globalBlockThreshold: DEFAULT_WALLET_ACTIVE_FLOOR,
   cashSettlementEnabled: true,
   autoUnblockOnZero: true,
   commissionOnToll: false,
-  minWalletBalance: 200,
-  // 'off' only until migration 0649 adds the columns (which seeds 'warn').
-  minBalanceMode: "off",
 };
-
-/**
- * The 0649 columns, read on their own so a database without them yet keeps its
- * existing policy instead of falling back to defaults wholesale.
- */
-async function loadMinBalancePolicy(
-  sql: Sql,
-  policyId: number | string
-): Promise<Pick<RideWalletPolicy, "minWalletBalance" | "minBalanceMode">> {
-  try {
-    const rows = await sql<Array<{ min_wallet_balance: string | number; min_balance_mode: string }>>`
-      SELECT min_wallet_balance, min_balance_mode
-      FROM ride_wallet_config
-      WHERE id = ${policyId}
-    `;
-    const row = rows[0];
-    if (!row) return { minWalletBalance: DEFAULT_POLICY.minWalletBalance, minBalanceMode: "off" };
-    const threshold = Number(row.min_wallet_balance);
-    return {
-      minWalletBalance: Number.isFinite(threshold) ? threshold : DEFAULT_POLICY.minWalletBalance,
-      minBalanceMode: normalizeMinBalanceMode(row.min_balance_mode),
-    };
-  } catch {
-    return { minWalletBalance: DEFAULT_POLICY.minWalletBalance, minBalanceMode: "off" };
-  }
-}
 
 let cachedPolicy: { value: RideWalletPolicy; loadedAt: number } | null = null;
 const POLICY_CACHE_MS = 30_000;
@@ -109,11 +82,10 @@ export async function loadRideWalletPolicy(
     }
     const value: RideWalletPolicy = {
       serviceNegativeThreshold: Number(row.service_negative_threshold ?? 50),
-      globalBlockThreshold: Number(row.global_block_threshold ?? -200),
+      globalBlockThreshold: normalizeWalletActiveFloor(row.global_block_threshold),
       cashSettlementEnabled: row.cash_settlement_enabled !== false,
       autoUnblockOnZero: row.auto_unblock_on_zero !== false,
       commissionOnToll: row.commission_on_toll === true,
-      ...(await loadMinBalancePolicy(sql, row.id)),
     };
     cachedPolicy = { value, loadedAt: now };
     return value;
@@ -135,8 +107,6 @@ export type UpdateRideWalletPolicyInput = {
   cashSettlementEnabled?: boolean;
   autoUnblockOnZero?: boolean;
   commissionOnToll?: boolean;
-  minWalletBalance?: number;
-  minBalanceMode?: MinBalanceMode;
   changedBySystemUserId?: number | null;
   reason?: string | null;
 };
@@ -164,20 +134,10 @@ export async function updateRideWalletPolicy(
   const cashEnabled = input.cashSettlementEnabled !== false;
   const autoUnblock = input.autoUnblockOnZero !== false;
   const commissionOnToll = input.commissionOnToll === true;
-  // Unspecified → keep the current values, so older admin clients that do not
-  // send these fields never silently change the minimum-balance policy.
-  const current = await loadRideWalletPolicy(sql, { forceRefresh: true });
-  const minWalletBalance =
-    input.minWalletBalance == null ? current.minWalletBalance : Number(input.minWalletBalance);
-  if (!Number.isFinite(minWalletBalance) || minWalletBalance < 0) {
-    throw Object.assign(new Error("min_wallet_balance must be zero or positive"), {
-      statusCode: 400,
-    });
-  }
-  const minBalanceMode =
-    input.minBalanceMode == null
-      ? current.minBalanceMode
-      : normalizeMinBalanceMode(input.minBalanceMode);
+  // The positive "minimum wallet balance" rule (0649) is retired: every new
+  // policy row records it as OFF so the database matches what the code does.
+  const minWalletBalance = 0;
+  const minBalanceMode = "off";
 
   await sql.begin(async (tx) => {
     await tx`

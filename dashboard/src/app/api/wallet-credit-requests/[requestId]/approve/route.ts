@@ -22,7 +22,8 @@ import {
 } from "@/lib/permissions/engine";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { logActionByAuth } from "@/lib/audit/logger";
-import { applyFifoAllocation, GLOBAL_BLOCK_THRESHOLD } from "@/lib/rider-negative-wallet-blocks";
+import { applyFifoAllocation, loadWalletActiveFloor } from "@/lib/rider-negative-wallet-blocks";
+import { isWalletAtOrBelowFloor } from "@gatimitra/financial-rules";
 
 export const runtime = "nodejs";
 
@@ -194,7 +195,7 @@ export async function POST(
         riderId: updated.riderId,
         amount: Number(updated.amount),
         totalBalanceAfter,
-        globalWalletBlock: totalBalanceAfter <= GLOBAL_BLOCK_THRESHOLD,
+        globalWalletBlock: isWalletAtOrBelowFloor(totalBalanceAfter, await loadWalletActiveFloor()),
         negativeWalletBlocks: blocksAfter.map((b) => ({ serviceType: b.serviceType, reason: b.reason })),
       },
     });

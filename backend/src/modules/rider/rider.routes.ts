@@ -1110,8 +1110,6 @@ export async function riderRoutes(app: FastifyInstance) {
     minWithdrawal: z.number().optional(),
     /** Max amount per withdrawal request. */
     maxWithdrawal: z.number().optional(),
-    /** Kept in the wallet by withdrawals (Ride/Parcel minimum balance, enforce mode). */
-    withdrawReserve: z.number().optional(),
     canWithdraw: z.boolean().optional(),
     isFrozen: z.boolean().optional(),
     freezeReason: z.string().nullable().optional(),
@@ -1153,7 +1151,7 @@ export async function riderRoutes(app: FastifyInstance) {
       penaltyEventId: z.string().nullable().optional(),
       penaltyTitle: z.string().nullable().optional(),
       penaltyFormattedOrderId: z.string().nullable().optional(),
-      /** Minimum available balance for Ride + Parcel (₹200 default, admin-configurable). */
+      /** Retired positive-minimum rule — always the neutral "off" status (app compat). */
       walletMinBalance: z
         .object({
           mode: z.enum(["off", "warn", "enforce"]),
@@ -1163,6 +1161,17 @@ export async function riderRoutes(app: FastifyInstance) {
           belowMinimum: z.boolean(),
           restricted: z.boolean(),
           restrictedServices: z.array(z.enum(["parcel", "person_ride"])),
+          message: z.string().nullable(),
+        })
+        .optional(),
+      /** THE wallet rule: active while balance > floor (Super Admin, default −₹200). */
+      walletFloor: z
+        .object({
+          floor: z.number(),
+          balance: z.number(),
+          blocked: z.boolean(),
+          unlockAmount: z.number(),
+          clearDuesAmount: z.number(),
           message: z.string().nullable(),
         })
         .optional(),
@@ -1235,16 +1244,16 @@ export async function riderRoutes(app: FastifyInstance) {
         parcel: wallet ? Number(wallet.earningsParcel ?? 0) : 0,
         ride: wallet ? Number(wallet.earningsPersonRide ?? 0) : 0,
       });
-      const { getRiderWithdrawReserve, getRiderWithdrawalLimits, withdrawableFromBalance } =
-        await import("../../lib/rider-withdrawal.service.js");
-      const [withdrawReserve, breakdownDetail, limits] = await Promise.all([
-        getRiderWithdrawReserve(),
+      const { getRiderWithdrawalLimits, withdrawableFromBalance } = await import(
+        "../../lib/rider-withdrawal.service.js"
+      );
+      const [breakdownDetail, limits] = await Promise.all([
         getRiderWalletBreakdown(riderId),
         getRiderWithdrawalLimits(),
       ]);
       // Same rule the withdrawal request enforces: the balance is already net of
-      // pending payouts; only the minimum-balance reserve is held back.
-      const withdrawable = withdrawableFromBalance(total, withdrawReserve);
+      // pending payouts (each is debited at creation), so nothing is held back.
+      const withdrawable = withdrawableFromBalance(total);
       const isFrozen = Boolean(wallet?.isFrozen);
       let freezeReason = isFrozen
         ? (typeof wallet?.freezeReason === "string" && wallet.freezeReason.trim()
@@ -1278,7 +1287,6 @@ export async function riderRoutes(app: FastifyInstance) {
         hasBankAccount,
         minWithdrawal: limits.minAmount,
         maxWithdrawal: limits.maxAmount,
-        withdrawReserve,
         canWithdraw:
           withdrawable >= limits.minAmount &&
           !isFrozen &&
@@ -1301,6 +1309,7 @@ export async function riderRoutes(app: FastifyInstance) {
           penaltyDue: accountRestrictions.penaltyDue,
           penaltyDutyStopped: accountRestrictions.penaltyDutyStopped,
           walletMinBalance: accountRestrictions.walletMinBalance,
+          walletFloor: accountRestrictions.walletFloor,
         },
       };
     },

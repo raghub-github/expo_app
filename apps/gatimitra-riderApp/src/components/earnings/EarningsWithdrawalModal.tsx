@@ -27,8 +27,6 @@ type Props = {
   withdrawable: number;
   minWithdrawal?: number;
   maxWithdrawal?: number;
-  /** Ride/Parcel minimum balance a withdrawal leaves in the wallet. */
-  withdrawReserve?: number;
   bankAccount: RiderBankPaymentMethod | null | undefined;
   onClose: () => void;
   onSuccess: () => void;
@@ -52,7 +50,6 @@ export function EarningsWithdrawalModal({
   withdrawable,
   minWithdrawal,
   maxWithdrawal,
-  withdrawReserve = 0,
   bankAccount,
   onClose,
   onSuccess,
@@ -191,19 +188,6 @@ export function EarningsWithdrawalModal({
               {formatCurrency(withdrawable)}
             </Text>
 
-            {withdrawReserve > 0 ? (
-              <Text style={[styles.reserveHint, flexShrinkText]} numberOfLines={2}>
-                {t(
-                  "earnings.withdrawReserveHint",
-                  "₹{{amount}} stays in your wallet as the minimum balance for Ride & Parcel orders.",
-                  {
-                    amount: Number.isInteger(withdrawReserve)
-                      ? withdrawReserve
-                      : withdrawReserve.toFixed(2),
-                  }
-                )}
-              </Text>
-            ) : null}
 
             {bankAccount ? (
               <Text style={[styles.bankHint, flexShrinkText]} numberOfLines={2}>
@@ -280,13 +264,6 @@ const styles = StyleSheet.create({
     color: colors.primary[600],
     textAlign: "center",
     marginBottom: 8,
-  },
-  reserveHint: {
-    fontSize: 12,
-    color: "#92400E",
-    textAlign: "center",
-    marginBottom: 8,
-    fontWeight: "600",
   },
   bankHint: {
     fontSize: 13,

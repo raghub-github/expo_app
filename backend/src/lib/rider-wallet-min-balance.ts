@@ -1,23 +1,29 @@
 /**
- * Minimum available wallet balance for post-paid (cash-capable) services.
+ * Rider wallet balance rule — re-exported from @gatimitra/financial-rules so the
+ * backend and the dashboard evaluate it with the same code.
  *
- * The evaluator lives in @gatimitra/financial-rules so the backend (dispatch, duty
- * toggle, app banners) and the dashboard (Blacklist Status by Service card) decide
- * "is this rider restricted for Parcel / Person Ride" with the same code. This file
- * keeps the original import path for existing callers.
+ * A rider is ACTIVE while the wallet balance is ABOVE the Super Admin floor
+ * (ride_wallet_config.global_block_threshold, default −₹200). At or below it,
+ * every service is paused until the balance is back above the floor.
  *
- *   off     — nothing happens
- *   warn    — the rider sees the shortfall and can recharge; dispatch unaffected
- *   enforce — no new Person Ride or Parcel assignments until the balance is back
- *
- * Food is prepaid (no cash collection) so it is never restricted by this rule.
+ * The former positive "minimum wallet balance" (₹200, Ride + Parcel) is retired:
+ * `neutralMinBalanceStatus` keeps the `walletMinBalance` API field's shape for
+ * installed apps while never restricting anything.
  */
 export {
+  DEFAULT_WALLET_ACTIVE_FLOOR,
   MIN_BALANCE_RESTRICTED_SERVICES,
-  evaluateMinWalletBalance,
-  normalizeMinBalanceMode,
-  riderWalletRechargeDue,
+  WALLET_ENGINE_BLOCK_REASONS,
+  evaluateWalletFloor,
+  formatSignedRupees,
+  isWalletAtOrBelowFloor,
+  neutralMinBalanceStatus,
+  normalizeWalletActiveFloor,
+  resolveWalletBlockState,
+  walletUnlockAmount,
   type MinBalanceMode,
   type MinBalanceRestrictedService,
   type RiderMinBalanceStatus,
+  type StoredWalletBlock,
+  type WalletFloorStatus,
 } from "@gatimitra/financial-rules";

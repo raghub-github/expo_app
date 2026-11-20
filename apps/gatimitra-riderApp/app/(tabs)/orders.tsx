@@ -37,7 +37,7 @@ import { colors } from "@/src/theme";
 import { Button } from "@/src/components/ui/Button";
 import { permissionManager } from "@/src/services/permissions/permissionManager";
 import { type RiderMapViewHandle } from "@/src/components/RiderMapView";
-import { AccountRestrictedBanner, PenaltyBanner, OffDutyBanner, RidePaymentHoldBanner, NetworkStatusBanner, WalletMinBalanceBanner } from "@/src/components/home/HomeAlertBanners";
+import { AccountRestrictedBanner, PenaltyBanner, OffDutyBanner, RidePaymentHoldBanner, NetworkStatusBanner } from "@/src/components/home/HomeAlertBanners";
 import {
   HomeAlertBannerCarousel,
   homeBannerDuration,
@@ -138,13 +138,8 @@ export default function OrdersScreen() {
     dutyAccountRestricted: dutyStatus?.accountRestricted,
   });
   const penaltyDue = Math.max(restrictions?.penaltyDue ?? 0, earnings?.locked ?? 0);
-  const walletMinBalance = restrictions?.walletMinBalance ?? null;
-  // Only explain the restriction as "low balance" when that is its sole cause.
-  const minBalanceIsOnlyRestriction =
-    walletMinBalance?.restricted === true &&
-    blockedServices.every((s) =>
-      (walletMinBalance.restrictedServices as string[]).includes(s)
-    );
+  // Wallet at or below the floor (−₹200 by default): the exact unlock amount.
+  const walletFloor = restrictions?.walletFloor ?? null;
 
   const refreshRestrictionQueries = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["rider", "earnings", "summary"] });
@@ -306,14 +301,7 @@ export default function OrdersScreen() {
       });
     }
 
-    // Minimum-balance pause is not an account restriction a rider should take to
-    // Support: Food keeps working and the fix is a recharge. When it is the ONLY
-    // cause and the amber "Recharge" slide below is showing, skip the red
-    // "Account Restricted / Support" slide (it duplicated the same cause).
-    const minBalanceSlideCoversRestriction =
-      minBalanceIsOnlyRestriction && walletMinBalance?.belowMinimum === true && !showPenaltyBanner;
-
-    if (showServiceRestrictedBanner && !minBalanceSlideCoversRestriction) {
+    if (showServiceRestrictedBanner) {
       slides.push({
         id: "account_restricted",
         type: "account_restricted",
@@ -325,7 +313,7 @@ export default function OrdersScreen() {
             globalWalletBlock={restrictions?.globalWalletBlock === true}
             accountRestrictedReason={restrictions?.accountRestrictedReason ?? null}
             negativeWalletBlocks={restrictions?.negativeWalletBlocks ?? []}
-            reasonOverride={minBalanceIsOnlyRestriction ? walletMinBalance?.message : null}
+            reasonOverride={walletFloor?.blocked ? walletFloor.message : null}
           />
         ),
       });
@@ -359,25 +347,6 @@ export default function OrdersScreen() {
       });
     }
 
-    // Below the Ride/Parcel minimum balance (and not already showing the negative
-    // wallet Pay slide, which pays the same server-computed amount).
-    if (walletMinBalance?.belowMinimum && !showPenaltyBanner) {
-      slides.push({
-        id: "wallet_min_balance",
-        type: "wallet_min_balance",
-        durationMs: homeBannerDuration("wallet_min_balance"),
-        element: (
-          <WalletMinBalanceBanner
-            amount={walletMinBalance.shortfall}
-            message={walletMinBalance.message}
-            restricted={walletMinBalance.restricted}
-            paying={penaltyPaying}
-            onPay={() => void handlePayPenalty()}
-          />
-        ),
-      });
-    }
-
     if (primaryPaymentHold) {
       slides.push({
         id: "ride_payment_hold",
@@ -405,8 +374,7 @@ export default function OrdersScreen() {
     handlePayPenalty,
     primaryPaymentHold,
     subscriptionBannerVisible,
-    walletMinBalance,
-    minBalanceIsOnlyRestriction,
+    walletFloor,
   ]);
 
   const homeChrome = useMemo(

@@ -13,7 +13,8 @@ import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine
 import { canPerformRiderActionAnyService } from "@/lib/permissions/actions";
 import { getSystemUserByEmail } from "@/lib/db/operations/users";
 import { logActionByAuth } from "@/lib/audit/logger";
-import { applyFifoAllocation, GLOBAL_BLOCK_THRESHOLD } from "@/lib/rider-negative-wallet-blocks";
+import { applyFifoAllocation, loadWalletActiveFloor } from "@/lib/rider-negative-wallet-blocks";
+import { isWalletAtOrBelowFloor } from "@gatimitra/financial-rules";
 
 export const runtime = "nodejs";
 
@@ -92,7 +93,7 @@ export async function POST(
           success: true,
           data: {
             totalBalance,
-            globalWalletBlock: totalBalance <= GLOBAL_BLOCK_THRESHOLD,
+            globalWalletBlock: isWalletAtOrBelowFloor(totalBalance, await loadWalletActiveFloor()),
             negativeWalletBlocks: blocks.map((b) => ({ serviceType: b.serviceType, reason: b.reason })),
             idempotent: true,
           },
@@ -166,7 +167,7 @@ export async function POST(
           description,
           idempotencyKey: idempotencyKey ?? null,
           totalBalanceAfter,
-          globalWalletBlock: totalBalanceAfter <= GLOBAL_BLOCK_THRESHOLD,
+          globalWalletBlock: isWalletAtOrBelowFloor(totalBalanceAfter, await loadWalletActiveFloor()),
         },
         newValues: { amount, balanceAfter: totalBalanceAfter },
       }
@@ -176,7 +177,7 @@ export async function POST(
       success: true,
       data: {
         totalBalance: totalBalanceAfter,
-        globalWalletBlock: totalBalanceAfter <= GLOBAL_BLOCK_THRESHOLD,
+        globalWalletBlock: isWalletAtOrBelowFloor(totalBalanceAfter, await loadWalletActiveFloor()),
         negativeWalletBlocks: blocksAfter.map((b) => ({ serviceType: b.serviceType, reason: b.reason })),
       },
     });
