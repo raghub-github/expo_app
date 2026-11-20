@@ -91,6 +91,7 @@ async function sendViaFlowApi(args: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', authkey: authKey },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(8_000),
   })
   const raw = await res.text()
   const data = parseMsg91Json(raw)
@@ -122,7 +123,10 @@ async function sendViaLegacyOtpApi(args: {
     otp_expiry: String(Math.max(1, args.otpExpiryMin)),
     ...(args.sender ? { sender: args.sender } : {}),
   })
-  const res = await fetch(`${MSG91_LEGACY_SEND_OTP_URL}?${params.toString()}`, { method: 'GET' })
+  const res = await fetch(`${MSG91_LEGACY_SEND_OTP_URL}?${params.toString()}`, {
+    method: 'GET',
+    signal: AbortSignal.timeout(8_000),
+  })
   const raw = await res.text()
   const data = parseMsg91Json(raw)
   const channel = 'legacy_sendotp'
@@ -167,6 +171,7 @@ async function sendViaV2Sms(args: {
       country: '91',
       sms: [{ message, to: [args.mobile] }],
     }),
+    signal: AbortSignal.timeout(8_000),
   })
   const raw = await res.text()
   const data = parseMsg91Json(raw)

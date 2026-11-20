@@ -127,11 +127,24 @@ export function TicketGridCard({
   const showOverdue = isSlaBreached || isOverdue15;
   const overdueLabel = showOverdue && ticket.slaDueAt ? `Overdue ${formatOverdue(ticket.slaDueAt)}` : "Overdue";
 
-  const sourceLabel = ticket.sourceRole?.trim() ? formatTicketSourceRole(ticket.sourceRole) : "";
-  const typeAvatarLetter = ticketTypeAvatarLetter(ticket.sourceRole);
-  const sectionDisplay = ticket.ticketSection?.trim() ? formatTicketSourceRole(ticket.ticketSection) : "";
+  const rawSourceRole = ticket.sourceRole?.trim() || "";
+  const rawSection = ticket.ticketSection?.trim() || "";
+  const preferSectionAsSource =
+    /^CUSTOMER_WEBSITE$/i.test(rawSection) &&
+    /^(SYSTEM|EMAIL|AGENT)?$/i.test(rawSourceRole);
+  const sourceLabel = preferSectionAsSource
+    ? formatTicketSourceRole(rawSection)
+    : rawSourceRole
+      ? formatTicketSourceRole(rawSourceRole)
+      : "";
+  const typeAvatarLetter = ticketTypeAvatarLetter(
+    preferSectionAsSource ? rawSection : ticket.sourceRole,
+  );
+  const sectionDisplay = rawSection ? formatTicketSourceRole(rawSection) : "";
   const showSectionChip =
-    Boolean(sectionDisplay) && sectionDisplay.toLowerCase() !== sourceLabel.toLowerCase();
+    Boolean(sectionDisplay) &&
+    !preferSectionAsSource &&
+    sectionDisplay.toLowerCase() !== sourceLabel.toLowerCase();
   const categoryLabel = ticket.ticketCategory
     ? ticket.ticketCategory.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())
     : "";

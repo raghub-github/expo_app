@@ -55,13 +55,16 @@ export function WithdrawProgressButton({
   const isDisabled = disabled || loading || !met;
   const ready = met && !disabled && !loading;
 
+  const readyLabel = (labelReady ?? "").trim() || "Withdraw";
+  // Always use white on the filled (teal) region so progress fill never hides the label.
   const label = loading
     ? null
     : met
-      ? labelReady
+      ? readyLabel
       : shortfall > 0 && shortfall < min
         ? `Min ₹${formatInrShort(min)} · ₹${formatInrShort(shortfall)} more`
         : `Min ₹${formatInrShort(min)}`;
+  const useLightLabel = ready || progress >= 0.45;
 
   return (
     <Pressable
@@ -69,7 +72,7 @@ export function WithdrawProgressButton({
       disabled={isDisabled}
       accessibilityRole="button"
       accessibilityState={{ disabled: isDisabled }}
-      accessibilityLabel={typeof label === "string" ? label : labelReady}
+      accessibilityLabel={typeof label === "string" ? label : readyLabel}
       style={({ pressed }) => [style, pressed && ready && styles.pressed]}
     >
       <View
@@ -86,7 +89,7 @@ export function WithdrawProgressButton({
               {
                 width: `${Math.round(progress * 100)}%`,
                 backgroundColor: color,
-                opacity: 0.85,
+                opacity: 0.9,
               },
             ]}
           />
@@ -95,7 +98,7 @@ export function WithdrawProgressButton({
           <ActivityIndicator color={ready ? "#FFFFFF" : colors.primary[800]} />
         ) : (
           <Text
-            style={[styles.text, ready ? styles.textReady : styles.textPending]}
+            style={[styles.text, useLightLabel ? styles.textReady : styles.textPending]}
             numberOfLines={1}
           >
             {label}

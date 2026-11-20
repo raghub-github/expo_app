@@ -42,7 +42,7 @@ Please include: Ticket ID (if any), full name, registered mobile, the order/ride
 
 ### 3.3 Phone
 
-Toll-free customer helpline: **1800-XXX-XXXX**
+Toll-free customer helpline: **+91 79888 52917**
 Hours: 24×7 for safety; 06:00–24:00 IST for others.
 
 ### 3.4 Post (registered post or speed post)
@@ -63,7 +63,7 @@ https://gatimitra.com/help/grievance
 | **Name** | [Mr./Ms. Full Name — to be filled before launch] |
 | **Designation** | Grievance Officer |
 | **Email** | grievance.officer@gatimitra.com |
-| **Phone** | +91-XX-XXXXXXXX (10:00–18:00 IST, Mon–Fri) |
+| **Phone** | +91 79888 52917 (10:00–18:00 IST, Mon–Fri) |
 | **Address** | [Registered office address with PIN] |
 
 We will publish the Officer's name and contact on this page and on https://gatimitra.com within 24 hours of any change.

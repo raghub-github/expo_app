@@ -24,8 +24,12 @@ import CustomizeModal from '@/components/cart/CustomizeModal'
 import RestaurantSwitchModal from '@/components/cart/RestaurantSwitchModal'
 import GroceryStoreMenuSection from '@/components/grocery/GroceryStoreMenuSection'
 import type { GroceryProduct } from '@/components/grocery/GroceryProductCard'
-import { useRestaurantMenuRealtime } from '@/lib/hooks/useRestaurantMenuRealtime'
+import {
+  useRestaurantMenuRealtime,
+  type MenuRealtimeChange,
+} from '@/lib/hooks/useRestaurantMenuRealtime'
 import { useRestaurantStoreStatusRealtime } from '@/lib/hooks/useRestaurantStoreStatusRealtime'
+import { isMenuItemEffectivelyInStock } from '@/lib/menuEffectiveStock'
 // Define MenuItem and Restaurant interfaces as before
 interface MenuItem {
   id: string;
@@ -179,27 +183,46 @@ function RestaurantPage({
   restaurantId,
   entryFrom,
   groceryMenu = false,
+  initialRestaurant = null,
 }: {
   restaurantId: string
   entryFrom?: string
   /** Grocery store: same header/tabs as restaurants; product grid in menu tab. */
   groceryMenu?: boolean
+  /** SSR-seeded store payload so the page never starts blank / fails on API blip. */
+  initialRestaurant?: Record<string, unknown> | null
 }) {
-  // Create Supabase client (move inside component)
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  // Stable client — recreating every render + listing in effect deps caused an API storm.
+  const supabase = useMemo(() => {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    if (!url || !key) return null
+    return createClient(url, key)
+  }, [])
   const router = useRouter();
-  const [restaurant, setRestaurant] = useState<Restaurant | null>(null)
+  const seeded = initialRestaurant && typeof initialRestaurant === 'object'
+    ? (initialRestaurant as unknown as Restaurant)
+    : null
+  const seededRef = useRef(seeded)
+  seededRef.current = seeded
+  const [restaurant, setRestaurant] = useState<Restaurant | null>(seeded)
+  const storeFetchInFlightRef = useRef(false)
+  const menuFetchInFlightRef = useRef(false)
+  const lastStoreFetchAtRef = useRef(0)
+  const lastMenuFetchAtRef = useRef(0)
+  const menuRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Numeric merchant_stores.id PK — resolved when the store detail loads.
   // Used for store-scoped Supabase realtime filters.
-  const [storeNumericId, setStoreNumericId] = useState<number | null>(null)
+  const seededNumericId =
+    seeded?.id != null && Number.isFinite(Number(seeded.id)) && Number(seeded.id) > 0
+      ? Number(seeded.id)
+      : null
+  const [storeNumericId, setStoreNumericId] = useState<number | null>(seededNumericId)
   const [menuItems, setMenuItems] = useState<MenuItem[]>([])
   const [groceryProducts, setGroceryProducts] = useState<GroceryProduct[]>([])
   const [groceryLoadError, setGroceryLoadError] = useState<string | null>(null)
   const [, setOffers] = useState<any[]>([])
-  const [loadingRestaurant, setLoadingRestaurant] = useState(true)
+  const [loadingRestaurant, setLoadingRestaurant] = useState(!seeded)
   const [loadingMenu, setLoadingMenu] = useState(true)
   const [menuLoadError, setMenuLoadError] = useState<string | null>(null)
   const [loadingOffers, setLoadingOffers] = useState(true)
@@ -215,7 +238,7 @@ function RestaurantPage({
   const [localVegOnly, setLocalVegOnly] = useState(false)
   const [isTabsSticky, setIsTabsSticky] = useState(false)
   const isTabsStickyRef = useRef(false)
-  const [showSkeleton, setShowSkeleton] = useState(true)
+  const [showSkeleton, setShowSkeleton] = useState(!seeded)
   const [showAppDownloadModal, setShowAppDownloadModal] = useState(false)
   const [floatingDownloadExpanded, setFloatingDownloadExpanded] = useState(true)
   /** Teal promo reel index into FLOATING_PROMO_SLIDES (image ↔ text). */
@@ -259,19 +282,24 @@ function RestaurantPage({
   }
 
   /**
-   * Silently re-fetches the menu without resetting loading state.
-   * Used by the realtime hook and visibility-change handler so updates arrive
-   * without any skeleton flash while the customer is browsing.
+   * Silently re-fetches the menu without skeleton flash.
+   * `force` bypasses the soft throttle (used by realtime after instant patch).
    */
-  const silentRefreshMenu = useCallback(() => {
-    if (!restaurantId) return;
+  const silentRefreshMenu = useCallback((opts?: { force?: boolean }) => {
+    if (!restaurantId || groceryMenu) return
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    const now = Date.now()
+    const minGap = opts?.force ? 900 : 4_000
+    if (menuFetchInFlightRef.current || now - lastMenuFetchAtRef.current < minGap) return
+    menuFetchInFlightRef.current = true
+    lastMenuFetchAtRef.current = now
     fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}/menu`, {
       cache: 'no-store',
       headers: { 'Cache-Control': 'no-cache' },
     })
-      .then((res) => res.ok ? res.json() : null)
+      .then((res) => (res.ok ? res.json() : null))
       .then((data: { items?: Array<{ id: string; item_name: string; description?: string | null; image_url?: string | null; category?: string | null; category_item?: string; price: number; offer_price?: number | null; in_stock?: boolean }> } | null) => {
-        if (!data?.items) return;
+        if (!data?.items) return
         const normalized: MenuItem[] = data.items.map((it) => ({
           id: String(it.id),
           restaurant_id: restaurantId,
@@ -284,117 +312,238 @@ function RestaurantPage({
           in_stock: it.in_stock !== false,
           description: it.description ?? undefined,
           is_active: true,
-        }));
-        setMenuItems(normalized);
-        setMenuLoadError(null);
+        }))
+        setMenuItems(normalized)
+        setMenuLoadError(null)
       })
       .catch(() => {
-        // Non-fatal: keep existing items, retry on next realtime event or visibility change.
-      });
-  }, [restaurantId]);
+        // Non-fatal: keep existing items
+      })
+      .finally(() => {
+        menuFetchInFlightRef.current = false
+      })
+  }, [restaurantId, groceryMenu])
 
-  // Realtime: subscribe to live menu table changes → silent refresh without page reload.
-  useRestaurantMenuRealtime(groceryMenu ? null : restaurantId, groceryMenu ? null : storeNumericId, silentRefreshMenu);
+  const scheduleMenuRefetch = useCallback(() => {
+    if (menuRefetchTimerRef.current) clearTimeout(menuRefetchTimerRef.current)
+    menuRefetchTimerRef.current = setTimeout(() => {
+      silentRefreshMenu({ force: true })
+    }, 450)
+  }, [silentRefreshMenu])
+
+  /** Instant local patch from postgres_changes, then coalesced API refetch for prices/images. */
+  const handleMenuRealtimeChange = useCallback(
+    (change: MenuRealtimeChange) => {
+      if (groceryMenu) return
+
+      if (change.table === 'merchant_menu_categories') {
+        // Category OOS / rename / delete affects many items — refetch immediately.
+        scheduleMenuRefetch()
+        return
+      }
+
+      const row = change.row
+      if (!row) {
+        scheduleMenuRefetch()
+        return
+      }
+
+      const id = String(row.id ?? '').trim()
+      if (!id) {
+        scheduleMenuRefetch()
+        return
+      }
+
+      const deleted =
+        change.eventType === 'DELETE' ||
+        row.is_deleted === true ||
+        row.is_active === false
+
+      const inStock = isMenuItemEffectivelyInStock({
+        in_stock: row.in_stock as boolean | null,
+        out_of_stock_manual: row.out_of_stock_manual as boolean | null,
+        out_of_stock_until: row.out_of_stock_until as string | null,
+        out_of_stock_updated_at: row.out_of_stock_updated_at as string | null,
+      })
+
+      if (deleted || !inStock) {
+        // OOS / removed / inactive — disappear from listing instantly.
+        setMenuItems((prev) => prev.filter((item) => String(item.id) !== id))
+        scheduleMenuRefetch()
+        return
+      }
+
+      if (change.eventType === 'INSERT') {
+        // New item needs priced/image payload from API.
+        scheduleMenuRefetch()
+        return
+      }
+
+      // UPDATE while still available — patch name/desc/veg instantly; refetch for commission price.
+      setMenuItems((prev) => {
+        const idx = prev.findIndex((item) => String(item.id) === id)
+        if (idx < 0) {
+          // Was missing (e.g. came back from OOS) — need full fetch.
+          return prev
+        }
+        const next = [...prev]
+        const cur = next[idx]
+        const foodType = String(row.food_type ?? cur.category_item ?? 'VEG')
+        next[idx] = {
+          ...cur,
+          item_name: String(row.item_name ?? cur.item_name ?? ''),
+          description:
+            row.item_description != null
+              ? String(row.item_description)
+              : cur.description,
+          category_item: foodType.toUpperCase().startsWith('NON') ? 'NON_VEG' : 'VEG',
+          in_stock: true,
+          is_active: true,
+        }
+        return next
+      })
+      scheduleMenuRefetch()
+    },
+    [groceryMenu, scheduleMenuRefetch]
+  )
+
+  useRestaurantMenuRealtime(
+    groceryMenu ? null : restaurantId,
+    groceryMenu ? null : storeNumericId,
+    handleMenuRealtimeChange
+  )
 
   /**
    * Keep store hours / open status fresh while the page stays open.
-   * Merchant schedule edits write operating_hours + merchant_stores live columns —
-   * realtime wakes this; focus/interval remain as fallbacks.
+   * Realtime is primary; visibility/interval are throttled fallbacks.
    */
-  const refreshStoreMeta = useCallback(() => {
-    if (!restaurantId) return;
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+  const refreshStoreMeta = useCallback((opts?: { force?: boolean }) => {
+    if (!restaurantId) return
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    const now = Date.now()
+    const minGap = opts?.force ? 1_200 : 5_000
+    if (storeFetchInFlightRef.current || now - lastStoreFetchAtRef.current < minGap) return
+    storeFetchInFlightRef.current = true
+    lastStoreFetchAtRef.current = now
     void fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}`, {
       cache: 'no-store',
       headers: { 'Cache-Control': 'no-cache' },
     })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (!data || typeof data !== 'object') return;
+        if (!data || typeof data !== 'object') return
         setRestaurant((prev) => {
-          if (!prev) return data;
+          if (!prev) return data
           return {
             ...prev,
             ...data,
-            // Preserve already-loaded menu-adjacent fields if API omits them
             operating_hours: data.operating_hours ?? prev.operating_hours,
             opening_time: data.opening_time ?? prev.opening_time,
             closing_time: data.closing_time ?? prev.closing_time,
             operational_status: data.operational_status ?? prev.operational_status,
-          };
-        });
+          }
+        })
       })
       .catch(() => {
         /* non-fatal background refresh */
-      });
-  }, [restaurantId]);
+      })
+      .finally(() => {
+        storeFetchInFlightRef.current = false
+      })
+  }, [restaurantId])
 
-  useRestaurantStoreStatusRealtime(restaurantId, storeNumericId, refreshStoreMeta);
+  const onStoreRealtime = useCallback(() => {
+    refreshStoreMeta({ force: true })
+  }, [refreshStoreMeta])
+
+  useRestaurantStoreStatusRealtime(restaurantId, storeNumericId, onStoreRealtime)
 
   useEffect(() => {
-    if (!restaurantId) return;
+    if (!restaurantId) return
 
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
-        refreshStoreMeta();
-        silentRefreshMenu();
+        refreshStoreMeta({ force: true })
+        silentRefreshMenu({ force: true })
       }
-    };
-    const onFocus = () => {
-      refreshStoreMeta();
-      silentRefreshMenu();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', onFocus);
-    const intervalId = window.setInterval(refreshStoreMeta, 45_000);
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    // Safety net if realtime websocket drops — keep menu honest without flooding.
+    const menuPollId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') silentRefreshMenu({ force: true })
+    }, 45_000)
+    const storePollId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') refreshStoreMeta()
+    }, 120_000)
     return () => {
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', onFocus);
-      window.clearInterval(intervalId);
-    };
-  }, [restaurantId, silentRefreshMenu, refreshStoreMeta]);
+      document.removeEventListener('visibilitychange', onVisible)
+      window.clearInterval(menuPollId)
+      window.clearInterval(storePollId)
+      if (menuRefetchTimerRef.current) clearTimeout(menuRefetchTimerRef.current)
+    }
+  }, [restaurantId, silentRefreshMenu, refreshStoreMeta])
 
-  // Fetch data: restaurant from API; menu loads in parallel (page renders before menu finishes).
+  // Fetch once per restaurantId — do NOT depend on supabase/seeded objects (infinite loop).
   useEffect(() => {
-    setError(null);
-    setMenuLoadError(null);
-    setLoadingRestaurant(true);
-    setLoadingMenu(true);
-    setLoadingOffers(true);
+    if (!restaurantId) return
 
-    const restaurantAc = new AbortController();
-    const menuAc = new AbortController();
-    let menuTimedOut = false;
-    const MENU_FETCH_TIMEOUT_MS = 20_000;
+    setError(null)
+    setMenuLoadError(null)
+    const hasSeed = Boolean(seededRef.current)
+    if (!hasSeed) setLoadingRestaurant(true)
+    setLoadingMenu(true)
+    setLoadingOffers(true)
+
+    const restaurantAc = new AbortController()
+    const menuAc = new AbortController()
+    let menuTimedOut = false
+    const MENU_FETCH_TIMEOUT_MS = 20_000
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
 
     const menuTimeoutId = window.setTimeout(() => {
-      menuTimedOut = true;
-      menuAc.abort();
-    }, MENU_FETCH_TIMEOUT_MS);
+      menuTimedOut = true
+      menuAc.abort()
+    }, MENU_FETCH_TIMEOUT_MS)
 
-    fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}`, {
-      signal: restaurantAc.signal,
-      cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache' },
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error(res.status === 404 ? 'Not found' : 'Failed to fetch');
-        return res.json();
+    const loadRestaurant = (attempt: number) => {
+      if (storeFetchInFlightRef.current && attempt === 0) return
+      storeFetchInFlightRef.current = true
+      lastStoreFetchAtRef.current = Date.now()
+      fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}`, {
+        signal: restaurantAc.signal,
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' },
       })
-      .then((data) => {
-        setRestaurant(data);
-        // Capture numeric PK for store-scoped realtime channel filter.
-        const numericId = data?.id != null ? Number(data.id) : NaN;
-        if (Number.isFinite(numericId) && numericId > 0) setStoreNumericId(numericId);
-        setLoadingRestaurant(false);
-      })
-      .catch((err: unknown) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return;
-        setError('Restaurant not found');
-        setLoadingRestaurant(false);
-      });
+        .then((res) => {
+          if (!res.ok) throw new Error(res.status === 404 ? 'Not found' : 'Failed to fetch')
+          return res.json()
+        })
+        .then((data) => {
+          setRestaurant(data)
+          setError(null)
+          const numericId = data?.id != null ? Number(data.id) : NaN
+          if (Number.isFinite(numericId) && numericId > 0) setStoreNumericId(numericId)
+          setLoadingRestaurant(false)
+        })
+        .catch((err: unknown) => {
+          if (err instanceof DOMException && err.name === 'AbortError') return
+          if (attempt < 1) {
+            retryTimer = setTimeout(() => loadRestaurant(attempt + 1), 800)
+            return
+          }
+          if (seededRef.current) {
+            setLoadingRestaurant(false)
+            return
+          }
+          setError('Restaurant not found')
+          setLoadingRestaurant(false)
+        })
+        .finally(() => {
+          storeFetchInFlightRef.current = false
+        })
+    }
+    loadRestaurant(0)
 
-    // Menu or grocery products for this store
     if (groceryMenu) {
       const qs = new URLSearchParams()
       qs.set('store', restaurantId)
@@ -422,68 +571,96 @@ function RestaurantPage({
           window.clearTimeout(menuTimeoutId)
         })
     } else {
-    fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}/menu`, { signal: menuAc.signal, cache: 'no-store' })
-      .then((res) => res.json().then((data: { items?: Array<{ id: string; item_name: string; description?: string | null; image_url?: string | null; category?: string | null; category_item?: string; price: number; offer_price?: number | null; in_stock?: boolean }> }) => ({ ok: res.ok, data })))
-      .then(({ ok, data }) => {
-        const apiItems = (ok && data?.items) ? data.items : [];
-        const normalized: MenuItem[] = apiItems.map((it) => ({
-          id: String(it.id),
-          restaurant_id: restaurantId,
-          item_name: it.item_name ?? '',
-          category: it.category ?? '',
-          category_item: (it.category_item ?? 'VEG').toUpperCase().startsWith('NON') ? 'NON_VEG' : 'VEG',
-          price: Number(it.price) || 0,
-          offer_price: it.offer_price != null ? it.offer_price : null,
-          image_url: toAbsoluteImageUrl(it.image_url ?? null) ?? it.image_url ?? null,
-          in_stock: it.in_stock !== false,
-          description: it.description ?? undefined,
-          is_active: true,
-        }));
-        setMenuItems(normalized);
-        setMenuLoadError(null);
-        setLoadingMenu(false);
+      lastMenuFetchAtRef.current = Date.now()
+      menuFetchInFlightRef.current = true
+      fetch(`/api/restaurants/${encodeURIComponent(restaurantId)}/menu`, {
+        signal: menuAc.signal,
+        cache: 'no-store',
       })
-      .catch((err: unknown) => {
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          if (menuTimedOut) {
-            setMenuLoadError('Menu is taking longer than usual. Pull to refresh or tap retry.');
+        .then((res) =>
+          res.json().then(
+            (data: {
+              items?: Array<{
+                id: string
+                item_name: string
+                description?: string | null
+                image_url?: string | null
+                category?: string | null
+                category_item?: string
+                price: number
+                offer_price?: number | null
+                in_stock?: boolean
+              }>
+            }) => ({ ok: res.ok, data })
+          )
+        )
+        .then(({ ok, data }) => {
+          const apiItems = ok && data?.items ? data.items : []
+          const normalized: MenuItem[] = apiItems.map((it) => ({
+            id: String(it.id),
+            restaurant_id: restaurantId,
+            item_name: it.item_name ?? '',
+            category: it.category ?? '',
+            category_item: (it.category_item ?? 'VEG').toUpperCase().startsWith('NON')
+              ? 'NON_VEG'
+              : 'VEG',
+            price: Number(it.price) || 0,
+            offer_price: it.offer_price != null ? it.offer_price : null,
+            image_url: toAbsoluteImageUrl(it.image_url ?? null) ?? it.image_url ?? null,
+            in_stock: it.in_stock !== false,
+            description: it.description ?? undefined,
+            is_active: true,
+          }))
+          setMenuItems(normalized)
+          setMenuLoadError(null)
+          setLoadingMenu(false)
+        })
+        .catch((err: unknown) => {
+          if (err instanceof DOMException && err.name === 'AbortError') {
+            if (menuTimedOut) {
+              setMenuLoadError('Menu is taking longer than usual. Pull to refresh or tap retry.')
+            }
+            setMenuItems([])
+          } else {
+            setMenuLoadError('Could not load menu. Please try again.')
+            setMenuItems([])
           }
-          setMenuItems([]);
-        } else {
-          setMenuLoadError('Could not load menu. Please try again.');
-          setMenuItems([]);
-        }
-        setLoadingMenu(false);
-      })
-      .finally(() => {
-        window.clearTimeout(menuTimeoutId);
-      });
+          setLoadingMenu(false)
+        })
+        .finally(() => {
+          menuFetchInFlightRef.current = false
+          window.clearTimeout(menuTimeoutId)
+        })
     }
 
-    const now = new Date().toISOString();
-    void Promise.resolve(
-      supabase
-        .from('offers')
-        .select('*')
-        .eq('restaurant_id', restaurantId)
-        .gt('valid_till', now)
-    )
-      .then(({ data, error: offersError }) => {
-        if (!offersError) setOffers(data || []);
-      })
-      .catch(() => {
-        setOffers([]);
-      })
-      .finally(() => {
-        setLoadingOffers(false);
-      });
+    if (supabase) {
+      const now = new Date().toISOString()
+      void Promise.resolve(
+        supabase.from('offers').select('*').eq('restaurant_id', restaurantId).gt('valid_till', now)
+      )
+        .then(({ data, error: offersError }) => {
+          if (!offersError) setOffers(data || [])
+        })
+        .catch(() => {
+          setOffers([])
+        })
+        .finally(() => {
+          setLoadingOffers(false)
+        })
+    } else {
+      setOffers([])
+      setLoadingOffers(false)
+    }
 
     return () => {
-      restaurantAc.abort();
-      menuAc.abort();
-      window.clearTimeout(menuTimeoutId);
-    };
-  }, [restaurantId, groceryMenu]);
+      restaurantAc.abort()
+      menuAc.abort()
+      window.clearTimeout(menuTimeoutId)
+      if (retryTimer) clearTimeout(retryTimer)
+      storeFetchInFlightRef.current = false
+      menuFetchInFlightRef.current = false
+    }
+  }, [restaurantId, groceryMenu, supabase])
 
   // Sidebar: All + unique category names + VEG/NON_VEG
   const categories = ['All', ...Array.from(new Set([...menuItems.map(i => i.category), ...menuItems.map(i => i.category_item)].filter(Boolean)))]
@@ -534,16 +711,17 @@ function RestaurantPage({
 
   useEffect(() => {
     hideStoreNavSkeleton()
-    setShowSkeleton(true)
+    // Don't flash full-page skeleton when SSR already seeded the store.
+    setShowSkeleton(!restaurant)
   }, [restaurantId])
 
   // Show restaurant shell as soon as store details load; menu section has its own loader.
   useEffect(() => {
-    if (!loadingRestaurant) {
-      const timeout = setTimeout(() => setShowSkeleton(false), 150)
+    if (!loadingRestaurant && restaurant) {
+      const timeout = setTimeout(() => setShowSkeleton(false), seeded ? 0 : 150)
       return () => clearTimeout(timeout)
     }
-  }, [loadingRestaurant])
+  }, [loadingRestaurant, restaurant, seeded])
 
   // Keep sticky offset in sync (no fixed header above the main store chrome).
   // Intentionally omit searchQuery — typing must not reflow sticky math / scroll.
@@ -921,19 +1099,33 @@ function RestaurantPage({
   if (showSkeleton) {
     return <StorePageSkeleton />;
   }
-  // Only show error after loading completes and data is missing
+  // Only show error after loading completes and data is missing (never if SSR seed exists).
   if (!loadingRestaurant && !restaurant) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-bg px-4">
         <img src="/img/ndf.png" alt="Not found" style={{ maxWidth: 320, width: '100%', height: 'auto', opacity: 0.9 }} />
         <p className="mt-4 text-text-light text-sm">This store could not be loaded.</p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="mt-4 rounded-full bg-[#16c2a5] px-4 py-2 text-sm font-semibold text-white"
+        >
+          Try again
+        </button>
       </div>
     );
   }
-  if (!loadingRestaurant && error) {
+  if (!loadingRestaurant && error && !restaurant) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-bg px-4">
+      <div className="min-h-screen flex flex-col items-center justify-center bg-bg px-4 gap-3">
         <p className="text-lg font-medium text-pink">{error}</p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="rounded-full bg-[#16c2a5] px-4 py-2 text-sm font-semibold text-white"
+        >
+          Try again
+        </button>
       </div>
     );
   }
@@ -2622,7 +2814,7 @@ function RestaurantPage({
         onClose={handleCancelSwitch}
         onConfirm={handleConfirmSwitch}
         currentRestaurantName={currentCartRestaurantName || 'Previous Restaurant'}
-        newRestaurantName={restaurant.name}
+          newRestaurantName={restaurant.name || restaurant.restaurant_name}
       />
     </div>
   )

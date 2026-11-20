@@ -123,7 +123,7 @@ We acknowledge within 24 hours and respond with a fix or workaround within 7 day
 If the app isn't accessible to you in the moment, you can:
 
 - Use the **website** at https://gatimitra.com (basic ordering + ride booking, mobile-web optimised).
-- Call our **toll-free helpline 1800-XXX-XXXX** — a human will help.
+- Call our **toll-free helpline +91 79888 52917** — a human will help.
 - Have a guardian / family member book on your behalf.
 
 ## 10. Procurement of accessible tooling

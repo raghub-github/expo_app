@@ -55,6 +55,7 @@ import {
   openRazorpayCheckout,
   isNativeRazorpayAvailable,
   extractRazorpayError,
+  formatRazorpayUserMessage,
   isRazorpayUserCancel,
 } from "@/src/lib/razorpay-native";
 import { useRiderPenaltyPayment } from "@/src/hooks/useRiderPenaltyPayment";
@@ -241,20 +242,21 @@ export default function OrdersScreen() {
           result.razorpaySignature
         );
       } catch (rzpErr) {
-        const { code, description } = extractRazorpayError(rzpErr);
+        const extracted = extractRazorpayError(rzpErr);
         void penaltyPayment.recordAttempt
           .mutateAsync({
             razorpayOrderId: order.orderId,
             status: isRazorpayUserCancel(rzpErr) ? "cancelled" : "failed",
-            reason: description || code || "cancelled",
+            reason: extracted.description || extracted.code || "cancelled",
           })
           .catch(() => undefined);
         if (!isRazorpayUserCancel(rzpErr)) {
           Alert.alert(
             t("home.penaltyPayFailedTitle", "Payment failed"),
-            description ||
-              code ||
+            formatRazorpayUserMessage(
+              rzpErr,
               t("home.penaltyPayFailedMessage", "Could not start payment. Try again.")
+            )
           );
         }
         setPenaltyPaying(false);
@@ -314,6 +316,8 @@ export default function OrdersScreen() {
             blockedServices={blockedServices}
             allServicesBlacklisted={allServicesBlacklisted}
             globalWalletBlock={restrictions?.globalWalletBlock === true}
+            accountRestrictedReason={restrictions?.accountRestrictedReason ?? null}
+            negativeWalletBlocks={restrictions?.negativeWalletBlocks ?? []}
             reasonOverride={minBalanceIsOnlyRestriction ? walletMinBalance?.message : null}
           />
         ),
@@ -383,6 +387,8 @@ export default function OrdersScreen() {
     blockedServices,
     allServicesBlacklisted,
     restrictions?.globalWalletBlock,
+    restrictions?.accountRestrictedReason,
+    restrictions?.negativeWalletBlocks,
     showPenaltyBanner,
     penaltyBannerAmount,
     penaltyDutyStopped,

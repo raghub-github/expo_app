@@ -120,8 +120,27 @@ export async function PATCH(req: NextRequest) {
   }
 
   const referralRaw = body.referralCode ?? body.referred_by
+  const fullNameRaw = body.fullName ?? body.full_name ?? body.name
+  const genderRaw = body.gender
+  const ageGroupRaw = body.ageGroup ?? body.age_group
   await dbOps.updateCustomerByMobile(db, phone, {
+    fullName:
+      fullNameRaw !== undefined && String(fullNameRaw).trim()
+        ? String(fullNameRaw).trim()
+        : undefined,
     email: body.email !== undefined ? (body.email as string | null) : undefined,
+    gender:
+      genderRaw !== undefined && genderRaw !== null && genderRaw !== ''
+        ? String(genderRaw)
+        : genderRaw === null || genderRaw === ''
+          ? null
+          : undefined,
+    ageGroup:
+      ageGroupRaw !== undefined && ageGroupRaw !== null && ageGroupRaw !== ''
+        ? String(ageGroupRaw)
+        : ageGroupRaw === null || ageGroupRaw === ''
+          ? null
+          : undefined,
     referredBy:
       referralRaw !== undefined && referralRaw !== null && referralRaw !== ''
         ? String(referralRaw)

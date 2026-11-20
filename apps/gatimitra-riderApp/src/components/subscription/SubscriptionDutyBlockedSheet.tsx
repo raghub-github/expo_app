@@ -25,7 +25,7 @@ import { useRiderProfile } from "@/src/hooks/useRiderProfile";
 import {
   openRazorpayCheckout,
   isNativeRazorpayAvailable,
-  extractRazorpayError,
+  formatRazorpayUserMessage,
   isRazorpayUserCancel,
 } from "@/src/lib/razorpay-native";
 import { extractApiErrorMessage } from "@/src/services/http";
@@ -200,10 +200,12 @@ export function SubscriptionDutyBlockedSheet({ visible, onClose }: Props) {
         );
       } catch (rzpErr) {
         if (!isRazorpayUserCancel(rzpErr)) {
-          const { description, code } = extractRazorpayError(rzpErr);
           Alert.alert(
             t("common.error", "Error"),
-            description || code || t("subscription.payFailed", "Payment failed")
+            formatRazorpayUserMessage(
+              rzpErr,
+              t("subscription.payFailed", "Payment failed")
+            )
           );
         }
         setPaying(false);

@@ -30,12 +30,18 @@ type StoreMeta = {
 export default function GroceryStorePage({
   storeSlug,
   entryFrom,
+  initialStoreMeta = null,
 }: {
   storeSlug: string
   entryFrom?: string
+  initialStoreMeta?: Record<string, unknown> | null
 }) {
+  const seededMeta =
+    initialStoreMeta && typeof initialStoreMeta === 'object'
+      ? (initialStoreMeta as StoreMeta)
+      : null
   const [data, setData] = useState<ProductsResponse | null>(null)
-  const [storeMeta, setStoreMeta] = useState<StoreMeta | null>(null)
+  const [storeMeta, setStoreMeta] = useState<StoreMeta | null>(seededMeta)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [selectedCategory, setSelectedCategory] = useState('All')
@@ -61,10 +67,11 @@ export default function GroceryStorePage({
       .then(([productsJson, storeJson]: [ProductsResponse, StoreMeta | null]) => {
         if (cancelled) return
         setData(productsJson)
-        setStoreMeta(storeJson)
+        if (storeJson) setStoreMeta(storeJson)
       })
       .catch(() => {
-        if (!cancelled) setError(true)
+        // Keep SSR seed so grocery store shell still paints.
+        if (!cancelled && !seededMeta) setError(true)
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -73,7 +80,7 @@ export default function GroceryStorePage({
     return () => {
       cancelled = true
     }
-  }, [storeSlug])
+  }, [storeSlug, seededMeta])
 
   const products = data?.products ?? []
   const categories = useMemo(

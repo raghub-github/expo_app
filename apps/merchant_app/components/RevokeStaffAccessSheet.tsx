@@ -1,5 +1,8 @@
 /**
  * Staff/manager self-revoke: OTP to their phone → delete store_staff + kick sessions.
+ *
+ * ZERO AUTOMATIC OTP: opening this sheet never sends SMS. The user must press
+ * "Send OTP" (or later "Resend OTP") explicitly.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -33,6 +36,7 @@ export function RevokeStaffAccessSheet({ visible, token, onClose, onRevoked }: P
   const insets = useSafeAreaInsets();
   const inputRef = useRef<TextInput>(null);
   const requestIdRef = useRef<string | null>(null);
+  const sendInFlightRef = useRef(false);
   const [digits, setDigits] = useState("");
   const [maskedLine, setMaskedLine] = useState("");
   const [devOtpHint, setDevOtpHint] = useState<string | null>(null);
@@ -40,9 +44,12 @@ export function RevokeStaffAccessSheet({ visible, token, onClose, onRevoked }: P
   const [verifying, setVerifying] = useState(false);
   const [resendSec, setResendSec] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [otpSentOnce, setOtpSentOnce] = useState(false);
 
   const sendOtp = useCallback(async () => {
     if (!token) return;
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setSending(true);
     setError(null);
     setDevOtpHint(null);
@@ -57,11 +64,13 @@ export function RevokeStaffAccessSheet({ visible, token, onClose, onRevoked }: P
         setDevOtpHint(sent.devOtp);
         setDigits(sent.devOtp);
       }
+      setOtpSentOnce(true);
       setResendSec(30);
       setTimeout(() => inputRef.current?.focus(), 250);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not send OTP.");
     } finally {
+      sendInFlightRef.current = false;
       setSending(false);
     }
   }, [token]);
@@ -74,10 +83,11 @@ export function RevokeStaffAccessSheet({ visible, token, onClose, onRevoked }: P
       setDevOtpHint(null);
       requestIdRef.current = null;
       setResendSec(0);
+      setOtpSentOnce(false);
       return;
     }
-    void sendOtp();
-  }, [visible, sendOtp]);
+    // Intentionally no OTP send on open — explicit Send OTP required.
+  }, [visible]);
 
   useEffect(() => {
     if (resendSec <= 0) return;
@@ -103,7 +113,8 @@ export function RevokeStaffAccessSheet({ visible, token, onClose, onRevoked }: P
     }
   };
 
-  const ready = digits.length === 6 && !verifying && !sending;
+  const ready = digits.length === 6 && !verifying && !sending && !!requestIdRef.current;
+  const sendLabel = !otpSentOnce ? "Send OTP" : sending ? "Sending…" : "Resend OTP";
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={() => {}}>
@@ -123,8 +134,8 @@ export function RevokeStaffAccessSheet({ visible, token, onClose, onRevoked }: P
         <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
           <Text style={styles.title}>Revoke staff access</Text>
           <Text style={styles.body}>
-            This permanently removes you from this outlet staff list. Enter the OTP sent to your
-            phone to confirm.
+            This permanently removes you from this outlet staff list. Press Send OTP, then enter
+            the code from your phone to confirm.
           </Text>
           {maskedLine ? <Text style={styles.masked}>{maskedLine}</Text> : null}
           {devOtpHint ? (
@@ -134,31 +145,47 @@ export function RevokeStaffAccessSheet({ visible, token, onClose, onRevoked }: P
           ) : null}
           {error ? <Text style={styles.error}>{error}</Text> : null}
 
-          <Pressable style={styles.boxes} onPress={() => inputRef.current?.focus()}>
-            {Array.from({ length: 6 }).map((_, i) => (
-              <View key={i} style={styles.box}>
-                <Text style={styles.digit}>{digits[i] ?? ""}</Text>
-                <View style={styles.underline} />
-              </View>
-            ))}
-            <TextInput
-              ref={inputRef}
-              value={digits}
-              onChangeText={(t) => setDigits(t.replace(/\D/g, "").slice(0, 6))}
-              keyboardType="number-pad"
-              maxLength={6}
-              style={styles.hiddenInput}
-              caretHidden
-              autoFocus
-            />
-          </Pressable>
+          {otpSentOnce ? (
+            <Pressable style={styles.boxes} onPress={() => inputRef.current?.focus()}>
+              {Array.from({ length: 6 }).map((_, i) => (
+                <View key={i} style={styles.box}>
+                  <Text style={styles.digit}>{digits[i] ?? ""}</Text>
+                  <View style={styles.underline} />
+                </View>
+              ))}
+              <TextInput
+                ref={inputRef}
+                value={digits}
+                onChangeText={(t) => setDigits(t.replace(/\D/g, "").slice(0, 6))}
+                keyboardType="number-pad"
+                maxLength={6}
+                style={styles.hiddenInput}
+                caretHidden
+                autoFocus
+              />
+            </Pressable>
+          ) : null}
 
           <View style={styles.resendRow}>
-            {resendSec > 0 ? (
+            {!otpSentOnce ? (
+              <Pressable
+                onPress={() => void sendOtp()}
+                disabled={sending || !token}
+                accessibilityRole="button"
+                accessibilityLabel="Send OTP"
+              >
+                <Text style={styles.resendActive}>{sending ? "Sending…" : "Send OTP"}</Text>
+              </Pressable>
+            ) : resendSec > 0 ? (
               <Text style={styles.resendMuted}>Resend OTP in {resendSec} secs</Text>
             ) : (
-              <Pressable onPress={() => void sendOtp()} disabled={sending}>
-                <Text style={styles.resendActive}>{sending ? "Sending…" : "Resend OTP"}</Text>
+              <Pressable
+                onPress={() => void sendOtp()}
+                disabled={sending}
+                accessibilityRole="button"
+                accessibilityLabel="Resend OTP"
+              >
+                <Text style={styles.resendActive}>{sendLabel}</Text>
               </Pressable>
             )}
           </View>
@@ -271,7 +298,7 @@ const styles = StyleSheet.create({
     opacity: 0.02,
     color: "transparent",
   },
-  resendRow: { alignItems: "flex-end", marginBottom: 16 },
+  resendRow: { alignItems: "flex-end", marginBottom: 16, minHeight: 24 },
   resendMuted: { color: GatiMitraMerchant.textTertiary, fontSize: 12 },
   resendActive: { color: GatiMitraMerchant.primary, fontSize: 12, fontWeight: "700" },
   continueBtn: {

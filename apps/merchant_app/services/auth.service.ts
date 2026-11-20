@@ -66,10 +66,6 @@ let _lastBackendOtpRequestId: string | null = null;
 /** Coalesce double-taps / Strict-Mode double calls for the same phone. */
 const _sendOtpInFlight = new Map<string, Promise<void>>();
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /** Supabase sometimes returns a stringified Response as `error.message` on 500s. */
 function formatPhoneOtpError(error: { message?: string; status?: number; code?: string } | null): Error {
   const status = error?.status;
@@ -229,26 +225,10 @@ export const merchantAuthService = {
             options: { channel: "sms" },
           });
 
-        let { error } = await attemptSignIn();
-        const status = (error as { status?: number } | null)?.status;
-        const rawMsg = String(error?.message ?? "");
-        const shouldRetry =
-          !!error &&
-          (status === 500 ||
-            /unexpected_failure/i.test(rawMsg) ||
-            rawMsg.includes("x-sb-error-code") ||
-            rawMsg.includes("/auth/v1/otp"));
-        if (shouldRetry) {
-          if (__DEV__) {
-            // eslint-disable-next-line no-console
-            console.warn("[MerchantAuth] sendOtp: Supabase 500 — retrying once", {
-              phoneTail: tail,
-              status,
-            });
-          }
-          await sleep(700);
-          ({ error } = await attemptSignIn());
-        }
+        // Do NOT auto-retry signInWithOtp on 500. The Send SMS hook may already
+        // have accepted and billed MSG91 before Supabase surfaces unexpected_failure;
+        // a second attempt would send a duplicate OTP SMS.
+        const { error } = await attemptSignIn();
 
         if (__DEV__) {
           if (error) {

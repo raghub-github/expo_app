@@ -238,22 +238,137 @@ export function startServerConfirmPoll(
   };
 }
 
-/** Normalise a Razorpay rejection into `{ code, description }`. */
+function isUsableRazorpayText(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const t = value.trim();
+  if (!t) return false;
+  const lower = t.toLowerCase();
+  if (lower === "undefined" || lower === "null" || lower === "[object object]") return false;
+  // Never surface raw gateway JSON blobs in the UI.
+  if (t.startsWith("{") || t.startsWith("[")) return false;
+  return true;
+}
+
+function parseRazorpayJsonBlob(raw: string): Record<string, unknown> | null {
+  const text = raw.trim();
+  if (!text.startsWith("{") && !text.startsWith("[")) return null;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function readRazorpayField(
+  source: Record<string, unknown> | null | undefined,
+  key: string
+): unknown {
+  if (!source) return undefined;
+  return source[key];
+}
+
+/**
+ * Normalise a Razorpay rejection into `{ code, description }`.
+ * Handles native Error.message that is a full JSON payload (common on Android).
+ */
 export function extractRazorpayError(err: unknown): { code: string; description: string } {
-  const obj = (err ?? {}) as {
-    code?: unknown;
-    description?: unknown;
-    error?: { code?: unknown; description?: unknown; reason?: unknown };
-    message?: unknown;
+  let root: Record<string, unknown> | null = null;
+
+  if (typeof err === "string") {
+    root = parseRazorpayJsonBlob(err) ?? { message: err };
+  } else if (err instanceof Error) {
+    const fromMessage = parseRazorpayJsonBlob(err.message);
+    root = fromMessage
+      ? { ...fromMessage, message: err.message }
+      : ({
+          ...(err as unknown as Record<string, unknown>),
+          message: err.message,
+          code: (err as { code?: unknown }).code,
+          description: (err as { description?: unknown }).description,
+        } as Record<string, unknown>);
+  } else if (err && typeof err === "object") {
+    root = err as Record<string, unknown>;
+  }
+
+  const nestedRaw = readRazorpayField(root, "error");
+  const nested =
+    nestedRaw && typeof nestedRaw === "object" && !Array.isArray(nestedRaw)
+      ? (nestedRaw as Record<string, unknown>)
+      : null;
+
+  const codeRaw = readRazorpayField(root, "code") ?? readRazorpayField(nested, "code");
+  const candidates = [
+    readRazorpayField(root, "description"),
+    readRazorpayField(nested, "description"),
+    readRazorpayField(nested, "reason"),
+    readRazorpayField(root, "reason"),
+    readRazorpayField(root, "message"),
+  ];
+
+  let description = "";
+  for (const c of candidates) {
+    if (isUsableRazorpayText(c)) {
+      description = c.trim();
+      break;
+    }
+  }
+
+  const code =
+    typeof codeRaw === "string"
+      ? codeRaw.trim()
+      : codeRaw != null && String(codeRaw) !== "undefined"
+        ? String(codeRaw)
+        : "";
+
+  return { code, description };
+}
+
+function readRazorpayStep(err: unknown): string {
+  const tryObj = (obj: Record<string, unknown> | null): string => {
+    if (!obj) return "";
+    const nested = obj.error;
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      const step = (nested as Record<string, unknown>).step;
+      if (typeof step === "string" && step.trim()) return step.trim();
+    }
+    const step = obj.step;
+    return typeof step === "string" ? step.trim() : "";
   };
-  const nested = obj.error;
-  const codeRaw = obj.code ?? nested?.code;
-  const descRaw =
-    obj.description ?? nested?.description ?? nested?.reason ?? obj.message ?? "";
-  return {
-    code: typeof codeRaw === "string" ? codeRaw : codeRaw != null ? String(codeRaw) : "",
-    description: typeof descRaw === "string" ? descRaw : descRaw != null ? String(descRaw) : "",
-  };
+
+  if (typeof err === "string") return tryObj(parseRazorpayJsonBlob(err));
+  if (err instanceof Error) {
+    const fromMsg = tryObj(parseRazorpayJsonBlob(err.message));
+    if (fromMsg) return fromMsg;
+  }
+  if (err && typeof err === "object") return tryObj(err as Record<string, unknown>);
+  return "";
+}
+
+/**
+ * Rider-facing payment failure copy — never raw JSON / "undefined".
+ */
+export function formatRazorpayUserMessage(
+  err: unknown,
+  fallback = "Payment could not be completed. Please try again."
+): string {
+  const { code, description } = extractRazorpayError(err);
+  if (description) return description;
+
+  const step = readRazorpayStep(err);
+  if (code === "BAD_REQUEST_ERROR" || step === "payment_authentication") {
+    return "Payment authentication failed. Please try another method or try again.";
+  }
+  if (code === "NETWORK_ERROR" || code === "0") {
+    return "Network error during payment. Check your connection and try again.";
+  }
+  if (code && code !== "undefined") {
+    return `${fallback} (${code})`;
+  }
+  return fallback;
 }
 
 /** True when the user dismissed the sheet (not a linker/gateway failure). */

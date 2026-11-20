@@ -83,19 +83,21 @@ async function redirectToSignedOrUpstream(search: string, key: string): Promise<
 
 /**
  * Serves store/menu/gallery images like the customer app attachment proxy.
- * Category / CMS assets 302 to R2 (they are 1–2MB — never buffer through Next).
+ * Prefer same-origin 200 stream for category/CMS assets (avoids noisy 302s + CORS).
+ * Fall back to signed R2 302 only when streaming is unavailable.
  */
 export async function GET(request: NextRequest) {
   const url = new URL(request.url)
-  const inline = url.searchParams.get('inline') === '1'
+  const forceRedirect = url.searchParams.get('redirect') === '1'
   url.searchParams.delete('inline')
+  url.searchParams.delete('redirect')
   const search = url.search
   const cacheKey = search
   const objectKey = r2KeyFromProxySearch(search)
 
   try {
     if (objectKey && shouldRedirectAttachmentToR2(objectKey)) {
-      if (inline) {
+      if (!forceRedirect) {
         const streamed = await streamAttachmentFromR2(search)
         if (streamed) {
           return new NextResponse(streamed.stream, {
@@ -108,6 +110,7 @@ export async function GET(request: NextRequest) {
         }
         const fromR2 = await fetchAttachmentFromR2(search)
         if (fromR2) {
+          remember(cacheKey, fromR2.body, fromR2.contentType)
           return new NextResponse(new Uint8Array(fromR2.body), {
             status: 200,
             headers: {

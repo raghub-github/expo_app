@@ -4,34 +4,17 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { requireRiderApiAuth, riderAuthFailureResponse } from "@/lib/auth/require-rider-api-auth";
 import { getDb } from "@/lib/db/client";
 import { walletCreditRequests, riders } from "@/lib/db/schema";
 import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
-import { getSystemUserIdFromAuthUser, hasDashboardAccess, isSuperAdmin } from "@/lib/permissions/engine";
 
 export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
-
-    const systemUserId = await getSystemUserIdFromAuthUser(user.id, user.email ?? undefined);
-    if (!systemUserId) {
-      return NextResponse.json({ success: false, error: "User not found" }, { status: 403 });
-    }
-
-    // Any agent with RIDER dashboard access (view or full) can see pending action data
-    const canView =
-      (await isSuperAdmin(user.id, user.email ?? "")) ||
-      (await hasDashboardAccess(systemUserId, "RIDER"));
-    if (!canView) {
-      return NextResponse.json({ success: false, error: "Insufficient permissions. RIDER dashboard access required." }, { status: 403 });
-    }
+    const auth = await requireRiderApiAuth(request);
+    if (!auth.ok) return riderAuthFailureResponse(auth);
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get("status"); // pending | approved | rejected

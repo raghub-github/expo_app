@@ -288,6 +288,8 @@ export interface RiderOrderRow {
   walletDebited?: boolean;
   hasLedgerEntry?: boolean;
   earningCreditPending?: boolean;
+  walletLedgerTitle?: string | null;
+  walletLedgerReason?: string | null;
   paymentStatus?: string | null;
   riderAssignmentStatus?: string | null;
   riderRideUnassigned?: boolean;

@@ -162,7 +162,11 @@ export function EarningsWithdrawalModal({
                   onPress={() => void handleSubmit()}
                   loading={submitting}
                   disabled={!canEdit || amountOverMax}
-                  labelReady={t("earnings.submitWithdrawal", "Submit withdrawal")}
+                  labelReady={
+                    t("earnings.submitWithdrawal", {
+                      defaultValue: "Submit Withdrawal",
+                    }) || "Submit Withdrawal"
+                  }
                   style={styles.submitProgress}
                 />
                 <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>

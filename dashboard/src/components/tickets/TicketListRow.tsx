@@ -227,12 +227,27 @@ export const TicketListRow = React.memo(function TicketListRow({
   const showOverdue = isSlaBreached || isOverdue15;
   const overdueLabel = showOverdue && ticket.slaDueAt ? `Overdue ${formatOverdue(ticket.slaDueAt)}` : "Overdue";
 
-  const sourceLabel = ticket.sourceRole?.trim() ? formatTicketSourceRole(ticket.sourceRole) : "";
-  const typeAvatarLetter = ticketTypeAvatarLetter(ticket.sourceRole);
-  const sectionDisplay = ticket.ticketSection?.trim() ? formatTicketSourceRole(ticket.ticketSection) : "";
+  // Prefer ticket_source when it is a web/channel source (e.g. CUSTOMER_WEBSITE)
+  // so agents see "Customer Website" even if raised_by_type fell back to SYSTEM.
+  const rawSourceRole = ticket.sourceRole?.trim() || "";
+  const rawSection = ticket.ticketSection?.trim() || "";
+  const preferSectionAsSource =
+    /^CUSTOMER_WEBSITE$/i.test(rawSection) &&
+    /^(SYSTEM|EMAIL|AGENT)?$/i.test(rawSourceRole);
+  const sourceLabel = preferSectionAsSource
+    ? formatTicketSourceRole(rawSection)
+    : rawSourceRole
+      ? formatTicketSourceRole(rawSourceRole)
+      : "";
+  const typeAvatarLetter = ticketTypeAvatarLetter(
+    preferSectionAsSource ? rawSection : ticket.sourceRole,
+  );
+  const sectionDisplay = rawSection ? formatTicketSourceRole(rawSection) : "";
   /** Skip section chip when it duplicates source role (e.g. Merchant + MERCHANT). */
   const showSectionChip =
-    Boolean(sectionDisplay) && sectionDisplay.toLowerCase() !== sourceLabel.toLowerCase();
+    Boolean(sectionDisplay) &&
+    !preferSectionAsSource &&
+    sectionDisplay.toLowerCase() !== sourceLabel.toLowerCase();
   const categoryLabel = ticket.ticketCategory
     ? ticket.ticketCategory.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())
     : "";

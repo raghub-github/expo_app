@@ -125,7 +125,7 @@ GatiMitra has an Internal Complaints Committee under the Sexual Harassment of Wo
 | Presiding Officer | [Female senior employee — to be named] |
 | External Member | [External member from NGO/legal — to be named] |
 | Email | icc@gatimitra.com |
-| Phone | +91-XX-XXXXXXXX |
+| Phone | +91 79888 52917 |
 
 Complaints are confidential. Response within 24 hours; inquiry completed within 90 days per the Act.
 

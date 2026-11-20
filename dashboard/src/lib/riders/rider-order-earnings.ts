@@ -1,6 +1,7 @@
 /**
  * Resolve rider order fare/earning for dashboard when orders_core columns are empty.
- * Source of truth after delivery: wallet_ledger (rider_earn:delivery:* + rider_earn:tip:*).
+ * Source of truth after delivery: wallet_ledger
+ * (rider_earn:delivery:* / tip + ride|parcel_cash_settle:* COD debits + cancel pens).
  */
 
 import { walletLedger } from "@/lib/db/schema";
@@ -8,7 +9,10 @@ import type { getDb } from "@/lib/db/client";
 import { and, eq, inArray, or, like } from "drizzle-orm";
 import { isRideRiderWalletCreditBlocked } from "@/lib/riders/ride-wallet-credit-pending";
 import { resolveRiderPayoutTotalForDisplay } from "@/lib/riders/rider-payout-snapshot";
-import { isLedgerCreditEntryType } from "@/lib/riders/rider-ledger-display";
+import {
+  isLedgerCreditEntryType,
+  resolveOrderWalletLedgerLabel,
+} from "@/lib/riders/rider-ledger-display";
 import { extractOrderCoreIdFromLedger } from "@/lib/riders/rider-ledger-resolve";
 import { isOrderDeliveredForRiderWalletCredit } from "@/lib/riders/rider-wallet-credit-display";
 import {
@@ -40,6 +44,10 @@ export type EnrichableRiderOrder = {
   /** True when at least one wallet_ledger row is linked to this order. */
   hasLedgerEntry?: boolean;
   earningCreditPending?: boolean;
+  /** Rider-app-aligned ledger title (e.g. Cash Parcel · Platform Share). */
+  walletLedgerTitle?: string | null;
+  /** Short reason for agents (why credit/debit happened). */
+  walletLedgerReason?: string | null;
   [key: string]: unknown;
 };
 
@@ -215,7 +223,13 @@ export function resolveOrderFareAmount(input: {
 }
 
 function ledgerRefPrefix(coreId: number) {
-  return [`rider_earn:delivery:${coreId}`, `rider_earn:tip:${coreId}`];
+  return [
+    `rider_earn:delivery:${coreId}`,
+    `rider_earn:tip:${coreId}`,
+    // COD / cash platform-share (C > R) — must mark Credit/Debit as Debit.
+    `ride_cash_settle:${coreId}`,
+    `parcel_cash_settle:${coreId}`,
+  ];
 }
 
 export async function enrichRiderOrdersWithEarnings<T extends EnrichableRiderOrder>(
@@ -256,6 +270,10 @@ export async function enrichRiderOrdersWithEarnings<T extends EnrichableRiderOrd
   /** Signed net ledger impact per order (credits +, debits −). */
   const ledgerNetByCoreId = new Map<number, number>();
   const ledgerHitByCoreId = new Set<number>();
+  const ledgerEntriesByCoreId = new Map<
+    number,
+    Array<{ entryType: string; ref: string | null }>
+  >();
   for (const entry of ledgerEntries) {
     const meta =
       entry.metadata != null && typeof entry.metadata === "object"
@@ -269,11 +287,19 @@ export async function enrichRiderOrdersWithEarnings<T extends EnrichableRiderOrd
     const signed = isLedgerCreditEntryType(entryType) ? amount : -amount;
     ledgerHitByCoreId.add(coreId);
     ledgerNetByCoreId.set(coreId, round2((ledgerNetByCoreId.get(coreId) ?? 0) + signed));
+    const list = ledgerEntriesByCoreId.get(coreId) ?? [];
+    list.push({ entryType, ref: entry.ref ?? null });
+    ledgerEntriesByCoreId.set(coreId, list);
   }
 
   return orders.map((order) => {
     const hasLedgerEntry = ledgerHitByCoreId.has(order.id);
     const ledgerNet = hasLedgerEntry ? (ledgerNetByCoreId.get(order.id) ?? 0) : null;
+    const ledgerLabel = resolveOrderWalletLedgerLabel({
+      orderType: order.orderType,
+      ledgerNet,
+      entries: ledgerEntriesByCoreId.get(order.id) ?? [],
+    });
     const delivered = isOrderDeliveredForRiderWalletCredit(order);
     // Same gate as delivery credit engine: never surface Credit before delivered.
     const walletCredited = delivered && ledgerNet != null && ledgerNet > 0;
@@ -334,6 +360,8 @@ export async function enrichRiderOrdersWithEarnings<T extends EnrichableRiderOrd
       walletDebited,
       hasLedgerEntry,
       earningCreditPending,
+      walletLedgerTitle: ledgerLabel?.title ?? null,
+      walletLedgerReason: ledgerLabel?.reason ?? null,
     };
   });
 }

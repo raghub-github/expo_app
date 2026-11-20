@@ -16,6 +16,12 @@ import {
 import { getEnv } from "../../config/env.js";
 import { deliverSupabaseOtpViaMsg91 } from "../../services/otp/msg91DeliverSupabaseOtp.js";
 import { checkAndRecordOtpSend } from "./otpSendGuard.js";
+import {
+  fingerprintIp,
+  logOtpAudit,
+  maskPhoneForAudit,
+  newOtpCorrelationId,
+} from "./otpAuditLog.js";
 import { issueSupabaseCompatibleJwt } from "./jwt.js";
 import {
   merchantAccountExistsForEmail,
@@ -646,25 +652,71 @@ export async function authRoutes(app: FastifyInstance) {
           return reply.send({ success: true });
         }
 
-        // Per-phone SEND guard (cooldown + daily cap) — the universal stop for SMS-bombing /
-        // billing runaway. This is the path EVERY app hits via supabase.signInWithOtp, so a
-        // client retry loop or auto-resend can never spend repeated real SMS on a number.
+        // Extra safeguard: SMS_BLOCKED_PHONES (comma-separated), same contract as partnersite.
+        {
+          const blocked = new Set(
+            String(env.SMS_BLOCKED_PHONES ?? "")
+              .split(",")
+              .map((p) => reviewModeTest.canonicalSubscriberDigits(p.trim()) ?? "")
+              .filter(Boolean),
+          );
+          const key = reviewModeTest.canonicalSubscriberDigits(phoneTrimmed);
+          if (key && blocked.has(key)) {
+            request.log.warn(
+              { phone: maskReviewPhone(phoneTrimmed) },
+              "[supabase-send-sms] SMS_BLOCKED_PHONES — SMS NOT sent",
+            );
+            return reply.send({ success: true });
+          }
+        }
+
+        // Per-phone SEND guard (cooldown + window/daily caps) — the universal stop for
+        // SMS-bombing / billing runaway. This is the path EVERY app hits via
+        // supabase.signInWithOtp, so a client retry loop or auto-resend can never spend
+        // repeated real SMS on a number.
+        const correlationId = newOtpCorrelationId();
         const sendGuard = await checkAndRecordOtpSend(phoneTrimmed);
         if (!sendGuard.allowed) {
-          request.log.warn(
-            { phoneTail: phoneTrimmed.slice(-4), reason: sendGuard.reason },
-            "[supabase-send-sms] per-phone rate limit — SMS NOT sent",
-          );
+          logOtpAudit(request.log, {
+            correlationId,
+            timestamp: new Date().toISOString(),
+            maskedPhone: maskPhoneForAudit(phoneTrimmed),
+            endpoint: "/v1/auth/supabase-send-sms",
+            triggerSource: "supabase_send_sms_hook",
+            ipFingerprint: fingerprintIp(request.ip),
+            result: "blocked",
+            rateLimitDecision: sendGuard.reason,
+          });
           return reply.code(429).send({ error: "otp_rate_limited", reason: sendGuard.reason });
         }
 
         const delivered = await deliverSupabaseOtpViaMsg91(env, phoneTrimmed, otpTrimmed);
         if (!delivered.ok) {
-          request.log.error({ err: delivered.error }, "[supabase-send-sms] MSG91 delivery failed");
+          logOtpAudit(request.log, {
+            correlationId,
+            timestamp: new Date().toISOString(),
+            maskedPhone: maskPhoneForAudit(phoneTrimmed),
+            endpoint: "/v1/auth/supabase-send-sms",
+            triggerSource: "supabase_send_sms_hook",
+            ipFingerprint: fingerprintIp(request.ip),
+            result: "failed",
+            msg91Status: delivered.error,
+            rateLimitDecision: "allowed",
+          });
           return reply.code(502).send({ error: "sms_delivery_failed", message: delivered.error });
         }
 
-        request.log.info({ phoneTail: phoneTrimmed.slice(-4) }, "[supabase-send-sms] delivered");
+        logOtpAudit(request.log, {
+          correlationId,
+          timestamp: new Date().toISOString(),
+          maskedPhone: maskPhoneForAudit(phoneTrimmed),
+          endpoint: "/v1/auth/supabase-send-sms",
+          triggerSource: "supabase_send_sms_hook",
+          ipFingerprint: fingerprintIp(request.ip),
+          result: "sent",
+          msg91Status: delivered.channel,
+          rateLimitDecision: "allowed",
+        });
         return reply.send({ success: true });
       } catch (e) {
         request.log.error({ err: e }, "[supabase-send-sms] internal error");
@@ -1057,15 +1109,23 @@ export async function authRoutes(app: FastifyInstance) {
 
       req.log?.info?.({ requestId, expiresInSec }, "[OTP] Generated");
 
-      // Per-phone SEND guard (cooldown + daily cap) — same universal limit as the Supabase
-      // hook, so this direct path also cannot be looped into an SMS/billing storm.
+      // Per-phone SEND guard (cooldown + window/daily caps) — same universal limit as the
+      // Supabase hook, so this direct path also cannot be looped into an SMS/billing storm.
+      const correlationId = newOtpCorrelationId();
       const sendGuard = await checkAndRecordOtpSend(phoneE164);
       if (!sendGuard.allowed) {
         otpStore.delete(requestId);
-        req.log?.warn?.(
-          { phoneTail, reason: sendGuard.reason },
-          "[OTP] per-phone rate limit — SMS NOT sent",
-        );
+        logOtpAudit(req.log, {
+          correlationId,
+          timestamp: new Date().toISOString(),
+          maskedPhone: maskPhoneForAudit(phoneE164),
+          endpoint: "/v1/auth/otp/request",
+          triggerSource: "direct_otp_request",
+          ipFingerprint: fingerprintIp(req.ip),
+          result: "blocked",
+          rateLimitDecision: sendGuard.reason,
+          detail: `requestId=${requestId}`,
+        });
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return (reply as any).code(429).send({
           error: "otp_rate_limited",
@@ -1084,10 +1144,18 @@ export async function authRoutes(app: FastifyInstance) {
       const smsSent = delivered.ok;
       if (!smsSent) {
         otpStore.delete(requestId);
-        req.log?.warn?.(
-          { phoneE164, phoneTail, requestId, err: delivered.error, attempts: delivered.attempts },
-          "[OTP] SMS Failed",
-        );
+        logOtpAudit(req.log, {
+          correlationId,
+          timestamp: new Date().toISOString(),
+          maskedPhone: maskPhoneForAudit(phoneE164),
+          endpoint: "/v1/auth/otp/request",
+          triggerSource: "direct_otp_request",
+          ipFingerprint: fingerprintIp(req.ip),
+          result: "failed",
+          msg91Status: delivered.error,
+          rateLimitDecision: "allowed",
+          detail: `requestId=${requestId}`,
+        });
         if (env.NODE_ENV !== "production") {
           // eslint-disable-next-line no-console
           console.warn("\n  [OTP] SMS NOT sent:", delivered.error, "\n");
@@ -1100,7 +1168,18 @@ export async function authRoutes(app: FastifyInstance) {
         });
       }
 
-      req.log?.info?.({ phoneE164, phoneTail, requestId, channel: delivered.channel }, "[OTP] SMS Sent");
+      logOtpAudit(req.log, {
+        correlationId,
+        timestamp: new Date().toISOString(),
+        maskedPhone: maskPhoneForAudit(phoneE164),
+        endpoint: "/v1/auth/otp/request",
+        triggerSource: "direct_otp_request",
+        ipFingerprint: fingerprintIp(req.ip),
+        result: "sent",
+        msg91Status: delivered.channel,
+        rateLimitDecision: "allowed",
+        detail: `requestId=${requestId}`,
+      });
       if (env.NODE_ENV !== "production") {
         // eslint-disable-next-line no-console
         console.log(

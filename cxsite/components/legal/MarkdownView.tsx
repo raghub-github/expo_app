@@ -267,7 +267,7 @@ export default function MarkdownView({ source }: Props) {
             return (
               <h1
                 key={idx}
-                className="mt-2 mb-6 text-3xl md:text-4xl font-bold tracking-tight text-slate-900"
+                className="mt-2 mb-6 text-3xl md:text-4xl font-bold tracking-tight text-[#1a1a1a]"
               >
                 {renderInline(b.text)}
               </h1>
@@ -280,12 +280,12 @@ export default function MarkdownView({ source }: Props) {
               <h2
                 key={idx}
                 id={id}
-                className="group mt-12 mb-4 scroll-mt-24 text-2xl md:text-3xl font-bold text-slate-900 border-b border-slate-200 pb-3 flex items-baseline gap-2"
+                className="group mt-12 mb-4 scroll-mt-24 flex items-baseline gap-2 border-b border-black/[0.08] pb-3 text-2xl font-bold text-[#1a1a1a] md:text-3xl"
               >
                 <a
                   href={`#${id}`}
                   aria-label="Link to section"
-                  className="opacity-0 group-hover:opacity-100 text-emerald-500 text-base no-underline transition-opacity"
+                  className="text-base text-[#109D4C] no-underline opacity-0 transition-opacity group-hover:opacity-100"
                 >
                   #
                 </a>
@@ -319,7 +319,7 @@ export default function MarkdownView({ source }: Props) {
             );
           case "ul":
             return (
-              <ul key={idx} className="mb-4 ml-6 list-disc space-y-1.5 text-slate-700 marker:text-emerald-500">
+              <ul key={idx} className="mb-4 ml-6 list-disc space-y-1.5 text-[#444] marker:text-[#109D4C]">
                 {b.items.map((it, j) => (
                   <li key={j} className="leading-7">
                     {renderInline(it)}
@@ -329,7 +329,7 @@ export default function MarkdownView({ source }: Props) {
             );
           case "ol":
             return (
-              <ol key={idx} className="mb-4 ml-6 list-decimal space-y-1.5 text-slate-700 marker:text-emerald-600 marker:font-semibold">
+              <ol key={idx} className="mb-4 ml-6 list-decimal space-y-1.5 text-[#444] marker:font-semibold marker:text-[#109D4C]">
                 {b.items.map((it, j) => (
                   <li key={j} className="leading-7">
                     {renderInline(it)}
@@ -341,7 +341,7 @@ export default function MarkdownView({ source }: Props) {
             return (
               <blockquote
                 key={idx}
-                className="my-5 border-l-4 border-emerald-400 bg-emerald-50/60 px-4 py-3 italic text-slate-700"
+                className="my-5 border-l-4 border-[#109D4C] bg-[#109D4C]/[0.08] px-4 py-3 italic text-[#333]"
               >
                 {renderInline(b.text)}
               </blockquote>

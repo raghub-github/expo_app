@@ -56,8 +56,9 @@ export default function Footer() {
   ];
 
   const company: LinkItem[] = [
-    { icon: <Info size={14} />, text: "About Us", href: "/about-us" },
-    { icon: <Newspaper size={14} />, text: "Blog", href: "/about-us" },
+    { icon: <Info size={14} />, text: "About Us", href: "/about" },
+    { icon: <Users size={14} />, text: "Our Team", href: "/team" },
+    { icon: <Newspaper size={14} />, text: "Blog", href: "/about" },
     { icon: <Megaphone size={14} />, text: "Press", href: "/contact-us" },
     { icon: <Briefcase size={14} />, text: "Careers", href: "/careers" },
     { icon: <Handshake size={14} />, text: "Partners", href: "https://partner.gatimitra.com" },

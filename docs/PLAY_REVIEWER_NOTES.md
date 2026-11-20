@@ -94,7 +94,7 @@ every surcharge, with a one-tap “Why is it this much?” explainer.
 | Data Protection Officer | dpo@gatimitra.com |
 | Nodal Officer (LEA) | nodal@gatimitra.com |
 | Support | support@gatimitra.com |
-| Phone | +91 80 1234 5678 |
+| Phone | +91 79888 52917 |
 
 ## 9. Source of truth
 

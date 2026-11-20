@@ -50,6 +50,8 @@ interface OrderRow {
   walletDebited?: boolean;
   hasLedgerEntry?: boolean;
   earningCreditPending?: boolean;
+  walletLedgerTitle?: string | null;
+  walletLedgerReason?: string | null;
   paymentStatus?: string | null;
   riderAssignmentStatus?: string | null;
   riderRideUnassigned?: boolean;
@@ -603,6 +605,18 @@ export function RiderOrdersClient() {
                               {earning.pendingHint ? (
                                 <span className="mt-0.5 text-[10px] font-semibold text-amber-700">
                                   {earning.pendingHint}
+                                </span>
+                              ) : null}
+                              {o.walletLedgerTitle ? (
+                                <span
+                                  className="mt-0.5 text-[10px] font-medium text-gray-700 max-w-[180px] truncate"
+                                  title={
+                                    o.walletLedgerReason
+                                      ? `${o.walletLedgerTitle} — ${o.walletLedgerReason}`
+                                      : o.walletLedgerTitle
+                                  }
+                                >
+                                  {o.walletLedgerTitle}
                                 </span>
                               ) : null}
                               {(approvedExtraByOrderId.get(o.id) ?? 0) > 0 && (

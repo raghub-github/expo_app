@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { toMsg91MobileDigits } from '@/lib/phoneNormalize'
 import { isMsg91OtpConfigured, msg91SendOtp, msg91VerifyOtp } from '@/lib/server/msg91Otp'
+import { checkAndRecordCxOtpSend } from '@/lib/server/otpSendGuard'
+import { maskReviewPhone, shouldSuppressCxCustomerOtp } from '@/lib/server/review-sms-bypass'
 
 export const runtime = 'nodejs'
 
@@ -40,6 +42,40 @@ export async function POST(req: NextRequest) {
   }
 
   if (action === 'send') {
+    // Only Google Play review phone bypasses SMS on cxsite — everyone else gets real MSG91.
+    const suppressCheck =
+      [phone, mobile, mobile.slice(-10)]
+        .map((p) => shouldSuppressCxCustomerOtp(p))
+        .find((s) => s.suppress) ?? shouldSuppressCxCustomerOtp(phone)
+
+    if (suppressCheck.suppress && suppressCheck.reason === 'review_bypass' && suppressCheck.otp) {
+      otpStore.set(mobile, { otp: suppressCheck.otp, expiresAt: otpExpiryMs() })
+      console.warn(
+        JSON.stringify({
+          audit: 'otp_sms',
+          timestamp: new Date().toISOString(),
+          maskedPhone: maskReviewPhone(phone),
+          endpoint: '/api/auth/otp',
+          triggerSource: 'user_initiated',
+          result: 'skipped',
+          rateLimitDecision: 'review_bypass',
+          msg91Status: 'not_called',
+        })
+      )
+      return NextResponse.json({
+        channel: 'review_bypass',
+        ok: true,
+        configured: true,
+        msg91: false,
+      })
+    }
+    if (suppressCheck.suppress) {
+      return NextResponse.json(
+        { channel: 'blocked', error: 'OTP SMS is blocked for this number.' },
+        { status: 403 }
+      )
+    }
+
     if (!isMsg91OtpConfigured()) {
       console.warn(
         '[api/auth/otp] SMS disabled (demo mode): set MSG91_AUTH_KEY and MSG91_TEMPLATE_ID and/or MSG91_FLOW_ID in .env.local, then restart dev server'
@@ -49,6 +85,34 @@ export async function POST(req: NextRequest) {
         configured: false,
         hint: 'Server has no MSG91 auth key + template/flow. Check .env.local and restart npm run dev.',
       })
+    }
+
+    const ip =
+      req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+      req.headers.get('x-real-ip') ||
+      'unknown'
+    const guard = await checkAndRecordCxOtpSend(mobile, ip)
+    if (!guard.allowed) {
+      console.warn(
+        JSON.stringify({
+          audit: 'otp_sms',
+          timestamp: new Date().toISOString(),
+          maskedPhone: `******${mobile.slice(-4)}`,
+          endpoint: '/api/auth/otp',
+          triggerSource: 'user_initiated',
+          result: 'blocked',
+          rateLimitDecision: guard.reason,
+        })
+      )
+      return NextResponse.json(
+        {
+          channel: 'msg91',
+          error: 'Too many OTP requests. Please wait a bit and try again.',
+          reason: guard.reason,
+          retryAfterSec: guard.retryAfterSec,
+        },
+        { status: 429 }
+      )
     }
 
     const otp = generateOtp()
@@ -72,7 +136,18 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    console.log('[api/auth/otp] MSG91 send accepted', { channel: sent.channel })
+    console.log(
+      JSON.stringify({
+        audit: 'otp_sms',
+        timestamp: new Date().toISOString(),
+        maskedPhone: `******${mobile.slice(-4)}`,
+        endpoint: '/api/auth/otp',
+        triggerSource: 'user_initiated',
+        result: 'sent',
+        msg91Status: sent.channel,
+        rateLimitDecision: 'allowed',
+      })
+    )
     return NextResponse.json({ channel: 'msg91', ok: true, configured: true })
   }
 

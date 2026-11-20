@@ -98,6 +98,8 @@ export async function updateCustomerByMobile(
   patch: {
     fullName?: string
     email?: string | null
+    gender?: string | null
+    ageGroup?: string | null
     referredBy?: string | null
     smsPermission?: boolean
     profileCompleted?: boolean
@@ -107,6 +109,8 @@ export async function updateCustomerByMobile(
   const set: {
     fullName?: string
     email?: string | null
+    gender?: string | null
+    ageGroup?: string | null
     referredBy?: string | null
     smsPermission?: boolean
     profileCompleted?: boolean
@@ -114,6 +118,8 @@ export async function updateCustomerByMobile(
   } = {}
   if (patch.fullName !== undefined) set.fullName = patch.fullName
   if (patch.email !== undefined) set.email = patch.email
+  if (patch.gender !== undefined) set.gender = patch.gender
+  if (patch.ageGroup !== undefined) set.ageGroup = patch.ageGroup
   if (patch.referredBy !== undefined) set.referredBy = patch.referredBy
   if (patch.smsPermission !== undefined) set.smsPermission = patch.smsPermission
   if (patch.profileCompleted !== undefined) set.profileCompleted = patch.profileCompleted

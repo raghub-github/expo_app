@@ -151,9 +151,12 @@ export async function sendMerchantActionOtp(args: {
   let sentSms = false;
   let smsChannel: string | undefined;
   try {
-    // Fire every MSG91 channel — v5/v2 often return type:"success" with no SMS.
+    // Stop on first successful MSG91 ack. tryAllChannels:true previously fired
+    // Flow + v5 + legacy + v2 in one logical send and multiplied billable SMS
+    // (P0: consecutive GATIMITRA_SMS rows for the same number). Prefer Flow/DLT
+    // channels that actually deliver on this account.
     const sms = await deliverSupabaseOtpViaMsg91(env, phone, otp, {
-      tryAllChannels: true,
+      preferLegacyOtpApi: true,
     });
     sentSms = !!sms.ok;
     smsChannel = sms.ok ? sms.channel : undefined;
