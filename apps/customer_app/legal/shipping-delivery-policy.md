@@ -170,7 +170,7 @@ Raise within 24 hours of delivery / trip end. See [Refund & Cancellation Policy]
 | Track an order / ride | In-app live tracking |
 | Delivery problem (in-progress) | In-app `Help` button on the order/ride screen |
 | Refund | payments@gatimitra.com |
-| General | 1800-XXX-XXXX |
+| General | +91 79888 52917 |
 
 ---
 **Owner:** Operations

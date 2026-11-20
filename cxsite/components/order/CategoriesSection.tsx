@@ -312,8 +312,7 @@ export default function CategoriesSection({
           isClosed,
         }
       })
-      .filter(Boolean)
-      .slice(0, 4) as Array<{
+      .filter(Boolean) as Array<{
       id: string
       public_slug: string | null
       name: string

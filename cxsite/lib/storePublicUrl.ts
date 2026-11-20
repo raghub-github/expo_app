@@ -12,14 +12,29 @@ export function restaurantCanonicalUrl(publicSlug: string): string {
   return `${SITE_ORIGIN}${restaurantPublicPath(publicSlug)}`
 }
 
-export function restaurantPageTitle(storeName: string, city: string): string {
+/** Zomato-style SERP title: "Roll Club, Model Town, Panipat | Order Online on GatiMitra" */
+export function restaurantPageTitle(
+  storeName: string,
+  city: string,
+  landmark?: string | null
+): string {
   const name = storeName.trim() || 'Restaurant'
+  const area = String(landmark ?? '').trim()
   const loc = city.trim()
-  return loc ? `${name}, ${loc} | GatiMitra` : `${name} | GatiMitra`
+  const place = [area, loc].filter(Boolean).join(', ')
+  return place
+    ? `${name}, ${place} | Order Online on GatiMitra`
+    : `${name} | Order Online on GatiMitra`
 }
 
-export function restaurantMetaDescription(storeName: string, city: string): string {
+export function restaurantMetaDescription(
+  storeName: string,
+  city: string,
+  landmark?: string | null
+): string {
   const name = storeName.trim() || 'this restaurant'
-  const loc = city.trim() || 'your area'
-  return `Order from ${name} in ${loc} on GatiMitra. Explore menu, food, offers, timings and order online.`
+  const area = String(landmark ?? '').trim()
+  const loc = city.trim()
+  const place = [area, loc].filter(Boolean).join(', ') || 'your area'
+  return `${name} is listed on GatiMitra. Order food online from ${name} in ${place} — menu, photos, ratings, offers & delivery. Available on GatiMitra.`
 }

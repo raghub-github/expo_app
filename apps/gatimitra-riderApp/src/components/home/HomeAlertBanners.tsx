@@ -28,46 +28,130 @@ function formatBlockedServiceLabels(services: string[], t: (key: string, fallbac
     .join(", ");
 }
 
+type NegativeWalletBlock = { serviceType: string; reason: string };
+
 type AccountRestrictedBannerProps = {
   blockedServices?: string[];
   allServicesBlacklisted?: boolean;
   globalWalletBlock?: boolean;
+  /** API reason code: service_blacklist | all_services_blacklist | blocked_status | none */
+  accountRestrictedReason?: string | null;
+  negativeWalletBlocks?: NegativeWalletBlock[];
   /** Specific cause to show instead of "contact Support" (e.g. low wallet balance). */
   reasonOverride?: string | null;
   onSupport?: () => void;
 };
 
+function walletBlockReasonLine(
+  blocks: NegativeWalletBlock[],
+  globalWalletBlock: boolean,
+  t: (key: string, fallback: string, options?: Record<string, unknown>) => string
+): string | null {
+  if (globalWalletBlock || blocks.some((b) => b.reason === "global_emergency")) {
+    return t(
+      "home.accountRestrictedWalletEmergency",
+      "Wallet balance is critically low — all services are blocked. Recharge your wallet to unlock."
+    );
+  }
+  const serviceBlocks = blocks.filter((b) => b.reason === "negative_wallet");
+  if (serviceBlocks.length === 0) return null;
+  const services = formatBlockedServiceLabels(
+    serviceBlocks.map((b) => b.serviceType),
+    t
+  );
+  return t(
+    "home.accountRestrictedWalletServices",
+    "Negative wallet balance exceeded the limit for {{services}}. Add money to unlock.",
+    { services }
+  );
+}
+
+function buildAccountRestrictedSubtitle(input: {
+  blockedServices: string[];
+  allServicesBlacklisted: boolean;
+  globalWalletBlock: boolean;
+  accountRestrictedReason: string | null;
+  negativeWalletBlocks: NegativeWalletBlock[];
+  reasonOverride: string | null;
+  t: (key: string, fallback: string, options?: Record<string, unknown>) => string;
+}): string {
+  const {
+    blockedServices,
+    allServicesBlacklisted,
+    globalWalletBlock,
+    accountRestrictedReason,
+    negativeWalletBlocks,
+    reasonOverride,
+    t,
+  } = input;
+
+  if (reasonOverride?.trim()) return reasonOverride.trim();
+
+  const walletWhy = walletBlockReasonLine(negativeWalletBlocks, globalWalletBlock, t);
+  if (walletWhy) return walletWhy;
+
+  const servicesLabel = formatBlockedServiceLabels(blockedServices, t);
+  const forServices =
+    allServicesBlacklisted || blockedServices.length >= 3
+      ? t("home.accountRestrictedScopeAll", "all services")
+      : blockedServices.length > 0
+        ? servicesLabel
+        : null;
+
+  if (accountRestrictedReason === "blocked_status") {
+    return forServices
+      ? t(
+          "home.accountRestrictedBlockedStatusFor",
+          "Your account is Restricted for {{services}} — account status is blocked. Contact Support to resolve.",
+          { services: forServices }
+        )
+      : t(
+          "home.accountRestrictedBlockedStatus",
+          "Your account status is blocked. Contact Support to resolve."
+        );
+  }
+
+  if (forServices) {
+    return t(
+      "home.accountRestrictedForServicesWhy",
+      "Your account is Restricted for {{services}}. Contact Support to resolve.",
+      { services: forServices }
+    );
+  }
+
+  return t(
+    "home.accountRestrictedSub",
+    "Please contact Support to request whitelisting or resolve the issue."
+  );
+}
+
 export function AccountRestrictedBanner({
   blockedServices = [],
   allServicesBlacklisted = false,
   globalWalletBlock = false,
+  accountRestrictedReason = null,
+  negativeWalletBlocks = [],
   reasonOverride = null,
   onSupport,
 }: AccountRestrictedBannerProps) {
   const { t } = useTranslation();
 
-  const restrictedSub = reasonOverride
-    ? reasonOverride
-    : allServicesBlacklisted || blockedServices.length >= 3
-      ? globalWalletBlock
-        ? t(
-            "home.accountRestrictedWalletAll",
-            "Your account is Restricted for All services. Add balance to wallet to unlock."
-          )
-        : t(
-            "home.accountRestrictedAllServices",
-            "Your account is Restricted for All services. Please contact Support to resolve."
-          )
-      : blockedServices.length > 0
-        ? t(
-            "home.accountRestrictedForServices",
-            "Your account is Restricted for {{services}}. Please contact Support to resolve.",
-            { services: formatBlockedServiceLabels(blockedServices, t) }
-          )
-        : t(
-            "home.accountRestrictedSub",
-            "Please contact Support to request whitelisting or resolve the issue."
-          );
+  const restrictedSub = buildAccountRestrictedSubtitle({
+    blockedServices,
+    allServicesBlacklisted,
+    globalWalletBlock,
+    accountRestrictedReason,
+    negativeWalletBlocks,
+    reasonOverride,
+    t: t as (key: string, fallback: string, options?: Record<string, unknown>) => string,
+  });
+
+  const titleServices =
+    !allServicesBlacklisted &&
+    blockedServices.length > 0 &&
+    blockedServices.length < 3
+      ? formatBlockedServiceLabels(blockedServices, t as (key: string, fallback: string) => string)
+      : null;
 
   return (
     <View style={styles.restrictedWrap}>
@@ -75,10 +159,16 @@ export function AccountRestrictedBanner({
         <Ionicons name="warning" size={16} color="#ffffff" />
       </View>
       <View style={styles.bannerTextCol}>
-        <Text style={styles.restrictedTitle}>
-          {t("home.accountRestrictedTitle", "Account Restricted")}
+        <Text style={styles.restrictedTitle} numberOfLines={2}>
+          {titleServices
+            ? t("home.accountRestrictedTitleFor", "Account Restricted — {{services}}", {
+                services: titleServices,
+              })
+            : t("home.accountRestrictedTitle", "Account Restricted")}
         </Text>
-        <Text style={styles.restrictedSub}>{restrictedSub}</Text>
+        <Text style={styles.restrictedSub} numberOfLines={3}>
+          {restrictedSub}
+        </Text>
       </View>
       <View style={styles.ctaCol}>
         <Pressable

@@ -13,25 +13,14 @@ export function AppleStoreIcon({ className = 'h-4 w-4' }: { className?: string }
   )
 }
 
+/** Official-style Google Play triangle mark (4 brand colors). */
 export function GooglePlayIcon({ className = 'h-4 w-4' }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" aria-hidden>
-      <path
-        fill="#EA4335"
-        d="M3.6 2.2c-.3.2-.6.6-.6 1.1v17.4c0 .5.3.9.6 1.1l9.3-9.8L3.6 2.2z"
-      />
-      <path
-        fill="#FBBC04"
-        d="M16.4 15.1 13.1 11.8l-9.5 9.9c.3.2.7.1 1.1-.1l11.7-6.5z"
-      />
-      <path
-        fill="#4285F4"
-        d="M20.5 10.9c-.5-.3-8.8-5-8.8-5L8.7 8.9l3.3 3.3L4.8 20.1l6.9-3.9 8.1-4.5c.5-.3.7-.8.7-.8z"
-      />
-      <path
-        fill="#34A853"
-        d="M11.7 5.9 4.1 1.6C3.9 1.5 3.7 1.5 3.6 1.6l9.5 9.5 3.3-3.2S12.2 6.2 11.7 5.9z"
-      />
+      <path fill="#32BBFF" d="M3.07 1.64c-.3.16-.5.48-.5.9v18.92c0 .42.2.74.5.9l10.66-10.36L3.07 1.64z" />
+      <path fill="#FBC11A" d="M16.2 15.18 13.06 12 3.07 21.72c.28.2.65.22 1.05.01l12.08-6.55z" />
+      <path fill="#ED4A4C" d="M16.2 8.82 4.12 2.27C3.72 2.06 3.35 2.08 3.07 2.28L13.06 12l3.14-3.18z" />
+      <path fill="#25C059" d="m13.06 12 3.14-3.18 3.6 1.96c.9.49.9 1.29 0 1.78l-3.6 1.96L13.06 12z" />
     </svg>
   )
 }

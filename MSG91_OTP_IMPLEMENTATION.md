@@ -6,10 +6,10 @@ This document describes the implementation of MSG91 OTP verification system for 
 ## Architecture
 
 ### Client-Side (Rider App)
-- **Technology**: MSG91 React Native SDK (`@msg91comm/sendotp-react-native`)
-- **Widget ID**: `356c71695646393436333739`
-- **OTP Length**: 4 digits (configured in MSG91 dashboard)
-- **Flow**: Client-side OTP verification using MSG91 Widget SDK
+- **Technology**: MSG91 React Native SDK (`@msg91comm/sendotp-react-native`) (legacy docs; current rider app uses Supabase phone OTP)
+- **Widget ID**: configure via env / MSG91 dashboard (do not commit live IDs)
+- **OTP Length**: 6 digits for current Supabase/MSG91 Flow path (legacy widget docs used 4)
+- **Flow**: Prefer server-side Send SMS hook → MSG91; do not embed `MSG91_AUTH_KEY` in the app
 
 ### Server-Side (Backend)
 - **Endpoint**: `/v1/auth/msg91/verify-token`
@@ -48,16 +48,21 @@ This document describes the implementation of MSG91 OTP verification system for 
 
 #### Environment Variables
 
-**Backend** (`.env`):
+**Backend** (`.env` — never commit real values; rotate any key that was ever committed):
 ```env
-MSG91_AUTH_KEY=483466A9gWqQENhMod699337aeP1
-MSG91_TEMPLATE_ID=6993113aac517f37a558a086
-MSG91_WIDGET_ID=356c71695646393436333739
+MSG91_AUTH_KEY=<set-in-deployment-secrets-only>
+MSG91_TEMPLATE_ID=<from-msg91-dashboard>
+MSG91_WIDGET_ID=<from-msg91-dashboard>
 MSG91_OTP_EXPIRY_SEC=300
 ```
 
+**SECURITY:** A previous revision of this file contained a live-looking `MSG91_AUTH_KEY`
+and template/widget IDs in plaintext. Treat those as compromised: rotate the MSG91
+auth key in the MSG91 dashboard, update all deployment secrets, and purge the old
+value from git history if it was pushed.
+
 **Rider App**:
-- Widget ID is hardcoded in `msg91OtpService.ts` (can be moved to config if needed)
+- Prefer env/config for widget IDs; never ship `MSG91_AUTH_KEY` in the app bundle
 - No secrets stored in app (all OTP operations use backend)
 
 #### iOS Configuration (`apps/gatimitra-riderApp/app.config.js`)

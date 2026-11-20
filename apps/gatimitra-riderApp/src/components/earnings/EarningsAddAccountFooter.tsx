@@ -115,7 +115,11 @@ export function EarningsAddAccountFooter({
           minAmount={minWithdrawal}
           onPress={handleRequestWithdrawal}
           disabled={withdrawBlockedExtra}
-          labelReady={t("earnings.requestWithdrawal", "Request Withdrawal")}
+          labelReady={
+            t("earnings.requestWithdrawal", {
+              defaultValue: "Request Withdrawal",
+            }) || "Request Withdrawal"
+          }
           style={styles.progressBtn}
         />
         <TouchableOpacity

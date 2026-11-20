@@ -520,6 +520,12 @@ const EnvSchema = z.object({
   ).default(false),
   GOOGLE_REVIEW_PHONE: z.preprocess(emptyToUndefined, z.string().min(10).max(20).optional()),
   GOOGLE_REVIEW_OTP: z.preprocess(emptyToUndefined, z.string().regex(/^\d{4,8}$/).optional()),
+
+  /**
+   * Extra never-SMS list (comma-separated phones). Same contract as partnersite
+   * SMS_BLOCKED_PHONES — use for review numbers when the Send SMS hook is shared.
+   */
+  SMS_BLOCKED_PHONES: z.preprocess(emptyToUndefined, z.string().optional()),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

@@ -496,6 +496,7 @@ export function LandingHeroGreenContent() {
       <div
         ref={containerRef}
         className="landing-hero-arc-root relative flex aspect-square w-[min(88vw,420px)] max-w-full items-center justify-center sm:w-[min(82vw,460px)] lg:w-[min(36vw,400px)]"
+        style={{ perspective: '900px' }}
       >
         {/* Arc + quick cards — above main disc (z-5), centered on plate */}
         <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center overflow-visible">
@@ -585,26 +586,28 @@ export function LandingHeroGreenContent() {
           </div>
         </div>
 
-        {/* Main circle — below arc in z-order */}
+        {/* Main circle — 3D disc with depth + specular highlight */}
         <div
           key={`hero-image-wrap-${selectedIndex}`}
           className="hero-image-swap-in relative z-[3] flex items-center justify-center"
         >
-          <AppAssetImage
-            key={`hero-image-${selectedIndex}`}
-            assetKey={item.assetKey}
-            alt={item.title}
-            width={512}
-            height={512}
-            decoding="async"
-            fetchPriority="high"
-            className="block aspect-square w-[min(62vw,260px)] rounded-full border-[6px] border-white bg-white object-contain p-3 shadow-[0_24px_50px_rgba(0,0,0,0.14)] sm:w-[min(58vw,300px)] lg:w-[min(28vw,320px)]"
-          />
+          <div className="landing-hero-disc-3d aspect-square w-[min(62vw,260px)] overflow-hidden rounded-full border-[6px] border-white bg-gradient-to-br from-white via-[#fbfbfb] to-[#eef2ef] p-3 sm:w-[min(58vw,300px)] lg:w-[min(28vw,320px)]">
+            <AppAssetImage
+              key={`hero-image-${selectedIndex}`}
+              assetKey={item.assetKey}
+              alt={item.title}
+              width={512}
+              height={512}
+              decoding="async"
+              fetchPriority="high"
+              className="block h-full w-full rounded-full object-contain"
+            />
+          </div>
         </div>
 
-        {/* Decorative leaves */}
+        {/* Decorative leaves — depth via 3D drop shadow */}
         <svg
-          className="pointer-events-none absolute -right-1 top-[10%] z-[2] hidden h-16 w-12 text-[#0d7a3d] opacity-90 drop-shadow-md sm:block"
+          className="landing-hero-leaf-3d pointer-events-none absolute -right-1 top-[10%] z-[2] hidden h-16 w-12 text-[#0d7a3d] opacity-95 sm:block"
           viewBox="0 0 60 80"
           fill="currentColor"
           aria-hidden
@@ -612,7 +615,7 @@ export function LandingHeroGreenContent() {
           <path d="M45 5 C20 25 5 55 15 78 C35 50 50 30 45 5Z" />
         </svg>
         <svg
-          className="pointer-events-none absolute bottom-[6%] -left-3 z-[2] h-24 w-16 text-[#0c6e36] opacity-88 drop-shadow-lg lg:-left-6"
+          className="landing-hero-leaf-3d pointer-events-none absolute bottom-[6%] -left-3 z-[2] h-24 w-16 text-[#0c6e36] opacity-92 lg:-left-6"
           viewBox="0 0 80 100"
           fill="currentColor"
           aria-hidden
@@ -620,7 +623,7 @@ export function LandingHeroGreenContent() {
           <path d="M60 0 C15 40 0 85 25 100 C55 70 70 35 60 0Z" />
         </svg>
         <svg
-          className="pointer-events-none absolute top-[20%] -right-2 z-[2] hidden h-12 w-9 text-[#0c6e36] opacity-75 drop-shadow-md md:block"
+          className="landing-hero-leaf-3d pointer-events-none absolute top-[20%] -right-2 z-[2] hidden h-12 w-9 text-[#0c6e36] opacity-80 md:block"
           viewBox="0 0 50 70"
           fill="currentColor"
           aria-hidden
@@ -672,8 +675,8 @@ export function LandingHeroExploreButton({
       key={`hero-explore-${selectedIndex}`}
       type="button"
       onClick={explore}
-      className={`hero-stagger-button cta-clickable-pulse mt-5 inline-flex min-w-[168px] max-w-[248px] self-start justify-center bg-[#109D4C] text-white font-bold text-[13px] sm:mt-6 sm:text-[14px] tracking-[0.08em] px-8 sm:px-9 py-2.5 rounded-[10px] shadow-[0_10px_28px_rgba(16,157,76,0.4)] hover:brightness-[1.05] transition-all uppercase ${
-        !isSelectedEnabled ? 'opacity-90' : ''
+      className={`landing-hero-explore-btn hero-stagger-button mt-5 sm:mt-6 ${
+        !isSelectedEnabled ? 'landing-hero-explore-btn--soon' : ''
       } ${className}`}
     >
       {isSelectedEnabled ? 'Explore More' : 'Coming Soon'}

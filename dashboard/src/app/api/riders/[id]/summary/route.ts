@@ -4,7 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { requireRiderApiAuth, riderAuthFailureResponse } from "@/lib/auth/require-rider-api-auth";
 import { getDb, getSql } from "@/lib/db/client";
 import { fetchRiderUnifiedTickets } from "@/lib/riders/rider-unified-tickets";
 import { fetchRiderRecentOrders, formatRiderOrderDisplayId } from "@/lib/riders/rider-orders-query";
@@ -39,7 +39,6 @@ import { healVehicleVerifiedFromRcDocuments } from "@/lib/rider-document-downstr
 import { eq, and, or, desc, gte, lte, isNull, sql } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
 import { getRedisClient } from "@/lib/redis";
 import { getCached, setCached } from "@/lib/server-cache";
 import { getRiderLogoutSessionSnapshot } from "@/lib/db/operations/rider-logout-events";
@@ -105,31 +104,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) {
-      return NextResponse.json(
-        { success: false, error: "Not authenticated" },
-        { status: 401 }
-      );
-    }
-    const email = user.email ?? "";
-    const { getSystemUserByEmail } = await import("@/lib/db/operations/users");
-    const systemUserForAccess = await getSystemUserByEmail(email);
-    if (!systemUserForAccess) {
-      return NextResponse.json(
-        { success: false, error: "Your account is not set up as an agent. Please contact admin.", code: "AGENT_NOT_FOUND" },
-        { status: 403 }
-      );
-    }
-    const userIsSuperAdmin = await isSuperAdmin(user.id, email);
-    const hasRiderAccess = await hasDashboardAccessByAuth(user.id, email, "RIDER");
-    if (!userIsSuperAdmin && !hasRiderAccess) {
-      return NextResponse.json(
-        { success: false, error: "Insufficient permissions. RIDER dashboard access required.", code: "FORBIDDEN" },
-        { status: 403 }
-      );
-    }
+    const auth = await requireRiderApiAuth(request);
+    if (!auth.ok) return riderAuthFailureResponse(auth);
 
     const { id } = await params;
     const riderId = parseInt(id);
@@ -922,6 +898,8 @@ export async function GET(
           walletDebited: order.walletDebited ?? false,
           hasLedgerEntry: order.hasLedgerEntry ?? false,
           earningCreditPending: order.earningCreditPending ?? false,
+          walletLedgerTitle: order.walletLedgerTitle ?? null,
+          walletLedgerReason: order.walletLedgerReason ?? null,
           createdAt:
             order.createdAt instanceof Date
               ? order.createdAt.toISOString()

@@ -15,6 +15,9 @@ export const customers = pgTable('customers', {
   fullName: text('full_name').notNull(),
   email: text('email'),
   primaryMobile: text('primary_mobile').notNull(),
+  /** DB enum customer_gender — sent as text, Postgres casts. */
+  gender: text('gender'),
+  ageGroup: text('age_group'),
   referralCode: text('referral_code'),
   referredBy: text('referred_by'),
   /** Stored as enum in DB; Drizzle sends text — Postgres casts. */
@@ -27,6 +30,7 @@ export const customers = pgTable('customers', {
   updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
   createdVia: text('created_via').default('app'),
   profileCompleted: boolean('profile_completed').default(false),
+  profileImageUrl: text('profile_image_url'),
   addressLine1: text('address_line1'),
   city: text('city'),
   state: text('state'),

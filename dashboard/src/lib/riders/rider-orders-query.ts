@@ -58,6 +58,8 @@ export type RiderRecentOrderRow = {
   walletDebited?: boolean;
   hasLedgerEntry?: boolean;
   earningCreditPending?: boolean;
+  walletLedgerTitle?: string | null;
+  walletLedgerReason?: string | null;
   riderAssignmentStatus?: string | null;
   riderRideUnassigned?: boolean;
   assignmentRiderEarning?: string | number | null;

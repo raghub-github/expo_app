@@ -396,6 +396,7 @@ const AccountRestrictionsSchema = z
         | "all_services_blacklist"
         | "blocked_status",
       globalWalletBlock: raw.globalWalletBlock ?? false,
+      negativeWalletBlocks: raw.negativeWalletBlocks ?? [],
       blacklistBlockedServices,
       allServicesBlacklisted,
       penaltyDue: raw.penaltyDue ?? 0,
@@ -451,6 +452,7 @@ const EarningsSummarySchema = z.object({
       accountRestricted: false,
       accountRestrictedReason: "none" as const,
       globalWalletBlock: false,
+      negativeWalletBlocks: [] as Array<{ serviceType: string; reason: string }>,
       blacklistBlockedServices: [],
       allServicesBlacklisted: false,
       penaltyDue: 0,

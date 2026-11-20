@@ -151,9 +151,25 @@ export function resolveLedgerCategory(entry: RiderLedgerDisplayEntry): string {
   }
   if (isLedgerTipEntry(entry)) return "tips";
   if (INCENTIVE_ENTRY_TYPES.has(entryType)) return "incentives";
-  if (ADJUSTMENT_ENTRY_TYPES.has(entryType)) return "adjustments";
 
   const service = entry.serviceType?.trim().toLowerCase() ?? "";
+  const isCashSettle =
+    entryType === "cod_order" ||
+    /^(?:ride|parcel)_cash_settle:\d+$/i.test(entry.ref ?? "");
+  // COD platform-share is ride/parcel job money, not a manual adjustment.
+  if (isCashSettle) {
+    if (service === "parcel" || entry.ref?.startsWith("parcel_cash_settle:")) return "parcel";
+    if (
+      service === "person_ride" ||
+      service === "ride" ||
+      entry.ref?.startsWith("ride_cash_settle:")
+    ) {
+      return "ride";
+    }
+  }
+
+  if (ADJUSTMENT_ENTRY_TYPES.has(entryType)) return "adjustments";
+
   if (service === "food") return "food";
   if (service === "parcel") return "parcel";
   if (service === "person_ride" || service === "ride") return "ride";
@@ -202,11 +218,15 @@ export function ledgerTransactionTitle(entry: RiderLedgerDisplayEntry): string {
   }
   if (entry.flow === "debit") {
     if (entry.category === "penalties") return "Penalty Deduction";
+    if (entryType === "cod_order" || /^(?:ride|parcel)_cash_settle:\d+$/i.test(entry.ref ?? "")) {
+      if (entry.category === "parcel") return "Cash Parcel · Platform Share";
+      if (entry.category === "ride") return "Cash Ride · Platform Share";
+      return "COD Collected";
+    }
     if (entry.category === "adjustments") return "Wallet Adjustment";
     if (entryType === "manual_deduct") return "Manual Deduction";
     if (entryType === "onboarding_fee") return "Onboarding Fee";
     if (entryType === "purchase") return "Purchase";
-    if (entryType === "cod_order") return "COD Collected";
     return `${category} Deduction`;
   }
   if (entry.category === "tips") return "Customer Tip";
@@ -255,8 +275,113 @@ export function ledgerEarningBanner(entry: RiderLedgerDisplayEntry): string {
   if (entryType === "withdrawal" || entry.refType?.toLowerCase() === "withdrawal") {
     return "Bank Transfer";
   }
+  if (entryType === "cod_order" || /^(?:ride|parcel)_cash_settle:\d+$/i.test(entry.ref ?? "")) {
+    return "Cash collected exceeds earning — platform share debited from wallet";
+  }
+  if (entry.ref?.startsWith("rider_cancel_pen:")) {
+    return "Cancellation penalty debited from wallet";
+  }
   if (entry.flow === "credit") return "Delivery Earning";
+  if (entry.category === "penalties") return "Penalty Deduction";
   return "Wallet Debit";
+}
+
+/**
+ * Recent-orders Credit/Debit subtitle — keep copy aligned with rider-app ledger titles.
+ */
+export function resolveOrderWalletLedgerLabel(input: {
+  orderType?: string | null;
+  ledgerNet: number | null;
+  entries: Array<{ entryType: string; ref?: string | null }>;
+}): { title: string; reason: string } | null {
+  if (input.ledgerNet == null || input.entries.length === 0) return null;
+
+  const service = String(input.orderType ?? "").trim().toLowerCase();
+  const isParcel = service === "parcel";
+  const isRide = service === "person_ride" || service === "ride";
+
+  const hasCashSettle = input.entries.some((e) => {
+    const ref = e.ref?.trim() ?? "";
+    const type = e.entryType.toLowerCase();
+    return (
+      type === "cod_order" ||
+      /^(?:ride|parcel)_cash_settle:\d+$/i.test(ref)
+    );
+  });
+  const hasCancelPen = input.entries.some((e) =>
+    (e.ref ?? "").startsWith("rider_cancel_pen:")
+  );
+  const hasEarning = input.entries.some((e) => {
+    const type = e.entryType.toLowerCase();
+    const ref = e.ref ?? "";
+    return type === "earning" || ref.startsWith("rider_earn:");
+  });
+
+  if (input.ledgerNet < 0) {
+    if (hasCashSettle) {
+      return {
+        title: isParcel
+          ? "Cash Parcel · Platform Share"
+          : isRide
+            ? "Cash Ride · Platform Share"
+            : "COD Collected",
+        reason: "Cash collected > earning. Platform share taken from wallet.",
+      };
+    }
+    if (hasCancelPen) {
+      return {
+        title: "Cancellation Penalty",
+        reason: "Cancel penalty deducted from wallet.",
+      };
+    }
+    return {
+      title: "Wallet Debit",
+      reason: "Amount deducted from rider wallet.",
+    };
+  }
+
+  if (input.ledgerNet > 0) {
+    if (hasCashSettle && hasEarning) {
+      return {
+        title: isParcel
+          ? "Cash Parcel · Company Top-up"
+          : isRide
+            ? "Cash Ride · Company Top-up"
+            : "Cash Settlement Credit",
+        reason: "Earning > cash collected. Top-up credited to wallet.",
+      };
+    }
+    if (hasEarning) {
+      return {
+        title: isParcel
+          ? "Parcel Delivery Earnings"
+          : isRide
+            ? "Ride Earnings"
+            : service === "food"
+              ? "Food Delivery Earnings"
+              : "Delivery Earnings",
+        reason: "Delivery earning credited to wallet.",
+      };
+    }
+    return {
+      title: "Wallet Credit",
+      reason: "Amount credited to rider wallet.",
+    };
+  }
+
+  // Net zero wallet move after settlement (cash collected ≈ earning).
+  if (hasCashSettle || hasEarning) {
+    return {
+      title: isParcel
+        ? "Cash Parcel · Cash Collected"
+        : isRide
+          ? "Cash Ride · Cash Collected"
+          : "Cash Collected",
+      reason: "Cash = earning. No wallet change.",
+    };
+  }
+
+  return null;
 }
 
 function isRealOrderRef(ref: string, refType: string): boolean {

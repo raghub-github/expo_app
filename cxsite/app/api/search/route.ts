@@ -64,7 +64,6 @@ export async function GET(request: NextRequest) {
       const nearbyRes = await supabase
         .from('merchant_stores')
         .select('store_id, latitude, longitude, delivery_radius_km, is_active, status, approval_status')
-        .eq('is_active', true)
         .eq('status', 'ACTIVE')
         .eq('approval_status', 'APPROVED')
         .not('latitude', 'is', null)
@@ -94,7 +93,6 @@ export async function GET(request: NextRequest) {
       supabase
         .from('merchant_stores')
         .select('store_id, public_slug, store_name, store_display_name, banner_url, full_address')
-        .eq('is_active', true)
         .eq('status', 'ACTIVE')
         .eq('approval_status', 'APPROVED')
         .or(`store_name.ilike.%${safeQ}%,store_display_name.ilike.%${safeQ}%,full_address.ilike.%${safeQ}%`)

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
-import { hasDashboardAccessByAuth, isSuperAdmin } from "@/lib/permissions/engine";
+import { requireRiderApiAuth, riderAuthFailureResponse } from "@/lib/auth/require-rider-api-auth";
 import {
   aggregateRiderCancellationCounts,
   RIDER_ANALYTICS_SERVICES,
@@ -21,23 +20,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const supabase = await createServerSupabaseClient();
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-    if (userError || !user) {
-      return NextResponse.json({ success: false, error: "Not authenticated" }, { status: 401 });
-    }
-
-    const userIsSuperAdmin = await isSuperAdmin(user.id, user.email ?? "");
-    const hasRiderAccess = await hasDashboardAccessByAuth(user.id, user.email ?? "", "RIDER");
-    if (!userIsSuperAdmin && !hasRiderAccess) {
-      return NextResponse.json(
-        { success: false, error: "Insufficient permissions." },
-        { status: 403 }
-      );
-    }
+    const auth = await requireRiderApiAuth(request);
+    if (!auth.ok) return riderAuthFailureResponse(auth);
 
     const { id } = await params;
     const riderId = parseInt(id, 10);

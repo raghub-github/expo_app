@@ -164,7 +164,9 @@ export function PaymentManagementClient() {
   );
 
   const [migrationRequired, setMigrationRequired] = useState(false);
-  const [payouts, setPayouts] = useState<MerchantPayoutRow[]>([]);
+  const [merchantPayouts, setMerchantPayouts] = useState<MerchantPayoutRow[]>([]);
+  const [riderPayouts, setRiderPayouts] = useState<MerchantPayoutRow[]>([]);
+  const [adjustmentPendingCount, setAdjustmentPendingCount] = useState(0);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [pgInputs, setPgInputs] = useState<Record<number, string>>({});
   const [utrInputs, setUtrInputs] = useState<Record<number, string>>({});
@@ -178,6 +180,7 @@ export function PaymentManagementClient() {
   const [editModal, setEditModal] = useState<{ row: MerchantPayoutRow; field: EditField } | null>(null);
   const [rejectModal, setRejectModal] = useState<MerchantPayoutRow | null>(null);
   const [holdModal, setHoldModal] = useState<MerchantPayoutRow | null>(null);
+  const payouts = party === "rider" ? riderPayouts : merchantPayouts;
 
   const loadConfig = useCallback(async () => {
     try {
@@ -196,53 +199,75 @@ export function PaymentManagementClient() {
     }
   }, []);
 
-  const loadPayouts = useCallback(async () => {
-    if (party === "threshold" || party === "adjustment") {
-      setPayouts([]);
-      return;
-    }
-    try {
-      const query = party === "rider" ? "?party=rider" : "";
-      const res = await fetch(`/api/super-admin/payment-payouts${query}`, { cache: "no-store" });
-      const data = await readApiJson(res);
-      if (!res.ok || !data.success) {
-        toast.error(String(data.error ?? "Failed to load withdrawals"));
-        return;
+  const seedPayoutInputs = useCallback((rows: MerchantPayoutRow[]) => {
+    setPgInputs((prev) => {
+      const next = { ...prev };
+      for (const row of rows) {
+        if (row.id != null && next[row.id] === undefined) {
+          next[row.id] = row.pg_transaction_id ?? "";
+        }
       }
-      const rows = (data.payouts as MerchantPayoutRow[]) ?? [];
-      setPayouts(rows);
-      setPgInputs((prev) => {
-        const next = { ...prev };
-        for (const row of rows) {
-          if (row.id != null && next[row.id] === undefined) {
-            next[row.id] = row.pg_transaction_id ?? "";
-          }
+      return next;
+    });
+    setUtrInputs((prev) => {
+      const next = { ...prev };
+      for (const row of rows) {
+        if (row.id != null && next[row.id] === undefined) {
+          next[row.id] = row.utr_reference ?? "";
         }
-        return next;
-      });
-      setUtrInputs((prev) => {
-        const next = { ...prev };
-        for (const row of rows) {
-          if (row.id != null && next[row.id] === undefined) {
-            next[row.id] = row.utr_reference ?? "";
-          }
+      }
+      return next;
+    });
+  }, []);
+
+  const loadPayouts = useCallback(async () => {
+    try {
+      const [merchantRes, riderRes, adjustmentRes] = await Promise.all([
+        fetch("/api/super-admin/payment-payouts", { cache: "no-store" }),
+        fetch("/api/super-admin/payment-payouts?party=rider", { cache: "no-store" }),
+        fetch("/api/merchant/wallet-requests?status=PENDING&limit=1&offset=0", {
+          credentials: "include",
+          cache: "no-store",
+        }),
+      ]);
+
+      const merchantData = await readApiJson(merchantRes);
+      if (!merchantRes.ok || !merchantData.success) {
+        toast.error(String(merchantData.error ?? "Failed to load merchant withdrawals"));
+      } else {
+        const rows = (merchantData.payouts as MerchantPayoutRow[]) ?? [];
+        setMerchantPayouts(rows);
+        seedPayoutInputs(rows);
+      }
+
+      const riderData = await readApiJson(riderRes);
+      if (!riderRes.ok || !riderData.success) {
+        toast.error(String(riderData.error ?? "Failed to load rider withdrawals"));
+      } else {
+        const rows = (riderData.payouts as MerchantPayoutRow[]) ?? [];
+        setRiderPayouts(rows);
+        seedPayoutInputs(rows);
+      }
+
+      try {
+        const adjustmentData = await adjustmentRes.json();
+        if (adjustmentData?.success) {
+          setAdjustmentPendingCount(Number(adjustmentData.total) || 0);
         }
-        return next;
-      });
+      } catch {
+        /* ignore adjustment badge failures */
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to load withdrawals");
     }
-  }, [party]);
+  }, [seedPayoutInputs]);
 
   useEffect(() => {
     void loadConfig();
     void loadPayouts();
   }, [loadConfig, loadPayouts]);
 
-  usePaymentPayoutsLiveSync(() => {
-    if (party === "threshold" || party === "adjustment") return;
-    return loadPayouts();
-  });
+  usePaymentPayoutsLiveSync(() => loadPayouts());
 
   const payoutAction = async (
     payoutId: number,
@@ -335,6 +360,17 @@ export function PaymentManagementClient() {
     };
   }, [filteredPayouts]);
 
+  const tabPendingCounts = useMemo(() => {
+    const countPending = (rows: MerchantPayoutRow[]) =>
+      rows.filter((p) => displayStatus(String(p.status ?? "")) === "PENDING").length;
+    return {
+      merchant: countPending(merchantPayouts),
+      rider: countPending(riderPayouts),
+      threshold: 0,
+      adjustment: adjustmentPendingCount,
+    } satisfies Record<PaymentParty, number>;
+  }, [merchantPayouts, riderPayouts, adjustmentPendingCount]);
+
   const totalPages = Math.max(1, Math.ceil(filteredPayouts.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const pageRows = filteredPayouts.slice((safePage - 1) * pageSize, safePage * pageSize);
@@ -387,7 +423,11 @@ export function PaymentManagementClient() {
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <div className="sticky top-0 z-30 shrink-0 border-b-[0.5px] border-[#121212]/10 bg-white py-2">
         <div className="flex flex-nowrap items-center gap-2 overflow-x-auto rounded-md border-[0.5px] border-[#121212]/15 bg-white px-2.5 py-2 [scrollbar-width:thin]">
-          <PaymentPartyTabs party={party} onChange={setParty} />
+          <PaymentPartyTabs
+            party={party}
+            onChange={setParty}
+            pendingCounts={tabPendingCounts}
+          />
 
           {party === "merchant" || party === "rider" ? (
             <>
@@ -431,23 +471,6 @@ export function PaymentManagementClient() {
                 <option value="HOLD">Hold</option>
               </select>
 
-              <div className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-[#121212]/12 bg-white px-2 text-xs text-[#121212]/70">
-                <Calendar className="h-3.5 w-3.5 shrink-0 text-[#121212]/35" />
-                <input
-                  type="date"
-                  value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
-                  className="w-[108px] border-0 bg-transparent p-0 text-xs outline-none"
-                />
-                <span className="text-[#121212]/35">→</span>
-                <input
-                  type="date"
-                  value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
-                  className="w-[108px] border-0 bg-transparent p-0 text-xs outline-none"
-                />
-              </div>
-
               {hasActiveFilters ? (
                 <button
                   type="button"
@@ -483,16 +506,16 @@ export function PaymentManagementClient() {
         </div>
 
         {party === "merchant" || party === "rider" ? (
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 px-0.5 text-[11px] text-[#121212]/55">
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 px-0.5 text-[11px] text-[#121212]/55">
             <span>
               Total <span className="font-semibold tabular-nums text-[#121212]">{formatInr(stats.total)}</span>
             </span>
-            <span>
+            <span className="inline-flex items-center gap-1">
               Pending{" "}
               <span className="font-semibold tabular-nums text-amber-700">{formatInr(stats.pending)}</span>
-              {stats.pendingCount > 0 ? (
-                <span className="ml-1 text-amber-700/80">({stats.pendingCount})</span>
-              ) : null}
+              <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-amber-800">
+                {stats.pendingCount}
+              </span>
             </span>
             <span>
               Completed{" "}
@@ -515,6 +538,26 @@ export function PaymentManagementClient() {
                 <span className="ml-1 text-violet-700/80">({stats.holdCount})</span>
               ) : null}
             </span>
+
+            <div className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[#121212]/12 bg-white px-2 text-xs text-[#121212]/70">
+              <Calendar className="h-3.5 w-3.5 shrink-0 text-[#121212]/35" />
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="w-[108px] border-0 bg-transparent p-0 text-xs outline-none"
+                aria-label="From date"
+              />
+              <span className="text-[#121212]/35">→</span>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="w-[108px] border-0 bg-transparent p-0 text-xs outline-none"
+                aria-label="To date"
+              />
+            </div>
+
             <Link
               href="/dashboard/super-admin/rule-engine"
               className="ml-auto inline-flex items-center gap-1 font-medium text-[#121212]/65 hover:text-[#121212]"
@@ -695,9 +738,11 @@ export function PaymentManagementClient() {
 function PaymentPartyTabs({
   party,
   onChange,
+  pendingCounts,
 }: {
   party: PaymentParty;
   onChange: (p: PaymentParty) => void;
+  pendingCounts: Record<PaymentParty, number>;
 }) {
   const items: { id: PaymentParty; label: string; icon: ReactNode }[] = [
     { id: "merchant", label: "Merchant", icon: <Store className="h-3.5 w-3.5" /> },
@@ -714,6 +759,7 @@ function PaymentPartyTabs({
     >
       {items.map((item) => {
         const active = party === item.id;
+        const pending = pendingCounts[item.id] ?? 0;
         return (
           <button
             key={item.id}
@@ -729,6 +775,16 @@ function PaymentPartyTabs({
           >
             {item.icon}
             {item.label}
+            {pending > 0 ? (
+              <span
+                className={`inline-flex min-w-[1.15rem] items-center justify-center rounded-full px-1 py-0.5 text-[10px] font-bold tabular-nums leading-none ${
+                  active ? "bg-amber-400 text-[#121212]" : "bg-amber-500 text-white"
+                }`}
+                title={`${pending} pending request${pending === 1 ? "" : "s"}`}
+              >
+                {pending > 99 ? "99+" : pending}
+              </span>
+            ) : null}
           </button>
         );
       })}

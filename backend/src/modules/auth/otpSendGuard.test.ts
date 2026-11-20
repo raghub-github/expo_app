@@ -3,7 +3,7 @@ import { test, mock, before } from "node:test";
 
 /**
  * Per-phone OTP send guard — the anti-SMS-bomb / anti-billing-runaway limit. Tested against a
- * tiny in-memory Redis fake so the cooldown + daily-cap + per-number isolation are pinned.
+ * tiny in-memory Redis fake so the cooldown + window + daily-cap + per-number isolation are pinned.
  * Run needs `--experimental-test-module-mocks` (see package.json "test").
  */
 
@@ -53,37 +53,121 @@ before(async () => {
 
 test("cooldown blocks a second send within the interval", async () => {
   store.clear();
-  const r1 = await checkAndRecordOtpSend("+919113194305", { minIntervalSec: 45, dailyCap: 100 });
+  const r1 = await checkAndRecordOtpSend("+919113194305", {
+    minIntervalSec: 60,
+    window15mCap: 100,
+    window1hCap: 100,
+    dailyCap: 100,
+  });
   assert.equal(r1.allowed, true);
-  const r2 = await checkAndRecordOtpSend("+919113194305", { minIntervalSec: 45, dailyCap: 100 });
+  const r2 = await checkAndRecordOtpSend("+919113194305", {
+    minIntervalSec: 60,
+    window15mCap: 100,
+    window1hCap: 100,
+    dailyCap: 100,
+  });
   assert.equal(r2.allowed, false);
   assert.equal(r2.allowed === false && r2.reason, "cooldown");
+});
+
+test("15-minute window blocks after N sends", async () => {
+  store.clear();
+  for (let i = 0; i < 3; i++) {
+    const r = await checkAndRecordOtpSend("+919999999999", {
+      minIntervalSec: 1,
+      window15mCap: 3,
+      window1hCap: 100,
+      dailyCap: 100,
+    });
+    assert.equal(r.allowed, true, `send ${i} should pass`);
+    store.delete("otp:send:cd:9999999999");
+  }
+  const over = await checkAndRecordOtpSend("+919999999999", {
+    minIntervalSec: 1,
+    window15mCap: 3,
+    window1hCap: 100,
+    dailyCap: 100,
+  });
+  assert.equal(over.allowed, false);
+  assert.equal(over.allowed === false && over.reason, "window_15m");
+});
+
+test("hourly window blocks after N sends", async () => {
+  store.clear();
+  for (let i = 0; i < 5; i++) {
+    const r = await checkAndRecordOtpSend("+918888888888", {
+      minIntervalSec: 1,
+      window15mCap: 100,
+      window1hCap: 5,
+      dailyCap: 100,
+    });
+    assert.equal(r.allowed, true, `send ${i} should pass`);
+    store.delete("otp:send:cd:8888888888");
+  }
+  const over = await checkAndRecordOtpSend("+918888888888", {
+    minIntervalSec: 1,
+    window15mCap: 100,
+    window1hCap: 5,
+    dailyCap: 100,
+  });
+  assert.equal(over.allowed, false);
+  assert.equal(over.allowed === false && over.reason, "window_1h");
 });
 
 test("daily cap blocks after N sends", async () => {
   store.clear();
   for (let i = 0; i < 3; i++) {
-    const r = await checkAndRecordOtpSend("+919999999999", { minIntervalSec: 1, dailyCap: 3 });
+    const r = await checkAndRecordOtpSend("+917777777777", {
+      minIntervalSec: 1,
+      window15mCap: 100,
+      window1hCap: 100,
+      dailyCap: 3,
+    });
     assert.equal(r.allowed, true, `send ${i} should pass`);
-    store.delete("otp:send:cd:9999999999"); // clear cooldown so we reach the daily cap
+    store.delete("otp:send:cd:7777777777");
   }
-  const over = await checkAndRecordOtpSend("+919999999999", { minIntervalSec: 1, dailyCap: 3 });
+  const over = await checkAndRecordOtpSend("+917777777777", {
+    minIntervalSec: 1,
+    window15mCap: 100,
+    window1hCap: 100,
+    dailyCap: 3,
+  });
   assert.equal(over.allowed, false);
   assert.equal(over.allowed === false && over.reason, "daily_cap");
 });
 
 test("different numbers are limited independently", async () => {
   store.clear();
-  const a = await checkAndRecordOtpSend("+919111111111", { minIntervalSec: 45, dailyCap: 100 });
-  const b = await checkAndRecordOtpSend("+919222222222", { minIntervalSec: 45, dailyCap: 100 });
+  const a = await checkAndRecordOtpSend("+919111111111", {
+    minIntervalSec: 60,
+    window15mCap: 100,
+    window1hCap: 100,
+    dailyCap: 100,
+  });
+  const b = await checkAndRecordOtpSend("+919222222222", {
+    minIntervalSec: 60,
+    window15mCap: 100,
+    window1hCap: 100,
+    dailyCap: 100,
+  });
   assert.equal(a.allowed, true);
   assert.equal(b.allowed, true);
 });
 
 test("+91 / bare variants of the same number share one limit", async () => {
   store.clear();
-  const a = await checkAndRecordOtpSend("+919113194305", { minIntervalSec: 45, dailyCap: 100 });
-  const b = await checkAndRecordOtpSend("9113194305", { minIntervalSec: 45, dailyCap: 100 });
+  const a = await checkAndRecordOtpSend("+919113194305", {
+    minIntervalSec: 60,
+    window15mCap: 100,
+    window1hCap: 100,
+    dailyCap: 100,
+  });
+  const b = await checkAndRecordOtpSend("9113194305", {
+    minIntervalSec: 60,
+    window15mCap: 100,
+    window1hCap: 100,
+    dailyCap: 100,
+  });
   assert.equal(a.allowed, true);
   assert.equal(b.allowed, false); // same last-10 digits → same cooldown key
 });

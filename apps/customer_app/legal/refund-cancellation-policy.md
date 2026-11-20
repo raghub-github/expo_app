@@ -186,7 +186,7 @@ This Policy is in addition to your rights under the Consumer Protection Act, 201
 |---|---|
 | In-app | Profile → Help & Support → Raise a Ticket |
 | Email | payments@gatimitra.com (refunds) / grievance@gatimitra.com (escalation) |
-| Phone | 1800-XXX-XXXX |
+| Phone | +91 79888 52917 |
 
 See [Grievance Redressal Mechanism](./grievance-redressal-mechanism.md) for the full grievance flow.
 

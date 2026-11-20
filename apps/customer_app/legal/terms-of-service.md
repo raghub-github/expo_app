@@ -173,7 +173,7 @@ These Terms, together with the documents in this `legal/` directory, constitute 
 
 | Concern | Channel |
 |---|---|
-| General support | support@gatimitra.com / 1800-XXX-XXXX |
+| General support | support@gatimitra.com / +91 79888 52917 |
 | Grievance | grievance.officer@gatimitra.com |
 | Privacy | privacy@gatimitra.com / dpo@gatimitra.com |
 | Safety | safety@gatimitra.com / SOS in app |

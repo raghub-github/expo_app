@@ -41,7 +41,7 @@ async function withPublicSlugs(rows: WebRestaurantRow[]): Promise<WebRestaurantR
 
 /**
  * GET /api/restaurants
- * - No lat/lon (or pan-India browse): all approved active stores (cap 500).
+ * - No lat/lon (or pan-India browse): ACTIVE+APPROVED stores incl. closed (cap 500).
  * - lat + lon: same nearby RPC as customer app (`get_nearby_merchant_stores`).
  */
 export async function GET(request: NextRequest) {

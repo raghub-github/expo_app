@@ -119,22 +119,47 @@ async function isCustomersApiLegacy(res: Response): Promise<boolean> {
   return res.status === 501
 }
 
-async function requestOtpSms(
-  phone: string
-): Promise<{ channel: 'msg91' } | { channel: 'demo' } | { error: string }> {
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  ms: number
+): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), ms)
   try {
-    const res = await fetch(otpAuthUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'send', phone }),
-    })
+    return await fetch(input, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+type OtpSendOk =
+  | { channel: 'msg91'; displayOtp?: string }
+  | { channel: 'demo'; displayOtp?: string }
+
+async function requestOtpSms(phone: string): Promise<OtpSendOk | { error: string }> {
+  try {
+    const res = await fetchWithTimeout(
+      otpAuthUrl(),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'send', phone }),
+      },
+      15000
+    )
     const j = (await res.json().catch(() => ({}))) as {
       channel?: string
       error?: string
       hint?: string
+      otp?: string
     }
-    if (res.ok && j.channel === 'msg91') {
-      return { channel: 'msg91' }
+    // review_bypass seeds OTP on server — verify via /api/auth/otp; show fixed OTP in UI when returned
+    if (res.ok && (j.channel === 'msg91' || j.channel === 'review_bypass')) {
+      return {
+        channel: 'msg91',
+        displayOtp: typeof j.otp === 'string' && j.otp ? j.otp : undefined,
+      }
     }
     if (res.ok && j.channel === 'demo') {
       console.warn(
@@ -147,7 +172,39 @@ async function requestOtpSms(
       error: j.error || `Could not send OTP (${res.status})`,
     }
   } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      return { error: 'OTP request timed out. Please try again.' }
+    }
     return { error: e?.message || 'Network error' }
+  }
+}
+
+function persistOtpChannel(otpRoute: OtpSendOk, dispatch: any) {
+  // Never surface OTP in the UI — SMS only (or silent server store for Google review phone).
+  dispatch(setGeneratedOtp(null))
+  if (typeof window !== 'undefined') {
+    sessionStorage.removeItem('demoOtp')
+    if (otpRoute.channel === 'demo') {
+      const demoOtp = otpRoute.displayOtp || generateDemoOtp()
+      sessionStorage.setItem('demoOtp', demoOtp)
+      sessionStorage.setItem('authOtpChannel', 'demo')
+    } else {
+      sessionStorage.removeItem('demoOtp')
+      sessionStorage.setItem('authOtpChannel', 'msg91')
+    }
+  }
+}
+
+async function checkUserExistsFast(phone: string, preferredFlow: 'signin' | 'signup'): Promise<boolean> {
+  try {
+    return await Promise.race([
+      checkUserExists(phone),
+      new Promise<boolean>((resolve) => {
+        setTimeout(() => resolve(preferredFlow === 'signin'), 2500)
+      }),
+    ])
+  } catch {
+    return preferredFlow === 'signin'
   }
 }
 
@@ -624,49 +681,42 @@ export const saveUser = async (
   }
 }
 
-// Sign In
-export const signInWithPhone = (phone: string, category: ServiceCategory = 'food') => async (dispatch: any) => {
+/**
+ * Send OTP for phone auth (customer-app style).
+ * Always pushes OTP — if no account exists, flow becomes signup instead of blocking.
+ */
+export const requestPhoneAuthOtp = (
+  phone: string,
+  preferredFlow: 'signin' | 'signup' = 'signin',
+  category: ServiceCategory = 'food'
+) => async (dispatch: any) => {
   dispatch(setLoading(true))
   dispatch(setError(null))
-  
-  try {
-    const userExists = await checkUserExists(phone)
-    dispatch(setIsExistingUser(userExists))
-    
-    if (!userExists) {
-      dispatch(setError('No account found. Please sign up first.'))
-      dispatch(setLoading(false))
-      return { success: false, error: 'User not found', isNewUser: true }
-    }
 
+  try {
+    // Push OTP immediately — don't wait on slow DB exists check (was causing timeouts).
+    const existsPromise = checkUserExistsFast(phone, preferredFlow)
     const otpRoute = await requestOtpSms(phone)
+
     if ('error' in otpRoute) {
       dispatch(setError(otpRoute.error))
-      dispatch(setLoading(false))
-      return { success: false, error: otpRoute.error }
+      return { success: false, error: otpRoute.error, flow: preferredFlow }
     }
 
-    if (otpRoute.channel === 'demo') {
-      const demoOtp = generateDemoOtp()
-      dispatch(setGeneratedOtp(demoOtp))
-      if (typeof window !== 'undefined') {
-        sessionStorage.setItem('demoOtp', demoOtp)
-        sessionStorage.setItem('authOtpChannel', 'demo')
-      }
-    } else {
-      dispatch(setGeneratedOtp(null))
-      if (typeof window !== 'undefined') {
-        sessionStorage.removeItem('demoOtp')
-        sessionStorage.setItem('authOtpChannel', 'msg91')
-      }
-    }
+    const userExists = await existsPromise
+    dispatch(setIsExistingUser(userExists))
+
+    // OTP already sent — never drop the user; just pick the right post-verify flow.
+    const flow: 'signin' | 'signup' = userExists ? 'signin' : 'signup'
+
+    persistOtpChannel(otpRoute, dispatch)
 
     if (typeof window !== 'undefined') {
       sessionStorage.setItem('pendingAuthCategory', category)
-      sessionStorage.setItem('authFlow', 'signin')
+      sessionStorage.setItem('authFlow', flow)
     }
 
-    return { success: true, isNewUser: false }
+    return { success: true, isNewUser: flow === 'signup', flow }
   } catch (error: any) {
     dispatch(setError(error.message))
     return { success: false, error: error.message }
@@ -674,6 +724,10 @@ export const signInWithPhone = (phone: string, category: ServiceCategory = 'food
     dispatch(setLoading(false))
   }
 }
+
+// Sign In — always sends OTP; new phones become signup automatically
+export const signInWithPhone = (phone: string, category: ServiceCategory = 'food') =>
+  requestPhoneAuthOtp(phone, 'signin', category)
 
 // Verify OTP
 export const verifyOtp = (phone: string, token: string, name?: string) => async (dispatch: any) => {
@@ -722,9 +776,10 @@ export const verifyOtp = (phone: string, token: string, name?: string) => async 
     
     if (isSignup) {
       console.log('[Auth] Processing signup - saving user...')
+      // Match customer app: create row at OTP with placeholder name; profile form fills real name.
       const saveResult = await saveUser({
         phone: phone,
-        name: userName || 'User',
+        name: userName?.trim() || 'Pending',
         user_id: gmmsId,
       })
       
@@ -742,7 +797,7 @@ export const verifyOtp = (phone: string, token: string, name?: string) => async 
       id: userData?.id || gmmsId,
       user_id: gmmsId,
       phone: phone,
-      name: userName || userData?.name || 'User',
+      name: userName || userData?.name || (isSignup ? 'Pending' : 'User'),
       email: userData?.email,
       services: services,
       currentCategory: category,
@@ -787,58 +842,14 @@ export const verifyOtp = (phone: string, token: string, name?: string) => async 
   }
 }
 
-// Sign Up
-export const signUpWithPhone = (phone: string, name?: string, category: ServiceCategory = 'food') => async (dispatch: any) => {
-  dispatch(setLoading(true))
-  dispatch(setError(null))
-  
-  try {
-    const userExists = await checkUserExists(phone)
-    
-    if (userExists) {
-      dispatch(setError('An account already exists. Please sign in instead.'))
-      dispatch(setLoading(false))
-      return { success: false, error: 'User already exists', isExistingUser: true }
+// Sign Up — sends OTP; existing accounts are directed to sign-in
+export const signUpWithPhone = (phone: string, name?: string, category: ServiceCategory = 'food') =>
+  async (dispatch: any) => {
+    if (typeof window !== 'undefined' && name) {
+      sessionStorage.setItem('pendingAuthName', name)
     }
-    
-    dispatch(setIsExistingUser(false))
-
-    const otpRoute = await requestOtpSms(phone)
-    if ('error' in otpRoute) {
-      dispatch(setError(otpRoute.error))
-      dispatch(setLoading(false))
-      return { success: false, error: otpRoute.error }
-    }
-
-    if (otpRoute.channel === 'demo') {
-      const demoOtp = generateDemoOtp()
-      dispatch(setGeneratedOtp(demoOtp))
-      if (typeof window !== 'undefined') {
-        sessionStorage.setItem('demoOtp', demoOtp)
-        sessionStorage.setItem('authOtpChannel', 'demo')
-      }
-    } else {
-      dispatch(setGeneratedOtp(null))
-      if (typeof window !== 'undefined') {
-        sessionStorage.removeItem('demoOtp')
-        sessionStorage.setItem('authOtpChannel', 'msg91')
-      }
-    }
-
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem('pendingAuthCategory', category)
-      sessionStorage.setItem('authFlow', 'signup')
-      if (name) sessionStorage.setItem('pendingAuthName', name)
-    }
-
-    return { success: true, isNewUser: true }
-  } catch (error: any) {
-    dispatch(setError(error.message))
-    return { success: false, error: error.message }
-  } finally {
-    dispatch(setLoading(false))
+    return dispatch(requestPhoneAuthOtp(phone, 'signup', category))
   }
-}
 
 // Switch Service - NO DATABASE WRITE, just state change
 // Popup will be shown by ServiceSwitchModal
@@ -860,11 +871,14 @@ export const switchService = (newService: ServiceCategory) => (dispatch: any, ge
   return { success: true }
 }
 
-// Save user details
+// Save user details (aligned with customer app onboarding PATCH /v1/me/profile)
 export const saveUserDetails = (
   phone: string,
   details: {
+    fullName?: string
     email?: string
+    ageGroup?: string
+    gender?: string
     referralCode?: string
     smsPermission?: boolean
     deviceId?: string
@@ -881,6 +895,9 @@ export const saveUserDetails = (
       return { success: false, error: 'Invalid phone number' }
     }
 
+    const fullName = details.fullName?.trim()
+    const emailNorm = details.email?.trim() ? details.email.trim().toLowerCase() : undefined
+
     if (typeof window !== 'undefined') {
       try {
         const res = await fetch(customerAuthUrl(), {
@@ -888,8 +905,11 @@ export const saveUserDetails = (
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             phone: phoneNorm,
-            email: details.email,
-            referralCode: details.referralCode,
+            fullName: fullName || undefined,
+            email: emailNorm,
+            ageGroup: details.ageGroup || undefined,
+            gender: details.gender || undefined,
+            referralCode: details.referralCode || undefined,
             smsPermission: details.smsPermission ?? false,
             profileCompleted: true,
           }),
@@ -898,7 +918,8 @@ export const saveUserDetails = (
           if (!res.ok) throw new Error((await res.json()).error || 'Update failed')
           dispatch(
             updateUserDetails({
-              email: details.email,
+              name: fullName || undefined,
+              email: emailNorm,
               smsPermission: details.smsPermission,
               needsDetailsForm: false,
             })
@@ -909,7 +930,8 @@ export const saveUserDetails = (
         if (!isSupabaseConfigured) {
           dispatch(
             updateUserDetails({
-              email: details.email,
+              name: fullName || undefined,
+              email: emailNorm,
               smsPermission: details.smsPermission,
               needsDetailsForm: false,
             })
@@ -923,7 +945,8 @@ export const saveUserDetails = (
     if (!isSupabaseConfigured) {
       dispatch(
         updateUserDetails({
-          email: details.email,
+          name: fullName || undefined,
+          email: emailNorm,
           smsPermission: details.smsPermission,
           needsDetailsForm: false,
         })
@@ -936,7 +959,8 @@ export const saveUserDetails = (
     const { error } = await supabase
       .from('users')
       .update({
-        email: details.email,
+        name: fullName || undefined,
+        email: emailNorm,
         referral_code: details.referralCode,
         sms_permission: details.smsPermission ?? false,
         device_id: details.deviceId || deviceInfo.deviceId,
@@ -950,7 +974,8 @@ export const saveUserDetails = (
 
     dispatch(
       updateUserDetails({
-        email: details.email,
+        name: fullName || undefined,
+        email: emailNorm,
         smsPermission: details.smsPermission,
         needsDetailsForm: false,
       })

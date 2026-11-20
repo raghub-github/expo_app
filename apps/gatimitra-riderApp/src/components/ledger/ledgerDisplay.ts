@@ -167,6 +167,13 @@ export function ledgerTransactionTitle(entry: RiderLedgerEntry, t: TFunction): s
   }
   if (entry.flow === "debit") {
     if (entry.category === "penalties") return t("ledger.titlePenalty", "Penalty Deduction");
+    if (entryType === "cod_order") {
+      return entry.category === "parcel"
+        ? t("ledger.titleParcelCashShare", "Cash Parcel · Platform Share")
+        : entry.category === "ride"
+          ? t("ledger.titleRideCashShare", "Cash Ride · Platform Share")
+          : t("ledger.titleCodCollected", "COD Collected");
+    }
     if (entry.category === "adjustments") return t("ledger.titleAdjustment", "Wallet Adjustment");
     return `${category} ${t("ledger.deduction", "Deduction")}`;
   }

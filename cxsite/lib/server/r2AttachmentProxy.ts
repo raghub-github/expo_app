@@ -302,7 +302,7 @@ export function r2KeyFromProxySearch(search: string): string | null {
   return k || null
 }
 
-/** Large CMS/category files — never buffer through Next; 302 like the backend proxy. */
+/** Category/CMS keys — prefer streamed 200; signed 302 is fallback only. */
 export function shouldRedirectAttachmentToR2(key: string): boolean {
   return /^(user-app-categories|app-static-assets)\//i.test(key)
 }

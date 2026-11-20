@@ -24,6 +24,7 @@ const config: Config = {
       },
       fontFamily: {
         inter: ['var(--font-inter)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        lora: ['var(--font-lora)', 'Lora', 'ui-serif', 'Georgia', 'serif'],
         poppins: ['Poppins', 'sans-serif'],
         roboto: ['Roboto', 'sans-serif'],
       },

@@ -307,6 +307,7 @@ export default function Header() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [showAppDownloadModal, setShowAppDownloadModal] = useState(false)
   const [showAppLinkToast, setShowAppLinkToast] = useState(false)
+  const [headerScrolled, setHeaderScrolled] = useState(false)
 
   const openAppDownloadModal = useCallback(() => {
     setIsMobileMenuOpen(false)
@@ -317,6 +318,13 @@ export default function Header() {
     const dropdownRef = useRef<HTMLDivElement>(null)
     const landingBusinessRef = useRef<HTMLDivElement>(null)
     const mobileMenuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const onScroll = () => setHeaderScrolled(window.scrollY > 8)
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   const isLandingNavItemActive = (href: string) => {
     if (href === '#') return false
@@ -357,62 +365,68 @@ export default function Header() {
     }
   }, [isBusinessDropdownOpen, isLandingBusinessOpen, isMobileMenuOpen])
 
+  const authCtaClass =
+    'font-lora inline-flex h-9 items-center justify-center gap-1.5 rounded-full bg-[#109D4C] px-5 text-[14px] font-bold tracking-wide text-white shadow-none transition hover:bg-[#0d8a42] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C]/45'
+  const authGhostClass =
+    'font-lora inline-flex h-9 items-center justify-center gap-1.5 rounded-full border border-black/10 bg-white/90 px-4 text-[14px] font-bold text-neutral-900 shadow-none transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#109D4C]/35'
+
   return (
     <>
       <div
-        className={`relative overflow-visible ${isAboutPage || isCorporatesPage || isAroundYouPage ? 'bg-white' : ''} ${
-          isCorporatesPage
-            ? 'sticky top-0 z-[220] border-b border-rose-100/40 bg-[#fdfaf9]/98 backdrop-blur-md shadow-none'
-            : isAboutPage || isAroundYouPage
-            ? 'sticky top-0 z-[220] border-b-0 bg-[#f3f3f3]/98 backdrop-blur-md shadow-none'
-            : showLocationSheet
-              ? 'z-[100]'
-              : showSearchResults && searchQuery
-                ? 'z-[50]'
-                : ''
+        className={`overflow-visible ${
+          showLandingHeaderShell
+            ? 'pointer-events-none fixed inset-x-0 top-0 z-[220] border-0 bg-transparent'
+            : `relative ${
+                showLocationSheet
+                  ? 'z-[100]'
+                  : showSearchResults && searchQuery
+                    ? 'z-[50]'
+                    : ''
+              }`
         }`}
       >
         {/* Header content */}
         <header
           className={
             showLandingHeaderShell
-              ? 'landing-hero-ref relative z-10 px-0 pt-0 pb-0 text-black'
+              ? 'landing-hero-ref relative z-10 px-0 pt-0 pb-0 text-neutral-900'
               : 'text-white py-4 px-5 md:px-20 pb-[160px] rounded-b-[90px] relative z-10'
           }
         >
           {/* Navbar — inner pages only (not home / not about); landing-style bar is inside hero card below */}
           {!showLandingHeaderShell && (
-          <div className="relative z-[100] max-w-[1400px] mx-auto mb-[24px] bg-[rgba(255,255,255,0.95)] backdrop-blur-[16px] rounded-[20px] shadow-[0_4px_24px_rgba(0,0,0,0.08)] px-4 md:px-[28px] py-3 md:py-[14px]">
-            <div className="flex justify-between items-center">
+          <div className="relative z-[100] mx-auto mb-6 max-w-[1400px] rounded-2xl border border-black/[0.06] bg-white/95 px-3 py-2.5 shadow-[0_8px_28px_rgba(0,0,0,0.06)] backdrop-blur-xl sm:px-5 md:px-6 md:py-3">
+            <div className="flex items-center justify-between gap-3">
               <Link
                 href="/"
-                className="flex items-center gap-2 md:gap-3"
+                className="flex shrink-0 items-center no-underline"
+                aria-label="GatiMitra home"
               >
-                <div className="relative flex-shrink-0 logo-blink">
+                <div className="relative flex h-9 items-center sm:h-10 md:h-11">
                   <GatiMitraLogo
-                    alt="GatiMitra Logo"
-                    className="h-10 md:h-12 w-auto object-contain"
+                    alt="GatiMitra"
+                    className="h-full w-auto max-w-[168px] object-contain sm:max-w-[190px]"
                   />
                 </div>
               </Link>
 
-              <nav className="hidden md:flex gap-6 items-center">
-                <Link href="/about" className="text-text no-underline font-medium text-[14px] px-3 py-2 rounded-lg transition-all duration-200 relative flex items-center gap-1.5 hover:text-purple hover:bg-[rgba(75,42,212,0.08)]">
-                  <i className="fas fa-info-circle text-[13px]"></i> About
+              <nav className="hidden md:flex gap-2 items-center">
+                <Link href="/about" className="font-lora rounded-full px-3 py-2 text-[14.5px] font-semibold text-neutral-800 no-underline transition hover:bg-[#109D4C]/08 hover:text-[#0d8a42]">
+                  About
                 </Link>
-                <Link href="#" className="text-text no-underline font-medium text-[14px] px-3 py-2 rounded-lg transition-all duration-200 relative flex items-center gap-1.5 hover:text-purple hover:bg-[rgba(75,42,212,0.08)]">
-                  <i className="fas fa-map-marker-alt text-[13px]"></i> Around You
+                <Link href="/india/All/Stores" className="font-lora rounded-full px-3 py-2 text-[14.5px] font-semibold text-neutral-800 no-underline transition hover:bg-[#109D4C]/08 hover:text-[#0d8a42]">
+                  Around You
                 </Link>
                 
                 <div className="relative inline-block shrink-0 align-middle" ref={dropdownRef}>
                   <button
                     type="button"
                     onClick={() => setIsBusinessDropdownOpen(!isBusinessDropdownOpen)}
-                    className="flex cursor-pointer items-center gap-1.5 rounded-lg border-none bg-transparent px-3 py-2 text-[14px] font-semibold text-text no-underline transition-all duration-200 hover:bg-[rgba(75,42,212,0.08)] hover:text-purple"
+                    className="font-lora flex cursor-pointer items-center gap-1.5 rounded-full border-none bg-transparent px-3 py-2 text-[14.5px] font-semibold text-neutral-800 no-underline transition hover:bg-[#109D4C]/08 hover:text-[#0d8a42]"
                     aria-expanded={isBusinessDropdownOpen}
                     aria-haspopup="menu"
                   >
-                    <i className="fas fa-briefcase text-[13px]"></i> Business
+                    Business
                     <i
                       className={`fas fa-chevron-down text-[10px] opacity-80 transition-transform duration-200 ${isBusinessDropdownOpen ? 'rotate-180' : ''}`}
                       aria-hidden
@@ -480,13 +494,12 @@ export default function Header() {
                     onClick={(e) => {
                       e.preventDefault()
                       e.stopPropagation()
-                      console.log('Profile button clicked')
                       setIsProfileModalOpen(true)
                     }}
-                    className="bg-gradient-to-br from-purple to-[#6a3aff] text-white px-6 py-2.5 rounded-xl font-semibold text-[14px] transition-all duration-200 shadow-[0_4px_16px_rgba(75,42,212,0.25)] hover:shadow-[0_6px_20px_rgba(75,42,212,0.35)] hover:-translate-y-0.5 relative overflow-hidden z-50"
+                    className={authGhostClass}
                     type="button"
                   >
-                    <i className="fas fa-user-circle mr-1.5 text-[13px]"></i>
+                    <i className="fas fa-user text-[11px] text-[#109D4C]" aria-hidden />
                     {user.name || user.phone}
                   </button>
                 ) : (
@@ -494,13 +507,12 @@ export default function Header() {
                     onClick={(e) => {
                       e.preventDefault()
                       e.stopPropagation()
-                      console.log('Auth button clicked, opening modal')
                       setIsAuthModalOpen(true)
                     }}
-                    className="bg-gradient-to-br from-purple to-[#6a3aff] text-white px-6 py-2.5 rounded-xl font-semibold text-[14px] transition-all duration-200 shadow-[0_4px_16px_rgba(75,42,212,0.25)] hover:shadow-[0_6px_20px_rgba(75,42,212,0.35)] hover:-translate-y-0.5 relative overflow-hidden cursor-pointer z-50"
+                    className={authCtaClass}
                     type="button"
                   >
-                    <i className="fas fa-user-circle mr-1.5 text-[13px]"></i> Sign In / Up
+                    Sign in
                   </button>
                 )}
               </nav>
@@ -509,13 +521,13 @@ export default function Header() {
               <div className="md:hidden relative shrink-0" ref={mobileMenuRef}>
                 <button
                   onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-                  className="text-text p-2 rounded-lg hover:bg-[rgba(75,42,212,0.08)] transition-all"
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-neutral-200 bg-white text-neutral-800 shadow-sm transition hover:border-[#109D4C]/40"
                   aria-label="Toggle menu"
                 >
-                  <div className="w-6 h-5 flex flex-col justify-between">
-                    <span className={`block h-0.5 w-full bg-text transition-all duration-300 ${isMobileMenuOpen ? 'rotate-45 translate-y-2' : ''}`}></span>
-                    <span className={`block h-0.5 w-full bg-text transition-all duration-300 ${isMobileMenuOpen ? 'opacity-0' : ''}`}></span>
-                    <span className={`block h-0.5 w-full bg-text transition-all duration-300 ${isMobileMenuOpen ? '-rotate-45 -translate-y-2' : ''}`}></span>
+                  <div className="flex h-3.5 w-4 flex-col justify-between">
+                    <span className={`block h-0.5 w-full rounded bg-neutral-800 transition-all duration-300 ${isMobileMenuOpen ? 'translate-y-[6px] rotate-45' : ''}`} />
+                    <span className={`block h-0.5 w-full rounded bg-neutral-800 transition-all duration-300 ${isMobileMenuOpen ? 'opacity-0' : ''}`} />
+                    <span className={`block h-0.5 w-full rounded bg-neutral-800 transition-all duration-300 ${isMobileMenuOpen ? '-translate-y-[6px] -rotate-45' : ''}`} />
                   </div>
                 </button>
 
@@ -524,50 +536,50 @@ export default function Header() {
                     <Link 
                       href="/" 
                       onClick={() => setIsMobileMenuOpen(false)}
-                      className="block px-5 py-3 text-gray-700 no-underline font-medium text-[15px] transition-all hover:bg-gradient-to-r hover:from-[rgba(22,194,165,0.08)] hover:to-[rgba(75,42,212,0.05)] hover:text-purple"
+                      className="block px-5 py-3 text-[15px] font-medium text-neutral-800 no-underline transition hover:bg-[#109D4C]/06 hover:text-[#0d8a42]"
                     >
-                      <i className="fas fa-home mr-3 text-[14px] text-purple"></i> Home
+                      Home
                     </Link>
                     <Link 
                       href="/about" 
                       onClick={() => setIsMobileMenuOpen(false)}
-                      className="block px-5 py-3 text-gray-700 no-underline font-medium text-[15px] transition-all hover:bg-gradient-to-r hover:from-[rgba(22,194,165,0.08)] hover:to-[rgba(75,42,212,0.05)] hover:text-purple"
+                      className="block px-5 py-3 text-[15px] font-medium text-neutral-800 no-underline transition hover:bg-[#109D4C]/06 hover:text-[#0d8a42]"
                     >
-                      <i className="fas fa-info-circle mr-3 text-[14px] text-purple"></i> About
+                      About
                     </Link>
                     <Link 
-                      href="#" 
+                      href="/india/All/Stores" 
                       onClick={() => setIsMobileMenuOpen(false)}
-                      className="block px-5 py-3 text-gray-700 no-underline font-medium text-[15px] transition-all hover:bg-gradient-to-r hover:from-[rgba(22,194,165,0.08)] hover:to-[rgba(75,42,212,0.05)] hover:text-purple"
+                      className="block px-5 py-3 text-[15px] font-medium text-neutral-800 no-underline transition hover:bg-[#109D4C]/06 hover:text-[#0d8a42]"
                     >
-                      <i className="fas fa-map-marker-alt mr-3 text-[14px] text-purple"></i> Around You
+                      Around You
                     </Link>
                     <a
                       href="https://partner.gatimitra.com"
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={() => setIsMobileMenuOpen(false)}
-                      className="block px-5 py-3 text-gray-700 no-underline font-medium text-[15px] transition-all hover:bg-gradient-to-r hover:from-[rgba(22,194,165,0.08)] hover:to-[rgba(75,42,212,0.05)] hover:text-purple"
+                      className="block px-5 py-3 text-[15px] font-medium text-neutral-800 no-underline transition hover:bg-[#109D4C]/06 hover:text-[#0d8a42]"
                     >
-                      <i className="fas fa-store mr-3 text-[14px] text-purple"></i> Register as Merchant
+                      Register as Merchant
                     </a>
                     <a
                       href="https://partner.gatimitra.com"
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={() => setIsMobileMenuOpen(false)}
-                      className="block px-5 py-3 text-gray-700 no-underline font-medium text-[15px] transition-all hover:bg-gradient-to-r hover:from-[rgba(22,194,165,0.08)] hover:to-[rgba(75,42,212,0.05)] hover:text-purple"
+                      className="block px-5 py-3 text-[15px] font-medium text-neutral-800 no-underline transition hover:bg-[#109D4C]/06 hover:text-[#0d8a42]"
                     >
-                      <i className="fas fa-tag mr-3 text-[14px] text-purple"></i> Register as Brand
+                      Register as Brand
                     </a>
                     <a
                       href="/corporates"
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={() => setIsMobileMenuOpen(false)}
-                      className="block px-5 py-3 text-gray-700 no-underline font-medium text-[15px] transition-all hover:bg-gradient-to-r hover:from-[rgba(22,194,165,0.08)] hover:to-[rgba(75,42,212,0.05)] hover:text-purple"
+                      className="block px-5 py-3 text-[15px] font-medium text-neutral-800 no-underline transition hover:bg-[#109D4C]/06 hover:text-[#0d8a42]"
                     >
-                      <i className="fas fa-building mr-3 text-[14px] text-purple"></i> GatiMitra for Corporates
+                      For Corporates
                     </a>
                     <GetAppNavControl onOpen={openAppDownloadModal} tone="drawer" />
                     {isAuthenticated && user ? (
@@ -578,14 +590,10 @@ export default function Header() {
                           setIsMobileMenuOpen(false)
                           setIsProfileModalOpen(true)
                         }}
-                        className="w-full px-5 py-3 text-left"
+                        className="mx-5 mb-3 mt-1 w-[calc(100%-2.5rem)]"
                         type="button"
                       >
-                        <div className="text-gray-700 font-medium text-[15px] flex items-center gap-3 hover:text-purple transition-colors">
-                          <i className="fas fa-user-circle text-[14px] text-purple"></i>
-                          {user.name || user.phone}
-                          <i className="fas fa-chevron-right text-[10px] text-gray-400 ml-auto"></i>
-                        </div>
+                        <span className={`w-full ${authGhostClass}`}>{user.name || user.phone}</span>
                       </button>
                     ) : (
                       <button
@@ -595,10 +603,10 @@ export default function Header() {
                           setIsMobileMenuOpen(false)
                           setIsAuthModalOpen(true)
                         }}
-                        className="w-[calc(100%-2.5rem)] mx-5 mb-3 bg-gradient-to-br from-purple to-[#6a3aff] text-white px-6 py-3 rounded-xl font-semibold text-[15px] transition-all duration-200 shadow-[0_4px_16px_rgba(75,42,212,0.25)] hover:shadow-[0_6px_20px_rgba(75,42,212,0.35)]"
+                        className={`mx-5 mb-3 mt-1 w-[calc(100%-2.5rem)] ${authCtaClass}`}
                         type="button"
                       >
-                        <i className="fas fa-user-circle mr-2"></i> Sign In / Up
+                        Sign in
                       </button>
                     )}
                   </div>
@@ -608,496 +616,384 @@ export default function Header() {
           </div>
           )}
 
-          {/* Landing-style navbar shell (hero is a sibling section on landing pages) */}
+          {/* Professional landing navbar */}
           {showLandingHeaderShell && (
-              <div className="landing-nav-shell w-full">
-                {/* Integrated top bar — overflow-visible so Business dropdown is not clipped */}
-                <div
-                  className={`relative z-[100] w-full shrink-0 overflow-visible px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8 ${
-                    isCorporatesPage
-                      ? 'border-b border-rose-100/35 bg-[#fdfaf9] py-2 sm:py-2.5'
-                      : `py-3 ${
-                          isAboutPage || isAroundYouPage
-                            ? 'bg-transparent'
-                            : 'border-b border-black/[0.05] bg-transparent'
-                        }`
-                  }`}
-                >
-                  {isCorporatesPage ? (
-                    <Link
-                      href="/"
-                      className="mx-auto flex w-full max-w-[1400px] items-center gap-3 px-0 no-underline outline-none transition-opacity hover:opacity-90 sm:gap-4 sm:px-1"
-                      aria-label="GatiMitra for Corporates — home"
-                    >
-                      <div className="flex h-9 shrink-0 items-center md:h-10">
-                        <GatiMitraLogo
-                          alt=""
-                          className="h-full w-auto max-w-[min(46vw,200px)] object-contain object-left sm:max-w-[220px]"
-                        />
-                      </div>
-                      <span
-                        className="h-9 w-px shrink-0 self-center bg-neutral-300/90 md:h-10"
-                        aria-hidden
+            <div className="landing-nav-shell w-full">
+              <div className="pointer-events-auto relative z-[100] mx-auto w-full overflow-visible pl-0 pr-3 pt-0 sm:pr-4 lg:pr-5">
+                {isCorporatesPage ? (
+                  <Link
+                    href="/"
+                    className="landing-logo-island flex w-full max-w-md items-center gap-3 no-underline outline-none transition-opacity hover:opacity-90 sm:gap-4"
+                    aria-label="GatiMitra for Corporates — home"
+                  >
+                    <div className="flex h-9 shrink-0 items-center md:h-10">
+                      <GatiMitraLogo
+                        alt=""
+                        className="h-full w-auto max-w-[min(46vw,200px)] object-contain object-left sm:max-w-[220px]"
                       />
-                      <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 py-0.5">
-                        <span className="text-[0.65rem] font-medium lowercase leading-tight tracking-wide text-neutral-500 sm:text-[11px]">
-                          gatimitra for
-                        </span>
-                        <span className="text-base font-bold italic leading-none tracking-tight text-neutral-900 sm:text-lg md:text-xl">
-                          Corporates
-                        </span>
-                        <span className="line-clamp-2 text-[10px] leading-snug text-neutral-500 sm:line-clamp-none sm:text-[11px] sm:leading-relaxed md:text-xs">
-                          Workplace meals, events and billing—hyperlocal, GST-ready, one partner.
-                        </span>
-                      </div>
-                    </Link>
-                  ) : (
-                  <div className="flex w-full items-center justify-between gap-2 overflow-visible md:grid md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-center md:gap-3 md:overflow-visible lg:gap-4">
+                    </div>
+                    <span className="h-9 w-px shrink-0 self-center bg-neutral-300/90 md:h-10" aria-hidden />
+                    <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 py-0.5">
+                      <span className="text-[0.65rem] font-medium lowercase leading-tight tracking-wide text-neutral-500 sm:text-[11px]">
+                        gatimitra for
+                      </span>
+                      <span className="font-lora text-base font-bold italic leading-none tracking-tight text-neutral-900 sm:text-lg md:text-xl">
+                        Corporates
+                      </span>
+                    </div>
+                  </Link>
+                ) : (
+                  <div className="flex w-full flex-nowrap items-start gap-3 overflow-visible sm:gap-3.5">
+                    {/* CoLabs-style logo TAB — flush top-left + bottom-right curve */}
                     <Link
                       href="/"
-                      className="flex w-max max-w-[min(100%,calc(100vw-8rem))] shrink-0 items-center gap-3 pr-2 no-underline md:justify-self-start"
+                      className="landing-logo-island shrink-0 no-underline"
+                      aria-label="GatiMitra home"
                     >
-                      <div className="relative flex h-10 shrink-0 items-center justify-center md:h-12">
-                        <GatiMitraLogo
-                          alt="GatiMitra Logo"
-                          className="h-full w-auto max-w-[200px] object-contain md:max-w-[230px]"
-                        />
-                      </div>
+                      <GatiMitraLogo
+                        alt="GatiMitra"
+                        className="relative z-[1] h-9 w-auto max-w-[148px] object-contain sm:h-10 sm:max-w-[180px] lg:max-w-[200px]"
+                      />
                     </Link>
 
-                    <nav
-                      className="hidden min-w-0 w-full flex-wrap items-center justify-center gap-x-5 gap-y-1 overflow-visible md:flex md:gap-x-6 md:px-2 lg:gap-x-7 xl:gap-x-8"
-                      aria-label="Primary"
-                    >
-                      {LANDING_TOP_NAV.map((item) => (
-                        <Link
-                          key={item.label}
-                          href={item.href}
-                          className={`text-center text-[11px] font-medium leading-tight tracking-tight no-underline transition-colors sm:text-[12px] lg:text-[13px] xl:text-[14px] ${
-                            isLandingNavItemActive(item.href)
-                              ? 'font-semibold text-[#109D4C]'
-                              : 'text-black hover:text-[#109D4C]'
-                          }`}
-                        >
-                          {item.label}
-                        </Link>
-                      ))}
-
-                      <div
-                        className="relative z-[210] inline-block shrink-0 align-middle"
-                        ref={landingBusinessRef}
+                    {/* Glass nav pill — fills remaining right width */}
+                    <div className="landing-nav-pill min-w-0 flex-1 flex-nowrap overflow-visible">
+                      <nav
+                        className="hidden shrink-0 items-center gap-1 overflow-visible xl:flex"
+                        aria-label="Primary"
                       >
-                        <button
-                          type="button"
-                          onClick={() => setIsLandingBusinessOpen((o) => !o)}
-                          className={`flex items-center gap-1 text-[11px] font-medium leading-tight tracking-tight transition-colors sm:text-[12px] lg:text-[13px] xl:text-[14px] ${
-                            isLandingBusinessOpen ? 'text-black' : 'text-black hover:text-[#109D4C]'
-                          }`}
-                          aria-expanded={isLandingBusinessOpen}
-                          aria-haspopup="menu"
-                        >
-                          Business
-                          <i
-                            className={`fas fa-chevron-down text-[9px] opacity-75 transition-transform duration-200 ${isLandingBusinessOpen ? 'rotate-180' : ''}`}
-                            aria-hidden
-                          />
-                        </button>
-                        {isLandingBusinessOpen && (
-                          <div
-                            className="animate-fadeIn absolute left-1/2 top-full z-[300] mt-1 min-w-[min(100vw-1.5rem,268px)] w-max -translate-x-1/2 pt-1.5"
-                            role="menu"
+                        {LANDING_TOP_NAV.map((item) => {
+                          const active = isLandingNavItemActive(item.href)
+                          return (
+                            <Link
+                              key={item.label}
+                              href={item.href}
+                              className={`font-lora relative whitespace-nowrap rounded-full px-3 py-2 text-[14px] no-underline transition-colors ${
+                                active
+                                  ? 'font-bold text-neutral-950'
+                                  : 'font-semibold text-neutral-800 hover:bg-black/[0.05] hover:text-neutral-950'
+                              }`}
+                            >
+                              {item.label}
+                              {active ? (
+                                <span
+                                  className="absolute inset-x-3 -bottom-0.5 h-[2px] rounded-full bg-[#109D4C]"
+                                  aria-hidden
+                                />
+                              ) : null}
+                            </Link>
+                          )
+                        })}
+
+                        <div className="relative z-[210]" ref={landingBusinessRef}>
+                          <button
+                            type="button"
+                            onClick={() => setIsLandingBusinessOpen((o) => !o)}
+                            className={`font-lora inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-2 text-[14px] transition-colors ${
+                              isLandingBusinessOpen
+                                ? 'bg-black/[0.06] font-bold text-neutral-950'
+                                : 'font-semibold text-neutral-800 hover:bg-black/[0.05] hover:text-neutral-950'
+                            }`}
+                            aria-expanded={isLandingBusinessOpen}
+                            aria-haspopup="menu"
                           >
-                            <div
-                              className="pointer-events-none absolute left-1/2 top-1 z-[2] h-0 w-0 -translate-x-1/2 border-x-[9px] border-x-transparent border-b-[10px] border-b-white drop-shadow-[0_-1px_0_rgba(0,0,0,0.04)]"
+                            Business
+                            <i
+                              className={`fas fa-chevron-down text-[10px] opacity-70 transition-transform duration-200 ${isLandingBusinessOpen ? 'rotate-180' : ''}`}
                               aria-hidden
                             />
+                          </button>
+                          {isLandingBusinessOpen && (
                             <div
-                              className="pointer-events-none absolute left-1/2 top-[5px] z-[1] h-0 w-0 -translate-x-1/2 border-x-[10px] border-x-transparent border-b-[11px] border-b-gray-200/90"
-                              aria-hidden
-                            />
-                            <div className="relative z-[3] overflow-hidden rounded-[10px] border border-gray-200/95 bg-white py-0.5 shadow-[0_8px_28px_rgba(0,0,0,0.12)]">
-                              <a
-                                href="https://partner.gatimitra.com"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={() => setIsLandingBusinessOpen(false)}
-                                className="flex items-center justify-between gap-2.5 px-3.5 py-2 text-left text-[14px] font-medium text-gray-900 no-underline transition-colors hover:bg-gray-50"
-                                role="menuitem"
-                              >
-                                <span>Register as Merchant</span>
-                                <i className="fas fa-chevron-right text-[10px] text-[#109D4C] opacity-90" aria-hidden />
-                              </a>
-                              <div className="mx-3 h-px bg-gray-100" aria-hidden />
-                              <a
-                                href="https://partner.gatimitra.com"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={() => setIsLandingBusinessOpen(false)}
-                                className="flex items-center justify-between gap-2.5 px-3.5 py-2 text-left text-[14px] font-medium text-gray-900 no-underline transition-colors hover:bg-gray-50"
-                                role="menuitem"
-                              >
-                                <span>Register as Brand</span>
-                                <i className="fas fa-chevron-right text-[10px] text-[#109D4C] opacity-90" aria-hidden />
-                              </a>
-                              <div className="mx-3 h-px bg-gray-100" aria-hidden />
-                              <a
-                                href="/corporates"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={() => setIsLandingBusinessOpen(false)}
-                                className="flex items-center justify-between gap-2.5 px-3.5 py-2 text-left text-[14px] font-medium text-gray-900 no-underline transition-colors hover:bg-gray-50"
-                                role="menuitem"
-                              >
-                                <span>GatiMitra for Corporates</span>
-                                <i className="fas fa-chevron-right text-[10px] text-[#109D4C] opacity-90" aria-hidden />
-                              </a>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      <GetAppNavControl onOpen={openAppDownloadModal} tone="landing" />
-                    </nav>
-
-                    <div className="flex shrink-0 items-center justify-end gap-3 md:justify-self-end lg:gap-4">
-                      {(isLandingHeroPage || isAroundYouPage) && !isAboutPage && !isCorporatesPage && (
-                        <div className="relative hidden min-w-[340px] max-w-[520px] flex-1 items-center rounded-full border border-gray-200 bg-white px-2.5 py-2 shadow-sm md:flex" ref={searchRef}>
-                          <div className="flex min-w-[160px] max-w-[220px] items-center pr-3">
-                            <i className="fas fa-map-marker-alt mr-2 text-sm text-[#109D4C]"></i>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setLocationSearchQuery('')
-                                setShowLocationSheet(true)
-                              }}
-                              className="flex w-full items-center justify-between gap-2 bg-transparent pr-1 text-sm text-gray-700"
+                              className="animate-fadeIn absolute left-1/2 top-full z-[300] mt-2 min-w-[260px] -translate-x-1/2"
+                              role="menu"
                             >
-                              <span className="truncate">
-                                {isCityAreaRoute && locationState.displayName
-                                  ? locationState.displayName
-                                  : headerLocationLabel}
-                              </span>
-                              <i className="fas fa-chevron-down ml-1 shrink-0 text-[10px] text-gray-500"></i>
-                            </button>
-                          </div>
-
-                          <div className="mx-2 h-6 w-px bg-gray-300" />
-
-                          <i className="fas fa-search ml-2 mr-2 text-xs text-gray-400"></i>
-                          <input
-                            type="text"
-                            placeholder={searchPlaceholder}
-                            className="w-full bg-transparent text-sm text-gray-700 placeholder:text-gray-400 focus:outline-none"
-                            value={searchQuery}
-                            onChange={handleLandingSearchInput}
-                            onFocus={() => searchQuery.trim() && setShowSearchResults(true)}
-                          />
-                          {searchQuery && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSearchQuery('')
-                                setShowSearchResults(false)
-                              }}
-                              className="ml-2 text-gray-400 hover:text-gray-600"
-                              aria-label="Clear search"
-                            >
-                              <i className="fas fa-times"></i>
-                            </button>
-                          )}
-
-                          {showSearchResults && searchQuery && (
-                            <div
-                              ref={searchResultsRef}
-                              className="absolute right-0 top-full z-[120] mt-2 w-[min(92vw,560px)]"
-                            >
-                              <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-xl">
-                                {searchLoading && (
-                                  <div className="px-6 py-8 text-center">
-                                    <div className="mb-3 inline-block h-8 w-8 animate-spin rounded-full border-2 border-purple border-t-transparent"></div>
-                                    <div className="text-sm text-gray-500">Searching for &quot;{debouncedSearchQuery || searchQuery}&quot;...</div>
-                                  </div>
-                                )}
-                                {!searchLoading && searchResults.length > 0 && (
-                                  <div className="max-h-[420px] overflow-y-auto py-1">
-                                    {searchResults.map((item: any, idx: number) => {
-                                      const href =
-                                        item.type === 'dish'
-                                          ? `/order?restaurant=${item.restaurant_id}`
-                                          : restaurantDetailHref(
-                                              {
-                                                public_slug: item.public_slug,
-                                                store_id: item.restaurant_id,
-                                                id: item.restaurant_id,
-                                              },
-                                              'search',
-                                              mergeLocationQuery(
-                                                queryFromLocation(),
-                                                buildLocationQueryFromState(locationState)
-                                              )
-                                            )
-                                      const ResultLink = item.type === 'dish' ? Link : StoreInnerLink
-                                      return (
-                                      <ResultLink
-                                        key={`${item.type || 'item'}-${item.id || item.restaurant_id || idx}`}
-                                        href={href}
-                                        onClick={() => setShowSearchResults(false)}
-                                        className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-50"
-                                      >
-                                        <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-gray-100">
-                                          {item.image_url ? (
-                                            <img src={item.image_url} alt={item.item_name || item.restaurant_name || item.name || 'result'} className="h-full w-full object-cover" />
-                                          ) : (
-                                            <span className="text-gray-400">🍽️</span>
-                                          )}
-                                        </div>
-                                        <div className="min-w-0 flex-1">
-                                          <div className="truncate text-sm font-semibold text-gray-900">{item.item_name || item.restaurant_name || item.name}</div>
-                                          <div className="truncate text-xs text-gray-500">
-                                            {item.type === 'dish' ? 'Dish result' : 'Restaurant result'}
-                                          </div>
-                                        </div>
-                                      </ResultLink>
-                                      )
-                                    })}
-                                  </div>
-                                )}
-                                {!searchLoading && searchResults.length === 0 && debouncedSearchQuery && (
-                                  <div className="px-6 py-8 text-center">
-                                    <div className="mb-2 text-sm font-semibold text-gray-600">No results for &quot;{debouncedSearchQuery}&quot;</div>
-                                    <button
-                                      type="button"
-                                      onClick={() => setShowSearchResults(false)}
-                                      className="text-xs font-medium text-purple hover:underline"
-                                    >
-                                      Clear search
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {isAuthenticated && user ? (
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault()
-                            e.stopPropagation()
-                            setIsProfileModalOpen(true)
-                          }}
-                          className="hidden whitespace-nowrap rounded-full border border-gray-200 bg-white px-6 py-2.5 text-[14px] font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 md:inline-flex md:items-center md:justify-center"
-                          type="button"
-                        >
-                          {user.name || user.phone}
-                        </button>
-                      ) : (
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault()
-                            e.stopPropagation()
-                            setIsAuthModalOpen(true)
-                          }}
-                          className="hidden cursor-pointer whitespace-nowrap rounded-full border border-gray-200 bg-white px-6 py-2.5 text-[14px] font-bold text-gray-800 shadow-sm transition-all hover:bg-gray-50 md:inline-flex md:items-center md:justify-center"
-                          type="button"
-                        >
-                          Sign In / Up
-                        </button>
-                      )}
-                      <div className="relative shrink-0 md:hidden" ref={mobileMenuRef}>
-                        <button
-                          onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-                          className="rounded-lg p-2 text-text transition-all hover:bg-[rgba(75,42,212,0.08)]"
-                          aria-label="Toggle menu"
-                          type="button"
-                        >
-                          <div className="flex h-5 w-6 flex-col justify-between">
-                            <span className={`block h-0.5 w-full bg-text transition-all duration-300 ${isMobileMenuOpen ? 'translate-y-2 rotate-45' : ''}`}></span>
-                            <span className={`block h-0.5 w-full bg-text transition-all duration-300 ${isMobileMenuOpen ? 'opacity-0' : ''}`}></span>
-                            <span className={`block h-0.5 w-full bg-text transition-all duration-300 ${isMobileMenuOpen ? '-translate-y-2 -rotate-45' : ''}`}></span>
-                          </div>
-                        </button>
-
-                        {isMobileMenuOpen && (
-                          <div className="animate-fadeIn absolute right-0 top-12 z-[200] min-w-[280px] overflow-hidden rounded-[16px] border border-gray-100 bg-white py-3 shadow-[0_12px_40px_rgba(0,0,0,0.15)]">
-                            {LANDING_MOBILE_LINKS.map((item) => {
-                              const rowClass =
-                                'block px-5 py-3 text-[15px] font-medium text-gray-700 no-underline transition-all hover:bg-gradient-to-r hover:from-[rgba(22,194,165,0.08)] hover:to-[rgba(75,42,212,0.05)] hover:text-purple'
-                              if (item.label === 'Get App') {
-                                return (
-                                  <div key={item.label} className="hover:bg-gradient-to-r hover:from-[rgba(22,194,165,0.08)] hover:to-[rgba(75,42,212,0.05)]">
-                                    <GetAppNavControl onOpen={openAppDownloadModal} tone="drawer" />
-                                  </div>
-                                )
-                              }
-                              const inner = (
-                                <>
-                                  <i className={`fas ${item.icon} mr-3 text-[14px] text-purple`}></i> {item.label}
-                                </>
-                              )
-                              if (item.href.startsWith('http') || item.openInNewTab) {
-                                return (
+                              <div className="overflow-hidden rounded-2xl border border-black/10 bg-white py-1.5 shadow-none">
+                                {LANDING_BUSINESS_ITEMS.map((item, i) => (
                                   <a
                                     key={item.label}
                                     href={item.href}
                                     target="_blank"
                                     rel="noopener noreferrer"
+                                    onClick={() => setIsLandingBusinessOpen(false)}
+                                    className={`font-lora flex items-center justify-between gap-3 px-4 py-2.5 text-left text-[14px] font-semibold text-neutral-900 no-underline transition-colors hover:bg-[#109D4C]/06 ${
+                                      i > 0 ? 'border-t border-neutral-100' : ''
+                                    }`}
+                                    role="menuitem"
+                                  >
+                                    <span className="inline-flex items-center gap-2.5">
+                                      <i className={`fas ${item.icon} text-[12px] text-[#109D4C]`} aria-hidden />
+                                      {item.label}
+                                    </span>
+                                    <i className="fas fa-arrow-up-right-from-square text-[10px] text-neutral-400" aria-hidden />
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </nav>
+
+                      {(isLandingHeroPage || isAroundYouPage) && !isAboutPage && !isCorporatesPage && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLocationSearchQuery('')
+                              setShowLocationSheet(true)
+                            }}
+                            className="inline-flex h-9 max-w-[200px] shrink-0 items-center gap-1.5 rounded-full bg-white/80 px-2.5 text-left shadow-none transition hover:bg-white sm:max-w-[240px] sm:px-3"
+                          >
+                            <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#109D4C]/12 text-[#109D4C]">
+                              <i className="fas fa-location-dot text-[11px]" aria-hidden />
+                            </span>
+                            <span className="font-lora min-w-0 flex-1 truncate text-[13px] font-semibold text-neutral-900">
+                              <span className="text-neutral-500">Deliver to </span>
+                              {isCityAreaRoute && locationState.displayName
+                                ? locationState.displayName
+                                : headerLocationLabel}
+                            </span>
+                            <i className="fas fa-chevron-down shrink-0 text-[9px] text-neutral-500" aria-hidden />
+                          </button>
+
+                          <div className="relative min-w-[10rem] flex-1 basis-[12rem]" ref={searchRef}>
+                            <div className="flex h-9 w-full items-center rounded-full bg-white/90 px-2.5 shadow-none transition focus-within:bg-white focus-within:ring-2 focus-within:ring-[#109D4C]/20 sm:px-3">
+                              <i className="fas fa-magnifying-glass mr-1.5 shrink-0 text-[12px] text-neutral-500 sm:mr-2" aria-hidden />
+                              <input
+                                type="search"
+                                placeholder={searchPlaceholder}
+                                className="font-lora w-full min-w-0 bg-transparent text-[13px] font-medium text-neutral-900 placeholder:truncate placeholder:text-neutral-500 focus:outline-none"
+                                value={searchQuery}
+                                onChange={handleLandingSearchInput}
+                                onFocus={() => searchQuery.trim() && setShowSearchResults(true)}
+                                aria-label="Search restaurants or dishes"
+                              />
+                              {searchQuery ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSearchQuery('')
+                                    setShowSearchResults(false)
+                                  }}
+                                  className="ml-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-neutral-500 hover:bg-black/5 hover:text-neutral-800"
+                                  aria-label="Clear search"
+                                >
+                                  <i className="fas fa-xmark text-[11px]" aria-hidden />
+                                </button>
+                              ) : null}
+                            </div>
+
+                            {showSearchResults && searchQuery ? (
+                              <div
+                                ref={searchResultsRef}
+                                className="absolute left-0 right-0 top-full z-[120] mt-2 min-w-[min(100%,360px)]"
+                              >
+                                <div className="overflow-hidden rounded-2xl border border-black/10 bg-white shadow-none">
+                                  {searchLoading && (
+                                    <div className="px-6 py-8 text-center">
+                                      <div className="mb-3 inline-block h-8 w-8 animate-spin rounded-full border-2 border-[#109D4C] border-t-transparent" />
+                                      <div className="text-sm text-neutral-500">
+                                        Searching for &quot;{debouncedSearchQuery || searchQuery}&quot;...
+                                      </div>
+                                    </div>
+                                  )}
+                                  {!searchLoading && searchResults.length > 0 && (
+                                    <div className="max-h-[420px] overflow-y-auto py-1" ref={mobileSearchResultsRef}>
+                                      {searchResults.map((item: any, idx: number) => {
+                                        const href =
+                                          item.type === 'dish'
+                                            ? `/order?restaurant=${item.restaurant_id}`
+                                            : restaurantDetailHref(
+                                                {
+                                                  public_slug: item.public_slug,
+                                                  store_id: item.restaurant_id,
+                                                  id: item.restaurant_id,
+                                                },
+                                                'search',
+                                                mergeLocationQuery(
+                                                  queryFromLocation(),
+                                                  buildLocationQueryFromState(locationState)
+                                                )
+                                              )
+                                        const ResultLink = item.type === 'dish' ? Link : StoreInnerLink
+                                        return (
+                                          <ResultLink
+                                            key={`${item.type || 'item'}-${item.id || item.restaurant_id || idx}`}
+                                            href={href}
+                                            onClick={() => setShowSearchResults(false)}
+                                            className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-neutral-50"
+                                          >
+                                            <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-neutral-100">
+                                              {item.image_url ? (
+                                                <img
+                                                  src={item.image_url}
+                                                  alt={item.item_name || item.restaurant_name || item.name || 'result'}
+                                                  className="h-full w-full object-cover"
+                                                />
+                                              ) : (
+                                                <i className="fas fa-utensils text-neutral-400" aria-hidden />
+                                              )}
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                              <div className="truncate text-sm font-semibold text-neutral-900">
+                                                {item.item_name || item.restaurant_name || item.name}
+                                              </div>
+                                              <div className="truncate text-xs text-neutral-500">
+                                                {item.type === 'dish' ? 'Dish' : 'Restaurant'} · available on GatiMitra
+                                              </div>
+                                            </div>
+                                          </ResultLink>
+                                        )
+                                      })}
+                                    </div>
+                                  )}
+                                  {!searchLoading && searchResults.length === 0 && debouncedSearchQuery && (
+                                    <div className="px-6 py-8 text-center">
+                                      <div className="mb-2 text-sm font-semibold text-neutral-600">
+                                        No results for &quot;{debouncedSearchQuery}&quot;
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowSearchResults(false)}
+                                        className="text-xs font-semibold text-[#109D4C] hover:underline"
+                                      >
+                                        Clear search
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        </>
+                      )}
+
+                      <div className="flex shrink-0 flex-nowrap items-center gap-2 pl-1">
+                        <div className="hidden sm:block">
+                          <GetAppNavControl onOpen={openAppDownloadModal} tone="landing" />
+                        </div>
+
+                        {isAuthenticated && user ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              setIsProfileModalOpen(true)
+                            }}
+                            className={`hidden sm:inline-flex ${authGhostClass}`}
+                          >
+                            <i className="fas fa-user text-[11px] text-[#109D4C]" aria-hidden />
+                            <span className="max-w-[100px] truncate">{user.name || user.phone}</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              setIsAuthModalOpen(true)
+                            }}
+                            className={`hidden sm:inline-flex ${authCtaClass}`}
+                          >
+                            Sign in
+                          </button>
+                        )}
+
+                        <div className="relative shrink-0 xl:hidden" ref={mobileMenuRef}>
+                          <button
+                            type="button"
+                            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+                            className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white/70 text-neutral-900 shadow-none transition hover:bg-white"
+                            aria-label="Toggle menu"
+                            aria-expanded={isMobileMenuOpen}
+                          >
+                            <div className="flex h-3.5 w-4 flex-col justify-between">
+                              <span className={`block h-0.5 w-full rounded bg-neutral-900 transition-all duration-300 ${isMobileMenuOpen ? 'translate-y-[6px] rotate-45' : ''}`} />
+                              <span className={`block h-0.5 w-full rounded bg-neutral-900 transition-all duration-300 ${isMobileMenuOpen ? 'opacity-0' : ''}`} />
+                              <span className={`block h-0.5 w-full rounded bg-neutral-900 transition-all duration-300 ${isMobileMenuOpen ? '-translate-y-[6px] -rotate-45' : ''}`} />
+                            </div>
+                          </button>
+
+                          {isMobileMenuOpen && (
+                            <div className="animate-fadeIn absolute right-0 top-12 z-[200] w-[min(92vw,300px)] overflow-hidden rounded-2xl border border-black/10 bg-white py-2 shadow-none">
+                              {LANDING_MOBILE_LINKS.map((item) => {
+                                const rowClass =
+                                  'font-lora flex items-center gap-3 px-4 py-2.5 text-[15px] font-semibold text-neutral-800 no-underline transition-colors hover:bg-[#109D4C]/06 hover:text-[#0d8a42]'
+                                if (item.label === 'Get App') {
+                                  return (
+                                    <div key={item.label} className="border-t border-neutral-100 sm:hidden">
+                                      <GetAppNavControl onOpen={openAppDownloadModal} tone="drawer" />
+                                    </div>
+                                  )
+                                }
+                                const inner = (
+                                  <>
+                                    <i className={`fas ${item.icon} w-4 text-center text-[13px] text-[#109D4C]`} aria-hidden />
+                                    {item.label}
+                                  </>
+                                )
+                                if (item.href.startsWith('http') || item.openInNewTab) {
+                                  return (
+                                    <a
+                                      key={item.label}
+                                      href={item.href}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={() => setIsMobileMenuOpen(false)}
+                                      className={rowClass}
+                                    >
+                                      {inner}
+                                    </a>
+                                  )
+                                }
+                                return (
+                                  <Link
+                                    key={item.label}
+                                    href={item.href}
                                     onClick={() => setIsMobileMenuOpen(false)}
                                     className={rowClass}
                                   >
                                     {inner}
-                                  </a>
+                                  </Link>
                                 )
-                              }
-                              return (
-                                <Link
-                                  key={item.label}
-                                  href={item.href}
-                                  onClick={() => setIsMobileMenuOpen(false)}
-                                  className={rowClass}
-                                >
-                                  {inner}
-                                </Link>
-                              )
-                            })}
-                            {isAuthenticated && user ? (
-                              <button
-                                onClick={(e) => {
-                                  e.preventDefault()
-                                  e.stopPropagation()
-                                  setIsMobileMenuOpen(false)
-                                  setIsProfileModalOpen(true)
-                                }}
-                                className="w-full px-5 py-3 text-left"
-                                type="button"
-                              >
-                                <div className="flex items-center gap-3 text-[15px] font-medium text-gray-700 transition-colors hover:text-purple">
-                                  <i className="fas fa-user-circle text-[14px] text-purple"></i>
-                                  {user.name || user.phone}
-                                  <i className="fas fa-chevron-right ml-auto text-[10px] text-gray-400"></i>
-                                </div>
-                              </button>
-                            ) : (
-                              <button
-                                onClick={(e) => {
-                                  e.preventDefault()
-                                  e.stopPropagation()
-                                  setIsMobileMenuOpen(false)
-                                  setIsAuthModalOpen(true)
-                                }}
-                                className="mx-5 mb-3 w-[calc(100%-2.5rem)] rounded-xl bg-gradient-to-br from-purple to-[#6a3aff] px-6 py-3 text-[15px] font-semibold text-white shadow-[0_4px_16px_rgba(75,42,212,0.25)] transition-all duration-200 hover:shadow-[0_6px_20px_rgba(75,42,212,0.35)]"
-                                type="button"
-                              >
-                                <i className="fas fa-user-circle mr-2"></i> Sign In / Up
-                              </button>
-                            )}
-                          </div>
-                        )}
+                              })}
+                              <div className="border-t border-neutral-100 px-4 pb-3 pt-2 sm:hidden">
+                                {isAuthenticated && user ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      setIsMobileMenuOpen(false)
+                                      setIsProfileModalOpen(true)
+                                    }}
+                                    className={`w-full ${authGhostClass}`}
+                                  >
+                                    {user.name || user.phone}
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      setIsMobileMenuOpen(false)
+                                      setIsAuthModalOpen(true)
+                                    }}
+                                    className={`w-full ${authCtaClass}`}
+                                  >
+                                    Sign in
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
-                  )}
-
-                  {(isLandingHeroPage || isAroundYouPage) && !isAboutPage && !isCorporatesPage && (
-                    <div className="relative mt-3 md:hidden" ref={mobileSearchRef}>
-                      <div className="flex items-center rounded-full border border-gray-200 bg-white px-3 py-2 shadow-sm">
-                        <i className="fas fa-search mr-2 text-xs text-gray-400"></i>
-                        <input
-                          type="text"
-                          placeholder={searchPlaceholder}
-                          className="w-full bg-transparent text-sm text-gray-700 placeholder:text-gray-400 focus:outline-none"
-                          value={searchQuery}
-                          onChange={handleLandingSearchInput}
-                          onFocus={() => searchQuery.trim() && setShowSearchResults(true)}
-                        />
-                        {searchQuery && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSearchQuery('')
-                              setShowSearchResults(false)
-                            }}
-                            className="ml-2 text-gray-400 hover:text-gray-600"
-                            aria-label="Clear search"
-                          >
-                            <i className="fas fa-times"></i>
-                          </button>
-                        )}
-                      </div>
-
-                      {showSearchResults && searchQuery && (
-                        <div
-                          ref={mobileSearchResultsRef}
-                          className="absolute left-0 top-full z-[120] mt-2 w-full"
-                        >
-                          <div className="overflow-hidden rounded-2xl border border-gray-100 bg-white shadow-xl">
-                            {searchLoading && (
-                              <div className="px-6 py-8 text-center">
-                                <div className="mb-3 inline-block h-8 w-8 animate-spin rounded-full border-2 border-purple border-t-transparent"></div>
-                                <div className="text-sm text-gray-500">Searching for &quot;{debouncedSearchQuery || searchQuery}&quot;...</div>
-                              </div>
-                            )}
-                            {!searchLoading && searchResults.length > 0 && (
-                              <div className="max-h-[360px] overflow-y-auto py-1">
-                                {searchResults.map((item: any, idx: number) => {
-                                  const href =
-                                    item.type === 'dish'
-                                      ? `/order?restaurant=${item.restaurant_id}`
-                                      : restaurantDetailHref(
-                                          {
-                                            public_slug: item.public_slug,
-                                            store_id: item.restaurant_id,
-                                            id: item.restaurant_id,
-                                          },
-                                          'search',
-                                          mergeLocationQuery(
-                                            queryFromLocation(),
-                                            buildLocationQueryFromState(locationState)
-                                          )
-                                        )
-                                  const ResultLink = item.type === 'dish' ? Link : StoreInnerLink
-                                  return (
-                                  <ResultLink
-                                    key={`mobile-${item.type || 'item'}-${item.id || item.restaurant_id || idx}`}
-                                    href={href}
-                                    onClick={() => setShowSearchResults(false)}
-                                    className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-50"
-                                  >
-                                    <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-gray-100">
-                                      {item.image_url ? (
-                                        <img src={item.image_url} alt={item.item_name || item.restaurant_name || item.name || 'result'} className="h-full w-full object-cover" />
-                                      ) : (
-                                        <span className="text-gray-400">🍽️</span>
-                                      )}
-                                    </div>
-                                    <div className="min-w-0 flex-1">
-                                      <div className="truncate text-sm font-semibold text-gray-900">{item.item_name || item.restaurant_name || item.name}</div>
-                                      <div className="truncate text-xs text-gray-500">{item.type === 'dish' ? 'Dish result' : 'Restaurant result'}</div>
-                                    </div>
-                                  </ResultLink>
-                                  )
-                                })}
-                              </div>
-                            )}
-                            {!searchLoading && searchResults.length === 0 && debouncedSearchQuery && (
-                              <div className="px-6 py-8 text-center">
-                                <div className="mb-2 text-sm font-semibold text-gray-600">No results for &quot;{debouncedSearchQuery}&quot;</div>
-                                <button
-                                  type="button"
-                                  onClick={() => setShowSearchResults(false)}
-                                  className="text-xs font-medium text-purple hover:underline"
-                                >
-                                  Clear search
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
+                )}
               </div>
+            </div>
           )}
 
         </header>

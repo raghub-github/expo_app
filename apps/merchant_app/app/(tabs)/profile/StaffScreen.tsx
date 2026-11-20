@@ -219,6 +219,7 @@ export default function StaffScreen() {
   const [otpSending, setOtpSending] = useState(false);
   const [otpVerifying, setOtpVerifying] = useState(false);
   const [otpResendSec, setOtpResendSec] = useState(0);
+  const [otpSentOnce, setOtpSentOnce] = useState(false);
   const [otpUi, setOtpUi] = useState<{ title: string; body: string; maskedLine: string }>({
     title: "Verify that it's you",
     body: "We need to verify your account in order to proceed",
@@ -371,10 +372,11 @@ export default function StaffScreen() {
       return;
     }
     pendingInviteRef.current = { name, phone, role: inviteRole };
-    await startOtpFlow("invite");
+    startOtpFlow("invite");
   };
 
-  const startOtpFlow = async (action: OtpPurpose, sessionId?: number) => {
+  /** Open OTP sheet only — never send SMS until explicit Send OTP / Resend OTP. */
+  const startOtpFlow = (action: OtpPurpose, sessionId?: number) => {
     if (!token) return;
     if (!ownerPhone) {
       setInfoModal({
@@ -388,56 +390,26 @@ export default function StaffScreen() {
     otpRequestIdRef.current = null;
     setOtpDigits("");
     setOtpVisible(true);
-    setOtpSending(true);
-    try {
-      const sent = await sendMerchantActionOtp(token, purposeForAction(action));
-      otpRequestIdRef.current = sent.requestId;
-      const channels = [
-        sent.maskedPhone,
-        sent.maskedEmail,
-      ]
-        .filter(Boolean)
-        .join(" or ");
-      setOtpUi({
-        title:
-          action === "remove_staff"
-            ? "Confirm removal"
-            : action === "invite"
-              ? "Verify that it's you"
-              : "Verify that it's you",
-        body:
-          action === "invite"
-            ? "Confirm this invite. OTP is sent to the owner phone and email — not the invited number."
-            : action === "remove_staff"
-              ? "Enter the OTP sent to the owner phone and email to permanently remove this user."
-              : action === "all"
-                ? "Enter the OTP sent to the owner phone and email to log out all devices."
-                : "We need to verify your account. OTP is sent to the owner phone and email.",
-        maskedLine: channels
-          ? `Enter the OTP sent on ${channels}`
-          : `Enter the OTP sent on ${maskPhone(ownerPhone)}`,
-      });
-      if (typeof sent.devOtp === "string" && sent.devOtp.length === 6) {
-        setOtpDigits(sent.devOtp);
-        setOtpUi((prev) => ({
-          ...prev,
-          maskedLine: `${prev.maskedLine}\nDev OTP (SMS not delivering): ${sent.devOtp}`,
-        }));
-      }
-      setOtpResendSec(30);
-      setTimeout(() => otpInputRef.current?.focus(), 250);
-    } catch (e) {
-      setOtpVisible(false);
-      otpActionRef.current = null;
-      pendingRemoveStaffRef.current = null;
-      pendingInviteRef.current = null;
-      setInfoModal({
-        title: "OTP failed",
-        message: e instanceof Error ? e.message : "Could not send OTP.",
-      });
-    } finally {
-      setOtpSending(false);
-    }
+    setOtpSending(false);
+    setOtpResendSec(0);
+    setOtpSentOnce(false);
+    setOtpUi({
+      title:
+        action === "remove_staff"
+          ? "Confirm removal"
+          : action === "invite"
+            ? "Verify that it's you"
+            : "Verify that it's you",
+      body:
+        action === "invite"
+          ? "Press Send OTP. The code goes to the owner phone and email — not the invited number."
+          : action === "remove_staff"
+            ? "Press Send OTP, then enter the code from the owner phone and email to remove this user."
+            : action === "all"
+              ? "Press Send OTP, then enter the code to log out all devices."
+              : "Press Send OTP, then enter the code from the owner phone and email.",
+      maskedLine: "No OTP sent yet — press Send OTP to continue.",
+    });
   };
 
   const confirmRemoveStaff = (s: StaffMember) => {
@@ -453,16 +425,17 @@ export default function StaffScreen() {
     });
   };
 
-  const startOtpForLogout = async (action: "one" | "all", sessionId?: number) => {
-    await startOtpFlow(action, sessionId);
+  const startOtpForLogout = (action: "one" | "all", sessionId?: number) => {
+    startOtpFlow(action, sessionId);
   };
 
-  const resendOtp = async () => {
-    if (otpResendSec > 0 || !token || !otpActionRef.current) return;
+  const sendOrResendOtp = async () => {
+    if (otpResendSec > 0 || !token || !otpActionRef.current || otpSending) return;
     setOtpSending(true);
     try {
       const sent = await sendMerchantActionOtp(token, purposeForAction(otpActionRef.current));
       otpRequestIdRef.current = sent.requestId;
+      setOtpSentOnce(true);
       const channels = [sent.maskedPhone, sent.maskedEmail].filter(Boolean).join(" or ");
       setOtpUi((prev) => ({
         ...prev,
@@ -476,10 +449,11 @@ export default function StaffScreen() {
         setOtpDigits(sent.devOtp);
       }
       setOtpResendSec(30);
+      setTimeout(() => otpInputRef.current?.focus(), 250);
     } catch (e) {
       setInfoModal({
         title: "OTP failed",
-        message: e instanceof Error ? e.message : "Could not resend OTP.",
+        message: e instanceof Error ? e.message : "Could not send OTP.",
       });
     } finally {
       setOtpSending(false);
@@ -790,10 +764,12 @@ export default function StaffScreen() {
           setOtpVisible(false);
           otpActionRef.current = null;
           otpRequestIdRef.current = null;
+          setOtpSentOnce(false);
           pendingRemoveStaffRef.current = null;
           pendingInviteRef.current = null;
         }}
-        onResend={() => void resendOtp()}
+        otpSentOnce={otpSentOnce}
+        onResend={() => void sendOrResendOtp()}
         onContinue={() => void verifyOtpAndContinue()}
         bottomInset={Math.max(insets.bottom, 16)}
         title={otpUi.title}
@@ -1346,6 +1322,7 @@ function OtpVerifySheet({
   bottomInset,
   title,
   body,
+  otpSentOnce,
 }: {
   visible: boolean;
   maskedLine: string;
@@ -1361,8 +1338,9 @@ function OtpVerifySheet({
   bottomInset: number;
   title?: string;
   body?: string;
+  otpSentOnce: boolean;
 }) {
-  const ready = digits.length === 6 && !verifying && !sending;
+  const ready = digits.length === 6 && !verifying && !sending && otpSentOnce;
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={() => {}}>
       <View style={styles.sheetRoot}>
@@ -1381,34 +1359,42 @@ function OtpVerifySheet({
         <View style={[styles.otpSheet, { paddingBottom: bottomInset + 12 }]}>
           <Text style={styles.otpTitle}>{title || "Verify that it's you"}</Text>
           <Text style={styles.otpBody}>
-            {body || "We need to verify your account in order to proceed"}
+            {body || "Press Send OTP, then enter the code to continue"}
           </Text>
           <Text style={styles.otpBody}>{maskedLine}</Text>
 
-          <Pressable style={styles.otpBoxes} onPress={() => inputRef.current?.focus()}>
-            {Array.from({ length: 6 }).map((_, i) => (
-              <View key={i} style={styles.otpBox}>
-                <Text style={styles.otpDigit}>{digits[i] ?? ""}</Text>
-                <View style={styles.otpUnderline} />
-              </View>
-            ))}
-            <TextInput
-              ref={inputRef}
-              value={digits}
-              onChangeText={onDigitsChange}
-              keyboardType="number-pad"
-              maxLength={6}
-              style={styles.otpHiddenInput}
-              caretHidden
-              autoFocus
-            />
-          </Pressable>
+          {otpSentOnce ? (
+            <Pressable style={styles.otpBoxes} onPress={() => inputRef.current?.focus()}>
+              {Array.from({ length: 6 }).map((_, i) => (
+                <View key={i} style={styles.otpBox}>
+                  <Text style={styles.otpDigit}>{digits[i] ?? ""}</Text>
+                  <View style={styles.otpUnderline} />
+                </View>
+              ))}
+              <TextInput
+                ref={inputRef}
+                value={digits}
+                onChangeText={onDigitsChange}
+                keyboardType="number-pad"
+                maxLength={6}
+                style={styles.otpHiddenInput}
+                caretHidden
+                autoFocus
+              />
+            </Pressable>
+          ) : null}
 
           <View style={styles.otpResendRow}>
-            {resendSec > 0 ? (
+            {!otpSentOnce ? (
+              <Pressable onPress={onResend} disabled={sending} accessibilityLabel="Send OTP">
+                <Text style={styles.otpResendActive}>
+                  {sending ? "Sending…" : "Send OTP"}
+                </Text>
+              </Pressable>
+            ) : resendSec > 0 ? (
               <Text style={styles.otpResend}>Resend OTP in {resendSec} secs</Text>
             ) : (
-              <Pressable onPress={onResend} disabled={sending}>
+              <Pressable onPress={onResend} disabled={sending} accessibilityLabel="Resend OTP">
                 <Text style={styles.otpResendActive}>
                   {sending ? "Sending…" : "Resend OTP"}
                 </Text>

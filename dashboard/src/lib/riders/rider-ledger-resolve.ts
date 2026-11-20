@@ -16,6 +16,8 @@ export function isInternalLedgerRef(value: string): boolean {
   return (
     v.startsWith("rider_earn:") ||
     v.startsWith("rider_cancel_pen:") ||
+    v.startsWith("ride_cash_settle:") ||
+    v.startsWith("parcel_cash_settle:") ||
     v.startsWith("rider_sub_") ||
     v.startsWith("subscription_") ||
     /^penalty[_:]/i.test(v)
@@ -48,7 +50,11 @@ export function extractOrderCoreIdFromLedger(
   const penaltyMatch = refText.match(/^rider_cancel_pen:(\d+):/);
   if (penaltyMatch) return Number(penaltyMatch[1]);
 
-  const earningMatch = refText.match(/^rider_earn:(?:delivery|tip):(\d+)$/);
+  // COD / cash platform-share debit (ride + parcel postpaid settlement).
+  const cashSettleMatch = refText.match(/^(?:ride|parcel)_cash_settle:(\d+)$/);
+  if (cashSettleMatch) return Number(cashSettleMatch[1]);
+
+  const earningMatch = refText.match(/^rider_earn:(?:delivery|tip|dyn):(\d+)$/);
   if (earningMatch) return Number(earningMatch[1]);
 
   return null;

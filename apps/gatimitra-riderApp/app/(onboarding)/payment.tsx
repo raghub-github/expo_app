@@ -23,6 +23,7 @@ import {
   openRazorpayCheckout,
   isNativeRazorpayAvailable,
   extractRazorpayError,
+  formatRazorpayUserMessage,
   isRazorpayUserCancel,
   startServerConfirmPoll,
 } from "@/src/lib/razorpay-native";
@@ -589,11 +590,10 @@ export default function PaymentScreen() {
         stopPoll();
         // Server already confirmed (webhook) — ignore a late SDK cancel/failure.
         if (paymentCompletedRef.current) return;
+        const extracted = extractRazorpayError(rzpErr);
         const reason = isRazorpayUserCancel(rzpErr)
           ? "cancelled"
-          : extractRazorpayError(rzpErr).description ||
-            extractRazorpayError(rzpErr).code ||
-            "failed";
+          : extracted.description || extracted.code || "failed";
         void recordPaymentAttempt
           .mutateAsync({
             riderId: data.riderId!,
@@ -605,8 +605,7 @@ export default function PaymentScreen() {
         showPaymentFailedSheet(
           isRazorpayUserCancel(rzpErr)
             ? "Payment was cancelled. You can try again."
-            : extractRazorpayError(rzpErr).description ||
-                "Payment failed. You can try again."
+            : formatRazorpayUserMessage(rzpErr, "Payment failed. You can try again.")
         );
       }
     },

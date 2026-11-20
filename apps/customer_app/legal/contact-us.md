@@ -32,7 +32,7 @@
 
 | Number | When | Purpose |
 |---|---|---|
-| **1800-XXX-XXXX** | 06:00–24:00 IST daily | Customer care |
+| **+91 79888 52917** | 06:00–24:00 IST daily | Customer care |
 | **24×7 helpline** | All hours | Safety, emergency, ride-in-progress |
 | **112** | All hours | India universal emergency (police/ambulance) — use directly during an emergency, not us |
 
@@ -89,7 +89,7 @@ We do not handle complaints via DMs (they can't be tracked under the grievance m
 
 | Role | Name | Contact |
 |---|---|---|
-| **Grievance Officer** | [Name] | grievance.officer@gatimitra.com / +91-XX-XXXXXXXX (10:00–18:00 IST Mon–Fri) |
+| **Grievance Officer** | [Name] | grievance.officer@gatimitra.com / +91 79888 52917 (10:00–18:00 IST Mon–Fri) |
 | **Data Protection Officer** | [Name] | dpo@gatimitra.com |
 | **Resident Grievance Officer (India)** *(when SSMI threshold crossed)* | [Name] | rgo.india@gatimitra.com |
 | **Chief Compliance Officer** *(when SSMI threshold crossed)* | [Name] | cco@gatimitra.com |
