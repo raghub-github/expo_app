@@ -40,10 +40,10 @@ export function useHomeSkeletonFlags(
 ): HomeSkeletonFlags {
   const {
     offersResolved = true,
-    assetsReady = true,
     locationReady = true,
     weatherReady = true,
   } = input;
+  // assetsReady intentionally unused — service cards paint without waiting on CMS art.
 
   const splashExited = useSplashExitedFlag();
   const [splashExitedAtMs, setSplashExitedAtMs] = useState<number | null>(null);
@@ -68,10 +68,12 @@ export function useHomeSkeletonFlags(
   const lastLoggedRef = useRef<string>("");
 
   // Zomato shell: header stays real (location updates from store). Never grey-box the header.
+  // Service cards are static titles/pills — paint immediately; images fill in as assets land.
+  // Promo can shimmer briefly until offers resolve (cache or network).
   const showLocationSkeleton = false;
   const showWeatherSkeleton = forceSkeletons || !weatherReady;
   const showPromoSkeleton = forceSkeletons || !offersResolved;
-  const showServicesSkeleton = forceSkeletons || !assetsReady;
+  const showServicesSkeleton = forceSkeletons;
   const showBrandSkeleton = false as const;
 
   useEffect(() => {

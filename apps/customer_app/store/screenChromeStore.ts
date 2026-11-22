@@ -48,6 +48,11 @@ export const useScreenChromeStore = create<ScreenChromeState>((set) => ({
   statusBarBackground: SPLASH_BOOTSTRAP_BG,
   statusBarStyle: "light",
   hideStatusBarSpacer: true,
+  /**
+   * Starts true for cold-start mint chrome. RootLayout MUST clear this when the
+   * native splash hands off to Home — leaving it true forces splash status icons
+   * and makes notification glyphs look invisible on the dark home header.
+   */
   bootstrapActive: true,
   setBootstrapActive: (active) => set({ bootstrapActive: active }),
   setStatusBarBackground: (color, style = DEFAULT_STATUS_BAR_STYLE) =>

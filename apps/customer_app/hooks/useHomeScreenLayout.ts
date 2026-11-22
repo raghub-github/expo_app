@@ -22,7 +22,7 @@ const BRAND_TOP_GAP = 10;
  */
 const TAB_SHEET_VISUAL_GAP = 12;
 /** Bump when brand card sizing changes — busts frozen layout cache. */
-const BRAND_LAYOUT_REV = "fw-lora-v12-home-dark-soft";
+const BRAND_LAYOUT_REV = "fw-lora-v13-card-tag-clearance";
 
 /**
  * Promo + service + brand sizes for Home.
@@ -72,10 +72,10 @@ export function useHomeScreenLayout(_showWeather: boolean) {
       GRID_ROW_GAP * 2;
 
     const gridH = availableH - usedWithoutGrid;
-    // Prefer ~118–126px cards. Floor at 116 so 3 rows stay tappable on small phones
-    // even if that means the page scrolls.
+    // Prefer ~122–130px cards so title + art + tag band never crush together.
+    // Floor at 122 — shorter cards clipped "Going Out" and overlapped grocery art.
     const fitted = Math.floor(gridH / 3) - 4;
-    const serviceCardH = Math.min(126, Math.max(116, fitted > 0 ? fitted : 116));
+    const serviceCardH = Math.min(130, Math.max(122, fitted > 0 ? fitted : 122));
 
     const sizes = {
       key: layoutKey,

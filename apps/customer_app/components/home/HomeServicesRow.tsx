@@ -5,11 +5,10 @@
  * Explore Nearby is inserted just after the last currently-active card.
  */
 
-import { useLayoutEffect, useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useLayoutEffect, useState, useCallback, useMemo } from "react";
 import { View, Text, StyleSheet, Dimensions, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { AppAssetImage } from "@/components/AppAssetImage";
-import { GMSkeleton } from "@/components/ShimmerSkeleton";
 import { CX } from "@/lib/appAssetKeys";
 import { AppText } from "@/components/AppText";
 import type { CustomerAccountBlocksMap } from "@/services/customerServiceBlocks.service";
@@ -23,7 +22,6 @@ import { useServiceCardOfferPills } from "@/hooks/useServiceCardOfferPills";
 import { InstantPressable } from "@/components/InstantPressable";
 import { HomeServicesGridSkeleton } from "@/components/home/HomeTabSkeletons";
 import { homeSkeletonLog } from "@/lib/homeSkeletonTelemetry";
-import { StoreFonts } from "@/constants/storeTypography";
 import { HOME_DARK } from "@/constants/homeDarkTheme";
 
 const { width: SCREEN_W } = Dimensions.get("window");
@@ -35,31 +33,28 @@ const CARD_W = Math.floor((SCREEN_W - PAD * 2 - GAP * (COLS - 1)) / COLS);
 const DEFAULT_CARD_H = 126;
 /** Magicpin-style soft tile radius. */
 const CARD_RADIUS = 22;
-const CORNER_PILL_PAD_V = 7;
+const CORNER_PILL_PAD_V = 6;
 const CORNER_PILL_PAD_H = 10;
-const CORNER_PILL_INNER_R = 14;
-const CORNER_PILL_FONT = 9;
-/** Extra line box so Lora descenders never clip in release/Hermes. */
+const CORNER_PILL_INNER_R = 12;
+const CORNER_PILL_FONT = 10;
+/** Extra line box so descenders never clip in release/Hermes. */
 const CORNER_PILL_LINE = 14;
 /** Solid forest green — matches reference offer corner badge. */
 const OFFER_PILL_GREEN = "#15803D";
 /** Alias kept so Metro HMR never throws if a prior gradient paint still reads this name. */
 const OFFER_PILL_GREEN_TOP = OFFER_PILL_GREEN;
 /**
- * Large magicpin-style art — title-only cards leave room for the illustration.
- * Kept clear of the top-right offer ribbon and bottom tag band.
+ * Bottom-right hero art (magicpin corner). Pill stays bottom-left; art hugs
+ * the opposite corner — never centered in the card.
  */
-/** Bottom-right hero art — larger magicpin presence, still clears top ₹OFF. */
-const SERVICE_IMAGE_BOX = 90;
+const SERVICE_IMAGE_BOX = 88;
 /**
- * Reserved bottom band for the tag pill. Illustration sits ABOVE this band so art
- * never covers "Fresh & Fast" / "Going Out" / "Elect & Ecom" (local + release).
+ * Reserved bottom-left band for the tag pill. Art sits in the bottom-right
+ * corner and must not cover pill copy.
  */
-const TAG_PILL_BAND_H = CORNER_PILL_PAD_V * 2 + CORNER_PILL_LINE + 2;
-/** Full-width tag is fine once art clears the band — no mid-word clip. */
-const TAG_PILL_MAX_W = CARD_W - 2;
-/** Delay illustration shimmer so disk-cache hits never flash grey. */
-const SERVICE_IMAGE_SKELETON_DELAY_MS = 180;
+const TAG_PILL_BAND_H = CORNER_PILL_PAD_V * 2 + CORNER_PILL_LINE + 4;
+/** Pill owns left side — wide enough for full "Going Out" / "Fresh & Fast". */
+const TAG_PILL_MAX_W = Math.min(CARD_W - SERVICE_IMAGE_BOX + 16, Math.floor(CARD_W * 0.7));
 
 function ServiceCardImage({
   assetKey,
@@ -72,64 +67,31 @@ function ServiceCardImage({
   const assetUrl = useAppAssetsStore(
     (s) => s.assets[assetKey]?.proxyUrl ?? s.assets[assetKey]?.url ?? null
   );
-  const homeImagesPrefetched = useAppAssetsStore((s) => s.homeImagesPrefetched);
   const hasUrl = Boolean(assetUrl?.trim());
-  // Cached CMS URL + prefetch complete → paint immediately (no tile shimmer).
-  const imageReadyRef = useRef(hasUrl && homeImagesPrefetched);
-  const [imageVisible, setImageVisible] = useState(hasUrl && homeImagesPrefetched);
-  const [showSkeleton, setShowSkeleton] = useState(false);
-
-  useEffect(() => {
-    if (imageReadyRef.current || imageVisible) {
-      setShowSkeleton(false);
-      return;
-    }
-    homeSkeletonLog("SKELETON_MOUNTED", "service_image", assetKey);
-    const timer = setTimeout(() => {
-      if (!imageReadyRef.current) setShowSkeleton(true);
-    }, SERVICE_IMAGE_SKELETON_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [assetKey, imageVisible]);
-
-  useEffect(() => {
-    if (hasUrl && homeImagesPrefetched) {
-      imageReadyRef.current = true;
-      setImageVisible(true);
-      setShowSkeleton(false);
-      homeSkeletonLog("SKELETON_SKIPPED_CACHE_HIT", "service_image", assetKey);
-    }
-  }, [assetKey, hasUrl, homeImagesPrefetched]);
+  const [imageVisible, setImageVisible] = useState(false);
 
   const handleImageLoad = useCallback(() => {
-    imageReadyRef.current = true;
-    setShowSkeleton(false);
     setImageVisible(true);
     homeSkeletonLog("CONTENT_RENDERED", "service_image", assetKey);
   }, [assetKey]);
 
   const drawSize = Math.round(SERVICE_IMAGE_BOX * Math.min(1, Math.max(0.5, imageScale)));
 
+  // No gray/white skeleton squares — empty until CMS art loads, then BR corner.
+  if (!hasUrl) return null;
+
   return (
-    <View style={[styles.imageWrap, { width: SERVICE_IMAGE_BOX, height: SERVICE_IMAGE_BOX }]}>
-      {showSkeleton && !imageVisible ? (
-        <GMSkeleton
-          dark
-          style={[
-            styles.imageSkeleton,
-            {
-              width: SERVICE_IMAGE_BOX,
-              height: SERVICE_IMAGE_BOX,
-              borderRadius: Math.round(SERVICE_IMAGE_BOX * 0.22),
-            },
-          ]}
-        />
-      ) : null}
+    <View
+      style={[styles.imageWrap, { width: SERVICE_IMAGE_BOX, height: SERVICE_IMAGE_BOX }]}
+      pointerEvents="none"
+    >
       <AppAssetImage
         assetKey={assetKey}
         style={{
           width: drawSize,
           height: drawSize,
-          opacity: imageVisible || !showSkeleton ? 1 : 0,
+          opacity: imageVisible ? 1 : 0,
+          backgroundColor: "transparent",
         }}
         contentFit="contain"
         transition={0}
@@ -188,8 +150,8 @@ const GROCERY: ServiceItem = {
   description: "Get daily essentials delivered to your home.",
   pill: "Fresh Daily",
   accentColor: "#EA580C",
-  // Cart art fills more of the canvas — slight shrink only.
-  imageScale: 0.92,
+  // Cart art optically fills more — slight shrink so it stays in the BR corner.
+  imageScale: 0.9,
   assetKey: CX.home.serviceVoucher,
   route: "/home/grocery",
 };
@@ -339,7 +301,8 @@ function ServiceTile({
             : {
                 color: "rgba(255,255,255,0.14)",
                 borderless: false,
-                foreground: true,
+                // foreground:true clips absolute pills/art on Android release.
+                foreground: false,
               }
         }
         disabled={!canPress}
@@ -397,7 +360,9 @@ function ServiceTile({
             offerPillLabel ? styles.titleWithOffer : null,
           ]}
           numberOfLines={2}
-          maxFontSizeMultiplier={1.15}
+          maxFontSizeMultiplier={1.1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.82}
         >
           {item.title}
         </AppText>
@@ -522,11 +487,11 @@ const styles = StyleSheet.create({
     borderRadius: CARD_RADIUS,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.10)",
-    paddingTop: 14,
-    // Room for the bottom tag band — title-only magicpin layout.
-    paddingBottom: TAG_PILL_BAND_H + 4,
-    paddingHorizontal: 14,
-    // Keep hidden for pressed overlay / radius — pill stays fully inside bounds.
+    paddingTop: 12,
+    // Room for the bottom tag band — title + art must never invade it.
+    paddingBottom: TAG_PILL_BAND_H + 2,
+    paddingHorizontal: 12,
+    // Radius clip for overlays; pills/art stay inside padded bounds.
     overflow: "hidden",
   },
   cardPressedOverlay: {
@@ -540,7 +505,7 @@ const styles = StyleSheet.create({
    * so titles (Order Food vs Book a Ride) stay vertically aligned.
    */
   cardWithOffer: {
-    paddingTop: 14,
+    paddingTop: 12,
   },
   /**
    * Reference corner badge (mirrored to top-right):
@@ -574,6 +539,7 @@ const styles = StyleSheet.create({
     lineHeight: CORNER_PILL_LINE,
     includeFontPadding: false,
     textTransform: "uppercase",
+    ...(Platform.OS === "android" ? { fontFamily: "sans-serif-medium" } : null),
   },
   disabledWash: {
     ...StyleSheet.absoluteFillObject,
@@ -604,20 +570,20 @@ const styles = StyleSheet.create({
     color: HOME_DARK.textDim,
   },
   title: {
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: "800",
     color: HOME_DARK.text,
-    lineHeight: 22,
-    letterSpacing: -0.3,
-    // Leave room for bottom-right art — title stays top-left like magicpin.
-    maxWidth: "58%",
-    paddingRight: 2,
+    lineHeight: 19,
+    letterSpacing: -0.2,
+    // Wide enough for "Courier Service" / "Explore Nearby" on two lines.
+    maxWidth: "70%",
+    paddingRight: 4,
     zIndex: 3,
   },
   titleWithOffer: {
-    // Clear top-right offer ribbon only.
-    maxWidth: "52%",
-    marginRight: 8,
+    // Clear top-right offer ribbon only — still fit two-word titles.
+    maxWidth: "62%",
+    marginRight: 6,
   },
   /**
    * Bottom-left corner tag — lives in TAG_PILL_BAND_H; art is parked above it.
@@ -642,34 +608,37 @@ const styles = StyleSheet.create({
     // Do NOT clip text — labels must fully paint in local + production.
     overflow: "visible",
     alignSelf: "flex-start",
+    minHeight: TAG_PILL_BAND_H - 2,
+    justifyContent: "center",
   },
   tagCornerPillText: {
     color: "#FFFFFF",
     fontSize: CORNER_PILL_FONT,
     lineHeight: CORNER_PILL_LINE,
-    letterSpacing: 0.05,
+    letterSpacing: 0.15,
     includeFontPadding: false,
-    // Family alone — Android clips when fontWeight is also set on custom faces.
-    fontFamily: StoreFonts.loraBold,
+    // System bold — custom Lora metrics clipped "Going Out" → "Going" in release.
+    fontWeight: "700",
+    ...(Platform.OS === "android" ? { fontFamily: "sans-serif-medium" } : null),
   },
   mediaCol: {
     position: "absolute",
-    right: -6,
-    // Flush bottom-right corner (magicpin) — left tag pill keeps higher zIndex.
-    bottom: -8,
+    right: 0,
+    bottom: 0,
     width: SERVICE_IMAGE_BOX,
     height: SERVICE_IMAGE_BOX,
     alignItems: "flex-end",
     justifyContent: "flex-end",
     zIndex: 2,
     elevation: 0,
-  },
-  imageWrap: {
-    alignItems: "center",
-    justifyContent: "center",
     overflow: "visible",
   },
-  imageSkeleton: {
-    position: "absolute",
+  imageWrap: {
+    width: "100%",
+    height: "100%",
+    alignItems: "flex-end",
+    justifyContent: "flex-end",
+    overflow: "visible",
+    backgroundColor: "transparent",
   },
 });
