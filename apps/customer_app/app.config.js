@@ -23,8 +23,8 @@ const LAUNCHER_SPLASH_BG = "#14b8a6";
  * Full-bleed approved Lora brand (logo + tagline) is installed as AppTheme
  * windowBackground by `./plugins/withBrandedNativeSplash.js`, which also calls
  * SplashScreenManager.hide() in MainActivity so the mint A12 overlay never sits
- * for the JS boot (~10s blank mint bug). JS `GatiMitraBootstrapScreen` continues
- * the same `splash-brand.png` until Home is ready.
+ * for the JS boot (~10s blank mint bug). JS must NOT remount splash-brand.png —
+ * native brand stays until Home commits (duplicate JS splash was a prod UX bug).
  *
  * Regenerate with: npm run generate:splash
  */

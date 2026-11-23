@@ -117,8 +117,20 @@ function resolveStage(args: {
     return "AT_STORE";
   }
 
-  // Kitchen / accept UI — check BEFORE ORDER_PLACED so stageAware MERCHANT_ACCEPTED
-  // / MERCHANT_PREP can advance the hero while HTTP status is still briefly PLACED.
+  // Merchant has NOT accepted yet — never show "Preparing" from stale/optimistic
+  // stageAware (MERCHANT_ACCEPTED / MERCHANT_PREP). HTTP status is the accept authority.
+  const awaitingMerchantAccept =
+    s === "ORDER_PLACED" ||
+    s === "PLACED" ||
+    s === "CREATED" ||
+    s === "NEW" ||
+    s === "PENDING";
+  if (awaitingMerchantAccept) {
+    return "ORDER_PLACED";
+  }
+
+  // Kitchen UI only after real accept / preparing status (or matching stageAware
+  // when status already advanced past placed).
   const stillPreparing =
     !foodReady &&
     !atStore &&
@@ -133,10 +145,6 @@ function resolveStage(args: {
   if (stillPreparing) {
     if (args.kitchenDelayed) return "PREPARATION_DELAYED";
     return "MERCHANT_PREPARING";
-  }
-
-  if (s === "ORDER_PLACED" || s === "PLACED" || s === "CREATED") {
-    return "ORDER_PLACED";
   }
 
   // Ready, no rider — never show "rider arriving".

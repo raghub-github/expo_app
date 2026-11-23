@@ -5,7 +5,8 @@ export function normalizeCustomerOrderStatus(status: string | null | undefined):
   if (raw === "PLACED") return "ORDER_PLACED";
   const upper = raw.toUpperCase().replace(/[\s-]+/g, "_");
   if (upper === "PLACED") return "ORDER_PLACED";
-  if (upper === "CONFIRMED") return "ACCEPTED";
+  // Payment/order confirmed ≠ merchant kitchen accept. Keep pre-prep until ACCEPTED/PREPARING.
+  if (upper === "CONFIRMED") return "ORDER_PLACED";
   if (upper === "COMPLETED" || upper === "COMPLETE") return "DELIVERED";
   if (upper === "RETURNED") return "RTO";
   return upper;

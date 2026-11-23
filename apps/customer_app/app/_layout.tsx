@@ -73,7 +73,6 @@ import { CustomerSystemChrome } from "@/components/CustomerSystemChrome";
 import { AndroidSystemNavigationFill } from "@/components/AndroidSystemNavigationFill";
 import { StatusBarRouteChromeGuard } from "@/components/StatusBarRouteChromeGuard";
 import { AuthNavigationGate } from "@/components/AuthNavigationGate";
-import { GatiMitraBootstrapScreen } from "@/components/GatiMitraBootstrapScreen";
 import { HomeColdStartSkeleton } from "@/components/home/HomeTabSkeletons";
 import { setOnSessionRevoked } from "@/services/api";
 import { PushNotificationBootstrap } from "@/components/PushNotificationBootstrap";
@@ -147,6 +146,7 @@ import {
 } from "@/lib/device-permissions";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { HOME_DARK } from "@/constants/homeDarkTheme";
+import { applyHomeStatusBarChrome } from "@/lib/applyHomeStatusBar";
 import { DiscoveryColors } from "@/features/discovery-home/discoveryTheme";
 import { useDiscoveryLayout } from "@/hooks/useDiscoveryLayout";
 import { colors } from "@/theme";
@@ -370,17 +370,16 @@ export default function RootLayout() {
   const syncReturningRef = useRef(peekSyncReturningUser());
   const syncReturning = syncReturningRef.current;
   /**
-   * Approved splash = full-bleed brand (large Lora on mint).
-   * Native: withBrandedNativeSplash shows splash-brand as windowBackground immediately
-   * (A12 circular icon stays mint-only). JS cover continues the same asset until Home.
+   * Single splash only: native branded windowBackground (Android) / expo splash (iOS).
+   * Do NOT remount splash-brand.png in JS — that was the visible "duplicate splash".
+   * Keep the React root transparent until we leave Index so the native brand stays up,
+   * then hand off straight to Home (no second logo animation).
    */
   const destinationCommitted =
     (criticalReady || syncReturning) && !onRootIndexHold;
   const destinationReady = destinationCommitted && initialShellReady;
-  // Only destinationCommitted dismisses branding — never splashExited alone (avoids blank mint).
-  const appReady = destinationCommitted;
-  const showBrandedCover = !destinationCommitted;
-  // Soft home skeletons fill the gap while Tabs/Home JS + profile warm.
+  const showNativeBrandHold = !destinationCommitted;
+  // Soft home skeletons fill a brief gap only while Tabs JS warms — never brand art.
   const showHomeShellPlaceholder =
     destinationCommitted && !initialShellReady && rootIsTabs;
 
@@ -388,35 +387,26 @@ export default function RootLayout() {
     const first = markSplashExited(reason);
     if (!first) return;
     startupMeasure("branding_splash_exit", "process_start");
-    startupMeasure("splash_visible_duration", "branding_visible");
+    startupMeasure("splash_visible_duration", "process_start");
     startupMeasure("usable_home_ready", "process_start");
     startupLaunchLog("BRANDED_SPLASH_DISMISS", {
       reason,
       blocksHome: true,
-      note: "js_fullbleed_brand_only",
+      note: "native_only_no_js_brand_overlay",
     });
+    // Clear splash chrome so Home can paint light status icons on dark header.
+    // Force light icons immediately — do not wait for Home focus / route guard.
+    // Edge-to-edge often ignores statusBarColor; bar style must flip off splash dark-content.
+    applyHomeStatusBarChrome("dismissBrandingSplash");
     void SplashScreen.hideAsync().catch(() => {});
+    endStartupApiGate();
     // Non-blocking map asset warm — must not sit on the dismiss path.
     void resolveMapImageDataUri(resolveNearbyRiderMarkerImage("bike")).catch(() => {});
   }, []);
 
-  /** Native solid-mint splash can hide the moment the approved JS brand is painted. */
-  const handleSplashReady = useCallback(() => {
-    startupMeasure("native_splash_hide", "process_start");
-    startupLaunchLog("NATIVE_SPLASH_HIDE", {
-      phase: "js_brand_laid_out",
-      blocksHome: false,
-      note: "native_was_mint_only",
-    });
-    void SplashScreen.hideAsync().catch(() => {});
-  }, []);
-
-  const handleSplashExitComplete = useCallback(() => {
-    if (!isSplashExited()) dismissBrandingSplash("bootstrap_exit_complete");
-  }, [dismissBrandingSplash]);
-
   useEffect(() => {
     startupLaunchLog("ROOT_LAYOUT_READY", { blocksHome: true });
+    startupMeasure("branding_visible", "process_start");
   }, []);
 
   // Sync-returning: seed auth immediately so destination kick can leave Index.
@@ -562,9 +552,10 @@ export default function RootLayout() {
   }, [session?.userId]);
 
   useEffect(() => {
-    // Home data prefetch is non-essential — start only after splash has left.
-    if (!splashExited || !session) {
-      setHomeDataPrefetched(!session);
+    // Start as soon as session exists — do not wait for splash exit (that serialized
+    // offers/wallet/weather behind the 30s+ branded hold).
+    if (!session) {
+      setHomeDataPrefetched(true);
       return;
     }
     let cancelled = false;
@@ -575,7 +566,7 @@ export default function RootLayout() {
     return () => {
       cancelled = true;
     };
-  }, [splashExited, session, queryClient]);
+  }, [session, queryClient]);
 
   useEffect(() => {
     if (!criticalReady) return;
@@ -665,14 +656,43 @@ export default function RootLayout() {
           return;
         }
       } else if (latest.sessionRestorePending) {
-        // Disk restore still running — hold Index under cover; Index/AuthGate
-        // will route once pending clears. Never treat "not yet restored" as logout.
-        startupLaunchLog("SPLASH_DESTINATION_KICK", {
-          phase: "await_session_restore",
-          note: "cover_held_until_auth_restore",
-          blocksHome: true,
-        });
-        return;
+        // Disk restore still running. After hard deadline, re-peek sync FastKV —
+        // never sit on Index for tens of seconds if a session already landed.
+        if (hardDeadlineHit) {
+          const lateSync = authService.peekStoredSessionSync();
+          if (lateSync?.accessToken) {
+            useAuthStore.setState({
+              session: lateSync,
+              hydrated: true,
+              sessionRestorePending: false,
+            });
+            if (hasCompletedProfileSync()) {
+              safeReplace(hrefForRequestedPrimaryTab());
+            } else {
+              const syncProfile = readSyncCachedProfile();
+              safeReplace(
+                syncProfile != null && syncProfile.profile_completed !== true
+                  ? "/(onboarding)"
+                  : hrefForRequestedPrimaryTab()
+              );
+            }
+            kicked = true;
+          } else {
+            startupLaunchLog("SPLASH_DESTINATION_KICK", {
+              phase: "await_session_restore_past_deadline",
+              note: "still_pending_no_sync_session",
+              blocksHome: true,
+            });
+            return;
+          }
+        } else {
+          startupLaunchLog("SPLASH_DESTINATION_KICK", {
+            phase: "await_session_restore",
+            note: "cover_held_until_auth_restore",
+            blocksHome: true,
+          });
+          return;
+        }
       } else if (hardDeadlineHit) {
         // Only send to Login after restore finished with no session.
         safeReplace("/(auth)/login");
@@ -723,8 +743,8 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (hydrated && useAuthStore.getState().session) {
-      // Short burst only — long 12s gate serialized home APIs on production latency.
-      extendStartupApiGate(4_000);
+      // Tiny burst only — long extensions re-serialized home APIs after login.
+      extendStartupApiGate(1_500);
     }
   }, [hydrated]);
 
@@ -736,8 +756,8 @@ export default function RootLayout() {
     }
     setPostSplashPhase(1);
     endStartupApiGate();
-    const t2 = setTimeout(() => setPostSplashPhase(2), 320);
-    const t3 = setTimeout(() => setPostSplashPhase(3), 900);
+    const t2 = setTimeout(() => setPostSplashPhase(2), 180);
+    const t3 = setTimeout(() => setPostSplashPhase(3), 500);
     return () => {
       clearTimeout(t2);
       clearTimeout(t3);
@@ -776,12 +796,14 @@ export default function RootLayout() {
             <View
             style={{
               flex: 1,
-              // Soft home bg once destination is ready. While the branded cover
-              // owns the frame, stay transparent so the native splash-brand
-              // windowBackground is never covered by a blank mint fill.
-              backgroundColor: showBrandedCover
+              // Soft home bg once destination is ready. While native brand holds,
+              // stay transparent so Android windowBackground splash-brand shows
+              // through — never remount a second JS logo splash.
+              backgroundColor: showNativeBrandHold
                 ? "transparent"
-                : GatiMitraColors.softBackground,
+                : rootIsTabs
+                  ? HOME_DARK.page
+                  : GatiMitraColors.softBackground,
             }}
           >
             {/* Home illustrations + category chip images must warm DURING splash —
@@ -893,20 +915,12 @@ export default function RootLayout() {
                 collapsable={false}
                 style={[
                   StyleSheet.absoluteFillObject,
-                  { zIndex: 9000, backgroundColor: GatiMitraColors.softBackground },
+                  { zIndex: 9000, backgroundColor: HOME_DARK.page },
                 ]}
                 accessibilityLabel="Loading home"
               >
                 <HomeColdStartSkeleton reason="post_splash_shell_placeholder" />
               </View>
-            ) : null}
-            {showBrandedCover ? (
-              <GatiMitraBootstrapScreen
-                variant="root"
-                appReady={appReady}
-                onSplashReady={handleSplashReady}
-                onExitComplete={handleSplashExitComplete}
-              />
             ) : null}
           </View>
         </SafeAreaProvider>
@@ -1466,14 +1480,23 @@ function LocationPermissionResumeCheck() {
   return null;
 }
 
-function StatusBarSystemUISync({ splashChromeActive }: { splashChromeActive: boolean }) {
+function StatusBarSystemUISync({
+  splashChromeActive,
+  inTabsHome,
+}: {
+  splashChromeActive: boolean;
+  inTabsHome: boolean;
+}) {
   const statusBarBackground = useScreenChromeStore((s) => s.statusBarBackground);
 
   useEffect(() => {
     if (Platform.OS !== "android") return;
-    // Keep the system StatusBar visible whenever chrome syncs (modals / nav can flip it).
     NativeStatusBar.setHidden(false, "none");
-  }, [statusBarBackground, splashChromeActive]);
+    // Do not re-apply Home chrome here — store updates were flipping the bar
+    // white/black against RootStack + Home focus.
+    void inTabsHome;
+    void splashChromeActive;
+  }, [statusBarBackground, splashChromeActive, inTabsHome]);
 
   return null;
 }
@@ -1575,50 +1598,61 @@ function RootStack({
         : "light";
 
   useEffect(() => {
-    if (!splashChromeActive) return;
-    // Never allow a white status strip over the splash gradient.
-    NativeStatusBar.setHidden(false, "none");
-    if (Platform.OS === "android") {
-      NativeStatusBar.setTranslucent(true);
-      NativeStatusBar.setBackgroundColor("transparent", true);
-      NativeStatusBar.setBarStyle("light-content", true);
+    // Tabs Home always wins — even while splashActive/bootstrap flags lag.
+    // Skipping this while splashChromeActive left dark-content from mint splash
+    // sitting on #2C2C30 (invisible time/wifi/battery in the screenshot).
+    if (inTabsHome) {
+      applyHomeStatusBarChrome("RootStack.tabsHome");
+      return;
     }
-  }, [splashChromeActive]);
-
-  useEffect(() => {
-    if ((!inDiscoveryFood && !inTabsHome) || splashChromeActive) return;
+    if (splashChromeActive) {
+      NativeStatusBar.setHidden(false, "none");
+      if (Platform.OS === "android") {
+        NativeStatusBar.setTranslucent(true);
+        NativeStatusBar.setBackgroundColor("transparent", true);
+        NativeStatusBar.setBarStyle("light-content", false);
+      }
+      return;
+    }
+    if (!inDiscoveryFood) return;
     NativeStatusBar.setHidden(false, "none");
-    NativeStatusBar.setBarStyle("light-content", true);
+    NativeStatusBar.setBarStyle("light-content", false);
     if (Platform.OS === "android") {
       NativeStatusBar.setTranslucent(true);
-      NativeStatusBar.setBackgroundColor(
-        inTabsHome ? HOME_DARK.page : DiscoveryColors.bg,
-        true
-      );
+      NativeStatusBar.setBackgroundColor(DiscoveryColors.bg, false);
     }
   }, [inDiscoveryFood, inTabsHome, splashChromeActive]);
 
   return (
     <>
-      <StatusBarSystemUISync splashChromeActive={splashChromeActive} />
+      <StatusBarSystemUISync
+        splashChromeActive={splashChromeActive}
+        inTabsHome={inTabsHome}
+      />
       <StatusBar
         hidden={false}
-        style={resolvedStatusBarStyle}
+        style={inTabsHome ? "light" : resolvedStatusBarStyle}
         backgroundColor={
-          splashChromeActive ? "transparent" : resolvedStatusBarBackground
+          inTabsHome
+            ? HOME_DARK.page
+            : splashChromeActive
+              ? "transparent"
+              : resolvedStatusBarBackground
         }
         translucent={immersiveStatusBar || resolvedStatusBarBackground === "transparent"}
       />
       <View
         style={{
           height: effectiveStatusBarHeight,
-          backgroundColor: splashChromeActive
-            ? SPLASH_CHROME_COLOR
-            : resolvedStatusBarBackground === "transparent"
-              ? immersiveStatusBar
-                ? "transparent"
-                : GatiMitraColors.softBackground
-              : resolvedStatusBarBackground,
+          backgroundColor: inTabsHome
+            ? HOME_DARK.page
+            : splashChromeActive
+              ? SPLASH_CHROME_COLOR
+              : resolvedStatusBarBackground === "transparent"
+                ? immersiveStatusBar
+                  ? "transparent"
+                  : GatiMitraColors.softBackground
+                : resolvedStatusBarBackground,
           width: "100%",
         }}
       />
@@ -1627,12 +1661,14 @@ function RootStack({
           screenOptions={{
             headerShown: false,
             statusBarHidden: false,
-            statusBarStyle: resolvedStatusBarStyle,
-            statusBarBackgroundColor: splashChromeActive
-              ? "transparent"
-              : resolvedStatusBarBackground === "transparent"
-                ? GatiMitraColors.softBackground
-                : resolvedStatusBarBackground,
+            statusBarStyle: inTabsHome ? "light" : resolvedStatusBarStyle,
+            statusBarBackgroundColor: inTabsHome
+              ? HOME_DARK.page
+              : splashChromeActive
+                ? "transparent"
+                : resolvedStatusBarBackground === "transparent"
+                  ? GatiMitraColors.softBackground
+                  : resolvedStatusBarBackground,
             statusBarTranslucent:
               splashChromeActive ||
               immersiveStatusBar ||
@@ -1640,9 +1676,11 @@ function RootStack({
             contentStyle: {
               backgroundColor: splashChromeActive
                 ? SPLASH_CHROME_COLOR
-                : inAuthOrOnboarding
-                  ? GatiMitraColors.splashMint
-                  : GatiMitraColors.softBackground,
+                : inTabsHome || inTabs
+                  ? HOME_DARK.page
+                  : inAuthOrOnboarding
+                    ? GatiMitraColors.splashMint
+                    : GatiMitraColors.softBackground,
             },
             animation: "slide_from_right",
             /**

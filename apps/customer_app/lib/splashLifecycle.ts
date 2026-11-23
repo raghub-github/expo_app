@@ -14,7 +14,7 @@ import { startupLaunchLog, startupProcessAgeMs } from "@/lib/startupPerf";
  * Absolute auth-unblock + shell-force budget. After this, RootLayout marks shell
  * ready so branding never waits on Metro lazy-bundles of Home.
  */
-export const SPLASH_HARD_DEADLINE_MS = 3_500;
+export const SPLASH_HARD_DEADLINE_MS = 2_500;
 /**
  * @deprecated Soft lag log only — shell force uses an 800ms post-auth budget in RootLayout.
  */

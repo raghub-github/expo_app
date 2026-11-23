@@ -1,6 +1,7 @@
 /**
  * Zomato-style Home skeletons:
- * - Cold start: real header + real tab bar; main body = text shimmer + spinner
+ * - Cold start: real header + real tab bar; main body =
+ *   shimmer slogan + plain pulse spinner + jumping bottom dots
  * - Section skeletons: still used for progressive Home content swap-in
  */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -216,6 +217,36 @@ export function HomeBrandBannerSkeleton({
   );
 }
 
+/** Soft pulse ring — Reanimated UI-thread (previous plain loader look). */
+function PulseRing({ delayMs, size }: { delayMs: number; size: number }) {
+  const progress = useSharedValue(0);
+  useEffect(() => {
+    progress.value = withDelay(
+      delayMs,
+      withRepeat(
+        withTiming(1, { duration: 1600, easing: Easing.out(Easing.cubic) }),
+        -1,
+        false
+      )
+    );
+    return () => cancelAnimation(progress);
+  }, [delayMs, progress]);
+  const style = useAnimatedStyle(() => ({
+    opacity: 0.28 * (1 - progress.value),
+    transform: [{ scale: 0.55 + progress.value * 0.7 }],
+  }));
+  return (
+    <Reanimated.View
+      pointerEvents="none"
+      style={[
+        styles.pulseRing,
+        { width: size, height: size, borderRadius: size / 2 },
+        style,
+      ]}
+    />
+  );
+}
+
 function BounceDot({ delayMs }: { delayMs: number }) {
   const y = useSharedValue(0);
   const opacity = useSharedValue(0.4);
@@ -256,10 +287,12 @@ function BounceDot({ delayMs }: { delayMs: number }) {
   return <Reanimated.View style={[styles.bounceDot, style]} />;
 }
 
-/** Compact brand spinner under the shimmer line. */
-function SimpleLoadSpinner() {
+/** Plain loader: pulse rings + mint spinner (previous Home cold-start look). */
+function PlainLoadSpinner() {
   return (
     <View style={styles.spinnerStage} accessibilityLabel="Loading">
+      <PulseRing delayMs={0} size={44} />
+      <PulseRing delayMs={500} size={44} />
       <ActivityIndicator size="small" color={GatiMitraColors.splashMint} />
     </View>
   );
@@ -269,8 +302,8 @@ function BounceDots() {
   return (
     <View style={styles.bounceDotsRow} collapsable={false}>
       <BounceDot delayMs={0} />
-      <BounceDot delayMs={150} />
-      <BounceDot delayMs={300} />
+      <BounceDot delayMs={140} />
+      <BounceDot delayMs={280} />
     </View>
   );
 }
@@ -338,7 +371,7 @@ function ShimmerSlogan() {
  * Cold-start Home shell (Zomato reference):
  * - Real header with live/cached location (updates as store hydrates)
  * - Real tab bar chrome (icons gated on Ionicons ready)
- * - Main body: text shimmer slogan + simple spinner + bounce dots
+ * - Main body: shimmer slogan + plain pulse spinner + jumping bottom dots
  */
 export function HomeColdStartSkeleton({ reason = "tabs_hold" }: { reason?: string }) {
   const insets = useSafeAreaInsets();
@@ -423,7 +456,7 @@ export function HomeColdStartSkeleton({ reason = "tabs_hold" }: { reason?: strin
       <View style={[styles.mainBody, { paddingBottom: tabBarReserve + 28 }]} collapsable={false}>
         <View style={styles.sloganCenter} accessibilityLabel="Loading content" collapsable={false}>
           <ShimmerSlogan />
-          <SimpleLoadSpinner />
+          <PlainLoadSpinner />
         </View>
         {/* Dots sit just above the absolute tab bar — no elevation (Android freezes Reanimated). */}
         <View
@@ -524,10 +557,16 @@ const styles = StyleSheet.create({
     color: SLOGAN_MUTED,
   },
   spinnerStage: {
-    marginTop: 16,
-    height: 28,
+    marginTop: 18,
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
+  },
+  pulseRing: {
+    position: "absolute",
+    borderWidth: 2,
+    borderColor: GatiMitraColors.splashMint,
   },
   dotsDock: {
     position: "absolute",
