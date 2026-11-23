@@ -9,8 +9,6 @@ import {
   StyleSheet,
   ScrollView,
   RefreshControl,
-  StatusBar as NativeStatusBar,
-  Platform,
   AppState,
   InteractionManager,
   type AppStateStatus,
@@ -23,9 +21,13 @@ import { StatusBar } from "expo-status-bar";
 import { GatiMitraColors } from "@/constants/gatimitra";
 import { resolveCustomerBottomNavHeight } from "@/constants/layout";
 import { HOME_DARK } from "@/constants/homeDarkTheme";
+import { applyHomeStatusBarChrome } from "@/lib/applyHomeStatusBar";
 import { NATURAL_VERTICAL_SCROLL_PROPS } from "@/lib/naturalScrollProps";
 import { HomeLocationHeader, HomeWeatherBanner } from "@/components/home/HomeScreenHeader";
-import { HomeLocationHeaderSkeleton } from "@/components/home/HomeTabSkeletons";
+import {
+  HomeColdStartSkeleton,
+  HomeLocationHeaderSkeleton,
+} from "@/components/home/HomeTabSkeletons";
 import { HomeServicesRow } from "@/components/home/HomeServicesRow";
 import { HomePromoCarousel } from "@/components/home/HomePromoCarousel";
 import { HomeBrandBanner } from "@/components/home/HomeBrandBanner";
@@ -51,7 +53,6 @@ import { useAddresses } from "@/hooks/useAddresses";
 import { normalizeOfferLocationParams } from "@/lib/featuredOfferGeo";
 import { reloadCustomerAppAssets, useAppAssetsStore } from "@/store/appAssetsStore";
 import { useNearbyGroceryAvailability } from "@/hooks/useNearbyGroceryAvailability";
-import { useScreenChromeStore } from "@/store/screenChromeStore";
 import { prioritizeVisibleMerchantBanners } from "@/lib/prefetchMerchantBanners";
 import { resetFoodHomeListScrollGuard } from "@/lib/foodHomeScrollGuard";
 import { warmFoodHomeEntry } from "@/lib/navigateToFoodHome";
@@ -328,6 +329,37 @@ export default function HomeScreen() {
     weatherReady,
   });
 
+  /**
+   * Plain Home loader (shimmer slogan + pulse rings + jumping dots) until the
+   * first meaningful paint — NOT gray promo/service box skeletons.
+   */
+  const locationSettled =
+    locationHydrated &&
+    Boolean(locationPrimary) &&
+    !locationPrimary.toLowerCase().startsWith("detecting") &&
+    !locationPrimary.toLowerCase().startsWith("updating");
+  const homeImagesPrefetched = useAppAssetsStore((s) => s.homeImagesPrefetched);
+  // Hold the plain loader until location + offers + service art are actually ready
+  // so Home does not pop in empty and then fill a second later.
+  const contentReady =
+    !forceSkeletons &&
+    locationSettled &&
+    offersResolved &&
+    weatherReady &&
+    (homeImagesPrefetched || assetsLoaded);
+  const [plainLoaderDone, setPlainLoaderDone] = useState(false);
+  useEffect(() => {
+    if (!splashExited) return;
+    if (contentReady) {
+      setPlainLoaderDone(true);
+      return;
+    }
+    // Hard cap only — normal path dismisses the moment data is ready.
+    const t = setTimeout(() => setPlainLoaderDone(true), 8_000);
+    return () => clearTimeout(t);
+  }, [splashExited, contentReady]);
+  const showPlainHomeLoader = splashExited && !plainLoaderDone && !contentReady;
+
   useEffect(() => {
     if (!splashExited) return;
     homeSkeletonLog("CONTENT_RENDERED", "location", "home_shell_after_splash", {
@@ -335,6 +367,7 @@ export default function HomeScreen() {
       showPromoSkeleton,
       showServicesSkeleton,
       showWeatherSkeleton,
+      showPlainHomeLoader,
     });
   }, [
     splashExited,
@@ -342,32 +375,19 @@ export default function HomeScreen() {
     showPromoSkeleton,
     showServicesSkeleton,
     showWeatherSkeleton,
+    showPlainHomeLoader,
   ]);
 
   // Home header always owns safe-top padding — keep root spacer off so first
   // paint never races splash/bootstrap (spacer 0 + header GAP-only = overlap).
   useFocusEffect(
     useCallback(() => {
-      const applyHomeStatusBar = () => {
-        NativeStatusBar.setHidden(false, "none");
-        NativeStatusBar.setBarStyle("light-content", true);
-        if (Platform.OS === "android") {
-          // Match Home page chrome — white icons on dark shell.
-          NativeStatusBar.setTranslucent(true);
-          NativeStatusBar.setBackgroundColor(STATUS_CHROME, true);
-        }
-        useScreenChromeStore.setState({
-          statusBarBackground: STATUS_CHROME,
-          statusBarStyle: "light",
-          hideStatusBarSpacer: true,
-        });
+      applyHomeStatusBarChrome("tabs-home-focus");
+
+      const onAppState = (state: AppStateStatus) => {
+        if (state === "active") applyHomeStatusBarChrome("tabs-home-resume");
       };
-      // Apply now, then again after sibling tab cleanups / root chrome settle
-      // (Profile/Orders used to leave dark-content and win the race).
-      applyHomeStatusBar();
-      const t0 = setTimeout(applyHomeStatusBar, 0);
-      const t1 = setTimeout(applyHomeStatusBar, 64);
-      const task = InteractionManager.runAfterInteractions(applyHomeStatusBar);
+      const appSub = AppState.addEventListener("change", onAppState);
 
       resetFoodHomeListScrollGuard();
       // Only remount tiles after idle resume via AppState — not every focus (avoids UI flash).
@@ -383,9 +403,7 @@ export default function HomeScreen() {
       }
 
       return () => {
-        clearTimeout(t0);
-        clearTimeout(t1);
-        task.cancel?.();
+        appSub.remove();
       };
     }, [queryClient])
   );
@@ -407,9 +425,21 @@ export default function HomeScreen() {
     if (critical.length > 0) enqueueImagePrefetchFront(critical, critical.length);
   }, [assets]);
 
+  // Plain loader owns the first paint after splash (no gray box skeletons).
+  if (showPlainHomeLoader) {
+    return (
+      <View style={styles.container} onLayout={onHomeShellLayout}>
+        {isFocused ? (
+          <StatusBar style="light" backgroundColor={STATUS_CHROME} translucent />
+        ) : null}
+        <HomeColdStartSkeleton reason="home_plain_loader" />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container} onLayout={onHomeShellLayout}>
-      {/* Only while focused — Profile's mounted StatusBar(dark) was winning the race. */}
+      {/* Dark Home chrome → always white status icons (never follow light-mode dark icons). */}
       {isFocused ? (
         <StatusBar style="light" backgroundColor={STATUS_CHROME} translucent />
       ) : null}
@@ -468,7 +498,6 @@ export default function HomeScreen() {
           />
         }
       >
-        {/* Weather / promo / services paint progressively over skeletons. */}
         <HomeWeatherBanner
           weather={weather}
           loading={showWeatherSkeleton}
@@ -482,7 +511,7 @@ export default function HomeScreen() {
           cardHeight={promoCardH}
           mode="home"
           showDefaultWhenEmpty
-          skeletonWhileLoading={showPromoSkeleton}
+          skeletonWhileLoading={false}
         />
 
         <HomeServicesRow
@@ -490,7 +519,7 @@ export default function HomeScreen() {
           cardHeight={serviceCardH}
           enabledServices={homeEnabledServices}
           accountBlocks={accountBlocks}
-          skeleton={showServicesSkeleton}
+          skeleton={false}
           onAccountBlockedPress={(_id, reason, label, assetKey) =>
             openBlockSheet({ serviceLabel: label, reason, serviceAssetKey: assetKey })
           }

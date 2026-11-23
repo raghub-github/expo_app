@@ -185,9 +185,11 @@ export function AppAssetImage({
 const styles = StyleSheet.create({
   host: {
     overflow: "hidden",
+    backgroundColor: "transparent",
   },
   fill: {
     ...StyleSheet.absoluteFillObject,
+    backgroundColor: "transparent",
   },
   pendingHidden: {
     opacity: 0,

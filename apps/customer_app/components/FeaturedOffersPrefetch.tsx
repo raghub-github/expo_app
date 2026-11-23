@@ -8,7 +8,7 @@ import { normalizeOfferLocationParams } from "@/lib/featuredOfferGeo";
 import { seedFeaturedOffersHomeQueryIfCached } from "@/lib/featuredOffersHomeCache";
 
 /** Brief settle so lastKnown → reconcile doesn't refetch a transient pincode. */
-const LOCATION_SETTLE_MS = 120;
+const LOCATION_SETTLE_MS = 40;
 
 /** Warm home + ride promo offers + grocery/parcel pills as soon as location is ready. */
 export function FeaturedOffersPrefetch() {

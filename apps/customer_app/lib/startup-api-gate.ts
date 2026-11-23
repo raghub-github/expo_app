@@ -1,15 +1,18 @@
 /**
  * Limits parallel API calls during cold start so the dev backend / Supabase pool
  * is not flooded (avoids axios "Network Error" from connection timeouts).
+ *
+ * Keep the window short — a 25s / 15s queue was a primary cause of 30s+ home loads.
+ * Home-critical reads bypass the gate entirely.
  */
 
-let startupEndsAt = Date.now() + 25_000;
+let startupEndsAt = Date.now() + 8_000;
 let inFlight = 0;
 const waiters: Array<() => void> = [];
 
-const MAX_PARALLEL = 3;
+const MAX_PARALLEL = 6;
 /** A queued request is never held longer than this, even if releases are lost. */
-const MAX_WAIT_MS = 15_000;
+const MAX_WAIT_MS = 2_500;
 
 /** Wallet + item customization must never sit behind the cold-start queue. */
 const GATE_BYPASS_URL_PARTS = [
@@ -27,6 +30,18 @@ const GATE_BYPASS_URL_PARTS = [
   "/v1/me/legal-consent",
   "/v1/auth/otp/",
   "/v1/auth/supabase/exchange-customer",
+  // Home first paint — never serialize these behind the gate.
+  "/v1/offers",
+  "/v1/featured",
+  "/v1/geo/",
+  "/v1/customer/geo",
+  "/v1/weather",
+  "/v1/app-assets",
+  "/v1/me/service-blocks",
+  "/v1/customer/service-blocks",
+  "/v1/home",
+  "/v1/merchants/nearby",
+  "/v1/grocery",
 ];
 
 export function shouldBypassStartupGate(url: string | undefined): boolean {
@@ -35,7 +50,7 @@ export function shouldBypassStartupGate(url: string | undefined): boolean {
 }
 
 export function resetStartupApiGateForTests(): void {
-  startupEndsAt = Date.now() + 25_000;
+  startupEndsAt = Date.now() + 8_000;
   inFlight = 0;
   waiters.length = 0;
 }

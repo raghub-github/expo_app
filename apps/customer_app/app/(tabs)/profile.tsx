@@ -5,7 +5,7 @@
 import { useCallback, useMemo, useState, useEffect } from "react";
 import { AppText } from "@/components/AppText";
 
-import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable, ActivityIndicator, Platform, StatusBar as NativeStatusBar } from "react-native";
+import { View, ScrollView, TouchableOpacity, StyleSheet, Alert, Pressable, ActivityIndicator } from "react-native";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { useAppSafeAreaInsets } from "@/hooks/useAppSafeAreaInsets";
@@ -29,7 +29,7 @@ import { GmitraPlusMembershipSheet } from "@/components/profile/GmitraPlusMember
 import { ProfilePhotoSourceSheet } from "@/components/profile/ProfilePhotoSourceSheet";
 import { ProfilePhotoViewerSheet } from "@/components/profile/ProfilePhotoViewerSheet";
 import { ProfileSocialIconsRow } from "@/components/profile/ProfileSocialIconsRow";
-import { useScreenChromeStore } from "@/store/screenChromeStore";
+import { applyLightScreenStatusBarChrome } from "@/lib/applyHomeStatusBar";
 import { STATUS_BAR_TO_HEADER_GAP, resolveCustomerBottomNavHeight } from "@/constants/layout";
 import { profileService, type UserProfile } from "@/services/profile.service";
 import { referralService } from "@/services/referral.service";
@@ -77,22 +77,10 @@ export default function ProfileScreen() {
     : null;
   const plusCtaSubtitle = defaultPrice ? formatPlanPriceLine(defaultPrice) : null;
 
-  // Only while Profile is focused — never re-paint dark-content on leave
-  // (that raced Home and made status icons invisible on the dark Home shell).
+  // Light Profile page → dark status icons. Home re-applies white on focus.
   useFocusEffect(
     useCallback(() => {
-      useScreenChromeStore.getState().setImmersiveStatusBarChrome(false);
-      useScreenChromeStore.setState({
-        statusBarBackground: PAGE_BG,
-        statusBarStyle: "dark",
-        // Self-pad below solid bar — avoid root spacer flash on tab slide.
-        hideStatusBarSpacer: true,
-      });
-      if (Platform.OS === "android") {
-        NativeStatusBar.setTranslucent(false);
-        NativeStatusBar.setBackgroundColor(PAGE_BG, true);
-        NativeStatusBar.setBarStyle("dark-content", true);
-      }
+      applyLightScreenStatusBarChrome(PAGE_BG);
       void queryClient.invalidateQueries({ queryKey: ["referral", "config", "customer"] });
       // Respect staleTime — invalidate-on-every-focus forced a /subscription/current
       // round trip even when the profile tab was revisited within a minute.

@@ -5,7 +5,7 @@
  *  - Android 12+ SplashScreen API only allows a color + circular icon.
  *  - expo-splash-screen holds that splash (keepSplashScreenOnScreen=true) until JS
  *    calls hideAsync — previously a solid-mint frame for ~10s while the bundle booted.
- *  - Branding lived only in JS (`GatiMitraBootstrapScreen` + splash-brand.png).
+ *  - Branding must stay native-only until Home — do not remount splash-brand in JS.
  *
  * This plugin:
  *  1. Installs splash-brand.png as a drawable + layer-list windowBackground.
