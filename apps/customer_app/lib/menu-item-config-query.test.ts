@@ -44,6 +44,11 @@ describe("menu item full-config sheet speed", () => {
       shouldBypassStartupGate("/v1/merchants/GMMC1026/menu/items/SS1026_x/full-config"),
       true
     );
-    assert.equal(shouldBypassStartupGate("/v1/merchants/nearby"), false);
+    // Home first paint (nearby stores) also skips the cold-start queue — a 25 s
+    // queue there was a primary cause of 30 s+ home loads.
+    assert.equal(shouldBypassStartupGate("/v1/merchants/nearby"), true);
+    // Non-critical reads still wait behind the gate.
+    assert.equal(shouldBypassStartupGate("/v1/orders/history"), false);
+    assert.equal(shouldBypassStartupGate("/v1/merchants/GMMC1026/reviews"), false);
   });
 });
